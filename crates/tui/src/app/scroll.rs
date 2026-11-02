@@ -198,12 +198,9 @@ impl App {
                     .map(|(_, _, l, _, _)| l.len() + 1)
                     .sum::<usize>()
         };
-        // The row condition is `Option`al on purpose: written as `k > stop_row` with 0 meaning "no
-        // row", the disjunct is true for every `k > 0` and the walk renders the whole session.
-        // `None` is the lines-only walk.
-        // **What the turn is doing that no row holds yet**, computed once for this walk.
-        // The backward walk is entered when the transcript is too big to render forward, and
-        // it still has to count the work in flight against the run it belongs to.
+        // The row condition is `Option`al on purpose: `k > stop_row` with 0 for "no row" is true for
+        // every `k > 0`, so `None` is the lines-only walk. The work in flight is counted here too, since
+        // the walk is entered when the transcript is too big to render forward.
         let live = live_work(
             self.turn.as_ref(),
             &self.items,
@@ -216,15 +213,13 @@ impl App {
         // **The run `ctrl-t` opens**, once, for the same reason the forward walk computes it
         // once: the seam names the chord only where it acts.
         let newest_run = newest_unseen_run(&self.items, self.visibility, &self.bound_prompts, live);
-        // `carry`: the walk does not stop in the middle of a run. A run's marker is drawn at its
-        // first row and this walk renders the newest first, so stopping on the line budget would
-        // leave the rows it passed with nothing on screen. Continuing costs one cheap predicate per
-        // row, and the rows draw no lines.
+        // `carry`: the walk does not stop in the middle of a run, because a run's marker is drawn at its first
+        // row and this walk renders the newest first. Continuing costs one predicate per row, and the rows
+        // draw no lines.
         let mut carry = false;
-        // `need_speaker`: a marker with nothing drawn beside it yet. The marker joins the sentence it
-        // continues only when that prose row is already in the block, which depends on where the line
-        // budget stopped, so the walk renders one more row rather than let the same transcript join or
-        // not depending on how far somebody had scrolled.
+        // `need_speaker`: a marker with nothing drawn beside it yet. The join depends on where the line budget
+        // stopped, so the walk renders one more row rather than let the same transcript join or not depending
+        // on how far somebody had scrolled.
         let mut need_speaker = false;
         loop {
             let enough = covered(&built) >= want
@@ -237,10 +232,8 @@ impl App {
             k -= 1;
             let targets = targets_before(&self.items, k);
             let answered = round_results(&self.items, k);
-            // **The marker, or the row** — R37 AMENDED, and the same three states the
-            // forward walk keeps. Both walks decide *which row of a run owns the line* the
-            // same way — the run's first — so the two agree about a block without either of
-            // them having to remember what the other drew.
+            // The marker, or the row: both walks decide which row of a run owns the line the same way, the
+            // run's first, so they agree about a block without either remembering what the other drew.
             let open_run = run_open_at(
                 &self.items,
                 self.visibility,
@@ -284,18 +277,11 @@ impl App {
                 self.items[k].item_id.as_str(),
             );
             let skipped = open_run && crate::app::runclick::run_skips(self.lift, &self.items[k]);
-            // **The marker's text, when this row is the first of the run.** The joining is
-            // the assembly loop's, because that is where forward order exists — this walk
-            // renders newest first, so the prose this marker continues has not been reached
-            // yet when the row is built. See [`hidden_run_marker`].
+            // The marker's text, when this row is the first of the run. The joining is the assembly loop's,
+            // since forward order exists only there. See [`hidden_run_marker`].
             let marker = unseen.filter(|(start, _)| *start == k).map(|(start, end)| {
-                // **Does this run hold the TURN's rows, or reach the live edge** — the
-                // `live_here` question, whose two clauses live in [`run_carries_live`] so the
-                // two walks and the pane's own guard cannot disagree about it. The doc there
-                // carries the whole account: a run of an earlier turn's rows is history and must
-                // not fold the live counts, and a run that reaches the end of the transcript is
-                // the run the work in flight is about to join whatever `turn_rows` says — which
-                // is the case a turn that has committed no row yet is in.
+                // Does this run hold the turn's rows, or reach the live edge: the two clauses live in
+                // [`run_carries_live`] so the two walks and the pane's guard cannot disagree about them.
                 let live_here = newest_run == Some(start)
                     && run_carries_live(&self.items, &turn_rows, start, end);
                 hidden_run_marker(
@@ -335,13 +321,9 @@ impl App {
                             .bound_prompts
                             .get(&self.items[k].item_id)
                             .map(String::as_str),
-                        // **What this head knows about the echo and nothing about the text.**
-                        // A bound row keeps the echo's mark: whether the snapshot that put
-                        // this row here carried the words is the head's history, and the same
-                        // string is `queued` in one session and `unconfirmed` in another.
-                        // **A bound row is being drawn, so its mark is never `queued`** — see
-                        // [`App::echo_mark`]. This was `_ => QUEUED`, which is the mark the operator
-                        // kept seeing under a reply that was already streaming.
+                        // What this head knows about the echo and nothing about the text: the same string is
+                        // `queued` in one session and `unconfirmed` in another, and a bound row being drawn is
+                        // never `queued`. See [`App::echo_mark`].
                         echo_mark: self
                             .bound_prompts
                             .get(&self.items[k].item_id)
@@ -397,11 +379,9 @@ impl App {
                 None => (body_class, body),
             };
             if !rows.iter().all(|l| l.trim().is_empty()) {
-                // A marker that is about to be the top of the block needs the row above it,
-                // or it cannot join and will be drawn as a row of its own.
-                // Only when the marker will be glued: a marker standing on its own line has
-                // no sentence to fetch, and fetching one would put a row on the screen that
-                // the budget did not ask for.
+                // A marker about to be the top of the block needs the row above it, or it cannot join. Only
+                // when the marker will be glued, since fetching a sentence for a lone marker puts a row on the
+                // screen the budget did not ask for.
                 need_speaker = marker.is_some() && joinable;
                 built.push((k, class, rows, marker, joinable));
             }
@@ -414,16 +394,9 @@ impl App {
             let mut fresh: Vec<Span> = Vec::new();
             let mut prev: Option<RowClass> = None;
             for (row, class, rows, marker, joinable) in built.iter().rev() {
-                // **The marker, glued into the sentence it continues** — R37 AMENDED's final
-                // shape, and this is the walk where the joining has to happen HERE rather
-                // than at the row: forward order exists only in this loop, and the prose the
-                // marker continues is the row just above it. `prev` is that row's class, and
-                // `Speech` is this file's own name for prose the reader can see.
-                //
-                // The width check is the fallback's: a line that cannot hold the counts
-                // would put them past the frame's edge, and counts that are off the screen
-                // are not a marker. Then it stands alone instead — `marker.is_none()` below
-                // leaves it without a blank, so it still hugs rather than starts a row.
+                // The marker, glued into the sentence it continues: forward order exists only in this loop and
+                // `prev` is the row just above. A line that cannot hold the counts leaves the marker standing
+                // alone, which still hugs rather than starting a row.
                 if let Some(m) = marker
                     && *joinable
                     && prev == Some(RowClass::Speech)
@@ -432,11 +405,8 @@ impl App {
                     let joined = format!("{} {}", block[at].trim_end(), m.painted(&cfg));
                     if visible_width(&joined) <= cfg.width {
                         block[at] = joined;
-                        // **The rows the marker stands over still go in.** The header went onto
-                        // the sentence above it, so only the row's own lines are left — and they
-                        // are the whole of what an OPEN run shows under its marker. This arm
-                        // used to `continue` unconditionally, which was right while a marker was
-                        // only ever drawn for a closed run (where `rows` is the marker itself).
+                        // The rows the marker stands over still go in: the header went onto the sentence above,
+                        // so the row's own lines are the whole of what an open run shows under its marker.
                         if rows.len() > 1 {
                             fresh.push(Span {
                                 row: *row,
@@ -469,12 +439,8 @@ impl App {
             if !self.hist_lines.is_empty() {
                 let pack = self.hist_first_class == Some(RowClass::Activity)
                     && built.last().map(|(_, c, _, _, _)| *c) == Some(RowClass::Activity);
-                // **And the marker keeps its sentence across the seam as well.** A fill
-                // renders older rows and prepends them, so the row at the top of the old
-                // buffer sits directly under the oldest row of the new block — and a marker
-                // there is the continuation of prose that is also in that block, so the
-                // blank goes. `built.first()` is the OLDEST row of the block (the vector is
-                // newest-first and walked in reverse above).
+                // The marker keeps its sentence across the seam too: a fill prepends older rows, and a marker
+                // at the top of the old buffer continues prose that is in the new block, so the blank goes.
                 let tight = built
                     .last()
                     .is_some_and(|(_, _, _, m, joinable)| m.is_some() && *joinable);
@@ -483,10 +449,8 @@ impl App {
                 }
             }
             let first = built.last().map(|(_, c, _, _, _)| *c);
-            // **Every line offset already recorded moves down by what was prepended** — and
-            // that is the whole reason the anchor is a row rather than a line number. A head
-            // holding a line index would creep by this amount on every fill; a head holding
-            // a row asks this list where the row went.
+            // Every recorded line offset moves down by what was prepended, which is why the anchor is a row
+            // and not a line number: a line index would creep on every fill.
             let shifted = block.len();
             block.append(&mut self.hist_lines);
             self.hist_lines = block;
@@ -516,27 +480,16 @@ impl App {
         self.hist_upto.saturating_sub(self.hist_floor)
     }
 
-    /// **The row `ctrl-t` opens, asked of the whole head** — and the answer depends on the
-    /// rung, which is the one thing R37 AMENDED changed here.
-    ///
-    /// Under `conversation` the long rows are not rows any more: they are inside a run that
-    /// draws as one marker line, so a chord that opened a result's payload window would be
-    /// naming something that is not on the screen. What there is to open is **the run**, and
-    /// the one a reader reaching for the key means is the newest — exactly the rule
-    /// [`App::newest_payload_row`] already follows one level down.
-    ///
-    /// One function, so the chord and the marker's seam cannot come to disagree about which
-    /// of the two things the key is about to open.
+    /// The row `ctrl-t` opens, asked of the whole head, and the answer depends on the rung: under
+    /// `conversation` the long rows are inside a run that draws as one marker line, so what there is to open
+    /// is the run, and the newest one. One function, so the chord and the seam cannot disagree.
     pub(crate) fn newest_openable(&self) -> Option<String> {
         let live = self.live_work_now();
         if let Some(start) =
             newest_unseen_run(&self.items, self.visibility, &self.bound_prompts, live)
         {
-            // **A run with no row yet is addressed by a sentinel**, because there is no id to
-            // key it on: the work in flight has no item. The chord still opens something —
-            // this is the turn's own live view, which is where that work is drawn — and
-            // *"a marker that cannot be opened is the elision this document refuses
-            // everywhere else."*
+            // A run with no row yet is addressed by a sentinel, because the work in flight has no item. The
+            // chord still opens something, and a marker that cannot be opened is the elision this file refuses.
             return Some(match self.items.get(start) {
                 Some(it) => it.item_id.clone(),
                 None => LIVE_RUN.to_string(),
@@ -545,30 +498,15 @@ impl App {
         self.newest_payload_row()
     }
 
-    /// **Is what `payload_sel` names an open RUN** rather than a ctrl-v window on one result?
-    ///
-    /// One field names both — a run is opened (by `ctrl-t` or a click on its marker) by naming
-    /// its first row there — and the two want opposite things from the scroll keys. A window
-    /// pages its own text and hands the rest of a scroll on; a run has no text of its own, it is
-    /// the conversation's rows drawn lifted, so the keys must move the conversation. Every scroll
-    /// key asked only `payload_sel.is_some()`, so an open run's wheel and page keys paged a window
-    /// nobody draws: up chained through to the conversation, down moved `payload_page` — and
-    /// threw the history away — every notch, and the view stood still. The operator: *"when i
-    /// click on thinking in the [tools, thinking lines] block, the scroll is stuck and broken"*.
-    ///
-    /// Asked of the same [`run_open_at`] the two walks draw by, so the keys and the screen
-    /// cannot disagree about which of the two is open — **except for the live tail, which is not a
-    /// row and is answered here** (see the arm below).
+    /// Is what `payload_sel` names an open run rather than a window on one result? One field names both, and
+    /// they want opposite things from the scroll keys: a window pages its own text, a run is the conversation
+    /// drawn lifted. Asked of the same [`run_open_at`] the walks draw by, so the keys and the screen agree.
     pub(crate) fn run_is_open(&self) -> bool {
         let Some(id) = self.payload_sel.as_deref().filter(|id| !id.is_empty()) else {
             return false;
         };
-        // **The live tail's sentinel names no row**, so it is answered here and not by
-        // [`run_open_at`] — which asks about a row and answers no for every one of them (see
-        // there: it used to answer the sentinel with a value that had no `row` in it, and every
-        // row of the transcript then read as inside the open run). The panel is open while there
-        // is work in flight and no run of rows has taken it over: that is the state the pane
-        // draws its own marker in, and the state `esc folds the run back` is about.
+        // The live tail's sentinel names no row, so it is answered here and not by [`run_open_at`], which
+        // asks about a row. The panel is open while there is work in flight and no run of rows has taken it.
         if id == LIVE_RUN {
             let live = self.live_work_now();
             return live.work() > 0
@@ -597,31 +535,18 @@ impl App {
         self.payload_sel.is_some() && !self.run_is_open()
     }
 
-    /// **Open the payload window on `id`, at its top** — the one writer of the three fields a
-    /// window is made of, and the reason *"a new result starts at the top"* is a fact rather than
-    /// a habit of each door.
-    ///
-    /// There are two doors (`ctrl-v` on the newest result, and the lift a click on a run's marker
-    /// throws) and both used to spell the three writes themselves. The page is not a property of
-    /// the head: it is where the reader is in ONE payload, and a second payload opening at the
-    /// first one's offset is a window that skips the head of a result nobody has read — which is
-    /// why `payload_max` is thrown away with it, since the length it clamps against is the other
-    /// payload's.
+    /// Open the payload window on `id`, at its top: the one writer of the three fields a window is made of.
+    /// The page is not a property of the head but where the reader is in one payload, so a second payload
+    /// opening at the first one's offset is a window that skips a head nobody has read.
     pub(crate) fn open_payload_window(&mut self, id: String) {
         self.payload_sel = Some(id);
         self.payload_page = 0;
         self.payload_max.set(usize::MAX);
     }
 
-    /// **Put the clicked line at the top of the window** — the click's half of the one offset.
-    ///
-    /// A click on a line of the window means *read from here*, the way a jump in a pager does:
-    /// the line under the pointer becomes the window's first, and everything after it follows.
-    /// It writes [`App::payload_page`] — the field the arrows, the page keys and the wheel write —
-    /// so a click and a key agree about where the reader is by construction rather than by two
-    /// handlers agreeing. `line` is a payload line, already past the clamp the draw recorded, and
-    /// it is clamped again here: a click near the end of a payload cannot push the window past
-    /// the last full page (`… end of output` is the bottom, not a page of one line).
+    /// Put the clicked line at the top of the window: it writes [`App::payload_page`], the field the arrows
+    /// and the wheel write, so a click and a key agree about where the reader is. Clamped again here, so a
+    /// click near the end cannot push the window past the last full page.
     pub(crate) fn payload_click(&mut self, line: usize) {
         if !self.payload_window_open() {
             return;
@@ -638,22 +563,9 @@ impl App {
         self.redraw = true;
     }
 
-    /// **Which rows of the conversation are lines of the open payload window**, as `(row of the
-    /// window, line of the payload)` — the sibling of [`App::file_rows_in`] and
-    /// [`App::picture_rows_in`], and read the same way: off the rows the walk drew, because only
-    /// the drawing knows where the window's seams fell.
-    ///
-    /// The window is `rano`'s to lay out (`ToolRow::layout`), and its rows are: the header, the
-    /// `↑ N more lines above` seam when the reader is past the head, the body, and then a seam
-    /// that says either `… +N lines · ↓ pages down` or `… end of output`. A row this head
-    /// appended after that (a detected diff, a picture) is not the window's. So the body is
-    /// **between the header and the first `…` row**, and a payload line is the body's index plus
-    /// the page the draw used — which is `payload_page` clamped by the length the draw measured,
-    /// exactly the clamp `ToolRow` itself applies.
-    ///
-    /// Nothing here recomputes the layout: the rows are the ones on the glass, and a line that
-    /// begins with `…` or `↑` is a seam only when it ends the way those sentences end, so a
-    /// payload that itself printed a `…` is still a line of the payload.
+    /// Which rows of the conversation are lines of the open payload window, read off the rows the walk drew,
+    /// because only the drawing knows where the seams fell. The body is between the header and the first `…`
+    /// row, and a payload line is its index plus the page the draw used.
     pub(crate) fn payload_rows_in(&self, start: usize, end: usize) -> Vec<(usize, usize)> {
         let Some(id) = self.payload_sel.as_deref().filter(|id| !id.is_empty()) else {
             return Vec::new();
@@ -687,10 +599,9 @@ impl App {
             if !mine {
                 continue;
             }
-            // **Where this row's body starts, in its own lines** — the header, then the `↑` seam
-            // when the reader is past the head, then the payload. Counted from the ROW's first
-            // line and not from the window's, because a conversation scrolled so that the header
-            // is off the top still names its lines correctly this way.
+            // Where this row's body starts in its own lines: the header, the `↑` seam when the reader is past
+            // the head, then the payload. Counted from the row's first line, so a scrolled header still names
+            // its lines correctly.
             let body_at = sp.at + 1 + usize::from(page > 0);
             if line < body_at {
                 // The header, or the `↑ N more lines above` seam: neither is payload text.
@@ -731,15 +642,9 @@ impl App {
         live_work(self.turn.as_ref(), &self.items, &self.cfg, superseded)
     }
 
-    /// The newest transcript row that has a payload to page: a tool result with more
-    /// than a line or two of text.
-    ///
-    /// "Newest" because that is the one the reader is looking at — rows are appended at
-    /// the bottom — and because it is the **only** row a head with no cursor can
-    /// address: `ctrl-t` opens a window on this row and the arrows page it. Every other
-    /// long row's seam therefore names `/t` rather than the chord; see
-    /// [`ItemCtx::payload_newest`]. Returning `None` means no result is long enough to
-    /// have a rest, and then the chord opens nothing rather than claiming a window.
+    /// The newest transcript row with a payload to page: a tool result with more than a line or two. Newest
+    /// because that is the row the reader is looking at, and the only one a head with no cursor can address;
+    /// every other long row's seam names `/t`. `None` means the chord opens nothing.
     pub(crate) fn newest_payload_row(&self) -> Option<String> {
         self.items
             .iter()
@@ -752,45 +657,23 @@ impl App {
             })
     }
 
-    /// **Scroll back by `by` lines, rendering whatever that needs.**
-    ///
-    /// The operator: *"i want scroll back work"*. The first version set `scroll` and let the
-    /// next frame's `fill_backward` catch up — but the frame clamps `scroll` against the
-    /// rows rendered **so far**, so the scroll could never express "further up than I have
-    /// drawn", and a press bought only the handful of lines the last frame happened to add.
-    /// Measured: twelve rounds of eight PageUps reached message 143 of 400.
-    ///
-    /// So the fill happens **here**, before the scroll is clamped, and it asks for a screen
-    /// beyond where the reader is going rather than for exactly where they are. A key that
-    /// scrolls is a key that renders; leaving the rendering to the next frame is what made
-    /// it crawl.
-    ///
-    /// `body_len` is deliberately **not** the clamp here. It is the *last frame's* total, and
-    /// on the tail path it is smaller than where the reader is going — so clamping against it
-    /// is what made a press buy one frame's worth instead of a screen. The fill raises the
-    /// real total, and `body_window` clamps against that after it has.
+    /// Scroll back by `by` lines, rendering whatever that needs: the fill happens before the scroll is
+    /// clamped and asks for a screen beyond where the reader is going, since a key that scrolls is a key
+    /// that renders. `body_len` is not the clamp, being the last frame's total.
     pub(crate) fn scroll_up(&mut self, by: usize) {
-        // **A change of direction is a change of intent** — the run a flick was counting
-        // is over the moment the reader turns around, so the next flick starts at a walk.
-        // Here rather than in the key handler, because every way of going up — the wheel,
-        // the page keys, a pane handing its edge on — means the same thing: not this way.
+        // A change of direction is a change of intent: the run a flick was counting is over the moment the
+        // reader turns around. Every way of going up means the same thing.
         self.wheel_run = 0;
         if self.hist_floor > 0 {
-            // A screen past where the reader is *going*, so the next press has rows to move
-            // into and does not have to wait for a frame to catch up. `view_top` is the last
-            // frame's own top line, which is the best estimate the key handler has — R36
-            // made this a real measurement of the glass rather than a count of lines from a
-            // bottom that moves.
+            // A screen past where the reader is going, so the next press has rows to move into. `view_top` is
+            // the last frame's own top line, which is the best estimate the key handler has.
             self.fill_backward(self.view_top.saturating_sub(by) + self.screen_rows + TAIL_SLACK);
         }
         self.hold(-(by as isize));
     }
 
-    /// **What the reader is looking at, right now, as the last frame drew it** — R36.
-    ///
-    /// Either the anchored row's line, or the top of the last frame's window when nothing is
-    /// anchored yet (the frame that *begins* a scroll). One function, so the two answers
-    /// cannot disagree about where the reader is.
+    /// What the reader is looking at, as the last frame drew it: the anchored row's line, or the top of the
+    /// last frame's window when nothing is anchored yet. One function, so the two answers cannot disagree.
     pub(crate) fn held_line(&self) -> usize {
         self.anchor
             .as_ref()
@@ -798,39 +681,9 @@ impl App {
             .unwrap_or(self.view_top)
     }
 
-    /// **Render what a held viewport needs, before anything asks where it is** — the
-    /// frame's own bootstrap in one place, so that a key can run it too (2026-10-09's
-    /// *"stuck at 190 lines"*).
-    ///
-    /// Two steps, and the frame has always done both:
-    ///
-    /// * the **tail bootstrap** — a conversation too big to walk from the beginning is
-    ///   rendered from its end, which is the frame's ordinary way into a big session;
-    /// * **the held row, if this head has not drawn it** (R36): a tail walk renders the
-    ///   last screenful and skips everything above it, so a viewport holding a row from
-    ///   further up has no span and nothing to place itself against. Rendering down to
-    ///   that row is the one thing that fixes it, and it is asked for by ROW rather than
-    ///   by lines — a fill measured in lines can stop short of the very row being held,
-    ///   which is a viewport chasing its own tail.
-    ///
-    /// **Why a key needs this and not only the frame.** In tail mode every arriving row
-    /// invalidates the rendered history *wholesale* — a tail walk leaves no marks, so
-    /// [`App::invalidate_history_from`] has nothing to rewind to and throws the lot away,
-    /// correctly, because the rows above the floor were never rendered and there is
-    /// nothing to be stale — and on a session whose turns keep arriving, that wipe sits
-    /// *between two frames* more often than not. A wheel notch that lands there finds no
-    /// spans at all: [`App::held_line`] falls back to a stale `view_top`,
-    /// [`App::span_at_line`] answers `None`, and the notch's own `None` arm has nothing
-    /// to anchor on either — so it moves **nothing**. Measured on the fixture below: the
-    /// operator's park — 190 lines up, on the tail path, rows arriving — took thirty-two
-    /// notches down and the window never moved a line while the count grew to 319. `esc`
-    /// worked because it clears the anchor outright and never asks the spans anything.
-    ///
-    /// **A key that scrolls is a key that renders** — the rule [`App::scroll_up`] already
-    /// keeps for going up, and the mirror of `fill_backward` for coming down. The frame's
-    /// `room` is the frame's own; a key between frames uses the last frame's
-    /// ([`App::view_room`]), which is R36's rule about the key handler answering from the
-    /// glass.
+    /// Render what a held viewport needs before anything asks where it is: the tail bootstrap, then the held
+    /// row. A key needs it because in tail mode every arriving row throws the history away, so a notch
+    /// between two frames finds no spans and moves nothing.
     pub(crate) fn render_held(&mut self, room: usize) {
         if self.hist_floor == 0
             && self.hist_lines.is_empty()
@@ -847,27 +700,17 @@ impl App {
         }
     }
 
-    /// **Move the held viewport by `delta` lines**, staying on a ROW.
-    ///
-    /// The sign is the reader's: negative is up, positive is down. The conversion
-    /// line-to-row happens here and nowhere else, and it is the whole of R36: a line number
-    /// means something different every time a row above grows, and a row means the same
-    /// thing until it is gone.
-    ///
-    /// **Reaching the bottom returns the reader to following**, because that is what
-    /// following means and it is an act they took — the same act as `esc`. Arriving content
-    /// never does it, which is the difference this requirement is about.
+    /// Move the held viewport by `delta` lines, staying on a row: the line-to-row conversion happens here and
+    /// nowhere else. Reaching the bottom returns the reader to following, which is an act they took, while
+    /// arriving content never does.
     pub(crate) fn hold(&mut self, delta: isize) {
         // **The row being held must be drawable before the hold can move off it** — or the
         // step is spent on a span table an arriving row just wiped, which is the pin this
         // answers. See [`App::render_held`].
         self.render_held(self.view_room.max(1));
-        // **The count is kept in step with the hold**, and it is a *derived* value: the
-        // frame recomputes it from the anchor every time it draws, because only the frame
-        // knows how many lines the body has. What this buys is that the two never disagree
-        // between frames — a reader of `scroll` between a key press and a paint (a test, a
-        // `/status`, any of the four places that clear it) sees the position the hold
-        // implies rather than a stale zero.
+        // The count is kept in step with the hold and it is derived: the frame recomputes it from the anchor,
+        // since only the frame knows how many lines the body has. A reader of `scroll` between a key and a
+        // paint sees the position the hold implies rather than a stale zero.
         let now = self.held_line();
         let want = if delta < 0 {
             now.saturating_sub(delta.unsigned_abs())
@@ -889,13 +732,9 @@ impl App {
         let want = want.min(bottom.max(1));
         match self.span_at_line(want) {
             Some(span) => {
-                // **`into` may be `lines`` — one past the row's last line — and it must be.**
-                // The blank line a separator puts between two rows belongs to no row, and
-                // clamping `into` to the row's own height sent a notch that landed on one
-                // back up a line: two three-line notches moved the window eight lines
-                // rather than six, found by asserting the distance rather than the count.
-                // Allowing `lines` makes the mapping exact in both directions — the
-                // separator is addressable as *the line just below this row*.
+                // `into` may be `lines`, one past the row's last line, and it must be: the blank a separator
+                // puts between two rows belongs to no row, and clamping sent a notch that landed on one back up
+                // a line, so two three-line notches moved eight lines rather than six.
                 let into = want.saturating_sub(span.at).min(span.lines);
                 self.anchor = Some(Held {
                     item_id: self.items[span.row].item_id.clone(),
@@ -903,10 +742,9 @@ impl App {
                     into,
                 });
             }
-            // **Above the first rendered row.** Either the reader has gone past what this
-            // head drew, or nothing has been drawn yet. Holding the topmost row at offset 0
-            // is the closest true thing, and it is what a second press then scrolls from —
-            // `fill_backward` has already been asked for more, and the next frame has them.
+            // Above the first rendered row: either the reader has gone past what this head drew, or nothing has
+            // been drawn. Holding the topmost row at offset 0 is the closest true thing and what a second press
+            // scrolls from.
             None => {
                 if let Some(first) = self.spans.first().copied() {
                     let item_id = self.items[first.row].item_id.clone();
@@ -918,71 +756,17 @@ impl App {
                 }
             }
         }
-        // **`scroll` is left alone, and it is deliberately not kept in step.**
-        //
-        // It is derived — the frame recomputes it from the anchor on every paint, because
-        // only the frame knows how many lines the body has — and a second derivation here
-        // would be two implementations of one formula, which is the shape this file has
-        // been bitten by more than once. Anything that wants to know whether the reader is
-        // at the bottom asks [`App::following`], which is a question about the anchor
-        // rather than about a number.
-        //
-        // **And this is where `redraw` used to be, for every key that scrolls the transcript** —
-        // `WheelUp` and `PageUp` through [`App::scroll_up`], `PageDown` and the parked arrows
-        // through this function directly. It should not have been. The flag *throws the glass
-        // away*: the head reads it before the next frame and calls `Terminal::invalidate`, which
-        // sets `full`, and a full frame is `ESC[2J` followed by every row rewritten with the row
-        // diff disabled ([`crate::term`]). A slid window wants the diff: `paint_full` rewrites the
-        // rows whose text differs and erases the rows the frame no longer has, which is the whole
-        // of what a scroll changed — the rest of the screen is already right, and rewriting it
-        // identically is the one thing this head's encoder exists not to do.
-        //
-        // What the erase cost was a flash per key, and on a touchpad it is a flash per *notch*:
-        // the inertial scroll arrives over many `read()`s, every read is its own tick and its own
-        // frame, and every frame erased the screen. Measured — see the commit that removed this.
-        // The state above is the part a scroll owes, and it is untouched; what to write to the
-        // glass is the frame's business and the diff already answers it.
+        // `scroll` is left alone: it is derived by the frame from the anchor, and a second derivation would
+        // be two implementations of one formula. Anything asking whether the reader is at the bottom asks
+        // [`App::following`].
     }
 
-    /// **One notch down walks three lines; a RUN of notches gathers speed — but only
-    /// against a stream that is still arriving.**
-    ///
-    /// This is the reconciliation of the wheel's three reports. 2026-10-05: *"I cant
-    /// scroll back to bottom with a mouse wheel - have to press escape"* — answered by
-    /// making one notch clear the anchor, which 2026-10-09 recoiled from: *"one simple
-    /// stroke gets me to the bottom immediately — effectively like Esc"*, because a
-    /// reader could no longer walk DOWN through a conversation. The answer then was the
-    /// three-line walk, and it is right — on a transcript that is holding still.
-    ///
-    /// What it cannot do is cover a deep park against a stream that keeps arriving,
-    /// which is where the operator sat: *"scrolled up and couldnt scroll back with mouse
-    /// - stuck at 190 lines lol. Esc worked"*, and the narrowing — *"to trigger
-    ///   conversation must be scrolled up far enough"*. Two mechanisms measured on the
-    ///   failing fixture: a notch landing between an arrival and the next frame found the
-    ///   span table wiped and moved **nothing** (fixed in [`App::render_held`]); and with
-    ///   the spans live, three lines a notch is outrun by two arriving rows — the notch
-    ///   moved every time and the count still grew, 191 to 319 over thirty-two notches.
-    ///
-    /// So the walk and the run are separated by the one fact that makes the difference:
-    /// **whether the transcript moved under the reader**. On a still transcript the
-    /// notch is a walk — three lines, every notch, whatever came before — which is
-    /// 2026-10-09's reconciliation entire, and its tests pin it. Against a stream the
-    /// notch joins a run, and each further notch of the same run doubles the step:
-    /// 3, 6, 12, 24 … — a stream adds rows at some finite pace and a doubling outgrows
-    /// any fixed pace, so the tail is reachable in a bounded number of notches however
-    /// fast it recedes, near the end included. The first notch of a run is three lines
-    /// either way, so one stroke is never the tail — October's line, held exactly.
-    ///
-    /// The run ends three ways, all of them the reader's: they pause
-    /// ([`WHEEL_RUN_MS`] — a notch spent reading is its own), they turn around
-    /// ([`App::scroll_up`] resets the count — a change of direction is a change of
-    /// intent), or they are back on the stream and the next park is a fresh question.
+    /// One notch down walks three lines; a run of notches gathers speed, but only against a stream still
+    /// arriving. A notch that cleared the anchor made the conversation between two positions unreachable, and
+    /// three lines a notch is outrun by arriving rows, so the step doubles while the transcript moves.
     pub(crate) fn wheel_down_notch(&mut self) -> usize {
-        // **The distance this notch steps is measured on a live span table** — the wipe an
-        // arriving row leaves behind ([`App::render_held`]) would otherwise hand the step a
-        // stale `view_top` and a stale `body_len`, and the step it sizes from them is the
-        // step that stalls four lines from the end for ever. Rendering here is idempotent:
-        // `hold` runs the same call a moment later and finds everything drawn.
+        // The step is measured on a live span table, since the wipe an arriving row leaves would hand it a
+        // stale `view_top` and a stale `body_len`. Rendering here is idempotent.
         self.render_held(self.view_room.max(1));
         let now = self.held_line();
         let bottom = self.body_len.saturating_sub(self.view_room.max(1));
@@ -1008,15 +792,9 @@ impl App {
         (3usize << (self.wheel_run - 1).min(6)).min(dist.max(3))
     }
 
-    /// **Draw rows until one of them is rendered** — R36.
-    ///
-    /// [`App::fill_backward`] walks back until it has covered *enough lines*, which is the
-    /// right question when the reader is moving and the wrong one when the head has to find
-    /// a specific row: after an invalidation the rows are gone, the line count is stale, and
-    /// a fill measured in lines can stop short of the very row the viewport is holding —
-    /// leaving the anchor unresolvable and the view adrift. Found by the debug rather than
-    /// by reasoning: the frame log showed `total` and `view_top` wandering on every payload
-    /// page, which is a fill chasing its own tail.
+    /// Draw rows until one of them is rendered: `fill_backward` covers enough lines, which is the wrong
+    /// question when the head must find a specific row, since a fill measured in lines can stop short of the
+    /// very row the viewport holds and leave the anchor unresolvable.
     pub(crate) fn fill_to_row(&mut self, row: usize) {
         if self.hist_floor > row {
             self.fill_backward_until(
@@ -1044,90 +822,41 @@ impl App {
             .copied()
     }
 
-    /// **The words of the row the reader is holding** — what [`Carry`] is taken from.
-    ///
-    /// `None` when nothing is held, when the held row is not in `items`, and when the row
-    /// carries no words at all: a row whose body has not arrived has nothing to be found
-    /// by, and that is a fact the carry has to be told rather than guessed around.
+    /// The words of the row the reader is holding, which is what [`Carry`] is taken from. `None` when
+    /// nothing is held, when the row is not in `items`, and when it carries no words at all.
     pub(crate) fn held_row_words(&self) -> Option<String> {
         let held = self.anchor.as_ref()?;
         let row = self.items.iter().find(|r| r.item_id == held.item_id)?;
         row_words(row)
     }
 
-    /// **The row a held viewport was on is not in this transcript — find it again, or say
-    /// that it is gone.**
+    /// The row a held viewport was on is not in this transcript: find it again by its own words, or say that
+    /// it is gone and go to the tail, which is the one place true of the whole new transcript. A reader who
+    /// was reading is never moved in silence.
     ///
-    /// A `resync`, a snapshot on `hello`, a fork and a compaction all replace the rows
-    /// wholesale, and a fork replaces them **under new ids** (`{transcript_id}.{n}`,
-    /// `engine.rs`). So the id the viewport holds names nothing in the transcript that
-    /// arrives, and the replacement is the only thing that moves a reader who has not
-    /// touched a key.
-    ///
-    /// # The row is found by its own words, and never by its index
-    ///
-    /// [`Carry`] is the row's text, taken before the old rows went, and this is where it is
-    /// spent. The [`App::retire_pending`] precedent: a fork's carried rows arrive under new
-    /// ids, so **match on the content**. An ordinal is a position in the list that has just
-    /// been replaced — carrying one across is carrying an offset measured against something
-    /// that no longer exists, and the same integer then names a different place. That is the
-    /// defect this exists for: the operator, scrolled up and reading, *"it also broke my
-    /// scroll - i was scrolled up and it showed me thousands of lines 'below'"*.
-    ///
-    /// **And a row that is not there is said, not jumped over.** The view goes to the TAIL
-    /// — the one place in the new transcript that is true of the whole of it — and the
-    /// reader is told in a sentence they can see. A reader who was reading must never be
-    /// moved in silence, and the tail is a move.
-    ///
-    /// # Not matchable YET is not gone
-    ///
-    /// A carry announces every row and publishes the bodies in the same pass, so a snapshot
-    /// taken mid-carry holds rows with no words to match ([`Bulk`]). Until that carry
-    /// completes the anchor is **pending**: it stays where it is, the window holds the line
-    /// it was on (see the anchor's arm in `ui/transcript/window.rs`), and the row is placed
-    /// the moment its body lands. Only when every announced row has its body and the words
-    /// are still nowhere is the row honestly gone.
-    ///
-    /// **A live fork's carry gets the same answer from a weaker fact.** Nothing announces a
-    /// live append — a fork's rows arrive one at a time and no event says the carry is over —
-    /// so a carry whose rows have not arrived at all ([`Carry::arriving`]) is **placed if its
-    /// words turn up and never concluded otherwise**. The tail is a move, and a move made on
-    /// a row that may still be coming is the defect rather than the disclosure.
-    ///
-    /// Emitted as a note with its own code rather than a notice: the reader has to be able to
-    /// find it again, `/notes` lists it, and `/status` counts it. `Failure`, by R29 part
-    /// two's own test — it is not the reader's act, and what is at risk is their orientation:
-    /// the thing they were reading is not there.
+    /// An ordinal is a position in the list that was just replaced, so carrying one across names a different
+    /// place. Not matchable yet is not gone: a carry that has not finished arriving waits, and a live fork's
+    /// carry is placed if its words turn up and never concluded otherwise.
     pub(crate) fn repair_anchor(&mut self) {
         let Some(held) = self.anchor.clone() else {
             self.carry = None;
             return;
         };
-        // **The row is on the screen, or in the transcript, under its own id** — so whatever
-        // the replacement did, it did not take this row. The carry is spent either way: an
-        // id that survived is an id this viewport never had to cross a boundary for, and
-        // leaving the words pending would match them against a later transcript.
+        // The row is on the screen or in the transcript under its own id, so the replacement did not take
+        // it. The carry is spent either way, since a surviving id needed no boundary crossed.
         if self.span_for(&held.item_id).is_some() {
             self.carry = None;
             return;
         }
-        // **A row that is simply not rendered yet is NOT a row that is gone.** In tail mode
-        // the rows above `hist_floor` were deliberately not walked, so a held row can be
-        // present in `items` and absent from `spans` — and saying *it is gone* about a row
-        // sitting in the transcript would be a false alarm on every scroll in a long
-        // session. The distinction is `items`, which knows every row, versus `spans`, which
-        // knows the drawn ones.
+        // A row that is simply not rendered yet is not a row that is gone: in tail mode a held row can be in
+        // `items` and absent from `spans`, and calling it gone would fire on every scroll in a long session.
         if self.items.iter().any(|it| it.item_id == held.item_id) {
             self.carry = None;
             return;
         }
-        // **The id is gone, so this is a transcript boundary.** The row's own words are the
-        // one thing both transcripts can be asked for — and the first row that says them is
-        // the row the reader was on, because a carry preserves the conversation's order and
-        // that is the only ordering the two sides agree on.
-        //
-        // Borrowed rather than cloned: this runs every frame until the row is placed, and a
-        // tool result's words are its whole payload.
+        // The id is gone, so this is a transcript boundary: the row's words are the one thing both
+        // transcripts can be asked for, and the first row that says them is the one the reader was on.
+        // Borrowed rather than cloned, since this runs every frame until the row is placed.
         let found = self
             .carry
             .as_ref()
@@ -1145,17 +874,13 @@ impl App {
             // move: the frame that follows writes only the rows that changed.
             return;
         }
-        // **Not matchable yet is not gone.** A snapshot taken mid-carry holds rows whose
-        // bodies are still coming, and there is nothing in a body-less row to match — so the
-        // anchor waits, and the frame holds the line rather than counting from a bottom that
-        // has moved. See the docstring.
+        // Not matchable yet is not gone: a snapshot taken mid-carry holds rows whose bodies are still
+        // coming, so the anchor waits and the frame holds the line.
         if self.bulk.is_some() {
             return;
         }
-        // **And the live half of the same rule, where there is nothing to wait on.** A fork
-        // stated before its rows has no announcement to be complete against — a snapshot has
-        // [`Bulk`], a live append has nothing — so such a carry is placed and never concluded.
-        // See [`Carry::arriving`].
+        // The live half of the same rule, where there is nothing to wait on: a fork stated before its rows
+        // has no announcement to be complete against, so such a carry is placed and never concluded.
         if self.carry.as_ref().is_some_and(|c| c.arriving) {
             return;
         }
@@ -1188,15 +913,9 @@ impl App {
                 detail: said,
                 ts: 0,
             }));
-            // **And said where the reader is certainly looking.**
-            //
-            // A note is planted at a *seam* in the conversation, and the seam for this one
-            // is the end of the replacement — which is precisely where a reader who is
-            // holding a row near the top **is not looking**. The durable sentence is the
-            // note (`/notes` lists it, `/status` counts it, and it stays); this is the
-            // transient line above the composer, which is on screen whatever the viewport is
-            // showing. A disclosure the reader cannot see is not a disclosure, and this is
-            // one about the viewport itself.
+            // And said where the reader is certainly looking: the note sits at the seam at the end of the
+            // replacement, which is where a reader holding a row near the top is not. The transient line above
+            // the composer is on screen whatever the viewport shows.
             self.say(&format!(
                 "the row you were reading is not in the transcript that replaced it — the \
                  view follows the tail again (row `{}`)",
@@ -1206,35 +925,14 @@ impl App {
         }
     }
 
-    /// **How the viewport's state reads on screen** — R36, and R29's rule applied to it.
-    ///
-    /// `None` when the head is following, which is the ordinary case and owes the reader
-    /// nothing: a marker that is always on is furniture. `Some` when it is **holding**, and
-    /// it names the act that returns them, because a reader who cannot tell pinned from
-    /// following will scroll to find out — which is the affordance failing.
+    /// How the viewport's state reads on screen: `None` when the head is following, since a marker always on
+    /// is furniture, and `Some` when it is holding, naming the act that returns them.
     pub fn scroll_state(&self) -> Option<&'static str> {
         (!self.following()).then_some("holding")
     }
 
-    /// **Whether the row is drawn is the SET's question now**, and the name on the status row
-    /// is the SET's name: the profile when the set is one, and `custom …` when a switch has
-    /// been moved off one. **Both halves of R29's rule**: the mode is named, and the name is
-    /// also the verb (`/verbosity`) that changes it.
-    ///
-    /// Drawn when the set hides the working, as it was drawn at `Conversation` — and **also
-    /// whenever the set is no profile**, because a state with no name is exactly the thing a
-    /// reader cannot ask about: *"any set that is no profile reads as `custom …`"*. A profile
-    /// that does not hide anything names nothing, because a marker that is always on is the
-    /// furniture this head keeps deleting.
-    ///
-    /// **The other half is the marker** — R37 AMENDED, and the correction is worth keeping in
-    /// view here because this comment used to argue the opposite. R37 as filed said R29 was
-    /// satisfied "by the mode being NAMED on the screen rather than by a placeholder per
-    /// hidden row" — and the second half of that was wrong. The operator never asked for no
-    /// marker; they asked not to read the rows. **One marker per RUN is not a placeholder per
-    /// row**, and without it the rung does not hide the work — it makes the model's own prose
-    /// lie, because the sentence introducing the work ends in a colon pointing at nothing.
-    /// See [`hidden_run_lines`], and [`App::newest_openable`] for what opens one.
+    /// Whether the row is drawn is the set's question, and the name on the status row is the set's name: the
+    /// profile when the set is one, and `custom …` when a switch has moved.
     pub fn rung_state(&self) -> Option<String> {
         let v = self.visibility;
         (v.hides_the_working() || v.profile().is_none()).then(|| v.as_str())
