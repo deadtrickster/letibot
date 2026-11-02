@@ -93,8 +93,8 @@ pub const SPAN: Duration = Duration::from_secs(1);
 ///   most a settle can contribute to a 3 s window is 30 ms, a tenth of that budget.
 /// * **It must be high enough that a genuinely waiting daemon is under it by a wide margin.**
 ///   Measured: **0.19 ms in a 250 ms slice** on a quiet box — a slice being the unit of the design
-///   that was rejected above, kept because that is how the number was taken — and the six 3 s
-///   windows of `no_spin.rs` read **0.76–3.72 ms** (0.03–0.12% of a core) across the four runs on
+///   that was rejected above, which is how that number was taken — and the six 3 s windows of
+///   `no_spin.rs` read **0.76–3.72 ms** (0.03–0.12% of a core) across the four runs on
 ///   record: 2.02–2.38 ms on a quiet box, 0.76–2.12 ms under four hundred busy processes on the
 ///   gate's box, and 1.87–3.72 ms on a 32-core box at load 28 with another workspace's test
 ///   running beside it. That is the accept loop's 20 ms poll and nothing else: at the loudest of
