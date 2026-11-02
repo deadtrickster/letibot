@@ -281,17 +281,9 @@ pub struct Source {
 }
 
 impl Source {
-    /// **Open the database read-only.**
-    ///
-    /// `SQLITE_OPEN_READ_ONLY` and **not** `immutable=1` (which rusqlite would need
-    /// `SQLITE_OPEN_URI` for anyway): opencode's WAL is live — a 6 MB `-wal` and a
-    /// `-shm` were present on this box while opencode was not even in the foreground —
-    /// and an immutable open ignores the WAL and reads a torn snapshot. Read-only
-    /// still **sees** the WAL, so no `immutable`.
-    ///
-    /// The open is proven here with the cheapest query, because SQLite opens lazily:
-    /// a path that is a directory, or not a database, would otherwise fail on the
-    /// first real read and be reported as something else.
+    /// Open the database read-only and not `immutable=1`: opencode's WAL is live, and an immutable
+    /// open ignores it and reads a torn snapshot. The open is proven here with the cheapest query,
+    /// because SQLite opens lazily and a path that is not a database would fail on the first real read.
     pub fn open(path: &Path) -> Result<Self> {
         let conn =
             Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e| {
@@ -315,10 +307,8 @@ impl Source {
         &self.path
     }
 
-    /// The whole tree of `root`: root first in `children` order, plus the part count.
-    ///
-    /// `NoSuchSession` when `root` names nothing — which is a different sentence from
-    /// `NoDatabase`, and the operator asked for the two to be told apart.
+    /// The whole tree of `root`, root first, plus the part count. `NoSuchSession` when `root` names
+    /// nothing, which is a different sentence from `NoDatabase`.
     pub fn tree(&self, root: &str) -> Result<Tree> {
         let ids = self.tree_ids(root)?;
         if ids.is_empty() {
@@ -346,10 +336,8 @@ impl Source {
         })
     }
 
-    /// **Read the whole tree, oldest part first.** One callback per event, so the
-    /// caller can publish as it goes and keep the screen live — the ordering is the
-    /// requirement, and a function that returned a `Vec` would have read everything
-    /// before drawing anything.
+    /// Read the whole tree, oldest part first, one callback per event so the caller can publish as it
+    /// goes: a function returning a `Vec` would read everything before drawing anything.
     pub fn read_tree(&self, root: &str, sink: &mut dyn FnMut(Event)) -> Result<Report> {
         let tree = self.tree(root)?;
         let ids = self.tree_ids(root)?;
@@ -681,12 +669,9 @@ fn interpret(
                     payload,
                     edit: None,
                     origin: None,
-                    // **An imported row carries no media, and that is a fact about the importer
-                    // rather than a gap left by accident.** opencode stores an attachment as a file
-                    // part whose content is on disk under its own `storage/`, and this importer
-                    // reads the message log — so an imported conversation shows the sentence a
-                    // reader can see and not the picture, which is the same rule every other
-                    // un-imported field on this row follows.
+                    // An imported row carries no media, which is a fact about the importer: opencode
+                    // keeps an attachment as a file part on disk and this reads the message log, so an
+                    // imported conversation shows the sentence and not the picture.
                     media: None,
                 },
                 report,
@@ -823,11 +808,8 @@ fn tokens_from(t: &serde_json::Value) -> Tokens {
     }
 }
 
-/// **Where opencode's database is on this box**, if it is anywhere.
-///
-/// `$OPENCODE_DB` wins (a test, or another install); otherwise
-/// `~/.local/share/opencode/opencode.db`, the measured location. Absence is
-/// reported by [`Source::open`] as `NoDatabase`, with this path in the sentence.
+/// Where opencode's database is, if anywhere: `$OPENCODE_DB` wins, otherwise
+/// `~/.local/share/opencode/opencode.db`. Absence is reported by [`Source::open`] with this path.
 pub fn default_db_path() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("OPENCODE_DB") {
         return Some(PathBuf::from(p));

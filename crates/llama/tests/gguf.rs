@@ -9,14 +9,9 @@ mod tests {
     use letibot_transcript::{TranscriptItem, UserPart};
     use std::path::Path;
 
-    /// The vocabulary the FFI tests load, or `None` with the skip already announced.
-    ///
-    /// A skip is loud: it names the path, the variable that overrides it, and says it is not
-    /// a pass. Absent apparatus reported as a failed assertion makes a suite that can never
-    /// go green, and hides a real failure inside its constant red mark.
-    ///
-    /// `LETIBOT_REQUIRE_APPARATUS=1` turns the skip back into a failure, so the box that has
-    /// the file can refuse to skip and prove coverage.
+    /// The vocabulary the FFI tests load, or `None` with the skip already announced: loud, naming the
+    /// path and the variable that overrides it. Absent apparatus reported as a failed assertion would
+    /// make a suite that can never go green and hide a real failure in its constant red.
     fn vocab() -> Option<Vocab> {
         let p = letibot_llama::apparatus::present_gguf()?;
         Some(letibot_llama::load(&p).expect("the vocabulary must load"))
@@ -32,10 +27,8 @@ mod tests {
         assert!(v.eos().is_some());
     }
 
-    /// Does a space survive tokenise then detokenise?
-    ///
-    /// letibot is token-native where other clients send text, so this round trip is a step
-    /// they do not have and the first place to look when a model edits a file badly.
+    /// Does a space survive tokenise then detokenise? letibot is token-native where other clients send
+    /// text, so this round trip is a step they do not have.
     #[test]
     fn spaces_survive_the_token_round_trip() {
         let Some(v) = vocab() else { return };
@@ -50,10 +43,8 @@ mod tests {
         }
     }
 
-    /// A character whose bytes straddle two tokens must still come back whole.
-    ///
-    /// Detokenizing each token on its own would make both halves invalid UTF-8, so the run
-    /// has to be decoded as a run rather than token by token.
+    /// A character whose bytes straddle two tokens must come back whole: decoding each token on its
+    /// own would make both halves invalid UTF-8.
     #[test]
     fn multibyte_characters_survive_detokenizing() {
         let Some(v) = vocab() else { return };
@@ -209,10 +200,8 @@ mod tests {
         ControlTokens::borrowed(QWEN_CONTROLS)
     }
 
-    /// The span for a role, for the stand-in renderer below.
-    ///
-    /// It asserts the assumption it depends on: ChatML spells each of these one way, and
-    /// `ControlTokens` answers "the token for this role" only when that is true.
+    /// The span for a role, for the stand-in renderer below. It asserts the assumption it depends on:
+    /// ChatML spells each of these one way.
     fn ctl(role: ControlRole) -> RenderSpan {
         let tokens = qwen();
         let mut all = tokens.all_with_role(role);
@@ -350,10 +339,8 @@ mod tests {
 
     // --- a stand-in dialect, so the seam can be exercised ------------------
 
-    /// A ChatML renderer, in this test module only.
-    ///
-    /// It exists so the seam - render to spans, tokenize the spans, append to the ledger -
-    /// is exercised over something with control tokens in it rather than over synthetic ids.
+    /// A ChatML renderer, in this test module only, so the seam is exercised over something with
+    /// control tokens in it rather than over synthetic ids.
     fn render(prefix: &StablePrefix, items: &[TranscriptItem]) -> Vec<RenderSpan> {
         let mut spans = Vec::new();
         spans.push(ctl(ControlRole::TurnStartUser));
@@ -645,11 +632,9 @@ mod tests {
 
     // --- the independent oracle -------------------------------------------
 
-    /// Cross-check against the running server's `/tokenize`.
-    ///
-    /// A check, not a dependency: the FFI path above never touches the network. With no
-    /// server listening the test says so and stops, because "the oracle is not running" and
-    /// "we disagree with the oracle" are different facts and only the second is a failure.
+    /// Cross-check against the running server's `/tokenize`. A check, not a dependency: with no server
+    /// listening the test says so and stops, since "the oracle is not running" and "we disagree" are
+    /// different facts.
     #[test]
     fn we_agree_with_the_server_oracle_where_one_is_running() {
         let Some(v) = vocab() else { return };
@@ -742,11 +727,8 @@ mod tests {
         }
     }
 
-    /// A four-line HTTP/1.1 `GET`, for `/props`.
-    ///
-    /// `None` means "could not ask", which the caller must not read as "the answer was
-    /// no". A network client would join this crate's dependency list for a test it does not
-    /// depend on.
+    /// A four-line HTTP/1.1 `GET`, for `/props`. `None` means "could not ask", which the caller must not
+    /// read as "the answer was no".
     fn post_get(path: &str) -> Option<String> {
         use std::io::{Read, Write};
         use std::net::TcpStream;

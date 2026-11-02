@@ -16,21 +16,15 @@
 /// The fork's checkout on the Linux box this tree is developed in.
 const DEFAULT_LLAMA_DIR: &str = "/home/dead/Projects/llama.cpp";
 
-/// Where a llama.cpp build tree keeps its libraries, in the order they are tried:
-/// this project's own CUDA build (`build-glm`), then CMake's default `build/bin`.
-///
-/// Two layouts because the two boxes disagree: the Linux box builds with `-B build-glm` and the
-/// macOS recipe builds with `-B build`.
+/// Where a llama.cpp build tree keeps its libraries: this project's own CUDA build, then CMake's
+/// default. Two layouts because the two boxes disagree about `-B`.
 const LLAMA_LIB_SUBDIRS: [&str; 2] = ["build-glm/bin", "build/bin"];
 
 /// What a `libllama` is called, by platform: the first that exists names the one.
 const LLAMA_LIBRARIES: [&str; 3] = ["libllama.so", "libllama.dylib", "libllama.a"];
 
-/// The checkouts this box may have, in the order they are tried: the variable, then the
-/// conventional checkout under this home, then the box's own path.
-///
-/// `$HOME/Projects/llama.cpp` and `/home/dead/Projects/llama.cpp` are the same directory
-/// on the Linux box, so the VM's answer is unchanged by the extra candidate.
+/// The checkouts this box may have: the variable, then the conventional checkout under this home, then
+/// the box's own path, which are the same directory on the Linux box.
 #[allow(dead_code)] // each includer uses a subset of this file
 fn llama_checkout_candidates() -> Vec<std::path::PathBuf> {
     let mut dirs: Vec<std::path::PathBuf> = Vec::new();
@@ -67,11 +61,8 @@ fn llama_checkout_found() -> Option<std::path::PathBuf> {
         .find(|d| d.join("include/llama.h").is_file())
 }
 
-/// The directory holding `libllama`, if one can be found.
-///
-/// An explicitly set `LETIBOT_LLAMA_LIB` is honoured as given, even when it holds nothing,
-/// because it is an instruction rather than a hint: a build that quietly used a different
-/// directory than the one it was told to would be the harder bug.
+/// The directory holding `libllama`, if one can be found. An explicitly set `LETIBOT_LLAMA_LIB` is
+/// honoured as given, even when it holds nothing, because it is an instruction rather than a hint.
 #[allow(dead_code)]
 fn llama_lib_found() -> Option<std::path::PathBuf> {
     if let Some(lib) = std::env::var_os("LETIBOT_LLAMA_LIB") {
@@ -83,12 +74,8 @@ fn llama_lib_found() -> Option<std::path::PathBuf> {
         .find(|d| llama_has_library(d))
 }
 
-/// The directory to bake an rpath to, for a crate whose binaries only need it at exec.
-///
-/// It never panics, and that is the contract: `crates/sessionlog` and the rest emit this
-/// unconditionally, because an rpath to a directory whose libraries are not linked costs nothing
-/// and a build script that failed on a box with no llama.cpp would take the cloud-only build with
-/// it.
+/// The directory to bake an rpath to, for a crate whose binaries only need it at exec. It never panics:
+/// a build script that failed on a box with no llama.cpp would take the cloud-only build with it.
 #[allow(dead_code)]
 fn llama_lib_dir() -> std::path::PathBuf {
     let lib = llama_lib_found()
@@ -97,12 +84,9 @@ fn llama_lib_dir() -> std::path::PathBuf {
     lib
 }
 
-/// Re-run when the library this build linked changes, not only when a variable does.
-///
-/// `rerun-if-env-changed` alone fires only on a variable changing, so a `target/` stays frozen to
-/// whatever its first build found, and a fork rebuilt into a different directory keeps linking
-/// the old one. A new higher-priority directory appearing is not caught, since cargo cannot watch
-/// a path that does not exist, and that case needs `cargo clean -p letibot-llama`.
+/// Re-run when the linked library changes, not only when a variable does: a `target/` otherwise stays
+/// frozen to whatever its first build found. A new higher-priority directory appearing needs `cargo
+/// clean -p letibot-llama`.
 #[allow(dead_code)]
 fn llama_watch(lib: &std::path::Path) {
     for name in LLAMA_LIBRARIES {
