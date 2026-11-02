@@ -1,119 +1,8 @@
-//! Layer 1's other half: **project-scoped namespaces**, so the boundary bounds a
-//! *view* and not only a lifetime.
-//!
-//! [`super::scope`] owns how long a process lives. This module owns what it can
-//! see. `docs/boundary-and-adjudication.md` §4: *"Mount (a project-rooted
-//! filesystem view, so the secret is not merely unreadable but **absent**), PID (so
-//! the process cannot see or signal the operator's daemon or the model server),
-//! network (so egress is a decision rather than a default), and user."*
-//!
-//! # Absence beats denial, and that is the whole design
-//!
-//! A denial needs a rule, a rule needs a path list, and §3 shows both directions a
-//! path list is wrong in. An **absent** file needs none of it: `~/.ssh/id_rsa` is
-//! not protected inside this boundary, it is *not there*, and there is no spelling
-//! of `cat` that reaches a file the mount namespace does not contain.
-//!
-//! # Four rules, and the first one outranks the rest
-//!
-//! **1. A boundary that silently is not there is worse than none.** So there are
-//! three states and never two:
-//!
-//! | state | what it is | what a spawn does |
-//! |---|---|---|
-//! | [`Bwrap`] | confinement was asked for and **measured** | runs inside it |
-//! | [`NoConfinement`] | confinement was asked for and the kernel, the policy or the helper refused | **refuses, naming what was missing** |
-//! | [`Unconfined`] | confinement was **not** asked for | runs, and every disclosure says loudly that it is not confined |
-//!
-//! There is no fourth, and in particular there is no path from the second to the
-//! third: a host that cannot confine does not quietly get the old behaviour.
-//!
-//! **2. Report the boundary you actually got, read rather than asserted.** This is
-//! the rule the repo has already paid for twice — a startup banner claiming
-//! `read-only tools` about a session with write tools, and
-//! [`crate::backend::HostBackend::describe`] hard-coding `read-only` for the
-//! writable backend. So [`Bwrap::probe`] does not assert that it unshared anything.
-//! It **runs the real invocation** and reads `/proc/self/ns/*` from inside it, and
-//! a namespace whose inode inside equals the harness's own is recorded as
-//! [`NsState::NotEntered`] however the arguments read. [`Boundary::describe`]
-//! formats that map. A partial boundary therefore describes itself as partial
-//! because there is nothing else for it to describe.
-//!
-//! **3. The mount view is the enforcement point for §3's flow rule** — for files.
-//! *Secret bytes may be consumed inside the boundary; they may never enter the
-//! transcript and never leave it.* The first half is structural here and the
-//! subtle case is `ssh`, which legitimately reads `~/.ssh/id_rsa`. See
-//! [`Grant::AgentSocket`] and the `credentials` section below: the resolution is
-//! that a credential is made **usable** by forwarding the agent that holds it, and
-//! is never made **readable** by binding the key. There is no grant in this module
-//! that puts a private key inside the view.
-//!
-//! **4. Absence must be legible.** A path outside the view produces `ENOENT`, and
-//! a bare `ENOENT` is read by a model as *the file does not exist* — an
-//! empty-haystack answer. [`Boundary::absence_notes`] turns it into *"not in this
-//! session's filesystem view"*. It decides that **lexically**, against the view's
-//! roots, and never by stat'ing the host: whether the file exists outside is not a
-//! fact this note needs, and not a fact it should disclose.
-//!
-//! # `/tmp` belongs to a session, not to a command
-//!
-//! Rule 4 is about a path *outside* the view. `/tmp` is the one that is **inside** it and is
-//! still not the host's, and for a long time it was a fresh tmpfs per command: safe, and a
-//! trap. An agent writes its scratch there constantly — a heredoc patch in one call and
-//! `git apply` in the next, a build log redirected and then read — and the second call answers
-//! `No such file or directory` with nothing to say that this is the boundary and not a broken
-//! shell (MEASURED 2026-10-27: `echo hello > /tmp/x` then `cat /tmp/x`, with `ls -d /tmp`
-//! succeeding and `TMPDIR` empty). So a caller that knows its session may name one directory
-//! ([`TmpView::Session`]) and have it bound at `/tmp`; the default stays the fresh tmpfs,
-//! because a view that claims nothing about a session is still right for a caller that does not
-//! have one. What does not change either way: **the host's `/tmp` is never bound**, at any
-//! path, under any name — it holds other programs' sockets and whatever the operator was doing.
-//!
-//! # Credentials: what is usable without being readable
-//!
-//! The authorised case is real and a project-only view breaks it. Three mechanisms
-//! were available and only one satisfies §3:
-//!
-//! | mechanism | usable | readable into context | verdict |
-//! |---|---|---|---|
-//! | bind `~/.ssh/id_rsa` into the view | yes | **yes** — one `cat` and it is in the transcript | rejected |
-//! | bind `~/.ssh` read-only | yes | **yes**, and more of it | rejected |
-//! | forward `$SSH_AUTH_SOCK` | yes | **no** — the agent signs, outside the boundary; only signatures cross | **this** |
-//!
-//! [`Grant::AgentSocket`] is the third. The key bytes stay in `ssh-agent`, which
-//! is not in the view and not in the namespace; what enters is a unix socket over
-//! which a challenge goes out and a signature comes back. That is §3's invariant
-//! holding rather than being enforced.
-//!
-//! And the case that has **no** mechanism is stated rather than papered over: a
-//! key that is not loaded into an agent cannot be used from inside this boundary,
-//! and the answer is [`Grant::agent_from_env`]'s refusal — *load it into
-//! `ssh-agent`; letibot forwards the agent, never the key* — not a bind. `ssh` also
-//! needs [`Egress::Host`], which is a second explicit decision. Two declarations,
-//! and neither makes a private key readable.
-//!
-//! # Why bubblewrap and not `unshare(2)` here
-//!
-//! `crates/tools/Cargo.toml` says *"No `libc`"*, and it means it — the whole crate
-//! reaches the kernel through `/proc`, `std::process` and the unix extension
-//! traits. A native implementation would need `unshare`, `pivot_root`, `mount` and
-//! a uid_map write in the window between `fork` and `exec`, which is `libc` and
-//! `unsafe` in the one place in the tree where a mistake is a boundary hole.
-//!
-//! The measurement that settled it: **this box cannot create a usable
-//! unprivileged user namespace at all.** `kernel.apparmor_restrict_unprivileged_userns`
-//! is `1`, so an unconfined process that calls `unshare(CLONE_NEWUSER)` is
-//! transitioned into the `unprivileged_userns` profile, which denies
-//! `CAP_SYS_ADMIN` — and `map_write` in the kernel requires `CAP_SYS_ADMIN` in the
-//! new namespace, so the `uid_map` write fails with `EPERM` and the namespace is
-//! inert. A native path would have been untestable on the machine it was written
-//! on, which `docs/tool-design-brief.md` §3b calls the component that *"reports
-//! success while delivering nothing"*.
-//!
-//! `/usr/bin/bwrap` has an AppArmor profile (`bwrap-userns-restrict`) that permits
-//! exactly this, which is how the policy is *meant* to be satisfied on such a
-//! host. So the helper is the mechanism, its absence is a named refusal, and its
-//! result is measured rather than trusted.
+//! The view half of the boundary: what a confined process can see, measured rather than
+//! asserted. [`super::scope`] owns how long a process lives; this module owns what it
+//! reaches, and an absent file beats a denied one because absence needs no path list.
+//! [`Bwrap`] enters namespaces through bubblewrap and [`super::seatbelt::Seatbelt`] applies
+//! a policy; both answer through [`Confinement`], and [`Boundary`] is what a probe measured.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -121,13 +10,13 @@ use std::time::SystemTime;
 
 use super::ExecError;
 
-/// The namespaces this boundary is made of. Ordered as they are declared, so
-/// [`Boundary::describe`] lists them in the order the design argues them.
+/// The namespaces a boundary is made of. Declaration order is the order
+/// [`Boundary::describe`] lists them in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Namespace {
     /// The one that makes the rest possible unprivileged.
     User,
-    /// The project-rooted view. **The enforcement point.**
+    /// The project-rooted view: the enforcement point.
     Mount,
     /// The daemon, the model server and a sibling job become invisible.
     Pid,
@@ -155,9 +44,9 @@ impl Namespace {
         }
     }
 
-    /// What entering this namespace buys, in the words a disclosure uses. Not a
-    /// category — the sentence, because `describe()` is read by somebody deciding
-    /// whether to seat `bash`.
+    /// What entering this namespace buys, in the words a disclosure uses: the sentence
+    /// rather than a category, because `describe()` is read by somebody deciding whether
+    /// to seat `bash`.
     pub fn buys(&self) -> &'static str {
         match self {
             Namespace::User => "the rest of this is possible without root",
@@ -174,11 +63,9 @@ impl Namespace {
         }
     }
 
-    /// The three without which there is no boundary worth the name.
-    ///
-    /// [`Namespace::Net`] is deliberately **not** here: `Egress::Host` is a
-    /// legitimate declared configuration, and a required-namespace check that
-    /// refused it would make the declaration unspellable rather than visible.
+    /// The three without which there is no boundary worth the name. [`Namespace::Net`] is not
+    /// among them: [`Egress::Host`] is a legitimate declared configuration, and requiring net
+    /// would make the declaration unspellable.
     pub const REQUIRED: [Namespace; 3] = [Namespace::User, Namespace::Mount, Namespace::Pid];
 
     /// Every namespace this module asks for, in declaration order.
@@ -203,36 +90,13 @@ impl std::fmt::Display for Namespace {
 /// namespaces are worth anything.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SealKind {
-    /// **Can a process inside create a new user namespace and step back out?**
-    ///
-    /// This is the hole a namespace boundary has by default and it is not
-    /// theoretical: `unshare(CLONE_NEWUSER)` is permitted to an unprivileged
-    /// process, the caller gets full capabilities *in the namespace it just made*,
-    /// and `unshare(CLONE_NEWNS)` then succeeds — so a child can build itself a
-    /// mount namespace the parent did not authorise. Mount, PID and network
-    /// namespaces entered by a parent are not a boundary if the child can leave
-    /// them.
-    ///
-    /// The survey's `grok-build` closes this with a second seccomp-BPF filter over
-    /// the mount and namespace API. bubblewrap has it as a flag pair —
-    /// `--disable-userns` sets the sandbox userns's `max_user_namespaces` to zero,
-    /// and `--assert-userns-disabled` makes the helper **fail** rather than proceed
-    /// if that did not take, which is the same fail-closed shape as the reference
-    /// launcher's `restrict_self` (`deepseek-harness`
-    /// `native/system/packages/entry/src/main.c:229-234`: an unusable mechanism is
-    /// a refusal, never an unconfined exec).
-    ///
-    /// Both are declared, and then the property is **measured anyway** — see
-    /// [`READBACK`]. A flag is a request.
+    /// Can a process inside create a user namespace and step back out? Mount, PID and net
+    /// namespaces are not a boundary if the child can leave them, so the helper is asked to
+    /// seal it and the seal is measured anyway.
     NestedNamespaces,
-    /// `PR_SET_NO_NEW_PRIVS`. Without it a setuid binary reachable inside the view
-    /// is an escalation, and the whole point of an unprivileged boundary is that
-    /// there is nothing to escalate to.
-    ///
-    /// The reference launcher sets it **before** restricting
-    /// (`main.c:248-253`) and the ordering is a correctness fact, not a style: an
-    /// unprivileged `landlock_restrict_self` is rejected without it. bubblewrap
-    /// does the equivalent itself; this reads the result rather than trusting that.
+    /// `PR_SET_NO_NEW_PRIVS`: without it a setuid binary reachable inside the view is an
+    /// escalation, and an unprivileged boundary has nothing to escalate to. bubblewrap sets
+    /// it; this reads the result rather than trusting that.
     NoNewPrivs,
 }
 
@@ -262,21 +126,19 @@ impl std::fmt::Display for SealKind {
     }
 }
 
-/// Whether a seal holds, **tested rather than requested**.
+/// Whether a seal holds, tested rather than requested.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Seal {
     /// A process inside tried the thing and could not do it.
     Held { how: String },
     /// It could. A fence with a gate in it is not a fence, and this refuses.
     Open { why: String },
-    /// The test could not be run from inside, so the property is unknown — and an
-    /// unknown property is reported as unknown, never as held.
+    /// The test could not be run from inside: the property is unknown, and an unknown
+    /// property is reported as unknown, never as held.
     Unverified { why: String },
-    /// **This mechanism has no such property to test.** Not `Held` (that would be a claim
-    /// about a mechanism that is not there), not `Unverified` (it is not that the test was
-    /// missed), and not `Open` (there is nothing to step through). macOS has no
-    /// `PR_SET_NO_NEW_PRIVS`, so a policy boundary reports that seal here with what it has
-    /// instead.
+    /// This mechanism has no such property to test: not `Held` (a claim about a mechanism
+    /// that is not there), not `Unverified` (the test was not missed), and not `Open` (there
+    /// is nothing to step through).
     NotApplicable { why: String },
 }
 
@@ -294,13 +156,9 @@ impl Seal {
     }
 }
 
-/// **Which family of machinery a measured boundary is made of.**
-///
-/// The two are not interchangeable and neither is a worse copy of the other: a
-/// namespace boundary makes what is outside it **absent**, and a policy boundary
-/// makes it **denied**. Both are measured before a command is run inside one, both
-/// answer [`Boundary::complete`], and the difference is printed rather than averaged
-/// away — see [`Boundary::describe`].
+/// Which family of machinery a measured boundary is made of. A namespace boundary makes
+/// what is outside it absent and a policy boundary makes it denied; the difference is
+/// printed rather than averaged away.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Mechanism {
     /// Linux namespaces, entered through bubblewrap: `/proc/self/ns/*` read from
@@ -327,23 +185,18 @@ impl std::fmt::Display for Mechanism {
     }
 }
 
-/// **A property a boundary can have that is not a namespace.**
-///
-/// The namespace table is the whole answer on Linux and no answer at all on macOS,
-/// which has none — so a policy boundary describes itself with this instead. Both
-/// families are asked the same questions, which is what stops one platform's
-/// disclosure from being a claim the other platform never makes.
+/// A property a boundary can have that is not a namespace. A policy boundary has no
+/// namespace table to describe itself with, so both families answer these instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Prop {
-    /// A file outside the view cannot be reached. On Linux the mount namespace makes
-    /// it **absent**; under a policy it is **denied**, and that difference is the one
-    /// [`Boundary::describe`] says out loud rather than in a footnote.
+    /// A file outside the view cannot be reached: absent under namespaces, denied under a
+    /// policy, and [`Boundary::describe`] says which.
     FileView,
-    /// A process outside the boundary cannot be reached — a signal, or a lookup that
-    /// would find it.
+    /// A process outside the boundary cannot be reached: a signal, or a lookup that would
+    /// find it.
     ProcessIsolation,
-    /// A process outside the boundary is **not there at all**. A PID namespace buys
-    /// this; nothing on macOS does.
+    /// A process outside the boundary is not there at all. A PID namespace buys this;
+    /// nothing on macOS does.
     ProcessAbsence,
     /// Egress is a decision rather than a default.
     Egress,
@@ -362,7 +215,7 @@ impl Prop {
         }
     }
 
-    /// What holding this buys, in the words a disclosure uses — the same question
+    /// What holding this buys, in the words a disclosure uses: the same question
     /// [`Namespace::buys`] answers, so the two tables read alike.
     pub fn buys(&self) -> &'static str {
         match self {
@@ -384,10 +237,9 @@ impl Prop {
         }
     }
 
-    /// The three a policy boundary is not a boundary without. [`Prop::ProcessAbsence`]
-    /// is deliberately **not** among them: no OS is allowed to be refused for a property
-    /// it does not have the kernel for, and refusing it would make the honest answer
-    /// (*disclosed, absent*) unspellable on the platform that has to give it.
+    /// The three a policy boundary is not a boundary without. [`Prop::ProcessAbsence`] is
+    /// not among them: refusing an OS for a property it has no kernel for would make the
+    /// honest answer (disclosed, absent) unspellable.
     pub const REQUIRED_POLICY: [Prop; 3] = [Prop::FileView, Prop::ProcessIsolation, Prop::Nested];
 
     /// Every property a policy boundary reports, in the order a disclosure lists them.
@@ -406,13 +258,9 @@ impl std::fmt::Display for Prop {
     }
 }
 
-/// What one [`Prop`] measured, and the third variant is the important one.
-///
-/// [`PropState::Absent`] is **not** a failure: it is an OS that cannot give the
-/// property at all, named so a reader is not left to infer it from a silence. It is
-/// kept apart from [`PropState::Unverified`] for exactly the reason
-/// `apparatus::applies` is kept apart from `apparatus::present` — one is *somebody
-/// could have done this and did not*, the other is *nobody could*.
+/// What one [`Prop`] measured, and the third variant is the important one:
+/// [`PropState::Absent`] is not a failure but an OS that cannot give the property, kept
+/// apart from [`PropState::Unverified`] because nobody could is not somebody did not.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PropState {
     /// Measured holding, from inside, with how it was measured.
@@ -437,21 +285,17 @@ impl PropState {
     }
 }
 
-/// What happened to one namespace, **as read back**, never as requested.
-///
-/// Three variants and the middle one is the reason there are not two: a namespace
-/// shared on purpose and a namespace that failed to be entered look identical from
-/// inside (the inode matches the harness's) and are completely different facts. A
-/// boundary that collapsed them would report `Egress::Host` as a defect, or —
-/// far worse — a failed unshare as a decision somebody made.
+/// What happened to one namespace, as read back. The middle variant is why there are three:
+/// a namespace shared on purpose and one that failed to be entered look identical from
+/// inside and are completely different facts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NsState {
-    /// Entered. The inode is the evidence: it is what `readlink /proc/self/ns/<n>`
-    /// returned from **inside**, and it differs from the harness's own.
+    /// Entered. The inode is the evidence: what `readlink /proc/self/ns/<n>` returned from
+    /// inside, and it differs from the harness's own.
     Entered { inode: String },
     /// Shared with the harness because somebody declared it, with the declaration.
     SharedByDecision { why: String },
-    /// Asked for and **not** entered. This is the state that refuses.
+    /// Asked for and not entered. This is the state that refuses.
     NotEntered { why: String },
 }
 
@@ -472,17 +316,15 @@ impl NsState {
     }
 }
 
-/// Whether a confined command may reach the network, and it is a *decision*.
+/// Whether a confined command may reach the network, and it is a decision.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Egress {
-    /// The default. An empty network namespace: no interfaces, no routes, no DNS.
-    /// A `curl` inside it fails at the socket, which is what makes a `web_fetch`
-    /// seam a seam rather than decoration.
+    /// The default. An empty network namespace: no interfaces, no routes, no DNS, so a
+    /// `curl` inside fails at the socket.
     Denied,
-    /// The host's network namespace, shared because somebody said so, with the
-    /// sentence they said it in. This is what an authorised `ssh` or `git push`
-    /// needs, and it is recorded as [`NsState::SharedByDecision`] so no disclosure
-    /// can mistake it for a boundary that failed.
+    /// The host's network namespace, shared because somebody said so, with the sentence
+    /// they said it in. Recorded as [`NsState::SharedByDecision`] so no disclosure mistakes
+    /// it for a boundary that failed.
     Host { why: String },
 }
 
@@ -492,76 +334,52 @@ impl Egress {
     }
 }
 
-/// What `$HOME` is inside the view.
-///
-/// It cannot be the operator's home — that is the directory the whole boundary
-/// exists to leave outside — and it cannot be nothing, because a shell with no
-/// writable `$HOME` breaks tools that have nothing to do with credentials.
+/// What `$HOME` is inside the view. It cannot be the operator's home, which the whole
+/// boundary exists to leave outside, and it cannot be nothing: a shell with no writable
+/// `$HOME` breaks tools that have nothing to do with credentials.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HomeView {
-    /// A fresh tmpfs each run. The safe default, and the one with a **cost worth
-    /// stating**: a build cache under `$HOME` (`~/.cargo/registry`, `~/.rustup`,
-    /// `~/.npm`) is empty every time, so a confined `cargo build` re-downloads.
-    /// [`Boundary::describe`] says so rather than letting somebody discover it as
-    /// a mysterious slowdown.
+    /// A fresh tmpfs each run: the safe default, and it costs a build cache under `$HOME`,
+    /// so [`Boundary::describe`] says so rather than letting a re-download read as a
+    /// mysterious slowdown.
     Tmpfs,
-    /// A letibot-owned directory, bound read-write at its own path. Persistent
-    /// across runs and **not** the operator's home.
+    /// A letibot-owned directory, bound read-write at its own path. Persistent across runs
+    /// and not the operator's home.
     Dir(PathBuf),
 }
 
-/// What `/tmp` is inside the view.
-///
-/// **`/tmp` is where an agent's scratch lives**, and a filesystem that forgets it between two
-/// calls makes every use of it look like a broken shell. MEASURED 2026-10-27: a session whose
-/// tools ran inside this boundary wrote a probe to `/tmp/x` in one call and read it in the
-/// next — *No such file or directory* — and the same shape hit a build log redirected to
-/// `/tmp/clippy.log` and read back by a later call. Nothing announces it: `ls -d /tmp`
-/// succeeds and `TMPDIR` is empty.
-///
-/// Nothing of the host's `/tmp` may become visible either way — it holds other programs'
-/// sockets and whatever the operator was doing — so this is a choice between *a fresh
-/// filesystem per command* and *one letibot-owned directory per session*, never a bind of the
-/// host's own.
+/// What `/tmp` is inside the view. An agent's scratch lives there, and a filesystem that
+/// forgets it between two calls makes every use of it look like a broken shell. The host's
+/// `/tmp` is never bound either way: it holds other programs' sockets.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TmpView {
     /// A fresh tmpfs per command: private to it, empty at its start, gone at its end. The
-    /// default, because it claims nothing — and the one that silently breaks a two-call
-    /// scratch idiom, so a caller that knows its session's directory should say so.
+    /// default, because it claims nothing, and the one that breaks a two-call scratch idiom,
+    /// so a caller with a session directory should say so.
     PerCommand,
     /// One letibot-owned directory, bound read-write at `/tmp`, so a file one call of the
-    /// session writes is there for the next call of **that** session and for no other.
-    /// Created by [`Bwrap::probe`] if it is not there, like [`HomeView::Dir`].
+    /// session writes is there for the next call of that session and for no other. Created by
+    /// [`Bwrap::probe`] if it is not there, like [`HomeView::Dir`].
     Session(PathBuf),
 }
 
 /// The sentence a [`Presence::Replaced`] for `/tmp` carries when a session's directory is
-/// bound there — see [`TmpView`]. It says the thing an `ENOENT` under `/tmp` has to say, which
-/// is no longer *this command started empty* and is still not *the host's*.
+/// bound there: an `ENOENT` under it is neither "this command started empty" nor the host's.
 const SESSION_TMP_WHAT: &str = "this session's own directory, bound here: it survives between the calls of one session \
      and holds none of the host's files";
 
-/// A path put inside the view on purpose, with the sentence that put it there.
-///
-/// Every variant carries a `why`, for the same reason [`super::Protected::why`]
-/// does: a grant nobody can explain is a grant nobody can revoke.
+/// A path put inside the view on purpose, with the sentence that put it there. Every variant
+/// carries a `why`, because a grant nobody can explain is a grant nobody can revoke.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Grant {
-    /// Readable inside the view. **And therefore readable into the transcript** —
-    /// §3's second half is not enforced by this module, so a grant is a decision
-    /// with that consequence and [`Boundary::describe`] prints the consequence next
-    /// to the grant.
+    /// Readable inside the view, and therefore readable into the transcript: a grant is a
+    /// decision with that consequence, and [`Boundary::describe`] prints it next to the grant.
     ReadOnly { path: PathBuf, why: String },
     /// Writable inside the view, with the same consequence and one more.
     ReadWrite { path: PathBuf, why: String },
-    /// **The credential mechanism.** A unix socket to an agent that holds a key,
-    /// bound at [`AGENT_SOCKET`] with `SSH_AUTH_SOCK` pointing at it.
-    ///
-    /// This is the one shape that makes a credential *usable* without making it
-    /// *readable*: the private key never enters the mount namespace, the signing
-    /// happens in a process outside the boundary, and what crosses the socket is a
-    /// challenge and a signature. `cat $SSH_AUTH_SOCK` returns nothing a
-    /// transcript can use.
+    /// The credential mechanism: a unix socket to an agent that holds a key, bound at
+    /// [`AGENT_SOCKET`] with `SSH_AUTH_SOCK` pointing at it. The key never enters the mount
+    /// namespace, so what crosses is a challenge and a signature.
     AgentSocket { path: PathBuf, why: String },
 }
 
@@ -600,14 +418,9 @@ impl Grant {
         }
     }
 
-    /// The authorised-`ssh` grant, from `$SSH_AUTH_SOCK`, **or the refusal that
-    /// names the mechanism nobody built**.
-    ///
-    /// This function is the whole of this module's answer to §3's subtle case, and
-    /// the error path is the important half. If there is no agent, there is no way
-    /// to use a key from inside this boundary, and the answer is *not* to bind the
-    /// key: binding it is exactly the "quietly make the key readable to get ssh
-    /// working" that the rule forbids. So the refusal says what to do instead.
+    /// The authorised-`ssh` grant, from `$SSH_AUTH_SOCK`, or the refusal that names the
+    /// mechanism nobody built. With no agent there is no way to use a key from inside, and
+    /// binding the key instead is exactly what the rule forbids.
     pub fn agent_from_env(why: impl Into<String>) -> Result<Grant, ExecError> {
         let Some(sock) = std::env::var_os("SSH_AUTH_SOCK") else {
             return Err(ExecError::NoCredentialMechanism(
@@ -624,9 +437,8 @@ impl Grant {
             ));
         };
         let path = PathBuf::from(sock);
-        // Guard the fact, not the proxy: it has to *be* a socket. A regular file
-        // called `agent.sock` would be a key by another name, and this is the one
-        // place where letting that through defeats the mechanism.
+        // Guard the fact, not the proxy: it has to be a socket. A regular file called
+        // `agent.sock` would be a key by another name.
         let meta = std::fs::symlink_metadata(&path).map_err(|e| {
             ExecError::NoCredentialMechanism(format!(
                 "`SSH_AUTH_SOCK` points at `{}`, which could not be read ({e}), so \
@@ -661,17 +473,17 @@ pub const TMPFS_HOME: &str = "/run/letibot/home";
 /// What a host path is when looked at from inside the view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Presence {
-    /// Bound in: the host's file *is* the sandbox's file.
+    /// Bound in: the host's file is the sandbox's file.
     Inside,
-    /// The path exists inside the view, but as a **fresh filesystem** — so nothing
-    /// the host keeps there is visible, and a write does not reach the host.
+    /// The path exists inside the view, but as a fresh filesystem, so nothing the host keeps
+    /// there is visible and a write does not reach the host.
     Replaced { what: &'static str },
     /// Not in the view at all. Absent, and no rule is what is stopping it.
     Outside,
 }
 
-/// The paths that exist inside the view but are **not** the host's, with what they
-/// are instead. See [`Presence::Replaced`].
+/// The paths that exist inside the view but are not the host's, with what they are instead.
+/// See [`Presence::Replaced`].
 const REPLACED_ROOTS: &[(&str, &str)] = &[
     (
         "/tmp",
@@ -692,14 +504,9 @@ const REPLACED_ROOTS: &[(&str, &str)] = &[
     ("/dev", "a minimal device set, not the host's `/dev`"),
 ];
 
-/// Which paths are in the view, and therefore which are absent from it.
-///
-/// The **project** is the workspace root the daemon was given, bound read-write at
-/// its own path. Keeping the path identical inside and out is deliberate: a
-/// compiler's `error[E0433]: ... at crates/tools/src/lib.rs:12` has to name the
-/// same file the `read` tool names, and rewriting the root to `/workspace` would
-/// make every path in every tool result a translation the model has to do and will
-/// sometimes get wrong.
+/// Which paths are in the view, and therefore which are absent from it. The project is bound
+/// read-write at its own path so a compiler's diagnostic names the same file the `read` tool
+/// names; rewriting the root would make every path a translation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ViewSpec {
     /// The workspace root. Read-write, at its own path.
@@ -707,20 +514,15 @@ pub struct ViewSpec {
     /// The read-only system roots a command needs to be a command at all.
     pub system: Vec<PathBuf>,
     pub home: HomeView,
-    /// What `/tmp` is — see [`TmpView`], and note that `/var/tmp` and `/run` stay fresh
-    /// tmpfs filesystems either way.
+    /// What `/tmp` is (see [`TmpView`]). `/var/tmp` and `/run` stay fresh tmpfs filesystems
+    /// either way.
     pub tmp: TmpView,
     pub grants: Vec<Grant>,
 }
 
-/// The read-only system paths bound by default.
-///
-/// `--ro-bind-try`, so a host that does not have one is not a failure: a merged
-/// `/usr` host has no real `/lib`, and a host that does has a symlink. This list is
-/// **not** a security decision — it is the answer to "what does `/bin/sh` need to
-/// exist" — and the security decision is everything *not* on it, which is where
-/// `$HOME`, `/root`, `/mnt`, `/srv`, `/opt`, the rest of `/etc` and every other
-/// project live.
+/// The read-only system paths bound by default, with `--ro-bind-try` so a host that does
+/// not have one is not a failure. This is what `/bin/sh` needs to exist, not a security
+/// decision: the security decision is everything not on it, where `$HOME` and `/root` live.
 pub const SYSTEM_ROOTS: &[&str] = &[
     "/usr",
     "/bin",
@@ -753,15 +555,9 @@ pub const NETWORK_ROOTS: &[&str] = &[
     "/etc/gai.conf",
 ];
 
-/// The environment variables a confined command keeps.
-///
-/// The environment is cleared (`--clearenv`) and these are put back, which is
-/// **absence beats denial applied to the environment**: an unset-list would need to
-/// name `GITHUB_TOKEN`, `FLOWY_TOKEN`, `AWS_SECRET_ACCESS_KEY`, `ANTHROPIC_API_KEY`
-/// and whatever was invented last week, and would be wrong in both directions the
-/// same way `NEVER_WRITE` is. A keep-list is wrong in one direction only, and that
-/// direction is *a command is missing a variable*, which is a visible failure with
-/// a fix rather than a silent leak.
+/// The environment variables a confined command keeps. The environment is cleared and
+/// these put back, which is absence beats denial applied to the environment: an unset list
+/// would be wrong in both directions, a keep list only in the visible one.
 pub const KEEP_ENV: &[&str] = &["PATH", "TERM", "LANG", "LC_ALL", "TZ"];
 
 impl ViewSpec {
@@ -781,7 +577,7 @@ impl ViewSpec {
         self
     }
 
-    /// Give this session a `/tmp` that outlives a command — see [`TmpView`].
+    /// Give this session a `/tmp` that outlives a command: see [`TmpView`].
     pub fn with_tmp(mut self, tmp: TmpView) -> ViewSpec {
         self.tmp = tmp;
         self
@@ -792,29 +588,14 @@ impl ViewSpec {
         self
     }
 
-    /// What a host path is, from inside the view. **Three answers, not two.**
-    ///
-    /// The middle one was found by a failing test and is the one that would have
-    /// been a wrong note: `/tmp/x` is *in* the view — `/tmp` exists inside — but it
-    /// is a **fresh tmpfs**, so a file the host has at `/tmp/x` is just as absent as
-    /// one in `~/.ssh`, and for a completely different reason. Collapsing that into
-    /// "inside" produces a bare `ENOENT` the model reads as an answer about the
-    /// world; collapsing it into "outside" produces a note claiming the path cannot
-    /// be reached, when in fact it can be created and used.
-    ///
-    /// **Lexical, on purpose.** Two reasons, and the second is the one that
-    /// matters. First, it has to be answerable about a path that is not there, and
-    /// a `stat` cannot tell "outside the view" from "does not exist anywhere".
-    /// Second, a `stat` on the host would make the note a *disclosure*: it would
-    /// say "this exists and you cannot see it", which is a fact about the
-    /// operator's disk that the model did not have and does not need. What it needs
-    /// is to know that `ENOENT` here means *boundary*, not *empty haystack*.
+    /// What a host path is, from inside the view: three answers, not two, because a fresh
+    /// tmpfs inside the view is not the host's `/tmp`. Lexical on purpose: a `stat` on the
+    /// host would disclose what the operator has, and cannot answer about an absent path.
     pub fn classify(&self, path: &Path) -> Presence {
         if !path.is_absolute() {
             return Presence::Inside;
         }
-        // The bound roots first, so a project that happens to live under `/tmp` is
-        // Inside rather than Replaced.
+        // The bound roots first, so a project under `/tmp` is Inside, not Replaced.
         let inside = std::iter::once(self.project.as_path())
             .chain(self.system.iter().map(|p| p.as_path()))
             .chain(self.grants.iter().map(|g| g.path()));
@@ -822,10 +603,8 @@ impl ViewSpec {
             if path == root || path.starts_with(root) {
                 return Presence::Inside;
             }
-            // The chain of parent directories to a bound path exists inside the
-            // view as empty directories, so `/home/dead` is *in* the view in the
-            // sense that a listing of it succeeds. Saying it is outside would be a
-            // note about a path the command could in fact see.
+            // The parent chain to a bound path exists inside as empty directories, so
+            // `/home/dead` can be listed and calling it outside would be wrong.
             if root.starts_with(path) {
                 return Presence::Inside;
             }
@@ -838,10 +617,8 @@ impl ViewSpec {
         for (p, what) in REPLACED_ROOTS {
             let p = Path::new(p);
             if path == p || path.starts_with(p) || p.starts_with(path) {
-                // **`/tmp` is still not the host's, and it is no longer emptied between
-                // commands when the session has a directory there.** Both halves matter to
-                // the note an `ENOENT` under it produces, so the sentence follows the view
-                // rather than the constant.
+                // A session's `/tmp` is still not the host's, and it is no longer emptied
+                // between calls, so the sentence follows the view rather than the constant.
                 let what = match &self.tmp {
                     TmpView::Session(_) if p == Path::new("/tmp") => SESSION_TMP_WHAT,
                     _ => what,
@@ -852,8 +629,8 @@ impl ViewSpec {
         Presence::Outside
     }
 
-    /// Is this absolute path outside the view entirely? A [`Presence::Replaced`]
-    /// path is **not** outside: it exists and can be used, it is simply empty.
+    /// Is this absolute path outside the view entirely? A [`Presence::Replaced`] path is
+    /// not outside: it exists and can be used, it is simply empty.
     pub fn outside(&self, path: &Path) -> bool {
         matches!(self.classify(path), Presence::Outside)
     }
@@ -872,7 +649,7 @@ impl ViewSpec {
         match &self.tmp {
             TmpView::PerCommand => {
                 // "a new tmpfs", not "FRESH TMPFS": that phrase is the `$HOME` arm's, and a
-                // disclosure is read for it to tell a throwaway home from a kept one.
+                // disclosure is read to tell a throwaway home from a kept one.
                 s.push_str(
                     "; /tmp is a new tmpfs for each command (so a file one call writes is gone \
                      in the next)",
@@ -895,7 +672,7 @@ impl ViewSpec {
     }
 }
 
-/// The boundary that was **measured**, not the one that was asked for.
+/// The boundary that was measured, not the one that was asked for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Boundary {
     /// What did it, with its version. `bubblewrap 0.11.1`, not `namespaces`.
@@ -908,7 +685,7 @@ pub struct Boundary {
     /// One entry per [`Namespace::ALL`], read back from inside. Empty under
     /// [`Mechanism::Policy`], which has no namespaces to enter.
     pub ns: BTreeMap<Namespace, NsState>,
-    /// One entry per [`SealKind::ALL`], **functionally tested** from inside.
+    /// One entry per [`SealKind::ALL`], functionally tested from inside.
     pub seals: BTreeMap<SealKind, Seal>,
     /// One entry per [`Prop::ALL`], measured from inside. Empty under
     /// [`Mechanism::Namespaces`], whose namespace table says the same things by name.
@@ -917,9 +694,8 @@ pub struct Boundary {
 }
 
 impl Boundary {
-    /// **An all-namespace boundary**, with no property table — the shape bubblewrap's
-    /// probe fills in. A constructor so that adding a field to this record does not
-    /// mean touching every test that builds one.
+    /// An all-namespace boundary with no property table, the shape bubblewrap's probe fills
+    /// in. A constructor, so a new field does not mean touching every fixture that builds one.
     pub fn namespaces(
         mechanism: impl Into<String>,
         view: ViewSpec,
@@ -939,18 +715,9 @@ impl Boundary {
         }
     }
 
-    /// Every required property of this boundary's own mechanism held, **and no seal
-    /// measured open**. The only honest success test, and the mirror of
-    /// [`super::Reaping::clean`].
-    ///
-    /// What "required" means is the mechanism's: three namespaces on Linux, three
-    /// properties under a policy. Asking a policy boundary for a PID namespace would
-    /// be asking it for something no OS gives it and calling the answer a defect.
-    ///
-    /// A seal that could not be tested does not fail this — it makes the boundary
-    /// *partial*, which is a different sentence in the disclosure. A seal measured
-    /// **open** does fail it, because a boundary a child can `unshare` its way out
-    /// of is the "silently is not there" case wearing the right flags.
+    /// Every required property of this boundary's own mechanism held, and no seal measured
+    /// open: required means three namespaces on Linux, three properties under a policy. An
+    /// untested seal makes the boundary partial; one measured open fails it.
     pub fn complete(&self) -> bool {
         let sealed = !self.seals.values().any(|s| matches!(s, Seal::Open { .. }));
         match self.platform {
@@ -969,42 +736,9 @@ impl Boundary {
         }
     }
 
-    /// **Is this a boundary a per-command ruling would buy nothing inside?** — D16.
-    ///
-    /// The operator's ruling (2026-10-27): *"agent can write any code in the test file and
-    /// then do the test. the only real defense is cgroups and namespaces. the rest is
-    /// theater."* So the gate admits a command unasked at `writes-allowed` where this
-    /// answers `true`, and the bar is deliberately higher than [`Boundary::complete`]:
-    ///
-    /// * **Every required namespace entered** — [`Namespace::REQUIRED`], which is `complete`'s
-    ///   own test. A boundary that is missing one is not a boundary.
-    /// * **Both seals `Held`**, not merely *not open*. `complete` tolerates `Unverified`, and
-    ///   it is right to: a boundary whose seal could not be tested from inside still confines,
-    ///   and refusing to run a command in it would be a session that cannot work. But an
-    ///   unknown seal is exactly the state D16's reasoning does not cover — the claim is
-    ///   *nothing a command does here can outlive or escape the boundary*, and an untested
-    ///   seal is a claim with its evidence missing. So a command here asks, as it did before.
-    /// * **Egress denied.** Included rather than left to the caller because it is the same
-    ///   judgement: a boundary that shares the host's network namespace has already decided
-    ///   that something crosses, and what crosses is what a card is still for.
-    ///
-    /// **What this does not answer, and why that is honest.** D16 names three things — the
-    /// namespaces, the seals and *the cgroup that bounds and reaps it* — and the reaper is
-    /// not a fact of this type: it is the process host's (`exec::scope`'s tree, or a remote
-    /// host's `setsid` process group). It cannot leave this question half-asked in the
-    /// admitting direction, because a boundary only ever reaches here through a process host
-    /// that was built with one: a local confined backend builds the scope tree and the
-    /// boundary together and refuses if either is absent
-    /// ([`crate::backend::HostBackend::confined`]), and a remote one is placed by a backend
-    /// whose jobs are its own process group. A session with no reaper has no boundary at all,
-    /// so the two arrive together or not at all.
-    ///
-    /// **Under [`Mechanism::Policy`]** (macOS's Seatbelt) there are no namespaces to enter, so
-    /// the same claim is asked of the property table instead: every [`Prop::REQUIRED_POLICY`]
-    /// held, egress denied, and each seal held **or** not applicable on this platform. A seal
-    /// macOS cannot have (`no-new-privs`) is not a seal that was tested and failed, and
-    /// counting it as missing would keep D16 off the one platform R98 built it for; a seal that
-    /// is `Unverified` or `Open` still keeps the command asking, as it does on Linux.
+    /// Is this a boundary a per-command ruling would buy nothing inside? Required namespaces
+    /// or properties held, every seal held rather than merely not open (one this platform
+    /// cannot have does not count against it), and egress denied.
     pub fn encloses(&self) -> bool {
         let inside = match self.platform {
             Mechanism::Namespaces => {
@@ -1030,18 +764,9 @@ impl Boundary {
         inside && self.egress == Egress::Denied
     }
 
-    /// Something was asked for and did not happen, or could not be confirmed.
-    /// **Not** the same as [`Boundary::complete`] being false: a boundary can be
-    /// partial in a namespace that is not required, or in a seal that could not be
-    /// tested from inside, and still confine.
-    ///
-    /// A [`PropState::Absent`] is deliberately not partial. It is an OS that cannot
-    /// give the property, it is printed in full by [`Boundary::describe`], and
-    /// counting it here would make "this machine has no PID namespace" read as the
-    /// same finding as "the probe could not tell".
-    ///
-    /// `Egress::Host` is deliberately not partial — that is a decision, and
-    /// collapsing the two would report an authorised `git push` as a defect.
+    /// Something was asked for and did not happen, or could not be confirmed. Not the same as
+    /// [`Boundary::complete`] being false: a partial boundary in a namespace that is not
+    /// required still confines, and [`PropState::Absent`] or `Egress::Host` is a decision.
     pub fn partial(&self) -> bool {
         self.ns
             .values()
@@ -1067,12 +792,9 @@ impl Boundary {
             .collect()
     }
 
-    /// The disclosure, **read off the map**.
-    ///
-    /// Nothing in here is a constant string about a property: every line comes
-    /// from `self.ns`, so a boundary that lost its PID namespace says so and a
-    /// hard-coded `confined` cannot outlive the confinement. That is rule 2, and
-    /// it is rule 2 because this repo shipped the opposite twice.
+    /// The disclosure, read off the map: every line comes from `self.ns` (or `self.props`),
+    /// so a boundary that lost its PID namespace says so and a hard-coded `confined` cannot
+    /// outlive the confinement.
     pub fn describe(&self) -> String {
         let mut s = String::new();
         let head = if self.complete() && !self.partial() {
@@ -1092,7 +814,7 @@ impl Boundary {
             s.push_str(&format!("\n  seal {k}: {} — {}", seal.line(), k.buys()));
         }
         match self.platform {
-            // The namespace table, by name — the whole answer on Linux.
+            // The namespace table, by name: the whole answer on Linux.
             Mechanism::Namespaces => {
                 for n in Namespace::ALL {
                     let state = self.ns.get(&n).cloned().unwrap_or(NsState::NotEntered {
@@ -1106,8 +828,8 @@ impl Boundary {
                     s.push_str(&format!("\n  {n}{req}: {} — {}", state.line(), n.buys()));
                 }
             }
-            // The property table, which is what a mechanism without namespaces has to
-            // say instead — including the properties it cannot have.
+            // The property table, which is what a mechanism without namespaces says
+            // instead, including the properties it cannot have.
             Mechanism::Policy => {
                 for p in Prop::ALL {
                     let state = self
@@ -1137,23 +859,9 @@ impl Boundary {
         s
     }
 
-    /// Turn a bare `ENOENT` into *"not in this session's filesystem view"*.
-    ///
-    /// Rule 4. A model that reads `cat: /home/dead/.ssh/id_rsa: No such file or
-    /// directory` concludes the file does not exist, and then reasons from an
-    /// answer about an empty haystack. This says what actually happened.
-    ///
-    /// Bounded, per `docs/tool-design-brief.md` §5 — *cap the corrective body the
-    /// way you cap a success body* — because a miss path that can be large is a
-    /// miss path that produces more output than a hit.
-    /// **The paths this command could not see**, as paths rather than as prose.
-    ///
-    /// `absence_notes` says the same thing in a sentence for the model; this is the
-    /// same finding for a caller that can act on it. The note used to end *"it has
-    /// to be granted into the view by whoever opened the session; asking again will
-    /// not change it"* — true, and a dead end: nothing could ask that person. Now
-    /// the runtime takes these and raises a grant decision, so the operator is
-    /// asked instead of the model being left to hand them shell commands.
+    /// The paths this command could not see, as paths rather than as prose: the same finding
+    /// [`Boundary::absence_notes`] gives in a sentence, for a caller that raises a grant
+    /// decision from it instead of only reporting it.
     pub fn outside_paths(&self, output: &str) -> Vec<PathBuf> {
         let mut outside: Vec<PathBuf> = Vec::new();
         for line in output.lines() {
@@ -1174,18 +882,9 @@ impl Boundary {
         outside
     }
 
-    /// **The words in a command's output that mean *the boundary refused this***, which
-    /// are not the same words on both kinds of boundary.
-    ///
-    /// A path outside a mount view is **absent**, so the command's own answer is
-    /// `No such file or directory`. A path outside a policy boundary is **denied**, and
-    /// the answer is `Operation not permitted` — so a rule-4 note written only for
-    /// `ENOENT` says nothing at all on the Mac, which is where the note is needed most
-    /// (the command saw `EPERM` and the model reads *a permission problem in the
-    /// checkout*).
-    ///
-    /// A shell's own missing-binary words are included on both, because `sh` says
-    /// `not found` for a program that is not in the view.
+    /// The words in a command's output that mean the boundary refused this: `ENOENT` for an
+    /// absent path, `EPERM` under a policy, and a shell's missing-binary words on both,
+    /// because a note written for one mechanism says nothing on the other.
     fn boundary_refusal(&self, line: &str) -> bool {
         let absent = line.contains("No such file or directory")
             || line.contains("ENOENT")
@@ -1201,13 +900,9 @@ impl Boundary {
         }
     }
 
-    /// What the boundary *does* to a path outside the view, in the words the note uses.
-    ///
-    /// One sentence per mechanism, because the two are different facts: a mount
-    /// namespace does not contain the path (no spelling reaches it), a policy denies the
-    /// access (the path is there and the kernel refuses). A policy's version also says
-    /// how to tell it apart from an ordinary permission problem, which is the thing a
-    /// model gets wrong on a Mac.
+    /// What the boundary does to a path outside the view, in the words the note uses. One
+    /// sentence per mechanism: a mount namespace does not contain the path, a policy denies
+    /// it, and the policy's version says how to tell that from a file permission.
     fn refusal_clause(&self) -> &'static str {
         match self.platform {
             Mechanism::Namespaces => {
@@ -1221,6 +916,9 @@ impl Boundary {
         }
     }
 
+    /// Turn a bare `ENOENT` into "not in this session's filesystem view": a model that reads
+    /// one concludes the file does not exist and reasons from an empty haystack. Bounded,
+    /// because a miss path must not produce more output than a hit.
     pub fn absence_notes(&self, output: &str) -> Vec<String> {
         let mut outside: Vec<PathBuf> = Vec::new();
         let mut replaced: Vec<(PathBuf, &'static str)> = Vec::new();
@@ -1286,9 +984,8 @@ impl Boundary {
                 } else {
                     "they are"
                 },
-                // **The session's `/tmp` is the one replaced root that does not start empty**
-                // — it holds what earlier calls of this session left. Saying *it just starts
-                // empty* there would be a note about a file the model itself wrote.
+                // The session's `/tmp` is the one replaced root that does not start empty, so
+                // saying it does would be a note about a file the model itself wrote.
                 if replaced.iter().any(|(_, what)| *what == SESSION_TMP_WHAT) {
                     "the directory exists and can be used, and what it holds is this \
                      session's own, written by an earlier call and not by the host."
@@ -1304,12 +1001,9 @@ impl Boundary {
 /// At most this many paths in one absence note.
 const MAX_ABSENCE_PATHS: usize = 5;
 
-/// Absolute-path-shaped tokens in a line of command output.
-///
-/// Deliberately crude and deliberately *bounded*: this feeds a note, not a
-/// decision, so a false positive costs a sentence and a false negative costs the
-/// note. Trailing punctuation a diagnostic adds (`:`, `,`, `'`, `"`, `)`) is
-/// stripped, which is the part that would otherwise make every path miss.
+/// Absolute-path-shaped tokens in a line of command output. Crude and bounded on purpose: it
+/// feeds a note, not a decision, so a false positive costs a sentence. Trailing punctuation a
+/// diagnostic adds is stripped, which is what would otherwise make every path miss.
 fn absolute_paths(line: &str) -> Vec<PathBuf> {
     line.split(|c: char| c.is_whitespace())
         .filter_map(|t| {
@@ -1329,54 +1023,28 @@ fn absolute_paths(line: &str) -> Vec<PathBuf> {
 pub struct ConfinePlan<'a> {
     /// Where the command runs. An absolute host path inside the view.
     pub cwd: &'a Path,
-    /// The additions to the environment the caller asked for. Under
-    /// `--clearenv` these have to be re-declared inside, so they come through
-    /// here rather than through `Command::env`.
+    /// The environment additions the caller asked for. Under `--clearenv` they have to be
+    /// re-declared inside, so they come through here rather than through `Command::env`.
     pub env: &'a [(String, String)],
 }
 
-/// **Whether the wrapped command gets a session of its own.**
-///
-/// One flag, two callers, and each one's reason is different — which is why it is a
-/// type with two variants rather than a bool (a bool called `controlling_terminal`
-/// was the first spelling, and it named only the pty's reason):
-///
-/// | variant | flag | who needs it |
-/// |---|---|---|
-/// | [`Session::Detached`] | `--new-session` | a job or a command this box spawns, so `TIOCSTI` cannot push characters back into the operator's shell |
-/// | [`Session::Kept`] | none | a program whose pty is its own (a `!term` pane), and **a command on another machine**, whose remote process group is what an interrupt kills |
-///
-/// The second row's remote half is the one that is not obvious: a group kill reaches a
-/// process that is in the group, and `--new-session` moves the sandbox (and everything it
-/// starts) out of it. `docs/remote-hosts.md`'s rule 6 is *an interrupt leaves nothing
-/// running there*, so the remote argv must not take the session away. Nothing is given up:
-/// a remote command's stdio is pipes and files, so there is no terminal for `TIOCSTI` to
-/// reach.
-///
-/// What it buys locally is [`SealKind`]'s and the pane's business, not this type's: the
-/// probe measures the namespaces and the two seals, and `setsid` is neither.
+/// Whether the wrapped command gets a session of its own: a job or a local command is
+/// detached so `TIOCSTI` cannot push characters into the operator's shell, while a pane's pty
+/// is its own and a remote command's process group is what an interrupt kills.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Session {
     Detached,
     Kept,
 }
 
-/// **One element of a command line, kept typed until it is joined.**
-///
-/// A local spawn is an `argv` — every element a literal, no shell in between. A spawn on
-/// another machine is a *shell script*: the far side's `bash -lc` splits it. The two are the
-/// same policy and must not become two builders (a second spelling of the binds is how a
-/// policy drifts), so the builder emits pieces and each caller joins them for the medium it
-/// has.
-///
-/// The distinction matters for exactly one thing, and getting it wrong is silent:
-/// `--setenv PATH "$PATH"` must reach the *far* shell as an expansion, and a literal
-/// `--setenv PATH '$PATH'` puts the five characters `$PATH` in the environment.
+/// One element of a command line, kept typed until it is joined: a local spawn is an argv and
+/// a remote one is a shell script, and a second spelling of the binds would drift. A literal
+/// `$PATH` would put five characters in the environment where an expansion belongs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Piece {
     /// An ordinary argument: quoted for whichever shell joins it.
     Literal(String),
-    /// A fragment the **far** shell must expand — the keep-list's `"$PATH"`. Already
+    /// A fragment the far shell must expand, such as the keep-list's `"$PATH"`. Already
     /// spelled for the shell it is going into, so a joiner passes it through.
     Shell(String),
 }
@@ -1387,21 +1055,18 @@ impl Piece {
     }
 }
 
-/// **Where the keep-list's values come from.**
-///
-/// [`KEEP_ENV`] is a keep-list rather than an unset-list, so its *values* have to be read
-/// somewhere, and the somewhere is not the same on both sides of an ssh connection: this
-/// Mac's `PATH` inside a Linux sandbox is a list of directories that do not exist there.
+/// Where the keep-list's values come from. [`KEEP_ENV`] keeps names, not values, and the
+/// values differ across an ssh connection: this box's `PATH` names directories that do not
+/// exist in a Linux sandbox.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EnvSource {
-    /// This process's own environment — a command this box spawns.
+    /// This process's own environment: a command this box spawns.
     Process,
-    /// The **far** shell's, expanded there just before the helper runs.
+    /// The far shell's, expanded there just before the helper runs.
     Remote,
 }
 
-/// Join pieces into a POSIX shell command line: literals quoted, shell fragments as
-/// written.
+/// Join pieces into a POSIX shell command line: literals quoted, shell fragments as written.
 pub fn join(pieces: &[Piece]) -> String {
     pieces
         .iter()
@@ -1416,26 +1081,20 @@ pub fn join(pieces: &[Piece]) -> String {
 /// The seam, and the mirror of [`super::ScopeTree`]: lifetime is one mechanism,
 /// view is another, and a backend can have either without the other.
 pub trait Confinement: Send + Sync {
-    /// One line — or several — for `EXPLAIN` and for the head. **Must say what it
-    /// does not confine**, because a disclosure that lists only the guarantees
-    /// reads as a claim about the rest.
+    /// One line or several for `EXPLAIN` and for the head. It must say what it does not
+    /// confine, because a disclosure that lists only the guarantees reads as a claim about
+    /// the rest.
     fn describe(&self) -> String;
 
     /// What was measured, if anything was.
     fn boundary(&self) -> Option<&Boundary>;
 
-    /// The argv that goes in front of the shell, or the refusal.
-    ///
-    /// An empty vector is a legitimate answer and means *nothing wraps this*; only
-    /// [`Unconfined`] returns it, and [`Unconfined::describe`] says so in the same
-    /// breath.
+    /// The argv that goes in front of the shell, or the refusal. An empty vector means nothing
+    /// wraps this; only [`Unconfined`] returns it, and [`Unconfined::describe`] says so.
     fn wrap(&self, plan: &ConfinePlan<'_>) -> Result<Vec<String>, ExecError>;
 
-    /// **[`Confinement::wrap`] as typed pieces**, for a caller whose command is a shell
-    /// script rather than an `argv` — a command on another machine.
-    ///
-    /// The default is [`Confinement::wrap`] with every element a [`Piece::Literal`], which
-    /// is what a confinement with no far side means.
+    /// [`Confinement::wrap`] as typed pieces, for a caller whose command is a shell script
+    /// rather than an argv. The default is `wrap` with every element a [`Piece::Literal`].
     fn wrap_pieces(
         &self,
         plan: &ConfinePlan<'_>,
@@ -1451,64 +1110,37 @@ pub trait Confinement: Send + Sync {
         false
     }
 
-    /// Rule 4's notes for one command's output.
+    /// The absence notes for one command's output: a bare `ENOENT` is read as "the file does
+    /// not exist", and that is a wrong answer about the world.
     fn absence_notes(&self, _output: &str) -> Vec<String> {
         Vec::new()
     }
 
-    /// Rule 4's same finding as PATHS, for a caller that can act on it rather than
-    /// only report it — the runtime raises a grant decision from these. Empty
-    /// where there is no view, because "outside" is meaningless then.
+    /// The same finding as paths, for a caller that can act on it rather than only report it:
+    /// the runtime raises a grant decision from these. Empty where there is no view, because
+    /// outside is meaningless then.
     fn outside_paths(&self, _output: &str) -> Vec<PathBuf> {
         Vec::new()
     }
 
-    /// **Did the LAUNCHER fail, rather than the command?**
-    ///
-    /// F5: *never let a component's "I did not do this" be reported upward as
-    /// success* — and the exec path's version of that is subtler, because the
-    /// wrong answer is not `ok` but *"the command ran and exited non-zero, which is
-    /// the command's answer"*. A boundary that failed to set up produces an exit
-    /// code that looks exactly like a command's, and reporting it as the command's
-    /// answer tells the model something false about the world it is reasoning over.
-    ///
-    /// The reference launcher solves this at the source: it exits **125**, *"a code
-    /// the wrapped command itself is unlikely to use, so the executor can tell
-    /// launcher failures from command failures"* (`deepseek-harness`
-    /// `native/system/packages/entry/src/main.c:105-111`) — the same trick, and the
-    /// same number, as [`super::scope::EXIT_NOT_SCOPED`]. We do not control
-    /// bubblewrap's exit codes, so this reads its stderr instead, which is weaker
-    /// and is stated as such rather than presented as equivalent.
+    /// Did the LAUNCHER fail, rather than the command? A boundary that failed to set up
+    /// produces an exit code that looks like a command's, and reporting that as the answer
+    /// tells the model something false. bubblewrap's codes are not ours, so this reads stderr.
     fn launcher_failure(&self, _output: &str) -> Option<String> {
         None
     }
 
-    /// **[`Confinement::wrap`] for a program that keeps a terminal of its own** — the `!term`
-    /// pane (R60 item 3), whose pty is its controlling terminal and must stay so inside the
-    /// boundary.
-    ///
-    /// The one difference is the controlling terminal. [`Bwrap`]'s ordinary argv starts the
-    /// command in a new session (`--new-session`), which takes the terminal away so `TIOCSTI`
-    /// cannot push characters into the operator's shell — right for a job, whose stdio is pipes
-    /// and whose session would otherwise be the daemon's. A pane's pty is **its own**: a pty
-    /// the daemon opened for this one program, with nothing on it but the program and the
-    /// keystrokes the operator sends it. Without its controlling terminal a screen program
-    /// loses `/dev/tty` (`ENXIO`), job control and `SIGWINCH` — the whole pane — and what
-    /// `TIOCSTI` could reach is the program's own input, which the program can already write.
-    ///
-    /// The default is `wrap` itself: a confinement with no session to drop has no difference
-    /// to make, and [`Unconfined`] and [`NoConfinement`] answer the same way for both.
+    /// [`Confinement::wrap`] for a program that keeps a terminal of its own, a `!term` pane:
+    /// without its controlling terminal a screen program loses `/dev/tty`, job control and
+    /// `SIGWINCH`, and what `TIOCSTI` could reach is the program's own input.
     fn wrap_terminal(&self, plan: &ConfinePlan<'_>) -> Result<Vec<String>, ExecError> {
         self.wrap(plan)
     }
 }
 
-/// **Confinement was asked for and is not available.** Every spawn refuses.
-///
-/// The pattern is [`super::NoScopes`], [`crate::builtins::retrieval::Unavailable`]
-/// and [`crate::adjudicate::NoAdjudicator`]: the default refuses and says why. What
-/// this one must never do is degrade into [`Unconfined`], and it cannot — there is
-/// no constructor, method or flag on it that yields a runnable command.
+/// Confinement was asked for and is not available: every spawn refuses. The default refuses
+/// and says why. What this must never do is degrade into [`Unconfined`], and it cannot,
+/// because no constructor, method or flag on it yields a runnable command.
 #[derive(Debug, Clone)]
 pub struct NoConfinement {
     pub why: String,
@@ -1535,12 +1167,9 @@ impl Confinement for NoConfinement {
     }
 }
 
-/// **Confinement was not asked for.** The status quo, and it is loud about it.
-///
-/// This is not a fallback: nothing constructs it in response to a failure. It is
-/// what [`crate::backend::HostBackend::executable`] has always had, named, so that
-/// the difference between *not asked for* and *asked for and missing* is a type
-/// and not a comment.
+/// Confinement was not asked for. Not a fallback, because nothing constructs it in response
+/// to a failure: it is what an unconfined backend has always had, named, so that not asked
+/// for and asked for and missing are two types rather than a comment.
 #[derive(Debug, Clone)]
 pub struct Unconfined {
     pub why: String,
@@ -1568,29 +1197,25 @@ impl Confinement for Unconfined {
     }
 }
 
-/// The bubblewrap boundary, **measured at construction**.
+/// The bubblewrap boundary, measured at construction.
 #[derive(Debug, Clone)]
 pub struct Bwrap {
     helper: PathBuf,
     boundary: Boundary,
 }
 
-/// The environment variable that overrides where `bwrap` is looked for. Set to a
-/// path that is not there to exercise the refusal, which is what
-/// `tests/confine.rs` does.
+/// The environment variable that overrides where `bwrap` is looked for. Point it at a path
+/// that is not there to exercise the refusal.
 pub const BWRAP_ENV: &str = "LETIBOT_BWRAP";
 
 impl Bwrap {
-    /// Find the helper, build the real invocation, **run it**, and read back which
-    /// namespaces it actually entered.
-    ///
-    /// Refuses rather than degrading, at four points, and each names what was
-    /// missing: no helper; the helper would not run; the readback could not be
-    /// parsed; a required namespace was not entered.
+    /// Find the helper, build the real invocation, run it, and read back which namespaces it
+    /// actually entered. Refuses at four points, each naming what was missing: no helper, a
+    /// helper that would not run, an unparseable readback, a required namespace not entered.
     pub fn probe(view: ViewSpec, egress: Egress) -> Result<Bwrap, ExecError> {
-        // **No bubblewrap on macOS, and no installing one**: it is a front end to Linux
+        // No bubblewrap on macOS, and no installing one: it is a front end to Linux
         // namespaces, which Darwin does not have. Said by name, with what a Mac does have,
-        // rather than through the Linux sentence below and its `apt install`.
+        // rather than through the Linux sentence and its `apt install`.
         #[cfg(target_os = "macos")]
         {
             let _ = (&view, egress);
@@ -1608,10 +1233,8 @@ impl Bwrap {
         let mechanism = version_of(&helper);
         let view = prepared(view)?;
 
-        // Read the harness's own namespace inodes FIRST. These are the denominator:
-        // without them, an inode read from inside proves nothing, because the
-        // number that says "confined" and the number that says "shared" are both
-        // just numbers.
+        // The harness's own namespace inodes first: they are the denominator, and without
+        // them an inode read from inside proves nothing.
         let mine = own_namespaces();
 
         let argv = build_argv(
@@ -1690,34 +1313,17 @@ impl Bwrap {
         Bwrap::probe(ViewSpec::project_only(root), Egress::Denied)
     }
 
-    /// **A boundary that was measured on ANOTHER machine**, out of what
-    /// [`probe_script`] printed there.
-    ///
-    /// A remote host's probe cannot be [`Bwrap::probe`]: the helper is on that machine, the
-    /// namespaces it enters are that kernel's, and the denominator the readback is compared
-    /// against is that box's own inodes rather than this one's. So the script prints both —
-    /// the outer `/proc/self/ns/*` of the shell that runs the helper, and the readback from
-    /// inside — and this reads them the same way, through [`state_of`] and the same three
-    /// refusals.
-    ///
-    /// **What is checked here and what is not.** The view's paths are checked at spawn and not
-    /// here: `Bwrap::probe` stats the project because a local view is built from this box's
-    /// paths, and a `--bind` of a path that is not there makes the helper fail with `bwrap: `
-    /// on stderr, which [`Confinement::launcher_failure`] turns into *the boundary failed, this
-    /// is not the command's answer*. A view whose root is missing is therefore refused as a
-    /// launcher failure naming the bind, which is the honest sentence — a client cannot stat
-    /// the far machine.
+    /// A boundary measured on ANOTHER machine, out of what [`probe_script`] printed there: the
+    /// helper and the namespaces are that kernel's and the denominator is that box's own
+    /// inodes, so the script prints both. The view's paths are checked at spawn, not here.
     pub fn measured_on_a_host(helper: PathBuf, boundary: Boundary) -> Result<Bwrap, ExecError> {
         judged(helper, boundary)
     }
 }
 
-/// **One namespace's state**, from the inode read inside, the denominator read outside, and
-/// what the egress decision says.
-///
-/// Shared by the local probe and the remote one so that the two cannot disagree about what
-/// *entered* means — the comparison against the caller's own inode is the whole point of the
-/// readback, and a second spelling of it would be a second answer.
+/// One namespace's state, from the inode read inside, the denominator read outside, and what
+/// the egress decision says. Shared by the local probe and the remote one so the two cannot
+/// disagree about what entered means.
 fn state_of(
     n: Namespace,
     inside: Option<&String>,
@@ -1758,16 +1364,12 @@ fn state_of(
     }
 }
 
-/// **The three refusals a measurement has to survive**, for both sides of an ssh
-/// connection: a seal measured open, a required namespace missing, and the boundary that is
-/// left.
+/// The three refusals a measurement has to survive, on both sides of an ssh connection: a
+/// seal measured open, a required namespace missing, and the boundary that is left.
 fn judged(helper: PathBuf, boundary: Boundary) -> Result<Bwrap, ExecError> {
-    // A seal measured **open** is the case the coordinator's survey caught and
-    // this brief did not originally ask for: mount, PID and network namespaces
-    // entered by a parent are not a boundary if the child can `unshare` its own.
-    // It refuses rather than describing itself as partial, because "partial"
-    // implies the part that is there still holds, and this is the part that
-    // makes the others hold.
+    // A seal measured open refuses rather than describing itself as partial: "partial"
+    // implies the part that is there still holds, and this is the part that makes the others
+    // hold.
     if let Some((k, why)) = boundary.seals.iter().find_map(|(k, s)| match s {
         Seal::Open { why } => Some((*k, why.clone())),
         _ => None,
@@ -1783,11 +1385,9 @@ fn judged(helper: PathBuf, boundary: Boundary) -> Result<Bwrap, ExecError> {
         )));
     }
 
-    // Fail closed on the three that are the boundary. A partial boundary in a
-    // non-required namespace is kept and *described* as partial; a missing
-    // required one is not a boundary at all, and running a command inside it
-    // while calling it confined is the defect this whole module is written
-    // against.
+    // Fail closed on the three that are the boundary. A partial boundary in a non-required
+    // namespace is kept and described as partial; a missing required one is not a boundary at
+    // all, and calling it confined is the defect this module is written against.
     if !boundary.complete() {
         let missing = Namespace::REQUIRED
             .iter()
@@ -1809,61 +1409,32 @@ fn judged(helper: PathBuf, boundary: Boundary) -> Result<Bwrap, ExecError> {
     Ok(Bwrap { helper, boundary })
 }
 
-/// **What a probe of another machine found**, before any view is applied to it.
-///
-/// The parts are kept apart because they answer different questions and are cached
-/// together: *can this box confine at all* ([`HostProbe::helper`], [`HostProbe::version`],
-/// [`HostProbe::outer`], [`HostProbe::inside`], [`HostProbe::seals`]) and *what is there to
-/// put in the view* ([`HostProbe::home`], [`HostProbe::toolchains`]). The second half is why
-/// the paths in a remote [`ViewSpec`] can be absolute: `~/.cargo` is a fact about that
-/// machine's home, and a `~` in a bind is a literal `~`.
+/// What a probe of another machine found, before any view is applied to it. The parts are
+/// kept apart because they answer different questions: can this box confine at all, and what
+/// is there to put in the view.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HostProbe {
-    /// Where the helper is **there**, as that shell spelled it. Empty means it is not there.
+    /// Where the helper is there, as that shell spelled it. Empty means it is not there.
     pub helper: String,
     /// `bwrap --version`, first line.
     pub version: String,
     /// That machine's `$HOME`, from its own shell.
     pub home: String,
-    /// The toolchain paths that exist there, absolute — the candidates [`GRANT_CANDIDATES`]
-    /// names, reduced to the ones that are really there.
+    /// The toolchain paths that exist there, absolute: [`GRANT_CANDIDATES`] reduced to the
+    /// ones that are really there.
     pub toolchains: Vec<String>,
     /// `/proc/self/ns/*` of the shell that ran the helper: the denominator.
     pub outer: BTreeMap<String, String>,
-    /// The same, read from **inside** the boundary.
+    /// The same, read from inside the boundary.
     pub inside: BTreeMap<String, String>,
     pub seals: BTreeMap<SealKind, Seal>,
     /// Everything the helper and the readback said, for a refusal that has to quote it.
     pub said: String,
 }
 
-/// **The paths a remote view holds read-only, by default** — the toolchain, and the one
-/// config file a commit cannot happen without.
-///
-/// Each entry is a path **under that machine's `$HOME`**, expanded there by the probe, and
-/// none of them is the home itself: a view that bound `$HOME` would put the operator's mail,
-/// their browser profile and their `.ssh` inside a sandbox whose whole purpose is to have none
-/// of that. `~/.ssh` is not on this list and cannot be: it is not a toolchain, and
-/// `docs/remote-hosts.md` RH5's refusal is about letibot never reading it.
-///
-/// * `.cargo` and `.rustup` — the Rust toolchain, and the registry that makes a build
-///   possible without the network. **Read-only, and the cost is stated**: a *new* dependency
-///   cannot be fetched into it from inside the boundary, so a build that needs one says so
-///   and the answer is a wider view, not a writable operator cache.
-/// * `.local/bin`, `.local/share/mise`, `.local/state/mise` — the tools the operator's
-///   machines install through mise, and the shims `PATH` already names.
-/// * `Project/llama.cpp/build*` — the one build tree a session that links against a local
-///   llama.cpp needs, and only when it is there. A glob with a fixed prefix, so it cannot
-///   reach anything but that.
-/// * `.gitconfig` — a commit made inside the boundary is recorded under the identity in this
-///   file; without it every `git commit` on a remote session fails with *Author identity
-///   unknown*, and the branch that comes back is the whole deliverable.
-/// * `Projects/llama.cpp` and `models` — what this tree's own build and its vocabulary tests
-///   need on a build machine: the llama.cpp source and headers `letibot-llama`'s build script
-///   compiles against, and the GGUF vocabularies the tests load. MEASURED 2026-10-27: without
-///   them a package placed on lab2x1 could not build `letibot-harnessd` with default features,
-///   and the vocabulary tests returned early — the vacuous green `LETIBOT_REQUIRE_APPARATUS`
-///   exists to refuse. Read-only, and bound only where they exist.
+/// The paths a remote view holds read-only by default: the toolchain, and the one config file
+/// a commit cannot happen without. Each is under that machine's `$HOME` and none is the home
+/// itself, whose mail, browser profile and `.ssh` are what this boundary exists to leave out.
 pub const GRANT_CANDIDATES: &[&str] = &[
     "$HOME/.cargo",
     "$HOME/.rustup",
@@ -1883,17 +1454,9 @@ pub const GRANT_GLOBS: &[&str] = &[
     "$HOME/Projects/llama.cpp/build-*",
 ];
 
-/// **The one script a remote probe runs** — the same readback the local probe runs, plus the
-/// two facts a view needs (where that home is, which toolchain directories exist) and the
-/// denominator read *outside* the boundary.
-///
-/// The denominator is the whole reason this is a script rather than one command: an inode read
-/// from inside proves nothing without the number to compare it against, and on a remote that
-/// number is **that shell's**, not this daemon's.
-///
-/// `key=value` and `outer …` lines, as [`crate::remote::probe`] does, so the parser here has no
-/// opinions about the far side's locale. Nothing here writes: the placement has already made
-/// the checkout and the home directory, and a probe is still a question.
+/// The one script a remote probe runs: the same readback the local probe runs, plus the two
+/// facts a view needs (where that home is, which toolchain directories exist) and the
+/// denominator read outside the boundary. Nothing here writes: a probe is a question.
 pub fn probe_script(view: &ViewSpec, egress: &Egress) -> String {
     let mut s = String::new();
     s.push_str("b=$(command -v bwrap 2>/dev/null || true)\n");
@@ -1914,8 +1477,8 @@ pub fn probe_script(view: &ViewSpec, egress: &Egress) -> String {
         "for n in user mnt pid net ipc uts cgroup; do \
          printf 'outer %s %s\\n' \"$n\" \"$(readlink /proc/self/ns/$n)\"; done\n",
     );
-    // The readback, inside the same argv a command will be wrapped in — the probe and the
-    // spawn share [`pieces_of`], so what was measured is what runs.
+    // The readback inside the same argv a command is wrapped in: the probe and the spawn
+    // share [`pieces_of`], so what was measured is what runs.
     s.push_str("if [ -n \"$b\" ]; then\n");
     let pieces = pieces_of(
         Piece::Shell("\"$b\"".to_string()),
@@ -1934,12 +1497,9 @@ pub fn probe_script(view: &ViewSpec, egress: &Egress) -> String {
     s
 }
 
-/// **Read [`probe_script`]'s output** — or the sentence that says why it is not an answer.
-///
-/// A helper that is not there is a **fact** and is returned as [`HostProbe::helper`] empty;
-/// a helper that ran and did not enter the namespaces is a refusal from
-/// [`Bwrap::measured_on_a_host`], not from here, because that judgement is [`judged`]'s and
-/// must not exist twice.
+/// Read [`probe_script`]'s output, or the sentence that says why it is not an answer. A
+/// helper that is not there is a fact (an empty [`HostProbe::helper`]); a helper that ran and
+/// entered nothing is [`judged`]'s refusal, so that judgement does not exist twice.
 pub fn read_probe(said: &str) -> HostProbe {
     let mut p = HostProbe {
         said: said.to_string(),
@@ -1950,8 +1510,8 @@ pub fn read_probe(said: &str) -> HostProbe {
     for line in said.lines() {
         let line = line.trim_end_matches('\r');
         if line.starts_with("ns ") {
-            // The readback's own lines, collected for `parse_readback` — the one parser
-            // for them, so the remote readback is read by the same code as the local one.
+            // The readback's own lines, collected for `parse_readback` so the remote readback
+            // is read by the same parser as the local one.
             inside_text.push_str(line);
             inside_text.push('\n');
             continue;
@@ -1979,11 +1539,9 @@ pub fn read_probe(said: &str) -> HostProbe {
     p
 }
 
-/// The boundary a [`HostProbe`] measured, applied to the view this session needs.
-///
-/// The refusals are [`judged`]'s, so a remote host that cannot enter the namespaces is
-/// refused with the same sentence a local one is — and the fallback to *unconfined, and the
-/// card says why* is the caller's ([`crate::remote`]), not this function's.
+/// The boundary a [`HostProbe`] measured, applied to the view this session needs. The
+/// refusals are [`judged`]'s, so a host that cannot enter the namespaces is refused with the
+/// same sentence a local one is; the fallback to unconfined is the caller's.
 pub fn measured_from_probe(
     probe: &HostProbe,
     view: ViewSpec,
@@ -2013,10 +1571,9 @@ pub fn measured_from_probe(
             ),
         );
     }
-    // **The egress as asked for, and the network namespace as measured.** The two are
-    // kept apart on purpose: if a run asked for the host's network and came back with a
-    // network namespace of its own, the [`NsState`] says `entered` and a reader sees that
-    // the decision did not take — where rewriting the egress here would hide it.
+    // The egress as asked for and the network namespace as measured, kept apart: if a run
+    // asked for the host's network and came back with its own, the [`NsState`] says entered
+    // and a reader sees the decision did not take.
     let boundary = Boundary::namespaces(
         if probe.version.is_empty() {
             "bubblewrap (version unknown)".to_string()
@@ -2031,19 +1588,13 @@ pub fn measured_from_probe(
     Bwrap::measured_on_a_host(PathBuf::from(probe.helper.trim()), boundary)
 }
 
-/// **Prepare a view for any mechanism**: the project canonicalised, and the directories a
-/// view may only have asked for abstractly made real.
-///
-/// Shared by both renderings, which is the point: a `Tmpfs` `$HOME` is a directory on macOS
-/// and a tmpfs in a mount namespace, but *whether the directory exists* and *whether the
-/// project root is a directory at all* are the same questions on both, and a second copy of
-/// them would be a second answer.
+/// Prepare a view for any mechanism: the project canonicalised, and the directories a view
+/// may have asked for abstractly made real. Shared by both renderings, because whether a
+/// directory exists is the same question on both.
 pub(crate) fn prepared(mut view: ViewSpec) -> Result<ViewSpec, ExecError> {
-    // Canonicalise the project root before anything compares against it.
-    // [`ViewSpec::outside`] is lexical, and a lexical comparison against a path
-    // holding a symlink is wrong in the direction that matters: `/tmp/x` when
-    // `/tmp` is a link to `/private/tmp` would put the whole project outside its
-    // own view and refuse every command with a boundary message.
+    // Canonicalise before anything compares against it: [`ViewSpec::outside`] is lexical, and
+    // a lexical comparison against a path holding a symlink would put the project outside its
+    // own view and refuse every command.
     if let Ok(c) = view.project.canonicalize() {
         view.project = c;
     }
@@ -2071,10 +1622,9 @@ pub(crate) fn prepared(mut view: ViewSpec) -> Result<ViewSpec, ExecError> {
             d.display()
         )));
     }
-    // **The session's `/tmp` is made here, once, because a `--bind` of a path that is not
-    // there is a helper failure at every spawn and not a setup error at the one place that
-    // could explain it.** It is not created empty-and-then-forgotten: this is the directory
-    // a session's scratch files live in, and [`TmpView::Session`] is why it exists.
+    // The session's `/tmp` is made here, once: a `--bind` of a path that is not there is a
+    // helper failure at every spawn rather than a setup error at the one place that could
+    // explain it.
     if let TmpView::Session(d) = &view.tmp
         && let Err(e) = std::fs::create_dir_all(d)
     {
@@ -2088,21 +1638,9 @@ pub(crate) fn prepared(mut view: ViewSpec) -> Result<ViewSpec, ExecError> {
     Ok(view)
 }
 
-/// **The boundary this platform can measure for `view`, or the refusal that says what
-/// is missing.**
-///
-/// The one place a caller asks for *a boundary* rather than for a particular mechanism.
-/// Linux answers with [`Bwrap`]; macOS answers with [`super::seatbelt::Seatbelt`], which
-/// is a mandatory-access policy rather than a set of namespaces. What the two share is
-/// the whole contract: the view is the same [`ViewSpec`], the egress decision is the same
-/// [`Egress`], and the result is a [`Boundary`] that was measured from inside rather than
-/// asserted.
-///
-/// **A boxed trait object, deliberately.** The callers that widen a view
-/// (`HostBackend::with_session_tmp`, `HostBackend::grant_into_view_impl`) hold whatever
-/// the first probe produced and replace it with whatever the next one produces; naming
-/// [`Bwrap`] in those places is what would make a Mac session silently lose its boundary
-/// on the second probe.
+/// The boundary this platform can measure for `view`, or the refusal that says what is
+/// missing: Linux answers with [`Bwrap`], macOS with [`super::seatbelt::Seatbelt`]. Boxed
+/// deliberately, because a caller that widens a view replaces one probe's answer with the next.
 pub fn probe(view: ViewSpec, egress: Egress) -> Result<Box<dyn Confinement>, ExecError> {
     #[cfg(target_os = "macos")]
     {
@@ -2114,12 +1652,9 @@ pub fn probe(view: ViewSpec, egress: Egress) -> Result<Box<dyn Confinement>, Exe
     }
 }
 
-/// Can this platform build a boundary at all, without asking what the view is?
-///
-/// `false` on a platform that has no mechanism to offer, so that a caller which has to
-/// behave differently when there is none (the daemon, on a Mac, seats an unconfined
-/// session and says so) can ask before it tries. The answer is a compile-time fact, not a
-/// probe: whether `sandbox-exec` is *there* is what [`probe`] answers.
+/// Can this platform build a boundary at all, without asking what the view is? A compile-time
+/// fact rather than a probe, so a caller that behaves differently when there is none can ask
+/// first; whether the helper is there is [`probe`]'s question.
 pub fn available() -> bool {
     cfg!(target_os = "macos") || cfg!(target_os = "linux")
 }
@@ -2143,8 +1678,8 @@ impl Confinement for Bwrap {
 
     fn wrap_pieces(&self, plan: &ConfinePlan<'_>, env: EnvSource) -> Result<Vec<Piece>, ExecError> {
         match env {
-            // The far side's own shell supplies the keep-list; the session is the
-            // remote one, so a group kill still reaches the sandbox — see [`Session`].
+            // The far side's own shell supplies the keep-list, and the session is the remote
+            // one so a group kill still reaches the sandbox: see [`Session`].
             EnvSource::Remote => self.remote_pieces(plan, Session::Kept),
             EnvSource::Process => Ok(self
                 .wrap_with(plan, Session::Detached)?
@@ -2166,11 +1701,9 @@ impl Confinement for Bwrap {
         self.boundary.outside_paths(output)
     }
 
-    /// bubblewrap's own diagnostics are prefixed `bwrap: `. That is the only
-    /// signal it gives, so this is a heuristic and the note says so: a command
-    /// that itself printed a line starting `bwrap: ` would be misattributed. The
-    /// alternative — treating a boundary failure as the command's answer — is
-    /// worse, because it is a false statement about what ran.
+    /// bubblewrap prefixes its own diagnostics `bwrap: `, which is the only signal it gives.
+    /// A heuristic, and the alternative (reporting a boundary failure as the command's answer)
+    /// is worse, because it is a false statement about what ran.
     fn launcher_failure(&self, output: &str) -> Option<String> {
         let line = output
             .lines()
@@ -2192,14 +1725,9 @@ impl Confinement for Bwrap {
 }
 
 impl Bwrap {
-    /// [`Confinement::wrap`] and [`Confinement::wrap_terminal`] (and a command on
-    /// another machine), which differ by one flag: [`Session`].
-    ///
-    /// **The probe measured the argv WITH `--new-session`**, and every other argv is that argv
-    /// less the one flag. What the probe reads — which namespaces were entered, and the two
-    /// seals — does not depend on the session: `setsid` is not a namespace and neither seal is
-    /// granted or withheld by it. So the boundary [`Boundary::describe`] reports is the one every
-    /// spawn runs in; the difference is stated here rather than measured twice.
+    /// [`Confinement::wrap`] and its two siblings, which differ by one flag: [`Session`]. The
+    /// probe measured the argv with `--new-session`, and neither the namespaces nor the seals
+    /// depend on it, so one boundary describes every spawn.
     fn wrap_with(
         &self,
         plan: &ConfinePlan<'_>,
@@ -2215,12 +1743,9 @@ impl Bwrap {
         ))
     }
 
-    /// **[`Confinement::wrap_pieces`], the far side's rendering**: the same view, the same
-    /// egress and the same session flag, with the keep-list taken from the shell that runs
-    /// the helper there rather than from this process.
-    ///
-    /// This is the one function a command on another machine is wrapped by. It is `Bwrap`'s
-    /// and not the backend's so that there is exactly one spelling of the binds.
+    /// [`Confinement::wrap_pieces`] as the far side renders it: the same view, egress and
+    /// session flag, with the keep-list taken from the shell that runs the helper there. This
+    /// is `Bwrap`'s and not the backend's so there is exactly one spelling of the binds.
     pub fn remote_pieces(
         &self,
         plan: &ConfinePlan<'_>,
@@ -2239,10 +1764,8 @@ impl Bwrap {
 
     /// The two refusals every wrap makes, for both renderings.
     fn check(&self, plan: &ConfinePlan<'_>) -> Result<(), ExecError> {
-        // Belt and braces against the one mistake that matters: a `Bwrap` whose
-        // boundary lost a required namespace between the probe and now cannot
-        // produce an argv. There is no code path that mutates it, which is exactly
-        // why the check is cheap enough to keep.
+        // Belt and braces: a `Bwrap` whose boundary lost a required namespace cannot produce
+        // an argv. No path mutates it, which is what keeps the check cheap.
         if !self.boundary.complete() {
             return Err(ExecError::NoConfinement(format!(
                 "this boundary is missing a required namespace, so nothing runs \
@@ -2259,7 +1782,7 @@ impl Bwrap {
         Ok(())
     }
 
-    /// **The helper this boundary was measured with**, as the far side spells it.
+    /// The helper this boundary was measured with, as the far side spells it.
     pub fn helper(&self) -> &Path {
         &self.helper
     }
@@ -2278,31 +1801,9 @@ fn unshare_flag(n: Namespace) -> &'static str {
     }
 }
 
-/// The shell fragment the probe runs **inside** the boundary.
-///
-/// # This is a functional probe, and that is taken from the survey
-///
-/// `deepseek-harness`'s launcher has a `--probe` mode that *"build[s] and enforce[s]
-/// a maximal ruleset in THIS short-lived process"* and reports what it got —
-/// `native/system/packages/entry/src/main.c:262-278`, whose comment states the
-/// reason exactly: *"`--version` style checks would miss a kernel that has the
-/// syscalls but refuses enforcement; actually restricting is the only honest
-/// signal."* That is *guard the fact, not the proxy* applied to picking a sandbox,
-/// and it is the right idea. This is the same move in a different mechanism.
-///
-/// So nothing here is a version number or a feature flag:
-///
-/// - the namespaces are read from `/proc/self/ns/*` **inside** the boundary,
-///   which with `--proc /proc` is the sandbox's own procfs, and compared against
-///   the harness's own inodes;
-/// - [`SealKind::NestedNamespaces`] is tested by **trying it**: the fragment runs
-///   `unshare -U true`, and a success is the escape hatch measured open. A read of
-///   `/proc/sys/user/max_user_namespaces` was the obvious proxy and it **lies** —
-///   it reported `2147483647` from inside a sandbox where the escape was in fact
-///   sealed, because the value is namespaced and the sandbox's procfs shows a
-///   different one. The proxy and the fact disagreed on the first run.
-/// - [`SealKind::NoNewPrivs`] is read from `/proc/self/status`, which is the
-///   kernel's own answer rather than the helper's.
+/// The shell fragment the probe runs inside the boundary. No version numbers or feature flags:
+/// namespaces are read from `/proc/self/ns/*` inside, the escape seal is tested by trying
+/// `unshare -U true`, and `NoNewPrivs` is the kernel's answer in `/proc/self/status`.
 const READBACK: &str = "\
 for n in user mnt pid net ipc uts cgroup; do printf 'ns %s %s\\n' \"$n\" \"$(readlink /proc/self/ns/$n)\"; done; \
 if command -v unshare >/dev/null 2>&1; then \
@@ -2311,9 +1812,8 @@ if command -v unshare >/dev/null 2>&1; then \
 else printf 'seal nested unverified\\n'; fi; \
 printf 'seal nnp %s\\n' \"$(sed -n 's/^NoNewPrivs:[[:space:]]*//p' /proc/self/status 2>/dev/null)\"";
 
-/// The invocation, built once and used both by the probe and by every spawn, so
-/// that what was measured is what runs. A probe that measured a different argv
-/// from the one used would be the banner defect with extra steps.
+/// The invocation, built once and used by the probe and by every spawn, so that what was
+/// measured is what runs: a probe against a different argv is the banner defect again.
 fn build_argv(
     helper: &Path,
     view: &ViewSpec,
@@ -2331,15 +1831,14 @@ fn build_argv(
     .into_iter()
     .map(|p| match p {
         Piece::Literal(s) => s,
-        // Unreachable by construction: [`EnvSource::Process`] never emits a shell
-        // fragment, and a fragment in an argv would be a literal `$PATH` in the
-        // environment rather than a bug worth panicking over.
+        // Unreachable by construction: [`EnvSource::Process`] never emits a shell fragment,
+        // and a fragment in an argv would be a literal `$PATH` rather than a panic.
         Piece::Shell(s) => s,
     })
     .collect()
 }
 
-/// [`build_argv`], and for a pane the same argv without `--new-session` — see
+/// [`build_argv`], and for a pane the same argv without `--new-session`: see
 /// [`Confinement::wrap_terminal`].
 fn build_argv_with(
     helper: &Path,
@@ -2364,12 +1863,9 @@ fn build_argv_with(
     .collect()
 }
 
-/// **The one builder**, in pieces: the local argv, the pane's argv and a command on
-/// another machine all come out of this function.
-///
-/// `helper` is a [`Piece`] rather than a path because a remote probe has to spell it
-/// `"$(command -v bwrap)"` — the helper's location is a fact of the far machine and is not
-/// known here until that script has run.
+/// The one builder, in pieces: the local argv, the pane's argv and a command on another
+/// machine all come out of here. `helper` is a [`Piece`] because a remote probe has to spell
+/// it `"$(command -v bwrap)"`, which is not known here until that script has run.
 fn pieces_of(
     helper: Piece,
     view: &ViewSpec,
@@ -2391,40 +1887,31 @@ fn pieces_of(
     if !egress.allowed() {
         arg(&mut a, "--unshare-net");
     }
-    // **Seal the boundary against a child stepping out of it.** See
-    // [`SealKind::NestedNamespaces`]: without this, `unshare(CLONE_NEWUSER)` is
-    // available to an unprivileged process inside, and full capabilities in the
-    // namespace it just made are enough to `unshare(CLONE_NEWNS)` past the mount
-    // view the parent built. `--assert-userns-disabled` makes the helper refuse
-    // rather than run if the seal did not take, which is the fail-closed half — and
-    // the probe measures it anyway, because a flag is a request.
+    // Seal the boundary against a child stepping out of it: without this, an unprivileged
+    // process inside can make a user namespace and unshare a mount namespace past this view.
+    // `--assert-userns-disabled` makes the helper refuse, and the probe measures it anyway.
     arg(&mut a, "--disable-userns");
     arg(&mut a, "--assert-userns-disabled");
-    // If the harness dies, this dies. A third mechanism on top of the cgroup and
-    // the join script, and it is free.
+    // If the harness dies, this dies: a third mechanism on top of the cgroup and the join
+    // script, and it is free.
     arg(&mut a, "--die-with-parent");
-    // No controlling terminal, so `TIOCSTI` cannot push characters back into the
-    // operator's shell. Safe here because a job's stdio is pipes — kept off for a
-    // pane, whose pty is its own, and for a remote command, whose process group an
-    // interrupt has to be able to kill: see [`Session`].
+    // No controlling terminal, so `TIOCSTI` cannot push characters back into the operator's
+    // shell. Kept off for a pane, whose pty is its own, and for a remote command, whose
+    // process group an interrupt has to be able to kill: see [`Session`].
     if session == Session::Detached {
         arg(&mut a, "--new-session");
     }
 
-    // The system roots, read-only and `-try`: a host without `/lib64` is not a
-    // failure, and a merged-`/usr` host has symlinks where a split one has
-    // directories.
+    // The system roots, read-only and `-try`: a host without `/lib64` is not a failure, and a
+    // merged-`/usr` host has symlinks where a split one has directories.
     for p in &view.system {
         arg(&mut a, "--ro-bind-try");
         arg(&mut a, p.display().to_string());
         arg(&mut a, p.display().to_string());
     }
-    // **A shared network has to be able to name things.** `Egress::Host` hands the command
-    // the host's interfaces and routes, and without the resolver's files every name failed
-    // anyway (`failed to resolve address for github.com`, MEASURED 2026-10-27 in a lab2x1
-    // placement), so the decision to share the network read as no network at all. Only
-    // with egress: a view with no network has nothing to resolve with. `-try`, and a
-    // symlink (`resolv.conf` -> systemd-resolved's stub) binds its target.
+    // A shared network has to be able to name things: with the host's routes and no resolver
+    // files every name fails to resolve, so the decision to share the network reads as no
+    // network at all. Only with egress, and a symlink binds its target.
     if egress.allowed() {
         for p in NETWORK_ROOTS {
             arg(&mut a, "--ro-bind-try");
@@ -2432,19 +1919,16 @@ fn pieces_of(
             arg(&mut a, *p);
         }
     }
-    // The kernel interfaces a process needs to be a process. `--proc` is the one
-    // that makes the PID namespace visible as isolation rather than as a lie:
-    // without it the sandbox would read the host's `/proc` and see every pid.
+    // The kernel interfaces a process needs to be a process. `--proc` is what makes the PID
+    // namespace visible as isolation rather than as a lie: without it the sandbox reads the
+    // host's `/proc` and sees every pid.
     arg(&mut a, "--proc");
     arg(&mut a, "/proc");
     arg(&mut a, "--dev");
     arg(&mut a, "/dev");
-    // **`/tmp` is the session's, not the command's**, when the caller has a directory for it.
-    // A fresh tmpfs here is the safe default and it silently eats a two-call scratch idiom —
-    // see [`TmpView`]. `/var/tmp` stays a fresh tmpfs either way: nothing in an agent's idiom
-    // writes there, and the one thing `/var/tmp` means on a host is *survives a reboot*, which
-    // no sandbox directory of ours may claim. `/run` stays fresh for the reason it exists in
-    // this list at all — it holds the agent socket and the tmpfs home, both bound after this.
+    // `/tmp` is the session's, not the command's, when the caller has a directory for it: a
+    // fresh tmpfs silently eats a two-call scratch idiom. `/var/tmp` and `/run` stay fresh
+    // either way, and `/run` holds the agent socket and the tmpfs home bound below.
     match &view.tmp {
         TmpView::PerCommand => {
             arg(&mut a, "--tmpfs");
@@ -2461,7 +1945,7 @@ fn pieces_of(
     arg(&mut a, "--tmpfs");
     arg(&mut a, "/run");
 
-    // The project, read-write, **at its own path**.
+    // The project, read-write, at its own path.
     arg(&mut a, "--bind");
     arg(&mut a, view.project.display().to_string());
     arg(&mut a, view.project.display().to_string());
@@ -2479,8 +1963,8 @@ fn pieces_of(
                 arg(&mut a, path.display().to_string());
             }
             Grant::AgentSocket { path, .. } => {
-                // Bound at a fixed path so `SSH_AUTH_SOCK` inside does not carry
-                // the operator's `/run/user/<uid>/…` out into the transcript.
+                // Bound at a fixed path so `SSH_AUTH_SOCK` inside does not carry the
+                // operator's `/run/user/<uid>/...` out into the transcript.
                 arg(&mut a, "--bind");
                 arg(&mut a, path.display().to_string());
                 arg(&mut a, AGENT_SOCKET);
@@ -2503,8 +1987,8 @@ fn pieces_of(
         arg(&mut a, TMPFS_HOME);
     }
 
-    // **Clear, then put back a keep-list.** See `KEEP_ENV`: absence beats denial
-    // applied to the environment.
+    // Clear, then put back a keep-list: see [`KEEP_ENV`], absence beats denial applied to
+    // the environment.
     arg(&mut a, "--clearenv");
     for k in KEEP_ENV {
         match env {
@@ -2515,8 +1999,8 @@ fn pieces_of(
                     arg(&mut a, v);
                 }
             }
-            // Expanded by the shell that runs the helper — the far one — because the
-            // value has to be that machine's.
+            // Expanded by the shell that runs the helper, the far one, because the value has
+            // to be that machine's.
             EnvSource::Remote => {
                 arg(&mut a, "--setenv");
                 arg(&mut a, *k);
@@ -2536,8 +2020,7 @@ fn pieces_of(
         arg(&mut a, "SSH_AUTH_SOCK");
         arg(&mut a, AGENT_SOCKET);
     }
-    // The caller's own environment last, so an explicit request wins over the
-    // keep-list.
+    // The caller's own environment last, so an explicit request wins over the keep-list.
     for (k, v) in plan.env {
         arg(&mut a, "--setenv");
         arg(&mut a, k);
@@ -2546,8 +2029,7 @@ fn pieces_of(
 
     arg(&mut a, "--chdir");
     arg(&mut a, plan.cwd.display().to_string());
-    // Everything after this is the command, never an option, whatever it is
-    // spelled like. A command beginning `--` would otherwise be read by the helper.
+    // Everything after this is the command, never an option, whatever it is spelled like.
     arg(&mut a, "--");
     a
 }
@@ -2587,8 +2069,8 @@ fn find_helper() -> Result<PathBuf, ExecError> {
     ))
 }
 
-/// The helper's version, for the record. A mechanism named `namespaces` is not a
-/// mechanism anybody can reproduce.
+/// The helper's version, for the record: a mechanism named `namespaces` is not one anybody
+/// can reproduce.
 fn version_of(helper: &Path) -> String {
     std::process::Command::new(helper)
         .arg("--version")
@@ -2626,11 +2108,8 @@ fn parse_readback(text: &str) -> BTreeMap<String, String> {
     m
 }
 
-/// `seal <name> <verdict>` lines from [`READBACK`].
-///
-/// A seal that produced no line at all is [`Seal::Unverified`] and never
-/// [`Seal::Held`]: an absent measurement is not a passing one, which is the same
-/// rule `grep`'s zero denominator follows one layer up.
+/// `seal <name> <verdict>` lines from [`READBACK`]. A seal that produced no line at all is
+/// [`Seal::Unverified`] and never [`Seal::Held`]: an absent measurement is not a passing one.
 fn parse_seals(text: &str) -> BTreeMap<SealKind, Seal> {
     let mut got: BTreeMap<String, String> = BTreeMap::new();
     for line in text.lines() {
@@ -2740,11 +2219,8 @@ mod tests {
 
     #[test]
     fn a_partial_boundary_describes_itself_as_partial() {
-        // **Rule 2, as the test the brief asks for by name.** `HostBackend::describe`
-        // shipped saying `read-only` for the writable backend; the fix is not a
-        // better constant, it is that the sentence is computed from the state. So
-        // the assertion is that changing one entry in the map changes the
-        // disclosure — a hard-coded `confined` cannot pass this.
+        // The sentence is computed from the state, so changing one entry in the map must change
+        // the disclosure, and a hard-coded `confined` cannot pass.
         let full = boundary_with(vec![]);
         assert!(full.complete());
         assert!(!full.partial());
@@ -2760,8 +2236,8 @@ mod tests {
                 why: "the inode inside is the harness's own".into(),
             },
         )]);
-        // Required namespaces are all there, so it still confines — and it must
-        // NOT describe itself as if nothing were missing.
+        // Required namespaces are all there, so it still confines, and it must not describe
+        // itself as if nothing were missing.
         assert!(partial.complete());
         assert!(partial.partial());
         let d = partial.describe();
@@ -2784,16 +2260,16 @@ mod tests {
         let d = broken.describe();
         assert!(d.contains("NOT CONFINED"), "{d}");
         assert!(d.contains("refused"), "{d}");
-        // And the one that is missing is named with what it would have bought, so
-        // the reader knows what they do not have.
+        // The missing namespace is named with what it would have bought, so the reader knows
+        // what they do not have.
         assert!(d.contains("cannot see or signal the daemon"), "{d}");
     }
 
     #[test]
     fn a_shared_namespace_is_a_decision_and_not_a_failure() {
-        // The two look identical from inside — same inode as the harness — and are
-        // completely different facts. Collapsing them would report a declared
-        // egress as a broken boundary, and a broken boundary as a decision.
+        // The two look identical from inside (the same inode as the harness) and are
+        // different facts: collapsing them would report a declared egress as a broken
+        // boundary, and the reverse.
         let b = Boundary {
             egress: Egress::Host {
                 why: "the operator authorised `git push` to origin".into(),
@@ -2815,8 +2291,7 @@ mod tests {
 
     #[test]
     fn the_default_disclosure_states_the_tmpfs_home_cost() {
-        // A surprise slowdown nobody can explain is a worse disclosure than a
-        // sentence in `describe()`.
+        // A surprise slowdown nobody can explain is a worse disclosure than a sentence here.
         let d = boundary_with(vec![]).describe();
         assert!(d.contains("FRESH TMPFS"), "{d}");
         assert!(d.contains("build cache"), "{d}");
@@ -2853,8 +2328,8 @@ mod tests {
         let d = c.describe();
         assert!(d.contains("NOT CONFINED"), "{d}");
         assert!(d.contains("whole filesystem"), "{d}");
-        // And it claims no view, so nothing produces an absence note that would
-        // blame a boundary that is not there.
+        // It claims no view, so nothing produces an absence note blaming a boundary that is
+        // not there.
         assert!(!c.outside_view(Path::new("/home/dead/.ssh/id_rsa")));
         assert!(
             c.absence_notes("cat: /etc/shadow: No such file or directory")
@@ -2872,9 +2347,8 @@ mod tests {
         assert!(v.outside(Path::new("/etc/shadow")));
         // `/usr` is a system root, so it is in the view and must not produce a note.
         assert!(!v.outside(Path::new("/usr/bin/cc")));
-        // The parent chain to the project exists inside the view as empty
-        // directories, so a listing of it succeeds and calling it absent would be
-        // a note about something the command CAN see.
+        // The parent chain to the project exists inside as empty directories, so a listing of
+        // it succeeds and calling it absent would be a note about something the command sees.
         assert!(!v.outside(Path::new("/home/dead")));
         assert!(!v.outside(Path::new("/home")));
         // A relative path is not this function's question.
@@ -2896,8 +2370,7 @@ mod tests {
 
     #[test]
     fn an_absent_path_is_reported_as_absent_from_the_view_and_not_as_missing() {
-        // **Rule 4.** A bare ENOENT is read as "the file does not exist", which is
-        // an empty-haystack answer.
+        // A bare `ENOENT` is read as "the file does not exist", an empty-haystack answer.
         let b = boundary_with(vec![]);
         let notes = b.absence_notes("cat: /home/dead/.ssh/id_rsa: No such file or directory");
         assert_eq!(notes.len(), 1, "{notes:?}");
@@ -2905,17 +2378,15 @@ mod tests {
         assert!(n.contains("not in this session's filesystem view"), "{n}");
         assert!(n.contains("/home/dead/.ssh/id_rsa"), "{n}");
         assert!(n.contains("another spelling"), "{n}");
-        // The note must not claim the path exists on the host. It is not stat'ed
-        // and the sentence does not assert it either way.
+        // The note must not claim the path exists on the host: nothing was stat'ed, and the
+        // sentence does not assert it either way.
         assert!(!n.contains("exists on"), "{n}");
     }
 
     #[test]
     fn a_session_tmp_is_bound_at_tmp_and_nothing_replaces_it() {
-        // **The two-call scratch idiom.** A command's `/tmp` was a fresh tmpfs, so a file one
-        // call wrote was gone in the next — and nothing announces it (`ls -d /tmp` succeeds).
-        // The replacement is a bind of the session's own directory, and this test is the argv
-        // half: `--tmpfs /tmp` must be gone and `--bind <dir> /tmp` must be there.
+        // The two-call scratch idiom: a file one call wrote was gone in the next, and nothing
+        // announces it. This is the argv half, `--tmpfs /tmp` gone and `--bind <dir> /tmp` there.
         let dir = PathBuf::from("/var/lib/letibot/scratch-1/tmp/s-a");
         let a = build_argv(
             Path::new("/usr/bin/bwrap"),
@@ -2933,8 +2404,7 @@ mod tests {
             "the session's own directory, bound at /tmp: {joined}"
         );
         // `/var/tmp` and `/run` are still fresh filesystems: the one thing `/var/tmp` means on
-        // a host is *survives a reboot*, which no sandbox directory of ours may claim, and
-        // `/run` holds the agent socket and the tmpfs home.
+        // a host is that it survives a reboot, and `/run` holds the agent socket and the home.
         assert!(joined.contains("--tmpfs /var/tmp"), "{joined}");
         assert!(joined.contains("--tmpfs /run"), "{joined}");
 
@@ -2993,10 +2463,9 @@ mod tests {
 
     #[test]
     fn a_replaced_root_is_its_own_answer_and_not_either_of_the_other_two() {
-        // **Found by a failing test, and it is the note that would have been
-        // wrong.** `/tmp` exists inside the view, so calling it outside would claim
-        // it cannot be reached; but it is a fresh tmpfs, so calling it inside leaves
-        // a bare `ENOENT` about a host file that really is invisible.
+        // The middle answer, and the note that would have been wrong: `/tmp` exists inside, so
+        // calling it outside claims it cannot be reached; it is a fresh tmpfs, so calling it
+        // inside leaves a bare `ENOENT` about a host file that really is invisible.
         let v = ViewSpec::project_only("/proj");
         assert_eq!(v.classify(Path::new("/proj/src")), Presence::Inside);
         assert_eq!(v.classify(Path::new("/opt/thing")), Presence::Outside);
@@ -3008,9 +2477,8 @@ mod tests {
             v.classify(Path::new("/proc/1234/cmdline")),
             Presence::Replaced { .. }
         ));
-        // A project that lives under `/tmp` is Inside, not Replaced: the bound roots
-        // are checked first, and getting that order wrong would tell every test
-        // fixture in this crate that its own workspace was a tmpfs.
+        // A project under `/tmp` is Inside, not Replaced: the bound roots are checked first,
+        // and getting that order wrong would tell every fixture its workspace was a tmpfs.
         let under_tmp = ViewSpec::project_only("/tmp/letibot-fixture");
         assert_eq!(
             under_tmp.classify(Path::new("/tmp/letibot-fixture/src")),
@@ -3032,9 +2500,8 @@ mod tests {
 
     #[test]
     fn a_miss_inside_the_view_gets_no_boundary_note() {
-        // The false positive that would matter: a genuinely missing project file
-        // blamed on the boundary would send the model looking for a grant it does
-        // not need.
+        // The false positive that would matter: a genuinely missing project file blamed on the
+        // boundary sends the model looking for a grant it does not need.
         let b = boundary_with(vec![]);
         assert!(
             b.absence_notes("cat: /proj/src/nope.rs: No such file or directory")
@@ -3050,7 +2517,7 @@ mod tests {
 
     #[test]
     fn the_absence_note_is_bounded_like_a_success_body() {
-        // §5: do not let a miss produce an unbounded reply.
+        // A miss must not produce an unbounded reply: see [`MAX_ABSENCE_PATHS`].
         let b = boundary_with(vec![]);
         let mut text = String::new();
         for i in 0..50 {
@@ -3064,9 +2531,8 @@ mod tests {
 
     #[test]
     fn an_agent_socket_is_forwardable_and_a_key_file_is_not() {
-        // §3's subtle case, as a test. The mechanism accepts a socket and refuses
-        // anything else, because "usable without being readable" is a property of
-        // the socket and not of the name.
+        // The subtle credential case as a test: the mechanism accepts a socket and refuses
+        // anything else, because usable-without-readable is a property of the socket.
         let dir = std::env::temp_dir().join(format!("letibot-agent-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let key = dir.join("id_rsa");
@@ -3090,8 +2556,8 @@ mod tests {
         // And it names the SECOND decision the authorised case needs.
         assert!(m.contains("Egress::Host"), "{m}");
 
-        // A real socket: accepted, and it is bound at a fixed path so the
-        // operator's `/run/user/<uid>` path does not travel.
+        // A real socket is accepted and bound at a fixed path, so the operator's
+        // `/run/user/<uid>` path does not travel.
         let sock = dir.join("agent.sock");
         let _ = std::fs::remove_file(&sock);
         let l = std::os::unix::net::UnixListener::bind(&sock).expect("bind agent socket");
@@ -3144,8 +2610,8 @@ mod tests {
         );
         // The caller's env survives `--clearenv`, because it is re-declared.
         assert!(joined.contains("CARGO_TERM_COLOR never"), "{joined}");
-        // And the command is separated from the options by `--`, so a command
-        // beginning with a dash is a command.
+        // The command is separated from the options by `--`, so a command beginning with a
+        // dash is a command.
         assert_eq!(a.last().map(String::as_str), Some("--"));
     }
 
@@ -3199,11 +2665,8 @@ mod tests {
 
     #[test]
     fn a_boundary_a_child_can_unshare_out_of_is_not_confined() {
-        // **The hole the survey caught.** Mount, PID and network namespaces entered
-        // by a parent are decoration if the child can make its own. So an open seal
-        // fails `complete()` — it does not merely make the boundary partial, because
-        // "partial" implies the rest still holds and this is what makes the rest
-        // hold.
+        // An open seal fails `complete()` rather than merely making the boundary partial:
+        // "partial" implies the rest still holds, and this is what makes the rest hold.
         let mut b = boundary_with(vec![]);
         assert!(b.complete());
         b.seals.insert(
@@ -3222,9 +2685,8 @@ mod tests {
 
     #[test]
     fn a_seal_that_could_not_be_tested_is_partial_and_never_held() {
-        // An absent measurement is not a passing one. It still confines — the
-        // namespaces were measured — but the disclosure must not read as though
-        // everything was checked.
+        // An absent measurement is not a passing one: it still confines, because the
+        // namespaces were measured, but the disclosure must not read as fully checked.
         let mut b = boundary_with(vec![]);
         b.seals.insert(
             SealKind::NestedNamespaces,
@@ -3241,8 +2703,7 @@ mod tests {
 
     #[test]
     fn the_seals_are_tested_and_a_missing_verdict_is_unknown_not_ok() {
-        // The parse, which is where "an absent measurement counts as a pass" would
-        // creep in.
+        // The parse, which is where "an absent measurement counts as a pass" would creep in.
         let held = parse_seals("ns user user:[1]\nseal nested held\nseal nnp 1\n");
         assert!(held[&SealKind::NestedNamespaces].held());
         assert!(held[&SealKind::NoNewPrivs].held());
@@ -3262,8 +2723,8 @@ mod tests {
                 "{k} must be unknown, not held"
             );
         }
-        // `unshare` absent from the view is its own reason, and it names the
-        // independent mechanism without claiming that mechanism as a measurement.
+        // `unshare` absent from the view is its own reason, and it names the independent
+        // mechanism without claiming that mechanism as a measurement.
         let no_tool = parse_seals("seal nested unverified\nseal nnp 1\n");
         let Seal::Unverified { why } = &no_tool[&SealKind::NestedNamespaces] else {
             panic!("expected unverified");
@@ -3292,8 +2753,8 @@ mod tests {
 
     #[test]
     fn a_helper_setup_failure_is_not_reported_as_the_commands_answer() {
-        // F5 in the shape that is easy to miss: the wrong answer here is not `ok`,
-        // it is "the command ran and exited non-zero".
+        // The shape that is easy to miss: the wrong answer here is not `ok`, it is "the
+        // command ran and exited non-zero".
         let dir = std::env::temp_dir();
         let b = Bwrap {
             helper: PathBuf::from("/usr/bin/bwrap"),
@@ -3317,9 +2778,8 @@ mod tests {
 
     #[test]
     fn a_readback_that_matches_the_harness_is_not_a_boundary() {
-        // The parse and the comparison, without needing a helper: this is the
-        // logic that decides `Entered` from `NotEntered`, and it is the logic that
-        // would let a hard-coded `confined` through if it were wrong.
+        // The parse and the comparison, without a helper: this is what decides `Entered` from
+        // `NotEntered`, and it is what would let a hard-coded `confined` through if wrong.
         let inside = parse_readback("ns user user:[42]\nns mnt mnt:[43]\nnoise\nns pid\n");
         assert_eq!(inside.get("user"), Some(&"user:[42]".to_string()));
         assert_eq!(inside.get("mnt"), Some(&"mnt:[43]".to_string()));
@@ -3333,8 +2793,8 @@ mod tests {
 
     #[test]
     fn a_missing_helper_is_a_refusal_that_names_the_kernel_policy_too() {
-        // The refusal has to be actionable. On this box the interesting half is
-        // not "install bubblewrap" but *why* a direct unshare is not the answer.
+        // The refusal has to be actionable: the interesting half is not "install bubblewrap"
+        // but why a direct unshare is not the answer.
         // SAFETY: single-threaded test scope; restored below.
         unsafe { std::env::set_var(BWRAP_ENV, "/nonexistent/bwrap") };
         let e = find_helper().unwrap_err();
