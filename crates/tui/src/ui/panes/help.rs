@@ -1,15 +1,13 @@
-//! **The help screen** (`/help`): this head's keys and verbs, drawn by
-//! `rano::agent::help`. The rows are the head's — they are what it does — and the layout is
-//! rano's.
+//! The help screen (`/help`): this head's keys and verbs, drawn by `rano::agent::help`. The rows are
+//! the head's - they are what it does - and the layout is rano's.
 
 use crate::ui::render::{RenderConfig, row_strings};
 use rano::agent::help::HelpPane;
 
 pub(crate) fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
-    // **The panes' rows are generated from their key tables** (R69): how each is opened, what it
-    // is, and every key it takes, read from `Surface::bindings` — the table its keys are
-    // dispatched from. The hand-written rows they replace said "wheel scrolls the transcript"
-    // and never named ctrl-g, ctrl-q, `/queue`, `/jobs`, `/todos` or `/subagents` (R67 item 9).
+    // The panes' rows are generated from their key tables: how each is opened, what it is, and
+    // every key it takes, read from `Surface::bindings`, the table its keys are dispatched from -
+    // so help cannot name a key the pane does not take, nor miss one it does.
     let panes: Vec<(String, String)> = crate::app::Surface::ALL
         .into_iter()
         .filter_map(crate::app::App::surface_help)

@@ -1,12 +1,6 @@
-//! **The queue feed, measured** — what a plugin is handed, field by field.
-//!
-//! The feed is a contract a reviewer reads (`docs/plugins-plan.md` §4.9's feed table), so these
-//! assert the JSON rather than the intent: a state in the daemon's own word, an age in
-//! milliseconds against the host's clock, `live` decided by the host's rule and not inferred from a
-//! state string, and `verbs` carrying the daemon's answer about what would actually move the row.
-//!
-//! The fixture is built by hand rather than from a store: a store would make this test about the
-//! store, and the thing under test is the translation.
+//! The queue feed, field by field: the JSON a plugin is handed, not the intent - a state in the
+//! daemon's own word, an age in milliseconds against the host's clock, `live` by the host's rule and
+//! `verbs` from the daemon. The fixture is built by hand, since the subject is the translation.
 
 use super::*;
 use letibot_sessionlog::event::{

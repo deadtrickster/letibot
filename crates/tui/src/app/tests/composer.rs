@@ -4,16 +4,9 @@ use super::*;
 
 use crate::app::composer::{PathCompletion, complete_path_word};
 
-/// **A bare line is not spent on the model while the operator's own command waits.**
-///
-/// The measured case, 2026-10-09: `! sudo apt install mc`, the password taken, `apt` at
-/// `Continue? [Y/n]` under root where `/proc` refuses — so no card — and the person typed
-/// `y` here. The line became a prompt and reached the model; the command they had typed
-/// waited unanswered until its deadline killed it. While the daemon's request for their run
-/// is still open — the card up, or put away with esc, which does not end the run and does
-/// not close the request — a bare line must not quietly become the model's: it is held, and
-/// the sentence names the two doors (`!send` for the command, and waiting for the run to
-/// end for the model).
+/// A bare line is not spent on the model while the operator's own run still waits: the line is
+/// held and the sentence names the two doors. The request stays open while the card is up AND
+/// after esc, which does not end the run, so the hold cannot be keyed on the card.
 #[test]
 fn a_bare_line_while_the_runs_request_is_open_is_not_spent_on_the_model() {
     let mut a = app();
@@ -45,12 +38,9 @@ fn a_bare_line_while_the_runs_request_is_open_is_not_spent_on_the_model() {
     );
 }
 
-/// **And the refusal answers nothing, in the head rather than in the matcher.**
-///
-/// The matcher saying `Ambiguous` is not enough: `submit` is what turns a keypress
-/// into an `Action`, and a refusal that still answered the marked row would hand the
-/// daemon a grant the operator never chose. So: no action, the words still in the
-/// composer, the ask still open, and the candidates on the notice line.
+/// And the refusal answers nothing, in the head rather than in the matcher: `submit` is what turns
+/// a keypress into an `Action`, so a refusal that still answered the marked row would hand the
+/// daemon a grant nobody chose. No action, the words still in the composer, the ask still open.
 #[test]
 fn an_ambiguous_prefix_answers_nothing_and_keeps_the_words() {
     use letibot_sessionlog::event::{OnTimeout, OptionKind};
@@ -199,14 +189,9 @@ fn up_recalls_the_queued_line_for_editing_and_takes_it_back() {
     assert_eq!(a.pending_prompts.len(), 1);
 }
 
-/// **R6: a line typed while the conversation is still being imported is held.**
-///
-/// The daemon answers a prompt sent mid-import against the whole history — the import
-/// is one worker job, so a prompt cannot interleave — but the head must not show one as
-/// `queued` for a turn nobody has started. So it is refused and the words go back to the
-/// field they were typed in: the §4.2 behaviour (`7b9ca62`), reused, because answering
-/// against a half-adopted transcript and then appending the rest would put the
-/// conversation in the wrong order (R2's rule with the whole history missing).
+/// A line typed while the conversation is still being imported is refused and its words go back to
+/// the field: the daemon would answer it against the whole history, and showing it as `queued` for
+/// a turn nobody started would append the rest of the import after the conversation's answer.
 #[test]
 fn a_line_typed_during_an_import_is_held_in_the_composer() {
     let mut a = app();
@@ -236,13 +221,9 @@ fn a_line_typed_during_an_import_is_held_in_the_composer() {
     assert!(s.contains("still being imported"), "{s}");
 }
 
-/// **The held `!` line is recallable, and the take-back rides with it.**
-///
-/// `↑` on an empty composer pulls the queued line back for editing and asks the
-/// daemon to drop it — and for a `!` line that is not a courtesy but the whole
-/// point: a command that ran after it was visibly taken back would be work nobody
-/// re-asked for. (The daemon's half — dropping the queued `OperatorShell` with the
-/// prompts — is pinned in `letibot-sessionlog`'s `operator_shell.rs`.)
+/// The held `!` line is recallable, and the take-back rides with it: `up` on an empty composer
+/// pulls the line back AND asks the daemon to drop it, because a command that ran after it was
+/// visibly taken back would be work nobody re-asked for.
 #[test]
 fn a_held_bang_line_is_recalled_by_up_and_the_take_back_rides_with_it() {
     let mut a = app();
@@ -268,11 +249,9 @@ fn a_held_bang_line_is_recalled_by_up_and_the_take_back_rides_with_it() {
     );
 }
 
-/// **`!!` is a command, not a repeat.** There is no history in this composer to
-/// repeat from, and inventing that reading would make the same bytes mean two
-/// things depending on state nobody can see — so `!!` carries the command `!`,
-/// which the shell will answer for itself, and the row that comes back is the
-/// honest one. `!x` is pinned beside it: a bang does not need a space.
+/// `!!` is a command, not a repeat: there is no history in this composer to repeat from, and the
+/// other reading would make the same bytes mean two things depending on state nobody can see. So
+/// `!!` carries the command `!`, and the shell answers for itself. `!x` is pinned beside it.
 #[test]
 fn a_double_bang_is_a_command_not_a_repeat() {
     let mut a = app();
@@ -288,9 +267,8 @@ fn a_double_bang_is_a_command_not_a_repeat() {
     );
 }
 
-/// **A verb the head will refuse is not offered** — R29 pointed the other way, and the
-/// reason the joined list is built from the two OWNERS rather than from anything a
-/// person could type (`/bash`, `/write`): neither half will act on those, and a
+/// A verb the head will refuse is not offered: the joined list is built from the two OWNERS rather
+/// than from what a person could type (`/bash`, `/write`), since neither half acts on those and a
 /// completion that suggests one is a remedy that does not work.
 #[test]
 fn completion_offers_nothing_neither_half_will_act_on() {
@@ -361,13 +339,9 @@ fn a_pasted_stack_trace_collapses_and_is_sent_in_full() {
     }
 }
 
-/// **§6: the panes and the promote, reachable as verbs.**
-///
-/// Each had a chord and no word (or, for `/models` and `/resync`, a word and no
-/// listing in the completion table). A pane that can only be opened by a chord is
-/// unreachable from a pipe and unteachable by `/help`, and a verb nobody lists is a
-/// verb nobody finds. The chords stay — they are faster — and every pair here ends
-/// in **one function**, so the two spellings cannot drift.
+/// The panes and the promote, reachable as verbs. A pane openable only by a chord is unreachable
+/// from a pipe and unteachable by `/help`, and a verb nobody lists is a verb nobody finds. The
+/// chords stay - they are faster - and every pair ends in one function, so the two cannot drift.
 #[test]
 fn the_panes_and_the_promote_are_reachable_as_verbs() {
     // `/todos` opens the pane and asks the daemon for the list, exactly as `ctrl-t`.
@@ -440,10 +414,9 @@ fn the_panes_and_the_promote_are_reachable_as_verbs() {
             access: Default::default(),
         },
     )));
-    // **The premise is the two questions apart, which is what this fixture is for.** The turn's
-    // state name says the round is over, and the call it proposed is still executing — so
-    // `turn_generating` is false and the head is plainly busy. That gap is why `/promote` could
-    // not be gated on the turn, and why the message below it must ask the calls.
+    // The premise is the two questions apart: the turn's state name says the round is over while the
+    // call it proposed still executes, so `turn_generating` is false and the head is plainly busy.
+    // That gap is why `/promote` cannot be gated on the turn and must ask the calls.
     assert!(!h.turn_generating(), "the premise: the round is over");
     assert!(h.turn_busy(), "the premise: and the model is still working");
     assert!(h.running_call().is_some(), "and its command is not");
@@ -455,19 +428,9 @@ fn the_panes_and_the_promote_are_reachable_as_verbs() {
     );
 }
 
-/// **§6: a verb this head has never heard of is the daemon's to refuse.**
-///
-/// The head kept a twelve-name allowlist of daemon verbs and answered `unknown
-/// command /x — try /help` for anything outside it. That is a second copy of the
-/// daemon's table, and its failure mode is the head lying about **its own daemon**:
-/// a verb added on the other side is unreachable until this head is rebuilt, and the
-/// operator is told the command does not exist by the half that does not own the
-/// list.
-///
-/// Forwarding is safe because the daemon answers an unrecognised verb by name
-/// (`/{verb} is not a daemon verb; /help lists the head's`), so the question is
-/// settled where the answer lives. This asserts both halves of that: the line goes
-/// over, and the head does not add a verdict of its own.
+/// A verb this head has never heard of is the daemon's to refuse: a head-side allowlist is a second
+/// copy of the daemon's table, and a verb added on the other side stays unreachable until this head
+/// is rebuilt. The daemon answers an unknown verb by name, so the answer lives there.
 #[test]
 fn a_verb_the_head_has_never_heard_of_goes_to_the_daemon_unjudged() {
     let mut a = app();
@@ -498,10 +461,9 @@ fn a_verb_the_head_has_never_heard_of_goes_to_the_daemon_unjudged() {
     assert!(c.pick == Some(Pick::Model), "the menu opened");
 }
 
-/// **Up recalls the session's prompts, not only this head's.** The operator: *"i worked -
-/// sent 30 prompts. then restart, send 2. and arrow up sees only these two"*. A fresh
-/// head attached to a session with earlier prompts recalls them, newest first, after
-/// the ones it typed itself; another speaker's rows (a harness notice) are not prompts.
+/// Up recalls the session's prompts, not only this head's: a fresh head attached to a session with
+/// earlier prompts recalls them, newest first, after the ones it typed itself. Another speaker's
+/// rows (a harness notice) are not prompts.
 #[test]
 fn up_recalls_the_sessions_earlier_prompts_after_a_restart() {
     let mut a = app();
@@ -583,13 +545,9 @@ fn the_body_a_frame_builds_does_not_grow_with_the_session() {
     assert!(a.body_len > 400, "the history is there: {}", a.body_len);
 }
 
-/// **The live `!` row draws only the candidates that fit.**
-///
-/// The cut is made while collecting rather than by `trim_to` at the end, because the
-/// collection is where the cost was: a session with two thousand matching commands
-/// cloned and joined every one of them on every frame to produce a row that was then
-/// thrown away down to the width. What a reader sees is what they always saw — the
-/// candidates that fit, newest first, and no marker for the rest.
+/// The live `!` row draws only the candidates that fit, and the cut is made while collecting rather
+/// than by `trim_to` at the end: the collection is where the cost was, since cloning and joining
+/// two thousand matches per frame to throw them away is the whole expense. Newest first, no marker.
 #[test]
 fn the_bang_row_draws_only_the_candidates_that_fit() {
     let mut a = app();
@@ -637,16 +595,9 @@ fn rendering_the_history_does_not_grow_with_the_session_either() {
     );
 }
 
-/// **`!send LINE` is a verb, and it is checked before the bare `!`.**
-///
-/// `!send Y` is also a perfectly good `!` line — `operator_shell_command` reads it as the
-/// command `send Y`, which is a program nobody has — so the verb has to be taken first,
-/// exactly as `!term` is and through the same kind of shared parse
-/// (`letibot_sessionlog::send_line`). And the line leaves with the verb stripped, so the
-/// daemon is handed the text and not the spelling.
-///
-/// **A bare `!send` sends an empty line**, which is an Enter and a real answer; and
-/// `!sender`, `!sends` and `!send-mail` are ordinary `!` lines and always were.
+/// `!send LINE` is a verb, and it is checked before the bare `!`: `!send Y` is also a good `!` line
+/// (`send Y` is a program nobody has), so the verb has to be taken first, through the same kind of
+/// shared parse `!term` uses. A bare `!send` is an Enter, and `!sender` is an ordinary line.
 #[test]
 fn the_send_verb_is_recognised_before_the_bare_bang() {
     let mut a = app();
@@ -686,20 +637,9 @@ fn the_send_verb_is_recognised_before_the_bare_bang() {
     }
 }
 
-/// **§1.7: a question can be answered.**
-///
-/// The requirement's own words for this head are *"cannot answer one at all"*, and
-/// the measurement behind that is worth restating because it is not obvious from
-/// either the type or the screen: a question carries **`options: []` with the model's
-/// offered choices in `choices`** (`Vec<String>`), and every row of this head's
-/// ladder machinery asked `options.len()` — so the bound was zero, the arrows had
-/// nothing to wrap on, `answer_marked` returned `None`, and a typed line was held
-/// with *"this ask offers no options"* while the card drew an empty ladder under a
-/// question the model had offered three answers to.
-///
-/// D10's three fields, one at a time: **index**, **the choice's own text**, and
-/// **free text** — the last being *"a typed answer, and a first-class one"*, named
-/// against Claude Code's *"chat later"*.
+/// A question can be answered: it carries `options: []` with the model's choices in `choices`, so a
+/// ladder bounded on `options.len()` is a ladder with nothing to wrap on. D10's three answers are
+/// the index, the choice's own text, and free text - the last a first-class one.
 #[test]
 fn a_question_is_drawn_with_its_choices_and_can_be_answered_three_ways() {
     use letibot_sessionlog::event::OnTimeout;
@@ -761,10 +701,9 @@ fn a_question_is_drawn_with_its_choices_and_can_be_answered_three_ways() {
         }
         other => panic!("a choice's own text is that choice, got {other:?}"),
     }
-    // Case and surrounding whitespace are a person's, not a spelling test — but
-    // the *words* still have to be the choice's. `PostgreSQL` is not `postgres`
-    // (ten characters against eight), so it is free text; `  SQLITE  ` is the
-    // second choice wearing a person's casing and spacing.
+    // Case and surrounding whitespace are a person's, not a spelling test - but the WORDS still have
+    // to be the choice's: `PostgreSQL` is not `postgres`, so it is free text, while `  SQLITE  ` is
+    // the second choice wearing a person's casing and spacing.
     let mut a = app();
     a.open.push(one.clone());
     match a.submit("  SQLITE  ".into()) {
@@ -833,12 +772,9 @@ fn a_question_is_drawn_with_its_choices_and_can_be_answered_three_ways() {
     assert_eq!(a.submit(String::new()), None);
 }
 
-/// **The operator's two other ways of answering** (2026-10-09): *"each choice can have
-/// my note, and i can abstain or type my answer"*.
-///
-/// Both are composer spellings and not card affordances, deliberately: the head is
-/// driven over a pipe in this tree's own tests, so an answer only a terminal can produce
-/// is not an answer a script can give.
+/// The operator's two other ways of answering: each choice can carry a note, and one can abstain or
+/// type an answer. Both are composer spellings rather than card affordances, deliberately - the
+/// head is driven over a pipe in this tree's own tests, so a terminal-only answer is no answer.
 #[test]
 fn a_question_takes_a_note_on_a_choice_and_an_abstention() {
     use letibot_sessionlog::event::OnTimeout;
@@ -945,19 +881,9 @@ fn a_question_takes_a_note_on_a_choice_and_an_abstention() {
     assert!(a.input().is_empty(), "{:?}", a.input());
 }
 
-/// **A child whose completion arrived does not count.**
-///
-/// The other end of the same rule: the daemon's `done` is the completion and it is the only
-/// thing that may end a child's life in this pane. `answer` is `Some` on that event and on no
-/// other, so the row and the count agree about what has ended without either of them reading
-/// a clock, an instant, or the absence of one.
-///
-/// **The list is the one frame the completion outlives**, and it is the frame this asserts in:
-/// a brief saying *a turn is generating in that session now* still overrides a settled row —
-/// *"a child asked for more work has started a second turn"*, which
-/// `the_session_list_owns_the_word_running_…` holds and this change does not disturb. The list
-/// is a positive measurement of life, and nothing here may retire a live child; what changed is
-/// that a **negative** one may no longer end a child that has not completed.
+/// A child whose completion arrived does not count: `answer` is `Some` on that event and no other,
+/// so the row and the count agree without reading a clock. The session list is the one frame the
+/// completion outlives, so a NEGATIVE measurement may not end a child that has not completed.
 #[test]
 fn a_child_whose_completion_arrived_does_not_count() {
     let mut a = app();
@@ -997,19 +923,9 @@ fn a_child_whose_completion_arrived_does_not_count() {
     );
 }
 
-/// **A settlement line is one line, however long the fact inside it is.**
-///
-/// MEASURED on this head, 2026-10-05, by the operator looking at it: *"a giant prompt"*.
-/// The `task` this head gives a subagent is a brief of thousands of characters, and
-/// [`folded_notice`] folds it into the settlement line because what a child was *asked* is the
-/// one fact the notice cannot say for itself. Pasted in whole it drew five wrapped rows of
-/// somebody's instructions where a settlement should be one line.
-///
-/// The trim is to the width the block will draw it in — [`session_text_cols`], the same number
-/// `session_block` wraps to — so what the reader gets is one row ending in the head's own `…`
-/// rather than a paragraph. The pane keeps the same rule at its own width (its rows end in
-/// `trim_to`), and the whole of the task is in the child's own session, which is where a reader
-/// goes for the whole of it.
+/// A settlement line is one line, however long the fact inside it is: the `task` given a subagent is
+/// a brief of thousands of characters and [`folded_notice`] folds it in, because what a child was
+/// asked is the one fact the notice cannot say for itself. The trim is [`session_text_cols`]' width.
 #[test]
 fn a_completion_row_holds_a_whole_brief_on_one_line() {
     const BRIEF: &str = "You are implementing one feature in the letibot repository, in your own git worktree. Read this whole brief before touching anything. The repo is at ~/Projects/letibot, the workspace root you are in, and main must not be touched.";
@@ -1076,14 +992,9 @@ fn a_completion_row_holds_a_whole_brief_on_one_line() {
     );
 }
 
-/// **A draft in the composer survives an ask on BOTH keys** — R51 items 13/14's neighbour, and
-/// leticl's `1f48056`.
-///
-/// The brief names `↑`; the same failure lives on Enter, and this is the pair of them measured
-/// rather than reasoned about. Enter on a permission whose row the line does not name HOLDS the
-/// words (`a_line_that_names_nothing_holds_the_words_and_answers_the_marked_row` is the other
-/// half); `↑` must not recall a queued line over a draft either — readline's own history is
-/// what a half-typed line gets.
+/// A draft in the composer survives an ask on BOTH keys: Enter on a permission whose row the line
+/// does not name holds the words, and `up` must not recall a queued line over a draft either -
+/// readline's own history is what a half-typed line gets.
 #[test]
 fn an_open_ask_does_not_take_the_draft_on_enter_or_on_up() {
     use letibot_sessionlog::event::OptionKind;
@@ -1119,10 +1030,9 @@ fn an_open_ask_does_not_take_the_draft_on_enter_or_on_up() {
         "the queue was not taken back by a key that did not recall it"
     );
 
-    // **And with NO card up, which is where the recall is actually reachable** — and this is
-    // the assertion the two above cannot make: a card with options owns `↑` for its ladder
-    // (proved by removing the empty-composer guard and watching the two above still pass), so
-    // the guard is only ever exercised on the bare composer.
+    // And with NO card up, which is where the recall is actually reachable: a card with options owns
+    // `up` for its ladder, so the empty-composer guard is only ever exercised on the bare composer.
+    // This is the assertion the two above cannot make.
     let mut c = app();
     c.apply(hello(
         "s",
@@ -1152,13 +1062,9 @@ fn an_open_ask_does_not_take_the_draft_on_enter_or_on_up() {
         c.pending_prompts.is_empty(),
         "the premise: and it takes it back"
     );
-    // Now with a draft: readline's own history, and the queue is not touched.
-    //
-    // **The draft is not lost, and that is the editor's contract rather than this head's** —
-    // §6: a history walk keeps the draft it interrupted, and `↓` brings it back. What this
-    // asserts is the half that IS this head's, and the half the brief is about: `↑` over a
-    // draft is NOT the queue's recall, so it can neither eat the draft nor take back a prompt
-    // the operator did not ask for.
+    // Now with a draft: readline's own history, and the queue is not touched. The draft survives by
+    // the editor's contract - a history walk keeps what it interrupted and `down` brings it back -
+    // so this head's half is that `up` over a draft is not the queue's recall.
     c.set_composer("");
     c.pending_prompts.push("a queued line".into());
     typed(&mut c, "half a thought");
@@ -1199,24 +1105,18 @@ fn tab_completes_a_slash_command_and_more_tabs_cycle_the_matches() {
     assert_eq!(a.input(), "/switch");
     a.key(Key::Tab);
     assert_eq!(a.input(), "/status");
-    // **A §6 verb joined the cycle**, which is the point of listing it: `/s` reaches
-    // `subagents` by Tab now, and the expectation has to name it or the test is
-    // pinning a list that no longer exists.
-    // **And `/standing`**, which joined the same way and for the same reason: the pane's
-    // verb is in the table, so `/s` reaches it and this cycle names it.
-    // **And `/skills`**, which joined the table with the pane: a verb this head implements is a
-    // verb `/s` reaches, and this cycle names it rather than pinning a list that moved.
+    // A verb this head implements is a verb `/s` reaches: `/subagents`, `/standing` and `/skills`
+    // joined the cycle with their panes, and naming them here is what keeps this expectation from
+    // pinning a list that moved.
     a.key(Key::Tab);
     assert_eq!(a.input(), "/skills");
     a.key(Key::Tab);
     assert_eq!(a.input(), "/standing");
     a.key(Key::Tab);
     assert_eq!(a.input(), "/subagents");
-    // **And R32's two**, which this test caught the moment they were listed — the
-    // mechanism working rather than a nuisance. `/settings` and `/stats` are the
-    // dispatcher's own aliases for `/config` and `/status`; both worked and neither was
-    // offered until the table gained them, which is the measured finding
-    // (`docs/evidence/slash-completion-2026-09-23.py`).
+    // R32's two: `/settings` and `/stats` are the dispatcher's aliases for `/config` and `/status`,
+    // and both worked while neither was offered until the table gained them - the mechanism this
+    // test is, catching a listed verb nobody could find.
     a.key(Key::Tab);
     assert_eq!(a.input(), "/settings");
     a.key(Key::Tab);
@@ -1250,11 +1150,9 @@ fn tab_completes_a_slash_command_and_more_tabs_cycle_the_matches() {
     );
 }
 
-/// **A `!` line completes from what this session has actually run** — the
-/// operator's own `!` rows and the model's `bash` calls both become
-/// candidates, which is the feature in one sentence: *"smart autocomplete
-/// here for ! - you trying to suggest me commands based on conversation
-/// context"*.
+/// A `!` line completes from what this session has actually run: the operator's own `!` rows and
+/// the model's `bash` calls both become candidates, which is the feature in one sentence - suggest
+/// me commands based on the conversation.
 #[test]
 fn a_bang_line_completes_from_the_sessions_own_rows() {
     let mut a = app();
@@ -1304,13 +1202,9 @@ fn a_bang_line_completes_from_the_sessions_own_rows() {
     );
 }
 
-/// **The newest candidate wins the first Tab, and a second Tab cycles.**
-///
-/// The last thing the session ran is the most likely thing the operator is
-/// about to run again, so it is first in the cycle; Tab again walks the rest.
-/// **The cycle does not wrap any more**: when it is exhausted the model is asked,
-/// about the line in the composer. See
-/// [`App::shell_model_fallback`] and the tests below it.
+/// The newest candidate wins the first Tab, and a second Tab cycles: the last thing the session ran
+/// is the most likely thing to run again. The cycle does not wrap - when it is exhausted the model
+/// is asked about the line in the composer, see [`App::shell_model_fallback`].
 #[test]
 fn the_newest_bang_candidate_wins_and_tab_cycles() {
     let mut a = app();
@@ -1323,10 +1217,9 @@ fn the_newest_bang_candidate_wins_and_tab_cycles() {
     // A second Tab cycles to the older one.
     a.key(Key::Tab);
     assert_eq!(a.input(), "! ls -la", "the second Tab cycles");
-    // The third Tab exhausts the history, and the hand-off is the model's: the
-    // composer stays on the last candidate the history offered — nothing the
-    // operator has just cycled past is shown again — and the ask is for THAT line,
-    // because that is the line being completed.
+    // The third Tab exhausts the history, and the hand-off is the model's: the composer stays on the
+    // last candidate the history offered, so nothing just cycled past is shown again, and the ask is
+    // for THAT line.
     a.key(Key::Tab);
     assert_eq!(
         a.input(),
@@ -1345,12 +1238,9 @@ fn the_newest_bang_candidate_wins_and_tab_cycles() {
     );
 }
 
-/// **The history is the first answer, and the model is not asked when it matches.**
-///
-/// The whole shape of the feature: a command this session actually ran is a fact
-/// and a model's proposal is a guess, so the fact answers first and the guess is
-/// never paid for. A head that asked anyway would spend a local model call on every
-/// Tab, which is the cost the history-first rule exists to avoid.
+/// The history is the first answer, and the model is not asked when it matches: a command this
+/// session actually ran is a fact and a model's proposal is a guess, so the fact answers first and
+/// the guess is never paid for. Asking anyway would spend a model call on every Tab.
 #[test]
 fn the_history_is_the_first_answer_and_the_model_is_not_asked_when_it_matches() {
     let mut a = app();
@@ -1361,13 +1251,9 @@ fn the_history_is_the_first_answer_and_the_model_is_not_asked_when_it_matches() 
     assert!(a.take_actions().is_empty(), "and no model was asked");
 }
 
-/// **A prefix the history does not have asks the model once, and only once.**
-///
-/// The operator's ask, in their words: *"i want smart ! when a model suggest
-/// completions."* The composer is untouched while the ask is out — nothing is
-/// filled from a guess that has not arrived — and a second Tab in that state is not
-/// a second call: the ask is filed under the id the head minted, and the head is
-/// what recognises the answer.
+/// A prefix the history does not have asks the model once, and only once. The composer is untouched
+/// while the ask is out - nothing is filled from a guess that has not arrived - and a second Tab in
+/// that state is not a second call: the ask is filed under an id the head recognises.
 #[test]
 fn the_model_is_asked_once_for_a_prefix_the_history_does_not_have() {
     let mut a = app();
@@ -1387,11 +1273,9 @@ fn the_model_is_asked_once_for_a_prefix_the_history_does_not_have() {
     assert_eq!(a.input(), "! git");
 }
 
-/// **The answer is cached by (prefix, position), cycled, and never asked twice.**
-///
-/// `shell_ask` is the asks in flight and `shell_suggestions` the answers, and the
-/// rule both exist for is in one sentence: the same prefix at the same transcript
-/// position is one model call. The operator may press Tab as often as they like.
+/// The answer is cached by (prefix, position), cycled, and never asked twice: `shell_ask` is the
+/// asks in flight and `shell_suggestions` the answers, and the rule both exist for is that the same
+/// prefix at the same transcript position is one model call.
 #[test]
 fn the_models_answer_is_cached_and_cycled_and_the_same_prefix_is_one_call() {
     let mut a = app();
@@ -1429,12 +1313,9 @@ fn the_models_answer_is_cached_and_cycled_and_the_same_prefix_is_one_call() {
     );
 }
 
-/// **A row landing makes the model's suggestion stale.**
-///
-/// A suggestion is built on the conversation as it was when it was asked, so a
-/// conversation that moved is a different question — and the answer to the old one
-/// is not an answer to the new one. The cache and the cycle both go with the rows,
-/// and the same prefix is a fresh ask rather than a stale answer.
+/// A row landing makes the model's suggestion stale: a suggestion is built on the conversation as
+/// it was when it was asked, so a conversation that moved is a different question. The cache and
+/// the cycle both go with the rows, and the same prefix is a fresh ask.
 #[test]
 fn a_row_landing_makes_the_models_suggestion_stale() {
     let mut a = app();
@@ -1474,12 +1355,9 @@ fn a_row_landing_makes_the_models_suggestion_stale() {
     assert_eq!(prefix, "! git", "asked again, at the new position");
 }
 
-/// **An empty answer is an answer, and it is said once.**
-///
-/// The model was told that a wrong suggestion is worse than none, so *nothing* is
-/// the answer it is supposed to be able to give — and a cache that read an empty
-/// list as *not asked* would send a fresh call on every Tab for the same prefix,
-/// which is exactly what the (prefix, position) key exists to prevent.
+/// An empty answer is an answer, and it is said once: the model was told a wrong suggestion is
+/// worse than none, so nothing is a real answer - and a cache reading an empty list as not asked
+/// would send a fresh call on every Tab for the same prefix.
 #[test]
 fn an_empty_answer_is_said_once_and_is_not_asked_for_again() {
     let mut a = app();
@@ -1500,16 +1378,9 @@ fn an_empty_answer_is_said_once_and_is_not_asked_for_again() {
     );
 }
 
-/// **The model's lines are drawn as proposals and the history's as facts.**
-///
-/// A line that looks like the operator typed it and did not is the same class of lie
-/// as an unattributed quote, so the live row marks the model's candidates and leaves
-/// the session's own plain. The mark is display-only: a Tab fills the composer with
-/// the line itself.
-///
-/// The state both kinds are drawn in is the hand-off: the history answered with its
-/// own line, the operator cycled past it, and the model was asked about the line
-/// they are now looking at.
+/// The model's lines are drawn as proposals and the history's as facts: a line that looks like the
+/// operator typed it and did not is the same class of lie as an unattributed quote. The mark is
+/// display-only, and a Tab fills the composer with the line itself.
 #[test]
 fn the_model_lines_are_drawn_as_proposals_and_the_historys_as_facts() {
     let mut a = app();
@@ -1568,25 +1439,9 @@ fn a_suggestion_only_fills_the_composer_and_never_submits() {
     );
 }
 
-/// **The suggestion row is a SLOT, so the transcript does not move under the reader.**
-///
-/// The operator, watching the pane while they typed a `!` line: *"the conversation jumps
-/// one line up and then down"*. The frame's arithmetic is why — the conversation is given
-/// `h` minus the chrome, so a completion row that came and went took its line from the
-/// transcript and handed it back, once per appearance and dismissal of the candidate list,
-/// while the reader was typing.
-///
-/// **What is pinned is the MOVE, not the row.** Asserting *the row is always there* would
-/// pass on a frame that reserved it in the wrong place; what a reader feels is the shove,
-/// so this compares the transcript's own last line, the conversation's rows and the
-/// composer's top edge across three frames — candidates, none, candidates again. The
-/// fixture FILLS the screen on purpose: a short transcript sits at the top, the row it
-/// loses comes out of the blank space under it, and the shove cannot be seen at all (which
-/// is how the first version of `a_turn_starting_does_not_shove_the_transcript_up_a_row`
-/// passed against a reverted fix).
-///
-/// **And the slot is still the typing aid it was**: the layout change may not cost the
-/// completion, so the last act here is a Tab.
+/// The suggestion row is a SLOT, so the transcript does not move under the reader: a completion row
+/// that came and went would take its line from the transcript and hand it back, once per appearance
+/// while the reader types. What is pinned is the MOVE, not the row - hence a full screen's fixture.
 #[test]
 fn the_suggestions_are_in_the_bottom_edge_and_nothing_moves() {
     let mut a = app();
@@ -1707,10 +1562,9 @@ fn the_suggestions_are_in_the_bottom_edge_and_nothing_moves() {
         near_the_composer(&slash)
     );
 
-    // **And the slot is still a completion.** Tab fills the line from it and sends
-    // nothing, which is the behaviour the layout change was not allowed to cost.
-    // The attach-time requests are drained first: what is asserted is that the Tab itself
-    // adds nothing to them.
+    // And the slot is still a completion: Tab fills the line from it and sends nothing, which is
+    // what the layout change was not allowed to cost. The attach-time requests are drained first,
+    // so what is asserted is that the Tab itself adds nothing to them.
     let _ = a.take_actions();
     a.set_composer("! cargo");
     a.key(Key::Tab);
@@ -1719,10 +1573,9 @@ fn the_suggestions_are_in_the_bottom_edge_and_nothing_moves() {
     assert!(actions.is_empty(), "and nothing was submitted: {actions:?}");
 }
 
-/// **A bare `!` is an empty command and does nothing** — the recogniser
-/// (`operator_shell_command`) says so, the same rule the send refuses on.
-/// A `!` prefix, by contrast, matches the candidates that start with it,
-/// newest first.
+/// A bare `!` is an empty command and does nothing - the recogniser (`operator_shell_command`) says
+/// so, the same rule the send refuses on. A `!` prefix, by contrast, matches the candidates that
+/// start with it, newest first.
 #[test]
 fn a_bare_bang_is_an_empty_command_and_does_nothing() {
     let mut a = app();
@@ -1778,14 +1631,9 @@ fn a_bang_line_with_no_history_match_leaves_the_text_untouched() {
     assert!(a.notice.is_some(), "the refusal is said, not silent");
 }
 
-/// **A prompt queued behind a re-seat says it is waiting behind the re-seat.**
-///
-/// The rano session, 2026-10-12: a bare `/reseat` held the worker for 6.5 minutes while it
-/// carried 971 rows onto the new prompt, and the operator's `pull` sat under a bare `queued`
-/// the whole while — which reads exactly like a daemon that stopped listening. The daemon now
-/// names the carry (`Filling`); an untaken prompt says what it waits behind while that runs,
-/// goes back to `queued` when it ends, and a line typed during it is held in the daemon's own
-/// words for the operation rather than as an import that is not happening.
+/// A prompt queued behind a re-seat says so: the daemon names the carry (`Filling`), so an untaken
+/// prompt says what it waits behind while that runs and goes back to `queued` when it ends, rather
+/// than sitting under a bare `queued` that reads like a daemon that stopped listening.
 #[test]
 fn a_prompt_queued_behind_a_reseat_says_so() {
     let mut a = app();

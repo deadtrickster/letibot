@@ -1,8 +1,5 @@
-//! **A red merge target, one line a notice, and the whole of it one click away.**
-//!
-//! The operator, pasting the `target_red` warning and the session's `EMERGENCY —` notice that
-//! one red `main` drew as two big blocks: *"please make all this: … a one-line similar to job -
-//! with a popup"*. See `ui::transcript::red_card`.
+//! A red merge target, one line a notice, and the whole of it one click away. See
+//! `ui::transcript::red_card`.
 
 use super::*;
 use crate::ui::transcript::red_card::{Trouble, notice_tip, unjudged_warning_tip, warning_tip};
@@ -305,10 +302,9 @@ fn a_timed_out_or_unjudged_target_is_one_line() {
     }
 }
 
-/// **A sentence the daemon learns later does not cost the line** — the coordinator's warning:
-/// the red notice will say what the landing tree lacks, and the landing path moves. The parser
-/// keys on the opening, the target, the sha, the repository and the step; the popup keeps the
-/// new sentence.
+/// A sentence the daemon learns later does not cost the line: the parser keys on the opening, the
+/// target, the sha, the repository and the step, so a warning that grows a sentence still matches -
+/// and the popup keeps the new sentence.
 #[test]
 fn an_extra_sentence_keeps_the_one_line_and_the_popup_shows_it() {
     const EXTRA: &str = "The landing tree has no `images/`, `vendor/` (gitignored, present in your \
@@ -516,18 +512,9 @@ fn a_red_warning_and_its_emergency_notice_are_one_line() {
     assert!(holds(&whole, first), "the notice is in the popup: {whole}");
 }
 
-/// **A fork takes the pairing with the rows it was made on** — the operator's `"my latest message
-/// simply not rendered"` (pg-noop, 2026-10-16).
-///
-/// The `target_red` warning for `feat/memory-engine` reached the head at 09:18:06 while the
-/// session's `EMERGENCY —` notice for the same tip was row 566 of `#t50`, so the warning was filed
-/// at seam 566 and row 566 was absorbed into its card. Two compactions later row 566 of `#t52` was
-/// the operator's `how we are doing` — and the head still held `absorbed[566]` and the note's
-/// seam, both indices into a transcript that had gone: the operator's line drew nothing, and the
-/// red card stood in its place with the time of an event from seven hours before.
-///
-/// The same shape, small: the notice at row 2, the warning paired with it, a fork that carries two
-/// rows, and the operator's message arriving live as row 2 of the new transcript.
+/// A fork takes the pairing with the rows it was made on. `absorbed` and the note's seam are
+/// INDICES into a transcript, so a fork that keeps them points them at rows that are gone - the
+/// operator's line then draws nothing and a red card stands in its place.
 #[test]
 fn a_fork_does_not_carry_a_red_cards_pairing_onto_the_operators_next_message() {
     let assistant = |text: &str| -> TranscriptItem {
