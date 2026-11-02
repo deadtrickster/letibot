@@ -59,7 +59,9 @@ pub struct Sdk {
 }
 
 /// **Where the SDK is on this box**, in the order the tree resolves such things: the environment
-/// first (a box may have rano anywhere), then the conventional checkout under `$HOME`.
+/// first (a box may have rano anywhere), then the conventional checkout under `$HOME`, then **the
+/// checkout cargo itself resolved the workspace's rano dependency from**, which is one a box that
+/// can build this daemon has, whatever it keeps in `$HOME`.
 ///
 /// A path that does not exist is still WRITTEN, with `found: false` and the sentence the tool
 /// result carries: scaffolding a plugin is useful on a box that cannot build it yet — the source
@@ -83,13 +85,71 @@ pub fn sdk() -> Sdk {
             path: path.display().to_string(),
             found: true,
         },
-        (None, None) => Sdk {
-            path: home
-                .map(|h| PathBuf::from(h).join(SDK_DEFAULT).display().to_string())
-                .unwrap_or_else(|| SDK_DEFAULT.to_string()),
-            found: false,
+        (None, None) => match cargo_cache_checkout() {
+            Some(path) => Sdk {
+                path: path.display().to_string(),
+                found: true,
+            },
+            None => Sdk {
+                path: home
+                    .map(|h| PathBuf::from(h).join(SDK_DEFAULT).display().to_string())
+                    .unwrap_or_else(|| SDK_DEFAULT.to_string()),
+                found: false,
+            },
         },
     }
+}
+
+/// **Rano's source where cargo put it**: the SDK that belongs to the rano this workspace links.
+///
+/// The workspace depends on rano by git rev, so its source is in cargo's checkouts directory on
+/// every box that built the daemon. `Cargo.lock` names the rev and `CARGO_HOME` says where the
+/// checkouts are, which is two facts rather than a path somebody is expected to have cloned.
+fn cargo_cache_checkout() -> Option<PathBuf> {
+    let lock = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.lock");
+    let rev = locked_rev(&std::fs::read_to_string(lock).ok()?)?;
+    let cargo_home = std::env::var_os("CARGO_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cargo")))?;
+    let checkouts = std::fs::read_dir(cargo_home.join("git/checkouts")).ok()?;
+    // Each repo's directory holds one directory per rev, named by cargo with a short prefix of it.
+    let mut candidates: Vec<PathBuf> = checkouts
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().starts_with("rano-"))
+        .flat_map(|e| std::fs::read_dir(e.path()).into_iter().flatten())
+        .flatten()
+        .map(|rev_dir| {
+            let name = rev_dir.file_name().to_string_lossy().into_owned();
+            (name, rev_dir.path())
+        })
+        .filter(|(name, _)| rev.starts_with(name.as_str()))
+        .map(|(_, path)| path.join("sdks/rust"))
+        .filter(|p| p.join("Cargo.toml").is_file())
+        .collect();
+    candidates.sort();
+    candidates.pop()
+}
+
+/// **The rev `Cargo.lock` pins rano to**, `git+<url>?rev=<rev>#<rev>`, which is the only place
+/// the answer is written down.
+fn locked_rev(lock: &str) -> Option<String> {
+    let mut lines = lock.lines();
+    while let Some(line) = lines.next() {
+        if line.trim() != "name = \"rano\"" {
+            continue;
+        }
+        for line in lines.by_ref() {
+            if line.trim().is_empty() {
+                break;
+            }
+            let Some(source) = line.trim().strip_prefix("source = \"") else {
+                continue;
+            };
+            let url = source.split('#').next()?;
+            return url.split("rev=").nth(1).map(str::to_string);
+        }
+    }
+    None
 }
 
 /// **A plugin name**, checked where it becomes a directory, a crate and a hook.

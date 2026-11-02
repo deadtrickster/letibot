@@ -857,7 +857,16 @@ fn the_templates_sdk_is_resolved_from_the_box() {
     );
     if let Ok(explicit) = std::env::var("LETIBOT_RANO_SDK") {
         assert_eq!(sdk.path, explicit);
+        return;
     }
+    // **The workspace depends on rano by git rev**, so the source cargo resolved it from is on every
+    // box that built this daemon, and that, not a checkout somebody is expected to have cloned
+    // under `$HOME`, is where the template's path has to point.
+    assert!(
+        sdk.found,
+        "the rano SDK this workspace depends on was not found: `{}`",
+        sdk.path
+    );
 }
 
 /// **`session_plugins_dir` is the one spelling of the session scope** — the directory the host
