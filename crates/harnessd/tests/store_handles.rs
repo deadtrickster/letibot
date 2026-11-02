@@ -1,36 +1,19 @@
-//! **A session that closes gives its descriptors back** — the measurement the operator's `EMFILE`
-//! is answered with, and the one that says which fix works.
+//! A session that closes gives its descriptors back - the measurement the operator's `EMFILE`
+//! is answered with.
 //!
-//! # The arithmetic, before and after
-//!
-//! `Harness::open` used to open the store **four times per session** — once for the session
-//! itself, once for the corpus the gate writes, once for the `transcript` tool and once for the
-//! `decisions` tool — and each of those was a `rusqlite` connection to a WAL file. MEASURED on
-//! lab2x1, `main` at `4b2f2113`: **20 sessions opened and closed left 92 descriptors on
-//! `sessions.db`** while the process held 5 `Store`s, and 88 stayed after the daemon's own
-//! connection was dropped too.
-//!
-//! `crates/tokencore/tests/connection_fds.rs` measures why: `sqlite3` keeps a descriptor per file
-//! in the inode's own record and releases it when the process's **last** connection to that file
-//! closes, so closing a session's four connections returned none of them while the daemon's own
-//! connection lived. So "close it properly" was never the fix — **fewer connections** is, and
-//! `Store::open` now hands every caller in the process the same connection per store file.
-//!
-//! After: the count is the same before and after twenty sessions, and it is the daemon's own
-//! three descriptors (the db, its `-wal` and its `-shm`).
-//!
-//! # How it counts
+//! `Harness::open` used to open the store four times per session, each a `rusqlite` connection
+//! to a WAL file, and `sqlite3` keeps a descriptor per file in the inode's own record until the
+//! process's last connection to that file closes - so closing a session's four connections
+//! returned none of them. "Close it properly" was therefore never the fix; fewer connections
+//! is, and `Store::open` now hands every caller in the process the same connection per store file.
 //!
 //! `/dev/fd` on Darwin and `/proc/self/fd` on Linux: both are directories whose entries ARE the
-//! process's open descriptors, so `read_dir` is a census and not an estimate. `Store::live()` is
-//! the second, independent count — how many connections the process holds — because a descriptor
+//! process's open descriptors, so `read_dir` is a census and not an estimate. `Store::live` is
+//! the second, independent count - how many connections the process holds - because a descriptor
 //! count is a proxy for a lifetime and `Store::live` is the lifetime itself.
 //!
-//! # What it needs
-//!
-//! **Nothing on this box but a temp directory.** The vocabulary is the byte one and the provider
-//! is named and never called (`no_vocab.rs`'s shape), because no turn runs here — the subject is
-//! the store, and a session that opens one needs no model to do it.
+//! Nothing on this box but a temp directory. The vocabulary is the byte one and the provider is
+//! named and never called, because no turn runs here - the subject is the store.
 
 use std::path::Path;
 
@@ -49,9 +32,8 @@ const ROOT: &str = "s-root-handles";
 fn config(session_id: &str, store: &Path) -> Config {
     let mut cfg = Config::for_this_box("/tmp");
     cfg.dialect = Dialect::Qwen;
-    // The unconfined seat with `write` and the delegation trio; a `coder` seat cannot open on a
-    // Mac at all (see `which-seat-a-test-must-fixture-on-a-mac.md`), and nothing here is about a
-    // boundary.
+    // The unconfined seat with `write` and the delegation trio: a `coder` seat cannot open on a Mac
+    // at all, and nothing here is about a boundary.
     cfg.seat = Seat::Leticode;
     cfg.endpoint = Endpoint::new("127.0.0.1", 1);
     cfg.http_retries = 0;
@@ -60,7 +42,7 @@ fn config(session_id: &str, store: &Path) -> Config {
     cfg.session_id = session_id.to_string();
     cfg.web_search = None;
     cfg.permission = Vec::new();
-    // **No GGUF**: a named provider opens a session on the byte vocabulary and no turn is run
+    // No GGUF: a named provider opens a session on the byte vocabulary and no turn is run
     // here, so this measures the store on any box, with or without llama.cpp.
     cfg.vocab_gguf = None;
     cfg.provider = Some(ProviderConfig {
@@ -87,7 +69,7 @@ fn wiring(cfg: &Config) -> SessionWiring {
     }
 }
 
-/// **This process's open descriptors** — the census, from the directory the kernel keeps them in.
+/// This process's open descriptors - the census, from the directory the kernel keeps them in.
 ///
 /// Darwin has `/dev/fd` (`fdescfs`); Linux has `/proc/self/fd`. Both list one entry per open
 /// descriptor, so the count is exact on the two boxes this tree runs on.
@@ -100,15 +82,12 @@ pub fn open_descriptors() -> usize {
     std::fs::read_dir(dir).map(|d| d.count()).unwrap_or(0)
 }
 
-/// **How many of this process's descriptors are on `path` and its WAL companions** — the count
-/// the operator read off their daemon with `lsof`, taken here without one.
+/// How many of this process's descriptors are on `path` and its WAL companions.
 ///
 /// `readlink` answers on Linux; Darwin's `/dev/fd` is not a symlink tree that resolves, so this
-/// asks the kernel with `F_GETPATH`.
-///
-/// Matched on the DIRECTORY and the file name, not on the name alone: both tests here open a
-/// `sessions.db`, and a census that counted its neighbour's would report one test's connections as
-/// the other's.
+/// asks the kernel with `F_GETPATH`. Matched on the DIRECTORY and the file name, not on the name
+/// alone: both tests here open a `sessions.db`, and a census that counted its neighbour's would
+/// report one test's connections as the other's.
 fn descriptors_on(path: &Path) -> usize {
     let dir = if cfg!(target_os = "linux") {
         "/proc/self/fd"
@@ -173,7 +152,7 @@ impl Drop for TempDir {
     }
 }
 
-/// **One test at a time**: the census is the PROCESS's, and a sibling test in this binary opening
+/// One test at a time: the census is the PROCESS's, and a sibling test in this binary opening
 /// sessions in parallel would be counted as this one's leak.
 static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -181,13 +160,12 @@ fn serial() -> std::sync::MutexGuard<'static, ()> {
     SERIAL.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// **Twenty sessions opened and closed leave the store's descriptors where they were.**
+/// Twenty sessions opened and closed leave the store's descriptors where they were.
 ///
-/// This is the deliverable's number. `Harness::open` opened the store four times per session, each
-/// a WAL connection, and MEASURED on `main` at `4b2f2113` twenty sessions left **92** descriptors
-/// on `sessions.db` after they were closed. One connection per store file per process makes the
-/// count the daemon's own three whatever the session count, and the bound below is the baseline
-/// plus nothing.
+/// `Harness::open` opened the store four times per session, each a WAL connection, so twenty
+/// sessions left ninety-odd descriptors on `sessions.db` after they were closed. One connection per
+/// store file per process makes the count the daemon's own three whatever the session count, and
+/// the bound below is the baseline plus nothing.
 #[test]
 fn a_closed_session_gives_its_descriptors_back() {
     let Some(_) = room::room_for("twenty sessions opened and closed", 1024) else {
@@ -209,7 +187,7 @@ fn a_closed_session_gives_its_descriptors_back() {
     let mut sessions =
         Sessions::open_first(&parts, cfg.clone(), registry.clone()).expect("the daemon opens");
 
-    // **The baseline, taken with the daemon up and no session of its own.** What the fixture itself
+    // The baseline, taken with the daemon up and no session of its own. What the fixture itself
     // holds (the registry's source, the mode store) is its own business; what these assertions are
     // about is that twenty sessions add NOTHING to it.
     let baseline = descriptors_on(&path);
@@ -257,7 +235,7 @@ fn a_closed_session_gives_its_descriptors_back() {
         open_descriptors()
     );
 
-    // **The number, in the assertion**: the count comes back to the baseline it started at.
+    // The number, in the assertion: the count comes back to the baseline it started at.
     assert!(
         closed_descs <= baseline,
         "closing {} sessions left {closed_descs} descriptors on the store file, where the daemon \
@@ -277,14 +255,14 @@ fn a_closed_session_gives_its_descriptors_back() {
     drop(registry);
 }
 
-/// **Two sessions at once are not blocked by each other.**
+/// Two sessions at once are not blocked by each other.
 ///
 /// The fix's cost is a lock: every store access in the process now serialises behind one
 /// connection, so this is the test that says the second session still gets its work done. Two
 /// threads write and read through the same store while two sessions are open; both finish, every
 /// row is there, and the connection count does not move.
 ///
-/// **What it would catch**: a lock held across a whole turn (a second session waiting for ever), a
+/// What it would catch: a lock held across a whole turn (a second session waiting for ever), a
 /// transaction left open (the next writer blocking on `BEGIN IMMEDIATE` until its thirty-second
 /// timeout), and a second connection appearing per thread.
 #[test]
@@ -316,7 +294,7 @@ fn two_sessions_at_once_are_not_blocked_by_each_other() {
     let baseline = descriptors_on(&path);
     let connections = Store::live();
 
-    // Two writers, one store, at the same time — each on its own thread, each through its own
+    // Two writers, one store, at the same time - each on its own thread, each through its own
     // `Store` handle, which is the same connection.
     let writes = 50;
     let work = |session: &'static str| {
@@ -363,7 +341,7 @@ fn two_sessions_at_once_are_not_blocked_by_each_other() {
          {baseline} descriptors on the store file before, {after} after",
         Store::live()
     );
-    // **The delta, not the absolute count**: what the fixture itself holds is its own business
+    // The delta, not the absolute count: what the fixture itself holds is its own business
     // (the first test in this binary measures that), and what this asserts is that a second
     // thread's `Store` was not a second connection.
     assert_eq!(

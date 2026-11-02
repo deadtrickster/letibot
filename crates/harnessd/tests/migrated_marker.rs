@@ -1,17 +1,13 @@
-//! **A copy of a session that lives somewhere else is refused, and the listing says where.**
+//! A copy of a session that lives somewhere else is refused, and the listing says where.
 //!
-//! `letibot --migrate SESSION --to HOST` moves a session's whole daemon to a host and marks the
-//! copy it leaves behind (`docs/remote-hosts.md` RH4, `session.lives_on`). Two surfaces have to
-//! follow that marker, and each is here:
+//! `letibot --migrate SESSION --to HOST` moves a session's whole daemon to a host and marks the copy
+//! it leaves behind (`session.lives_on`). Two surfaces have to follow that marker: `--sessions` says
+//! *lives on lab2x1* beside the row instead of offering it as a conversation this box is appending
+//! to, and `Harness::open` refuses it by name - a marked copy is not being written to, and a turn in
+//! it would be work typed into a conversation nobody else will ever see.
 //!
-//! * **`--sessions`** says *lives on lab2x1* beside the row instead of offering it as a
-//!   conversation this box is appending to;
-//! * **`Harness::open` refuses it by name**, because a marked copy is not being written to, and a
-//!   turn in it would be work typed into a conversation nobody else will ever see.
-//!
-//! The session opens on the **byte vocabulary with a provider** — `vocab_gguf: None`,
-//! `provider: Some(..)` — so this runs on a machine with no model file at all, and no request
-//! leaves the box: the refusal happens before anything could be sent.
+//! The session opens on the byte vocabulary with a provider, so this runs on a machine with no model
+//! file at all, and no request leaves the box: the refusal happens before anything could be sent.
 
 use std::process::Command;
 
@@ -61,8 +57,8 @@ fn store_with_a_moved_session(path: &std::path::Path) -> Store {
     store
 }
 
-/// **`--sessions` says where it went**, and leaves the row in the list — the rows are here, and
-/// a move back is what removes the mark.
+/// `--sessions` says where it went, and leaves the row in the list - the rows are here, and a move
+/// back is what removes the mark.
 #[test]
 fn the_listing_names_the_host_a_moved_session_lives_on() {
     let dir = std::env::temp_dir().join(format!("letibot-marker-{}", std::process::id()));
@@ -101,9 +97,9 @@ fn the_listing_names_the_host_a_moved_session_lives_on() {
     );
 }
 
-/// **A marked copy does not open**, and the refusal says where the session is and how to get
-/// there. A warning would be read by nobody: the person who has to notice it is looking at the
-/// conversation the model would be answering in.
+/// A marked copy does not open, and the refusal says where the session is and how to get there. A
+/// warning would be read by nobody: the person who has to notice it is looking at the conversation
+/// the model would be answering in.
 #[test]
 fn a_session_that_lives_on_a_host_is_refused_by_name() {
     let dir = std::env::temp_dir().join(format!("letibot-marker-open-{}", std::process::id()));
@@ -119,7 +115,7 @@ fn a_session_that_lives_on_a_host_is_refused_by_name() {
     cfg.seat = Seat::Leticode;
     cfg.session_id = MOVED.into();
     cfg.store = Some(path.clone());
-    // The byte vocabulary and a provider: no model file, and nothing is sent — the refusal is
+    // The byte vocabulary and a provider: no model file, and nothing is sent - the refusal is
     // before the first round.
     cfg.vocab_gguf = None;
     cfg.provider = Some(ProviderConfig {

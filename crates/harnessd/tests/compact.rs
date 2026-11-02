@@ -1,27 +1,23 @@
 //! Compaction's fork: the daemon's half of turning a summary into the new base.
 //!
-//! `letibot-turn`'s `compaction.rs` asserts the summary turn itself — the cached
-//! prefix, the instruction, the outcome's numbers. This file asserts what the
-//! *harness* does with that outcome, none of which the turn crate can see:
+//! `letibot-turn`'s `compaction.rs` asserts the summary turn itself - the cached prefix, the
+//! instruction, the outcome's numbers. This file asserts what the *harness* does with that outcome
+//! none of which the turn crate can see
 //!
-//! 1. **The fork is a store row, not a truncation.** A new transcript row with the
-//!    session's own stable prefix, linked back to the parent with the session
-//!    log's seq — the old transcript kept whole, because compaction never deletes
-//!    anything, it stops carrying it.
-//! 2. **The new base is the prefix plus one item**, and that item says what it is
-//!    and carries the summary verbatim. A base that paraphrased the summary would
-//!    be a base nobody can check against the turn that produced it.
-//! 3. **A resume lands on the fork.** `list_sessions` picks a session's newest
-//!    transcript, so reopening the session after a compaction must resume the
-//!    fork — a resume that came back on the parent would put the full history
-//!    behind the next prompt, which is the thing compaction exists to prevent.
-//! 4. **Twice is a chain.** A second compaction forks off the first fork, and the
-//!    ids say so.
+//! 1. The fork is a store row, not a truncation - a new transcript with the session's own stable
+//!    prefix, linked back to the parent with the session log's seq, the old transcript kept whole
+//!    because compaction never deletes anything, it stops carrying it.
+//! 2. The new base is the prefix plus one item that says what it is and carries the summary
+//!    verbatim - a base that paraphrased it could not be checked against the turn that produced it.
+//! 3. A resume lands on the fork: `list_sessions` picks a session's newest transcript, and a
+//!    resume that came back on the parent would put the full history behind the next prompt, which
+//!    is the thing compaction exists to prevent.
+//! 4. Twice is a chain - a second compaction forks off the first fork, and the ids say so.
 //!
-//! It needs the vocabulary GGUF and **not** the model server: the fork needs only
-//! the store, the vocabulary and the harness. That is why [`Harness::compact`]
-//! (which runs the turn) and [`Harness::fork_to_summary`] (which does not) are two
-//! methods. `LETIBOT_VOCAB_GGUF` overrides the path.
+//! It needs the vocabulary GGUF and not the model server: the fork needs only the store, the
+//! vocabulary and the harness, which is why [`Harness::compact`] (which runs the turn) and
+//! [`Harness::fork_to_summary`] (which does not) are two methods. `LETIBOT_VOCAB_GGUF` overrides the
+//! path.
 
 use letibot_harnessd::config::{Config, WallBasis};
 use letibot_harnessd::harness::ForkTail;
@@ -42,18 +38,15 @@ const WANTED: Dialect = Dialect::Qwen;
 fn config(store: &std::path::Path, session_id: &str) -> Config {
     let mut cfg = Config::for_this_box("/tmp");
     cfg.dialect = WANTED;
-    // **This file needs the vocabulary and not the server** — its own module note
-    // says so — so an endpoint that does not answer is the expected state and not
-    // a server worth waiting for. Left at the default, the one test that does
-    // reach for the endpoint walked the whole retry ladder: 1+2+4+8+16+32 seconds,
-    // which is the entire 63.7s this file used to take for 3.5s of CPU.
+    // This file needs the vocabulary and not the server - its own module note says so - so an
+    // endpoint that does not answer is the expected state. Left at the default, the one test that
+    // does reach for the endpoint walked the whole retry ladder: 1+2+4+8+16+32 seconds.
     cfg.http_retries = 0;
     cfg.store = Some(store.to_path_buf());
     cfg.session_id = session_id.to_string();
-    // `Config::for_this_box` carries no vocabulary default any more (a daemon on
-    // the byte vocabulary needs none), so a harness built here is handed one: the
-    // operator's `LETIBOT_VOCAB_GGUF` if it is set, else the box's own GGUF — the
-    // same path this file's `vocab_gguf` gate consults.
+    // `Config::for_this_box` carries no vocabulary default any more (a daemon on the byte
+    // vocabulary needs none), so a harness built here is handed the operator's `LETIBOT_VOCAB_GGUF`
+    // if it is set, else the box's own GGUF - the path this file's `vocab_gguf` gate consults.
     cfg.vocab_gguf = support::vocab::gguf();
     cfg
 }
@@ -204,10 +197,9 @@ fn a_session_without_a_store_refuses_to_fork_by_name() {
     let mut cfg = Config::for_this_box("/tmp");
     cfg.dialect = WANTED;
     cfg.store = None;
-    // `Config::for_this_box` carries no vocabulary default any more (a daemon on
-    // the byte vocabulary needs none), so a harness built here is handed one: the
-    // operator's `LETIBOT_VOCAB_GGUF` if it is set, else the box's own GGUF — the
-    // same path this file's `vocab_gguf` gate consults.
+    // `Config::for_this_box` carries no vocabulary default any more (a daemon on the byte
+    // vocabulary needs none), so a harness built here is handed the operator's `LETIBOT_VOCAB_GGUF`
+    // if it is set, else the box's own GGUF - the path this file's `vocab_gguf` gate consults.
     cfg.vocab_gguf = support::vocab::gguf();
     cfg.session_id = "compact-no-store".into();
     let parts = load_parts(&cfg);
@@ -221,18 +213,14 @@ fn a_session_without_a_store_refuses_to_fork_by_name() {
     );
 }
 
-/// **The turn after the wall is the harness's own words, not the operator's.**
+/// The turn after the wall is the harness's own words, not the operator's.
 ///
-/// `continue_after_wall` is what `Sessions::after_turn` calls instead of leaving
-/// the operator to type "continue" after every compaction (*"again have to write
-/// it after compaction"*). What must hold even where no model server answers:
-/// the item lands as a User row, because that is what the model reads as a
-/// prompt; the trail records it as `Speaker::Agent`, because the harness talking
-/// to itself must never be readable as the operator authorising the work it
-/// resumes; and the turn it then attempts is allowed to fail — the append
-/// happens first, which is the ordering this test can see without a server and
-/// the part that would be lost if the item were never written. The endpoint is
-/// a dead port, so the attempt fails fast and touches no server.
+/// `continue_after_wall` is what `Sessions::after_turn` calls instead of leaving the operator to type
+/// "continue" after every compaction. What must hold even where no model server answers: the item
+/// lands as a User row, because that is what the model reads as a prompt; the trail records it as
+/// `Speaker::Agent`, because the harness talking to itself must never be readable as the operator
+/// authorising the work it resumes; and the turn it then attempts is allowed to fail - the append
+/// happens first, which is the ordering this test can see without a server.
 #[test]
 fn the_continuation_after_a_wall_is_the_harnesss_own_words() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -263,8 +251,8 @@ fn the_continuation_after_a_wall_is_the_harnesss_own_words() {
     let letibot_transcript::UserPart::Text { text } = &user_parts[0] else {
         panic!("the continuation is text, got {:?}", user_parts[0]);
     };
-    // R93.E1: it asks for the work back from the summary, and does not name the "context wall"
-    // the context check tells the model not to size by.
+    // It asks for the work back from the summary, and does not name the "context wall" the context
+    // check tells the model not to size by.
     assert!(
         text.starts_with("Continue from the summary above"),
         "the continuation asks for the work back: {text}"
@@ -323,9 +311,8 @@ impl Drop for TempDir {
 // Qwen's own ids, the same values the turn crate's canned tests pin.
 const THINK_OPEN: u32 = 248068;
 
-/// The live finding of 2026-09-15, replayed: the stream stops with a normal
-/// `eos` while the reasoning block is still open and nothing but reasoning was
-/// produced — the shape that failed the operator's automatic compaction.
+/// The shape that failed the operator's automatic compaction: the stream stops with a normal `eos`
+/// while the reasoning block is still open and nothing but reasoning was produced.
 fn an_unfinished_reasoning_turn(
     vocab: &letibot_tokencore::Vocab,
     thought: &str,
@@ -350,23 +337,16 @@ fn an_unfinished_reasoning_turn(
     frames
 }
 
-/// **The salvage spending itself is still a failure the log announces.**
+/// The salvage spending itself is still a failure the log announces.
 ///
-/// The compaction path now salvages a say-nothing summary turn the way the tool
-/// loop does, bounded by the engine's budget. What must hold when the budget is
-/// spent — a model that ends every retry inside its own reasoning block — is
-/// that the failure still COMES OUT: `Sessions::compact` errs, and the
-/// automatic path publishes `auto_compact_failed` exactly as it did before the
-/// salvage existed. A compaction that did not run must say so; the event
-/// disappearing behind retries would be the dishonest version of this fix.
+/// The compaction path salvages a say-nothing summary turn the way the tool loop does, bounded by the
+/// engine's budget. What must hold when the budget is spent - a model that ends every retry inside
+/// its own reasoning block - is that the failure still COMES OUT: `Sessions::compact` errs, and the
+/// automatic path publishes `auto_compact_failed`. A compaction that did not run must say so; the
+/// event disappearing behind retries would be the dishonest version of this fix.
 ///
-/// The window is 512 so the wall sits at 384 tokens (`should_compact` is
-/// `resident + headroom >= window`, and below 8192 the headroom is a quarter of
-/// the window): the stable prefix alone is past it, so one answered prompt turn
-/// is enough for the automatic compaction to fire. The scripts: request one is
-/// the prompt turn and answers; every request after is the compaction turn
-/// ending unfinished, three of which are salvaged before the fourth comes back
-/// `SalvageExhausted`.
+/// The window is 512, so the stable prefix alone is past the wall and one answered prompt turn is
+/// enough for the automatic compaction to fire.
 #[test]
 fn a_compaction_that_exhausts_the_salvage_still_publishes_auto_compact_failed() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -386,7 +366,7 @@ fn a_compaction_that_exhausts_the_salvage_still_publishes_auto_compact_failed() 
 
     // One answered prompt turn, then unfinished compaction turns for as long as
     // anybody asks: three salvages, the spent turn, and one spare in case the
-    // count is ever off by one — an undersupplied server would turn the spent
+    // count is ever off by one - an undersupplied server would turn the spent
     // budget into a socket error and the test would pass for the wrong reason.
     let scripts = vec![
         a_plain_answer_turn(vocab, "counting", "the answer was forty-two", 20),
@@ -407,7 +387,7 @@ fn a_compaction_that_exhausts_the_salvage_still_publishes_auto_compact_failed() 
     let mut sessions =
         Sessions::open_first(&parts, cfg.clone(), registry.clone()).expect("the session opens");
 
-    // The prompt turn answers, and the automatic compaction fires after it —
+    // The prompt turn answers, and the automatic compaction fires after it -
     // and fails, loudly, after spending the budget.
     let out = sessions.submit(session_id, "count the things");
     assert!(out.is_ok(), "the prompt turn answered: {out:?}");
@@ -422,7 +402,7 @@ fn a_compaction_that_exhausts_the_salvage_still_publishes_auto_compact_failed() 
         .collect();
 
     // The attempt was announced in the vocabulary that was already there, and
-    // the failure followed it in the same vocabulary — no parallel event, no
+    // the failure followed it in the same vocabulary - no parallel event, no
     // silence.
     let attempt_at = warnings
         .iter()
@@ -441,18 +421,10 @@ fn a_compaction_that_exhausts_the_salvage_still_publishes_auto_compact_failed() 
         detail.contains("the automatic compaction did not run"),
         "the failure says the compaction did not run: {detail}"
     );
-    // **What it names has been both things, so read this before changing it.**
-    //
-    // This fixture is a 2719-token PROMPT in a 512-token window: hopeless, and
-    // hopeless before any turn runs. It used to discover that by attempting a
-    // summary and spending the salvage budget, and the assertion here named the
-    // spent budget. Compaction now does the arithmetic first, so the same fixture
-    // is refused up front and names the actual cause.
-    //
-    // The test is not about either message. It is about the failure COMING OUT --
-    // `Sessions::compact` errs and the automatic path publishes
-    // `auto_compact_failed` -- and that is why it survives the behaviour changing
-    // underneath it twice.
+    // What it names has been both things, so read this before changing it. This fixture is a
+    // 2719-token PROMPT in a 512-token window - hopeless before any turn runs - so the failure names
+    // the cause rather than a spent budget. The test is not about either message: it is about the
+    // failure COMING OUT.
     assert!(
         detail.contains("PROMPT is") && detail.contains("token window"),
         "the failure names the prompt against the window, which is the cause here: {detail}"
@@ -480,7 +452,7 @@ fn a_compaction_that_exhausts_the_salvage_still_publishes_auto_compact_failed() 
             matches!(i, letibot_transcript::TranscriptItem::User { parts, .. }
                 if matches!(&parts[..],
                     [letibot_transcript::UserPart::Text { text }]
-                    // Against the constant, not a copy of its words: this test
+                    // Against the constant, not a copy of its words: this test once
                     // failed for a rewording of the notice it is not about.
                     if text.as_str() == letibot_turn::UNFINISHED_REASONING_NOTICE))
         })
@@ -491,21 +463,14 @@ fn a_compaction_that_exhausts_the_salvage_still_publishes_auto_compact_failed() 
     );
 }
 
-/// **A compaction re-seats, so `/compact` then `/reseat` is no longer two
-/// summaries.**
+/// A compaction re-seats, so `/compact` then `/reseat` is no longer two summaries.
 ///
-/// Measured in the operator's own session before this landed. Their `…#t8` was
-/// five rows: row 0 the `/compact` summary, row 1 `/reseat` asking for a summary
-/// of a transcript that was already nothing but a summary, row 2 the model —
-/// with nothing to summarise — running `git log` instead, which tripped the "a
-/// summary is a record, not an action" guard and refused the re-seat, and rows 3
-/// and 4 the retry. Three summary turns and two cold prefills to pick up a tool
-/// list. Their reading: *"let compaction automatically reseat so new tools picked
-/// up"*.
+/// Asking for a summary of a transcript that is already nothing but a summary has nothing to
+/// summarise: the model acts instead, the re-seat is refused, and the retry costs three summary
+/// turns and two cold prefills to pick up a tool list.
 ///
-/// This drives the half that needs no model server: the daemon comes back with a
-/// different prompt, the fork lands on THAT one, and a `/reseat` afterwards has
-/// nothing left to do.
+/// This drives the half that needs no model server: the daemon comes back with a different prompt
+/// the fork lands on THAT one, and a `/reseat` afterwards has nothing left to do.
 #[test]
 fn a_compaction_forks_onto_the_prompt_the_daemon_seats_now() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -531,7 +496,7 @@ fn a_compaction_forks_onto_the_prompt_the_daemon_seats_now() {
         .expect("the first fork lands");
     drop(h);
 
-    // The daemon comes back with a different system prompt — which is what a new
+    // The daemon comes back with a different system prompt - which is what a new
     // tool does to the prefix, without needing a registry this test cannot build.
     let mut cfg2 = config(&path, session_id);
     cfg2.system = format!("{}\n\nAnd one more standing instruction.", cfg2.system);
@@ -551,7 +516,7 @@ fn a_compaction_forks_onto_the_prompt_the_daemon_seats_now() {
         "a new prefix row, not the old one"
     );
 
-    // The compaction forks onto it — one summary, one fork, one cold prefill.
+    // The compaction forks onto it - one summary, one fork, one cold prefill.
     let second = h2
         .fork_to_summary(
             &outcome("the second summary"),
@@ -573,7 +538,7 @@ fn a_compaction_forks_onto_the_prompt_the_daemon_seats_now() {
     );
     assert_eq!(fork.stable_prefix_id, next_id);
 
-    // **And this is the whole point**: a `/reseat` now has nothing to do, so it
+    // And this is the whole point: a `/reseat` now has nothing to do, so it
     // refuses before running a turn instead of asking for a summary of a summary.
     let said = match h2.reseat() {
         Err(e) => e.to_string(),
@@ -594,14 +559,12 @@ fn a_compaction_forks_onto_the_prompt_the_daemon_seats_now() {
     assert_eq!(r.transcript_id, second.transcript_id);
 }
 
-/// **`/tools` names the gap between seated and announced.**
+/// `/tools` names the gap between seated and announced.
 ///
-/// The registry is what this daemon seated; the prompt is what message zero
-/// announces, and it is fixed when a transcript starts. A tool seated after the
-/// conversation began is one the model has never been told about and cannot call
-/// — and the banner is no help, because the banner is computed from the registry.
-/// That gap is the operator's lost hour: *"i did letibot --stop and leticode
-/// --continue but still no exec"*.
+/// The registry is what this daemon seated; the prompt is what message zero announces, and it is fixed
+/// when a transcript starts. A tool seated after the conversation began is one the model has never
+/// been told about and cannot call - and the banner is no help, because it is computed from the
+/// registry.
 #[test]
 fn the_tools_listing_marks_what_the_prompt_has_never_heard_of() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -630,17 +593,13 @@ fn the_tools_listing_marks_what_the_prompt_has_never_heard_of() {
     assert!(said.contains("(read)"), "{said}");
 }
 
-/// **The note in the new base may not claim a region was replaced while showing
-/// it.** R27 ruled that a remote compaction carries the newest exchanges
-/// verbatim, and that is exactly the change that made the old note false: it said
-/// *"everything said before this point is replaced by the summary below"* and
-/// then appended the tail, so the reader is told a thing is gone while reading it.
+/// The note in the new base may not claim a region was replaced while showing it.
 ///
-/// The two sentences the tail adds are the disclosure a reader needs and could
-/// not otherwise get: how much was carried, and — when the tail had to start
-/// inside an exchange — that its first message answers something no longer here.
-/// That second one is `docs/compaction.md` §3's *something must stand where the
-/// evicted span was* applied inside the boundary rather than before it.
+/// A remote compaction carries the newest exchanges verbatim, so the old sentence - *"everything said
+/// before this point is replaced by the summary below"* - told the reader a thing was gone while it
+/// was reading it. The two sentences the tail adds are the disclosure a reader needs and could not
+/// otherwise get: how much was carried, and, when the tail had to start inside an exchange, that its
+/// first message answers something no longer here.
 #[test]
 fn the_fork_says_what_it_carried_verbatim_and_never_claims_it_was_replaced() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -686,7 +645,7 @@ fn the_fork_says_what_it_carried_verbatim_and_never_claims_it_was_replaced() {
 
     assert_eq!(report.tail_items, 3, "three items went in verbatim");
     assert_eq!(report.tail_dropped, Some(2), "and two of them are missing");
-    // **The tail on the wire is the words, in order, with a role each** — so a head
+    // The tail on the wire is the words, in order, with a role each - so a head
     // draws the recent past instead of parsing a count out of the note. Two agent
     // turns and one operator turn, and an empty assistant row would be no turn at all.
     assert_eq!(
@@ -741,7 +700,7 @@ fn the_fork_says_what_it_carried_verbatim_and_never_claims_it_was_replaced() {
 }
 
 /// A fork with no tail says nothing about one, and keeps the replacement
-/// sentence — the local path, and every re-seat and re-ingest.
+/// sentence - the local path, and every re-seat and re-ingest.
 #[test]
 fn a_fork_with_no_tail_claims_nothing_about_a_tail() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -779,21 +738,17 @@ fn a_fork_with_no_tail_claims_nothing_about_a_tail() {
     );
 }
 
-/// **The door's call is a DEPOSIT: it lands in the transcript and nothing replies to it.**
+/// The door's call is a DEPOSIT: it lands in the transcript and nothing replies to it.
 ///
-/// R31's whole reason for the door, and the three facts that make it one rather than a
-/// request:
+/// The three facts that make it a deposit rather than a request: the row is in `items`, so the next
+/// turn reads it and no turn was started to produce it; it carries `origin: Operator { who }`, so
+/// every head draws it as the person's act and no head has to infer it; and the size is said before
+/// the row lands, which is the one thing the operator chose to buy and would otherwise discover at
+/// the next compaction.
 ///
-/// 1. the row is in `items` — the next turn reads it, and no turn was started to produce it;
-/// 2. it carries `origin: Operator { who }`, so every head draws it as the person's act and
-///    no head has to infer it (`dd81999`);
-/// 3. **the size is said before the row lands**, which is the one thing the operator chose to
-///    buy and would otherwise discover at the next compaction.
-///
-/// Run through `run_operator_call`, which is the same function both paths call — the worker's
-/// between-turns arm and the round boundary a running turn polls
-/// (`Harness::apply_queued_head_run`) — so what this asserts is the deposit itself and not one
-/// caller of it.
+/// It runs through `run_operator_call`, the same function both paths call - the worker's
+/// between-turns arm and the round boundary a running turn polls - so what this asserts is the
+/// deposit itself and not one caller of it.
 #[test]
 fn a_door_call_lands_as_a_deposit_with_its_origin_and_its_size() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -823,7 +778,7 @@ fn a_door_call_lands_as_a_deposit_with_its_origin_and_its_size() {
     };
     assert_eq!(call_id, "h1-1");
     assert_eq!(name, "read");
-    // **The provenance, which only this mechanism gives.** Pasted into the composer the text
+    // The provenance, which only this mechanism gives. Pasted into the composer the text
     // would be indistinguishable from the operator's own opinion of it; through the door it is
     // evidence supplied, and a model may weigh the two differently.
     assert_eq!(
@@ -833,9 +788,9 @@ fn a_door_call_lands_as_a_deposit_with_its_origin_and_its_size() {
     );
     assert!(!payload.is_empty(), "the file's text is the payload");
 
-    // **And the size was said while the operator could still act on it.** The note names the
-    // bytes that reach the model and the tokens they cost — the figure R31 asks for, and the
-    // one thing about this call they chose to buy.
+    // And the size was said while the operator could still act on it. The note names the bytes
+    // that reach the model and the tokens they cost - the one thing about this call they chose to
+    // buy.
     let said: Vec<String> = h
         .hub()
         .retained()
@@ -862,16 +817,14 @@ fn a_door_call_lands_as_a_deposit_with_its_origin_and_its_size() {
     );
 }
 
-/// **The transcript's own note says WHY it has no tail** — and this half is the DURABLE one.
+/// The transcript's own note says WHY it has no tail - and this half is the DURABLE one.
 ///
-/// The `compacted` warning reaches attached heads; the store has no events table. After a
-/// restart, the note in the new transcript is all a reader has — so with no tail it said
-/// nothing about one, and R27's ruling working was the same row as the budget losing to a
-/// single item. That is R41's shape one document over: an absence with three causes and one
-/// appearance.
+/// The `compacted` warning reaches attached heads; the store has no events table, so after a restart
+/// the note in the new transcript is all a reader has. Without a reason, a compaction with no tail
+/// said nothing about one - an absence with three causes and one appearance.
 ///
-/// The reason is CHOSEN here rather than hoped for from a fixture's sizes, which is the whole
-/// reason `ForkTail::because` is a parameter.
+/// The reason is CHOSEN here rather than hoped for from a fixture's sizes, which is the whole reason
+/// `ForkTail::because` is a parameter.
 #[test]
 fn the_compaction_note_says_why_it_has_no_tail() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -884,7 +837,7 @@ fn the_compaction_note_says_why_it_has_no_tail() {
         ("nothing_fits", "larger than the whole tail budget"),
         ("no_turns", "nothing to carry"),
     ] {
-        // **A fresh session per case**, because a fork replaces the transcript and the second
+        // A fresh session per case, because a fork replaces the transcript and the second
         // fork would be reading the first one's note.
         let session_id = format!("compact-why-{because}");
         let cfg = config(&path, &session_id);
@@ -921,7 +874,7 @@ fn the_compaction_note_says_why_it_has_no_tail() {
             "the note claims a tail it does not have: {text}"
         );
     }
-    // **And a fork that is not a compaction gets no clause at all.** A re-seat passes an empty
+    // And a fork that is not a compaction gets no clause at all. A re-seat passes an empty
     // `because`, and a reason for it would be a claim about a decision nobody made.
     let session_id = "compact-why-reseat";
     let cfg = config(&path, session_id);
@@ -951,20 +904,8 @@ fn the_compaction_note_says_why_it_has_no_tail() {
     }
 }
 
-/// **A switch clears the token ratio, in BOTH directions** — ruled 2026-09-24.
-///
-/// `ledger_scale` is a measurement: `(this box's ledger tokens, the model's own prompt
-/// tokens)` for one prompt on one model. A ratio from one model is not evidence about another,
-/// and carrying it forward presents a stale measurement as current. **Cleared rather than
-/// re-derived**, because there is nothing to derive it from at the moment of the switch — the
-/// first round on the new model is what produces it — and inventing one would be a guess
-/// wearing a number's clothes.
-///
-/// Both directions, and the second had a live defect behind it: the per-round setter was
-/// guarded on `self.provider.is_some()`, so a LOCAL round never refreshed the ratio and a
-/// provider → local switch kept the provider's scale for the rest of the session.
-/// **A summary cut off at the length limit says so in one plain sentence** (R93.E2): the
-/// sentence used to carry runs of fourteen literal spaces, from line breaks without a `\`.
+/// A summary cut off at the length limit says so in one plain sentence. The sentence used to
+/// carry runs of fourteen literal spaces, from line breaks without a `\`.
 #[test]
 fn a_cut_off_summary_says_so_without_whitespace_gaps() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -995,6 +936,17 @@ fn a_cut_off_summary_says_so_without_whitespace_gaps() {
     assert!(!text.contains("  "), "no whitespace gaps: {text:?}");
 }
 
+/// A switch clears the token ratio, in BOTH directions.
+///
+/// `ledger_scale` is a measurement - `(this box's ledger tokens, the model's own prompt tokens)` for
+/// one prompt on one model - so a ratio from one model is not evidence about another, and carrying it
+/// forward presents a stale measurement as current. Cleared rather than re-derived, because the
+/// first round on the new model is what produces it, and inventing one would be a guess wearing a
+/// number's clothes.
+///
+/// Both directions, and the second had a live defect behind it: the per-round setter was guarded on
+/// `self.provider.is_some`, so a provider → local switch kept the provider's scale for the rest of
+/// the session.
 #[test]
 fn a_switch_clears_the_token_ratio_and_a_local_round_can_set_it() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -1006,11 +958,11 @@ fn a_switch_clears_the_token_ratio_and_a_local_round_can_set_it() {
     let parts = load_parts(&cfg);
     let mut h = opened(&cfg, &parts);
 
-    // A measurement exists — as it would after any metered round.
+    // A measurement exists - as it would after any metered round.
     h.config_mut().ledger_scale = Some((1_000_699, 671_280));
     assert!(h.config().tokens_are_converted(), "the fixture is scaled");
 
-    // **A switch that CANNOT be built changes nothing**, which is this method's own promise:
+    // A switch that CANNOT be built changes nothing, which is this method's own promise
     // a provider whose key is missing is refused, and a scale dropped for a refusal would be
     // a change made by a thing that did not happen.
     let before = h.config().ledger_scale;
@@ -1030,7 +982,7 @@ fn a_switch_clears_the_token_ratio_and_a_local_round_can_set_it() {
         );
     }
 
-    // **A switch that CAN be built clears it.** An explicit key resolves without any network,
+    // A switch that CAN be built clears it. An explicit key resolves without any network
     // so this is the success path and not a mock of it.
     let line = h
         .set_provider(Some(letibot_harnessd::config::ProviderConfig {
@@ -1046,11 +998,9 @@ fn a_switch_clears_the_token_ratio_and_a_local_round_can_set_it() {
         None,
         "the switch carried a measurement made on another model"
     );
-    // **And the fact is SAYABLE**, which is the ruling's other half: a reader of an
-    // estimated number must be able to tell it from a calibrated one. Since the carried
-    // scale (W6) the measurement made on the model switched away from stands in, NAMED, until
-    // a round on the new one measures: that is not "unscaled" (`context.rs`: *carried is not
-    // unmeasured*), it is an estimate that says whose it is.
+    // And the fact is SAYABLE, which is the ruling's other half: a reader of an estimated number
+    // must be able to tell it from a calibrated one. The carried scale stands in, NAMED, until a
+    // round on the new model measures - an estimate that says whose it is.
     assert!(
         !h.config().tokens_are_unscaled(),
         "a carried measurement is not an unmeasured one"
@@ -1064,7 +1014,7 @@ fn a_switch_clears_the_token_ratio_and_a_local_round_can_set_it() {
         "and every line that prints it can name that model"
     );
 
-    // **Back to local clears it too** — the direction that had the live defect.
+    // Back to local clears it too - the direction that had the live defect.
     h.set_provider(None).expect("local is not refused");
     assert_eq!(h.config().ledger_scale, None);
     // And a local session is not "unscaled" in the sense that needs saying: its two counts
@@ -1073,8 +1023,8 @@ fn a_switch_clears_the_token_ratio_and_a_local_round_can_set_it() {
         !h.config().tokens_are_unscaled(),
         "a local session's counts need no measurement and are not a warning"
     );
-    // **And a LOCAL round may set the ratio.** The setter's guard used to be
-    // `self.provider.is_some()`, so this assignment was impossible and a session that had ever
+    // And a LOCAL round may set the ratio. The setter's guard used to be
+    // `self.provider.is_some`, so this assignment was impossible and a session that had ever
     // been switched ran unscaled for ever.
     h.config_mut().ledger_scale = Some((1_000_699, 1_000_699));
     assert!(
@@ -1087,29 +1037,17 @@ fn a_switch_clears_the_token_ratio_and_a_local_round_can_set_it() {
     );
 }
 
-/// **A resumed session is checked for the wall BEFORE its first turn is sent.**
+/// A resumed session is checked for the wall BEFORE its first turn is sent.
 ///
-/// `compact_if_at_the_wall`'s own contract is to compact *"when the NEXT turn
-/// would not fit"*, and its two older call sites are both AFTER a turn — so the
-/// one prompt nothing checked was the first prompt after a resume, which is
-/// exactly the prompt a reopened session gets. Measured 2026-10-02: a reopened
-/// leticl session sent 1,463,497 tokens against a 1,048,576 window on every
-/// attempt, and the provider's refusal came back as a BACKEND error rather than
-/// `ContextWall` — so `after_turn`'s `out.is_ok() || wall` was false, the
-/// compaction was never reached, and no amount of retyping could dig that session
-/// out. A dead head, not a slow one.
+/// `compact_if_at_the_wall`'s contract is to compact *"when the NEXT turn would not fit"*, and its
+/// older call sites are both AFTER a turn - so the one prompt nothing checked was the first after a
+/// resume, which is exactly the prompt a reopened session gets. A provider's refusal for that came
+/// back as a BACKEND error rather than `ContextWall`, so the compaction was never reached and no
+/// amount of retyping could dig the session out.
 ///
-/// The fixture is the salvage test's, for the same reason it uses it: a prefix in
-/// a 512-token window is over the wall before any turn runs, so nothing about the
-/// conversation has to build up first. What is asserted is the ORDER — the wall
-/// is announced before the turn starts — because that ordering *is* the property
-/// under test, and it is the one thing an assertion on `out.is_ok()` cannot see.
-///
-/// The compaction then FAILS here, because this fixture's prompt is larger than
-/// its window; that is the fixture's point and not this test's. What matters is
-/// that it was CONSIDERED before anything was sent, which is what a resumed
-/// session needs and what it did not have. The failure itself is the salvage
-/// test's assertion, not this one's.
+/// The fixture is the salvage test's: a prefix in a 512-token window is over the wall before any turn
+/// runs. What is asserted is the ORDER - the wall is announced before the turn starts - because that
+/// ordering is the property, and it is the one thing an assertion on `out.is_ok` cannot see.
 #[test]
 fn the_wall_is_checked_before_the_first_turn_after_a_resume() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -1144,7 +1082,7 @@ fn the_wall_is_checked_before_the_first_turn_after_a_resume() {
     let mut sessions =
         Sessions::open_first(&parts, cfg.clone(), registry.clone()).expect("the session opens");
 
-    // **Nothing has run yet**: the session has just been opened, which is the state
+    // Nothing has run yet: the session has just been opened, which is the state
     // a resume leaves it in, and the prompt below is its first turn.
     let out = sessions.submit(session_id, "count the things");
     assert!(out.is_ok(), "the prompt turn still answers: {out:?}");
@@ -1165,36 +1103,23 @@ fn the_wall_is_checked_before_the_first_turn_after_a_resume() {
     );
 }
 
-/// `<tool_call>` and `</tool_call>` — Qwen's own control tokens, the same ids the
+/// `<tool_call>` and `</tool_call>` - Qwen's own control tokens, the same ids the
 /// turn crate's engine tests pin. Only this file's tool-call fixture needs them.
 const TOOL_CALL_OPEN: u32 = 248058;
 const TOOL_CALL_CLOSE: u32 = 248059;
 
-/// **A child's session compacts when its TOOL RESULT overruns, and finishes the task.**
+/// A child's session compacts when its TOOL RESULT overruns, and finishes the task.
 ///
-/// The operator's requirement, in their words: *"subagent is a normal session. it must
-/// be able to compact on tool call overrun"*, and their question, *"we have overrun
-/// protection exactly for this case, why this resurfaces again and again"*. The
-/// measured answer this test is the regression guard for: a child of
-/// `s-1789462738453908838` stopped after 207 rounds at 1,131,717 of 1,146,137 tokens
-/// with a wall notice promising *"a compaction was ATTEMPTED"*, and the store showed
-/// ONE transcript for it — no fork, no compaction item — while its parent compacted
-/// 57 times in the same window. The seam that reacts to the wall lived only in
-/// `Sessions::after_turn`, and a child never passes through `Sessions`.
+/// The seam that reacts to the wall lived only in `Sessions::after_turn`, and a child never passes
+/// through `Sessions` - so a child could cross the wall, be told *a compaction was ATTEMPTED*, and
+/// leave ONE transcript with no fork, while its parent compacted dozens of times in the same window.
 ///
-/// The fixture is a CHILD's shape on purpose: a bare [`Harness`] driven directly, the
-/// way `HarnessTaskRunner::run_to_completion` drives one — no `Sessions`, no daemon
-/// worker, nothing between the turn and the wall. The overrun is the operator's own
-/// case: round zero calls `read`, the result is appended between rounds, and the
-/// ledger crosses the wall BEFORE round one is sent — so what is asserted is exactly
-/// *"compacts before the next round rather than after the wall"*:
-///
-/// 1. the prompt still ANSWERS (the child's task finishes rather than dying with the
-///    wall notice);
-/// 2. the wall fired mid-turn, from the tool result — `context_wall` is in the log
-///    after the round that ran the call, and before the compaction;
-/// 3. the compaction ran — `compacting now` precedes a `compacted` warning, and the
-///    transcript FORKED (`#t1`), which is the store row the dead child never had.
+/// The fixture is a CHILD's shape on purpose: a bare [`Harness`] driven the way
+/// `HarnessTaskRunner::run_to_completion` drives one, with nothing between the turn and the wall.
+/// Round zero calls `read`, the result is appended between rounds, and the ledger crosses the wall
+/// BEFORE round one is sent. What is asserted: the prompt still ANSWERS; the wall fired mid-turn, from
+/// the tool result; and the compaction ran - `compacting now`, a `compacted` warning, and a FORKED
+/// transcript.
 #[test]
 fn a_child_session_compacts_on_a_tool_result_overrun_and_finishes() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -1206,18 +1131,9 @@ fn a_child_session_compacts_on_a_tool_result_overrun_and_finishes() {
     let path = dir.path().join("sessions.db");
     let session_id = "child-wall-test";
     let mut cfg = config(&path, session_id);
-    // The window that makes the tool results an overrun, at the scale the real
-    // ones are. The stable prefix of a seated session is ~3634 tokens of this
-    // vocabulary; `read` renders ~15 tokens per line (gutter and all) and is
-    // byte-capped per call, so the fixture reaches the wall the way the dead
-    // child did — by ACCUMULATION across a batch of calls, not one giant result.
-    // At 32768 the headroom is 2048 (`max(w/16, 2048).min(w/4)`), the wall at
-    // 30720, and prefix plus ten reads of a 260-line file (~3950 tokens each)
-    // lands at ~43000 — past the wall and past the window, which is the state
-    // `plan_overrun` calls `Cut` and answers with the two-half summary a local
-    // server takes. That is the arm a wall-triggered compaction really runs on
-    // big sessions; the ordinary arm needs resident + 8192 ≤ window, which no
-    // session at its wall ever satisfies.
+    // The window that makes the tool results an overrun, at the scale the real ones are: the stable
+    // prefix is ~3634 tokens, `read` renders ~15 tokens per line, and the fixture reaches the wall the
+    // way a real child did - by ACCUMULATION across a batch of calls, not one giant result.
     cfg.context_window = Some(32768);
 
     // The file the child reads: 260 numbered lines, ~3950 tokens as `read`
@@ -1232,28 +1148,19 @@ fn a_child_session_compacts_on_a_tool_result_overrun_and_finishes() {
         ));
     }
     std::fs::write(&big, body).expect("the file to read is written");
-    // **The session root is this test's own temp dir**, so `read` is handed a path
-    // inside it whatever `TMPDIR` says. `config` above seats every session at `/tmp`,
-    // and this test used to assume its temp dir was under it and strip that prefix —
-    // which held only while `TMPDIR` was unset. Under `TMPDIR=$HOME/.cache/…` the
-    // path stayed absolute, every one of the ten reads was refused with "path
-    // resolves outside the session root" (correctly: the tool's root check is doing
-    // its job), no tool result overran anything, and the test failed at its
-    // `context_wall` assertion for a reason that had nothing to do with compaction.
+    // The session root is this test's own temp dir, so `read` is handed a path inside it whatever
+    // `TMPDIR` says - with `config`'s `/tmp` root and a `TMPDIR` elsewhere, every read was refused for
+    // a reason that had nothing to do with compaction.
     cfg.workspace = dir.path().to_path_buf();
     let rel = "big.txt";
 
     let parts = load_parts(&cfg);
     let vocab = &parts.vocab;
 
-    // Round zero: a BATCH of ten `read` calls, end — the turn hands the harness
-    // ten calls to run in order, which is how one round's results push a session
-    // past the wall (the operator's child crossed it on its 207th). Each body is
-    // the QWEN dialect's own tool-call shape — `<function=read>` with
-    // `<parameter>` entries, the format `parse.rs`'s round-trip test pins — and
-    // the fences carry their literal text, because that is what a boundary looks
-    // like on the wire. A final `eos` ends the turn with the calls pending, which
-    // is what makes the harness run them.
+    // Round zero: a BATCH of ten `read` calls, then end - one round's results push a session past the
+    // wall. Each body is the Qwen dialect's own tool-call shape (`<function=read>` with `<parameter>`
+    // entries), and a final `eos` ends the turn with the calls pending, which is what makes the
+    // harness run them.
     let mut round0 = vec![canned::Frame::Progress {
         total: 30,
         processed: 30,
@@ -1287,7 +1194,7 @@ fn a_child_session_compacts_on_a_tool_result_overrun_and_finishes() {
     }
     round0.push(canned::Frame::Final {
         stop_type: "eos",
-        // Every control token besides the bodies: the think fences and, per call,
+        // Every control token besides the bodies: the think fences and, per call
         // the two tool-call fences. The accumulator counts what was streamed, so
         // this has to agree with it exactly or the turn dies in `CountMismatch`
         // before the wall is ever reached.
@@ -1316,7 +1223,7 @@ fn a_child_session_compacts_on_a_tool_result_overrun_and_finishes() {
     // Spares, in case a path through the fix asks one turn more than the three
     // above: an undersupplied server turns a scripted answer into a socket error
     // and the test would fail for a reason that is not the one under test.
-    // (`Frame` is not `Clone` — the turn crate's support keeps it minimal — so
+    // (`Frame` is not `Clone` - the turn crate's support keeps it minimal - so
     // the spares are built, not copied.)
     let spare = a_plain_answer_turn(vocab, "resuming", "the task is finished", 30);
     let spare2 = a_plain_answer_turn(vocab, "resuming", "the task is finished", 30);
@@ -1325,7 +1232,7 @@ fn a_child_session_compacts_on_a_tool_result_overrun_and_finishes() {
     cfg.endpoint = serv.endpoint.clone();
 
     // A CHILD's harness: opened bare, held directly, no `Sessions` anywhere near
-    // it. That is the whole of the defect's setting — everything the daemon's own
+    // it. That is the whole of the defect's setting - everything the daemon's own
     // sessions get around a turn, this harness must supply itself.
     let hub = Hub::new(session_id);
     let mut h = Harness::open(&parts, cfg.clone(), hub.clone()).expect("the child opens");
@@ -1363,7 +1270,7 @@ fn a_child_session_compacts_on_a_tool_result_overrun_and_finishes() {
         "the compaction is attempted before it is reported: {compacting} < {compacted}"
     );
     // ...and the turn that finished the task ran AFTER the compaction, on the
-    // summary — a TurnStarted later than the report is the continuation.
+    // summary - a TurnStarted later than the report is the continuation.
     let last_started = events
         .iter()
         .rposition(|e| matches!(e, SessionEvent::TurnStarted { .. }))
@@ -1374,8 +1281,8 @@ fn a_child_session_compacts_on_a_tool_result_overrun_and_finishes() {
          last TurnStarted at {last_started}"
     );
 
-    // **The store row the dead child never had.** The fork is what a compaction
-    // leaves behind — one transcript became two — and `transcript_id` is the
+    // The store row the dead child never had. The fork is what a compaction
+    // leaves behind - one transcript became two - and `transcript_id` is the
     // store's own id for the new base.
     assert_eq!(
         h.transcript_id(),
@@ -1384,19 +1291,15 @@ fn a_child_session_compacts_on_a_tool_result_overrun_and_finishes() {
     );
 }
 
-/// **A fork's rows REPLACE the ones the session's own view holds, and the statement that says so
-/// is on the log.**
+/// A fork's rows REPLACE the ones the session's own view holds, and the statement that says so is
+/// on the log.
 ///
-/// The head is the reader the operator watched; the hub's view is the reader nobody watches and
-/// everybody gets. `Hub::snapshot` cuts that view's rows for every head that attaches, so a view
-/// that keeps both transcripts hands the conversation to a late head TWICE — the same defect one
-/// attach later, with no event to blame it on, because that head never saw the fork.
+/// `Hub::snapshot` cuts that view's rows for every head that attaches, so a view that keeps both
+/// transcripts hands the conversation to a late head TWICE - the same defect one attach later, with
+/// no event to blame it on, because that head never saw the fork.
 ///
-/// **The fixture forks twice, and the second fork is the measurement.** One fork would leave a
-/// view that agrees with the session for the wrong reason: the session had no rows before it, so
-/// there is nothing for the carry to be appended to. The first fork's rows ARE in the view when
-/// the second fork lands, which is exactly the state a live session is in when the operator types
-/// `/reseat`.
+/// The fixture forks twice, and the second fork is the measurement: after the first fork the view
+/// already holds its rows, which is the state a live session is in when the operator types `/reseat`.
 #[test]
 fn a_fork_replaces_the_rows_the_hub_holds_rather_than_adding_to_them() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -1445,13 +1348,10 @@ fn a_fork_replaces_the_rows_the_hub_holds_rather_than_adding_to_them() {
         "the note and two carried rows"
     );
 
-    // **The order, and what it is for.** The statement comes AFTER the rows it is about, and the
-    // rule does not depend on that: the event names the transcript it replaces rather than a
-    // count, so a reader drops exactly those rows whenever it hears it. What the order buys is
-    // the two cases a statement published first would break — a head that reconnects into the
-    // one-seq window between them (it would replay the rows and not the boundary), and a fork
-    // whose `append_items` fails (every reader emptied while the session still speaks the
-    // transcript it was told it had left).
+    // The order, and what it is for. The statement comes AFTER the rows it is about; the rule does
+    // not depend on that (the event names the transcript it replaces, so a reader drops exactly those
+    // rows), but the order keeps a head that reconnects into the one-seq window from replaying rows
+    // without the boundary.
     let events: Vec<letibot_sessionlog::SessionEvent> =
         hub.retained().iter().map(|e| e.event.clone()).collect();
     let said = events
@@ -1485,7 +1385,7 @@ fn a_fork_replaces_the_rows_the_hub_holds_rather_than_adding_to_them() {
         other => panic!("the statement is not a fork: {other:?}"),
     }
 
-    // **The second fork, and this is the doubling.** The first fork's three rows are in the view;
+    // The second fork, and this is the doubling. The first fork's three rows are in the view
     // a view that folds the second fork as a pile of appends holds six and a late head draws the
     // conversation twice.
     let second = h

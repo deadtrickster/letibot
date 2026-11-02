@@ -1,11 +1,9 @@
-//! **A daemon for a cloud provider needs no GGUF** — and one with neither opens, and refuses
-//! the turn by name.
+//! A daemon for a cloud provider needs no GGUF - and one with neither opens, and refuses the turn by
+//! name.
 //!
-//! The operator's ask: *"say i want to just install leticode, give it my deepseek/glm key
-//! and continue"*. Before this, `Parts::load` read a GGUF on every start and the engine
-//! checked the dialect's control tokens against it, so a box with only a key could not
-//! start a session at all — and none of llama.cpp's bundled vocabularies passed that check
-//! (measured 2026-10-07 on a Mac: `qwen2`, `qwen35`, `deepseek-llm`).
+//! Before this, `Parts::load` read a GGUF on every start and the engine checked the dialect's control
+//! tokens against it, so a box with only a key could not start a session at all - and none of
+//! llama.cpp's bundled vocabularies passed that check.
 //!
 //! These need no model file, no server and no key: the provider is named, never called.
 
@@ -26,8 +24,8 @@ fn provider_cfg(dialect: Dialect) -> Config {
     cfg
 }
 
-/// Both dialects' whole control table and stop list resolve on the byte vocabulary —
-/// the startup check that refused every bundled GGUF — and the engine is built.
+/// Both dialects' whole control table and stop list resolve on the byte vocabulary - the startup
+/// check that refused every bundled GGUF - and the engine is built.
 #[test]
 fn a_provider_session_opens_on_the_byte_vocabulary_for_both_dialects() {
     for dialect in [Dialect::Qwen, Dialect::Glm] {
@@ -42,7 +40,7 @@ fn a_provider_session_opens_on_the_byte_vocabulary_for_both_dialects() {
 }
 
 /// The two dialects reserve different literals, so their byte vocabularies are different
-/// vocabularies — the identity a resume compares.
+/// vocabularies - the identity a resume compares.
 #[test]
 fn each_dialect_has_its_own_byte_vocabulary() {
     let q = Parts::load(&provider_cfg(Dialect::Qwen)).unwrap();
@@ -50,14 +48,13 @@ fn each_dialect_has_its_own_byte_vocabulary() {
     assert_ne!(q.vocab.source(), g.vocab.source());
 }
 
-/// **No GGUF and no provider: the daemon opens, and the TURN is refused by name.**
+/// No GGUF and no provider: the daemon opens, and the TURN is refused by name.
 ///
-/// This was a refusal at load — the daemon's half of the launcher's model gate, so a box with
-/// no GGUF and no key could not start a session at all. The operator, 2026-10-18: *"idk why i
-/// even have to do --provider. horrible ux - we already have models chooser and keys asker"*.
-/// Now the session opens on the byte vocabulary with no model chosen, the head's chooser is the
-/// way on, and a turn that reaches the daemon anyway (a one-shot, an older head) is refused
-/// naming `/models` — before anything is sent, because a llama-server cannot read byte ids.
+/// This was a refusal at load - the daemon's half of the launcher's model gate, so a box with no GGUF
+/// and no key could not start a session at all. Now the session opens on the byte vocabulary with no
+/// model chosen, the head's chooser is the way on, and a turn that reaches the daemon anyway (a
+/// one-shot, an older head) is refused naming `/models` - before anything is sent, because a
+/// llama-server cannot read byte ids.
 #[test]
 fn no_vocabulary_and_no_provider_opens_and_refuses_the_turn_by_name() {
     use letibot_harnessd::Harness;

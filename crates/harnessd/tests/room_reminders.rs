@@ -1,34 +1,13 @@
-//! **A holder of a room item gets a todo row, and the idle check carries it** — `docs/room.md`
-//! § *Still owed* item 3, end to end: a real socket, a real `Harness`, the real `room` tool, and
-//! the real nag.
+//! A holder of a room item gets a todo row, and the idle check carries it - `docs/room.md` § *Still
+//! owed* item 3, end to end: a real socket, a real `Harness`, the real `room` tool and the real nag.
 //!
-//! # The five things this file exists to have caught
+//! One row per item, never a second: the board's key is a row's exact `content`, so a row carrying a
+//! clock would be a new row every pass - a nag machine. The row is retired when the item is, it
+//! names the room item in `wait_on` (the whole of quiet-or-loud), and only top-level sessions get
+//! one.
 //!
-//! 1. **One row per item, updated not appended.** The pass runs every few seconds, and the board's
-//!    key is a row's exact `content` — so a row that carried a clock (`… for 4m`) would be a new row
-//!    every pass, which is a nag machine. This drives the pass three times over one claim and
-//!    asserts the board grew by one row and then by none.
-//! 2. **Retired when the item is.** `done` takes the row away in the pass that sees it, and the
-//!    room's record is the reason: a room row is the ROOM seen from a session, not a plan.
-//! 3. **Top-level sessions only.** A session with a `parent_session_id` gets no link at all, so the
-//!    pass has nothing to ask and writes nothing — and a claim by *another* session is not this
-//!    session's row.
-//! 4. **`wait_on` names the room item**, and that edge is the whole of quiet-or-loud: while it is on
-//!    the row the idle check says nothing; the moment it comes off, the check names the row.
-//! 5. **The row is the session's own** (`by: Model`, which the nag draws as *yours*), never the
-//!    operator's — and a row that already says the same thing is reused rather than doubled.
-//!
-//! # What it needs, and what it does not
-//!
-//! No model, no store, no GGUF: the byte vocabulary, a `Server::serve`d room on a socket of this
-//! test's own, and no turn is ever run. The room is the plain [`letibot_room::Server`] rather than a
-//! `--room` coordinator, because the coordinator's arbiter is a session and this file is about a
-//! different session entirely.
-//!
-//! # One test per binary
-//!
-//! `LETIBOT_ROOM_SOCKET` is process-wide, so this file holds **one** test: a second one would race
-//! it for the variable.
+//! No model, no store, no GGUF: the byte vocabulary and a `Server` on this test's own socket.
+//! `LETIBOT_ROOM_SOCKET` is process-wide, so this file holds one test.
 
 use std::sync::Arc;
 
@@ -68,8 +47,7 @@ fn a_holder_is_reminded_by_its_own_row_and_the_idle_check_carries_it() {
     let dir = scratch("reminders");
     let socket = dir.join("room.sock");
     // SAFETY: this binary holds one test, so nothing else in the process reads this variable while
-    // it is set. It is the door `daemon_room::socket_path` reads, and it is what keeps the whole
-    // test inside `dir` — no fixture here touches the box's own room.
+    // it is set. It is the door `daemon_room::socket_path` reads, and it keeps the test inside `dir`.
     unsafe { std::env::set_var(daemon_room::SOCKET_ENV, &socket) };
     let server = Server::serve(&socket, Room::new()).expect("a room on this test's socket");
 
@@ -78,8 +56,8 @@ fn a_holder_is_reminded_by_its_own_row_and_the_idle_check_carries_it() {
     let mut cfg = Config::for_this_box(&workspace);
     cfg.vocab_gguf = None;
     cfg.model = "local".to_string();
-    // The one flag that matters: this session may speak in the room. The link is built at open,
-    // and only when the socket exists — which is why the server is started first.
+    // The one flag that matters: this session may speak in the room. The link is built at open
+    // and only when the socket exists - which is why the server is started first.
     cfg.room_link = true;
     let me = cfg.session_id.clone();
     let parts = Parts::load(&cfg).expect("the byte vocabulary needs no model file");
@@ -134,8 +112,8 @@ fn a_holder_is_reminded_by_its_own_row_and_the_idle_check_carries_it() {
         "nothing was declared as a wait, so nothing is coming: the edge says so on the row"
     );
 
-    // **And the existing nag carries it, with no model call.** This is the whole deliverable: the
-    // sentence the idle check composes names the row, so a holder that never asks is still told.
+    // And the existing nag carries it, with no model call: the sentence the idle check composes
+    // names the row, so a holder that never asks is still told.
     let nag = h
         .nag_notice()
         .expect("an unfinished plan must be nagged about");
@@ -149,7 +127,7 @@ fn a_holder_is_reminded_by_its_own_row_and_the_idle_check_carries_it() {
     );
 
     // -----------------------------------------------------------------------------------------
-    // 1 again. A SECOND pass is not a second row — the nag machine this design exists to avoid.
+    // 1 again. A SECOND pass is not a second row - the nag machine this design exists to avoid.
     // -----------------------------------------------------------------------------------------
     let before = h.todo_list().len();
     assert_eq!(h.fill_room_board(), 1);
@@ -162,7 +140,7 @@ fn a_holder_is_reminded_by_its_own_row_and_the_idle_check_carries_it() {
     );
 
     // -----------------------------------------------------------------------------------------
-    // 4. The holder marks what it waits on, and the row goes QUIET — `wait_on` names the item.
+    // 4. The holder marks what it waits on, and the row goes QUIET - `wait_on` names the item.
     // -----------------------------------------------------------------------------------------
     room(
         &h,
@@ -283,7 +261,7 @@ fn a_holder_is_reminded_by_its_own_row_and_the_idle_check_carries_it() {
     );
 
     // -----------------------------------------------------------------------------------------
-    // 3 again. A subagent gets no link and no row — the room's own rule, twice.
+    // 3 again. A subagent gets no link and no row - the room's own rule, twice.
     // -----------------------------------------------------------------------------------------
     let child_cfg = {
         let mut c = Config::for_this_box(&workspace);

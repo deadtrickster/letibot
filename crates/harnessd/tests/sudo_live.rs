@@ -1,13 +1,11 @@
-//! The shim plus `SUDO_ASKPASS`, against the real `sudo` on this box — the one
-//! link that is genuinely ours and needs a live sudo to prove: that the shim's
-//! `-A` makes sudo run the askpass program instead of reaching for a tty, that
-//! the program's stdout is fed to sudo as the password, and that a wrong one
-//! comes back as sudo's own refusal (not a tty error, and not a hang).
+//! The shim plus `SUDO_ASKPASS`, against the real `sudo` on this box - the one link that is genuinely
+//! ours and needs a live sudo to prove: that the shim's `-A` makes sudo run the askpass program
+//! instead of reaching for a tty, that the program's stdout is fed to sudo as the password, and that
+//! a wrong one comes back as sudo's own refusal rather than a tty error or a hang.
 //!
-//! No model, no daemon: `letibot-askpass` talks to a daemon, and that path is
-//! covered by `letibot-sessionlog`'s `askpass` socket test. Here the askpass
-//! program is a one-line script that prints a deliberately wrong password, so
-//! the assertion is sudo's *refusal*, which is nobody's secret.
+//! No model, no daemon: `letibot-askpass` talking to a daemon is covered by `letibot-sessionlog`'s
+//! `askpass` socket test. Here the askpass program is a one-line script printing a deliberately wrong
+//! password, so the assertion is sudo's refusal, which is nobody's secret.
 //!
 //! `SUDO_LIVE=1 cargo test -p letibot-harnessd --test sudo_live`.
 
@@ -19,8 +17,8 @@ fn the_shim_routes_sudo_to_askpass_and_a_wrong_password_is_refused_not_a_tty_err
         eprintln!("SUDO_LIVE=1 to run this against the box's real sudo");
         return;
     }
-    // `install()` finds the helper beside the daemon binary; here we only need the
-    // shim it writes, so point $LETIBOT_ASKPASS at a script of our own.
+    // `install` finds the helper beside the daemon binary; here we only need the shim it writes
+    // so point `$LETIBOT_ASKPASS` at a script of our own.
     let dir = letibot_sessionlog::testing::scratch_root()
         .join(format!("letibot-sudo-live-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -36,9 +34,9 @@ fn the_shim_routes_sudo_to_askpass_and_a_wrong_password_is_refused_not_a_tty_err
     let shim = plumbing.shims.join("sudo");
     assert!(shim.is_file(), "the shim was not written");
 
-    // The shim, with SUDO_ASKPASS set the way the daemon sets it, running a
-    // harmless command. Wrong password → sudo prints its own refusal and exits
-    // non-zero. The one thing that must NOT happen is "a terminal is required".
+    // The shim, with SUDO_ASKPASS set the way the daemon sets it, running a harmless command. A
+    // wrong password makes sudo print its own refusal and exit non-zero; what must NOT happen is
+    // "a terminal is required".
     let out = std::process::Command::new(&shim)
         .arg("true")
         .env("SUDO_ASKPASS", &fake_askpass)

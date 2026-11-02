@@ -1,13 +1,10 @@
-//! **`transcript` against a real store with a real fork chain.**
+//! `transcript` against a real store with a real fork chain. The unit tests in `letibot-tools` use
+//! a fake source, which proves the tool's reporting; this proves the thing it exists for - a row a
+//! compaction moved into a parent transcript is still found, and is labelled as history rather than
+//! presented as current context.
 //!
-//! The unit tests in `letibot-tools` use a fake source, which proves the tool's
-//! reporting; this proves the thing the tool exists for, which is that a row a
-//! compaction moved into a parent transcript is still found — and is labelled as
-//! history rather than presented as current context.
-//!
-//! The store is built the way a compaction builds one: a first transcript, then a
-//! fork of it at a seq, with the fork carrying only what compaction kept. Nothing
-//! here reaches through to SQL; the assertions are on what the tool says.
+//! The store is built the way a compaction builds one: a first transcript, then a fork of it at a
+//! seq, with the fork carrying only what compaction kept. Nothing here reaches through to SQL.
 
 use std::sync::Arc;
 
@@ -47,7 +44,7 @@ fn tool_result(name: &str, payload: &str) -> TranscriptItem {
 fn row(seq: u32) -> LedgerRow {
     LedgerRow {
         item_id: format!("i{seq}"),
-        // The prefix these fixtures seat is three tokens long, so row 0 starts after it:
+        // The prefix these fixtures seat is three tokens long, so row 0 starts after it
         // the store refuses a row at any other offset, because a resume rebuilds the chain
         // from the prefix's length.
         tok_offset: 3 + seq,
@@ -143,10 +140,9 @@ fn q() -> TranscriptQuery {
     }
 }
 
-/// **The whole point.** A row that a compaction left behind in `#t0` is found from
-/// a session now running on `#t1`, and it comes back marked as an earlier
-/// generation — because "this is history you were never given" and "this is
-/// something you forgot" are different facts about a row.
+/// The whole point: a row a compaction left behind in `#t0` is found from a session now running on
+/// `#t1`, and comes back marked as an earlier generation - because "history you were never given"
+/// and "something you forgot" are different facts about a row.
 #[test]
 fn a_row_the_compaction_left_behind_is_found_and_marked_as_history() {
     let d = tempdir();
@@ -174,9 +170,8 @@ fn a_row_the_compaction_left_behind_is_found_and_marked_as_history() {
     assert_eq!(hits.chain[0].forked_at_seq, Some(2), "t1 was cut at seq 2");
 }
 
-/// `history=false` is the caller asking only about the conversation it is in, and
-/// then the same search misses. This is the assertion that proves the walk is
-/// doing the work rather than the row being in both places.
+/// `history=false` is the caller asking only about the conversation it is in, and then the same
+/// search misses - which proves the walk is doing the work rather than the row being in both places.
 #[test]
 fn without_history_the_same_search_misses() {
     let d = tempdir();
@@ -192,9 +187,8 @@ fn without_history_the_same_search_misses() {
     assert_eq!(hits.chain.len(), 2, "the chain is still reported");
 }
 
-/// The text predicate matches what a person would read, not the JSON. `kind` is a
-/// column name and appears in every row's `item_json`; a search for it must find
-/// nothing rather than everything.
+/// The text predicate matches what a person would read, not the JSON: `kind` is a column name and
+/// appears in every row's `item_json`, and a search for it must find nothing rather than everything.
 #[test]
 fn the_match_is_against_the_text_and_not_the_stored_json() {
     let d = tempdir();
@@ -303,7 +297,7 @@ fn a_session_resolves_by_a_fragment_of_its_title() {
     );
 }
 
-/// A store with no such session id still lists — the reader is not the session,
+/// A store with no such session id still lists - the reader is not the session
 /// and a session that has written nothing yet is not a broken store.
 #[test]
 fn a_session_with_no_transcript_reports_an_empty_chain_not_an_error() {

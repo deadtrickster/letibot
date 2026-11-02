@@ -1,15 +1,14 @@
-//! **A pane is handed the feeds it declared** — `docs/plugins-plan.md` §4.9, from the daemon's side.
+//! A pane is handed the feeds it declared - `docs/plugins-plan.md` §4.9, from the daemon's side.
 //!
-//! The head has built the `sessions` feed for its own in-process session list since feeds landed
-//! (`crates/tui/src/app/sessions_pane.rs`). **The daemon did not**: its C3 input carried `v`,
-//! `state`, `look`, `event` and `size`, so a layer on disk that declared `feeds = ["sessions"]` was
-//! handed nothing and drew an empty pane — a declaration the host does not honour, which on a
+//! The head has built the `sessions` feed for its own in-process session list since feeds landed.
+//! The daemon did not: its C3 input carried `v`, `state`, `look`, `event` and `size`, so a layer on
+//! disk declaring `feeds = ["sessions"]` was handed nothing and drew an empty pane - which on a
 //! screen reads as a broken plugin rather than as a host that never had the feature.
 //!
-//! These tests are the daemon's half, through the public seams and nothing else: a `PluginHost`
-//! with a `SessionFeed` of its own, a `Loader` that records the input it was called with, and a
-//! `PaneDriver::open` — the same call `ClientFrame::PaneOpen` makes. What is asserted is the input
-//! the module was really given, because that is what a plugin sees and all it can see.
+//! These tests are the daemon's half, through the public seams and nothing else: a `PluginHost` with
+//! a `SessionFeed` of its own, a `Loader` that records the input it was called with, and a
+//! `PaneDriver::open`. What is asserted is the input the module was really given, because that is
+//! what a plugin sees and all it can see.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -45,9 +44,8 @@ impl SessionFeed for Fixture {
     }
 }
 
-/// **A module that answers a pane and remembers what it was asked** — the whole of what these
-/// tests need from an engine, without one: the input is the contract, and a wasm call would only
-/// add a compiler to the way of reading it.
+/// A module that answers a pane and remembers what it was asked - the whole of what these tests
+/// need from an engine: the input is the contract, and a wasm call would only add a compiler.
 struct Recording {
     seen: Arc<Mutex<Vec<String>>>,
     /// The hooks this module exports.
@@ -127,7 +125,7 @@ fn tempdir(tag: &str) -> PathBuf {
     dir
 }
 
-/// **A host with the fixture feed and a recording loader**, and the inputs it was asked with.
+/// A host with the fixture feed and a recording loader, and the inputs it was asked with.
 fn host(
     root: &Path,
     hook: &str,
@@ -160,9 +158,9 @@ fn first_input(seen: &Arc<Mutex<Vec<String>>>) -> Value {
     serde_json::from_str(first).expect("the input is JSON")
 }
 
-/// **A pane that declares `sessions` is handed one**, built by the host, with the three fields only
-/// a host can answer: `here` (the session whose pane this is), `now` (a wasm guest has no clock)
-/// and each row's `moved_ms` and `repo`.
+/// A pane that declares `sessions` is handed one, built by the host, with the fields only a host can
+/// answer: `here` (the session whose pane this is), `now` (a wasm guest has no clock) and each row's
+/// `moved_ms` and `repo`.
 #[test]
 fn a_pane_that_declares_the_sessions_feed_is_handed_one() {
     let root = tempdir("declared");
@@ -207,8 +205,8 @@ fn a_pane_that_declares_the_sessions_feed_is_handed_one() {
     assert_eq!(published, vec!["nicks/nicks".to_string()]);
 }
 
-/// **A layer that declared no feed is handed none** — the sandbox on this side is the declaration,
-/// so a pane that reads a feed it did not ask for does not get one.
+/// A layer that declared no feed is handed none - the sandbox on this side is the declaration, so a
+/// pane that reads a feed it did not ask for does not get one.
 #[test]
 fn a_pane_that_declares_no_feed_is_handed_none() {
     let root = tempdir("undeclared");
@@ -225,8 +223,8 @@ fn a_pane_that_declares_no_feed_is_handed_none() {
     );
 }
 
-/// **A feed this host cannot build is ABSENT, not empty** — `[]` would tell a layer *there are
-/// none*, and *this host cannot answer that yet* is a different fact that only the layer can draw.
+/// A feed this host cannot build is ABSENT, not empty - `[]` would tell a layer there are none, and
+/// "this host cannot answer that yet" is a different fact that only the layer can draw.
 #[test]
 fn a_feed_this_host_cannot_build_is_absent_rather_than_empty() {
     let root = tempdir("planned");
@@ -246,9 +244,9 @@ fn a_feed_this_host_cannot_build_is_absent_rather_than_empty() {
     );
 }
 
-/// **A host with no session list hands no `sessions` key at all**, so a pane says so on its screen
-/// instead of drawing an empty list — which is the difference between a broken host and a daemon
-/// with no sessions.
+/// A host with no session list hands no `sessions` key at all, so a pane says so on its screen
+/// instead of drawing an empty list - the difference between a broken host and a daemon with no
+/// sessions.
 #[test]
 fn a_host_with_no_session_list_hands_no_feed() {
     let root = tempdir("nofeed");

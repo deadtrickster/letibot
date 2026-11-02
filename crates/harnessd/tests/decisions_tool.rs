@@ -1,11 +1,7 @@
-//! **`decisions` against a real corpus.**
-//!
-//! The unit tests in `letibot-tools` prove the reporting against a fake source.
-//! This proves the SQL: that `by=oracle` reaches `oracle:glm` through a prefix
-//! match, that `asked` is not the same question as "who decided", and that the
-//! miss report's "values present" come from the SCOPE rather than from the empty
-//! result set — which is the bug a naive implementation has, and the one that
-//! turns a helpful miss into "no rows, and nothing present either".
+//! `decisions` against a real corpus: the SQL the unit tests, which use a fake source, cannot reach.
+//! `by=oracle` reaches `oracle:glm` through a prefix match, `asked` is not the same question as "who
+//! decided", and the miss report's "values present" come from the SCOPE rather than from the empty
+//! result set - the bug a naive implementation has, which turns a helpful miss into "no rows".
 
 use std::sync::Arc;
 
@@ -23,12 +19,12 @@ fn adj(request_id: &str, session_id: &str) -> NewAdjudication {
         tier: "may_approve".into(),
         trail_json: "[]".into(),
         shown: Some("brief — a file was read".into()),
-        // R11: both halves of the exchange are on the row now, and this fixture carries
-        // them so a reader that renders one cannot quietly drop the other.
+        // Both halves of the exchange are on the row, so a reader that renders one cannot quietly
+        // drop the other.
         reply: Some("It follows from what was asked.\nALLOW 0".into()),
-        // R11: the flag the counts read. This fixture's oracle spoke.
+        // The flag the counts read: this fixture's oracle spoke.
         consulted: Some(true),
-        // R12: this row's answer was a verdict and not an unsure, so there is no reading.
+        // This row's answer was a verdict and not an unsure, so there is no reading.
         oracle_reading: None,
         tool: "bash".into(),
         arguments_json: "{}".into(),
@@ -50,9 +46,8 @@ fn adj(request_id: &str, session_id: &str) -> NewAdjudication {
     }
 }
 
-/// A corpus with the three kinds of decision that actually occur: one an oracle
-/// measured and admitted, one a person was asked and refused, and one a boundary
-/// rule settled with nobody asked at all.
+/// A corpus with the three kinds of decision that actually occur: one an oracle measured and
+/// admitted, one a person was asked and refused, and one a boundary rule settled with nobody asked.
 fn corpus(dir: &std::path::Path) -> (Store, String) {
     let store = Store::open(&dir.join("sessions.db")).expect("opening");
     let session_id = "s-gate".to_string();
@@ -84,11 +79,9 @@ fn corpus(dir: &std::path::Path) -> (Store, String) {
     );
 
     let mut human = adj("adj-s-gate-0226", &session_id);
-    // **A person decided this one, so no model was asked.** `adj()`'s default is `true`
-    // because the ORACLE row is the one that fixture is about; carried over to these two it
-    // made `measured` count every row in the session, which is the assertion below's whole
-    // subject (`counts_are_per_session_and_any_widens_to_everything` — *"one oracle
-    // answered"*). Found while adding R12's column to this file.
+    // A person decided this one, so no model was asked. `adj`'s default is `true` because the
+    // ORACLE row is the one that fixture is about; carried over it made `measured` count every row
+    // in the session, which is the subject of `counts_are_per_session_and_any_widens_to_everything`.
     human.consulted = Some(false);
     human.tool = "write".into();
     human.verdict = Some("deny".into());
@@ -130,8 +123,8 @@ fn q() -> DecisionQuery {
     }
 }
 
-/// The call this replaced: one request id, every field the sqlite3 query selected
-/// by name, and the brief it did not think to ask for.
+/// The call this replaced: one request id, every field the sqlite3 query selected by name, and the
+/// brief it did not think to ask for.
 #[test]
 fn one_request_comes_back_with_the_oracles_own_reason_and_its_brief() {
     let d = tempdir();
@@ -152,8 +145,8 @@ fn one_request_comes_back_with_the_oracles_own_reason_and_its_brief() {
     assert!(r.shown.as_deref().unwrap().contains("ar t libfoo.a"));
 }
 
-/// `by` is a prefix, because the stored value joins the decider to its identity
-/// with a colon and the question is almost always about the decider.
+/// `by` is a prefix, because the stored value joins the decider to its identity with a colon and
+/// the question is almost always about the decider.
 #[test]
 fn by_matches_the_decider_not_the_whole_identity() {
     let d = tempdir();
@@ -179,9 +172,8 @@ fn by_matches_the_decider_not_the_whole_identity() {
     }
 }
 
-/// `asked` and `by` are different questions. The boundary row was refused with
-/// nobody asked; the human row was refused with somebody asked. A tool that
-/// conflated them would report two.
+/// `asked` and `by` are different questions. The boundary row was refused with nobody asked; the
+/// human row was refused with somebody asked. A tool that conflated them would report two.
 #[test]
 fn asked_is_not_the_same_question_as_who_decided() {
     let d = tempdir();
@@ -207,9 +199,8 @@ fn asked_is_not_the_same_question_as_who_decided() {
     assert_eq!(denied_and_asked.rows[0].request_id, "adj-s-gate-0226");
 }
 
-/// **The bug this test exists for.** The miss report's "values present" must come
-/// from the scope, not from the result set — otherwise a query that matched
-/// nothing reports nothing present, and the model is back at sqlite.
+/// The bug this test exists for: the miss report's "values present" must come from the scope, not
+/// from the result set - otherwise a query that matched nothing reports nothing present.
 #[test]
 fn a_miss_still_reports_the_values_that_are_present_in_scope() {
     let d = tempdir();
@@ -272,8 +263,8 @@ fn counts_are_per_session_and_any_widens_to_everything() {
     assert_eq!(all.decided_by_operator, 2);
 }
 
-/// A session that never gated anything reports zero without erroring — a
-/// read-only seat never reaches the gate, and that is not a broken corpus.
+/// A session that never gated anything reports zero without erroring - a read-only seat never
+/// reaches the gate, and that is not a broken corpus.
 #[test]
 fn a_session_with_no_decisions_is_empty_not_an_error() {
     let d = tempdir();
@@ -297,8 +288,8 @@ fn a_session_with_no_decisions_is_empty_not_an_error() {
     assert!(hits.verdicts_present.is_empty(), "nothing in scope to list");
 }
 
-/// `last` caps the MATCH set, not the scan — `last=1` with a filter is the newest
-/// one matching decision, not "whichever of the newest one matched".
+/// `last` caps the MATCH set, not the scan - `last=1` with a filter is the newest one matching
+/// decision, not "whichever of the newest one matched".
 #[test]
 fn last_caps_the_matches() {
     let d = tempdir();
@@ -327,9 +318,8 @@ impl Drop for Dir {
 }
 
 fn tempdir() -> Dir {
-    // **A counter as well as the clock**: macOS's clock resolves microseconds, so two tests
-    // in this process starting in the same one got the same directory, seeded the corpus
-    // twice, and read `matched: 2` — measured 2026-10-07 under a full workspace run.
+    // A counter as well as the clock: macOS's clock resolves microseconds, so two tests starting in
+    // the same one got the same directory, seeded the corpus twice and read `matched: 2`.
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let p = letibot_sessionlog::testing::scratch_root().join(format!(
         "letibot-decisions-{}-{}-{}",

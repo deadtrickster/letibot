@@ -1,25 +1,14 @@
-//! **The four hook kinds, through rano's real engine** — `docs/plugins-plan.md` §7 step 2.
+//! The four hook kinds, through rano's real engine - `docs/plugins-plan.md` §7 step 2.
 //!
-//! Every test of the four patch points before this one answered through a *table* of closures
-//! (`crates/plugins`'s tests, and `crates/harnessd/src/plugins.rs`'s `TableLoader`): precedence, the
-//! markers, the fail-down and the contracts are all measurable that way, and none of them needs a
-//! JIT. What a table cannot say is that a module written in the ABI actually answers — that
-//! `rano_abi` is 1, that a hook returns an 8-byte result block and not a pointer, that the JSON a
-//! guest hands back is the JSON the contract parses. That is this file, and it is the whole of what
-//! it adds: **the host is the real one, the loader is `RanoLoader`, and the module is bytes that
-//! were compiled from wasm rather than faked.**
+//! Every earlier test of the four patch points answered through a table of closures, which measures
+//! precedence, the markers and the contracts but cannot say that a module written in the ABI
+//! answers: that `rano_abi` is 1, that a hook returns an 8-byte result block and not a pointer, that
+//! the JSON a guest hands back is the JSON the contract parses. Here the host is the real one, the
+//! loader is `RanoLoader`, and the module is bytes compiled from wasm rather than faked.
 //!
-//! # The fixture
-//!
-//! `tests/data/plugin-engine/` holds `plugin.toml`, `plugin.wasm` (867 bytes) and the guest's
-//! source. The module is committed rather than built here because a test that shells out to a
-//! compiler fails on a box without a wasm target, which is exactly what the `Loader` seam exists to
-//! avoid everywhere else; `guest/lib.rs`'s header carries the one `rustc` line that rebuilds it.
-//! Rano's own tests use WAT, but their `wat` dev-dependency is a crate this tree's `Cargo.lock`
-//! does not have and the offline cache cannot resolve, and wasmtime's `wat` feature is off in the
-//! build rano pins — so the fixture is the small built module the plan allows for.
-//!
-//! One assertion per kind, in §4's order: the call, the result, the notice, the condition.
+//! `tests/data/plugin-engine/` holds `plugin.toml`, `plugin.wasm` and the guest's source, committed
+//! because a test that shells out to a compiler fails on a box without a wasm target; `guest/lib.rs`
+//! carries the `rustc` line that rebuilds it. One assertion per kind, in §4's order.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -38,7 +27,7 @@ fn layer() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/plugin-engine")
 }
 
-/// A host whose one layer is the committed module, in the SESSION scope — which is a directory of
+/// A host whose one layer is the committed module, in the SESSION scope - which is a directory of
 /// layer directories, so the fixture is reached through its own name.
 fn host(tmp: &Path) -> Arc<PluginHost> {
     let scope = tmp.join("plugins");
@@ -48,7 +37,7 @@ fn host(tmp: &Path) -> Arc<PluginHost> {
         std::fs::copy(layer().join(file), dest.join(file)).expect("the fixture");
     }
     // The builder is never reached: `discover` loads the module that is already there, and the
-    // gate's step 1 — the only caller of a `Builder` — needs `plugin build` or `plugin load`.
+    // gate's step 1 - the only caller of a `Builder` - needs `plugin build` or `plugin load`.
     Arc::new(PluginHost::discover(
         "s-plugin-engine",
         tmp.join("workspace"),
@@ -77,8 +66,8 @@ fn a_call() -> letibot_plugin::Call {
     letibot_plugin::Call::new("bash", json!({"command": "cargo test"}))
 }
 
-/// **`on_tool_call`** (§4.1): the module answers a call, and the answer is the host's own verdict
-/// type — so the ABI's result block, the JSON text and `ToolCallOut` all agree.
+/// `on_tool_call` (§4.1): the module answers a call, and the answer is the host's own verdict type -
+/// so the ABI's result block, the JSON text and `ToolCallOut` all agree.
 #[test]
 fn a_call_is_answered_by_the_committed_module() {
     let tmp = tempdir("call");
@@ -96,7 +85,7 @@ fn a_call_is_answered_by_the_committed_module() {
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
-/// **`on_tool_result`** (§4.2): the result is what the module appended, through the typed contract.
+/// `on_tool_result` (§4.2): the result is what the module appended, through the typed contract.
 #[test]
 fn a_result_is_amended_by_the_committed_module() {
     let tmp = tempdir("result");
@@ -114,8 +103,8 @@ fn a_result_is_amended_by_the_committed_module() {
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
-/// **`notice`** (§4.3): the harness's sentence is reworded, resolved per KIND — `notice_job`, which
-/// is the export this module has and the only notice it answers.
+/// `notice` (§4.3): the harness's sentence is reworded, resolved per KIND - `notice_job` is the
+/// export this module has, and the only notice it answers.
 #[test]
 fn a_notice_is_reworded_by_the_committed_module() {
     let tmp = tempdir("notice");
@@ -138,9 +127,8 @@ fn a_notice_is_reworded_by_the_committed_module() {
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
-/// **`condition`** (§4.4): the module arms a watch through the daemon's seam, its look runs under
-/// the `read` capability it declared, and its own interval and state come back through the typed
-/// `ConditionOut`.
+/// `condition` (§4.4): the module arms a watch through the daemon's seam, its look runs under the
+/// `read` capability it declared, and its interval and state come back through `ConditionOut`.
 #[test]
 fn a_watch_is_armed_by_the_committed_module() {
     let tmp = tempdir("condition");

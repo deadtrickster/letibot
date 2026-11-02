@@ -1,32 +1,17 @@
-//! **The bell, per client — the two halves that are the client's own act**: a note read at the round
-//! boundary a running turn actually reaches (firecode's first rule, *listen before you work*), and a
-//! claim that says what it is doing before it does it (the third, *acknowledge before you act*).
+//! The bell, per client - the two halves that are the client's own act: a note read at the round
+//! boundary a running turn actually reaches (*listen before you work*), and a claim that says what it
+//! is doing before it does it (*acknowledge before you act*).
 //!
-//! # What each test would have failed on before it existed
+//! The first test would fail without the room among `HubSteering::try_next`'s arms: a room event
+//! became a sentence read by `Harness::wake`, a door that only opens BETWEEN turns, so a message
+//! posted while a session was mid-turn reached it after the work it would have changed. The second
+//! would fail on a `claim` that sent one frame and returned: a claim with no word on it is
+//! indistinguishable, from the queue, from a session that took the item and died. That word lands in
+//! `Claim::said` and NOT in `Claim::waits_on` - the field a reminder reads to decide the holder still
+//! has to act - so an acknowledgement written there makes every claim quiet.
 //!
-//! **`a_room_note_posted_mid_turn_is_read_at_the_next_round_boundary`** — `HubSteering::try_next` is
-//! the source the engine polls at every step boundary of a running turn, and it had five arms
-//! (a held message, the hub's command, the harness's own injections, the deliveries, a monitor) and
-//! **none of them was the room**. A room event became a sentence in `crate::room::wake` and was read
-//! by `Harness::wake` — a door that only opens BETWEEN turns — so a message posted while a session
-//! was mid-turn reached it after the work it would have changed. The operator's own words for the
-//! rule: *the test is a message posted while a session is mid-turn reaching it before that turn's
-//! next decision, not after the work is done.*
-//!
-//! **`a_claim_is_acknowledged_on_the_room_before_any_work_begins`** — `SessionRoom::call("claim")`
-//! sent one frame and returned. The room's `Claim` had no field for *what I am doing with it*, so
-//! *seen, doing X* was nobody's act: a model at work does not think about the queue's bookkeeping,
-//! which is the whole reason firecode's rule exists. From the queue, a claim with no word on it is
-//! indistinguishable from a session that took the item and died. It lands in `Claim::said` and NOT
-//! in `Claim::waits_on` — that field is what a reminder reads to decide the holder still has to
-//! act, so an acknowledgement written there made every claim quiet (`crates/room/src/wire.rs`'s
-//! version-5 note).
-//!
-//! # Why these two are here and not in `crates/room`
-//!
-//! Both are claims about the DAEMON's client (`SessionRoom`) rather than about the wire: the room
-//! only carries the frames. `crates/room/tests/bell.rs` is the socket's own half of the rules, and
-//! `crates/harnessd/tests/room_bell_turn.rs` is the one that needs a live session.
+//! Both are claims about the DAEMON's client (`SessionRoom`) rather than about the wire, which only
+//! carries the frames: `crates/room/tests/bell.rs` is the socket's own half of the rules.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -40,14 +25,12 @@ use letibot_room::{Request, Response, Room, Speaker, State};
 use letibot_sessionlog::hub::Hub;
 use letibot_turn::steering::SteeringSource;
 
-/// **Rule 1 — listen before working.** A sentence pushed while a turn is running comes out of the
+/// Rule 1 - listen before working. A sentence pushed while a turn is running comes out of the
 /// steering source at the next round boundary, and it comes out ONCE.
 ///
-/// The push is what the room's reader thread does (`crate::room::link`'s wake closure), so this is
-/// the same queue the real path fills. The engine is the poller (`turn/src/engine.rs` asks its
-/// `SteeringSource` before every round), and the harnessd suite that runs a turn against a stub
-/// provider asserts the other end of it — what this test owns is the one thing that was missing:
-/// that a room note is among the answers at all.
+/// The push is what the room's reader thread does, so this is the same queue the real path fills. The
+/// engine is the poller (it asks its `SteeringSource` before every round); what this test owns is the
+/// one thing that was missing - that a room note is among the answers at all.
 #[test]
 fn a_room_note_posted_mid_turn_is_read_at_the_next_round_boundary() {
     let me = "s-mid-turn";
@@ -59,8 +42,8 @@ fn a_room_note_posted_mid_turn_is_read_at_the_next_round_boundary() {
         "a boundary with nothing to say says nothing"
     );
 
-    // **The message that would have changed the work**, posted by the room's reader thread while
-    // this session's turn is in flight.
+    // The message that would have changed the work, posted by the room's reader thread while this
+    // session's turn is in flight.
     let note = "[room] `s-b` claimed #1 under `ram` — while that claim lives, `ram` is locked and \
                 your own claim under it would be refused.";
     wake::push(me, note.to_string());
@@ -119,19 +102,18 @@ impl Drop for Scratch {
     }
 }
 
-/// **Rule 3 — acknowledge before acting.** The claim and the word *seen, doing X* are on the room by
+/// Rule 3 - acknowledge before acting. The claim and the word *seen, doing X* are on the room by
 /// the time `claim` returns, so nothing a model does next can be the first thing the queue hears.
 ///
 /// What the test measures is the ORDER the rule is about: the observer reads the room immediately
-/// after the claimant's call returns and before the claimant has done anything else, and it finds
-/// both the claim and the sentence. A client that had to remember a second call would leave the
-/// window this rule exists to close, and a claim with no word on it is what the queue reads as a
-/// session that took the item and died.
+/// after the claimant's call returns and before the claimant has done anything else, and finds both
+/// the claim and the sentence. A client that had to remember a second call would leave the window
+/// this rule exists to close.
 #[test]
 fn a_claim_is_acknowledged_on_the_room_before_any_work_begins() {
     let scratch = Scratch::new("ack");
-    // The server must outlive the clients: dropping it closes the listener, and a connection that
-    // is still being served would lose its socket mid-frame.
+    // The server must outlive the clients: dropping it closes the listener, and a connection that is
+    // still being served would lose its socket mid-frame.
     let _server = Server::serve(&scratch.socket(), Room::new()).expect("a room to talk to");
     let rung = Arc::new(AtomicUsize::new(0));
     let bell: Arc<dyn Fn(&str) + Send + Sync> = {
@@ -140,7 +122,7 @@ fn a_claim_is_acknowledged_on_the_room_before_any_work_begins() {
             rung.fetch_add(1, Ordering::SeqCst);
         })
     };
-    // The DAEMON's client — the one the `room` tool calls through, with the same ack in it.
+    // The DAEMON's client - the one the `room` tool calls through, with the same ack in it.
     let me = SessionRoom::connect(
         "s-worker",
         &scratch.socket(),
@@ -159,7 +141,7 @@ fn a_claim_is_acknowledged_on_the_room_before_any_work_begins() {
         .expect("a post");
     assert!(posted.contains("#1"), "{posted}");
 
-    // **The claim, in the words a model gives it.** `text` is the `waiting` verb's field and a claim
+    // The claim, in the words a model gives it. `text` is the `waiting` verb's field and a claim
     // may carry it, so the acknowledgement can be the model's own sentence about the work.
     let claimed = me
         .call(
@@ -172,8 +154,8 @@ fn a_claim_is_acknowledged_on_the_room_before_any_work_begins() {
         "the sentence a model reads says the acknowledgement went with the claim: {claimed}"
     );
 
-    // **An observer, reading the room as it stands** — which is what anybody queued behind this
-    // claim would see. The claimant has done no work: the call has only just returned.
+    // An observer, reading the room as it stands - which is what anybody queued behind this claim
+    // would see. The claimant has done no work: the call has only just returned.
     let seen = Arc::new(Mutex::new(Vec::new()));
     let heard = Arc::clone(&seen);
     let observer = Client::connect(
@@ -198,11 +180,10 @@ fn a_claim_is_acknowledged_on_the_room_before_any_work_begins() {
         panic!("#1 was claimed before any work began: {item:?}");
     };
     assert_eq!(claim.by, "s-worker", "and by the session that claimed it");
-    // **`said`, not `waits_on`** — the two are opposite facts and the room keeps them apart. The
-    // acknowledgement is what the holder is DOING; `waits_on` is what it waits on, and it is the
-    // field a reminder reads to decide the holder still has to act. An acknowledgement recorded
-    // there silenced every reminder there was (`crates/room/src/wire.rs`'s version-5 note), so this
-    // test asserts both halves: the words landed, and they did not land as a wait.
+    // `said`, not `waits_on` - the two are opposite facts and the room keeps them apart. The
+    // acknowledgement is what the holder is DOING; `waits_on` is what it waits on, and it is the field
+    // a reminder reads to decide the holder still has to act, so an acknowledgement recorded there
+    // silences every reminder there is.
     let said = claim
         .said
         .as_ref()
@@ -217,9 +198,9 @@ fn a_claim_is_acknowledged_on_the_room_before_any_work_begins() {
          and `waits_on` is what makes a reminder quiet: {claim:?}"
     );
 
-    // **And a claim with nothing to say still says something.** A model that passes no `text` gets
-    // the bare acknowledgement rather than silence — the rule is *acknowledge*, not *acknowledge
-    // when you happen to have a sentence*.
+    // And a claim with nothing to say still says something. A model that passes no `text` gets the
+    // bare acknowledgement rather than silence - the rule is *acknowledge*, not *acknowledge when you
+    // happen to have a sentence*.
     let _ = observer
         .request(&Request::Abandon {
             id: "a1".into(),
@@ -250,24 +231,19 @@ fn a_claim_is_acknowledged_on_the_room_before_any_work_begins() {
         waits_on.is_none(),
         "and a bare claim is not a wait either: {waits_on:?}"
     );
-    // The observer's own channel is not this test's subject; dropping it closes its socket, which
-    // is the room's `note_gone` and the claim's way back — nothing here asserts on it.
+    // The observer's own channel is not this test's subject; dropping it closes its socket, which is
+    // the room's `note_gone` and the claim's way back - nothing here asserts on it.
     drop(observer);
 }
 
-/// **Rule 2 at the daemon's door — a reconnect is told what it missed, in words, once.**
+/// Rule 2 at the daemon's door - a reconnect is told what it missed, in words, once.
 ///
 /// `crates/room/tests/bell.rs` proves the room COUNTS a gap and hands the count over with the
-/// `Welcome`. The count is not the rule; the rule is that the client does something with it, and
-/// the something is `SessionRoom::note_gap`: one sentence pushed into the session's queue, one
-/// ring of its bell, and the sentence names the reads that cannot be wrong. Without this test the
-/// daemon half was a claim about a private method — a `take_missed` that nobody called, or a
-/// sentence composed and never rung, would both have passed everything else in the tree.
-///
-/// What it would have failed on: `Client::take_missed` existed and `wake::missed_line` existed, and
-/// the two were joined by one line in a reader thread's loop. A client that reconnected was told
-/// *you missed four* by a number nobody read — which is the silent resynchronisation the rule is
-/// about, wearing the words of its own fix.
+/// `Welcome`. The count is not the rule; the rule is that the client does something with it, and the
+/// something is `SessionRoom::note_gap`: one sentence pushed into the session's queue, one ring of
+/// its bell, and the sentence names the reads that cannot be wrong. Without this test the daemon half
+/// was a claim about a private method - a `take_missed` nobody called, or a sentence composed and
+/// never rung, would both have passed everything else in the tree.
 #[test]
 fn a_reconnect_is_told_what_it_missed_once_and_in_words() {
     let scratch = Scratch::new("gap-line");
@@ -297,10 +273,10 @@ fn a_reconnect_is_told_what_it_missed_once_and_in_words() {
             &serde_json::json!({"verb": "post", "tag": "ram", "body": "8 GB for the suite"}),
         )
         .expect("a post");
-    // **Its own post is news to it**, and the queue is process-wide: take it now, or the gap's
-    // sentence below is asserted against a list that already had something in it. Waited for
-    // rather than taken at once — the reply to a `post` returns when the SERVER has answered, and
-    // the sentence is composed on this side's reader thread a moment later.
+    // Its own post is news to it, and the queue is process-wide: take it now, or the gap's
+    // sentence below is asserted against a list that already had something in it. Waited for rather
+    // than taken at once - the reply to a `post` returns when the SERVER has answered, and the
+    // sentence is composed on this side's reader thread a moment later.
     wait_until("the poster to be told what it made", || {
         wake::waiting(session) >= 1
     });
@@ -313,8 +289,8 @@ fn a_reconnect_is_told_what_it_missed_once_and_in_words() {
     wait_until("the room to notice the close", || server.connections() == 0);
 
     // ---- an event with nobody behind the socket ---------------------------
-    // A claim by somebody else, addressed to the poster — which is `session`, and `session` is
-    // not here. The room counts it and the count is the whole of what it can say.
+    // A claim by somebody else, addressed to the poster - which is `session`, and `session` is not
+    // here. The room counts it and the count is the whole of what it can say.
     let claimant = Client::connect(
         scratch.socket(),
         Speaker::top_level("s-gap-claimant"),
@@ -365,32 +341,29 @@ fn a_reconnect_is_told_what_it_missed_once_and_in_words() {
          exists not to be"
     );
 
-    // **And nothing is left for the next turn.** The count was taken by the `Welcome`, so the
-    // reader's next pass finds zero — a client that re-reported the same gap would tell the model
-    // the room had gone quiet again every few seconds.
+    // And nothing is left for the next turn. The count was taken by the `Welcome`, so the reader's
+    // next pass finds zero - a client that re-reported the same gap would tell the model the room had
+    // gone quiet again every few seconds.
     std::thread::sleep(std::time::Duration::from_millis(400));
     assert_eq!(wake::waiting(session), 0, "the gap is said once: {said:?}");
     drop(back);
 }
 
-/// **R57 at the daemon's door — a turn ending rings nothing; a message under the tag does.**
+/// A turn ending rings nothing; a message under the tag does.
 ///
-/// R57's confusion, in one place: *a child's completion is not a firing.* On this side of the room
-/// a subagent finishing IS a turn ending — `Harness` runs the turn, the child's session was never a
-/// room member, and `SessionRoom::turn_ended` stops the beat and nothing else. So nothing is rung,
-/// the claim it held is still held, and a client queued behind it is not woken to say so. What IS a
-/// bell is a message arriving under the tag, which is the only thing that ever was.
+/// A child's completion is not a firing. On this side of the room a subagent finishing IS a turn
+/// ending - the child's session was never a room member, and `SessionRoom::turn_ended` stops the beat
+/// and nothing else. So nothing is rung, the claim it held is still held, and a client queued behind
+/// it is not woken to say so. What IS a bell is a message arriving under the tag.
 ///
-/// **What it would have failed on:** the natural wrong implementation — an `abandon` on the turn's
-/// end, *"the work stopped, so give the item back"* — is plausible, is what a session that crashed
-/// gets, and would make every completion an event. It also explains the old sentence: a client that
-/// treats a completion as a firing waits for the child for ever, because the child's completion
-/// rings a bell that says nothing about the item and the item never moves.
+/// The natural wrong implementation - an `abandon` on the turn's end, *"the work stopped, so give the
+/// item back"* - is plausible, is what a session that crashed gets, and would make every completion
+/// an event.
 #[test]
 fn a_turn_ending_rings_no_bell_and_a_message_under_the_tag_does() {
     let scratch = Scratch::new("r57");
-    // The server must outlive the clients: dropping it closes the listener under a connection that
-    // is still being served.
+    // The server must outlive the clients: dropping it closes the listener under a connection that is
+    // still being served.
     let _server = Server::serve(&scratch.socket(), Room::new()).expect("a room to talk to");
     let rung = Arc::new(AtomicUsize::new(0));
     let bell: Arc<dyn Fn(&str) + Send + Sync> = {
@@ -418,8 +391,8 @@ fn a_turn_ending_rings_no_bell_and_a_message_under_the_tag_does() {
         .expect("a claim");
     assert!(claimed.contains("#1"), "{claimed}");
 
-    // **An observer queued under the same tag**, so *nothing happened* is a fact about a channel
-    // that works rather than about a channel that was never open.
+    // An observer queued under the same tag, so *nothing happened* is a fact about a channel that
+    // works rather than about a channel that was never open.
     let seen = Arc::new(Mutex::new(Vec::new()));
     let heard = Arc::clone(&seen);
     let observer = Client::connect(
@@ -461,8 +434,8 @@ fn a_turn_ending_rings_no_bell_and_a_message_under_the_tag_does() {
         rung_before,
         "and nothing rings — not for the session, not for the tag"
     );
-    // **And the claim survives**, which is the half that makes the old confusion expensive: a
-    // completion is not an abandonment, so the item is still held and the queue still says so.
+    // And the claim survives, which is the half that makes the confusion expensive: a completion
+    // is not an abandonment, so the item is still held and the queue still says so.
     let queue = observer
         .request(&Request::Queue { tag: "ram".into() })
         .expect("a queue read");
@@ -500,7 +473,7 @@ fn a_turn_ending_rings_no_bell_and_a_message_under_the_tag_does() {
     );
 }
 
-/// Wait until `f` says so — for a fact that arrives on a thread rather than as a frame.
+/// Wait until `f` says so - for a fact that arrives on a thread rather than as a frame.
 fn wait_until(what: &str, mut f: impl FnMut() -> bool) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while std::time::Instant::now() < deadline {

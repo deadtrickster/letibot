@@ -1,24 +1,12 @@
-//! **The operator's own shell line (`!`), run by the daemon** — the run half of the
-//! feature the wire half lives in `letibot-sessionlog`'s `operator_shell.rs`.
+//! The operator's own shell line (`!`), run by the daemon - the run half of the feature whose
+//! wire half is `letibot-sessionlog`'s `operator_shell.rs`.
 //!
-//! Three properties, and the first is the one the requirement names as *the* test:
+//! Three properties: no permission decision is made anywhere (the adjudicator here counts its calls
+//! and would answer *nobody decided*); the output lands as a `User` row in the operator's own voice
+//! and then a `ToolResult` named `bash` with `origin: Operator`; and `sudo` can ask, because the
+//! command inherits the standing environment that lets `letibot-askpass` raise a card.
 //!
-//! 1. **No permission decision is made.** The adjudicator attached is one that counts
-//!    its calls and would answer *nobody decided*; the run must succeed with zero
-//!    calls, no `DecisionRequested` may appear on the log, and no `OperatorCallAllowed`
-//!    either — that event is the door's admission, and a `!` line has none.
-//! 2. **The output reaches the model as a message, with the command named**: a `User`
-//!    row in the operator's own words (the typed line, bang included, `speaker:
-//!    Operator`) followed by a `ToolResult` named `bash` with `origin: Operator` —
-//!    the row every head folds, pages and sanitises like any other tool result.
-//! 3. **`sudo` can ask.** The command runs on the daemon's exec host, so it inherits
-//!    the standing environment (`LETIBOT_SOCKET`, `LETIBOT_SESSION`, `SUDO_ASKPASS`)
-//!    that lets `letibot-askpass` put a password card in front of a head. The test's
-//!    double for `sudo -A` is documented at its own test.
-//!
-//! What these need, and what they do not: a real exec host (a delegated cgroup v2
-//! subtree) and the vocabulary GGUF, because a `Harness` renders its stable prefix at
-//! open. Not a model: nothing here generates.
+//! Needs a real exec host and the vocabulary GGUF, not a model: nothing here generates.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -44,22 +32,19 @@ fn config(session: &str, socket: &std::path::Path) -> Config {
         .expect("the workspace root is two levels above this crate")
         .to_path_buf();
     let mut cfg = Config::for_this_box(repo);
-    // **Not this box's configuration.** The same rule `wired.rs` states: these tests
-    // assert what the fixture supplies, not what the operator's `~/.config/letibot`
-    // happens to hold.
+    // Not this box's configuration. These tests assert what the fixture supplies, not what the
+    // operator's `~/.config/letibot` happens to hold.
     cfg.web_search = None;
     cfg.permission = Vec::new();
     cfg.dialect = Dialect::Qwen;
     cfg.session_id = session.into();
     cfg.socket = socket.to_path_buf();
     // A seat that can run commands: unconfined (`leticode`), `bash` seated, and a
-    // mode that needs no oracle — the point here is the exec path, not the mode.
+    // mode that needs no oracle - the point here is the exec path, not the mode.
     cfg.seat = Seat::Leticode;
     cfg.allow_bash = true;
-    // `Config::for_this_box` carries no vocabulary default any more (a daemon on
-    // the byte vocabulary needs none), so a harness built here is handed one: the
-    // operator's `LETIBOT_VOCAB_GGUF` if it is set, else the box's own GGUF — the
-    // same path this file's `vocab_gguf` gate consults.
+    // `Config::for_this_box` carries no vocabulary default any more, so a harness built here is
+    // handed one: the same path this file's gate consults.
     cfg.vocab_gguf = support::vocab::gguf();
     cfg
 }
@@ -76,10 +61,9 @@ fn parts(cfg: &Config) -> Parts {
 
 /// An adjudicator that counts its calls and would answer *nobody decided*.
 ///
-/// It exists so that "the gate was not consulted" is a measurement rather than an
-/// inference from the call having succeeded: if the `!` path ever reached an
-/// adjudicator, the counter would move and `unavailable` would stop the command, so
-/// the outcome assertion and the counter assertion fail together.
+/// It exists so that "the gate was not consulted" is a measurement rather than an inference from
+/// the call having succeeded: if the `!` path ever reached an adjudicator, the counter would move
+/// and `unavailable` would stop the command, so both assertions fail together.
 struct NeverAsked(Arc<AtomicUsize>);
 
 impl Adjudicator for NeverAsked {
@@ -108,8 +92,8 @@ fn socket_path(tag: &str) -> std::path::PathBuf {
     ))
 }
 
-/// **The whole run: a `!` line becomes two rows, the command actually ran, and no
-/// permission decision was made anywhere on the way.**
+/// The whole run: a `!` line becomes two rows, the command actually ran, and no
+/// permission decision was made anywhere on the way.
 #[test]
 fn a_bang_line_runs_in_the_workspace_and_lands_as_two_rows_with_no_decision() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -129,9 +113,8 @@ fn a_bang_line_runs_in_the_workspace_and_lands_as_two_rows_with_no_decision() {
     );
     let mut h = match opened {
         Ok(h) => h,
-        // An exec host needs a delegated cgroup v2 subtree; a host without one is a
-        // real host, and the refusal is asserted rather than skipped (`exec.rs`'s
-        // rule — a green test that measured nothing is worse than a red one).
+        // An exec host needs a delegated cgroup v2 subtree; a host without one is a real host, and
+        // the refusal is asserted rather than skipped - a green test that measured nothing is bad.
         Err(e) => {
             let msg = format!("{e}");
             assert!(
@@ -150,7 +133,7 @@ fn a_bang_line_runs_in_the_workspace_and_lands_as_two_rows_with_no_decision() {
     h.run_operator_shell(&line, "dead")
         .expect("the operator's own command runs and is recorded");
 
-    // **What a head would receive**, read the way a head reads it: the snapshot.
+    // What a head would receive, read the way a head reads it: the snapshot.
     let snap = hub.snapshot();
     let items: Vec<&TranscriptItem> = snap.items.iter().filter_map(|i| i.item.as_ref()).collect();
     // The operator's own row first: their words, verbatim, in their own voice.
@@ -191,11 +174,8 @@ fn a_bang_line_runs_in_the_workspace_and_lands_as_two_rows_with_no_decision() {
     assert_eq!(wrote, "the-operator-ran-this");
     let _ = std::fs::remove_file(h.workspace().join(&marker));
 
-    // **No permission decision anywhere on the way.** Three half-checks, because the
-    // decision has three places it could show up: the adjudicator (never asked), the
-    // session log (no `DecisionRequested`, no `OperatorCallAllowed` — the door's
-    // admission, which a `!` line must not produce), and the outcome (Ok, which a
-    // refused call could never be).
+    // No permission decision anywhere on the way - three half-checks, because the decision has
+    // three places it could show up: the adjudicator, the session log, and the outcome.
     assert_eq!(
         asked.load(Ordering::SeqCst),
         0,
@@ -221,26 +201,13 @@ fn a_bang_line_runs_in_the_workspace_and_lands_as_two_rows_with_no_decision() {
     );
 }
 
-/// **The turn that starts reads the payload** — the half that was missing.
+/// The turn that starts reads the payload - the half the two rows do not prove by themselves.
 ///
-/// The test above asserts the operator's half: the two rows land, their line and the
-/// command's output, and a head draws them. This one asserts the MODEL's half, and it is
-/// the defect that was measured three times on a live session: `! ls -la` deposited its
-/// two rows, the turn started, and the turn opened with the line and nothing else.
-///
-/// **Where the evidence is pinned, said plainly.** A `Harness` cannot run a real turn here
-/// — that needs a model — so this test takes the rows the deposit left in the store and
-/// hands them to the function that builds what the model is handed,
-/// `letibot_provider::messages::convert`. That is the layer the drop happened in
-/// (`pair_tool_calls` saw a `tool` message with no proposing assistant row and discarded
-/// it), and it is reachable without a live model. **The layer this covers is the
-/// model-facing message builder over the real deposited rows; what it does not cover is a
-/// live round trip to a provider.**
-///
-/// The local dialects are not in this test's scope because they were never wrong:
-/// `dialect-qwen`'s `ToolResult` arm renders the row as a `<tool_response>` user turn with
-/// no proposal above it, which is why the operator's screen showed the output while the
-/// `messages` route dropped it.
+/// A `Harness` cannot run a real turn here (that needs a model), so this takes the rows the deposit
+/// left and hands them to `letibot_provider::messages::convert` - the layer the drop happened in
+/// (`pair_tool_calls` discarded a `tool` message with no proposing assistant row). What it does not
+/// cover is a live round trip to a provider. The local dialects were never wrong: `dialect-qwen`
+/// renders the row as a `<tool_response>` user turn with no proposal above it.
 #[test]
 fn the_turn_the_line_starts_hands_the_model_the_commands_output() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -258,12 +225,9 @@ fn the_turn_the_line_starts_hands_the_model_the_commands_output() {
         }
     };
     let marker = format!("bang-reads-marker-{}", std::process::id());
-    // **The output is not in the command line, and that is what makes this a test.**
-    //
-    // The first draft of this test `printf`ed its own marker, so the marker was in the
-    // operator's typed line as well as in the output — and the assertion below passed
-    // against the LINE while the result was being dropped, which is the exact defect it
-    // exists to catch. The file is seeded here and the command only names it.
+    // The output is not in the command line, and that is what makes this a test: the first
+    // draft `printf`ed its own marker, so the assertion passed against the LINE while the result
+    // was being dropped. The file is seeded here and the command only names it.
     let output = format!("the-model-must-read-{}", std::process::id());
     std::fs::write(h.workspace().join(&marker), &output).expect("seed the file the command reads");
     let line = format!("! cat {marker}");
@@ -274,7 +238,7 @@ fn the_turn_the_line_starts_hands_the_model_the_commands_output() {
     h.run_operator_shell(&line, "dead")
         .expect("the operator's own command runs and is recorded");
 
-    // **The rows the turn reads**, in the order the turn reads them: everything the
+    // The rows the turn reads, in the order the turn reads them: everything the
     // deposit left, exactly as the transcript holds it.
     let items: Vec<TranscriptItem> = hub
         .snapshot()
@@ -289,9 +253,8 @@ fn the_turn_the_line_starts_hands_the_model_the_commands_output() {
         "the operator's own line is not in what the model would read: {items:?}"
     );
 
-    // What the model is handed.
-    // A model that takes pictures: this test is about which ROWS reach the model, and a
-    // text-only model would answer a `read` image with a placeholder instead.
+    // What the model is handed. A model that takes pictures: this test is about which ROWS reach
+    // it, and a text-only model would answer a `read` image with a placeholder instead.
     let messages = letibot_provider::messages::convert(
         "be terse",
         &items,
@@ -307,10 +270,9 @@ fn the_turn_the_line_starts_hands_the_model_the_commands_output() {
         said.iter().any(|c| c.contains(&output)),
         "the command's output never reaches the model \u{2014} this is the defect: {messages:?}"
     );
-    // **And it is the person's, not the model's.** No assistant `tool_calls` entry was
-    // invented to own it and no `tool` message was sent to answer one: the model is handed
-    // the output as the operator's own turn, which is the shape the local dialects already
-    // render for this row.
+    // And it is the person's, not the model's. No assistant `tool_calls` entry was invented
+    // to own it and no `tool` message answers one: the model is handed the output as the
+    // operator's own turn, which is the shape the local dialects already render for this row.
     assert!(
         !messages.iter().any(|m| m["role"] == "tool"),
         "the result was sent as a tool message answering nothing: {messages:?}"
@@ -326,10 +288,9 @@ fn the_turn_the_line_starts_hands_the_model_the_commands_output() {
     let _ = std::fs::remove_file(h.workspace().join(&marker));
 }
 
-/// **A command that cannot start is reported, not swallowed.**
-///
-/// `bash`'s own refusal lands as the `ToolResult` row with the outcome the tool gave,
-/// so the operator reads it where they read every other result.
+/// A command that cannot start is reported, not swallowed. `bash`'s own refusal lands as the
+/// `ToolResult` row with the outcome the tool gave, so the operator reads it where they read every
+/// other result.
 #[test]
 fn a_command_that_cannot_start_lands_as_a_failed_row() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -347,7 +308,7 @@ fn a_command_that_cannot_start_lands_as_a_failed_row() {
         }
     };
     // A command that cannot start: the shell is asked to `exec` a binary that does
-    // not exist. bash reports it and exits non-zero — which is the COMMAND's answer
+    // not exist. bash reports it and exits non-zero - which is the COMMAND's answer
     // (`ok` with the exit stated), so the honest assertion is on the payload naming
     // what happened, not on the outcome variant.
     h.run_operator_shell("! this-binary-does-not-exist-anywhere", "dead")
@@ -376,29 +337,13 @@ fn a_command_that_cannot_start_lands_as_a_failed_row() {
 // sudo: the password ask
 // ---------------------------------------------------------------------------
 
-/// **The `!` path's command can ask the head for a password.**
+/// The `!` path's command can ask the head for a password.
 ///
-/// The chain, and where each link is proven:
-///
-/// * the operator's command runs on the daemon's exec host with the **standing
-///   environment** (`LETIBOT_SOCKET`, `LETIBOT_SESSION`, `SUDO_ASKPASS`) and the
-///   `sudo` shim first on `PATH` — wired at `Harness::open`, and THIS test proves the
-///   `!` path inherits it, which is the one link that is new;
-/// * a helper that connects on that socket reaches the head as
-///   `SecretRequested` and the head's `Secret` answer reaches the helper —
-///   `letibot-sessionlog`'s `askpass.rs`, unchanged by this feature;
-/// * `sudo -A` runs `SUDO_ASKPASS` — `sudo.rs`'s unit test, and the opt-in
-///   `sudo_live.rs` against a real sudo.
-///
-/// **The double.** Standing in for `sudo -A` + `letibot-askpass` is a python3 script
-/// that speaks the wire's own NDJSON (attach as an `askpass` head, send `Askpass`,
-/// read the `Secret` answer) — the same three steps the real helper takes, with the
-/// two JSON lines serialized from real frames in this test so the double cannot drift
-/// from the protocol. It runs as the `!` command itself, so what is measured is
-/// exactly what a `sudo` inside a `!` command does: reach the daemon, ask, be
-/// answered. A real sudo is not used because the assertion must not depend on this
-/// box's sudo policy — and `letibot-askpass` is not built beside a test binary, which
-/// is what `$LETIBOT_ASKPASS` exists to override in `sudo_live.rs`.
+/// The link this test adds: the command runs with the standing environment (`LETIBOT_SOCKET`
+/// `LETIBOT_SESSION`, `SUDO_ASKPASS`) and the `sudo` shim first on `PATH`, wired at open.
+/// The double is a python3 script that speaks the wire's own NDJSON (attach as an `askpass`
+/// head, send `Askpass`, read the `Secret` answer), run as the `!` command itself - so a real sudo
+/// is not used and the assertion does not depend on this box's sudo policy.
 #[test]
 fn a_sudo_inside_a_bang_line_asks_the_head_for_the_password_and_gets_it() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -406,10 +351,8 @@ fn a_sudo_inside_a_bang_line_asks_the_head_for_the_password_and_gets_it() {
     };
     let socket = socket_path("sudo");
     let cfg = config("bang-sudo", &socket);
-    // **Leaked on purpose.** The harness borrows `Parts` for its life and the run
-    // must happen on another thread (the worker blocks inside the command while
-    // this thread answers the password ask), so the borrow has to be `'static`.
-    // A test's `Parts` is exactly the thing a leak is for.
+    // Leaked on purpose. The harness borrows `Parts` for its life and the run must happen on
+    // another thread (the worker blocks inside the command while this thread answers the ask).
     let p: &'static Parts = Box::leak(Box::new(parts(&cfg)));
     let hub = Hub::new(&cfg.session_id);
     let h = match Harness::open_with(p, cfg.clone(), hub.clone(), None, None) {
@@ -426,7 +369,7 @@ fn a_sudo_inside_a_bang_line_asks_the_head_for_the_password_and_gets_it() {
         .ok();
     let server = serve_registry(registry, &socket).expect("bind");
     // The harness borrows `Parts` for its life, and the runner thread below takes
-    // the harness while this thread keeps `p` — both alive to the end of the test.
+    // the harness while this thread keeps `p` - both alive to the end of the test.
     let h = h;
 
     // The two frames the double sends, serialized here so the double cannot drift.
@@ -449,7 +392,7 @@ fn a_sudo_inside_a_bang_line_asks_the_head_for_the_password_and_gets_it() {
     .expect("askpass line");
 
     // The double. `#!/usr/bin/python3` because the exec host clears the environment
-    // and pins PATH — an absolute interpreter is the one spelling that survives.
+    // and pins PATH - an absolute interpreter is the one spelling that survives.
     let dir = letibot_sessionlog::testing::scratch_root()
         .join(format!("letibot-bang-askpass-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("temp dir");
@@ -503,7 +446,7 @@ sys.exit(1)
     let (tx, rx) = std::sync::mpsc::channel();
     let _pump = std::thread::spawn(move || pump(reader, tx));
 
-    // The `!` line, run on the worker's own thread — the operator's command blocks
+    // The `!` line, run on the worker's own thread - the operator's command blocks
     // inside it while the password is outstanding, exactly as a real `sudo` would.
     let line = format!(
         "! {double} '[sudo] password for dead: ' 'sudo true'",
@@ -542,7 +485,7 @@ sys.exit(1)
         .expect("answer the ask");
     runner.join().expect("the run finished");
 
-    // The helper's own report is the command's output, so it is the row's payload —
+    // The helper's own report is the command's output, so it is the row's payload -
     // and the password is nowhere the transcript or the log can reach.
     let snap = hub.snapshot();
     let payload = item_payloads(&snap).join("\n");
@@ -574,35 +517,24 @@ fn item_payloads(snap: &letibot_sessionlog::Snapshot) -> Vec<String> {
 // The prompt card: the operator's own run can be ANSWERED
 // ---------------------------------------------------------------------------
 
-/// **The whole thing, end to end, through the real path.**
+/// The whole thing, end to end, through the real path.
 ///
-/// The defect: `! sudo apt install mc` streamed its progress and then aborted at
-/// `Continue? [Y/n]`, because fd 0 was `/dev/null` and an EOF is not a `Y`. Every layer of the
-/// fix is exercised here and **not one of them by calling a helper in isolation**:
+/// The daemon holds a pipe on the run's stdin; the run is blocked reading it, which `exec::ask`
+/// reads out of `/proc` - the process, not its words - and which is what raises the card; the card
+/// reaches a head as `PromptRequested` naming the command the operator typed; the answer is
+/// delivered on the socket reader's thread, because the run's own thread is blocked inside the
+/// command that is asking; and the command reads it and finishes with the answer in its own output.
 ///
-/// * the daemon holds a **pipe** on the operator's own run's stdin (`letibot_tools::exec`);
-/// * the run is **blocked reading it**, which is what `letibot_tools::exec::ask` reads out of
-///   `/proc` — the process's state and not its words — and which is what raises the card;
-/// * the card reaches a head as `PromptRequested`, **naming the command the operator typed**;
-/// * the head's `PromptAnswer` is delivered on the socket reader's thread — it cannot go
-///   through the command queue, because the run's own thread is blocked inside the very
-///   command that is asking — and the daemon writes it into the pipe;
-/// * **the command reads it and finishes**, with the answer in its own output, which is the
-///   assertion the whole branch exists for;
-/// * and the two rows the `!` feature already appends still land, with the program's last
-///   words and its status.
-///
-/// **`read` and `printf` are builtins**, so the assertion does not depend on anything
-/// outside the pinned `PATH` — the same rule the tests above keep.
+/// `read` and `printf` are builtins, so the assertion does not depend on anything outside the
+/// pinned `PATH`.
 #[test]
 fn a_bang_line_that_asks_is_answered_and_finishes() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
-    // **Linux's reading, asserted.** The card carries the program's own last line only where
-    // the daemon can see that the program is blocked on its terminal, and Darwin exposes
-    // neither `wchan` nor `/proc/<tid>/syscall` (`crates/tools/src/exec/ask.rs`): a Mac raises
-    // the unreadable offer instead, which `!send` still answers.
+    // Linux's reading, asserted. The card carries the program's own last line only where the
+    // daemon can see that the program is blocked on its terminal, and Darwin exposes neither
+    // `wchan` nor `/proc/<tid>/syscall`: a Mac raises the unreadable offer instead.
     let Some(_) = letibot_tokencore::apparatus::applies(
         "reading that a program waits on its terminal (wchan or /proc/<tid>/syscall)",
         cfg!(target_os = "linux"),
@@ -611,15 +543,14 @@ fn a_bang_line_that_asks_is_answered_and_finishes() {
     };
     let socket = socket_path("answered");
     let cfg = config("bang-answered", &socket);
-    // **Leaked on purpose.** The harness borrows `Parts` for its life and the run must happen
-    // on another thread (the worker blocks inside the command while this thread answers),
-    // so the borrow has to be `'static`.
+    // Leaked on purpose. The harness borrows `Parts` for its life and the run must happen on
+    // another thread (the worker blocks inside the command while this thread answers), so the
+    // borrow has to be `'static`.
     let p: &'static Parts = Box::leak(Box::new(parts(&cfg)));
     let hub = Hub::new(&cfg.session_id);
-    // **The registry the harness is opened WITH**, and not a second one built afterwards:
-    // the daemon installs this session's stdin driver on the registry it was handed, so a
-    // test that served a different one would be testing a socket with no way in — which is
-    // exactly what the first cut of this test did, and it failed for that reason.
+    // The registry the harness is opened WITH, and not a second one built afterwards: the
+    // daemon installs this session's stdin driver on the registry it was handed, so serving a
+    // different one would be testing a socket with no way in.
     let registry = Registry::of(hub.clone());
     let mut h = match Harness::open_with_registry(
         p,
@@ -689,16 +620,15 @@ fn a_bang_line_that_asks_is_answered_and_finishes() {
         .expect("the run thread")
         .expect("the run records");
 
-    // **The command read the answer and finished with it in its own output.** This is the
+    // The command read the answer and finished with it in its own output. This is the
     // assertion the branch exists for.
     let payload = item_payloads(&hub.snapshot()).join("\n");
     assert!(
         payload.contains("answered=Y"),
         "the answer must reach the command's stdin and come back out of it: {payload}"
     );
-    // **And the ending the `!` path already added is still there** — the program's last words
-    // and its status, as the row every head draws. An answered prompt must not cost the
-    // ending that was there before it.
+    // And the ending the `!` path already added is still there - the program's last words and
+    // its status. An answered prompt must not cost the ending that was there before it.
     let outcome = hub
         .snapshot()
         .items
@@ -713,7 +643,7 @@ fn a_bang_line_that_asks_is_answered_and_finishes() {
         matches!(outcome, letibot_transcript::ToolOutcome::Ok),
         "the answered command exited cleanly and the row says so: {outcome:?}"
     );
-    // And the settlement is on the log — who answered, and never the line.
+    // And the settlement is on the log - who answered, and never the line.
     let settled = hub.retained().into_iter().find_map(|env| match env.event {
         SessionEvent::PromptSettled { req_id, sent, by } => Some((req_id, sent, by)),
         _ => None,
@@ -734,14 +664,12 @@ fn a_bang_line_that_asks_is_answered_and_finishes() {
     server.shutdown();
 }
 
-/// **The manual way in reaches a running command's stdin** — and it needs no card at all.
+/// The manual way in reaches a running command's stdin - and it needs no card at all.
 ///
-/// This is the floor under the heuristic, and the operator's own instruction is why it is the
-/// primary mechanism rather than a fallback: the card is raised by a reading of `/proc` that
-/// has misses it names, and **a person watching the stream can always answer**. So the test
-/// never looks at a card: it sends `SendLine` while the run is blocked and asserts the command
-/// got the line. The program prints **nothing at all** before it blocks, which also pins the
-/// other half — `!send` is a verb and not a reply to a question.
+/// The floor under the heuristic: the card is raised by a reading of `/proc` that has misses it
+/// names, and a person watching the stream can always answer. So this never looks at a card -
+/// it sends `SendLine` while the run is blocked. The program prints nothing at all before it
+/// blocks, which pins the other half: `!send` is a verb, not a reply to a question.
 #[test]
 fn the_manual_send_reaches_a_running_commands_stdin() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -778,13 +706,12 @@ fn the_manual_send_reaches_a_running_commands_stdin() {
         let line = line.to_string();
         move || h.run_operator_shell(&line, "dead")
     });
-    // **No card is waited for.** The verb is the way in whether or not anything looked like a
+    // No card is waited for. The verb is the way in whether or not anything looked like a
     // question, which is the whole point of it being a verb.
     //
-    // **Sent until it is read, not once after a fixed sleep.** A single send after 1.2 s hung
-    // this test for 49 minutes at load 150: the line arrived before the command was running,
-    // was dropped, and `read x` waited forever. So the line is resent until the run ends, and
-    // a run that never ends fails the test at 60 s instead of hanging the suite.
+    // Sent until it is read, not once after a fixed sleep: a single send can land before the
+    // command is running, be dropped, and leave `read x` waiting forever. So the line is resent
+    // until the run ends, and a run that never ends fails the test instead of hanging the suite.
     let deadline = std::time::Instant::now() + Duration::from_secs(60);
     while !runner.is_finished() {
         assert!(
@@ -808,27 +735,24 @@ fn the_manual_send_reaches_a_running_commands_stdin() {
     server.shutdown();
 }
 
-/// **A program that prints a question and EXITS raises no card.**
+/// A program that prints a question and EXITS raises no card.
 ///
-/// The control, and it is the one that would have failed before the detection was corrected.
-/// A text matcher — `ends with ?`, `ends with [Y/n]` — fires on the output of a program that
-/// has already finished, which is a card nobody can answer, raised for a command that is over.
-/// The state reading cannot: `wait_job` returns `Happened` for it and the question is never
-/// asked.
+/// The control, and the one that would have failed before the detection was corrected: a text
+/// matcher (`ends with ?`, `ends with [Y/n]`) fires on the output of a program that has already
+/// finished, which is a card nobody can answer, raised for a command that is over. The state
+/// reading cannot.
 ///
-/// **And the third case is the strongest form of the correction.** A program that prints no
-/// question at all — `working...` — and then blocks on its stdin **does** raise a card,
-/// because what is being read is the process and not the words. A rule drawn around
-/// `Continue?` would fail that one in the direction that looks like success.
+/// And the third case is the strongest form of the correction: a program that prints no
+/// question at all and then blocks on its stdin does raise a card, because what is read is the
+/// process and not the words.
 #[test]
 fn a_program_that_prints_a_question_and_exits_raises_no_card() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
-    // **Linux's reading, asserted.** The card carries the program's own last line only where
-    // the daemon can see that the program is blocked on its terminal, and Darwin exposes
-    // neither `wchan` nor `/proc/<tid>/syscall` (`crates/tools/src/exec/ask.rs`): a Mac raises
-    // the unreadable offer instead, which `!send` still answers.
+    // Linux's reading, asserted. The card carries the program's own last line only where the
+    // daemon can see that the program is blocked on its terminal, and Darwin exposes neither
+    // `wchan` nor `/proc/<tid>/syscall`: a Mac raises the unreadable offer instead.
     let Some(_) = letibot_tokencore::apparatus::applies(
         "reading that a program waits on its terminal (wchan or /proc/<tid>/syscall)",
         cfg!(target_os = "linux"),
@@ -871,7 +795,7 @@ fn a_program_that_prints_a_question_and_exits_raises_no_card() {
             "a program that printed a question and EXITED must raise no card: there is \
              nobody left to answer it and nothing is blocked"
         );
-        // And the ending the `!` path adds is still there — an answered prompt, or a run that
+        // And the ending the `!` path adds is still there - an answered prompt, or a run that
         // ends, still leaves the row with the program's last words and its status.
         let payload = item_payloads(&hub.snapshot()).join("\n");
         assert!(

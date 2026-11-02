@@ -1,52 +1,32 @@
-//! **Can a session recorded under one dialect be re-rendered under another?**
+//! Can a session recorded under one dialect be re-rendered under another?
 //!
-//! The resume path refuses a dialect change, and correctly: it replays stored
-//! TOKENS, and two renderers' bytes in one prompt is a prompt no model saw.
+//! The resume path refuses a dialect change because it replays stored TOKENS, and two renderers'
+//! bytes in one prompt is a prompt no model saw. But `transcript_item` stores `item_json` beside
+//! `tokens`, and `item_json` is dialect-neutral - a tool call is `{name, arguments}`, not markup -
+//! so the tokens are a cache of one rendering and the items are the record. The conversation can be
+//! rebuilt rather than refused; the refusal is a property of the fast path, not of the data.
 //!
-//! But `transcript_item` stores `item_json` BESIDE `tokens`, and `item_json` is
-//! dialect-neutral — a tool call is `{name, arguments}`, not `<function=…>`
-//! markup. So the tokens are a cache of one rendering and the items are the
-//! record, which means the conversation can be REBUILT for the other renderer
-//! rather than refused. The refusal is a property of the fast path, not of the
-//! data.
+//! This measures that on the operator's own store: load a real transcript recorded under the other
+//! dialect, render every item through this one, and report what it costs.
 //!
-//! This measures that on the operator's own store rather than asserting it from
-//! a reading: load a real transcript recorded under the other dialect, render
-//! every item through this one, and report what it costs.
+//! # It reads the operator's store, so it is opt in
 //!
-//! # It reads the operator's store, so it is OPT IN — the merge gate does not opt in
+//! This is a measurement against the box's data, not proof about the code under review, so
+//! `LETIBOT_CHECK_REAL_STORE=1` is what asks for it
 //!
-//! This is a MEASUREMENT against the box's data, not proof about the code under review, so
-//! `LETIBOT_CHECK_REAL_STORE=1` is what asks for it:
-//!
-//!     LETIBOT_CHECK_REAL_STORE=1 cargo test -p letibot-harnessd --test reprefill_feasibility -- --nocapture
+//! LETIBOT_CHECK_REAL_STORE=1 cargo test -p letibot-harnessd --test reprefill_feasibility -- --nocapture
 //!
 //! Without it the test prints one line saying it was skipped and why. `LETIBOT_REQUIRE_APPARATUS`
-//! deliberately does not reach it: the store is somebody's history, not the apparatus the code
-//! needs. See `letibot_tokencore::apparatus::check_real_store`.
+//! deliberately does not reach it: the store is somebody's history, not the apparatus the code needs.
 //!
 //! # The store is read through a read-only view, never opened and never copied
 //!
-//! `Store::open` is not a read: it **migrates**. A build whose `SCHEMA_VERSION` is
-//! newer than the file's rewrites it in place, so a test that opens the operator's
-//! live `~/.local/share/letibot/sessions.db` is a test that upgrades the operator's
-//! store underneath the daemon serving it. This one did exactly that — MEASURED
-//! with `strace` on 2026-10-06, before the first fix:
-//!
-//!     openat(AT_FDCWD, "/home/dead/.local/share/letibot/sessions.db",
-//!            O_RDWR|O_CREAT|O_NOFOLLOW|O_CLOEXEC, 0644) = 3
-//!
-//! — and the cost was two subagent spawns: the store moved to 16 while the running
-//! daemon was built at 15, and every spawn after that was refused with
-//! `SchemaTooNew { found: 16, known: 15 }`.
-//!
-//! The first fix copied the whole file into the temp dir, which by 2026-10-14 was
-//! 5.2 GB of a RAM-backed `/tmp` per run, left behind whenever the run was killed,
-//! and not a consistent snapshot of a file a daemon is checkpointing. So the live
-//! file is now attached `mode=ro` by `letibot_tokencore::store::live_view::LiveView`,
-//! which SQLite itself refuses to write through, and the one transcript measured is
-//! copied into memory in one read transaction. `crates/turn/tests/restore.rs` reads
-//! the store the same way.
+//! `Store::open` is not a read: it migrates, so a build whose `SCHEMA_VERSION` is newer than the
+//! file's rewrites the operator's live store underneath the daemon serving it. Copying the file
+//! instead left gigabytes of a RAM-backed `/tmp` per run, and was no consistent snapshot of a file
+//! a daemon is checkpointing - so the live file is attached `mode=ro` by `LiveView`, which SQLite
+//! itself refuses to write through, and the one transcript measured is copied into memory in a
+//! single read transaction. `crates/turn/tests/restore.rs` reads the store the same way.
 
 use letibot_tokencore::control::{resolve, tokenize_spans};
 use letibot_tokencore::store::live_view::LiveView;
@@ -91,7 +71,7 @@ fn a_transcript_from_the_other_dialect_re_renders_under_this_one() {
         .map(|b| format!("{b:02x}"))
         .collect();
 
-    // **Read-only, never the writer's `Store::open`** — see the module doc.
+    // Read-only, never the writer's `Store::open` - see the module doc.
     let view = LiveView::open(&store_path)
         .unwrap_or_else(|e| panic!("opening {}: {e}", store_path.display()));
     let Some(transcript_id) = biggest_foreign(&view, &ours) else {
@@ -104,9 +84,8 @@ fn a_transcript_from_the_other_dialect_re_renders_under_this_one() {
     let control =
         resolve(&vocab, &wiring.spec().control_tokens).expect("the control tokens resolve");
 
-    // Each item is rendered against the history as it stood BEFORE it — the same
-    // contract `Session::append_items` renders under — so this is the real cost
-    // and not an approximation of it.
+    // Each item is rendered against the history as it stood BEFORE it - the contract
+    // `Session::append_items` renders under - so this is the real cost, not an approximation.
     let mut history: Vec<TranscriptItem> = Vec::new();
     let mut tokens = 0usize;
     let mut by_kind: std::collections::BTreeMap<&str, (usize, usize)> = Default::default();
@@ -147,11 +126,9 @@ fn a_transcript_from_the_other_dialect_re_renders_under_this_one() {
     assert!(tokens > 0, "the re-rendered prompt is not empty");
 }
 
-/// The largest transcript whose recorded dialect is not `ours` — a two-row
-/// session would prove nothing about a six-hundred-row one.
-///
-/// A session's transcript is its CURRENT one — newest by `created_at`, then `rowid`, the
-/// order `Store::list_sessions` uses — and its size is that transcript's row count.
+/// The largest transcript whose recorded dialect is not `ours` - a two-row session would prove
+/// nothing about a six-hundred-row one. A session's transcript is its current one (newest by
+/// `created_at`, then `rowid`, the order `Store::list_sessions` uses), and its size is its rows.
 fn biggest_foreign(view: &LiveView, ours: &str) -> Option<String> {
     let conn = view.connection();
     let mut stmt = conn

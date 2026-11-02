@@ -1,29 +1,11 @@
-//! **`/clear`: the conversation starts over and the session does not.**
+//! `/clear`: the conversation starts over and the session does not.
 //!
-//! The operator, verbatim: *"I need to be able to clear context - fresh reseat without loosing
-//! session todos and jobs"*, *"and subagents"*, *"this will allow me to fix model degradation"*.
+//! A cleared session keeps its board, its job and its child; a job or a child that settles after
+//! the clear lands in the NEW transcript, and the old one stays whole in the store. A subagent's
+//! own `/clear` is answered by the thread that owns it.
 //!
-//! What is proved here is the whole list, on one session, through the production doors:
-//!
-//! 1. **The transcript is new and short** — message zero plus one orientation item, spoken as
-//!    the harness (`Speaker::Agent`), naming the old transcript, the board, the job and the
-//!    child, and the operator's sentence.
-//! 2. **The board is identical** — both halves, statuses and authors.
-//! 3. **A job that settles AFTER the clear is delivered into the NEW conversation**, by the next
-//!    wake, as it would have been into the old one.
-//! 4. **A child that answers AFTER the clear reaches its parent's new conversation** — its
-//!    settlement rides the same watchers, which are the session's and not the transcript's.
-//! 5. **The old transcript is still in the store, whole.**
-//! 6. **The context count is about the new transcript**: unmeasured, and the size of the new
-//!    base — no anchor left over from the conversation that was cleared.
-//!
-//! And a subagent's own `/clear` is answered by the thread that owns it.
-//!
-//! # What this needs
-//!
-//! The vocabulary GGUF (the harness renders its prefix) and a process-lifetime tree for the
-//! background job — each gate says so and skips. **No model**: every turn is answered by a stub
-//! on the shared `canned` frames, held on a gate so the child is mid-turn at the clear.
+//! Needs the vocabulary GGUF and a process-lifetime tree for the background job. No model: a stub
+//! answers on `canned` frames, held on a gate so the child is mid-turn at the clear.
 
 use std::net::TcpListener;
 use std::path::Path;
@@ -50,7 +32,7 @@ use support::stub::{read_request, write_frames, write_props};
 
 const PATIENCE: Duration = Duration::from_secs(30);
 
-/// The child's brief — what the orientation must say it was asked.
+/// The child's brief - what the orientation must say it was asked.
 const BRIEF: &str = "audit the parser's error paths";
 /// The operator's sentence, given with the clear.
 const NEXT: &str = "finish the parser, then run the gate";
@@ -58,13 +40,12 @@ const NEXT: &str = "finish the parser, then run the gate";
 fn config(session_id: &str, endpoint: Endpoint, store: &Path) -> Config {
     let mut cfg = Config::for_this_box("/tmp");
     cfg.dialect = Dialect::Qwen;
-    // A seat that can run commands and start children: unconfined (`leticode`) with `bash`
-    // seated — `operator_shell.rs`'s fixture, because the job here is a real process.
+    // Unconfined with `bash` seated: the job here is a real process.
     cfg.seat = Seat::Leticode;
     cfg.allow_bash = true;
     cfg.endpoint = endpoint;
     cfg.http_retries = 0;
-    // A child is planned against a window; see `message_between_turns.rs`.
+    // A child is planned against a window.
     cfg.context_window = Some(32_768);
     cfg.store = Some(store.to_path_buf());
     cfg.session_id = session_id.to_string();
@@ -89,9 +70,8 @@ fn wiring(cfg: &Config) -> SessionWiring {
     }
 }
 
-/// **A parent session with the REAL runner**, its hub adopted into a registry the way a daemon's
-/// is, and a teardown that drains the tree (see `message_between_turns.rs`'s `Parent` for why
-/// the drain is a crash fix rather than tidiness).
+/// A parent session with the REAL runner, its hub adopted into a registry as a daemon's is
+/// the teardown drains the tree, or the subagent threads outlive the test.
 struct Parent {
     harness: Harness,
     registry: Arc<Registry>,
@@ -115,9 +95,8 @@ fn a_parent(session_id: &str, parts: &Parts, cfg: &Config, gate: Arc<Stub>) -> P
 }
 
 impl Parent {
-    /// **One tool call through the session's own runtime, WATCHED** — the sink a turn wraps its
-    /// tools in (`JobWatchSink`), so a `Backgrounded` outcome is armed for delivery exactly as a
-    /// model's call would arm it.
+    /// One tool call through the session's own runtime, WATCHED - a turn's own sink, so a
+    /// `Backgrounded` outcome is armed for delivery.
     fn call(&self, name: &str, args: serde_json::Value) -> letibot_tools::ToolResult {
         let rt = self.harness.runtime_handle();
         let call = ToolCall {
@@ -180,9 +159,8 @@ fn user_text(item: &TranscriptItem) -> Option<(Speaker, String)> {
     }
 }
 
-/// **Whether the model's answer has come back on this hub** — the reply, and not the prompt that
-/// asked for it: a settlement is owed when a child has FINISHED, and a turn that has been asked is
-/// not a turn that has answered.
+/// Whether the model's answer has come back on this hub - the reply, not the prompt: a
+/// settlement is owed when a child has FINISHED.
 fn answered(hub: &Hub, needle: &str) -> bool {
     hub.retained().iter().any(|e| match &e.event {
         SessionEvent::TranscriptContent { item, .. } => {
@@ -203,7 +181,7 @@ fn warnings(hub: &Hub) -> Vec<(String, String)> {
 }
 
 // ---------------------------------------------------------------------------
-// THE ONE THIS CHANGE EXISTS FOR
+// THE ONE THIS FILE EXISTS FOR
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -224,9 +202,8 @@ fn a_cleared_session_keeps_its_board_its_job_and_its_child() {
 
     let parts = parts_for(&config(session_id, Endpoint::new("127.0.0.1", 1), &path));
     let v = &parts.vocab;
-    // Requests, in the only order they can arrive: #0 the parent's own turn (history to clear),
-    // #1 the child's first turn — HELD until after the clear, so the child is mid-turn at it —
-    // then the wakes that deliver the two settlements, answered plainly.
+    // Requests in the only order they can arrive: the parent's own turn, the child's first turn
+    // (HELD, so the child is mid-turn at the clear), then the wakes that deliver the settlements.
     let scripts = vec![
         a_plain_answer_turn(
             v,
@@ -245,7 +222,7 @@ fn a_cleared_session_keeps_its_board_its_job_and_its_child() {
     let cfg = config(session_id, stub.endpoint.clone(), &path);
     let mut parent = a_parent(session_id, &parts, &cfg, stub.clone());
 
-    // **A history worth clearing.**
+    // A history worth clearing.
     parent
         .harness
         .submit("start on the parser")
@@ -254,7 +231,7 @@ fn a_cleared_session_keeps_its_board_its_job_and_its_child() {
     let old_items = parent.harness.items().len();
     assert!(old_items >= 2, "a prompt and its answer");
 
-    // **The board: one row of each author.**
+    // The board: one row of each author.
     parent.harness.set_operator_todos(
         vec![TodoItem {
             content: "review the parser before it lands".into(),
@@ -281,7 +258,7 @@ fn a_cleared_session_keeps_its_board_its_job_and_its_child() {
     let board = parent.harness.todo_list();
     assert_eq!(board.len(), 3, "{board:#?}");
 
-    // **A background job that cannot finish until the test says so** — so its settlement lands
+    // A background job that cannot finish until the test says so - so its settlement lands
     // after the clear, never before it.
     let job = parent.backgrounded(
         "bash",
@@ -293,7 +270,7 @@ fn a_cleared_session_keeps_its_board_its_job_and_its_child() {
             "background": true
         }),
     );
-    // **A child, mid-turn**: its first request is held by the stub.
+    // A child, mid-turn: its first request is held by the stub.
     let child = parent.backgrounded("task", serde_json::json!({"prompt": BRIEF}));
     let child_hub = parent.hub_of(&child);
     assert!(
@@ -377,20 +354,11 @@ fn a_cleared_session_keeps_its_board_its_job_and_its_child() {
     stub.release(usize::MAX);
     std::fs::write(&go, b"").expect("the job's go file");
 
-    // (3) and (4): both settlements reach the NEW conversation. **Under R79 a routine result is
-    // HELD** — nothing on this board waits on the job or the child, so neither may start a turn of
-    // its own (`Harness::wake` answers `Ok(None)`) — and it rides in with the next turn the model
-    // takes anyway, as one `[meanwhile]` batch. So the loop wakes (which delivers anything that IS
-    // immediate) and, once both have SETTLED, takes the one turn a person would: a prompt. What is
-    // asserted is unchanged — the settlements land in the cleared conversation.
-    //
-    // **"Once both have settled" is read off the settlements, not off a stopwatch.** It used to be
-    // two seconds after the releases, and that was a guess about the box: on a loaded one the job's
-    // own poll and the child's turn both outlast it, so the prompt fired with a settlement still in
-    // flight — its `[meanwhile]` then carried only the half that had arrived, and the loop below sat
-    // out its whole patience waiting for a turn nothing was going to take. The two facts are the
-    // settlement's own: the job is over, and the child's answer is on the child's log. Neither can
-    // become true early, so a busy box makes this wait longer and never makes it wrong.
+    // (3) and (4): both settlements reach the NEW conversation. A routine result is HELD - nothing
+    // on this board waits on the job or the child - so it rides in with the next turn the model
+    // takes anyway, as one `[meanwhile]` batch: the loop wakes, and once both have SETTLED takes
+    // the one turn a person would. "Settled" is read off the settlements, not off a stopwatch, so a
+    // loaded box makes this wait longer and never makes it wrong.
     let began = Instant::now();
     let mut prompted = false;
     loop {
@@ -413,10 +381,10 @@ fn a_cleared_session_keeps_its_board_its_job_and_its_child() {
             .map(|(_, t)| t)
             .collect();
         // Past the orientation, which names both handles itself: what is looked for is the
-        // SETTLEMENT — the job's output and the child's answer, which nothing before the clear
+        // SETTLEMENT - the job's output and the child's answer, which nothing before the clear
         // could have known.
         let later = || texts.iter().skip(1);
-        // R93.C3: the completion names the job and how it ended; its own command is not echoed.
+        // The completion names the job and how it ended; its own command is not echoed.
         let job_in = later().any(|t| t.contains(&format!("`{job}` exited 0")));
         let child_in =
             later().any(|t| t.contains(&child) && t.contains("the child's audit is done"));
@@ -447,7 +415,7 @@ fn a_cleared_session_keeps_its_board_its_job_and_its_child() {
     drop(child_hub);
 }
 
-/// **A subagent's own `/clear` is answered by the thread that owns it** — with its board kept,
+/// A subagent's own `/clear` is answered by the thread that owns it - with its board kept
 /// its transcript forked, and the boundary row on its own log; and the old one in the store.
 #[test]
 fn a_childs_clear_is_answered_by_its_own_thread() {
@@ -525,17 +493,14 @@ fn a_childs_clear_is_answered_by_its_own_thread() {
 }
 
 // ---------------------------------------------------------------------------
-// The stub (`message_between_turns.rs`'s, which holds a request until released)
+// The stub (`message_between_turns.rs`'s): a request held until released
 // ---------------------------------------------------------------------------
 
-/// **A model that answers on a gate, and keeps every request it was asked.**
+/// A model that answers on a gate, and keeps every request it was asked.
 ///
-/// `canned::Canned` answers as fast as it can, which closes the window this file has to
-/// reach into: a turn is mid-flight only for as long as its model takes to answer. So each
-/// request is read, RECORDED, and held until the test releases it — *"the child is in a
-/// turn"* becomes a state the test stands in rather than races. The recorded body is what
-/// makes the other half provable: a request carries token ids, and detokenized with the
-/// same vocabulary the child tokenized with, they are the prompt the model was handed.
+/// `canned::Canned` answers too fast to stand in a mid-flight turn, so a request is read
+/// recorded and held until the test releases it: *"the child is in a turn"* becomes a state the
+/// test stands in rather than races.
 struct Stub {
     endpoint: Endpoint,
     shared: Arc<Gate>,
@@ -575,17 +540,15 @@ impl Stub {
         let handle = std::thread::spawn(move || {
             let mut i = 0usize;
             while i < requests {
-                // A listener that cannot accept is a listener nobody will be answered by:
-                // there is nothing left to say, and the client's own error is the report.
+                // An accept that fails has nothing left to answer: the client's own error is
+                // the report.
                 let Ok((stream, _)) = listener.accept() else {
                     return;
                 };
                 let (line, body) = read_request(stream.try_clone().expect("clone the socket"));
-                // **`/props` is not a turn and does not consume a script.** A spawn asks the
-                // parent's own endpoint for its window (`HarnessTaskRunner::start`'s
-                // `served_ctx`, one `GET` per child while this session has never left
-                // local) — a fact about the spawn path rather than about the model, and
-                // counting it as a turn would shift every script by one.
+                // `/props` is not a turn and does not consume a script. A spawn asks the
+                // parent's endpoint for its window, one `GET` per child - counting it as a turn
+                // would shift every script by one.
                 if line.starts_with("GET ") {
                     let _ = write_props(stream);
                     continue;

@@ -1,6 +1,6 @@
-//! **Run a repository's own merge gate on a declared host, by hand** — the instrument behind the
-//! numbers in `docs/remote-hosts.md` § *The merge gate on a declared host*, and the way to try a
-//! host before a project's `[queue] gate_host` names it.
+//! Run a repository's own merge gate on a declared host, by hand - the instrument behind the numbers
+//! in `docs/remote-hosts.md` § *The merge gate on a declared host*, and the way to try a host before
+//! a project's `[queue] gate_host` names it.
 //!
 //! ```sh
 //! cargo run --offline -p letibot-harnessd --example gate_on_host -- \
@@ -8,8 +8,8 @@
 //! ```
 //!
 //! The steps are the ones the TARGET declares (`AGENTS.md`'s `## Merge gate`, read from the tree's
-//! `main`), so this measures what the queue would measure; a trailing `--` list of commands
-//! replaces them, which is how a cheap measurement of the transport is taken:
+//! `main`); a trailing `--` list of commands replaces them, which is how a cheap measurement of the
+//! transport is taken
 //!
 //! ```sh
 //! cargo run --offline -p letibot-harnessd --example gate_on_host -- \
@@ -17,7 +17,7 @@
 //! ```
 //!
 //! It prints one line per step (outcome, milliseconds, the end of its output) and the verdict. It
-//! writes nothing to the store, claims no lease and runs no queue: the gate, and nothing else.
+//! writes nothing to the store, claims no lease and runs no queue.
 
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;

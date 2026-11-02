@@ -1,6 +1,4 @@
-//! The canned turn a replayed provider answers with, spelled in Qwen's own ids.
-//!
-//! A turn has to be written in the vocabulary it will be detokenized with: an id chosen for
+//! The canned turn a replayed provider answers with, spelled in Qwen's own ids: an id chosen for
 //! convenience decodes to a token the harness never reads as the end of a thought, and the round
 //! loop then runs on to the end of the script.
 

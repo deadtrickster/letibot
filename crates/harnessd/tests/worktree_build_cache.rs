@@ -1,22 +1,16 @@
-//! **A `task_start` worktree is handed over exactly as its branch is, and the build cache is
-//! shared through the child's environment.**
+//! A `task_start` worktree is handed over exactly as its branch is, and the build cache is shared
+//! through the child's environment.
 //!
-//! The bug this pins: `start_worktree` wrote `<worktree>/.cargo/config.toml` (`[build] target-dir
-//! = <main>/target`) and "hid" it by appending to `$(git rev-parse --git-dir)/info/exclude` — in
-//! a worktree that is `.git/worktrees/<name>/info/exclude`, which git does not read. So every
-//! worktree showed `?? .cargo/`, a child's `git add -A` committed it, and a repository that
-//! TRACKS its own `.cargo/config.toml` had that file overwritten in the child's tree. The
-//! operator: *".cargo/config.toml situation must be solved"*.
+//! The bug this pins: `start_worktree` wrote `<worktree>/.cargo/config.toml` and "hid" it by
+//! appending to `$(git rev-parse --git-dir)/info/exclude` - which in a worktree is
+//! `.git/worktrees/<name>/info/exclude`, a file git does not read. So every worktree showed
+//! `??.cargo/`, a child's `git add -A` committed it, and a repository that TRACKS its own
+//! `.cargo/config.toml` had that file overwritten in the child's tree.
 //!
-//! What is required now:
-//!
-//! * the worktree `task_start` arranges has an empty `git status --porcelain`, and no `.cargo/`
-//!   is written into it;
-//! * a repository that tracks `.cargo/config.toml` keeps it byte for byte, in the child's tree
-//!   and in the main one;
-//! * the child's commands carry `CARGO_TARGET_DIR` = the main tree's `target/`
-//!   (`harness::worktree_build_env`, through `Config::build_env` into the exec host's standing
-//!   environment, which is what survives the host's `env_clear`).
+//! What is required now: the worktree has an empty `git status --porcelain` and no `.cargo/` is
+//! written into it; a repository that tracks `.cargo/config.toml` keeps it byte for byte; and the
+//! child's commands carry `CARGO_TARGET_DIR` = the main tree's `target/`, through `Config::build_env`
+//! into the exec host's standing environment, which is what survives the host's `env_clear`.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -72,8 +66,8 @@ fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).to_string()
 }
 
-/// A scratch repository with one commit; with `tracked`, that commit holds a
-/// `.cargo/config.toml` of the repository's own.
+/// A scratch repository with one commit; with `tracked`, that commit holds a `.cargo/config.toml` of
+/// the repository's own.
 struct Scratch {
     root: PathBuf,
 }
@@ -168,7 +162,7 @@ fn porcelain(dir: &Path) -> String {
     git(dir, &["status", "--porcelain"])
 }
 
-/// **The worktree is the branch and nothing else**: clean, no `.cargo/` written — and the child's
+/// The worktree is the branch and nothing else: clean, no `.cargo/` written - and the child's
 /// build-cache pair points at the main tree's `target/`.
 #[test]
 fn a_task_start_worktree_is_clean_and_has_no_cargo_dir_written() {
@@ -220,8 +214,8 @@ fn a_task_start_worktree_is_clean_and_has_no_cargo_dir_written() {
     assert!(parent.wait_for_children(std::time::Duration::from_secs(30)));
 }
 
-/// **A repository that tracks its own `.cargo/config.toml` keeps it** — byte for byte in the
-/// child's tree, and in the main tree, and neither status moves.
+/// A repository that tracks its own `.cargo/config.toml` keeps it - byte for byte in the child's
+/// tree and in the main tree, and neither status moves.
 #[test]
 fn a_tracked_cargo_config_is_left_as_the_repository_has_it() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -247,9 +241,9 @@ fn a_tracked_cargo_config_is_left_as_the_repository_has_it() {
     assert!(parent.wait_for_children(std::time::Duration::from_secs(30)));
 }
 
-/// **The pair reaches the commands the session runs**: a harness opened with `build_env` (what
-/// the spawn gives a worktree child) runs `bash` with `CARGO_TARGET_DIR` set, although the exec
-/// host clears its environment before every command.
+/// The pair reaches the commands the session runs: a harness opened with `build_env` (what the
+/// spawn gives a worktree child) runs `bash` with `CARGO_TARGET_DIR` set, although the exec host
+/// clears its environment before every command.
 #[test]
 fn the_childs_commands_carry_cargo_target_dir() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {

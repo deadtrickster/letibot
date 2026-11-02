@@ -1,19 +1,15 @@
-//! **One turn tail for every door** — `TODO.md` R68.4, as one assertion list run against each.
+//! One turn tail for every door, as one assertion list run against each.
 //!
-//! The review of 2026-10-11 found the tails had diverged: the sweep was armed by the command and
-//! wake arms of `Daemon::run` (at their call sites, so a door reached any other way had none) and
-//! by the nag door by hand; the `!` doors armed neither the sweep nor the wake; a subagent ran a
-//! second copy of the tail whose `Answer` arm dropped its error (`.is_ok()`), so a child's failed
-//! turn published a `turn_failed` with no reason and no `TurnFailed` at all.
+//! A review found the tails had diverged: the sweep was armed by the command and wake arms of
+//! `Daemon::run` at their call sites, so a door reached any other way had none, and the `!` doors
+//! armed neither the sweep nor the wake; a subagent ran a second copy of the tail whose `Answer` arm
+//! dropped its error, so a child's failed turn published a `turn_failed` with no reason and no
+//! `TurnFailed` at all.
 //!
-//! Every door now runs `turn_tail::run_turn`. What this file asserts is what that buys, door by
-//! door, with ONE list ([`the_tail_ran`]): the sweep is armed by the door itself, and a failed
-//! turn reaches the session's log as `TurnFailed` carrying the reason plus a `turn_failed`
-//! warning — the model is a stub that refuses every request with a body this file can find.
-//!
-//! MEASURED before the change: the prompt, message, wake and `!` doors driven through `Sessions`
-//! (not through `Daemon::run`'s arms) left no sweep armed; the child's prompt published no
-//! `TurnFailed`.
+//! Every door now runs `turn_tail::run_turn`. What this file asserts is what that buys, door by door
+//! with ONE list ([`the_tail_ran`]): the sweep is armed by the door itself, and a failed turn reaches
+//! the session's log as `TurnFailed` carrying the reason plus a `turn_failed` warning - the model is
+//! a stub that refuses every request with a body this file can find.
 //!
 //! Needs the vocabulary GGUF and no model.
 
@@ -170,9 +166,9 @@ fn failures(hub: &Hub) -> (usize, usize) {
     (turn_failed, warned)
 }
 
-/// **THE ONE LIST** — what every door's turn must leave behind, whatever the door. `before` is
-/// [`failures`] taken before the door ran; `sweep` is whether the door armed the sweep (`None`
-/// for an owner whose sweep this file cannot read: a child's clock is its own thread's).
+/// THE ONE LIST - what every door's turn must leave behind, whatever the door. `before` is
+/// [`failures`] taken before the door ran; `sweep` is whether the door armed the sweep (`None` for an
+/// owner whose sweep this file cannot read: a child's clock is its own thread's).
 fn the_tail_ran(door: &str, hub: &Hub, before: (usize, usize), sweep: Option<bool>) {
     if let Some(armed) = sweep {
         assert!(
@@ -284,9 +280,9 @@ fn every_door_of_a_session_the_daemon_holds_runs_one_tail() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **A subagent's door is the same tail** — its own thread, `serve_child`, runs
-/// `turn_tail::run_turn` with the child's owner. Before, the `Answer` arm was
-/// `submit_as_a_normal_session(..).is_ok()`: the reason was dropped and no `TurnFailed` went out.
+/// A subagent's door is the same tail - its own thread, `serve_child`, runs `turn_tail::run_turn`
+/// with the child's owner. Before, the `Answer` arm was `submit_as_a_normal_session(..).is_ok`: the
+/// reason was dropped and no `TurnFailed` went out.
 #[test]
 fn a_subagents_door_runs_the_same_tail() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {

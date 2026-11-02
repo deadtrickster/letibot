@@ -1,9 +1,9 @@
 //! The HTTP a model endpoint answers: drain one request, serve `/props`, serve a canned turn.
 //!
-//! A session asks its endpoint for the window before its first turn, so a stub that answers every
-//! connection with frames hands a `GET` the body of a turn and the harness reads a reply that was
-//! never asked for. These three together are what makes that distinction possible: the request
-//! line is returned so the caller can tell the probe from the turn.
+//! A session asks its endpoint for the window before its first turn, so a stub that answered every
+//! connection with frames would hand a `GET` the body of a turn and the harness would read a reply
+//! nobody asked for. That is why `read_request` returns the request line: the caller can tell the
+//! probe from the turn.
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -11,11 +11,8 @@ use std::net::TcpStream;
 use super::canned;
 use super::canned::Frame;
 
-/// Drain one request, as the request line and the body `Content-Length` names.
-///
-/// Reads to the end of the headers rather than assuming they arrive with the body: a client that
-/// sends the two together would otherwise leave the body unread and the next read would see the
-/// tail of this one.
+/// Drain one request, as the request line and the body `Content-Length` names. Reads to the end of
+/// the headers rather than assuming they arrive with the body, or the next read sees this one's tail.
 pub fn read_request(mut s: TcpStream) -> (String, String) {
     let mut acc: Vec<u8> = Vec::new();
     let mut buf = [0u8; 4096];

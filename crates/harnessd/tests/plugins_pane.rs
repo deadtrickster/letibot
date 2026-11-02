@@ -1,36 +1,21 @@
-//! **A plugin pane, end to end, through the REAL wasm** — W4 of `docs/plugins-slice1.md`.
+//! A plugin pane, end to end, through the REAL wasm - W4 of `docs/plugins-slice1.md`.
 //!
-//! The chain this file proves is the whole of the slice's wiring, and it is deliberately the real
-//! one at every step: a daemon (`Daemon::serve`) serving one session (`Sessions::open_first`), a
-//! head's `ClientFrame::PaneOpen` on a real socket, the daemon's `PaneDriver` for that session,
-//! `letibot_plugins::Stack` resolving `pane_dashboard`, the rano `Loader` compiling
-//! `plugins/examples/plan-dashboard/plugin.wasm`, the pane's two answers, and
-//! `SessionEvent::PluginPane` back up the same socket.
+//! Every step is the real one: a daemon serving one session, a head's `ClientFrame::PaneOpen` on a
+//! real socket, the daemon's `PaneDriver`, `Stack` resolving `pane_dashboard`, the rano `Loader`
+//! compiling the example's `plugin.wasm`, the pane's two answers, and `SessionEvent::PluginPane`
+//! back up the same socket.
 //!
-//! **Nothing here is a stub but the model**, and the model is never asked anything: the session
-//! is opened on the byte vocabulary (`vocab_gguf = None`) with a provider that is named and never
-//! called, the way `idle_clock.rs` and `no_vocab.rs` do — so this runs on a box with no GGUF, no
-//! server and no key.
+//! Nothing here is a stub but the model, and the model is never asked anything: the session opens on
+//! the byte vocabulary with a provider that is named and never called, so this runs on a box with no
+//! GGUF, no server and no key.
 //!
-//! # What is asserted, and why these two frames
+//! The two frames are the proof that a look ran and its result came back: the first is titled `plan`
+//! with one unavailable panel and asks for `.letibot/status.json`, and the last is the dashboard
+//! titled `plan · v0.2.0` (the name the status file carries) and holding the plan's tiers.
 //!
-//! C5's example asks for its file and draws nothing until it has it: the first answer is the
-//! `loading` frame — `plan`, one unavailable panel, `"look":{"read":".letibot/status.json"}` — and
-//! the second is the dashboard, whose title carries the release the status file names and whose
-//! panels are the plan's tiers, stages, agents and hosts. So the two frames ARE the proof that a
-//! look ran and its result came back into the pane:
-//!
-//! * the first `PluginPane` is titled `plan` and has no `tiers` panel;
-//! * the last is titled `plan · v0.2.0` (the name in `status.example.json`) and has one.
-//!
-//! # What it copies
-//!
-//! `plugin.toml` and `plugin.wasm` from `plugins/examples/plan-dashboard/`, and that directory's
-//! `status.example.json` as the project's `.letibot/status.json` — exactly what a person wanting
-//! this dashboard on their own project copies. The module is committed (252 KiB of it is
-//! serde_json, see `.letibot/notes/the-example-plugin-weighs-252k.md`), so nothing here compiles
-//! wasm: the `CargoBuilder` is the daemon's production one and it is never reached, because the
-//! file on disk is what the gate would have produced.
+//! `plugin.toml`, `plugin.wasm` and `status.example.json` are copied from
+//! `plugins/examples/plan-dashboard/` - exactly what a person installing this dashboard copies. The
+//! module is committed, so nothing here compiles wasm.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -47,7 +32,7 @@ use letibot_sessionlog::registry::Registry;
 /// The pane the layer exports: `<manifest name>/<hook name>` (C4).
 const PANE: &str = "plan-dashboard/dashboard";
 
-/// The release `status.example.json` names — the second frame's title is built from it.
+/// The release `status.example.json` names - the second frame's title is built from it.
 const RELEASE: &str = "v0.2.0";
 
 /// How long a head waits for the frames. Generous: the module is compiled once here, and a loaded
@@ -95,8 +80,8 @@ fn example() -> PathBuf {
         .expect("the example plugin is in this checkout")
 }
 
-/// **A project that has installed the example**: the layer where a project-scope plugin lives, and
-/// the status file the pane reads.
+/// A project that has installed the example: the layer where a project-scope plugin lives, and the
+/// status file the pane reads.
 fn project(dir: &Path) -> PathBuf {
     let root = dir.join("project");
     let layer = root.join(".letibot/plugins/plan-dashboard");
@@ -113,7 +98,7 @@ fn project(dir: &Path) -> PathBuf {
 }
 
 /// A session on the byte vocabulary with a provider that is named and never called: no GGUF, no
-/// server, no key — and no turn in this test at all.
+/// server, no key - and no turn in this test at all.
 fn config(store: &Path, session: &str, workspace: &Path) -> Config {
     let mut cfg = Config::for_this_box(workspace);
     cfg.dialect = Dialect::Qwen;
@@ -130,7 +115,7 @@ fn config(store: &Path, session: &str, workspace: &Path) -> Config {
     cfg
 }
 
-/// **What a head sees**: every `PluginPane` view the log published to it, in order.
+/// What a head sees: every `PluginPane` view the log published to it, in order.
 fn pane_opened(socket: &Path, session: &str) -> Vec<serde_json::Value> {
     let (mut client, _hello, mut reader) =
         HeadClient::attach(socket, session, 0, "test", "plugins-pane", Caps::default())
@@ -151,8 +136,8 @@ fn pane_opened(socket: &Path, session: &str) -> Vec<serde_json::Value> {
             }
         }
     });
-    // **The rectangle the pane is drawn in** (protocol 51): a real width and height, not the
-    // daemon's default, so the frame that comes back was laid out for a screen somebody has.
+    // The rectangle the pane is drawn in: a real width and height, not the daemon's default, so the
+    // frame that comes back was laid out for a screen somebody has.
     client
         .pane_open(PANE, 100, 30)
         .expect("asking for the pane");
@@ -167,9 +152,9 @@ fn pane_opened(socket: &Path, session: &str) -> Vec<serde_json::Value> {
             assert_eq!(pane, PANE);
             let titled = view["title"].as_str().unwrap_or_default().to_string();
             seen.push(view);
-            // **The dashboard is the frame this test is for**, so the wait ends on it rather than
-            // on a count nobody outside the plugin can know — the pane is announced on attach and
-            // answered on open, so there is more than one frame on the way.
+            // The dashboard is the frame this test is for, so the wait ends on it rather than on a
+            // count nobody outside the plugin can know - the pane is announced on attach and answered
+            // on open, so there is more than one frame on the way.
             if titled.starts_with("plan · ") {
                 break;
             }
@@ -178,7 +163,7 @@ fn pane_opened(socket: &Path, session: &str) -> Vec<serde_json::Value> {
     seen
 }
 
-/// **The 252 KiB module, the real plugin, the spec's own input and answer.**
+/// The committed module, the real plugin, the spec's own input and answer.
 #[test]
 fn the_example_dashboard_answers_its_look_through_the_daemons_loader() {
     let dir = TempDir::new("plugins-pane");
@@ -196,8 +181,8 @@ fn the_example_dashboard_answers_its_look_through_the_daemons_loader() {
     let mut sessions =
         Sessions::open_first(&parts, cfg.clone(), registry.clone()).expect("the session opens");
 
-    // **The session's panes are announced before anybody opens one** (C4), so a head's list has
-    // titles — the discovery half of this test is the same events the open half produces.
+    // The session's panes are announced before anybody opens one, so a head's list has titles - the
+    // discovery half of this test is the same events the open half produces.
     let hub = registry.get(session).expect("the session's hub");
     assert!(
         hub.retained()
@@ -211,8 +196,8 @@ fn the_example_dashboard_answers_its_look_through_the_daemons_loader() {
         let socket = socket.clone();
         std::thread::spawn(move || {
             let seen = pane_opened(&socket, session);
-            // **Always**: closing the registry is what ends `Daemon::run`, so a failure has to be
-            // an assertion rather than a hung test.
+            // Always: closing the registry is what ends `Daemon::run`, so a failure has to be an
+            // assertion rather than a hung test.
             registry.close();
             seen
         })
@@ -259,7 +244,7 @@ fn the_example_dashboard_answers_its_look_through_the_daemons_loader() {
         tiers["denominator"].as_str().is_some_and(|d| !d.is_empty()),
         "every bar says its denominator (C3): {tiers}"
     );
-    // **And the view this host publishes is one it can drive**: the daemon validated it before
+    // And the view this host publishes is one it can drive: the daemon validated it before
     // publishing, so the head's own check is the second opinion rather than the only one.
     let view: letibot_sessionlog::pane::View =
         serde_json::from_value(last.clone()).expect("a C3 view");

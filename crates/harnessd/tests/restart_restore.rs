@@ -1,34 +1,23 @@
-//! **A daemon restart brings back what a session was running — or, past the threshold, reminds
-//! the model of it.**
+//! A daemon restart brings back what a session was running - or, past the threshold, reminds
+//! the model of it. Under the threshold a restart restores the children, monitors and jobs; past
+//! it, it says how long the daemon was down and what was running, and nothing comes back on its own.
 //!
-//! **And a restart that had nothing to restore is said anyway**, because the one fact only the
-//! daemon has is the time: the operator, 2026-10-30, after one restart had told the model
-//! something and the next had said nothing — *"mb always tell agent about restart? with the
-//! current time lol"*. That sentence is a NOTICE and not a turn (`restart::nothing_running`),
-//! while a restore keeps the turn it has always had: `an_empty_restart_is_said_once_and_starts_no_turn`
-//! pins the first, and every other test here pins the second.
-//!
-//! The operator, 2026-10-12, verbatim: *"and here is one more thing about restart - we should
-//! bring subagents back - i cant afford to wait till they finish. we should record them (session
-//! persist anyway) and restart automatically"*; then *"on restoring agents - in fact to make
-//! restarts as much painless as possible - by default we restore agents, monitors, and remind the
-//! model about jobs. Now, if some threshold passed - say more than 1 hours after the stop, we start
-//! to simply remind the model stating that time passed and this is what you wre running and how
-//! to restart that."*; and *"this is the case for when harnessd stopped of course"*.
+//! And a restart that had nothing to restore is said anyway, because the time is the one fact
+//! only the daemon has. That sentence is a NOTICE and not a turn (`restart::nothing_running`)
+//! while a restore keeps the turn it has always had.
 //!
 //! # How a restart is staged here
 //!
 //! A daemon is a [`Registry`] (its instance id is what every record is stamped with) and a store
 //! file. "Stopping the daemon" is what `cli.rs` does on the orderly path: `Registry::close` (which
 //! interrupts every turn in flight), the subagent threads waited out, `Lifeline::stopped`.
-//! "Starting it again" is a NEW registry on the SAME store, and the parent session opened in it —
+//! "Starting it again" is a NEW registry on the SAME store, with the parent session opened in it -
 //! `restore_after_restart` is what `Sessions` calls at that open, called here directly where the
-//! test drives a bare [`Harness`], and through `Sessions::open_first` where the ring that starts
-//! the model's turn is the thing asserted. What a crash would leave (a `running` row from a daemon
-//! with no stop recorded) is staged by writing the rows a crashed daemon leaves, which is the
-//! only way to have a daemon die in a test process without taking the test with it.
+//! test drives a bare [`Harness`], and through `Sessions::open_first` where the ring that starts the
+//! model's turn is the thing asserted. What a crash would leave is staged by writing the rows a
+//! crashed daemon leaves.
 //!
-//! The model is a stub that answers every turn with a plain answer — except the first child turn
+//! The model is a stub that answers every turn with a plain answer - except the first child turn
 //! of the main test, which it HOLDS so the daemon can be stopped while the child is mid-turn.
 //! Needs the vocabulary GGUF (a harness renders its stable prefix), no model.
 
@@ -59,8 +48,8 @@ mod support;
 
 use support::canned;
 use support::canned::Frame;
-// **The descriptors a binary's parallel tests need** — see [`room`]'s own note: on this box the
-// soft open-file limit is 256 and eighteen daemons and their children at once want more.
+// The descriptors a binary's parallel tests need: the soft open-file limit here is 256 and
+// eighteen daemons and their children at once want more.
 use support::qwen::{IM_END, THINK_CLOSE};
 use support::room;
 use support::stub::{read_request, write_props};
@@ -154,7 +143,7 @@ impl Drop for Scratch {
     }
 }
 
-/// **One daemon**: a registry with the parent session adopted, and the parent's harness.
+/// One daemon: a registry with the parent session adopted, and the parent's harness.
 struct Daemon {
     registry: Arc<Registry>,
     parent: Harness,
@@ -379,16 +368,15 @@ fn answered(d: &Daemon, handle: &str) -> bool {
 // The one this change exists for
 // ---------------------------------------------------------------------------
 
-/// **A child mid-turn when the daemon stops is resumed when it starts again** — same session,
-/// same worktree, the restart notice in its own transcript — and its answer reaches the parent
+/// A child mid-turn when the daemon stops is resumed when it starts again - same session
+/// same worktree, the restart notice in its own transcript - and its answer reaches the parent
 /// through the parent's watcher, exactly as a fresh child's does.
 #[test]
 fn a_child_running_when_the_daemon_stopped_resumes_and_its_answer_reaches_the_parent() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
-    // Eighteen daemons and their children in parallel need more open files than a shell's 256 —
-    // `room`'s note has the measurement.
+    // Eighteen daemons and their children in parallel want more than a shell's 256 open files.
     let Some(_) = room::room_for("eighteen daemons and their children in parallel", 1024) else {
         return;
     };
@@ -425,7 +413,7 @@ fn a_child_running_when_the_daemon_stopped_resumes_and_its_answer_reaches_the_pa
     assert_eq!(recorded.state, "running");
     assert_eq!(recorded.parent_id, PARENT);
     assert_eq!(recorded.prompt, "fix the flaky test");
-    // **The child is named after its worktree, and the name is recorded and listed** — the slug
+    // The child is named after its worktree, and the name is recorded and listed - the slug
     // its branch `agent/fix-flaky` was cut from.
     assert_eq!(
         RecordedSpec::from_json(&recorded.spec_json)
@@ -500,7 +488,7 @@ fn a_child_running_when_the_daemon_stopped_resumes_and_its_answer_reaches_the_pa
         )),
         "{notice}"
     );
-    // **And the time, with the list** — the return time and the stop are in every restart notice,
+    // And the time, with the list - the return time and the stop are in every restart notice
     // and a restore is not the case that is allowed to drop them.
     assert!(notice.contains("; back at "), "{notice}");
     assert!(notice.contains("stopped at "), "{notice}");
@@ -535,7 +523,7 @@ fn a_child_running_when_the_daemon_stopped_resumes_and_its_answer_reaches_the_pa
         user_rows(&child)
     );
     wait_until("the resumed child to answer", || answered(&two, &handle));
-    // **The resumed child is checked as a fresh one is**: its turn was about to end with the
+    // The resumed child is checked as a fresh one is: its turn was about to end with the
     // tree dirty, so it was told once, and the parent's answer carries the salvage line.
     assert!(
         user_rows(&child)
@@ -544,7 +532,7 @@ fn a_child_running_when_the_daemon_stopped_resumes_and_its_answer_reaches_the_pa
         "the resumed child was not held to its branch: {:?}",
         user_rows(&child)
     );
-    // **And after the restart the child is still known by its name**: the new daemon's list
+    // And after the restart the child is still known by its name: the new daemon's list
     // carries it, and `task_result` takes it in place of the handle.
     assert_eq!(brief(&two).as_deref(), Some("fix-flaky"));
     let by_name = task_result(&two, "fix-flaky");
@@ -591,20 +579,17 @@ fn a_child_running_when_the_daemon_stopped_resumes_and_its_answer_reaches_the_pa
     two.stop(None);
 }
 
-/// **A child that had answered and was mid-way through a LATER turn when the daemon stopped is
-/// resumed too** — pg-noop, 2026-10-14: `slt-current-number` answered at 01:57, its parent's
-/// `task_message` woke it at 02:01:41 to collect its sweep, and the restart at 02:06:05 found its
-/// row reading `done` from the first answer. The next daemon left it, `task_result` said it was
-/// never started, `task_resume` said it had finished, and the parent read the worktree to find
-/// out. A later turn moves the row back to `running` for its length, so the stop leaves a child
-/// to resume — and a later turn that ends on its own puts it back.
+/// A child that had answered and was mid-way through a LATER turn when the daemon stopped is
+/// resumed too - its row read `done` from the first answer, so the next daemon left it and every
+/// door then disagreed about what had become of it. A later turn moves the row back to `running` for
+/// its length, so the stop leaves a child to resume - and a later turn that ends on its own puts it
+/// back.
 #[test]
 fn a_child_stopped_in_a_later_turn_is_resumed_not_left_as_finished() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
-    // Eighteen daemons and their children in parallel need more open files than a shell's 256 —
-    // `room`'s note has the measurement.
+    // Eighteen daemons and their children in parallel want more than a shell's 256 open files.
     let Some(_) = room::room_for("eighteen daemons and their children in parallel", 1024) else {
         return;
     };
@@ -690,15 +675,14 @@ fn a_child_stopped_in_a_later_turn_is_resumed_not_left_as_finished() {
     two.stop(None);
 }
 
-/// **A later turn that ends on its own puts the row back** — the child is between turns again,
+/// A later turn that ends on its own puts the row back - the child is between turns again
 /// its first answer delivered, and a restart now has nothing to resume or re-deliver.
 #[test]
 fn a_later_turn_that_ends_on_its_own_leaves_the_row_settled() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
-    // Eighteen daemons and their children in parallel need more open files than a shell's 256 —
-    // `room`'s note has the measurement.
+    // Eighteen daemons and their children in parallel want more than a shell's 256 open files.
     let Some(_) = room::room_for("eighteen daemons and their children in parallel", 1024) else {
         return;
     };
@@ -749,20 +733,17 @@ fn a_later_turn_that_ends_on_its_own_leaves_the_row_settled() {
     one.stop(None);
 }
 
-/// **A tool's helpers are never the model's news, and a recorded child reads one way through
-/// every door** — pg-noop, 2026-10-14, staged as its store held it: twelve `digest` part readers
-/// from the day before, settled and never marked delivered (their tool read them), all deriving
-/// the one name `you-are-reading-part`; and a finished, delivered child left without a slot.
-/// The restart announced the twelve as *"12 subagents you started have finished"*, listed every
-/// other child as `unknown`, and `task_result` refused the finished one as never started while
+/// A tool's helpers are never the model's news, and a recorded child reads one way through every
+/// door - twelve part readers, settled and never marked delivered (their tool read them), all
+/// derived the one name; so the restart announced twelve subagents that had finished, listed every
+/// other child as `unknown`, and `task_result` refused a finished one as never started while
 /// `task_resume` called it finished.
 #[test]
 fn helpers_are_not_restored_and_a_recorded_child_reads_one_way() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
-    // Eighteen daemons and their children in parallel need more open files than a shell's 256 —
-    // `room`'s note has the measurement.
+    // Eighteen daemons and their children in parallel want more than a shell's 256 open files.
     let Some(_) = room::room_for("eighteen daemons and their children in parallel", 1024) else {
         return;
     };
@@ -854,7 +835,7 @@ fn helpers_are_not_restored_and_a_recorded_child_reads_one_way() {
         listed.contains("slt-current-number · s-restart-parent-sub-slt — answered"),
         "{listed}"
     );
-    // By handle and by name, its recorded answer — the sentence `task_resume` points at.
+    // By handle and by name, its recorded answer - the sentence `task_resume` points at.
     for asked in ["s-restart-parent-sub-slt", "slt-current-number"] {
         let r = task_result(&d, asked);
         assert_eq!(
@@ -891,33 +872,24 @@ fn helpers_are_not_restored_and_a_recorded_child_reads_one_way() {
     d.stop(None);
 }
 
-/// **A child whose record was never written is still this session's child** — listed, readable,
+/// A child whose record was never written is still this session's child - listed, readable
 /// and refused by name when nothing can bring it back.
 ///
-/// MEASURED 2026-11-01 on the operator's daemon: `s-…-sub-1793488007308855461`
-/// (`the-notices-stay-collapsed`) was working when the daemon restarted, and after the restart
-/// `task_result` listed 54 subagents and **that one was not among them** — not `working`, not
-/// `answered`, not `failed`. It was not filtered out: its `subagent_run` row was never written.
-/// The daemon's own log says so in as many words —
+/// A `subagent_run` row can be lost (the store was locked when the spawn wrote it) and the child goes
+/// on working, so the daemon's own log is the only place that says so
 ///
 /// ```text
 ///   s-…-sub-1793488007308855461 · not recorded (sqlite: database is locked); it runs, and a
 ///   daemon restart will not bring it back
 /// ```
 ///
-/// — and the child went on working for six and a half minutes, wrote 1456 rows and left four
-/// commits, with nothing anywhere that named it as a child of this session except its own
-/// session row. That row is the second witness, and this is the test that reads it: the store is
+/// Its own session row is the second witness, and this is the test that reads it: the store is
 /// staged as a lost spawn leaves it (a child session, no `subagent_run` row, a turn that never
 /// ended), the parent is opened, and every door a model has is asked about the child.
 ///
-/// **And one child from before the store recorded any**, which is the other class and the one that
-/// is not a loss at all: 517 of that session's 573 children predate its first `subagent_run` row.
-/// The recorded child's row is a minute old, so the window is a real instant in this store's life
-/// — and the older child, staged a minute before it, must be ABSENT from the list and must be told
-/// *this child is from before this store recorded any child* rather than *the store refused the row
-/// its spawn writes*. A reader that dropped the window lists it and hands it the refused-write
-/// sentence, which is what this test now fails on.
+/// And one child from before the store recorded any, which is the other class and not a loss at
+/// all: a child older than the store's first record must be ABSENT from the list and must be told
+/// *this child is from before this store recorded any child* rather than the refused-write sentence.
 #[test]
 fn a_child_whose_record_was_never_written_is_still_listed_and_readable() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -934,10 +906,10 @@ fn a_child_whose_record_was_never_written_is_still_listed_and_readable() {
     ));
     let stub = Stub::new(plain(&parts.vocab, "noted"), 0);
     let cfg = config(&dir.repo(), &dir.store(), stub.endpoint.clone());
-    // **One recorded child, so the store has a window** — it began recording children a minute
-    // ago, and a reader that ignored the window would list every child this store ever had.
-    // **The daemon that loses it, and then a restart** — the reported sequence. The child was
-    // spawned by the first one; the list is read by the second.
+    // One recorded child, so the store has a window - it began recording children a minute ago
+    // and a reader that ignored the window would list every child this store ever had.
+    // The daemon that loses it, and then a restart: the child was spawned by the first, the list
+    // is read by the second.
     let one = a_daemon(&parts, &cfg);
     one.stop(None);
     let store = Store::open(&dir.store()).unwrap();
@@ -952,14 +924,13 @@ fn a_child_whose_record_was_never_written_is_still_listed_and_readable() {
     );
     kept.outcome = Some("kept is in".into());
     kept.delivered = true;
-    // **The window is a real instant in this store's life, not `run`'s 1 ms.** The store has been
-    // recording children for a minute, so a child created inside that minute had a row due and a
-    // child created before it never did — which is the only staging in which an unwindowed reader
-    // and a windowed one answer differently, and so the only one that proves the window at all.
+    // The window is a real instant in this store's life. A child created inside the recorded
+    // minute had a row due and one created before it never did - the only staging in which a
+    // windowed reader and an unwindowed one answer differently.
     let began = letibot_sessionlog::registry::now_ms() - 60_000;
     kept.started_ms = began;
     store.put_subagent_run(&kept).unwrap();
-    // **And the child the store refused the row for**: its session, and nothing else.
+    // And the child the store refused the row for: its session, and nothing else.
     let lost = "s-restart-parent-sub-lost";
     store
         .put_session(&letibot_tokencore::store::SessionRecord {
@@ -978,9 +949,8 @@ fn a_child_whose_record_was_never_written_is_still_listed_and_readable() {
         store.subagent_run(lost).unwrap().is_none(),
         "the state this test is about: a child with no record"
     );
-    // **And a child from BEFORE this store recorded any child** — the other class, and on the
-    // operator's box the overwhelming one (517 of one session's 573 child sessions). It ran, it
-    // settled, and its having no row says nothing about a write: no row of it was ever due.
+    // And a child from BEFORE this store recorded any child - the other class, and not a loss
+    // it ran, it settled, and no row of it was ever due.
     let old = "s-restart-parent-sub-old";
     store
         .put_session(&letibot_tokencore::store::SessionRecord {
@@ -1004,11 +974,10 @@ fn a_child_whose_record_was_never_written_is_still_listed_and_readable() {
             (began as i64 - 60_000, old),
         )
         .unwrap();
-    // **Two more children with no record, and each stopped somewhere different.** This is the class
-    // the LIST did not carry: it printed one sentence for every child that did not end on an
-    // answer, so a parent could not tell a child that died mid-`bash` from one that never opened a
-    // session. A child's own transcript is what says where it got to, so these two are staged with
-    // one last row each — the same row the single-handle door reads.
+    // Two more children with no record, and each stopped somewhere different. The LIST printed one
+    // sentence for every child that did not end on an answer, so a parent could not tell a child that
+    // died mid-`bash` from one that never opened a session. A child's own transcript says where it got
+    // to, so each is staged with one last row - the row the single-handle door reads.
     let prefix_id = store
         .put_stable_prefix(&letibot_tokencore::store::StablePrefixRecord {
             dialect_sha: "dd".repeat(32),
@@ -1050,7 +1019,7 @@ fn a_child_whose_record_was_never_written_is_still_listed_and_readable() {
             )
             .unwrap();
     };
-    // The one that died with a call's result in hand — the turn went on from there and never came
+    // The one that died with a call's result in hand - the turn went on from there and never came
     // back.
     let mid = "s-restart-parent-sub-mid";
     a_child_that_stopped_at(
@@ -1066,7 +1035,7 @@ fn a_child_whose_record_was_never_written_is_still_listed_and_readable() {
             media: None,
         },
     );
-    // And the one whose last row IS an answer — the case the review was about: its text is what it
+    // And the one whose last row IS an answer - the case the review was about: its text is what it
     // had written when it stopped, and nothing says its turn ended.
     let got_an_answer = "s-restart-parent-sub-answer";
     a_child_that_stopped_at(
@@ -1078,10 +1047,9 @@ fn a_child_whose_record_was_never_written_is_still_listed_and_readable() {
             truncated: false,
         },
     );
-    // **And one from BEFORE the store recorded any child, whose last row is an answer.** It is not
-    // in the list (a row was never due for it), and a model may still name it — so the caveat must
-    // come from the keyed read rather than from the list, or the 517-of-573 class on the
-    // operator's box is exactly the class whose answers are handed over bare.
+    // And one from BEFORE the store recorded any child, whose last row is an answer. It is not in
+    // the list (a row was never due for it) and a model may still name it, so the caveat must come
+    // from the keyed read rather than the list - or that whole class is handed over bare.
     let old_answer = "s-restart-parent-sub-old-answer";
     a_child_that_stopped_at(
         old_answer,
@@ -1101,7 +1069,7 @@ fn a_child_whose_record_was_never_written_is_still_listed_and_readable() {
         .unwrap();
 
     let d = a_daemon(&parts, &cfg);
-    // **Listed** — by its handle, marked as a child with no record rather than silently missing.
+    // Listed - by its handle, marked as a child with no record rather than silently missing.
     let listed = d.call("task_result", serde_json::json!({})).payload;
     eprintln!("--- what task_result lists ---\n{listed}");
     assert!(
@@ -1116,7 +1084,7 @@ fn a_child_whose_record_was_never_written_is_still_listed_and_readable() {
         listed.contains("s-restart-parent-sub-kept") && listed.contains("answered"),
         "the recorded child reads as it always did: {listed}"
     );
-    // **HOW FAR EACH GOT** — three children with no record, three different classes, and each row
+    // HOW FAR EACH GOT - three children with no record, three different classes, and each row
     // says which: a parent reading the list can tell a child that died after `bash`'s result from
     // one that never opened a session, which one fixed sentence for both could not.
     assert!(
@@ -1138,17 +1106,16 @@ fn a_child_whose_record_was_never_written_is_still_listed_and_readable() {
         )),
         "and the one whose last row is an answer is named for what that is: {listed}"
     );
-    // **And no row names a cause the list does not know.** Why a record is missing is the store's
+    // And no row names a cause the list does not know. Why a record is missing is the store's
     // own class (`no_record_cause`), and the list is handed only the fact that it is missing.
     assert!(
         !listed.contains("refused"),
         "a cause nobody measured reached the list: {listed}"
     );
-    // **And the answer to a child whose last row is an answer is NOT an answer** — nothing
-    // recorded its settlement, and during a shutdown an interrupted turn comes back as whatever
-    // the child had written when it stopped (`SubagentRecord::settled`'s own comment). The caveat
-    // is the first thing read, so a truncation that keeps the head keeps it, and the text is still
-    // underneath it rather than replaced by it.
+    // And the answer to a child whose last row is an answer is NOT an answer - nothing recorded
+    // its settlement, and during a shutdown an interrupted turn comes back as whatever the child had
+    // written when it stopped. The caveat is read first, so a truncation that keeps the head keeps it
+    // and the text is still underneath it.
     let not_an_answer = task_result(&d, got_an_answer);
     eprintln!(
         "--- what task_result says about the child that answered ---\n{}",
@@ -1179,7 +1146,7 @@ fn a_child_whose_record_was_never_written_is_still_listed_and_readable() {
         not_an_answer.payload
     );
 
-    // **The window, and this is the assertion an unwindowed reader fails** — a child older than
+    // The window, and this is the assertion an unwindowed reader fails - a child older than
     // the store's first record was never due one, so the list does not carry it. A reader that
     // dropped the window lists it here, which is the wall of rows this class used to be.
     assert!(
@@ -1190,8 +1157,8 @@ fn a_child_whose_record_was_never_written_is_still_listed_and_readable() {
         !listed.contains(old_answer),
         "and the same window holds for the one that answered: {listed}"
     );
-    // **The caveat does not depend on the list.** A child the list does not carry, named by
-    // handle, still gets it — which is the only way the 517-of-573 class is covered.
+    // The caveat does not depend on the list. A child the list does not carry, named by
+    // handle, still gets it - which is the only way the 517-of-573 class is covered.
     let old_not_an_answer = task_result(&d, old_answer);
     eprintln!(
         "--- what task_result says about the old child that answered ---\n{}",
@@ -1210,7 +1177,7 @@ fn a_child_whose_record_was_never_written_is_still_listed_and_readable() {
         old_not_an_answer.payload
     );
 
-    // **Readable** — the single-handle answer says it is gone, where its work is, and how to read
+    // Readable - the single-handle answer says it is gone, where its work is, and how to read
     // it, and does not pretend to resume what has no description to resume from.
     let r = task_result(&d, lost);
     eprintln!("--- what task_result says about it ---\n{}", r.payload);
@@ -1230,7 +1197,7 @@ fn a_child_whose_record_was_never_written_is_still_listed_and_readable() {
         "{}",
         r.payload
     );
-    // **And what it was asked**, which is the only thing left that says WHICH child this was:
+    // And what it was asked, which is the only thing left that says WHICH child this was
     // a lost child was never given a name anything wrote down, so its brief's first line is how
     // a parent recognises it.
     assert!(
@@ -1250,7 +1217,7 @@ fn a_child_whose_record_was_never_written_is_still_listed_and_readable() {
         "{}",
         by_name.payload
     );
-    // **And `job_kill` does not call it a stranger either** — it is in the list above, so *no
+    // And `job_kill` does not call it a stranger either - it is in the list above, so *no
     // subagent in this session* would contradict the list.
     let stopped = d.call("job_kill", serde_json::json!({"job": lost}));
     assert!(
@@ -1258,7 +1225,7 @@ fn a_child_whose_record_was_never_written_is_still_listed_and_readable() {
         "{}",
         stopped.payload
     );
-    // **And `task_resume` says why it cannot come back** rather than calling it a stranger.
+    // And `task_resume` says why it cannot come back rather than calling it a stranger.
     let resumed = d.call("task_resume", serde_json::json!({"task": lost}));
     assert!(
         resumed
@@ -1275,15 +1242,13 @@ fn a_child_whose_record_was_never_written_is_still_listed_and_readable() {
         resumed.payload
     );
 
-    // **The child older than the record, through the two doors that answer by id** — it is not in
-    // the list (above), and `task_result` and `task_resume` still answer for it because the model
-    // named it, saying which class it is in and never a cause nobody measured.
+    // The child older than the record, through the two doors that answer by id - it is not in the
+    // list, and `task_result` and `task_resume` still answer for it because the model named it, saying
+    // which class it is in and never a cause nobody measured.
     //
-    // `job_kill` is not one of them: it resolves a handle against the LIST, and a child the list
-    // does not carry falls through to this session's job table — so it answers *"this session has
-    // started 0 jobs"* rather than anything about the child. That is a true sentence about the
-    // table it was asked about, and it is the arm `route_subagent` has always had for a handle
-    // nobody lists.
+    // `job_kill` is not one of them: it resolves a handle against the LIST, so a child the list does
+    // not carry falls through to this session's job table - a true sentence about the table it was
+    // asked about.
     let before = task_result(&d, old);
     eprintln!(
         "--- what task_result says about the older child ---\n{}",
@@ -1322,16 +1287,15 @@ fn a_child_whose_record_was_never_written_is_still_listed_and_readable() {
     d.stop(None);
 }
 
-/// **A job the old daemon's orderly stop ended is reminded** — pg-noop's `slt-sweep` (j17239),
-/// killed at 02:05:55 by `end_running("the daemon stopping")`: after a clean restart no job row
-/// reads `running`, so the reminder was never given.
+/// A job the old daemon's orderly stop ended is reminded - a job killed by
+/// `end_running("the daemon stopping")`: after a clean restart no job row reads `running`, so the
+/// reminder was never given.
 #[test]
 fn a_job_the_orderly_stop_ended_is_reminded() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
-    // Eighteen daemons and their children in parallel need more open files than a shell's 256 —
-    // `room`'s note has the measurement.
+    // Eighteen daemons and their children in parallel want more than a shell's 256 open files.
     let Some(_) = room::room_for("eighteen daemons and their children in parallel", 1024) else {
         return;
     };
@@ -1399,23 +1363,18 @@ fn job_state(store: &Store, handle: &str) -> String {
         .unwrap_or_default()
 }
 
-/// **A relic draws no REMINDER** — pg-noop, 2026-10-15: a daemon down a couple of seconds told the
-/// model *"when the previous one stopped is unknown … NOTHING was restored automatically"* over
-/// four jobs (j900, j610, j624, j2437) that builds long gone had left with no `job_context`. They
-/// were the session's only records, they name no daemon, and `Stopped::latest` over no daemon is
-/// unknown. Such a row is closed quietly and named to nobody.
+/// A relic draws no REMINDER - a job row left by a build before `job_context`, naming no daemon
+/// so `Stopped::latest` over no daemon is unknown. Such a row is closed quietly and named to nobody.
 ///
-/// **The restart itself is still said** (2026-10-30): a session with nothing running is told when
-/// the daemon came back, because that is the one fact only the daemon has. Here that sentence is
-/// the whole notice — no job in it — and, because the relics name no daemon, it is the one that
-/// says the stop is unknown rather than the one that dates it.
+/// The restart itself is still said: a session with nothing running is told when the daemon came
+/// back, because that is the one fact only the daemon has. Here that sentence is the whole notice -
+/// no job in it - and it says the stop is unknown rather than dating it.
 #[test]
 fn relics_alone_draw_no_reminder_and_are_closed_quietly() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
-    // Eighteen daemons and their children in parallel need more open files than a shell's 256 —
-    // `room`'s note has the measurement.
+    // Eighteen daemons and their children in parallel want more than a shell's 256 open files.
     let Some(_) = room::room_for("eighteen daemons and their children in parallel", 1024) else {
         return;
     };
@@ -1430,7 +1389,7 @@ fn relics_alone_draw_no_reminder_and_are_closed_quietly() {
     seed_session(&parts, &cfg);
     {
         let store = Store::open(&dir.store()).unwrap();
-        // The daemon that really stopped did so a moment ago, in order — and left nothing here.
+        // The daemon that really stopped did so a moment ago, in order - and left nothing here.
         old_daemon_stopped(&store, Duration::from_secs(2));
         for h in ["j900", "j610", "j624", "j2437"] {
             a_relic(&store, h);
@@ -1438,8 +1397,8 @@ fn relics_alone_draw_no_reminder_and_are_closed_quietly() {
     }
     let mut d = a_daemon(&parts, &cfg);
     let notice = d.parent.restore_after_restart();
-    // **The restart is said, and nothing is listed**: no relic is named, no reminder is drawn, and
-    // the sentence is the empty one — the relics name no daemon, so the stop is unknown.
+    // The restart is said, and nothing is listed: no relic is named, no reminder is drawn, and
+    // the sentence is the empty one - the relics name no daemon, so the stop is unknown.
     let notice = notice.expect("a restart with nothing running is still said");
     assert!(
         notice.starts_with("[restart] the daemon came back at ")
@@ -1475,15 +1434,14 @@ fn relics_alone_draw_no_reminder_and_are_closed_quietly() {
     d.stop(None);
 }
 
-/// **Beside a real record, a relic neither dates the stop nor is reminded** — the down time is
+/// Beside a real record, a relic neither dates the stop nor is reminded - the down time is
 /// the real record's daemon's, under the threshold, and only the real job is in the notice.
 #[test]
 fn a_relic_beside_a_real_record_takes_the_down_time_from_the_real_one() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
-    // Eighteen daemons and their children in parallel need more open files than a shell's 256 —
-    // `room`'s note has the measurement.
+    // Eighteen daemons and their children in parallel want more than a shell's 256 open files.
     let Some(_) = room::room_for("eighteen daemons and their children in parallel", 1024) else {
         return;
     };
@@ -1532,16 +1490,15 @@ fn a_relic_beside_a_real_record_takes_the_down_time_from_the_real_one() {
     d.stop(None);
 }
 
-/// **Past the threshold nothing comes back on its own** — the model is told how long the daemon
-/// was down and given the one call per child — and `task_resume` brings the child back in that
+/// Past the threshold nothing comes back on its own - the model is told how long the daemon
+/// was down and given the one call per child - and `task_resume` brings the child back in that
 /// one call.
 #[test]
 fn past_the_threshold_a_child_is_only_reminded_and_task_resume_brings_it_back() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
-    // Eighteen daemons and their children in parallel need more open files than a shell's 256 —
-    // `room`'s note has the measurement.
+    // Eighteen daemons and their children in parallel want more than a shell's 256 open files.
     let Some(_) = room::room_for("eighteen daemons and their children in parallel", 1024) else {
         return;
     };
@@ -1634,19 +1591,15 @@ fn past_the_threshold_a_child_is_only_reminded_and_task_resume_brings_it_back() 
     d.stop(None);
 }
 
-/// **The restore threshold is measured to the OPEN, not to the daemon's return** (R91.8).
+/// The restore threshold is measured to the OPEN, not to the daemon's return.
 ///
-/// The operator's rule is *"if some threshold passed - say more than 1 hours after the stop, we
-/// start to simply remind"*, and the harm it exists to prevent is a child resumed on a tree that
-/// moved while nobody was looking. The code measured the stop to the daemon's START, which is the
-/// same moment for a session the daemon opens as it starts and hours apart for one opened later
-/// (a head attaching, a `/resume`, a picker row) — and the later open is the case the threshold is
-/// for.
+/// The harm the threshold prevents is a child resumed on a tree that moved while nobody was looking.
+/// Measuring the stop to the daemon's START is the same moment for a session the daemon opens as it
+/// starts and hours apart for one opened later (a head attaching, a `/resume`, a picker row) - and
+/// the later open is the case the threshold is for.
 ///
-/// Staged in miniature: the previous daemon stopped at the instant this one started (its own
-/// downtime is nothing) and the session is opened a moment later, against a one-millisecond
-/// threshold. FAILS before R91.8: the child was resumed and the notice said the daemon's own
-/// *"down 0s"* was under the threshold.
+/// Staged in miniature: the previous daemon stopped at the instant this one started (its downtime is
+/// nothing) and the session is opened a moment later, against a one-millisecond threshold.
 #[test]
 fn a_session_opened_late_is_measured_from_the_open_and_only_reminded() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -1666,7 +1619,7 @@ fn a_session_opened_late_is_measured_from_the_open_and_only_reminded() {
     cfg.restore_within = Duration::from_millis(1);
     let store = Store::open(&dir.store()).unwrap();
 
-    // **The daemon first**, because the stop is written AT its start: the fixture's whole point
+    // The daemon first, because the stop is written AT its start: the fixture's whole point
     // is that the daemon's own downtime says nothing about how long the SESSION was away.
     let mut d = a_daemon(&parts, &cfg);
     let started = d.registry.started_ms();
@@ -1718,7 +1671,7 @@ fn a_session_opened_late_is_measured_from_the_open_and_only_reminded() {
     d.stop(None);
 }
 
-/// **A child of a child comes back with its parent** — the root resumes the child, and the
+/// A child of a child comes back with its parent - the root resumes the child, and the
 /// child's own open resumes the grandchild. The child died while it was still opening, so it has
 /// no transcript: it is asked its task again, rather than told to carry on from nothing.
 #[test]
@@ -1726,8 +1679,7 @@ fn a_grandchild_comes_back_when_its_parent_does() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
-    // Eighteen daemons and their children in parallel need more open files than a shell's 256 —
-    // `room`'s note has the measurement.
+    // Eighteen daemons and their children in parallel want more than a shell's 256 open files.
     let Some(_) = room::room_for("eighteen daemons and their children in parallel", 1024) else {
         return;
     };
@@ -1780,7 +1732,7 @@ fn a_grandchild_comes_back_when_its_parent_does() {
     d.stop(None);
 }
 
-/// **The edge cases a restore must not get wrong**, each named in the notice: a worktree that is
+/// The edge cases a restore must not get wrong, each named in the notice: a worktree that is
 /// gone, a child that crashed the daemon three times in a row, a child a person stopped (never
 /// resumed, never mentioned), and a finished child whose answer never reached its parent (handed
 /// over, not respawned).
@@ -1789,8 +1741,7 @@ fn what_must_not_be_respawned_is_reported_or_delivered() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
-    // Eighteen daemons and their children in parallel need more open files than a shell's 256 —
-    // `room`'s note has the measurement.
+    // Eighteen daemons and their children in parallel want more than a shell's 256 open files.
     let Some(_) = room::room_for("eighteen daemons and their children in parallel", 1024) else {
         return;
     };
@@ -1895,7 +1846,7 @@ fn what_must_not_be_respawned_is_reported_or_delivered() {
     d.stop(None);
 }
 
-/// The parent's session row, as the old daemon left it — written by opening the parent once in a
+/// The parent's session row, as the old daemon left it - written by opening the parent once in a
 /// daemon that is then dropped. The `job` and `todo` rows reference it.
 fn seed_session(parts: &Parts, cfg: &Config) {
     let d = a_daemon(parts, cfg);
@@ -1923,7 +1874,7 @@ fn stage_monitors_and_jobs(store: &Store) {
             300_000,
         )
         .unwrap();
-    // A reminder the model hung on a scope of its own — the soak's `lubuntu2-soak`.
+    // A reminder the model hung on a scope of its own - the soak's `lubuntu2-soak`.
     store
         .put_monitor(
             PARENT,
@@ -1972,22 +1923,20 @@ fn stage_monitors_and_jobs(store: &Store) {
         .unwrap();
 }
 
-/// **A restart with nothing running is SAID — once, through the daemon's own open — and it starts
-/// no turn.** The operator, 2026-10-30, after one restart had told the model something and the next
-/// had said nothing: *"mb always tell agent about restart? with the current time lol"*.
+/// A restart with nothing running is SAID - once, through the daemon's own open - and it starts no
+/// turn.
 ///
-/// The two doors are pinned here and in `harness::tests::restart_notice`: a restore is work to
-/// continue and keeps its turn, and a restart with nothing to restore is a NOTICE — a transcript
-/// row the model reads when it next reads. The daemon's open rings the session either way (that
-/// ring is what carries a todo row, a queue handover and a restored child), so the assertion that
-/// matters is the one after it: the wake finds nothing to say and no model call is made.
+/// A restore is work to continue and keeps its turn; a restart with nothing to restore is a NOTICE
+/// a transcript row the model reads when it next reads. The daemon's open rings the session either
+/// way (that ring is what carries a todo row, a queue handover and a restored child), so the
+/// assertion that matters is the one after it: the wake finds nothing to say and no model call is
+/// made.
 #[test]
 fn an_empty_restart_is_said_once_and_starts_no_turn() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
-    // Eighteen daemons and their children in parallel need more open files than a shell's 256 —
-    // `room`'s note has the measurement.
+    // Eighteen daemons and their children in parallel want more than a shell's 256 open files.
     let Some(_) = room::room_for("eighteen daemons and their children in parallel", 1024) else {
         return;
     };
@@ -2002,8 +1951,8 @@ fn an_empty_restart_is_said_once_and_starts_no_turn() {
     seed_session(&parts, &cfg);
     let store = Store::open(&dir.store()).unwrap();
     old_daemon_stopped(&store, Duration::from_secs(1));
-    // **Nothing was running**, and the session still names the daemon that held it: a monitor that
-    // had already ended. That is where the down time is read from — a session whose rows name no
+    // Nothing was running, and the session still names the daemon that held it: a monitor that
+    // had already ended. That is where the down time is read from - a session whose rows name no
     // daemon at all says `unknown` (`harness::tests::restart_notice`).
     store
         .put_monitor(
@@ -2025,7 +1974,7 @@ fn an_empty_restart_is_said_once_and_starts_no_turn() {
         Sessions::open_first(&parts, cfg.clone(), registry.clone()).expect("the daemon opens");
     let hub = registry.get(PARENT).unwrap();
     let back = registry.started_ms();
-    // **The whole sentence**, not a fragment: the return time from the daemon's own clock, the down
+    // The whole sentence, not a fragment: the return time from the daemon's own clock, the down
     // time and the stop it is counted from, and that nothing was running.
     let sentence = format!(
         "[restart] the daemon came back at {} (down {}, stopped at {}): nothing was running",
@@ -2033,9 +1982,9 @@ fn an_empty_restart_is_said_once_and_starts_no_turn() {
         letibot_harnessd::restart::span(Duration::from_millis(back.saturating_sub(stopped))),
         letibot_harnessd::subagent_record::utc(stopped)
     );
-    // **One line, and it is the row.** The sentence used to be published as a card *and* written
-    // as a row, which drew one restart twice (the operator: *"i need only one restart
-    // notification"*); the row is the copy both readers can use, so the card is gone.
+    // One line, and it is the row. The sentence used to be published as a card *and* written as a
+    // row, which drew one restart twice; the row is the copy both readers can use, so the card is
+    // gone.
     assert!(
         warnings(&hub, "restart_nothing").is_empty(),
         "no card: the row is the line"
@@ -2048,7 +1997,7 @@ fn an_empty_restart_is_said_once_and_starts_no_turn() {
     assert!(warnings(&hub, "restart_restored").is_empty());
     assert!(warnings(&hub, "restart_reminded").is_empty());
 
-    // **The open rang the session** — that ring is the daemon's own, and it carries everything a
+    // The open rang the session - that ring is the daemon's own, and it carries everything a
     // restored session owes. This session owes nothing, so the wake says so.
     let woke = loop {
         match registry.next_work_until(Some(Instant::now() + Duration::from_secs(5))) {
@@ -2062,7 +2011,7 @@ fn an_empty_restart_is_said_once_and_starts_no_turn() {
         matches!(sessions.wake(PARENT), Outcome::Ignored),
         "a restart with nothing running opened a turn"
     );
-    // **And the model was told anyway**, as a row it reads at its next turn.
+    // And the model was told anyway, as a row it reads at its next turn.
     let rows = user_rows(&hub);
     assert!(
         rows.contains(&sentence),
@@ -2073,7 +2022,7 @@ fn an_empty_restart_is_said_once_and_starts_no_turn() {
         0,
         "the empty restart cost a model call — it is a notice, not a turn"
     );
-    // **Once.** A second wake finds nothing, and the sentence is not said again.
+    // Once. A second wake finds nothing, and the sentence is not said again.
     assert!(matches!(sessions.wake(PARENT), Outcome::Ignored));
     assert_eq!(
         user_rows(&hub)
@@ -2088,23 +2037,18 @@ fn an_empty_restart_is_said_once_and_starts_no_turn() {
     registry.close();
 }
 
-/// **A session restored with a plan it still owes is WOKEN, and its first turn carries the restart
-/// sentence** — the operator, 2026-11-01: *"it is not ok that restart notice arrived with my
-/// continue … so i expected that after restart you will continue"*.
+/// A session restored with a plan it still owes is WOKEN, and its first turn carries the restart
+/// sentence - a restart notice that arrives with the person's own `continue` is not a restart.
 ///
-/// The whole chain, through production doors only: the daemon's own open (`Sessions::open_first`),
-/// its ring (`put_a_restored_session_to_work`), and its wake — and the model stub counts the calls,
+/// The whole chain, through production doors only: the daemon's own open (`Sessions::open_first`)
+/// its ring (`put_a_restored_session_to_work`), and its wake - and the model stub counts the calls
 /// so "woken" is a number rather than a reading.
-///
-/// FAILS before the ruling: the sentence was a transcript row and the wake found nothing to say
-/// (`Outcome::Ignored`, `stub.arrived() == 0`), so the session waited for the person to type.
 #[test]
 fn a_restored_session_with_an_open_todo_row_is_woken_and_its_turn_carries_the_restart() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
-    // Eighteen daemons and their children in parallel need more open files than a shell's 256 —
-    // `room`'s note has the measurement.
+    // Eighteen daemons and their children in parallel want more than a shell's 256 open files.
     let Some(_) = room::room_for("eighteen daemons and their children in parallel", 1024) else {
         return;
     };
@@ -2119,7 +2063,7 @@ fn a_restored_session_with_an_open_todo_row_is_woken_and_its_turn_carries_the_re
     seed_session(&parts, &cfg);
     let store = Store::open(&dir.store()).unwrap();
     old_daemon_stopped(&store, Duration::from_secs(1));
-    // **The plan the model left on the board** — work it wrote down and never finished, which is
+    // The plan the model left on the board - work it wrote down and never finished, which is
     // the durable half of *"after restart i owe you"*.
     store
         .put_todos(
@@ -2133,7 +2077,7 @@ fn a_restored_session_with_an_open_todo_row_is_woken_and_its_turn_carries_the_re
             }],
         )
         .unwrap();
-    // **And nothing was running**, with the session still naming the daemon that held it — a
+    // And nothing was running, with the session still naming the daemon that held it - a
     // monitor that had already ended, which is where the down time is read from.
     store
         .put_monitor(
@@ -2153,8 +2097,8 @@ fn a_restored_session_with_an_open_todo_row_is_woken_and_its_turn_carries_the_re
     let mut sessions =
         Sessions::open_first(&parts, cfg.clone(), registry.clone()).expect("the daemon opens");
     let hub = registry.get(PARENT).unwrap();
-    // **The open rang the session**, which is the only door a between-turns fact has after a
-    // restart — a watcher or a head's command would both be something that ran before it.
+    // The open rang the session, which is the only door a between-turns fact has after a
+    // restart - a watcher or a head's command would both be something that ran before it.
     let woke = loop {
         match registry.next_work_until(Some(Instant::now() + Duration::from_secs(5))) {
             WorkOrIdle::Work(Work::Woken(id)) => break id,
@@ -2163,7 +2107,7 @@ fn a_restored_session_with_an_open_todo_row_is_woken_and_its_turn_carries_the_re
         }
     };
     assert_eq!(woke, PARENT);
-    // **The wake is a turn**, and the turn's opening line is the restart's own sentence.
+    // The wake is a turn, and the turn's opening line is the restart's own sentence.
     assert!(
         !matches!(sessions.wake(PARENT), Outcome::Ignored),
         "a restored session that owes work was not woken"
@@ -2179,7 +2123,7 @@ fn a_restored_session_with_an_open_todo_row_is_woken_and_its_turn_carries_the_re
         restart.contains("a todo row still owed"),
         "the sentence says why it is a turn: {restart}"
     );
-    // **Once per restart, not once per pass.** A second wake is the worker's next pass over the
+    // Once per restart, not once per pass. A second wake is the worker's next pass over the
     // same restart: it finds nothing, and neither the sentence nor the row is said again.
     assert!(matches!(sessions.wake(PARENT), Outcome::Ignored));
     assert_eq!(stub.arrived(), 1, "the restart was said twice");
@@ -2195,12 +2139,10 @@ fn a_restored_session_with_an_open_todo_row_is_woken_and_its_turn_carries_the_re
     registry.close();
 }
 
-/// **A session that was mid-turn when the daemon stopped is woken too** — the arm the operator's
-/// own case is, since a model that restarts the daemon from inside a tool call leaves its call and
-/// no result.
+/// A session that was mid-turn when the daemon stopped is woken too - the arm a model that
+/// restarts the daemon from inside a tool call is in, since it leaves its call and no result.
 ///
-/// FAILS before the ruling: nothing was running, so the sentence was a row and the wake said
-/// nothing (`Outcome::Ignored`), and the session waited for the person to type.
+/// Before the ruling nothing was running, so the sentence was a row and the wake said nothing.
 #[test]
 fn a_restored_session_that_was_mid_turn_is_woken() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -2220,7 +2162,7 @@ fn a_restored_session_that_was_mid_turn_is_woken() {
     seed_session(&parts, &cfg);
     let store = Store::open(&dir.store()).unwrap();
     old_daemon_stopped(&store, Duration::from_secs(1));
-    // **The last row the dying daemon left**: a call was issued and its result never written. The
+    // The last row the dying daemon left: a call was issued and its result never written. The
     // transcript is the one the seeded daemon's own open made, so the prefix and the anchor are
     // its own and only the row is the fixture's.
     let transcript = store
@@ -2287,16 +2229,15 @@ fn a_restored_session_that_was_mid_turn_is_woken() {
     registry.close();
 }
 
-/// **Under the threshold: monitors come back, a monitor that cannot is reported, and a job is
-/// reminded with the call that runs it again** — and the reminder starts the model's turn, through
+/// Under the threshold: monitors come back, a monitor that cannot is reported, and a job is
+/// reminded with the call that runs it again - and the reminder starts the model's turn, through
 /// the daemon's own open (`Sessions`), its ring, and its wake.
 #[test]
 fn monitors_are_rearmed_and_jobs_reminded_and_the_reminder_is_a_turn() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
-    // Eighteen daemons and their children in parallel need more open files than a shell's 256 —
-    // `room`'s note has the measurement.
+    // Eighteen daemons and their children in parallel want more than a shell's 256 open files.
     let Some(_) = room::room_for("eighteen daemons and their children in parallel", 1024) else {
         return;
     };
@@ -2402,15 +2343,14 @@ fn monitors_are_rearmed_and_jobs_reminded_and_the_reminder_is_a_turn() {
     registry.close();
 }
 
-/// **Over the threshold the same session is only reminded** — no monitor is armed, and each is
+/// Over the threshold the same session is only reminded - no monitor is armed, and each is
 /// given back as the call that declares it.
 #[test]
 fn past_the_threshold_monitors_and_jobs_are_only_reminded() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
-    // Eighteen daemons and their children in parallel need more open files than a shell's 256 —
-    // `room`'s note has the measurement.
+    // Eighteen daemons and their children in parallel want more than a shell's 256 open files.
     let Some(_) = room::room_for("eighteen daemons and their children in parallel", 1024) else {
         return;
     };
@@ -2453,17 +2393,15 @@ fn past_the_threshold_monitors_and_jobs_are_only_reminded() {
     d.stop(None);
 }
 
-/// **Only a DAEMON stop triggers any of it** — the operator: *"this is the case for when harnessd
-/// stopped of course"*. A session whose records were written by the daemon that is running —
-/// however long it has sat idle, and however stale its heartbeat looks — is opened again (a head
-/// attaching, a `/resume`) and nothing is restored, reminded or rung.
+/// Only a DAEMON stop triggers any of it. A session whose records were written by the daemon that
+/// is running - however long it has sat idle, and however stale its heartbeat looks - is opened again
+/// (a head attaching, a `/resume`) and nothing is restored, reminded or rung.
 #[test]
 fn a_session_reopened_by_the_daemon_that_wrote_its_records_restores_nothing() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
-    // Eighteen daemons and their children in parallel need more open files than a shell's 256 —
-    // `room`'s note has the measurement.
+    // Eighteen daemons and their children in parallel want more than a shell's 256 open files.
     let Some(_) = room::room_for("eighteen daemons and their children in parallel", 1024) else {
         return;
     };
@@ -2478,7 +2416,7 @@ fn a_session_reopened_by_the_daemon_that_wrote_its_records_restores_nothing() {
     let mut d = a_daemon(&parts, &cfg);
     let me = d.registry.instance().to_string();
     let store = Store::open(&dir.store()).unwrap();
-    // This daemon's own life, with a heartbeat that looks hours old — a long idle.
+    // This daemon's own life, with a heartbeat that looks hours old - a long idle.
     store.life_started(&me, 1).unwrap();
     store.life_beat(&me, 2).unwrap();
     let mut mine = run(
@@ -2500,13 +2438,11 @@ fn a_session_reopened_by_the_daemon_that_wrote_its_records_restores_nothing() {
         .unwrap();
 
     assert!(d.parent.restore_after_restart().is_none());
-    // **A SECOND harness for one session is REFUSED, by name** — the writer claim
-    // (`letibot_tokencore::store::writers`, `harnessd::writer`). The daemon's own door never
-    // builds one: `Sessions::open_as` answers a `/resume` or a head's attach for a session it
-    // holds with the harness it already has. This is what a hand-built second one gets, and it
-    // is the reason the guard exists — two harnesses on one transcript interleave rows and the
-    // store's append-only trigger refuses the second, leaving a conversation that does not
-    // restore (MEASURED 2026-10-26, `s-gatekeeper#t0`).
+    // A SECOND harness for one session is REFUSED, by name - the writer claim. The daemon's own
+    // door never builds one (`Sessions::open_as` answers a `/resume` or a head's attach with the
+    // harness it already has); this is what a hand-built second one gets, and why the guard exists
+    // two harnesses on one transcript interleave rows and the store's append-only trigger refuses the
+    // second, leaving a conversation that does not restore.
     let hub2 = Hub::new(PARENT);
     let second = Harness::open_with_registry(
         &parts,
@@ -2524,7 +2460,7 @@ fn a_session_reopened_by_the_daemon_that_wrote_its_records_restores_nothing() {
         refusal.contains("is being written by another process"),
         "the refusal names the reason: {refusal}"
     );
-    // **And the reopen that really happens** — the daemon's harness gone, its claim given back
+    // And the reopen that really happens - the daemon's harness gone, its claim given back
     // with it, the session opened again: nothing restored and nothing reminded, because the
     // records name the daemon that wrote them.
     let registry = d.registry.clone();
@@ -2551,18 +2487,15 @@ fn a_session_reopened_by_the_daemon_that_wrote_its_records_restores_nothing() {
     registry.close();
 }
 
-/// **A stop no record dates is UNKNOWN, and an unknown down time restores nothing** — the
-/// operator, pasting the first restart onto a new build: *"the daemon was down for 0s (stopped
-/// at …, estimated from nothing (no record said when); back at …)"*, *"these gray walls are
-/// hilarious"*. The old daemon here kept no `daemon_life` row (a build before the lifeline); its
-/// monitor and its job name it, so the stop is truly unknown — not merely undated by a relic.
+/// A stop no record dates is UNKNOWN, and an unknown down time restores nothing. The old daemon
+/// here kept no `daemon_life` row (a build before the lifeline); its monitor and its job name it, so
+/// the stop is truly unknown - not merely undated by a relic.
 #[test]
 fn a_stop_no_record_dates_is_said_unknown_and_restores_nothing() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
-    // Eighteen daemons and their children in parallel need more open files than a shell's 256 —
-    // `room`'s note has the measurement.
+    // Eighteen daemons and their children in parallel want more than a shell's 256 open files.
     let Some(_) = room::room_for("eighteen daemons and their children in parallel", 1024) else {
         return;
     };
@@ -2654,7 +2587,7 @@ fn a_stop_no_record_dates_is_said_unknown_and_restores_nothing() {
     d.stop(None);
 }
 
-/// **Restored is said only when something was** — under the threshold, a session whose only
+/// Restored is said only when something was - under the threshold, a session whose only
 /// record is a job (which is never re-run) was raised as `restart_restored`, *"restored where
 /// it could be"*, over a list of reminders.
 #[test]
@@ -2662,8 +2595,7 @@ fn under_the_threshold_a_session_with_only_a_job_is_reminded_not_restored() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
-    // Eighteen daemons and their children in parallel need more open files than a shell's 256 —
-    // `room`'s note has the measurement.
+    // Eighteen daemons and their children in parallel want more than a shell's 256 open files.
     let Some(_) = room::room_for("eighteen daemons and their children in parallel", 1024) else {
         return;
     };
@@ -2713,7 +2645,7 @@ fn under_the_threshold_a_session_with_only_a_job_is_reminded_not_restored() {
         notice.contains("under the 1h00m restore threshold, but nothing could be restored"),
         "{notice}"
     );
-    // **And the time**, which is what a restart is for: the return time and the stop it is counted
+    // And the time, which is what a restart is for: the return time and the stop it is counted
     // from are in every notice, whatever is listed under it.
     assert!(notice.contains("; back at "), "{notice}");
     assert!(notice.contains("stopped at "), "{notice}");
@@ -2725,8 +2657,8 @@ fn under_the_threshold_a_session_with_only_a_job_is_reminded_not_restored() {
     assert!(notice.contains("Nothing above is running now."), "{notice}");
     assert!(warnings(&d.hub(), "restart_restored").is_empty());
     assert_eq!(warnings(&d.hub(), "restart_reminded").len(), 1);
-    // **Said once**: the row now reads `lost at restart`, an ending, and it was said — so the next
-    // open does not announce it again as an ending nobody was told about (R91.5).
+    // Said once: the row now reads `lost at restart`, an ending, and it was said - so the next
+    // open does not announce it again as an ending nobody was told about.
     assert!(
         d.parent.restore_after_restart().is_none(),
         "the lost job was announced a second time"
@@ -2761,17 +2693,16 @@ fn the_old_daemons(store: &Store, handle: &str) {
         .unwrap();
 }
 
-/// **A job whose ending was held when the daemon stopped is said by the next one, once** (TODO.md
-/// R91.5). Restore used to collect only `running` rows: a job that settled during a long turn and
-/// was HELD (R79) had a row reading `exited 0`, the daemon stopped, and the model never heard its
-/// result. One that WAS delivered is not said again, and neither is the held one on a second open.
+/// A job whose ending was held when the daemon stopped is said by the next one, once. Restore
+/// used to collect only `running` rows: a job that settled during a long turn and was HELD had a row
+/// reading `exited 0`, the daemon stopped, and the model never heard its result. One that WAS
+/// delivered is not said again, and neither is the held one on a second open.
 #[test]
 fn a_job_that_ended_untold_before_the_stop_is_said_after_it_once() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
-    // Eighteen daemons and their children in parallel need more open files than a shell's 256 —
-    // `room`'s note has the measurement.
+    // Eighteen daemons and their children in parallel want more than a shell's 256 open files.
     let Some(_) = room::room_for("eighteen daemons and their children in parallel", 1024) else {
         return;
     };
@@ -2826,17 +2757,15 @@ fn a_job_that_ended_untold_before_the_stop_is_said_after_it_once() {
     d.stop(None);
 }
 
-/// **A job handle minted after a restart is above every one the store holds** (TODO.md R91.3).
-/// The counter started at `j1` in every daemon life, so a session's first job after a restart
-/// could be its own pre-restart `j7` to every reader that matches by handle, and its row
-/// inherited the old job's command.
+/// A job handle minted after a restart is above every one the store holds. The counter started at
+/// `j1` in every daemon life, so a session's first job after a restart could be its own pre-restart
+/// `j7` to every reader that matches by handle, and its row inherited the old job's command.
 #[test]
 fn a_job_handle_minted_after_a_restart_is_above_every_one_the_store_holds() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
-    // Eighteen daemons and their children in parallel need more open files than a shell's 256 —
-    // `room`'s note has the measurement.
+    // Eighteen daemons and their children in parallel want more than a shell's 256 open files.
     let Some(_) = room::room_for("eighteen daemons and their children in parallel", 1024) else {
         return;
     };
@@ -2862,17 +2791,16 @@ fn a_job_handle_minted_after_a_restart_is_above_every_one_the_store_holds() {
     d.stop(None);
 }
 
-/// **A job still running when a VM child's backend is closed is named, and its row settled**
-/// (TODO.md R92.1, second half). A VM child's backend is closed after its first turn and its
-/// background jobs die with the guest; the watcher is stopped first, so nothing ever said so and
-/// the row read `running` for ever. Driven on a host backend, which is the same `processes()` read.
+/// A job still running when a VM child's backend is closed is named, and its row settled. A VM
+/// child's backend is closed after its first turn and its background jobs die with the guest; the
+/// watcher is stopped first, so nothing ever said so and the row read `running` for ever. Driven on a
+/// host backend, which is the same `processes` read.
 #[test]
 fn the_jobs_a_closing_backend_takes_with_it_are_named_and_their_rows_settled() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
-    // Eighteen daemons and their children in parallel need more open files than a shell's 256 —
-    // `room`'s note has the measurement.
+    // Eighteen daemons and their children in parallel want more than a shell's 256 open files.
     let Some(_) = room::room_for("eighteen daemons and their children in parallel", 1024) else {
         return;
     };

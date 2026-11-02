@@ -1,32 +1,16 @@
-//! **A session's model choice survives a restart** — the operator's question of
-//! 2026-10-04: *"will model choice be saved for a session? will it survive
-//! restars?"* It did not: `set_provider` was in-memory, the session row had no
-//! column for a choice, and a switched session came back on the daemon's own
-//! CLI default with the first turn quietly going to a model nobody chose for
-//! that conversation.
+//! A session's model choice survives a restart. It did not: `set_provider` was in-memory, the
+//! session row had no column for a choice, and a switched session came back on the daemon's CLI
+//! default with its first turn quietly going to a model nobody chose for that conversation.
 //!
-//! Three moving parts, and each has its half pinned here:
+//! Three halves, each pinned here: the switch writes the row in the same breath as
+//! `publish_settings`; the restore reads it at both open paths; and the restore goes through the
+//! same door the switch did (`models_choice`), so a preset this build no longer knows fails SAID
+//! with the row left alone for a build that does know it.
 //!
-//! 1. **the switch writes the row** (`Harness::persist_provider_choice`), in the
-//!    same breath as `publish_settings` — a switch that reached the screen but
-//!    not the row was a choice that expired with the process;
-//! 2. **the restore reads it at both open paths** — the first session a
-//!    `--continue` resumes and the lazy `harness()` a head's switch reaches;
-//! 3. **the restore goes through the SAME door the switch went through**
-//!    (`models_choice`), so a restore cannot build a provider the verb would
-//!    refuse — and a preset this build no longer knows fails SAID rather than
-//!    silently, with the row left alone so a build that does know it still finds
-//!    it.
-//!
-//! The store's own half (the column, its four spellings, the v13 migration) is
-//! pinned in `tokencore`'s own tests; this file is the harness's half.
-//!
-//! **What these tests cannot cover, stated rather than hidden:** restoring a
-//! KNOWN provider requires that provider's key to resolve, and a key on this
-//! box is not a thing CI has — so the known-provider branch is exercised by the
-//! branch that refuses (`no-such-provider`), which is the same code path down to
-//! `models_choice`, plus the live session that switched to `glm-coding` and is
-//! being answered by it right now.
+//! The store's own half (the column, its spellings, the migration) is pinned in `tokencore`'s
+//! tests. Restoring a KNOWN provider needs that provider's key, which a box running tests has not
+//! got - so the known branch is covered by the refusal, which is the same path down to
+//! `models_choice`.
 
 use letibot_harnessd::config::Config;
 use letibot_harnessd::{Dialect, Harness, Parts};
@@ -43,10 +27,9 @@ fn config(store: &std::path::Path, session_id: &str) -> Config {
     cfg.http_retries = 0;
     cfg.store = Some(store.to_path_buf());
     cfg.session_id = session_id.to_string();
-    // `Config::for_this_box` carries no vocabulary default any more (a daemon on
-    // the byte vocabulary needs none), so a harness built here is handed one: the
-    // operator's `LETIBOT_VOCAB_GGUF` if it is set, else the box's own GGUF — the
-    // same path this file's `vocab_gguf` gate consults.
+    // `Config::for_this_box` carries no vocabulary default any more (a daemon on the byte
+    // vocabulary needs none), so a harness built here is handed one: the operator's
+    // `LETIBOT_VOCAB_GGUF` if it is set, else the box's own GGUF - the path `vocab_gguf` consults.
     cfg.vocab_gguf = support::vocab::gguf();
     cfg
 }
@@ -98,12 +81,9 @@ impl Drop for TempDir {
     }
 }
 
-/// **An unswitched session writes `local` BY NAME, not NULL.**
-///
-/// The two answer different questions at a resume — *no opinion* against *the
-/// local server, deliberately* — and a daemon whose own default is a provider
-/// would hand a switched-back session straight back to it if the two collapsed
-/// into NULL.
+/// An unswitched session writes `local` BY NAME, not NULL: the two answer different questions at a
+/// resume - *no opinion* against *the local server, deliberately* - and a daemon whose own default
+/// is a provider would hand a switched-back session straight back to it if they collapsed.
 #[test]
 fn a_switch_writes_the_row_and_local_is_written_by_name() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -117,9 +97,8 @@ fn a_switch_writes_the_row_and_local_is_written_by_name() {
     let hub = Hub::new(session_id);
     let h = Harness::open(&parts, cfg, hub).expect("the session must open");
 
-    // Nothing switched: the row this writes is `local`, because the daemon's own
-    // default being a provider is a real configuration and NULL must not mean
-    // "whatever the daemon was started on" for a session that CHOSE local.
+    // Nothing switched: the row this writes is `local`, because a daemon whose own default is a
+    // provider must not read NULL as "whatever it was started on" for a session that CHOSE local.
     h.persist_provider_choice().expect("the row is written");
     let s = Store::open(&path).expect("reopening");
     assert_eq!(
@@ -129,9 +108,8 @@ fn a_switch_writes_the_row_and_local_is_written_by_name() {
     );
 }
 
-/// **A resume restores the session's own model** — and a preset this build does
-/// not know is refused SAID, with the daemon's default standing and the row left
-/// alone so a build that does know the preset still finds it.
+/// A resume restores the session's own model, and a preset this build does not know is refused
+/// SAID - the daemon's default stands, and the row is left alone for a build that does know it.
 #[test]
 fn a_resume_restores_the_sessions_own_model_and_a_unknown_preset_is_refused_by_name() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -157,8 +135,8 @@ fn a_resume_restores_the_sessions_own_model_and_a_unknown_preset_is_refused_by_n
         said.contains("no-such-provider") && said.contains("does not know that provider"),
         "the refusal names the preset and says what answers instead: {said}"
     );
-    // **And the row is left alone**, so a build that does know the preset still
-    // finds it on the next open rather than the refusal having eaten the choice.
+    // And the row is left alone, so a build that does know the preset still finds it on the next
+    // open rather than the refusal having eaten the choice.
     let s = Store::open(&path).expect("reopening");
     assert_eq!(
         s.provider_choice(session_id).unwrap().as_deref(),
@@ -166,11 +144,9 @@ fn a_resume_restores_the_sessions_own_model_and_a_unknown_preset_is_refused_by_n
         "a refused restore must not clear the row it failed to apply"
     );
 
-    // A second open of the SAME session is not a re-switch of anything: the
-    // restore reads the row it left, says the same refusal, and the daemon
-    // default keeps answering. The no-op-by-`already` arm (a live session a head
-    // switched INTO) needs a resolvable provider, and that is the live session's
-    // half — stated in the module note rather than hidden.
+    // A second open of the SAME session is not a re-switch: the restore reads the row it left, says
+    // the same refusal, and the daemon default keeps answering. The no-op-by-`already` arm (a live
+    // session a head switched INTO) needs a resolvable provider - the live session's half.
     drop(s);
     assert_eq!(
         h.restore_provider_choice().expect("the same sentence"),
@@ -179,9 +155,8 @@ fn a_resume_restores_the_sessions_own_model_and_a_unknown_preset_is_refused_by_n
     );
 }
 
-/// **A session with no row for a choice resumes on the daemon's default** — which
-/// is what such a session always did, and the reason NULL is not backfilled: a
-/// store recorded before this column existed has no opinion to restore.
+/// A session with no row for a choice resumes on the daemon's default - what it always did, and the
+/// reason NULL is not backfilled: a store recorded before this column existed has no opinion.
 #[test]
 fn a_session_that_never_chose_resumes_on_the_daemon_default() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {

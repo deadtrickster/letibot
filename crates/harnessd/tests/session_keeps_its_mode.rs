@@ -1,8 +1,7 @@
-//! **A session comes back at the point it was put at** — the operator, 2026-10-12: *"and again
-//! peerdb allow-all lost after restart/reseat"*. The point a session was moved to with `/mode` is
-//! the session's own row in the store, and an open reads it before the project's: so a restart,
-//! or a reseat, brings it back there whatever the project row says by then — or whether another
-//! daemon wrote that row away.
+//! A session comes back at the point it was put at. The point a session was moved to with `/mode` is
+//! the session's own row in the store, and an open reads it before the project's - so a restart, or a
+//! reseat, brings it back there whatever the project row says by then, or whether another daemon
+//! wrote that row away.
 
 use letibot_harnessd::config::{Config, ProviderConfig};
 use letibot_harnessd::modes::ModeStore;

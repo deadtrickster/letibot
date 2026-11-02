@@ -1,11 +1,11 @@
-//! **A verbatim `/reseat` keeps the provider's measurement**, so a restart can still read the
-//! ledger in the provider's units.
+//! A verbatim `/reseat` keeps the provider's measurement, so a restart can still read the ledger in
+//! the provider's units.
 //!
-//! The operator's peerdb session, 2026-10-12: a `/reseat` (which forks the conversation onto
-//! the new prompt with every row carried) cleared the stored measurement, the daemon was
-//! restarted before a round measured again, and the session was folded on 2,431,232 ledger
-//! bytes of a conversation deepseek had counted at around 600,000 — "after 2m tokens, how scale
-//! can not be measured?". It had been measured on every round; the fork threw it away.
+//! A `/reseat` forks the conversation onto the new prompt with every row carried, and it used to
+//! clear the stored measurement: if the daemon restarted before a round measured again, the session
+//! was folded on its raw ledger bytes instead of the count the provider had reported - "after 2m
+//! tokens, how can scale not be measured?". It had been measured on every round; the fork threw it
+//! away.
 //!
 //! On the byte vocabulary a cloud session uses, so it runs on a box with no model file.
 
@@ -49,7 +49,7 @@ fn a_verbatim_reseat_keeps_the_measurement_and_moves_its_anchor() {
         .set_context("keep", Some(600_000), Some(1_000), Some(at))
         .expect("seed the measurement");
 
-    // Message zero changes — what seating a new tool does — and the conversation is re-seated
+    // Message zero changes - what seating a new tool does - and the conversation is re-seated
     // onto it verbatim.
     h.config_mut().system = "a different base prompt entirely".into();
     h.reingest().expect("the re-seat");

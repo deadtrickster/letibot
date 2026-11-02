@@ -1,64 +1,35 @@
-//! **Ctrl-C in a one-shot: the first one interrupts the turn, and the process goes in seconds.**
+//! Ctrl-C in a one-shot: the first one interrupts the turn, and the process goes in seconds.
 //!
-//! # The state this measures
+//! The signal does reach the daemon - the launcher `exec`s it for a one-shot, so it is in the
+//! terminal's foreground process group - and that leaves two defects
 //!
-//! MEASURED 2026-10-26, the operator at a terminal in `~/Projects/stroppy-io`: a one-shot
-//! (`harnessd --prompt`, socket `oneshot-<pid>.sock`) had a turn in flight and they pressed Ctrl-C.
-//! Nothing visible happened, the model went on running `ssh` commands, and the process took
-//! MINUTES to go.
+//! 1. Nothing said anything. The daemon's first word about a signal was its last, so a stop that
+//!    was working and a stop that was ignored looked exactly alike.
+//! 2. The turn did not end. `Registry::close` interrupts a session only when it reads as *a turn
+//!    is in flight*, and it asked `SessionStatus::running` - the ROUND-level flag, which is `false`
+//!    for the whole of a round's tool calls. So in the one window a person presses Ctrl-C in (a turn
+//!    inside a command) no interrupt was queued at all: the run enders killed the command and the
+//!    turn went straight on to ask the model again. `close` now asks `Hub::turn_in_flight`, queued
+//!    BEFORE the kill, so the round the killed command hands back to is the round that ends the turn.
 //!
-//! The signal does reach the daemon — the launcher `exec`s it for a one-shot (`setsid` is the
-//! detached-daemon path only), so it is in the terminal's foreground process group and SIGINT
-//! arrives as it always does. That leaves two defects, and the first is the one that ate the
-//! minutes:
+//! What is asserted: the command in flight is killed and the turn stops there, with no assistant
+//! answer after the `bash` result; the process exits far below the command's own deadline, because
+//! *it stopped when the deadline expired* is the behaviour being removed; and the log names the
+//! signal. The second test covers a turn that never comes back - a provider that accepts the request
+//! and answers nothing, where no steering poll can reach - and a second Ctrl-C, which must exit at
+//! once rather than wait out `ONE_SHOT_EXIT_GRACE`.
 //!
-//! 1. **Nothing said anything.** The daemon's first word about a signal was its last, so a stop
-//!    that was working and a stop that was ignored looked exactly alike.
-//! 2. **The turn did not end.** `Registry::close` interrupts a session only when it reads as *a
-//!    turn is in flight*, and it asked `SessionStatus::running` — the ROUND-level flag, which is
-//!    `false` for the whole of a round's tool calls. So in the one window a person presses Ctrl-C
-//!    in (a turn inside a command) no interrupt was queued at all: the run enders killed the
-//!    command, and the turn went straight on to its next round and asked the model again.
-//!    `Hub::turn_in_flight` names that mistake in its own doc, and it is what `close` asks now,
-//!    queued BEFORE the kill so the round the killed command hands back to is the round that ends
-//!    the turn.
+//! The signal has to land on a turn whose command is RUNNING, and nothing the provider can see
+//! says that: `rounds` moves when the request has been READ, before the daemon has parsed the call
+//! run it past the gate and spawned it. So the command writes a marker as its first act and the test
+//! waits for that - a condition, not a pause. *At once* for the second Ctrl-C is read off the log
+//! too (the second-Ctrl-C line present, the grace's line absent), because which of its two sentences
+//! a run ends with is the daemon saying which one fired.
 //!
-//! # What is asserted, and how
-//!
-//! 1. **The command in flight is killed and the turn stops there**: the store's transcript holds
-//!    the `bash` result `killed by the daemon stopping` and no assistant answer after it — the
-//!    turn ended at the interrupt instead of spending another round on a model.
-//! 2. **It exits, in seconds.** The bound is far below the in-flight command's own deadline (two
-//!    minutes at the `bash` default), because *"it stopped when the command's deadline expired"*
-//!    is the behaviour being removed — the same shape, and the same bound, as `stop_ends_runs.rs`.
-//! 3. **It says so**, on the daemon's own log, naming the signal.
-//! 4. **A turn that never comes back is bounded too** (the second test): a provider that accepts
-//!    the request and answers nothing is the shape that waited minutes — no steering poll can
-//!    reach a turn blocked in a socket, so the one-shot's `ONE_SHOT_EXIT_GRACE` ends it.
-//! 5. **A second Ctrl-C exits at once**, before that grace — and *at once* is read off the
-//!    daemon's own log (the second-Ctrl-C line present, the grace's line **absent**) rather than
-//!    off a stopwatch: the grace is the daemon's own clock, and which of its two sentences a run
-//!    ends with is the daemon saying which one fired. A stopwatch here would have been a bet on
-//!    the box, measured through a 25 ms poll, for a fact the log states outright.
-//!
-//! # The two waits this file had to change
-//!
-//! **The signal has to land on a turn whose command is RUNNING**, and the fixture used to assume
-//! that 1500 ms after the provider had read the request it was. That is a pause, and the number
-//! it is placed against is measured (request read → command running: 0.13 s alone, 0.18 s under
-//! four hundred busy processes) — a factor of eight, not a condition. The command now writes a
-//! marker as its first act and the test waits for *that*; a lost bet used to make the assertion
-//! about the killed command's row fail about the fixture.
-//!
-//! **And nothing else here is a clock.** The stop has its own budget (15 s against a measured
-//! 0.13–0.78 s) and that one is a hang detector; the grace's firing is the log's.
-//!
-//! # What makes this runnable anywhere
-//!
-//! The session opens on the **byte vocabulary** with a provider (`vocab_gguf: None` with a
-//! `provider`), so no model file is needed, and the provider is a loopback fake. `sleep` is on the
-//! test's own preapproved list, so the gate admits it with nobody to ask — a one-shot has no head,
-//! and an ask would be `gate:no-head` in microseconds.
+//! It runs anywhere: the session opens on the byte vocabulary with a provider (`vocab_gguf: None`
+//! with a `provider`), the provider is a loopback fake, and `sleep` is on the test's own preapproved
+//! list so the gate admits it with nobody to ask - a one-shot has no head, and an ask would be
+//! `gate:no-head` in microseconds.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -73,27 +44,20 @@ use letibot_transcript::TranscriptItem;
 /// How long the daemon may take to start, open the session and reach its first round.
 const PATIENCE: Duration = Duration::from_secs(60);
 
-/// **How long the first Ctrl-C may take to end the daemon.**
+/// How long the first Ctrl-C may take to end the daemon.
 ///
-/// Well under the run's own two minutes — that is the whole point — and above everything the
-/// daemon's own stop is allowed to spend: [`ONE_SHOT_EXIT_GRACE`](letibot_harnessd::daemon::ONE_SHOT_EXIT_GRACE)
-/// for a turn that does not come back, and the subagent drain beside it. MEASURED 2026-11-01,
-/// signal to gone: **0.13 s** alone, **0.20 s** under four hundred busy processes, and **0.78 s**
-/// with those processes *and* the gate's own `TMPDIR` on a real disk. The stop is not slow, so this
-/// ceiling is a hang detector and nothing else.
+/// Well under the run's own two minutes - that is the whole point - and above everything the
+/// daemon's own stop is allowed to spend: `ONE_SHOT_EXIT_GRACE` for a turn that does not come
+/// back, and the subagent drain beside it. The stop is not slow, so this ceiling is a hang detector
+/// and nothing else.
 const CTRL_C_BUDGET: Duration = Duration::from_secs(15);
 
-/// **The file the in-flight command writes as its first act.**
+/// The file the in-flight command writes as its first act.
 ///
-/// The signal this test sends has to land on a turn whose command is *running*, and nothing the
-/// provider can see says that: `rounds()` moves when the provider has READ the request, before
-/// the daemon has parsed the tool call, run it past the gate and spawned it. A pause after
-/// `rounds()` is a bet on how fast the box does that, and the number the bet is placed against is
-/// measured — request read to command running: **0.13 s** alone, **0.18 s** under four hundred
-/// busy processes, **0.16 s** with those and `TMPDIR` on a real disk, and **0.28 s** with the box
-/// at load 141. So the old 1500 ms pause had a factor of five at the worst of those and no more; a
-/// factor is not a condition, and the fact this test needs is *the command is running*. The command
-/// says so itself.
+/// The signal has to land on a turn whose command is *running*, and nothing the provider can see
+/// says that: `rounds` moves when the request has been read, before the daemon has parsed the tool
+/// call, run it past the gate and spawned it. A pause after `rounds` is a bet on how fast the box
+/// does that, and a factor is not a condition. The command says it is up itself.
 const MARKER: &str = "the-command-started";
 
 struct TempDir {
@@ -130,7 +94,7 @@ enum Script {
     /// Round one: a `bash` call that sleeps for longer than any bound here. Round two: prose, so a
     /// turn that was NOT interrupted finishes and the test fails on the clock rather than hanging.
     BashThenProse,
-    /// **Accept the connection, read the request, answer nothing** — a provider that stopped
+    /// Accept the connection, read the request, answer nothing - a provider that stopped
     /// sending, which is a turn blocked where no steering poll can reach it.
     Hang,
 }
@@ -139,9 +103,8 @@ enum Script {
 struct Fake {
     url: String,
     rounds: Arc<AtomicUsize>,
-    /// When the FIRST request had been read off the socket — the moment the daemon could begin
-    /// to parse it. The gap from here to the command's marker is what the old fixture's 1500 ms
-    /// pause was standing in for.
+    /// When the FIRST request had been read off the socket - the moment the daemon could begin to
+    /// parse it. The gap from here to the command's marker is what the fixture prints.
     first_read: Arc<std::sync::OnceLock<Instant>>,
 }
 
@@ -170,8 +133,8 @@ impl Fake {
                     continue;
                 }
                 let body = if n == 0 {
-                    // **The command announces itself before it blocks**, and the `touch` is what
-                    // the test waits for: `rounds()` only says the provider has read the request.
+                    // The command announces itself before it blocks, and the `touch` is what the
+                    // test waits for: `rounds` only says the provider has read the request.
                     let arguments =
                         serde_json::json!({ "command": format!("touch {MARKER} && sleep 120") })
                             .to_string();
@@ -250,7 +213,7 @@ fn read_request(stream: &std::net::TcpStream) -> String {
     String::from_utf8_lossy(&body).into_owned()
 }
 
-/// **A one-shot daemon**, with nothing of the operator's reachable from it.
+/// A one-shot daemon, with nothing of the operator's reachable from it.
 struct OneShot {
     child: Child,
     log: PathBuf,
@@ -278,10 +241,10 @@ impl OneShot {
             ),
         )
         .expect("providers.toml");
-        // The preapproved list, so the long command is admitted with no head to ask: a one-shot
-        // has nobody attached, and an ask would be `gate:no-head` before the command ever ran.
-        // Two segments, because the command is two: the `touch` that says it is up, and the
-        // `sleep` that is the thing in flight.
+        // The preapproved list, so the long command is admitted with no head to ask: a one-shot has
+        // nobody attached, and an ask would be `gate:no-head` before the command ever ran. Two
+        // segments, because the command is two: the `touch` that says it is up, and the `sleep` that
+        // is the thing in flight.
         std::fs::write(
             config.join("permission.json"),
             "{\"bash\": {\"touch*\": \"allow\", \"sleep*\": \"allow\"}}\n",
@@ -343,15 +306,15 @@ impl OneShot {
         }
     }
 
-    /// Where the command's own marker lands — the workspace is the command's cwd.
+    /// Where the command's own marker lands - the workspace is the command's cwd.
     fn marker(&self) -> PathBuf {
         self.workspace.join(MARKER)
     }
 
-    /// **Wait until the command is RUNNING** — the marker the command writes itself, so this is
-    /// the condition and not a pause. Returns how long the daemon took from the provider reading
-    /// the request to the command being up, which is the number the old 1500 ms pause was betting
-    /// on. `None` when it never got there, and the caller says what the log had to say about it.
+    /// Wait until the command is RUNNING - the marker the command writes itself, so this is the
+    /// condition and not a pause. Returns how long the daemon took from the provider reading the
+    /// request to the command being up. `None` when it never got there, and the caller says what the
+    /// log had to say about it.
     fn wait_for_the_command(&mut self, fake: &Fake) -> Option<Duration> {
         let deadline = Instant::now() + PATIENCE;
         while Instant::now() < deadline {
@@ -366,7 +329,7 @@ impl OneShot {
         None
     }
 
-    /// **Wait until a round is being generated** — the request has reached the provider.
+    /// Wait until a round is being generated - the request has reached the provider.
     fn wait_for_a_request(&mut self, fake: &Fake) -> bool {
         let deadline = Instant::now() + PATIENCE;
         while Instant::now() < deadline {
@@ -413,8 +376,8 @@ impl OneShot {
         std::fs::read_to_string(&self.log).unwrap_or_default()
     }
 
-    /// **The session as the store has it** — the rows the interrupted turn left, in order. Read
-    /// over a fresh connection with the daemon already gone: that is the *saved, not lost* half.
+    /// The session as the store has it - the rows the interrupted turn left, in order. Read over
+    /// a fresh connection with the daemon already gone: that is the *saved, not lost* half.
     fn rows(&self) -> Vec<TranscriptItem> {
         let store = Store::open(&self.store).expect("the store opens after the daemon is gone");
         let id = store
@@ -450,9 +413,8 @@ fn the_first_ctrl_c_interrupts_the_turn_and_the_one_shot_goes_in_seconds() {
             shot.log()
         );
     };
-    // **The number the old fixture's pause was standing in for**, and the reason it was a bet:
-    // this is how long the box takes to get from a request the provider has read to a process
-    // the daemon has spawned.
+    // The number the fixture prints, and the reason a pause was a bet: this is how long the box
+    // takes to get from a request the provider has read to a process the daemon has spawned.
     println!("  request read -> command running: {dispatch:?}");
     assert_eq!(
         fake.rounds(),
@@ -519,7 +481,7 @@ fn a_turn_that_never_comes_back_is_bounded_and_a_second_ctrl_c_exits_at_once() {
     );
 
     shot.ctrl_c();
-    // **A second Ctrl-C, a moment later** — what a person does, and what must not have to wait for
+    // A second Ctrl-C, a moment later - what a person does, and what must not have to wait for
     // the grace.
     std::thread::sleep(Duration::from_millis(300));
     shot.ctrl_c();
@@ -536,11 +498,10 @@ fn a_turn_that_never_comes_back_is_bounded_and_a_second_ctrl_c_exits_at_once() {
         log.contains("a second Ctrl-C — exiting now"),
         "the second Ctrl-C was not said, or did not end it ({took:?}):\n{log}"
     );
-    // **And the grace did not fire** — which is the fact *exited at once* means, said by the
-    // daemon itself instead of by a stopwatch on a busy box. A second signal that did nothing
-    // would have left the turn blocked in a provider that never answers, and
-    // `ONE_SHOT_EXIT_GRACE` would have ended the process with its own sentence; the absence of
-    // that sentence is the proof, and it does not care what else is running.
+    // And the grace did not fire - which is what *exited at once* means, said by the daemon
+    // itself instead of by a stopwatch on a busy box. A second signal that did nothing would have
+    // left the turn blocked in a provider that never answers, and `ONE_SHOT_EXIT_GRACE` would have
+    // ended the process with its own sentence; the absence of that sentence is the proof.
     assert!(
         !log.contains("the turn did not come back within"),
         "the second Ctrl-C waited out the grace instead of exiting at once ({took:?}):\n{log}"

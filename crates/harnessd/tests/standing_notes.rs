@@ -1,21 +1,16 @@
-//! Standing notes against a real harness: the moments the head of the prompt
-//! may move — session open, and every base rebuild. Nothing delivers a note
-//! mid-conversation; that path was removed on the operator's ruling, so a
-//! note edited between rebuilds lands at the next one, not on the next turn.
+//! Standing notes against a real harness: the moments the head of the prompt may move - session
+//! open, and every base rebuild. Nothing delivers a note mid-conversation; that path was removed on
+//! the operator's ruling, so a note edited between rebuilds lands at the next one, not on the next
+//! turn.
 //!
-//! The assembly itself — the sources, the order, the budget, the digest — is
-//! asserted as unit tests on `standing_notes`, which needs no harness. What
-//! needs one is the part the operator actually asked for:
+//! The assembly itself - the sources, the order, the budget, the digest - is asserted as unit
+//! tests on `standing_notes`, which needs no harness. What needs one is the re-read at a base
+//! rebuild: `reseat_target` re-reads the files, so an `AGENTS.md` edited between two compactions
+//! lands in the new base's message 0 - and only the notes move, with everything the composed prompt
+//! carries beside them carried through byte for byte, including a fabric block appended after the
+//! section.
 //!
-//! 1. **The re-read at a base rebuild.** `reseat_target` re-reads the files,
-//!    so an `AGENTS.md` edited between two compactions lands in the new
-//!    base's message 0 — and only the notes move, with everything the
-//!    composed prompt carries beside them carried through byte for byte,
-//!    including a fabric block appended after the section the way
-//!    `Sessions::with_fabric` leaves it.
-//!
-//! It needs the vocabulary GGUF and not the model server: nothing here runs a
-//! turn. Same gate as `compact.rs`, for the same reason.
+//! It needs the vocabulary GGUF and not the model server: nothing here runs a turn.
 
 use letibot_harnessd::config::Config;
 use letibot_harnessd::standing_notes;
@@ -48,11 +43,10 @@ impl Drop for TempDir {
     }
 }
 
-/// **A box with no instruction file of its own.** The box scope is pointed at
-/// scratch paths that do not exist, so the machine the suite runs on cannot
-/// answer for a fixture — the operator's own instruction file exists on the box
-/// this was written on, and a result that depended on it would be a result about
-/// one person's home directory.
+/// A box with no instruction file of its own. The box scope is pointed at scratch paths that do
+/// not exist, so the machine the suite runs on cannot answer for a fixture - the operator's own
+/// instruction file exists on the box this was written on, and a result that depended on it would
+/// be a result about one person's home directory.
 fn no_box(scratch: &std::path::Path) -> letibot_harnessd::leticode_config::BoxDirs {
     letibot_harnessd::leticode_config::BoxDirs {
         config: scratch.join("box-config"),
@@ -60,12 +54,13 @@ fn no_box(scratch: &std::path::Path) -> letibot_harnessd::leticode_config::BoxDi
     }
 }
 
-/// A session over a workspace with a nonce in its `AGENTS.md`, composed the
-/// way `Sessions` composes one: `seat_prompt` set, so the harness composes the
-/// prompt at open for its seated tools, notes included.
-/// The store's directory comes back with the harness: a `TempDir` dropped here removed the
-/// database out from under every later write (`sqlite: disk I/O error` on macOS, where a
-/// deleted directory cannot grow the WAL).
+/// A session over a workspace with a nonce in its `AGENTS.md`, composed the way `Sessions` composes
+/// one: `seat_prompt` set, so the harness composes the prompt at open for its seated tools, notes
+/// included.
+///
+/// The store's directory comes back with the harness: a `TempDir` dropped here removed the database
+/// out from under every later write (`sqlite: disk I/O error` on macOS, where a deleted directory
+/// cannot grow the WAL).
 fn opened(workspace: &std::path::Path, nonce: &str) -> (Harness, TempDir) {
     opened_over(
         workspace,
@@ -104,8 +99,8 @@ fn opened_over(
     )
 }
 
-/// **The box a session reads is the one its config names, and an unconfigured one reads
-/// nothing of the machine it runs on.**
+/// The box a session reads is the one its config names, and an unconfigured one reads
+/// nothing of the machine it runs on.
 ///
 /// A fixture's prompt has to be a function of its own files: two sessions here, one instruction
 /// file and one skill between them, and the only difference is what the config says the box is.
@@ -161,13 +156,10 @@ fn the_box_a_session_reads_is_the_one_its_config_names() {
     );
 }
 
-/// **An `AGENTS.md` edited between the compose and the rebuild shows up in the
-/// new base.**
+/// An `AGENTS.md` edited between the compose and the rebuild shows up in the new base.
 ///
-/// This is the operator's ask verbatim — *"make sure AGENTS.md reread after
-/// each compaction"* — driven at the seam every fork computes its next prefix
-/// through, without a model server: `reseat_target` is the offline-drivable
-/// half of a compaction by its own doc.
+/// Driven at the seam every fork computes its next prefix through, without a model server
+/// `reseat_target` is the offline-drivable half of a compaction by its own doc.
 #[test]
 fn an_edited_agents_md_lands_in_the_next_base() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -199,8 +191,8 @@ fn an_edited_agents_md_lands_in_the_next_base() {
         !next.system.contains("note-rebuild-one"),
         "the old generation is gone"
     );
-    // **And nothing else moved.** Strip the section from both and the prompts
-    // are byte-identical: the sections, `system_extra`, the budget arithmetic —
+    // And nothing else moved. Strip the section from both and the prompts
+    // are byte-identical: the sections, `system_extra`, the budget arithmetic -
     // the whole frozen-input rule `compose_for_seat` set keeps its side of the
     // bargain and only the notes moved.
     assert_eq!(
@@ -209,7 +201,7 @@ fn an_edited_agents_md_lands_in_the_next_base() {
         "everything outside the notes section is carried through unchanged"
     );
 
-    // **A fabric block appended after the section survives the swap** — the
+    // A fabric block appended after the section survives the swap - the
     // shape `Sessions::with_fabric` leaves the prompt in, and the reason the
     // swap is by marker rather than a recompose.
     h.config_mut().system.push_str("\n\nfabric block goes last");
@@ -229,19 +221,16 @@ fn an_edited_agents_md_lands_in_the_next_base() {
     );
 }
 
-/// **A note the `notes` tool writes is one the reader injects — round-tripped,
-/// not assumed.**
+/// A note the `notes` tool writes is one the reader injects - round-tripped, not assumed.
 ///
-/// The tool lives in `letibot-tools` and the reader here, joined only by a
-/// trait (`NotesScope`) and a convention about directories. A note the tool
-/// writes that the reader does not read is the bug this feature exists to
-/// prevent: the model would be told it kept something, and the next session
-/// would never see it. So this drives the REAL tool over a real workspace and
-/// reads the result back through [`standing_notes::section`] — the same
-/// function `Harness::open_with_registry` and `reseat_target` call.
+/// The tool lives in `letibot-tools` and the reader here, joined only by a trait (`NotesScope`) and
+/// a convention about directories. A note the tool writes that the reader does not read is the bug
+/// this feature exists to prevent: the model would be told it kept something, and the next session
+/// would never see it. So this drives the REAL tool over a real workspace and reads the result back
+/// through [`standing_notes::section`] - the same function `Harness::open_with_registry` and
+/// `reseat_target` call.
 ///
-/// No vocabulary GGUF needed: the byte vocabulary counts exactly, and the
-/// fixture is small.
+/// No vocabulary GGUF needed: the byte vocabulary counts exactly, and the fixture is small.
 #[test]
 fn a_note_the_tool_writes_is_one_the_reader_injects() {
     struct Scope(std::path::PathBuf, std::path::PathBuf);
@@ -282,7 +271,7 @@ fn a_note_the_tool_writes_is_one_the_reader_injects() {
     );
     assert!(r.is_grounded(), "the add lands: {}", r.render());
 
-    // And the reader — the same `section` the prompt is composed with — picks
+    // And the reader - the same `section` the prompt is composed with - picks
     // it up, verbatim, under its path.
     let vocab = letibot_tokencore::Vocab::bytes([], []);
     let s = standing_notes::section(ws.path(), global.path(), &no_box(global.path()), &vocab)
@@ -300,7 +289,7 @@ fn a_note_the_tool_writes_is_one_the_reader_injects() {
         "the injected block carries the historical caveat too: {s}"
     );
 
-    // And an append reaches the reader as well — the loop is round in both
+    // And an append reaches the reader as well - the loop is round in both
     // directions of the verb set, not just on the happy path.
     let r = call(r#"{"action":"append","name":"qwen-tail","text":"re-measured: still true"}"#);
     assert!(r.is_grounded(), "{}", r.render());

@@ -1,26 +1,18 @@
-//! The todo path, end to end, against the live server: the model writes the
-//! plan, the store holds it, the log announces it.
+//! The todo path, end to end, against the live server: the model writes the plan, the store holds
+//! it, the log announces it.
 //!
-//! The offline files prove every link separately — the tool's behaviour
-//! (`letibot-tools`), the store round-trip (`letibot-tokencore`), the restore at
-//! open (`todos.rs`), the event's wire shape (`letibot-sessionlog`). What none of
-//! them can prove is the chain: a real model, told to plan, actually calling
-//! `todo_write` through the gated runtime, the harness flushing at the round
-//! boundary, and a head attaching afterwards finding both the store row and the
-//! event in its backlog.
+//! The offline files prove every link separately - the tool's behaviour (`letibot-tools`), the
+//! store round-trip (`letibot-tokencore`), the restore at open (`todos.rs`), the event's wire shape
+//! (`letibot-sessionlog`). What none of them can prove is the chain: a real model, told to plan
+//! actually calling `todo_write` through the gated runtime, the harness flushing at the round
+//! boundary, and a head attaching afterwards finding both the store row and the event in its
+//! backlog.
 //!
-//! # The one rule on this box
-//!
-//! The server on `127.0.0.1:8080` is a singleton and the GLM one is already
-//! serving — this session runs on it. **Never start a second model server to
-//! make a test pass**: the services evict each other, and the eviction takes down
-//! whatever else is running on the same endpoint. This test uses the GLM dialect
-//! and the GLM vocabulary, which is what the server is already holding, so it
-//! starts nothing and evicts nothing. The serving preflight is the gate, and when
-//! nothing answers at all the test SKIPS rather than failing — see
-//! `letibot_turn::serving::skip_live_test`, and `LETIBOT_REQUIRE_MODEL` to refuse
-//! the skip. Five minutes of `SalvageExhausted` against a closed port is what that
-//! guard replaced.
+//! Never start a second model server to make a test pass: the servers on this box evict each
+//! other, and the eviction takes down whatever else is running on the endpoint. This test uses the
+//! GLM dialect and vocabulary, which the running server already holds, so it starts nothing. When
+//! nothing answers it SKIPS rather than failing (`letibot_turn::serving::skip_live_test`
+//! `LETIBOT_REQUIRE_MODEL` refuses the skip).
 
 use std::sync::OnceLock;
 
@@ -53,37 +45,20 @@ fn a_live_todo_write_reaches_the_store_and_the_log() {
         cfg.endpoint = letibot_turn::Endpoint::new(h, p.parse().expect("port"));
     }
 
-    // **NO SERVER, NO TEST — and the guard goes BEFORE the vocabulary assertion.**
+    // NO SERVER, NO TEST - and the guard goes BEFORE the vocabulary assertion.
     //
-    // MEASURED with the endpoint on a dead port: this is the one target in the whole
-    // workspace that still failed, `FAILED. 0 passed; 1 failed` in 14.73 s, panicking
-    // at `the turn: Turn(SalvageExhausted { streak: 4 })` — four retries against
-    // nothing. Every other live file either uses a canned server or needs no endpoint,
-    // which `cargo test --workspace --no-fail-fast` established rather than guessed.
-    //
-    // It goes FIRST because on a machine that is not this box the file fails for a
-    // second, louder reason: `GLM_GGUF` is an absolute path under `/home/dead`, so the
-    // `<GLM_GGUF>` assertion would fire before anything got as far as the endpoint.
-    // A skip has to be reached before the assertions it is skipping past.
+    // It goes first because on a machine that is not this box the vocabulary path is absent too
+    // and a skip has to be reached before the assertions it is skipping past.
     if letibot_turn::serving::skip_live_test(&cfg.endpoint, "This test") {
         return;
     }
 
-    // **The vocabulary is apparatus whether or not a server answered**, so it is
-    // the same skip rather than an assert. This used to `assert!` — with a message
-    // telling the reader how to make it SKIP, which is a sentence that should have
-    // been the code. MEASURED: with a server up and the override pointing at
-    // nothing, the assert fired and reported absent apparatus as a failed
-    // assertion; on a runner there is no server, so the earlier guard caught it and
-    // the inconsistency stayed hidden.
+    // The vocabulary is apparatus whether or not a server answered, so it is the same skip
+    // rather than an assert - an `assert!` whose message tells the reader how to make it skip is a
+    // sentence that should have been the code.
     //
-    // **It checks the file the CONFIG resolves, not the constant.** The first version
-    // of this guarded `GLM_GGUF` while `cfg.vocab_gguf` above prefers
-    // `LETIBOT_VOCAB_GGUF` — so with the override pointing at nothing the guard
-    // PASSED and `Parts::load` then failed with `no vocabulary GGUF at
-    // /nonexistent/…`. A guard that resolves a different path from the thing it
-    // guards can be true while the test still cannot run, which is the whole defect
-    // it is there to prevent. MEASURED, and `compact_live.rs` had it too.
+    // It checks the file the CONFIG resolves, not the constant. A guard that resolves a
+    // different path from the thing it guards can be true while the test still cannot run.
     let gguf = std::env::var("LETIBOT_VOCAB_GGUF")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| letibot_tokencore::apparatus::glm_gguf_path());
@@ -93,23 +68,17 @@ fn a_live_todo_write_reaches_the_store_and_the_log() {
     ) else {
         return;
     };
-    // The server, before the work: a vocabulary on disk is not a model on the
-    // endpoint, and only the second one can answer this. `compact_live.rs` has had
-    // this guard for a while; this file asserted the same precondition in prose.
+    // The server, before the work: a vocabulary on disk is not a model on the endpoint, and only
+    // the second one can answer this.
     if !glm_is_served() {
         return;
     }
     let parts = Parts::load(&cfg).expect("the vocabulary must load");
     let hub = Hub::new(session_id);
     let mut h = Harness::open(&parts, cfg.clone(), hub.clone()).expect("the session must open");
-    // The log's head now that the session has announced itself: a resume from
-    // here is a gap replay of everything the turn appends. (`attach` with
-    // since_seq 0 is a snapshot attach — empty backlog by design — so the mark
-    // must be taken after open, not before.)
-    // A first head, so the log has a nonzero mark for the late joiner to resume
-    // from: `attach` itself appends HeadAttached, and `Harness::open` appends
-    // nothing — a `since` of 0 would mean a snapshot attach, whose backlog is
-    // empty by design, and the assertion below would be testing nothing.
+    // The log's head once the session has announced itself: a resume from here is a gap replay of
+    // everything the turn appends. A first head is needed because `Harness::open` appends nothing
+    // and a `since` of 0 is a snapshot attach whose backlog is empty by design.
     let _pre = hub.attach("pre", "test", Caps::default(), 0);
     let since = hub.head_seq();
     assert!(since > 0, "the pre-attach must have moved the log's head");
@@ -123,7 +92,7 @@ fn a_live_todo_write_reaches_the_store_and_the_log() {
     eprintln!("  model -> {:?}", r.text.trim());
     eprintln!("  rounds {}, tool calls {}", r.rounds, r.tool_calls);
 
-    // The store holds what the model wrote — the resume guarantee, and the thing
+    // The store holds what the model wrote - the resume guarantee, and the thing
     // a pane's bootstrap read is served from.
     let store = Store::open(&path).expect("reopening");
     let todos = store.todos(session_id).expect("reading the todo row");
@@ -131,10 +100,10 @@ fn a_live_todo_write_reaches_the_store_and_the_log() {
     assert_eq!(todos.len(), 1, "the whole list, as written: {todos:?}");
     assert_eq!(todos[0].content, "write the report");
     assert_eq!(todos[0].status, TodoStatus::Pending);
-    // And the harness's board agrees with the store — the flush did both halves.
+    // And the harness's board agrees with the store - the flush did both halves.
     assert_eq!(h.todo_list().len(), 1);
 
-    // A head attaching now is told, from the log: the announcement is durable,
+    // A head attaching now is told, from the log: the announcement is durable
     // not a live-only fan-out that a late joiner never sees.
     let att = hub.attach("tui", "test", Caps::default(), since);
     eprintln!(
@@ -156,23 +125,12 @@ fn a_live_todo_write_reaches_the_store_and_the_log() {
     );
 }
 
-/// **Is the box actually serving the model this test renders for?**
+/// Is the box actually serving the model this test renders for?
 ///
-/// It was not, and this file had no way to notice. Its header says *"The serving
-/// preflight is the gate"* — and the gate was a vocabulary FILE existing, which is a
-/// different question from a server being up. MEASURED on this box: serving
-/// `qwen-3.8-27b` while this test rendered GLM token ids, the turn failed with
-/// `Turn(SalvageExhausted { streak: 4 })` in 21.67 s — a symptom that names nothing
-/// about the cause, because the ids were out of range for the other vocabulary
-/// rather than because the salvage logic is wrong.
-///
-/// **`compact_live.rs` documents exactly this incident at length** (a GLM-vocabulary
-/// runner against a qwen server, `262194 tokens exceeds the available context size
-/// 262144`, *51 minutes* to discover) and guards against it. This file asserts the
-/// same precondition in prose and not in code — the same gap as the `GLM_GGUF` guard
-/// that resolved a different path from the config, in the same file.
-///
-/// So: refuse by name, in seconds, saying `THIS IS NOT A PASS`.
+/// A vocabulary FILE existing is a different question from a server being up: with a qwen server on
+/// the port while this test renders GLM token ids, the turn fails with a symptom that names nothing
+/// about the cause (the ids are out of range for the other vocabulary). So: refuse by name, in
+/// seconds, saying `THIS IS NOT A PASS`.
 fn glm_is_served() -> bool {
     static OK: OnceLock<bool> = OnceLock::new();
     *OK.get_or_init(|| {

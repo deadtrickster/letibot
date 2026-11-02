@@ -1,22 +1,19 @@
-//! **What the daemon publishes as a session moves** — `PROTOCOL_VERSION` 52, end to end through
+//! What the daemon publishes as a session moves - `PROTOCOL_VERSION` 52, end to end through
 //! the machinery that publishes it.
 //!
 //! `crates/sessionlog/src/activity.rs` carries the argument and `crates/harnessd/src/activity.rs`
 //! the composition; what is asserted here is that the two are wired to the things that move: a
 //! round, the calls a round leaves, a card, a settlement queued for the model, a child the plan
-//! waits on — and that a value that has not moved is not published again.
+//! waits on - and that a value that has not moved is not published again.
 //!
-//! The first test drives the hub directly, the way the daemon's own threads do: `TurnStarted`,
+//! The tests drive the hub directly, the way the daemon's own threads do: `TurnStarted`
 //! `ToolCallProposed`, `TurnFinished` and the rest are published by the engine and the gate, and
-//! this publishes the same shapes at the same points. Nothing is faked past that — the watcher set
-//! is a real [`JobWatchers`], with a real watcher thread blocked on a real `TaskRunner`, and the
-//! board is the real [`TodoBoard`] the tool writes.
+//! this publishes the same shapes at the same points. Nothing is faked past that - the watcher set
+//! is a real [`JobWatchers`], with a real watcher thread blocked on a real `TaskRunner`.
 //!
-//! **The real-turn half lives in `activity_turn.rs`**, and it has to be a binary of its own: it
-//! points a provider session at a loopback fake by writing a `providers.toml` under a scratch
-//! `XDG_CONFIG_HOME`, which means `set_var`, which is only sound in a process whose other tests
-//! are not reading the environment. Two tests in one binary sharing that is the race `std::env`
-//! documents; a file per test is how this suite already keeps promises it cannot keep in a `cfg`.
+//! The real-turn half lives in `activity_turn.rs`, and it has to be a binary of its own: it
+//! writes a `providers.toml` under a scratch `XDG_CONFIG_HOME`, which means `set_var`, which is
+//! only sound in a process whose other tests are not reading the environment.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
@@ -32,8 +29,8 @@ use letibot_tools::builtins::task::{TaskRunner, TaskSpec, TaskStatus};
 use letibot_tools::builtins::todo::TodoBoard;
 
 /// A watcher set with nothing to watch: no process host, no runner. Enough for a settlement to be
-/// **queued** on — which is the state that matters here (`delivery`), and the one a caller between
-/// a job ending and its wake reads.
+/// queued on - the state that matters here, and the one a caller between a job ending and its
+/// wake reads.
 fn watchers(hub: &Arc<Hub>) -> Arc<JobWatchers> {
     JobWatchers::watching_tasks(hub, None)
 }
@@ -54,7 +51,7 @@ fn child_settlement(owner: &str, child: &str) -> JobCompletion {
     }
 }
 
-/// **A runner whose one child never finishes**, so a watcher thread really is blocked on it and
+/// A runner whose one child never finishes, so a watcher thread really is blocked on it and
 /// `JobWatchers::watching_now` really does see the handle. Everything else is `Unknown`, which is
 /// what a runner says about a handle it never minted.
 struct NeverFinishes {
@@ -86,16 +83,15 @@ fn said(a: &Activity) -> String {
     }
 }
 
-/// **Every entry, in the order the session moves through them** — and the value a head that
+/// Every entry, in the order the session moves through them - and the value a head that
 /// attaches in the middle of it is handed.
 #[test]
 fn the_activity_follows_a_session_through_a_turn_a_card_and_a_settlement() {
     let hub = Hub::new("s-activity");
     let watch = watchers(&hub);
     let cursor = Arc::new(AtomicUsize::new(0));
-    // **The prompt's own span**, which the harness sets and clears around a turn. This test drives it
-    // by hand because there is no harness here; the real-turn test below is where it is set by
-    // `begin_turn_clock`/`end_turn_clock` on a live session.
+    // The prompt's own span, which the harness sets and clears around a turn - driven by hand
+    // here because there is no harness; `activity_turn.rs` is where a live session sets it.
     let prompt = Arc::new(AtomicBool::new(false));
     hub.set_activity_source(activity::source(
         Some(watch.clone()),
@@ -114,7 +110,7 @@ fn the_activity_follows_a_session_through_a_turn_a_card_and_a_settlement() {
         "an unchanged value is not published again"
     );
 
-    // **A round is generating.**
+    // A round is generating.
     hub.publish(SessionEvent::TurnStarted {
         turn_id: "t1".into(),
         model: "m".into(),
@@ -128,7 +124,7 @@ fn the_activity_follows_a_session_through_a_turn_a_card_and_a_settlement() {
         hub.activity()
     );
 
-    // **The round ended and its call is running.** `TurnFinished` alone would read as *idle* to
+    // The round ended and its call is running. `TurnFinished` alone would read as *idle* to
     // anybody folding round-level events, which is the whole defect this event exists for.
     hub.publish(SessionEvent::ToolCallProposed {
         turn_id: "t1".into(),
@@ -150,7 +146,7 @@ fn the_activity_follows_a_session_through_a_turn_a_card_and_a_settlement() {
         hub.activity()
     );
 
-    // A second round over the same call — the state must not flap back to quiet in between.
+    // A second round over the same call - the state must not flap back to quiet in between.
     hub.publish(SessionEvent::TurnStarted {
         turn_id: "t1".into(),
         model: "m".into(),
@@ -181,7 +177,7 @@ fn the_activity_follows_a_session_through_a_turn_a_card_and_a_settlement() {
         said(&hub.activity())
     );
 
-    // **A card nobody has answered**, and the ONE entry that waits for a person.
+    // A card nobody has answered, and the ONE entry that waits for a person.
     hub.publish(letibot_sessionlog::testing::requested("adj-1", "git push"));
     let busy = hub.activity();
     assert_eq!(busy.ask(), Some("adj-1"), "{}", said(&busy));
@@ -193,8 +189,8 @@ fn the_activity_follows_a_session_through_a_turn_a_card_and_a_settlement() {
     hub.publish(letibot_sessionlog::testing::answered("adj-1", "allow_once"));
     assert!(hub.activity().is_quiet(), "{}", said(&hub.activity()));
 
-    // **A card open on a session whose PROMPT is still in flight shows the card and not the turn**
-    // — the prompt span is up (`prompt_in_flight`), a call of it is running, and nobody has
+    // A card open on a session whose PROMPT is still in flight shows the card and not the turn
+    // - the prompt span is up (`prompt_in_flight`), a call of it is running, and nobody has
     // answered: *will this session act again by itself* is NO, and the list must not claim both.
     prompt.store(true, std::sync::atomic::Ordering::SeqCst);
     hub.publish(SessionEvent::TurnStarted {
@@ -237,7 +233,7 @@ fn the_activity_follows_a_session_through_a_turn_a_card_and_a_settlement() {
         "{}",
         said(&hub.activity())
     );
-    // **The prompt's span alone is a turn**, with no event at all — which is the whole point of
+    // The prompt's span alone is a turn, with no event at all - which is the whole point of
     // `Waiting::Turn` being the prompt and not a round: nothing is published between a round's last
     // call finishing and the next round starting, and the value must not move there.
     prompt.store(false, std::sync::atomic::Ordering::SeqCst);
@@ -265,9 +261,9 @@ fn the_activity_follows_a_session_through_a_turn_a_card_and_a_settlement() {
         said(&hub.activity())
     );
 
-    // **A settlement the model owes a turn for** — the window QC's `wait` exited in, and the one
-    // no event says: the job is over and the turn it wakes has not started. The queue is the
-    // daemon's own, put there the way a watcher thread puts it.
+    // A settlement the model owes a turn for - the window a `wait` can exit in, and the one no
+    // event says: the job is over and the turn it wakes has not started. The queue is put there the
+    // way a watcher thread puts it.
     watch.queue_for_test(child_settlement("s-activity", "j8032"));
     hub.refresh_activity();
     assert_eq!(
@@ -277,8 +273,8 @@ fn the_activity_follows_a_session_through_a_turn_a_card_and_a_settlement() {
         hub.activity()
     );
 
-    // **A head that attaches here is not blind**: the value travels in the snapshot, and the
-    // hub says the current one again after it — the event is ephemeral, so a reconnect across a
+    // A head that attaches here is not blind: the value travels in the snapshot, and the
+    // hub says the current one again after it - the event is ephemeral, so a reconnect across a
     // change would otherwise keep the value from before the gap.
     let attached = hub.attach("tui", "tester", Caps::default(), 0);
     let snapshot = attached.snapshot.expect("a fresh attach takes a snapshot");
@@ -289,12 +285,11 @@ fn the_activity_follows_a_session_through_a_turn_a_card_and_a_settlement() {
     );
 }
 
-/// **A running child is an entry, and the one the model PARKED is not**, through the real watcher
+/// A running child is an entry, and the one the model PARKED is not, through the real watcher
 /// set, whose thread really is blocked on the runner.
 ///
-/// The plan no longer decides this: a child's settlement reaches the model as a turn of its own, so a
-/// session holding one is not done. The old rule read it quiet unless a todo row named it, and a
-/// `wait` exited on a session a settlement was about to wake.
+/// The plan does not decide this: a child's settlement reaches the model as a turn of its own, so a
+/// session holding one is not done.
 #[test]
 fn a_running_child_is_an_entry_and_one_the_model_parked_is_not() {
     let hub = Hub::new("s-activity-child");
@@ -336,7 +331,7 @@ fn a_running_child_is_an_entry_and_one_the_model_parked_is_not() {
         "the words a head draws and a caller reads"
     );
 
-    // **The model said it does not need waking for it** (`task {wake: "later"}`), so it holds
+    // The model said it does not need waking for it (`task {wake: "later"}`), so it holds
     // nothing: that is the dev server of this fixture.
     watch.want_now("s-kid", letibot_tools::runtime::WantedNow::WakeLater);
     hub.refresh_activity();
@@ -347,7 +342,7 @@ fn a_running_child_is_an_entry_and_one_the_model_parked_is_not() {
     );
 }
 
-/// A warning, which is the shape the merge queue's `raise` publishes — one of the events whose fold
+/// A warning, which is the shape the merge queue's `raise` publishes - one of the events whose fold
 /// asks the activity to be re-derived.
 fn a_warning(code: &str) -> SessionEvent {
     SessionEvent::Warning {
@@ -357,17 +352,12 @@ fn a_warning(code: &str) -> SessionEvent {
     }
 }
 
-/// **A publish returns while a session's settlement queue is held** — the deadlock the merge queue
-/// spent 8½ hours in on 2026-10-29, as a property rather than as a story.
+/// A publish returns while a session's settlement queue is held.
 ///
-/// The queue's state machine publishes from inside itself
-/// (`pass` → `apply_gate` → `judged` → `raise` → `publish_for_repository` → `Hub::publish`), and
-/// `Hub::publish` re-derives the activity, so **anything the activity reads is a lock the queue's
-/// thread holds while it holds the queue**. One thread holding the settlement queue was therefore
-/// enough: `sample 53775` found the queue's worker in `JobWatchers::pending → Mutex::lock` in 795 of
-/// 795 samples.
-///
-/// The wait is bounded on purpose: a test for a deadlock that hangs is a test that says nothing.
+/// The merge queue publishes from inside its own state machine, so anything the activity reads is a
+/// lock the queue's thread holds while it holds the queue: one thread holding the settlement queue
+/// was enough to wedge it. The wait is bounded on purpose - a test for a deadlock that hangs says
+/// nothing.
 #[test]
 fn a_publish_returns_while_the_settlement_queue_is_held() {
     let hub = Hub::new("s-held-queue");
@@ -388,7 +378,7 @@ fn a_publish_returns_while_the_settlement_queue_is_held() {
         std::thread::spawn(move || {
             watch.hold_settlements_for_test(|| {
                 holding_tx.send(()).expect("the test is waiting");
-                // Hold it until the publisher is done, or until the test has given up — a holder
+                // Hold it until the publisher is done, or until the test has given up - a holder
                 // that never let go would turn one failure into a hung binary.
                 let _ = release_rx.recv_timeout(Duration::from_secs(10));
             })
@@ -408,7 +398,7 @@ fn a_publish_returns_while_the_settlement_queue_is_held() {
     };
     let returned = done_rx.recv_timeout(Duration::from_secs(5));
     let _ = release_tx.send(());
-    // **Assert before joining**: a thread parked in the deadlock is a thread `join` waits for for
+    // Assert before joining: a thread parked in the deadlock is a thread `join` waits for for
     // ever, and a test for a deadlock that hangs is a test that says nothing.
     returned.expect(
         "a publish must not wait on a session's settlement queue: the merge queue publishes from \
@@ -418,7 +408,7 @@ fn a_publish_returns_while_the_settlement_queue_is_held() {
     let _ = holder.join();
     let _ = publisher.join();
 
-    // **And the facts are still right**: the settlement is still queued, and the value the publish
+    // And the facts are still right: the settlement is still queued, and the value the publish
     // left behind says so.
     assert_eq!(
         hub.activity(),
@@ -428,15 +418,12 @@ fn a_publish_returns_while_the_settlement_queue_is_held() {
     );
 }
 
-/// **A session closing itself does not wedge a publisher** — the exact site of the 8½ hours.
+/// A session closing itself does not wedge a publisher.
 ///
 /// `JobWatchers::stop` publishes the held counts as it hands them up, and it used to do that while
-/// holding the settlement queue — which the activity then asked for, from the same thread. One
-/// non-reentrant mutex taken twice: the closing session never returned, and every publisher on the
-/// box (the merge queue's worker among them) queued behind it for the rest of the night.
-///
-/// A held result is the state that makes `stop` speak, so the test holds one first: that is what the
-/// operator's own sessions do — a result held for the next break is the whole point of `held`.
+/// holding the settlement queue - one non-reentrant mutex taken twice on one thread, so every
+/// publisher on the box queued behind it. A held result is the state that makes `stop` speak, so
+/// the test holds one first.
 #[test]
 fn a_session_closing_itself_does_not_wedge_a_publisher() {
     let hub = Hub::new("s-stopping");
@@ -463,7 +450,7 @@ fn a_session_closing_itself_does_not_wedge_a_publisher() {
         })
     };
     let stopped = done_rx.recv_timeout(Duration::from_secs(5));
-    // **Assert before joining** — the wedged thread is exactly what this test is looking for, and
+    // Assert before joining - the wedged thread is exactly what this test is looking for, and
     // `join` on one never returns.
     stopped.expect(
         "`stop` published while holding its own settlement queue, and the publish asked for that \
@@ -479,12 +466,12 @@ fn a_session_closing_itself_does_not_wedge_a_publisher() {
     );
 }
 
-/// **A runner that answers only when the test says so** — so a watcher is really live for a while
-/// and then really ends, which is the two states the line has to tell apart.
+/// A runner that answers only when the test says so, so a watcher is really live for a while
+/// and then really ends - the two states the line has to tell apart.
 ///
-/// `Running` at the `watch` probe is enough to make the handle a subagent (`Unknown` is what means
-/// *a job*), and the short sleep stands in for the chunk `TaskRunner::collect` blocks for — a fake
-/// that returned at once would spin this thread and leave no window to observe.
+/// `Running` at the `watch` probe is what makes the handle a subagent (`Unknown` is what means *a
+/// job*), and the short sleep stands in for the chunk `collect` blocks for - a fake that returned
+/// at once would spin this thread and leave no window to observe.
 struct AnswersWhenTold {
     handle: String,
     done: AtomicBool,
@@ -513,14 +500,12 @@ impl TaskRunner for AnswersWhenTold {
     }
 }
 
-/// **The line is right while a watcher lives and after it has gone** — the two states a `wait`
-/// reads differently, and the one this file's snapshot has to keep true on its own.
+/// The line is right while a watcher lives and after it has gone - the two states a `wait`
+/// reads differently.
 ///
 /// A live child the plan waits on is `Child`; once it answers, the handle leaves the set and what
-/// is left is `Delivery` — the settlement the model is owed — with no child in the list. **Nothing
-/// in this test asks for the second reading**: the watcher publishes it as it ends, which is the
-/// half that used to be missing (the settlement's own refresh ran while the handle was still in
-/// the map, so the line read `delivery, child s-kid-done` for a child that had already gone).
+/// is left is `Delivery` - the settlement the model is owed - with no child in the list. Nothing
+/// in this test asks for the second reading: the watcher publishes it as it ends.
 #[test]
 fn the_line_is_right_while_a_watcher_lives_and_after_it_has_gone() {
     let hub = Hub::new("s-child-gone");
@@ -563,7 +548,7 @@ fn the_line_is_right_while_a_watcher_lives_and_after_it_has_gone() {
         hub.activity()
     );
 
-    // **It answers, and nobody asks the hub anything afterwards.**
+    // It answers, and nobody asks the hub anything afterwards.
     runner.done.store(true, std::sync::atomic::Ordering::SeqCst);
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     let settled = Activity::of(vec![Waiting::Delivery]);
@@ -578,7 +563,7 @@ fn the_line_is_right_while_a_watcher_lives_and_after_it_has_gone() {
     );
     assert!(watch.watching_now().is_empty(), "and the set says so too");
 
-    // Drained, the session is quiet — and that is the value a `wait` reads as *done*.
+    // Drained, the session is quiet - and that is the value a `wait` reads as *done*.
     watch.take_completions();
     hub.refresh_activity();
     assert!(

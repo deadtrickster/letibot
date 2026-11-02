@@ -1,39 +1,16 @@
-//! **`/models local.glm` from a daemon started on other weights** — the switch
-//! the operator asked for in five words: *"i need model usable"*.
+//! `/models local.glm` from a daemon started on other weights - a switch replaces the
+//! vocabulary, the dialect and the address of a live session instead of needing a daemon restarted
+//! on those weights.
 //!
-//! Until this change the switch refused on the vocabulary and stopped there:
-//! `Vocab` was a daemon-start fact, the dialect was a `--dialect` start flag, and
-//! a session whose daemon was started on the qwen 27B could not be pointed at the
-//! GLM on :8080 without restarting the daemon on those weights. The enabling
-//! refactor (the preserved commit this branch carries) made the vocabulary and
-//! the renderer replaceable at runtime; this file pins the wiring that replaced
-//! them.
+//! Three tiers, because the parts fail for different reasons: the decision
+//! (`local_switch_decision`) against a stub `/props` is pure and needs no GGUF; the session switch
+//! (`Harness::set_local_model`) needs the daemon's own vocabulary; and the full cross-weights switch
+//! needs both GGUFs, being the one run that proves a second `Vocab::load` in one process.
 //!
-//! # Three tiers, and why the split is the honest shape
-//!
-//!   * **The decision, offline** — `local_switch_decision` against a stub
-//!     `/props`: every arm (same weights, other weights, each refusal) is a pure
-//!     question about one probe's answer, needs no GGUF, and runs anywhere.
-//!   * **The session switch, offline** — `Harness::set_local_model` against the
-//!     same stub, gated on the qwen GGUF the harness itself needs. This is where
-//!     the refusal for a target whose GGUF is not on this box is pinned, because
-//!     that refusal is reached only after the dialect step passed.
-//!   * **The full cross-weights switch, live** — the second `Vocab::load` in one
-//!     process, the re-render fork, and the return home. Gated on BOTH GGUFs.
-//!
-//! # The stub, and what it deliberately never does
-//!
-//! The stub answers `/props` — the one probe the decision makes — and nothing
-//! else. It never serves `/completion`, so nothing in this file can put load on
-//! a model server: a switch's work is local (probe, load, render, fork), and the
-//! tests that need a model to ANSWER are the tree's live tests, not these.
-//!
-//! The template it serves is the REAL one from the dialect crate (`Dialect::
-//! wiring(None).spec().template`), JSON-escaped the way a server escapes it —
-//! which is itself part of what is pinned: a Jinja document is full of quotes
-//! and newlines, and the first cut of the probe's reader truncated at the first
-//! escaped quote (see `serving::json_string`'s tests for the half of that
-//! regression that lives in `letibot-turn`).
+//! The stub answers `/props` and nothing else - never `/completion` - so nothing in this file can
+//! put load on a model server: a switch's work is local (probe, load, render, fork). It serves the
+//! REAL template from the dialect crate, JSON-escaped the way a server escapes it, because a
+//! reader that truncates at the first escaped quote is part of what this file pins.
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -46,10 +23,8 @@ use letibot_provider::keys::{LocalModel, ModelProfile};
 use letibot_sessionlog::hub::Hub;
 use letibot_tokencore::apparatus;
 
-/// The GLM this fleet hosts, as the gguf the live tier needs on this box.
-///
-/// An explicit `LETIBOT_GLM_GGUF` wins, matching `apparatus::gguf_path`'s rule
-/// that an override is not a hint.
+/// The GLM this fleet hosts, as the gguf the live tier needs on this box. An explicit
+/// `LETIBOT_GLM_GGUF` wins, matching `apparatus::gguf_path`'s rule that an override is not a hint.
 fn glm_gguf() -> PathBuf {
     if let Ok(p) = std::env::var("LETIBOT_GLM_GGUF") {
         return PathBuf::from(p);
@@ -68,11 +43,10 @@ fn glm_gguf() -> PathBuf {
 
 /// A `/props` that answers on a local socket.
 ///
-/// `model_path` and `chat_template` are exactly what a llama.cpp server would
-/// answer — the path as it sees it, the template JSON-escaped — plus an `n_ctx`
-/// so the window retune reads a number instead of hanging a second probe off
-/// the test's story. `None` for either field omits the key, which is a server
-/// too old (or a proxy) not answering it: also a fact the decision must read.
+/// `model_path` and `chat_template` are what a llama.cpp server answers - the path as it sees it
+/// the template JSON-escaped - plus an `n_ctx` so the window retune reads a number rather than
+/// hanging a second probe off the test's story. `None` omits the key, which is a server too old (or
+/// a proxy) not answering it: also a fact the decision must read.
 fn props_stub(model_path: Option<&str>, chat_template: Option<&str>) -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").expect("a loopback socket");
     let port = listener.local_addr().unwrap().port();
@@ -87,9 +61,9 @@ fn props_stub(model_path: Option<&str>, chat_template: Option<&str>) -> u16 {
     }
     body.push('}');
     std::thread::spawn(move || {
-        // Every request the switch can make is a GET /props with
-        // `Connection: close`, and a switch makes at most three of them. Bound
-        // the loop so the thread cannot outlive a wedged test by much.
+        // Every request the switch can make is a GET /props with `Connection: close`, and a switch
+        // makes at most three, so the loop is bounded and the thread cannot outlive a wedged test
+        // by much.
         for _ in 0..8 {
             let Ok((mut sock, _)) = listener.accept() else {
                 return;
@@ -125,9 +99,8 @@ fn json_escape(s: &str) -> String {
     out
 }
 
-/// The GLM dialect's own shipped template — the bytes its GGUF carries and its
-/// unit answers, trailing newline and all (10648 here, 10647 served: the one
-/// divergence the comparison trims).
+/// The GLM dialect's own shipped template, trailing newline and all - the one divergence the
+/// comparison trims.
 fn glm_template() -> String {
     Dialect::Glm
         .wiring(None)
@@ -159,18 +132,15 @@ fn model(name: &str, port: u16, dialect: Option<&str>) -> LocalModel {
     }
 }
 
-/// A daemon's own vocabulary, as the decision sees it: a path whose BASENAME is
-/// what `/props` is compared against, exactly as `local_switch_decision` does.
+/// A daemon's own vocabulary, as the decision sees it: a path whose BASENAME is what `/props` is
+/// compared against, exactly as `local_switch_decision` does.
 const OWN_GGUF: &str =
     "/home/dead/models/qwen3.8-flash-next/Qwen3.8-Flash-Next-UD-Q6_K_XL-00001-of-00006.gguf";
 
 // --- the decision, offline ------------------------------------------------
 
-/// **The dialect is what the target SAYS it renders, not a table of names.**
-///
-/// This is the test that fails before the wiring: on the preserved commit the
-/// probe existed but nothing called it, and a qwen daemon asked for the local
-/// GLM was refused on the basename alone.
+/// The dialect is what the target SAYS it renders, not a table of names - a daemon asked for
+/// the local GLM derives glm from the served template, not from the basename.
 #[test]
 fn the_dialect_comes_from_what_the_target_says_it_renders() {
     let port = props_stub(
@@ -196,12 +166,12 @@ fn the_dialect_comes_from_what_the_target_says_it_renders() {
     }
 }
 
-/// Same weights by basename need no dialect — the file name is the measurement,
-/// and same weights carry the template this session already renders.
+/// Same weights by basename need no dialect - the file name is the measurement, and same weights
+/// carry the template this session already renders.
 #[test]
 fn same_weights_by_basename_switch_the_address_only() {
-    // A DIFFERENT box serving the SAME first-shard file name, which is this
-    // fleet's own arrangement: the 27B on two hosts.
+    // A DIFFERENT box serving the SAME first-shard file name, which is this fleet's own
+    // arrangement: the 27B on two hosts.
     let port = props_stub(Some(OWN_GGUF), None);
     let got = local_switch_decision(
         &letibot_turn::http::Endpoint::new("127.0.0.1", port),
@@ -212,9 +182,8 @@ fn same_weights_by_basename_switch_the_address_only() {
     assert_eq!(got, LocalSwitch::SameWeights);
 }
 
-/// **`same_vocab = true` asserts the weights and skips the probe** — the proof
-/// that it skips is the endpoint: port 9 answers nothing, and a decision that
-/// probed it would have refused.
+/// `same_vocab = true` asserts the weights and skips the probe - the proof that it skips is the
+/// endpoint: port 9 answers nothing, and a decision that probed it would have refused.
 #[test]
 fn same_vocab_asserts_the_weights_and_skips_the_probe() {
     let mut m = model("proxy", 9, None);
@@ -228,9 +197,8 @@ fn same_vocab_asserts_the_weights_and_skips_the_probe() {
     assert_eq!(got, LocalSwitch::SameWeights);
 }
 
-/// **A template nobody drives is refused by name**, with the block key that
-/// asserts a dialect by hand — not guessed, because a guessed dialect is valid
-/// ids meaning other words.
+/// A template nobody drives is refused by name, with the block key that asserts a dialect by
+/// hand - not guessed, because a guessed dialect is valid ids meaning other words.
 #[test]
 fn a_template_no_dialect_drives_is_refused_by_name() {
     let alien = "{# a template this tree ships no dialect for #}\n";
@@ -247,8 +215,8 @@ fn a_template_no_dialect_drives_is_refused_by_name() {
     );
 }
 
-/// **A template nobody matches with an assertion switches** — the escape the
-/// `dialect =` key exists for, honoured rather than filed away.
+/// A template nobody matches with an assertion switches - the escape the `dialect =` key
+/// exists for, honoured rather than filed away.
 #[test]
 fn an_asserted_dialect_answers_a_template_nobody_matches() {
     let alien = "{# overridden on the launch line #}\n";
@@ -271,9 +239,9 @@ fn an_asserted_dialect_answers_a_template_nobody_matches() {
     );
 }
 
-/// **An assertion that contradicts the served template is refused** — the
-/// server's own template is the one it renders with; a block that disagrees
-/// with it is somebody's mistake, not a tie for this code to break.
+/// An assertion that contradicts the served template is refused - the server's own template is
+/// the one it renders with, so a block that disagrees with it is somebody's mistake, not a tie for
+/// this code to break.
 #[test]
 fn an_assertion_that_contradicts_the_served_template_is_refused() {
     let port = props_stub(Some("/m/glm.gguf"), Some(&glm_template()));
@@ -290,9 +258,8 @@ fn an_assertion_that_contradicts_the_served_template_is_refused() {
     );
 }
 
-/// **An assertion nobody can read is refused with its value** — the regression
-/// the profile reader's own test names one layer down: a key whose value was
-/// dropped could never be honoured, silently.
+/// An assertion nobody can read is refused with its value - a key whose value was dropped could
+/// never be honoured, silently.
 #[test]
 fn an_unreadable_dialect_assertion_is_refused_with_its_value() {
     let port = props_stub(Some("/m/glm.gguf"), Some(&glm_template()));
@@ -308,8 +275,8 @@ fn an_unreadable_dialect_assertion_is_refused_with_its_value() {
     );
 }
 
-/// **A server that reports no template needs the assertion** — the refusal
-/// names the missing fact and the key that supplies it.
+/// A server that reports no template needs the assertion - the refusal names the missing fact
+/// and the key that supplies it.
 #[test]
 fn a_target_without_a_template_needs_the_asserted_dialect() {
     let port = props_stub(Some("/m/glm.gguf"), None);
@@ -325,8 +292,8 @@ fn a_target_without_a_template_needs_the_asserted_dialect() {
     );
 }
 
-/// **A silent endpoint is refused by name**, with the block key that asserts
-/// the weights by hand — port 9 is the traditional nothing-listens-here.
+/// A silent endpoint is refused by name, with the block key that asserts the weights by hand -
+/// port 9 is the traditional nothing-listens-here.
 #[test]
 fn a_silent_endpoint_is_refused_by_name() {
     let why = local_switch_decision(
@@ -341,14 +308,11 @@ fn a_silent_endpoint_is_refused_by_name() {
     );
 }
 
-// --- the byte-vocabulary daemon: `None`, the arm the merge added ----------
+// --- the byte-vocabulary daemon: `None` ------------------------------------
 
-/// **A daemon with no vocabulary of its own still switches — to the weights
-/// the target itself reports.** main made the vocabulary optional (a box with
-/// only an API key), and the merge's rule is that NOTHING can be `SameWeights`
-/// there: the target's weights differ from a vocabulary that does not exist.
-/// So the decision is not main's blanket refusal — it is the ordinary
-/// cross-weights switch, with the GGUF taken from the target's own `/props`.
+/// A daemon with no vocabulary of its own still switches - to the weights the target itself
+/// reports. Nothing can be `SameWeights` there, so the decision is the ordinary cross-weights
+/// switch with the GGUF taken from the target's own `/props`, not a blanket refusal.
 #[test]
 fn no_vocabulary_of_its_own_switches_to_the_targets_reported_weights() {
     let port = props_stub(
@@ -375,11 +339,9 @@ fn no_vocabulary_of_its_own_switches_to_the_targets_reported_weights() {
     }
 }
 
-/// **Not even `same_vocab = true` can make weights the same as none** — the
-/// assertion short-circuits only where there is a vocabulary to be the same
-/// as, so the probe still runs and the switch still lands on the target's own
-/// reported weights rather than on the operator's word about weights this
-/// daemon does not have.
+/// Not even `same_vocab = true` can make weights the same as none - the assertion
+/// short-circuits only where there is a vocabulary to be the same as, so the probe still runs and
+/// the switch lands on the target's own reported weights.
 #[test]
 fn same_vocab_cannot_assert_weights_a_byte_daemon_does_not_have() {
     let mut m = model("local.glm", 0, None);
@@ -401,10 +363,9 @@ fn same_vocab_cannot_assert_weights_a_byte_daemon_does_not_have() {
     );
 }
 
-/// **A refusal under `None` names the GGUF the target reported** — the one
-/// weights this switch could ever have seated. The stub answers a model_path
-/// and a template this tree drives no dialect for, so the refusal fires after
-/// the weights were known; the sentence must carry them.
+/// A refusal under `None` names the GGUF the target reported - the one weights this switch could
+/// ever have seated. The stub answers a model_path and a template this tree drives no dialect for
+/// so the refusal fires after the weights were known and must carry them.
 #[test]
 fn no_vocabulary_refusals_name_the_targets_reported_gguf() {
     let alien = "{# a template this tree ships no dialect for #}\n";
@@ -421,9 +382,9 @@ fn no_vocabulary_refusals_name_the_targets_reported_gguf() {
     );
 }
 
-/// **And a target that names no model at all is refused with both absences** —
-/// no weights here to keep, none reported there to load — rather than with
-/// main's `same_vocab` remedy, which has no vocabulary to assert against.
+/// And a target that names no model at all is refused with both absences - no weights here to
+/// keep, none reported there to load - rather than with the `same_vocab` remedy, which has no
+/// vocabulary to assert against.
 #[test]
 fn no_vocabulary_and_no_model_path_names_both_absences() {
     let port = props_stub(None, Some(&glm_template()));
@@ -476,10 +437,9 @@ fn config(store: &std::path::Path, session_id: &str) -> Config {
     cfg.http_retries = 0;
     cfg.store = Some(store.to_path_buf());
     cfg.session_id = session_id.to_string();
-    // The daemon's own vocabulary, named as a daemon would name it: main made
-    // `vocab_gguf` optional and `for_this_box` no longer carries this box's
-    // default, so the test states the GGUF its own gate (`vocab_gguf`, at
-    // each test) checked for — the qwen one the harness must tokenize with.
+    // The daemon's own vocabulary, named as a daemon would name it: `for_this_box` carries no
+    // default, so the test states the GGUF its own gate (`vocab_gguf`, at each test) checked for -
+    // the qwen one the harness must tokenize with.
     cfg.vocab_gguf = Some(apparatus::gguf_path());
     if let Ok(g) = std::env::var("LETIBOT_VOCAB_GGUF") {
         cfg.vocab_gguf = Some(g.into());
@@ -487,15 +447,9 @@ fn config(store: &std::path::Path, session_id: &str) -> Config {
     cfg
 }
 
-/// **Other weights whose GGUF is not on this box are refused with the path** —
-/// and the wording proves the dialect step PASSED first: this stub serves glm's
-/// own template and a path no box has, so the old refusal (a basename mismatch)
-/// would never mention loading a vocabulary.
-///
-/// This is the before/after seam of the whole change: on the preserved commit
-/// the same call refused with *"serves `…` and this daemon tokenizes with `…`"*
-/// and the switch was impossible; now the weights question has an answer that
-/// is not "start another daemon".
+/// Other weights whose GGUF is not on this box are refused with the path - and the wording
+/// proves the dialect step PASSED first: this stub serves glm's own template and a path no box has
+/// so the refusal can only come from loading the vocabulary.
 #[test]
 fn other_weights_refuse_when_their_gguf_is_not_on_this_box() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -524,10 +478,8 @@ fn other_weights_refuse_when_their_gguf_is_not_on_this_box() {
     );
 }
 
-/// **A same-weights switch moves the address, and `/models local` moves it
-/// back to the daemon's own** — the half of "back" that was missing: the window
-/// always came home while the address stayed wherever the fleet switch put it,
-/// and the line still said *"the local server"*.
+/// A same-weights switch moves the address, and `/models local` moves it back to the daemon's
+/// own - the window always came home while the address stayed wherever the fleet switch put it.
 #[test]
 fn a_same_weights_switch_moves_the_address_and_local_moves_it_back() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -577,20 +529,13 @@ fn a_same_weights_switch_moves_the_address_and_local_moves_it_back() {
 
 // --- the full cross-weights switch: live, gated on both GGUFs --------------
 
-/// **`/models local.glm` from a qwen daemon, end to end: weights, dialect,
-/// fork, and back.**
+/// `/models local.glm` from a qwen daemon, end to end: weights, dialect, fork, and back.
 ///
-/// This is the measurement a box short of GPU memory cannot take: the SECOND
-/// `Vocab::load` in one process. The daemon's own vocabulary loads at
-/// `Parts::load`; the switch loads the GLM's here — and on a box whose cards
-/// are full, a vocabulary load that enumerates CUDA devices ABORTS inside
-/// ggml (`ggml-cuda.cu:108`, measured 2026-10-07 twice, in the shim's own
-/// comment). The shim now names the CPU device only, so the load touches no
-/// GPU at all — but that fix was written by the child that died before it
-/// could run it, which is exactly why this test exists: it is the run that
-/// child never got to make. A box without both GGUFs skips, loudly; a box with
-/// them and a working shim passes; a box where the abort still happens fails
-/// by dying, which is the honest failure for "this cannot be done here".
+/// The measurement a box short of GPU memory cannot take is the SECOND `Vocab::load` in one
+/// process - a vocabulary load that enumerates CUDA devices aborts inside ggml, which is why this
+/// is a test and not a unit. A box without both GGUFs skips, loudly; a box with them and a working
+/// shim passes; a box where the abort still happens fails by dying, which is the honest failure for
+/// "this cannot be done here".
 #[test]
 fn local_glm_from_a_qwen_daemon_switches_weights_dialect_and_comes_back() {
     let Some(qwen) = letibot_harnessd::vocab_gguf() else {
@@ -607,17 +552,16 @@ fn local_glm_from_a_qwen_daemon_switches_weights_dialect_and_comes_back() {
     let dir = TempDir::new("live-switch");
     let path = dir.path.join("sessions.db");
     let mut cfg = config(&path, "switch-live-glm");
-    // The daemon's own weights are the qwen ones — the exact session the
-    // operator asked to make usable.
+    // The daemon's own weights are the qwen ones, so the switch really is cross-weights.
     cfg.vocab_gguf = Some(qwen);
     let parts = Parts::load(&cfg).expect("the qwen vocabulary must load");
     let hub = Hub::new("switch-live-glm");
     let mut h = Harness::open(&parts, cfg, hub).expect("the session must open");
     let own_line = h.provider_line();
 
-    // A conversation with something in it, so the re-render is a measured fact
-    // and not a claim about an empty prefix: one user item, appended through
-    // the fork machinery the way `compact.rs` seeds its sessions, with no turn.
+    // A conversation with something in it, so the re-render is a measured fact and not a claim
+    // about an empty prefix: one user item, appended through the fork machinery the way
+    // `compact.rs` seeds its sessions, with no turn.
     use letibot_harnessd::harness::ForkTail;
     use letibot_transcript::{Speaker, TranscriptItem, UserPart};
     use letibot_turn::CompactionOutcome;
@@ -648,16 +592,14 @@ fn local_glm_from_a_qwen_daemon_switches_weights_dialect_and_comes_back() {
     )
     .expect("seeding one item");
 
-    // The switch: the stub serves the REAL gguf path on this box and glm's own
-    // template, so the dialect is derived, the vocabulary loaded, the dialect
-    // fitted and the conversation forked — all of it local, none of it a turn.
+    // The switch: the stub serves the REAL gguf path on this box and glm's own template, so the
+    // dialect is derived, the vocabulary loaded, the dialect fitted and the conversation forked -
+    // all of it local, none of it a turn.
     let port = props_stub(Some(&glm.display().to_string()), Some(&glm_template()));
     let said = h
         .set_local_model(&model("glm-5.3-flash", port, None))
         .expect("the switch the operator asked for");
-    // Printed rather than only asserted: this line is what an operator reads at
-    // a picker, and a `--nocapture` run of this test is the transcript of the
-    // measurement this file exists to take.
+    // Printed as well as asserted: this is the line an operator reads at a picker.
     println!("AFTER: {said}");
     assert!(
         said.contains("turns go to `glm-5.3-flash` at 127.0.0.1:"),
@@ -676,9 +618,8 @@ fn local_glm_from_a_qwen_daemon_switches_weights_dialect_and_comes_back() {
         format!("local — glm-5.3-flash at 127.0.0.1:{port}")
     );
 
-    // The fork is in the store, and its prefix row is keyed by the GLM's own
-    // template sha — the guarantee a resume depends on: another dialect's
-    // cache row is never reused.
+    // The fork is in the store, and its prefix row is keyed by the GLM's own template sha - the
+    // guarantee a resume depends on: another dialect's cache row is never reused.
     let store = letibot_tokencore::store::Store::open(&path).expect("the store reopens");
     let glm_sha = {
         use letibot_tokencore::ledger::hex as hex32;
@@ -697,8 +638,8 @@ fn local_glm_from_a_qwen_daemon_switches_weights_dialect_and_comes_back() {
         "the switch wrote a prefix row under glm's own sha"
     );
 
-    // And home again: the daemon's own weights, dialect and address, with the
-    // conversation re-rendered once more under them.
+    // And home again: the daemon's own weights, dialect and address, with the conversation
+    // re-rendered once more under them.
     let back = h.set_provider(None).expect("the way home");
     println!("BACK: {back}");
     assert!(
@@ -712,9 +653,8 @@ fn local_glm_from_a_qwen_daemon_switches_weights_dialect_and_comes_back() {
     );
 }
 
-// A qwen template on other weights derives the qwen dialect by the same rule —
-// pinned here so the arm is exercised for both dialects this tree drives, not
-// just the one the operator asked for.
+// A qwen template on other weights derives the qwen dialect by the same rule - pinned so the arm
+// is exercised for both dialects this tree drives, not just the one the operator asked for.
 #[test]
 fn a_qwen_template_on_other_weights_derives_the_qwen_dialect() {
     let port = props_stub(

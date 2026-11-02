@@ -1,45 +1,27 @@
-//! **A `task` the OPERATOR runs arms a watcher, so its child's settlement rings the session
-//! that ran it** — the hole left by R57's own fix.
+//! A `task` the OPERATOR runs arms a watcher, so its child's settlement rings the session that ran
+//! it.
 //!
-//! # The chain R57 closed, and the two doors it did not reach
+//! A `task` call made by a model inside a turn settles like this, and every hop is asserted
+//! `run_rounds` invokes the tool with a `JobWatchSink` → `emit` sees the `Backgrounded` outcome and
+//! calls `JobWatchers::watch` → `watch_task` → `settled_here` → the session's bell → `Work::Woken` →
+//! `Sessions::wake` → `Harness::wake` → `completion_notices` → one `User { speaker: Agent }` row.
 //!
-//! A `task` call made by a model inside a turn settles like this, and every hop is asserted:
-//! `Harness::run_rounds` invokes the tool with `&mut self.tool_sink` (a [`JobWatchSink`]) →
-//! `JobWatchSink::emit` sees the `Backgrounded` outcome and calls `JobWatchers::watch` →
-//! `watch_task` → `settled_here` → `SettlementQueue::push` → the session's bell → `Work::Woken`
-//! → `Sessions::wake` → `Harness::wake` → `completion_notices` → one `User { speaker: Agent }`
-//! row.
+//! The sink is what arms the watcher, and the sink is per call site. Three of the daemon's doors
+//! invoked their tool with a bare `NullToolSink` - the operator's own call, their `!` line on the
+//! harness, and `bangrun`'s thread for the between-turns run - so a call from any of them that
+//! returned `Backgrounded` minted a handle in nobody's table, while the row it left says in words
+//! *its completion will be delivered to you on its own*. Nothing could deliver it.
 //!
-//! **The sink is what arms the watcher, and the sink is per call site.** Two of the daemon's
-//! doors invoked their tool with a bare `letibot_tools::NullToolSink`: the operator's own call
-//! ([`Harness::run_operator_call`]) and their `!` line ([`Harness::run_operator_shell`], and
-//! `crate::bangrun`'s thread for the between-turns run). A call from either that returns
-//! `Backgrounded` therefore minted a handle in nobody's table — and the row the operator gets
-//! back says, in words, *its completion will be delivered to you on its own*. Nothing could
-//! deliver it: no watcher existed, so no settlement was ever queued and no bell was ever rung.
+//! One shape, three doors, each with its own test: the console's call (a real child, and nobody
+//! calls `task_result`); a `!` line moved to the background mid-flight, which is the half an
+//! operator hits with their own hands; and `bangrun::spawn_run` called directly, which mints nothing
+//! itself and so has to be handed the watcher. On the tree before the fix each times out on the ring
+//! rather than failing an assertion, because nothing in that path could put anything on the queue.
 //!
-//! # What is proved here
-//!
-//! Two doors, one shape.
-//!
-//! 1. **The console's call** — `run_operator_call("op-1", "task", …)`, a real child on the real
-//!    runner, and **nobody calls `task_result`**. The session's bell rings (`Work::Woken`, which
-//!    is what `Sessions::wake` answers) and the wake that bell buys composes the `[task]`
-//!    sentence as a row in this session's own transcript.
-//! 2. **The `!` line, moved to the background while it runs** — the reachable half, and the one
-//!    an operator hits with their own hands: a line they typed, Ctrl+O'd mid-flight, settles as
-//!    `Backgrounded`. Same two facts: the ring, and the `[job]` sentence.
-//!
-//! On the tree before the fix neither test merely fails an assertion — each times out on the
-//! ring, because nothing in that path could ever put anything on the queue.
-//!
-//! # What this needs, and what it does not
-//!
-//! The vocabulary GGUF (a `Harness` renders its stable prefix at open) and, for the `!` line,
-//! **a process-lifetime tree** — a run has to be a real process to be moved between scopes —
-//! which its own gate says and skips. `task` needs no process host at all, which is the reason
-//! `JobWatchers` is built whether or not a session can start one. No model either: every turn
-//! here is answered by the shared `canned` frames.
+//! It needs the vocabulary GGUF and, for the `!` lines, a process-lifetime tree - a run has to be
+//! a real process to be moved between scopes - which its own gate says and skips. `task` needs no
+//! process host at all, which is why `JobWatchers` is built whether or not a session can start one.
+//! No model: every turn here is answered by the shared `canned` frames.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
@@ -116,15 +98,15 @@ fn session(tag: &str) -> (TempDir, Config, Parts) {
     }
     let mut cfg = Config::for_this_box(&dir.path);
     cfg.dialect = letibot_harnessd::Dialect::Qwen;
-    // **`leticode` because it is the UNCONFINED seat that has the delegation trio** — `task`,
-    // `task_result`, `task_message`. `message_between_turns.rs` says the rest: `coder` and
-    // `runner` are the confined seats, and a Mac cannot build the boundary they need, so a
-    // fixture that seats one measures the absent boundary instead of its subject.
+    // `leticode` because it is the UNCONFINED seat that has the delegation trio - `task`
+    // `task_result`, `task_message`. `coder` and `runner` are the confined seats, and a Mac cannot
+    // build the boundary they need, so a fixture that seats one measures the absent boundary instead
+    // of its subject.
     cfg.seat = Seat::Leticode;
     cfg.http_retries = 0;
-    // **A window, because a child is planned against one** — a spawn with no window is refused
-    // by name, and this session has never measured a server (`local_window` is `None` outside
-    // the daemon), so the number here is what `runs_on_the_parents_model` falls back to.
+    // A window, because a child is planned against one - a spawn with no window is refused by
+    // name, and this session has never measured a server (`local_window` is `None` outside the
+    // daemon), so the number here is what `runs_on_the_parents_model` falls back to.
     cfg.context_window = Some(32_768);
     cfg.store = Some(store);
     cfg.session_id = session_id;
@@ -169,8 +151,8 @@ fn user_rows(h: &Harness) -> Vec<(Speaker, String)> {
         .collect()
 }
 
-/// **The session's hub adopted into a registry, the way the daemon's are** — so the bell the
-/// watcher set rings is one this test can ask whether the session was woken.
+/// The session's hub adopted into a registry, the way the daemon's are - so the bell the watcher
+/// set rings is one this test can ask whether the session was woken.
 fn adopted(parts: &Parts, cfg: &Config) -> (Harness, Arc<Registry>) {
     let registry = Registry::new();
     let hub = registry.new_hub(cfg.session_id.clone());
@@ -192,9 +174,9 @@ fn adopted(parts: &Parts, cfg: &Config) -> (Harness, Arc<Registry>) {
     (h, registry)
 }
 
-/// **Wait for the worker to be woken for `id`** — `Work::Woken` and nothing else. Anything the
-/// registry queues for another reason is passed over (a child's own `Open`, a wake for the
-/// child's session), because the fact under test is which session a settlement rang.
+/// Wait for the worker to be woken for `id` - `Work::Woken` and nothing else. Anything the
+/// registry queues for another reason is passed over (a child's own `Open`, a wake for the child's
+/// session), because the fact under test is which session a settlement rang.
 fn woken(registry: &Registry, id: &str) -> bool {
     let began = Instant::now();
     loop {
@@ -213,8 +195,8 @@ fn woken(registry: &Registry, id: &str) -> bool {
     }
 }
 
-/// **The child's own log**, which is where its answer is — and the proof that a child was
-/// really started rather than a handle invented.
+/// The child's own log, which is where its answer is - and the proof that a child was really
+/// started rather than a handle invented.
 fn answers(hub: &letibot_sessionlog::hub::Hub) -> Vec<String> {
     hub.retained()
         .iter()
@@ -232,7 +214,7 @@ fn answers(hub: &letibot_sessionlog::hub::Hub) -> Vec<String> {
 fn child_hub(registry: &Registry, mine: &str) -> Arc<letibot_sessionlog::hub::Hub> {
     let began = Instant::now();
     loop {
-        // Every session in the registry except this one is the child — a root has no other.
+        // Every session in the registry except this one is the child - a root has no other.
         if let Some(hub) = registry
             .ids()
             .into_iter()
@@ -256,17 +238,17 @@ fn a_task_the_operator_runs_rings_the_session_that_ran_it() {
         return;
     };
     let (_dir, mut cfg, parts) = session("op-task-wakes");
-    // One script for every request: the child's turn, the `GET /props` a spawn makes of the
-    // parent's endpoint, and the turn the wake runs. The order is not this test's subject, and
-    // a script per request would make it one.
+    // One script for every request: the child's turn, the `GET /props` a spawn makes of the parent's
+    // endpoint, and the turn the wake runs. The order is not this test's subject, and a script per
+    // request would make it one.
     let serv = canned::Canned::serve_replies(vec![a_plain_answer(&parts.vocab, "noted")], 8);
     cfg.endpoint = serv.endpoint.clone();
     let (mut h, registry) = adopted(&parts, &cfg);
     let session_id = cfg.session_id.clone();
 
-    // **The door's own function.** `HEAD_RUN_TOOLS` is the head's list — the server refuses a
-    // name outside it on the connection's thread — and this is the function that RUNS a call
-    // once it is admitted. A `task` from the operator reaches exactly this.
+    // The door's own function. `HEAD_RUN_TOOLS` is the head's list - the server refuses a name
+    // outside it on the connection's thread - and this is the function that RUNS a call once it is
+    // admitted. A `task` from the operator reaches exactly this.
     h.run_operator_call(
         "op-1",
         "task",
@@ -275,8 +257,8 @@ fn a_task_the_operator_runs_rings_the_session_that_ran_it() {
     )
     .expect("the operator's call ran");
 
-    // The row the operator got back names the child and says it is running — the promise this
-    // test exists to make true.
+    // The row the operator got back names the child and says it is running - the promise this test
+    // exists to make true.
     let said = h
         .items()
         .iter()
@@ -313,8 +295,8 @@ fn a_task_the_operator_runs_rings_the_session_that_ran_it() {
         std::thread::sleep(Duration::from_millis(20));
     }
 
-    // **And nobody calls `task_result`.** The settlement has to arrive on its own: the ring is
-    // what `Sessions::wake` answers, and without it the notice below can never be composed.
+    // And nobody calls `task_result`. The settlement has to arrive on its own: the ring is what
+    // `Sessions::wake` answers, and without it the notice below can never be composed.
     assert!(
         woken(&registry, &session_id),
         "the session that ran the `task` was never woken — no watcher was armed for the handle \
@@ -322,7 +304,7 @@ fn a_task_the_operator_runs_rings_the_session_that_ran_it() {
          promises a completion and no bell rings for it."
     );
 
-    // **The wake the ring bought**, and the sentence it composes.
+    // The wake the ring bought, and the sentence it composes.
     let reply = h
         .wake()
         .expect("the wake runs")
@@ -347,20 +329,16 @@ fn a_task_the_operator_runs_rings_the_session_that_ran_it() {
     );
 }
 
-/// **The other door, and the reachable half: a `!` line moved to the background mid-flight.**
+/// The other door, and the reachable half: a `!` line moved to the background mid-flight.
 ///
-/// The operator types a line, the command is still running, and they press Ctrl+O. The `bash`
-/// wait loop takes the flag, moves the run into a job of its own, and the run settles as
-/// `Backgrounded` with the operator named — the row it leaves says *its completion will be
-/// delivered to you on its own when it ends*, which is a promise about a watcher nobody armed.
+/// The operator types a line, the command is still running, and they press Ctrl+O. The `bash` wait
+/// loop takes the flag, moves the run into a job of its own, and the run settles as `Backgrounded`
+/// with the operator named - the row it leaves says *its completion will be delivered to you on its
+/// own when it ends*, which is a promise about a watcher nobody armed.
 ///
-/// This is also the between-turns path: `crate::bangrun`'s thread is where a `!` line runs when
-/// the worker is not holding it, and it invoked with a bare `NullToolSink` for the same reason
-/// the two harness doors did.
-///
-/// The harness is moved onto a thread to run the line — `run_operator_shell` takes `&mut self`
-/// and blocks in the wait loop, exactly as it blocks on the daemon's worker — and handed back so
-/// the wake can be driven from here.
+/// The harness is moved onto a thread to run the line - `run_operator_shell` takes `&mut self` and
+/// blocks in the wait loop, exactly as it blocks on the daemon's worker - and handed back so the wake
+/// can be driven from here.
 #[test]
 fn an_operator_shell_run_moved_to_the_background_still_reaches_the_model() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -380,9 +358,9 @@ fn an_operator_shell_run_moved_to_the_background_still_reaches_the_model() {
     let hub = registry.get(&cfg.session_id).expect("the session's hub");
     let session_id = cfg.session_id.clone();
 
-    // **The run, on its own thread, the way the daemon runs it.** Long enough that a promote a
-    // half-second in is unambiguously mid-flight; short enough that the job's own ending lands
-    // inside this test's patience rather than the other way round.
+    // The run, on its own thread, the way the daemon runs it. Long enough that a promote a
+    // half-second in is unambiguously mid-flight; short enough that the job's own ending lands inside
+    // this test's patience rather than the other way round.
     let (tx, rx) = std::sync::mpsc::channel();
     let join = std::thread::spawn(move || {
         let mut h = h;
@@ -391,7 +369,7 @@ fn an_operator_shell_run_moved_to_the_background_still_reaches_the_model() {
         h
     });
     std::thread::sleep(Duration::from_millis(500));
-    // **Exactly what Ctrl+O sets.** The flag on the hub is what the `bash` wait loop polls; the
+    // Exactly what Ctrl+O sets. The flag on the hub is what the `bash` wait loop polls; the
     // queued `CommandKind::Promote` is only its announcement, and this test has no worker.
     hub.request_promote("dead");
     assert!(
@@ -423,8 +401,8 @@ fn an_operator_shell_run_moved_to_the_background_still_reaches_the_model() {
         "the row promises the completion this test is about: {said}"
     );
 
-    // **And then it ends, with nobody asking.** The handle the promotion minted is in the
-    // session's own watcher set only if the sink was armed where the handle was made.
+    // And then it ends, with nobody asking. The handle the promotion minted is in the session's
+    // own watcher set only if the sink was armed where the handle was made.
     assert!(
         woken(&registry, &session_id),
         "the session whose `!` line was moved to the background was never woken: the promotion \
@@ -446,18 +424,17 @@ fn an_operator_shell_run_moved_to_the_background_still_reaches_the_model() {
     );
 }
 
-/// **The BETWEEN-TURNS door is a third function, and it is the one a daemon actually uses.**
+/// The BETWEEN-TURNS door is a third function, and it is the one a daemon actually uses.
 ///
-/// A `!` line typed while the worker is not holding it goes through `crate::bangrun`'s own
-/// thread ([`bangrun::spawn_run`]), which mints nothing itself — it is handed the minted call
-/// and the runtime — so the watcher has to travel as an argument or not at all. That is the
-/// half a fix at the harness cannot reach, and this is the test that says so: `spawn_run` is
-/// called directly, the run is promoted mid-flight, and the settlement must still arrive.
+/// A `!` line typed while the worker is not holding it goes through `bangrun`'s own thread, which
+/// mints nothing itself - it is handed the minted call and the runtime - so the watcher has to
+/// travel as an argument or not at all. That is the half a fix at the harness cannot reach, and this
+/// is the test that says so.
 ///
-/// **The rows of that run do not land here** — the thread hands them back as a
-/// `CommandKind::OperatorShellResult` and this fixture has no worker to drain it. That is not
-/// what this test is about: the question is whether the handle the promotion minted is in the
-/// session's watcher set, and the answer is the ring.
+/// The rows of that run do not land here: the thread hands them back as a
+/// `CommandKind::OperatorShellResult` and this fixture has no worker to drain it. The question is
+/// whether the handle the promotion minted is in the session's watcher set, and the answer is the
+/// ring.
 #[test]
 fn a_bang_run_on_its_own_thread_watches_what_it_promotes() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -479,8 +456,8 @@ fn a_bang_run_on_its_own_thread_watches_what_it_promotes() {
 
     let line = "! sleep 3";
     let (call_id, call) = h.prepare_operator_shell(line).expect("the line mints");
-    // **The three things `Sessions::dispatch` hands over**, taken from the harness exactly as it
-    // takes them — and the fourth, which is this change: the watcher.
+    // The three things `Sessions::dispatch` hands over, taken from the harness exactly as it
+    // takes them - and the fourth, which is this change: the watcher.
     let runtime = h.runtime_handle();
     let watch = h.job_watchers();
     let session_for_run = session_id.clone();

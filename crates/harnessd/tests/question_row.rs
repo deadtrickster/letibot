@@ -1,55 +1,31 @@
-//! **An answered question leaves the operator's answer in the conversation as THEIRS.**
+//! An answered question leaves the operator's answer in the conversation as THEIRS.
 //!
-//! The operator's report, verbatim: *"by the way i dont see my answer to the selector"*.
-//! What was measured: a question rides the permission-card machinery — `Answers::ask_question`
-//! publishes `SessionEvent::DecisionRequested { kind: "question", … }` and the answer closes it
-//! with `DecisionAnswered` — so the selector is a **live overlay**. The answer travelled back
-//! through `ClientFrame::AnswerQuestion` into the `ask_user_question` **tool result**, and that
-//! payload was the only durable trace. Under `read-edits` — the operator's own profile — the
-//! tool rows are not drawn, so once the card closed their screen held no record of the
-//! exchange at all. And the half that matters more than visibility: the answer was not a `User`
-//! row, so it was not in the authorisation trail either — a *yes* given through that card could
-//! not be cited as authorisation, while a *yes* typed in the composer could.
+//! A question rides the permission-card machinery - `Answers::ask_question` publishes a
+//! `DecisionRequested { kind: "question", … }` and the answer closes it - so the selector is a
+//! live overlay, and the answer's only durable trace was the `ask_user_question` tool result.
+//! Under a profile that does not draw tool rows that is nothing at all; and because the answer was
+//! not a `User` row it was not in the authorisation trail either, so a *yes* given through that card
+//! could not be cited as authorisation while a *yes* typed in the composer could.
 //!
-//! # What is asserted, and through what
+//! The whole chain and nothing stubbed between the call and the row: a canned model emitting an
+//! `ask_user_question` call in the Qwen dialect's own shape, the session's own tool runtime running
+//! it through its own gate, a head attached to the session's own hub answering the way `letibot-tui`
+//! does, and the assertions on the session's transcript and on the authorisation trail.
 //!
-//! The whole chain and nothing stubbed between the call and the row: a **canned model**
-//! (the shared `canned` frames, included by path rather than copied) that emits an
-//! `ask_user_question` call in the Qwen dialect's own shape; the session's own tool runtime
-//! running it through its own gate; a head attached to the session's own hub answering the
-//! card the way `letibot-tui` does; and the assertion on **the session's transcript** and on
-//! **the authorisation trail**, which are the two places the operator's words have to be.
+//! Three claims: the answer row is theirs, byte for byte - the option's own text and their note
+//! with nothing of the harness's prepended; the question row is NOT - it is `Speaker::Agent`
+//! because the trail reads every operator row as words an action may cite, and a question put in
+//! their mouth could be quoted back as authorisation for the answer to it; and the trail can cite
+//! the answer, through the same door the composer's own speech is recorded by.
 //!
-//! Three things, and each is a different kind of claim:
+//! The order is the result, then the person's row - not the `!` line's recipe. Something above
+//! the result proposed the call, and `letibot_provider::messages::pair_tool_calls` closes its
+//! answering window on any non-`tool` row, so a `User` row between the proposal and its result makes
+//! the model read *"no result was recorded for this call"* beside the real one.
 //!
-//! 1. **The answer row is theirs, byte for byte.** `TranscriptItem::User { speaker: Operator }`
-//!    whose text is exactly what they chose — the option's own text and their note, with
-//!    nothing of the harness's prepended. A citable utterance with a harness sentence glued to
-//!    its front is a citable utterance of the wrong thing.
-//! 2. **The question row is not.** It is `Speaker::Agent`, because the trail reads every
-//!    `User`-with-`speaker: Operator` row as words an action may cite — and a question put in
-//!    their mouth would be a question the harness could quote back as authorisation for the
-//!    answer to it.
-//! 3. **The trail can cite the answer.** `Speaker::Operator`, through the same door the
-//!    composer's own speech is recorded by. This is the half the operator's screen never
-//!    showed: before this the answer existed only as a tool payload.
-//!
-//! # The order, and why it is not the brief's
-//!
-//! The `!` line's recipe is *the person's row, then the result*, and it is right there because
-//! nothing above the result proposed the call. Here something did — the model's
-//! `Assistant { tool_calls }` row — and `letibot_provider::messages::pair_tool_calls` closes
-//! its answering window on any non-`tool` row. A `User` row between the proposal and its
-//! result makes the model read *"no result was recorded for this call"* beside the real one.
-//! So the result comes first and the person's half follows it; the assertion below pins the
-//! order rather than leaving it to a reader.
-//!
-//! # What this needs, and what it does not
-//!
-//! The vocabulary GGUF (`Harness::open` renders its stable prefix) and not the model server:
-//! the turns are replayed from the shared canned frames. No exec host — nothing here runs a
-//! command — so the gate is the harness's own `Head` arm, which is also where the question
-//! path is installed (`letibot-harnessd`'s `answers` module says why those are one act).
+//! It needs the vocabulary GGUF (`Harness::open` renders its stable prefix) and not the model
+//! server. No exec host - nothing here runs a command - so the gate is the harness's own `Head` arm
+//! which is also where the question path is installed.
 
 use std::sync::Arc;
 
@@ -60,9 +36,9 @@ use letibot_tokencore::Vocab;
 use letibot_tools::authorise::{AuthorisationTrail, Speaker};
 use letibot_transcript::{TranscriptItem, UserPart};
 
-/// The row's own speaker vocabulary, named apart from the trail's: the two enums are two
-/// values with one meaning, and a test that let them share a name would not notice if the
-/// session wrote the wrong one.
+/// The row's own speaker vocabulary, named apart from the trail's: the two enums are two values with
+/// one meaning, and a test that let them share a name would not notice if the session wrote the
+/// wrong one.
 use letibot_transcript::Speaker as RowSpeaker;
 
 mod support;
@@ -79,7 +55,7 @@ const TOOL_CALL_CLOSE: u32 = 248059;
 /// The question the model asks, and the two choices it offers.
 const QUESTION: &str = "which database should the migration target?";
 const OPTIONS: [&str; 2] = ["postgres", "sqlite"];
-/// The note the operator puts on their choice — the second half of what they said.
+/// The note the operator puts on their choice - the second half of what they said.
 const NOTE: &str = "only for the CUDA box";
 
 // ---------------------------------------------------------------------------
@@ -89,17 +65,16 @@ const NOTE: &str = "only for the CUDA box";
 fn config(session_id: &str, store: &std::path::Path) -> Config {
     let mut cfg = Config::for_this_box("/tmp");
     cfg.dialect = Dialect::Qwen;
-    // **`leticode` because that is the seat `ask_user_question` lives on** — it takes its own
-    // seat there and nowhere else (`letibot-tools`' seat table). A test against a seat that
-    // does not carry the tool would be measuring the seat table.
+    // `leticode` because that is the seat `ask_user_question` lives on - it takes its own seat
+    // there and nowhere else. A test against a seat that does not carry the tool would be measuring
+    // the seat table.
     cfg.seat = Seat::Leticode;
     // The operator's own `providers.toml` and `permission.json` are not this test's business
-    // (`wired.rs`'s rule): without these, a key on the developer's laptop decides what is
-    // seated.
+    // without these, a key on the developer's laptop decides what is seated.
     cfg.web_search = None;
     cfg.permission = Vec::new();
-    // Nothing here should fail, and a failure that retried would spend the suite's time
-    // hiding behind doubling waits.
+    // Nothing here should fail, and a failure that retried would spend the suite's time hiding
+    // behind doubling waits.
     cfg.http_retries = 0;
     cfg.context_window = Some(32_768);
     cfg.store = Some(store.to_path_buf());
@@ -119,8 +94,8 @@ fn parts_for(cfg: &Config) -> Parts {
     p
 }
 
-/// **The turn that asks the question** — one tool call and no text, which is the round
-/// boundary the tool runs at.
+/// The turn that asks the question - one tool call and no text, which is the round boundary the
+/// tool runs at.
 fn an_ask_turn(vocab: &Vocab, n_prompt: u64) -> Vec<Frame> {
     let call = format!(
         "\n<function=ask_user_question>\n<parameter=question>\n{QUESTION}\n</parameter>\n\
@@ -151,8 +126,8 @@ fn an_ask_turn(vocab: &Vocab, n_prompt: u64) -> Vec<Frame> {
     });
     frames.push(Frame::Final {
         stop_type: "eos",
-        // The think fences and the two tool-call fences: the accumulator counts what was
-        // streamed, so this has to agree with it exactly.
+        // The think fences and the two tool-call fences: the accumulator counts what was streamed
+        // so this has to agree with it exactly.
         n_decoded: (call_ids.len() + 4) as u64,
         n_prompt,
         cache_n: 0,
@@ -160,8 +135,8 @@ fn an_ask_turn(vocab: &Vocab, n_prompt: u64) -> Vec<Frame> {
     frames
 }
 
-/// A directory that removes itself, because a test that leaks a store per run eventually
-/// fills the disk and the run that finds out is not this one.
+/// A directory that removes itself, because a test that leaks a store per run eventually fills the
+/// disk.
 struct TempDir {
     path: std::path::PathBuf,
 }
@@ -199,7 +174,7 @@ impl Drop for TempDir {
 // The exchange
 // ---------------------------------------------------------------------------
 
-/// **One whole exchange**, from the model's call to the rows the session wrote afterwards.
+/// One whole exchange, from the model's call to the rows the session wrote afterwards.
 ///
 /// Returns the session's transcript and its authorisation trail, which are the two places a
 /// person's words have to end up.
@@ -220,15 +195,15 @@ fn one_exchange(tag: &str, reply: Reply) -> (Vec<TranscriptItem>, AuthorisationT
     cfg.endpoint = serv.endpoint.clone();
 
     let hub = Hub::new(tag);
-    // **`None` for the adjudicator, and that is the point of the fixture.** The question path
-    // is installed in the arm that builds the head adjudicator from `cfg.adjudicator` — one
-    // `Answers`, one sink, one slot, as one act — so a test that handed in its own adjudicator
-    // would be testing a session where no question can reach anybody.
+    // `None` for the adjudicator, and that is the point of the fixture. The question path is
+    // installed in the arm that builds the head adjudicator from `cfg.adjudicator` - one `Answers`
+    // one sink, one slot, as one act - so a test that handed in its own adjudicator would be testing
+    // a session where no question can reach anybody.
     let mut h = Harness::open_with(&parts, cfg, hub.clone(), None, None)
         .expect("a leticode session opens with the head adjudicator");
 
-    // A head that can answer, playing itself on its own thread — the same shape `wired.rs`'s
-    // end-to-end ask uses, so the two cannot drift on what the card looks like.
+    // A head that can answer, playing itself on its own thread - the same shape the end-to-end ask
+    // in `wired.rs` uses, so the two cannot drift on what the card looks like.
     let head = hub.attach("tui", "deadtrickster", Default::default(), 0);
     let hub2 = hub.clone();
     let head_id = head.head_id.clone();
@@ -287,13 +262,12 @@ fn user_row(item: &TranscriptItem) -> Option<(RowSpeaker, String)> {
     Some((*speaker, text))
 }
 
-/// **A choice, and the person's own note on it, land as their words — and the trail can cite
-/// them.**
+/// A choice, and the person's own note on it, land as their words - and the trail can cite
+/// them.
 ///
-/// The operator's requirement for the row is the one the `!` line's own row keeps: their
-/// words, verbatim, with nothing of the harness's prepended. So the option's text is read off
-/// the QUESTION they were shown — the label, not an index, because an index is not something
-/// anybody said — and the note follows it on its own line.
+/// The row keeps the `!` line's own rule: their words, verbatim, with nothing of the harness's
+/// prepended. So the option's text is read off the QUESTION they were shown - the label, not an
+/// index, because an index is not something anybody said - and the note follows it on its own line.
 #[test]
 fn the_answer_is_the_operators_own_row_and_the_trail_can_cite_it() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -305,16 +279,16 @@ fn the_answer_is_the_operators_own_row_and_the_trail_can_cite_it() {
         Reply::Question(letibot_sessionlog::question::QuestionAnswer::choosing(1).with_note(NOTE)),
     );
 
-    // **The answer row: theirs, byte for byte.** `sqlite` is the option's own text — the label
-    // the person was shown and picked — and the note is what they said about it.
+    // The answer row: theirs, byte for byte. `sqlite` is the option's own text - the label the
+    // person was shown and picked - and the note is what they said about it.
     let answer = items
         .iter()
         .position(|i| matches!(user_row(i), Some((RowSpeaker::Operator, t)) if t == said))
         .unwrap_or_else(|| panic!("no row carries the operator's answer: {items:#?}"));
 
-    // **The question row: the session's, not theirs.** The trail reads every
-    // `User`-with-`speaker: Operator` row as citable words of theirs, so the question must not
-    // be one — and a head must not draw it as them either.
+    // The question row: the session's, not theirs. The trail reads every operator row as
+    // citable words of theirs, so the question must not be one - and a head must not draw it as them
+    // either.
     let question = items
         .iter()
         .position(|i| matches!(user_row(i), Some((RowSpeaker::Agent, t)) if t.contains(QUESTION)))
@@ -331,8 +305,8 @@ fn the_answer_is_the_operators_own_row_and_the_trail_can_cite_it() {
         "the question was attributed to the operator: {items:#?}"
     );
 
-    // **The result is the person's act**, which is what every head draws at every verbosity —
-    // and it still carries the payload the model reads.
+    // The result is the person's act, which is what every head draws at every verbosity - and it
+    // still carries the payload the model reads.
     let result = items
         .iter()
         .position(|i| {
@@ -354,15 +328,15 @@ fn the_answer_is_the_operators_own_row_and_the_trail_can_cite_it() {
         "the payload the model reads is unchanged: {payload}"
     );
 
-    // **And the order.** The result answers the model's proposal, so it comes first; the
-    // person's half follows it. See this file's header for the measurement behind it.
+    // And the order. The result answers the model's proposal, so it comes first; the person's
+    // half follows it, for the reason this file's header gives.
     assert!(
         result < question && question < answer,
         "result {result}, question {question}, answer {answer}: the exchange is out of order"
     );
 
-    // **The trail can cite it** — `Speaker::Operator`, through the same door the composer's own
-    // speech is recorded by. This is the half the operator's screen never showed.
+    // The trail can cite it - `Speaker::Operator`, through the same door the composer's own
+    // speech is recorded by.
     let cited = trail
         .utterances
         .iter()
@@ -373,8 +347,8 @@ fn the_answer_is_the_operators_own_row_and_the_trail_can_cite_it() {
         Speaker::Operator,
         "an answer given through a card must authorise exactly as one typed in the composer"
     );
-    // And the question is not theirs there either: the trail's two speakers are the whole of
-    // the distinction an `ALLOW <n>` rests on.
+    // And the question is not theirs there either: the trail's two speakers are the whole of the
+    // distinction an `ALLOW <n>` rests on.
     let question_in_trail = trail
         .utterances
         .iter()
@@ -387,11 +361,11 @@ fn the_answer_is_the_operators_own_row_and_the_trail_can_cite_it() {
     );
 }
 
-/// **A typed answer is a first-class answer, and it lands as the person's row.**
+/// A typed answer is a first-class answer, and it lands as the person's row.
 ///
 /// The fourth shape the tool takes (`QuestionAnswer::free`): no option, no note, just what they
-/// typed. It is the case the composer's own words are the whole of, and the case the row has to
-/// carry without a label, an index or a quotation around it.
+/// typed - the case where the composer's own words are the whole of it, and the row has to carry
+/// them without a label, an index or a quotation around them.
 #[test]
 fn a_typed_answer_lands_as_the_operators_own_words() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -422,12 +396,12 @@ fn a_typed_answer_lands_as_the_operators_own_words() {
     assert_eq!(cited.speaker, Speaker::Operator);
 }
 
-/// **An abstention is an ANSWER, and it lands as one.**
+/// An abstention is an ANSWER, and it lands as one.
 ///
-/// The tool reports it as `Abstained` rather than as `not_run` — *"I am not answering this
-/// one"* is a decision the person made — so the row exists and the trail can cite it. It is
-/// also the one outcome where the answer row is neither a choice nor a sentence, and the word
-/// the wire carries for the act is the word the row carries.
+/// The tool reports it as `Abstained` rather than as `not_run` - *"I am not answering this one"* is
+/// a decision the person made - so the row exists and the trail can cite it. It is also the one
+/// outcome where the answer row is neither a choice nor a sentence, so the word the wire carries for
+/// the act is the word the row carries.
 #[test]
 fn an_abstention_lands_as_the_operators_own_row() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -455,8 +429,8 @@ fn an_abstention_lands_as_the_operators_own_row() {
             )
         });
     assert_eq!(cited.speaker, Speaker::Operator);
-    // And the tool said the same thing, which is the pair that keeps the row and the result
-    // from disagreeing about what happened.
+    // And the tool said the same thing, which is the pair that keeps the row and the result from
+    // disagreeing about what happened.
     assert!(
         items.iter().any(|i| matches!(
             i,

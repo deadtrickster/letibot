@@ -1,38 +1,22 @@
-//! **Ctrl+O during a run in flight must move that run to the background** — the
-//! frame the head sends, through the daemon, to the run the operator is looking at.
+//! Ctrl+O during a run in flight must move that run to the background - the frame the head
+//! sends, through the daemon, to the run the operator is looking at.
 //!
-//! # The defect this file is the proof of
+//! The request travels as a flag on the hub (shared with the exec backend, so the `bash` wait
+//! loop can take it without the worker delivering anything) and as a queued command that
+//! announces it. For a run the worker is itself holding, the queued command cannot be dispatched
+//! until the run ends, so the flag is the request, and the wait loop takes it.
 //!
-//! The operator: *"also ctrl-o printed \"background requests\" and didnt background
-//! it"*. The run they were looking at was in flight, and the request was announced —
-//! `CommandKind::Promote` renders as *"background requested"* on the log — so the
-//! frame arrived. What never happened is the promotion.
+//! An operator `!` run does not hold the worker - it runs on a thread of its own
+//! (`crate::bangrun`), exactly so everything else keeps working. So the idle worker dispatches the
+//! queued `CommandKind::Promote` at once, the between-turns arm takes the flag and warns that
+//! nothing was running to move, and the run's own wait loop finds it gone. The test fails on that
+//! shape in both assertions: the row settles only when the command's own clock ends it, and as the
+//! command's own outcome rather than `Backgrounded` by the operator.
 //!
-//! The mechanism, and why the wait loop never saw the request: the request travels
-//! as a **flag on the hub** (shared with the exec backend, so the `bash` wait loop
-//! can take it without the worker delivering anything) **and** as a queued command
-//! that announces it. For a run the worker is itself holding, the queued command
-//! cannot be dispatched until the run ends, so the flag is the request, and the wait
-//! loop takes it. But an **operator `!` run does not hold the worker** — it runs on
-//! a thread of its own (`crate::bangrun`), exactly so everything else keeps working
-//! (`run_off_worker.rs` is that proof). The worker is idle, so it dispatches the
-//! queued `CommandKind::Promote` at once, and the between-turns arm takes the flag
-//! and warns *"a background request arrived between turns; nothing was running to
-//! move"* — which is false: a run was in flight, on the bang thread, whose wait loop
-//! is the flag's designed consumer and now finds it gone.
-//!
-//! The first test below fails on that shape in both of its assertions: the run's
-//! row settles only when the command's own clock ends it (the full sleep, not the
-//! sub-second a promotion takes), and it settles as the command's own outcome
-//! rather than `Backgrounded` by the operator.
-//!
-//! # What these need, and what they do not
-//!
-//! The same apparatus `run_off_worker.rs` needs: a delegated cgroup v2 subtree (a
-//! run has to start and be movable between scopes) and the vocabulary GGUF (a
-//! `Harness` renders its stable prefix at open). **Not a model**: the endpoint is a
-//! local stub that answers every request with HTTP 400, so the settle turn each run
-//! starts fails in milliseconds and the rows land anyway.
+//! The apparatus `run_off_worker.rs` needs: a delegated cgroup v2 subtree (a run has to start and
+//! be movable between scopes) and the vocabulary GGUF. Not a model: the endpoint is a local
+//! stub that answers HTTP 400, so the settle turn each run starts fails in milliseconds and the
+//! rows land.
 
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::time::{Duration, Instant};
@@ -53,7 +37,7 @@ mod support;
 /// driver's watch, so the test fails on its assertions rather than on a timeout.
 const RUN_SLEEP: u64 = 20;
 
-/// **How long after Ctrl+O the run's row may take to settle.** A promotion ends the
+/// How long after Ctrl+O the run's row may take to settle. A promotion ends the
 /// wait the moment the wait loop polls the flag (half a second), so anything near
 /// this bound means nobody took the request; the bound is set for scheduler jitter
 /// and a slow settle, not because the promotion itself is slow.
@@ -69,7 +53,7 @@ fn repo() -> std::path::PathBuf {
 
 fn config(session: &str, socket: &std::path::Path, model_port: u16) -> Config {
     let mut cfg = Config::for_this_box(repo());
-    // Not this box's configuration (`wired.rs`'s rule), and not this box's model:
+    // Not this box's configuration (`wired.rs`'s rule), and not this box's model
     // the settle arm starts a turn per run and this file measures the promote, not
     // the generation. A 400 fails the turn at once (see `refusing_model_stub`).
     cfg.web_search = None;
@@ -104,9 +88,9 @@ fn socket_path(tag: &str) -> std::path::PathBuf {
     ))
 }
 
-/// A model server that refuses in the one way the retry rule respects — a 400 is
+/// A model server that refuses in the one way the retry rule respects - a 400 is
 /// *the request, not the weather*, so the settle turn fails on the first attempt
-/// instead of holding anything for the retry budget. `run_off_worker.rs`'s stub,
+/// instead of holding anything for the retry budget. `run_off_worker.rs`'s stub
 /// verbatim in purpose.
 fn refusing_model_stub() -> u16 {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("an ephemeral port");
@@ -167,7 +151,7 @@ struct Record {
 fn classify(frame: ServerFrame, sent: &Instant, rec: &mut Record) {
     match frame {
         ServerFrame::Accepted { note, .. } if note.contains("background requested") => {
-            // The daemon's own sentence for the frame arriving — what the operator
+            // The daemon's own sentence for the frame arriving - what the operator
             // saw printed. Recorded so a failure can say the request DID land.
             rec.announced = true;
         }
@@ -203,13 +187,13 @@ fn watch(rx: &Receiver<Inbound>, sent: &Instant, rec: &mut Record) {
     }
 }
 
-/// **Ctrl+O's frame, mid-run, moves the run the operator is looking at.**
+/// Ctrl+O's frame, mid-run, moves the run the operator is looking at.
 ///
-/// A `! sleep` runs on its own thread; a second later — while it MUST still be in
-/// flight — the head sends exactly what Ctrl+O sends (`HeadClient::promote`, the
-/// driver's own call for `Action::Promote`). The run must then settle as
-/// `Backgrounded` by the operator, promptly: a promotion ends the wait, so a row
-/// that only arrives when the sleep has run its course is a request nobody honoured.
+/// A `! sleep` runs on its own thread; a second later - while it MUST still be in flight - the head
+/// sends exactly what Ctrl+O sends (`HeadClient::promote`, the driver's own call for
+/// `Action::Promote`). The run must then settle as `Backgrounded` by the operator, promptly: a
+/// promotion ends the wait, so a row that only arrives when the sleep has run its course is a
+/// request nobody honoured.
 #[test]
 fn a_ctrl_o_promotes_the_operators_run_in_flight() {
     let Some(_) = letibot_tokencore::apparatus::present(
@@ -250,7 +234,7 @@ fn a_ctrl_o_promotes_the_operators_run_in_flight() {
             client
                 .operator_shell(0, &line)
                 .expect("the `!` line is accepted");
-            // Not a synchronisation — the run is dispatched within milliseconds, and
+            // Not a synchronisation - the run is dispatched within milliseconds, and
             // this only makes sure the promote goes in while the run is in flight
             // rather than racing the submit itself.
             std::thread::sleep(Duration::from_millis(1500));
@@ -267,7 +251,7 @@ fn a_ctrl_o_promotes_the_operators_run_in_flight() {
     let rec = driver.join().expect("the driver thread");
     daemon.shutdown();
 
-    // **The run settled as a backgrounding, attributed to the operator.** On the
+    // The run settled as a backgrounding, attributed to the operator. On the
     // defect this is the load-bearing assertion: the run runs to its own end and
     // settles as its own outcome, because nothing took the request.
     let snap = hub.snapshot();
@@ -300,7 +284,7 @@ fn a_ctrl_o_promotes_the_operators_run_in_flight() {
         "the head that pressed Ctrl+O is who the backgrounding is attributed to"
     );
 
-    // **And promptly.** A promotion ends the wait at the loop's next poll of the
+    // And promptly. A promotion ends the wait at the loop's next poll of the
     // flag; a row that arrives only at the sleep's end is the request dropped.
     let at = rec.row_at.expect("a backgrounded run settles at once");
     assert!(

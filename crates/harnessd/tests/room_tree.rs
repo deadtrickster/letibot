@@ -1,24 +1,14 @@
-//! **A room is a project's, and its membership is the tree** — the operator's hierarchy,
+//! A room is a project's, and its membership is the tree - the operator's hierarchy
 //! `<project>/<top-sessions>/<subagents>*|system/`, as the room holds it.
 //!
-//! # What this file exists to have caught
-//!
-//! Until this slice there was one room per BOX. Two unrelated sessions could not find each other
-//! (nothing in the tree will name a session), and two projects on one machine shared one set of
-//! tags — project B's `ram` was refused `Busy` by project A's claim, and the refusal named a
-//! session nobody in B had ever heard of. The room also held only the sessions *connected* to it,
-//! and a subagent never connects: the door refuses it (`docs/room.md` § *The wire*), so the one
-//! kind of session the operator's sentence names twice was the one kind the room could not see.
-//!
-//! So there are three facts here, and each was false before: a session reaches its project's room
-//! **without naming an id**; a subagent at depth 2 is a member of that same room; and a session in
-//! another project gets another room and never hears the first.
-//!
-//! # What it needs
+//! Three facts, each false while there was one room per BOX: a session reaches its project's room
+//! without naming an id; a subagent at depth 2 is a member of that same room, though it never
+//! connects (the door refuses it); and a session in another project gets another room and never
+//! hears the first - where before, project B's `ram` was refused `Busy` by project A's claim.
 //!
 //! Nothing on the box: a `Server` on a socket in a directory of the test's own, and
-//! `SessionRoom::connect` — the same two objects a daemon uses. No store, no model, no turn, and no
-//! coordinator process, so this cannot touch `~/.local/share/letibot` or the operator's room.
+//! `SessionRoom::connect` - the same two objects a daemon uses. No store, no model, no turn, and no
+//! coordinator process, so this cannot touch the operator's room.
 
 use std::sync::Arc;
 
@@ -36,11 +26,11 @@ fn scratch(what: &str) -> std::path::PathBuf {
     dir
 }
 
-/// **The key is the tree's own** — the twelve hex characters `scripts/letibot` cuts,
+/// The key is the tree's own - the twelve hex characters `scripts/letibot` cuts
 /// `letibot_sessionlog::workspace_key` computes and `s-gatekeeper-<key>` is spelled from.
 ///
 /// This is the pin that lets the room crate keep its own copy of the rule: two spellings, one
-/// table, exactly as `lease::host_key_of` is pinned to the launcher's bash.
+/// table.
 #[test]
 fn the_project_key_is_the_workspace_key_the_rest_of_the_tree_uses() {
     let dir = scratch("key");
@@ -52,7 +42,7 @@ fn the_project_key_is_the_workspace_key_the_rest_of_the_tree_uses() {
             letibot_sessionlog::workspace_key(std::path::Path::new(&root)),
             "the room names `{root}` exactly as the gatekeeper's session id does"
         );
-        // **And the gatekeeper of that project is named by the same key** — which is what makes a
+        // And the gatekeeper of that project is named by the same key - which is what makes a
         // `system/gatekeepers` row recognisable as *this* project's and no other's.
         let gate = letibot_sessionlog::gatekeeper_session(std::path::Path::new(&root));
         assert!(
@@ -62,7 +52,7 @@ fn the_project_key_is_the_workspace_key_the_rest_of_the_tree_uses() {
     }
 }
 
-/// A tree the room is told about, standing in for `Registry::list()` — the grouping itself is
+/// A tree the room is told about, standing in for `Registry::list` - the grouping itself is
 /// pinned by `harnessd`'s `room::roster` tests, which is where the rules live.
 struct Tree(Vec<Member>);
 
@@ -83,10 +73,10 @@ fn member(session: &str, label: &str, group: Group, parent: Option<&str>, depth:
     }
 }
 
-/// **Two projects on one socket are two rooms, and neither hears the other.**
+/// Two projects on one socket are two rooms, and neither hears the other.
 ///
-/// The tag is the same word in both (`ram`), which is the whole point: before this slice it was one
-/// lock, so B's claim was refused by A's and B could not tell whose queue it had walked into.
+/// The tag is the same word in both (`ram`), which is the whole point: one lock for the box meant
+/// B's claim was refused by A's, and B could not tell whose queue it had walked into.
 #[test]
 fn two_projects_are_two_rooms_and_a_tag_is_not_shared_between_them() {
     let dir = scratch("projects");
@@ -101,7 +91,7 @@ fn two_projects_are_two_rooms_and_a_tag_is_not_shared_between_them() {
         .expect("a session of project one");
     let b = SessionRoom::connect("s-b", &socket, &two, None, Arc::clone(&quiet), None)
         .expect("a session of project two");
-    // **Neither session named a room, a socket or an id** — the derivation did it, from the project
+    // Neither session named a room, a socket or an id - the derivation did it, from the project
     // the daemon placed it in.
     assert_eq!(a.project(), one);
     assert_eq!(b.project(), two);
@@ -112,7 +102,7 @@ fn two_projects_are_two_rooms_and_a_tag_is_not_shared_between_them() {
         .expect("a post in project one");
     assert!(posted.contains("#1"), "{posted}");
 
-    // **Project two's `ram` is empty** — a tag is a project's, not the box's.
+    // Project two's `ram` is empty - a tag is a project's, not the box's.
     let theirs = b.call("queue", &json!({"tag": "ram"})).expect("a read");
     assert!(
         !theirs.contains("8 GB"),
@@ -129,7 +119,7 @@ fn two_projects_are_two_rooms_and_a_tag_is_not_shared_between_them() {
     assert!(mine.contains("8 GB"), "{mine}");
     assert!(mine.contains("#1"), "{mine}");
 
-    // **The pane's read is the room's**, and each session is told which room it reached.
+    // The pane's read is the room's, and each session is told which room it reached.
     let one_room = server.room_name_of(&one);
     let two_room = server.room_name_of(&two);
     assert!(one_room.ends_with(&one) && two_room.ends_with(&two));
@@ -138,7 +128,7 @@ fn two_projects_are_two_rooms_and_a_tag_is_not_shared_between_them() {
     assert_eq!(server.items_in(&two).len(), 1);
     assert_eq!(server.projects().len(), 3, "the box's own room, plus two");
 
-    // **And the reads that name no tag at all reach the session's own room**: `holding` is what a
+    // And the reads that name no tag at all reach the session's own room: `holding` is what a
     // session asks about itself, and each one is answered from the room its daemon put it in.
     let a_holds = a.call("holding", &json!({})).expect("a read");
     let b_holds = b.call("holding", &json!({})).expect("a read");
@@ -164,17 +154,13 @@ fn two_projects_are_two_rooms_and_a_tag_is_not_shared_between_them() {
     server.stop();
 }
 
-/// **The tree decides WHICH room an event is in; the bell decides WHO is told** — and the two rules
+/// The tree decides WHICH room an event is in; the bell decides WHO is told - and the two rules
 /// meet in one assertion: a post under project one's `ram` rings project one's session and leaves
 /// project two's bell silent.
 ///
-/// This is the seam the two halves of the room were built on: `Server::route` filters the
-/// connections by the project the event came out of, and a `SessionRoom`'s wake closure rings only
-/// for what its own connection was sent. So the isolation is asserted at both ends at once — the
-/// server's (a connection in another room is never written to) and the client's (a session that was
-/// sent nothing cannot ring). Before the room was a project's, both sessions shared one room and
-/// project two's bell rang for project one's work; before the bell, a session was only woken between
-/// turns, so the ring itself did not exist to be asserted.
+/// `Server::route` filters the connections by the project the event came out of, and a
+/// `SessionRoom`'s wake closure rings only for what its own connection was sent, so the isolation
+/// is asserted at both ends at once.
 #[test]
 fn a_bell_in_one_projects_room_does_not_ring_in_another() {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -202,9 +188,9 @@ fn a_bell_in_one_projects_room_does_not_ring_in_another() {
     let b = SessionRoom::connect("s-two-worker", &socket, &two, None, bell(&rung_two), None)
         .expect("a session of project two");
 
-    // **Both projects have a queue under the same word**, and that is the whole point: before the
-    // room was a project's, `ram` was one lock and one queue, so project two's poster was in project
-    // one's audience and every claim on it rang the wrong session.
+    // Both projects have a queue under the same word, and that is the point: one shared room
+    // meant project two's poster was in project one's audience, and every claim rang the wrong
+    // session.
     let posted = a
         .call(
             "post",
@@ -220,7 +206,7 @@ fn a_bell_in_one_projects_room_does_not_ring_in_another() {
         .expect("a post in project two");
     assert!(theirs.contains('#'), "{theirs}");
 
-    // Each session is rung for the item it made — the baseline this test measures against, because
+    // Each session is rung for the item it made - the baseline this test measures against, because
     // a poster hearing its own post is the room working, not a leak between rooms.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while std::time::Instant::now() < deadline
@@ -237,7 +223,7 @@ fn a_bell_in_one_projects_room_does_not_ring_in_another() {
     wake::take("s-one-worker");
     wake::take("s-two-worker");
 
-    // **Project one's claim on its own `ram`** — an event about project one's item, and the event
+    // Project one's claim on its own `ram` - an event about project one's item, and the event
     // that would reach project two if the two shared one room.
     let claimed = a
         .call("claim", &json!({"tag": "ram"}))
@@ -257,7 +243,7 @@ fn a_bell_in_one_projects_room_does_not_ring_in_another() {
         "and the sentence the ring is about is in its queue"
     );
 
-    // **And the other project heard nothing** — not a bell, and not a note. A `missed` count would
+    // And the other project heard nothing - not a bell, and not a note. A `missed` count would
     // be wrong here too: the event was never addressed to this session, so there is no gap to report.
     assert_eq!(
         rung_two.load(Ordering::SeqCst),
@@ -270,7 +256,7 @@ fn a_bell_in_one_projects_room_does_not_ring_in_another() {
         "and nothing is waiting in project two's queue either"
     );
     // The room itself agrees: the two `ram`s are two queues, each holding only its own project's
-    // item — and each numbering its own from 1, which is why the count a `claim` answers with is a
+    // item - and each numbering its own from 1, which is why the count a `claim` answers with is a
     // number and not a sentence about somebody else's queue.
     let mine = a.call("queue", &json!({"tag": "ram"})).expect("a read");
     assert!(
@@ -290,7 +276,7 @@ fn a_bell_in_one_projects_room_does_not_ring_in_another() {
     server.stop();
 }
 
-/// **The room holds what the tree holds**: a subagent at depth 2 and the review queue's session
+/// The room holds what the tree holds: a subagent at depth 2 and the review queue's session
 /// under `system`, neither of which ever opens a connection.
 #[test]
 fn a_subagent_at_depth_two_and_the_gatekeeper_are_members_of_the_same_room() {
@@ -352,7 +338,7 @@ fn a_subagent_at_depth_two_and_the_gatekeeper_are_members_of_the_same_room() {
         ],
         "the tree, in the tree's order"
     );
-    // **The name the tree draws the gatekeeper under** — the operator's `<project>/<system>/…`.
+    // The name the tree draws the gatekeeper under - the operator's `<project>/<system>/…`.
     assert_eq!(members[3].where_in("letibot"), "letibot/system/gatekeepers");
     assert_eq!(members[2].where_in("letibot"), "letibot/the second look");
     // The pane's read carries the same list, so a pane could draw the tree.
