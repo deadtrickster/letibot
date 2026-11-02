@@ -224,16 +224,13 @@ impl ProgressDetector {
                  answer them.",
             ),
         }
-        // Say what happens next. The version before this one invited the model to "say so and
-        // carry on", which promised latitude the harness does not grant: one more stalled round
-        // and the turn stops regardless.
+        // One instruction, and the reason it is one: a model reading a wall of policy mid-turn
+        // answers the wall. What happens next is a fact, so it is stated as one.
         msg.push_str(
-            "\n\nIf you already have what you need, answer now. If you do not, ask a \
-             *different* question \u{2014} the same one returns the same bytes. If the \
-             next round also produces nothing new the turn stops and the operator is \
-             shown this, so say in that round what you are still looking for: an \
-             operator who can see what you were after can widen the search, and one \
-             who cannot see it can only see that you stopped.",
+            "\n\nAnswer now if you have what you need; if not, ask a *different* question, \
+             because the same one returns the same bytes. One more round with nothing new \
+             ends the turn and shows the operator this, so say what you are still looking \
+             for.",
         );
         Some(msg)
     }
@@ -553,6 +550,36 @@ mod tests {
             "one is the error signal, two is the harness insisting"
         );
         assert!(d.exhausted());
+    }
+
+    /// The nudge is read at the moment a turn is going wrong, so it says what to do and stops:
+    /// the facts it must carry, and a budget no wall of prose can pass.
+    #[test]
+    fn the_nudge_says_what_to_do_and_no_more() {
+        let mut d = ProgressDetector::new(3);
+        d.observe(&call("read", r#"{"path":"a"}"#), &ok(), "same");
+        d.end_round();
+        d.observe(&call("read", r#"{"path":"a"}"#), &ok(), "same");
+        d.end_round();
+        d.observe(&call("read", r#"{"path":"a"}"#), &ok(), "same");
+        d.end_round();
+        let n = d.nudge().expect("the round before the stop");
+        let lower = n.to_lowercase();
+        for fact in ["answer now", "*different* question", "ends the turn"] {
+            assert!(lower.contains(fact), "the nudge must say `{fact}`: {n}");
+        }
+        let words = n.split_whitespace().count();
+        assert!(words <= 100, "the nudge is {words} words long: {n}");
+        let advice = n.split("\n\n").nth(1).unwrap_or_default();
+        let advice_words = advice.split_whitespace().count();
+        assert!(
+            advice_words <= 50,
+            "what to do is {advice_words} words, and this is read mid-turn: {advice}"
+        );
+        assert!(
+            !n.contains("widen the search"),
+            "the policy aside is not the model's to act on: {n}"
+        );
     }
 
     #[test]
