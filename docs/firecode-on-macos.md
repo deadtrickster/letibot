@@ -2,16 +2,15 @@
 
 Standalone: everything needed to go from a bare Apple-silicon Mac to letibot sessions and
 subagents whose tools run in [firecode](https://github.com/deadtrickster/firecode) microVMs.
-Each step says how to check it worked before the next one depends on it.
 
-**What you get.** A session or a subagent placed `where: firecode` runs its tools in a VM on a
-*copy* of the project: root inside, no permission prompts, no access to your Mac's files, keys
-or processes. When it ends, its work lands beside the project as `<project>-<timestamp>`; your
-tree is never written to. A placed subagent can be held to an acceptance check that the harness
-runs, not the subagent. Containers (docker, compose) run inside the VM.
+A session or a subagent placed `where: firecode` runs its tools in a VM: root inside, no permission
+prompts, no access to your Mac's files, keys or processes. What the VM holds depends on the
+placement - a copy of the project, a mounted worktree, or the whole workspace folder under `--vm`
+(step 4) - and a copy comes back beside the project as `<project>-<timestamp>`, so your tree is
+never written to.
 
-**Requirements.** Apple silicon (M1 or later), macOS 14 or later, Homebrew, the Xcode Command
-Line Tools (`xcode-select --install`), and about 20 GB free.
+Requirements: Apple silicon (M1 or later), macOS 14 or later, Homebrew, the Xcode Command Line Tools
+(`xcode-select --install`), and about 20 GB free.
 
 ---
 
@@ -34,10 +33,10 @@ firecode doctor
 
 `setup` compiles `firecode-vz` (a small Swift program over Apple's Virtualization.framework) and
 signs it locally with the virtualization entitlement; no Apple account is involved. `prepare`
-needs no docker and no root. Nothing in the whole install asks for `sudo`.
+needs no docker and no root. None of it asks for `sudo`.
 
-**Check:** `firecode doctor` ends with `0 failure(s)`. Warnings about macFUSE and opencode are
-optional features. Then:
+Check: `firecode doctor` ends with `0 failure(s)`; the macFUSE and opencode warnings are optional
+features. Then:
 
 ```sh
 mkdir -p /tmp/fc-try && cd /tmp/fc-try && git init -q && echo hi > README
@@ -46,9 +45,9 @@ firecode up && firecode in 'uname -m; docker run --rm hello-world | head -2' && 
 
 expects `aarch64`, then `Hello from Docker!`, then `work delivered:` or `nothing to deliver`.
 
-**The first run reads your Claude credentials from the Keychain**, and macOS may ask whether
-`security` may read "Claude Code-credentials". Choose *Always Allow*, or it asks every time the
-credentials change.
+The first run reads your Claude credentials from the Keychain, and macOS may ask whether `security`
+may read "Claude Code-credentials". Choose *Always Allow*, or it asks every time the credentials
+change.
 
 ## 2. Install letibot
 
@@ -69,7 +68,7 @@ LETIBOT_LLAMA_DIR=~/Projects/llama.cpp LETIBOT_LLAMA_LIB=~/Projects/llama.cpp/bu
 
 Cloud-only (no local model) skips llama.cpp: `cargo build --release --no-default-features --bins`.
 
-**Check:** `./target/release/harnessd --help | grep -A3 -- --where` lists `host|firecode`.
+Check: `./target/release/harnessd --help | grep -A3 -- --where` lists `host|firecode`.
 
 ## 3. Connect them
 
@@ -77,12 +76,12 @@ letibot finds firecode on `PATH`, or wherever `$FIRECODE_BIN` names. Set `FIRECO
 firecode is not on the daemon's PATH, and restart the daemon after changing either: it is read
 once, at start.
 
-**Check:** with firecode missing, `task(where: firecode)` is refused at the call with a sentence
-naming `PATH` and `$FIRECODE_BIN`. If you see that, the daemon cannot find it.
+Check: with firecode missing, `task(where: firecode)` is refused at the call with a sentence naming
+`PATH` and `$FIRECODE_BIN`. If you see that, the daemon cannot find it.
 
 ## 4. Use it
 
-**A whole session in a VM:**
+### A whole session in a VM
 
 ```sh
 cd ~/Projects/stroppy-io
@@ -90,32 +89,34 @@ letibot --vm                                    # the session and all its subage
 letibot --vm --vm-arg --mem --vm-arg 16384      # anything after --vm-arg goes to `firecode up`
 ```
 
-With `--vm` the session lives in a VM, and everything is allowed there: no permission
-prompts, for it or for any subagent. On a Mac the workspace folder is **mounted read-write**:
-every repository in it can be read and changed, and agents create worktrees beside a repository
-(`stroppy-fix-x`) and commit to them exactly as they would on the host. All of it lands in
-`~/Projects/stroppy-io` as it is made, so nothing is copied and nothing comes back. Nothing
-outside that folder is reachable: not your home directory, your keys or other projects.
+With `--vm` the session lives in a VM, and everything is allowed there: no permission prompts, for
+it or for any subagent. On a Mac the workspace folder is **mounted read-write**: every repository in
+it can be read and changed, and agents create worktrees beside a repository (`stroppy-fix-x`) and
+commit to them exactly as they would on the host. All of it lands in `~/Projects/stroppy-io` as it
+is made, so nothing is copied and nothing comes back. Nothing outside that folder is reachable: not
+your home directory, your keys or other projects.
 
-Subagents, and theirs in turn, run in the **same VM** unless one is explicitly given a VM of
-its own. A second `letibot --vm` in the same folder **joins** the VM that is already up instead
-of booting another. The VM is brought down by the session that started it.
+Subagents, and theirs in turn, run in the **same VM** unless one is explicitly given a VM of its own.
+A second `letibot --vm` in the same folder **joins** the VM that is already up instead of booting
+another. The VM is brought down by the session that started it.
 
-The trade-off is the point: anything in that VM can change anything in the folder, every
-repository included, as an agent on the host could. `--vm-copy` gives the older placement, a
-copy of one repository with the work delivered as a sibling directory at the end.
+The trade-off is the point: anything in that VM can change anything in the folder, every repository
+included, as an agent on the host could. `--vm-copy` gives the older placement, a copy of one
+repository with the work delivered as a sibling directory at the end.
 
-**A subagent in a VM**, from inside a session. The model calls `task` (or `task_start`) with
-`where: firecode`, and can hold the child to a check:
+### A subagent in a VM
+
+From inside a session, the model calls `task` (or `task_start`) with `where: firecode`, and can hold
+the child to a check:
 
 ```json
 {"prompt": "make the e2e suite pass", "where": "firecode",
  "verify": "cd flow && go test -tags tilt ./e2e/postgres_postgres/ -timeout 20m"}
 ```
 
-`verify` is a shell command that firecode runs in the child's project **after the child has
-finished, before its VM stops**. Its exit status is the verdict, and the child cannot fake it.
-The parent's answer carries both the delivered path and the verdict:
+`verify` is a shell command that firecode runs in the child's project **after the child has finished,
+before its VM stops**. Its exit status is the verdict, and the child cannot fake it. The parent's
+answer carries both the delivered path and the verdict:
 
 ```
 the subagent's VM finished normally. Everything it wrote is in /…/project-20261011-194613-30065 …
@@ -126,7 +127,7 @@ The work is NOT done, whatever the subagent said.
 
 `verify` without `where: firecode` is refused, because nothing would run it.
 
-**Where the work goes depends on what the child works in.**
+Where the work goes depends on what the child works in.
 
 - **A worktree** (a `task_start` child, or any session whose workspace is a git worktree) is
   **mounted, not copied**: the worktree read-write, the main checkout read-only, the repository's
@@ -138,7 +139,7 @@ The work is NOT done, whatever the subagent said.
 
 ### Just a shell, or just a test run
 
-Not every use needs an agent. From inside a project:
+From inside a project, with no agent:
 
 ```sh
 firecode sh                                   # a contained Linux shell; exit and it is gone
@@ -152,9 +153,9 @@ guest.
 
 ## 5. Containers in a VM
 
-docker, compose and buildx are in the guest image, started on first use. A compose stack works
-the way it does on a workstation, including service-name resolution and `host.docker.internal`
-(which inside a VM means the VM itself). Large stacks need room:
+docker, compose and buildx are in the guest image, started on first use. A compose stack works the
+way it does on a workstation, including service-name resolution and `host.docker.internal` (which
+inside a VM means the VM itself). Large stacks need room:
 
 ```sh
 firecode up --layer-size 48G --fresh-root --mem 16384 --vcpu 8
@@ -172,16 +173,16 @@ because firecode copies what git would. Generate them inside, the way the projec
 
 Pulling new code changes nothing that is running.
 
-1. **firecode:** `git pull`. Re-run `firecode setup` if the pull touched `macos/`, `scripts/setup-macos.sh`
+1. firecode: `git pull`. Re-run `firecode setup` if the pull touched `macos/`, `scripts/setup-macos.sh`
    or `guest/initramfs/`, and `firecode prepare --force` if it touched `guest/build-rootfs.sh` or
    `guest/systemd/` (both are baked into the image). The other guest scripts travel with every VM
    and take effect at the next start.
-2. **letibot:** `git pull`, then **rebuild the release binaries** (the `cargo build --release` line
+2. letibot: `git pull`, then **rebuild the release binaries** (the `cargo build --release` line
    above), then restart the daemon. A daemon keeps running the binary it started with.
-3. **Reseat.** When a rebuild changes a tool's schema or the system prompt, a resumed session is
-   told it is speaking an older prompt and offered `/reseat`. If no offer appears after an
-   upgrade you expected to change tools, the daemon is almost certainly still on an old binary:
-   compare `stat -f %Sm target/release/harnessd` with the commit you pulled.
+3. Reseat: when a rebuild changes a tool's schema or the system prompt, a resumed session is told
+   it is speaking an older prompt and offered `/reseat`. If no offer appears after an upgrade you
+   expected to change tools, the daemon is almost certainly still on an old binary: compare
+   `stat -f %Sm target/release/harnessd` with the commit you pulled.
 
 ## 7. When something is wrong
 
