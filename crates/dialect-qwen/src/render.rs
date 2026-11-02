@@ -375,14 +375,14 @@ fn render_items(
                 // another follows it. `close_tool_turn` owns it.
             }
         }
-        if let Some(ends) = ends.as_deref_mut() {
+        if let Some(ends) = ends.as_mut() {
             ends.push(out.len());
         }
     }
     // A batch is always followed by a generation prompt or by more items, never left hanging
     // inside a user turn - so whatever closes it belongs to the last item of the batch.
     close_tool_turn(st, out);
-    if let Some(ends) = ends.as_deref_mut()
+    if let Some(ends) = ends
         && let Some(last) = ends.last_mut()
     {
         *last = out.len();

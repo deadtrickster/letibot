@@ -209,9 +209,9 @@ mod tests {
         assert_eq!(entry_bytes(1), RECURRENT_BYTES + ATTENTION_BYTES_PER_TOKEN);
         // The point of T18: for a short prompt the fixed term is most of the bill, so a sweep of
         // many short distinct prompts costs far more than their token count suggests.
-        assert!(
+        const _: () = assert!(
             SMALL * ATTENTION_BYTES_PER_TOKEN < RECURRENT_BYTES,
-            "a {SMALL}-token prompt is still mostly its sequence, not its tokens"
+            "a short prompt is still mostly its sequence, not its tokens"
         );
     }
 

@@ -265,7 +265,11 @@ mod tests {
             tools_json: vec![],
         };
         for d in [Dialect::Glm, Dialect::Qwen] {
-            let got = spans_to_string(&d.wiring(None).renderer.render(&prefix, &[item.clone()]));
+            let got = spans_to_string(
+                &d.wiring(None)
+                    .renderer
+                    .render(&prefix, std::slice::from_ref(&item)),
+            );
             assert_eq!(
                 got.matches("NO_RESULT").count(),
                 1,
