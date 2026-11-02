@@ -225,10 +225,9 @@ pub struct Outline {
     pub partial: bool,
 }
 
-/// Parse `source` and list what it defines, in source order.
-///
-/// Function bodies are deliberately not descended into: a closure or a helper inside one
-/// is a definition, and none of them answers "what is the structure of this file".
+/// Parse `source` and list what it defines, in source order. Function bodies are not
+/// descended into: a closure or a helper inside one answers nothing about a file's
+/// structure.
 pub fn outline(source: &str, language: Language) -> Outline {
     let lines = source.lines().count();
     let mut stream = Stream::new(language.lang());
