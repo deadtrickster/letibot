@@ -1,0 +1,36 @@
+[package]
+name = "letibot-embeddings"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# The tree's one HTTP/1.1 client, for a URL mode that speaks an OpenAI-compatible
+# `/v1/embeddings`. Same reason `provider` uses it: a second hand-rolled client is a
+# second place for a framing bug to live.
+letibot-http.workspace = true
+# The tree's one wall clock: `metrics` owns the millisecond the cache's `last_used` is.
+letibot-metrics.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# The section is read with the same parser `prompts.toml` uses: a hand-rolled
+# `key = value` reader is how a mangled setting gets through.
+toml.workspace = true
+# The cache's key is a content hash, and it is the same SHA-256 the ledger uses.
+sha2 = "0.10"
+# `embeddings.db` is its own file, so it is opened by its own `Connection` and never
+# through `tokencore`'s shared `Store`: a cache must not carry a store schema.
+rusqlite = "0.40"
+# **candle, in pure Rust, and no llama.** The built-in model is BERT-family, so the
+# runtime is `candle-core` plus the two crates above it; nothing here links libllama
+# and `cargo tree -p letibot-embeddings` is the check.
+candle-core = "0.9"
+candle-nn = "0.9"
+candle-transformers = "0.9"
+# The tokenizer `model.safetensors` comes with. `onig` and `esaxx_fast` are off
+# on purpose: each is a C build, and BERT's WordPiece needs neither. `fancy-regex`
+# is the pure-Rust half of the pair tokenizers refuses to compile without.
+tokenizers = { version = "0.21", default-features = false, features = ["fancy-regex"] }
+safetensors = "0.4"

@@ -33,6 +33,11 @@ members = [
     "crates/sessionlog",
     "crates/tui",
     "crates/ui",
+    # **The second similarity tier**, one level below the tool runtime that scores
+    # with it: `letibot_tools::similarity` answers on words alone, and R114's blend
+    # needs meaning. Below `tools` because the tool runtime must be able to name an
+    # embedder without owning candle, and above nothing that needs a score.
+    "crates/embeddings",
     "crates/tools",
     "crates/code",
     # The plugin layer stack: scope resolution, hot reload and the shadow gate. It carries no
@@ -159,6 +164,7 @@ letibot-turn = { path = "crates/turn", default-features = false }
 letibot-sessionlog = { path = "crates/sessionlog", default-features = false }
 letibot-tui = { path = "crates/tui" }
 letibot-ui = { path = "crates/ui" }
+letibot-embeddings = { path = "crates/embeddings" }
 letibot-tools = { path = "crates/tools" }
 letibot-code = { path = "crates/code" }
 letibot-plugins = { path = "crates/plugins" }
