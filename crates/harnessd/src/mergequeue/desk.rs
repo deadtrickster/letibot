@@ -322,6 +322,15 @@ fn names(key: &str, asked: &str) -> bool {
             .is_some_and(|head| head.ends_with('/'))
 }
 
+/// A count said in words. The number is known here, so `row(s)` is a placeholder no reader of a
+/// `queue` answer should be shown.
+fn how_many(n: usize, one: &str, many: &str) -> String {
+    match n {
+        1 => format!("1 {one}"),
+        n => format!("{n} {many}"),
+    }
+}
+
 /// Every repository the queue holds - the healths, the rows and the leases, deduped and sorted: what
 /// `all` counts and what a name is matched against.
 fn served(store: &Store) -> Result<Vec<String>, String> {
@@ -487,8 +496,9 @@ fn bounded(store: &Store, repo: &str) -> Result<String, String> {
     }
     if more > 0 {
         out.push_str(&format!(
-            "+{more} more row(s) — `queue` with `action: \"status\"` and `repository: \".\"` prints \
-             every row of this repository\n"
+            "+{} — `queue` with `action: \"status\"` and `repository: \".\"` prints \
+             every row of this repository\n",
+            how_many(more, "more row", "more rows")
         ));
     }
     out.push_str(&served_by(&leases));
@@ -547,8 +557,8 @@ pub fn status(store: &Store, repository: Option<&str>) -> Result<String, String>
         .filter(|r| here(&r.repository) && parked(r.state))
         .collect();
     out.push_str(&format!(
-        "review queue: {} row(s) open or parked\n",
-        open_reviews.len()
+        "review queue: {} open or parked\n",
+        how_many(open_reviews.len(), "row", "rows")
     ));
     for r in open_reviews {
         out.push_str(&review_line(r, None));
@@ -560,8 +570,8 @@ pub fn status(store: &Store, repository: Option<&str>) -> Result<String, String>
         .filter(|m| here(&m.repository) && parked_merge(m.state))
         .collect();
     out.push_str(&format!(
-        "merge queue: {} row(s) open or parked\n",
-        open_merges.len()
+        "merge queue: {} open or parked\n",
+        how_many(open_merges.len(), "row", "rows")
     ));
     for m in open_merges {
         out.push_str(&merge_line(m, None));
@@ -613,8 +623,8 @@ fn targets(healths: &[TargetHealth], tail: Option<usize>) -> String {
         }
         if keep < lines.len() {
             out.push_str(&format!(
-                "    | … {} more line(s); `repository: \".\"` prints them all\n",
-                lines.len() - keep
+                "    | … {}; `repository: \".\"` prints them all\n",
+                how_many(lines.len() - keep, "more line", "more lines")
             ));
         }
     }
@@ -1196,7 +1206,7 @@ mod tests {
             "the whole tail, not three lines of it: {said}"
         );
         assert!(
-            said.contains("review queue: 1 row(s) open or parked"),
+            said.contains("review queue: 1 row open or parked"),
             "{said}"
         );
 
@@ -1304,14 +1314,14 @@ mod tests {
             "{said}"
         );
         assert!(said.contains("r-parked"), "the parked row is kept: {said}");
-        assert!(said.contains("+2 more row(s)"), "{said}");
+        assert!(said.contains("+2 more rows"), "{said}");
         assert!(said.contains("r-waiting-8"), "the oldest waiting: {said}");
         assert!(
             !said.contains("r-waiting-9"),
             "the tail of the queue: {said}"
         );
         assert!(
-            said.contains("… 3 more line(s); `repository: \".\"` prints them all"),
+            said.contains("… 3 more lines; `repository: \".\"` prints them all"),
             "the tail is cut, and it says so: {said}"
         );
         assert!(said.lines().count() <= 25, "a screenful: {said}");
@@ -1321,7 +1331,7 @@ mod tests {
         let full = desk.status(false, Some(".")).unwrap();
         assert!(full.contains("r-waiting-10"), "every row: {full}");
         assert!(
-            full.contains("review queue: 12 row(s) open or parked"),
+            full.contains("review queue: 12 rows open or parked"),
             "{full}"
         );
         assert!(!full.contains("+2 more"), "nothing is counted away: {full}");
@@ -1517,5 +1527,37 @@ mod tests {
             .unwrap_or_else(|| panic!("{said}"));
         assert_eq!(quiet, "other  no target · 1 waiting · unserved", "{said}");
         drop(gate::step_guard(&wt));
+    }
+
+    /// The `queue` answer is read by the model, and every count in it is known: `1 row` and
+    /// `3 rows`, never `row(s)`.
+    #[test]
+    fn a_count_is_said_in_words_not_as_a_placeholder() {
+        let dir = TempDir::new("desk-counts");
+        let mine = a_repo(&dir.0, "mine", None);
+        let db = dir.0.join("sessions.db");
+        let store = Store::open(&db).unwrap();
+        red_target(&store, &mine, "cargo build ok\nFAIL: no binary\n");
+        a_review(&store, &mine, "r-mine", "waiting its turn", 10);
+        a_review(&store, &mine, "r-two", "waiting its turn", 11);
+        let desk = a_desk(&db, &dir.0.join("mine"));
+        let said = desk.status(false, None).unwrap();
+
+        assert_eq!(how_many(1, "row", "rows"), "1 row");
+        assert_eq!(how_many(3, "row", "rows"), "3 rows");
+        // The full shape (`repository: "<name>"`) counts both queues in words.
+        let full = status(&store, None).unwrap();
+        assert!(
+            full.contains("review queue: 2 rows open or parked"),
+            "{full}"
+        );
+        assert!(
+            full.contains("merge queue: 0 rows open or parked"),
+            "{full}"
+        );
+        for placeholder in ["(s)", "(es)"] {
+            assert!(!said.contains(placeholder), "{said}");
+            assert!(!full.contains(placeholder), "{full}");
+        }
     }
 }
