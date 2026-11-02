@@ -249,6 +249,7 @@ the backend captures `declare -f` and `alias -p` and each command is `eval`'d in
 `ALWAYS_SAFE_COMMANDS` entry, that executes `rm`; **`PATH` shims** likewise; and the match on
 `ToolInput` is **not exhaustive**, so image generators, `SchedulerCreate` and `Workflow` fall
 through to `Read(None)` and are auto-approved with the reason `SAFE_COMMAND`.
+
 **omp** - the strict compound parser rejects the whole analysis on `$`, backticks, `( ) < > * ? [
 ] { } ~ | ; &`, on control characters even inside quotes, on `VAR=` prefixes, on 14 interpreter
 names and on ~90 shell-stateful builtins, and normalises the basename before the denylist lookups.
