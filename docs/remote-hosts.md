@@ -99,6 +99,16 @@ sessions, and git cannot be the ninth session on the call master.
 rule, the name checked against `hosts.toml` in both places. A child of a remote session runs on the same
 host unless it asks otherwise; a child of a session in a guest there gets a guest of its own.
 
+A placement is a fact of the **daemon**, not of a session: `--host NAME` sets `Remote(NAME)` for the
+process, and `SessionWiring` carries model, dialect, endpoint and workspace and no backend, because there
+is one backend per process. So the daemon writes it down - `letibot_sessionlog::placement`, a file named
+`<socket>.placement` beside the socket and beside the folder's lock, holding `socket <dev>:<ino>` - and a
+record whose socket is not the inode at that path reads as absent. The inode is what stops a daemon killed
+with SIGKILL from leaving a line the next daemon's listener makes look true, with the bridge then letting a
+package run here while its caller believed it was placed. It is written after the bind, so a refused second
+start cannot clobber a live daemon's record, and the window before the write fails closed: unknown is
+refused in both directions.
+
 ## The tree: git, both ways
 
 The remote works on a **checkout**, not a copy of the local folder:
