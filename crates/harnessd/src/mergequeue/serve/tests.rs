@@ -67,8 +67,9 @@ pub(crate) fn repo(under: &Path) -> PathBuf {
     let repo = under.join("repo");
     std::fs::create_dir_all(&repo).unwrap();
     sh(&repo, &["init", "-q", "-b", "main"]);
-    sh(&repo, &["config", "user.email", "q@test"]);
-    sh(&repo, &["config", "user.name", "queue test"]);
+    // The landing rebases into this repository with the daemon's environment, so the identity and
+    // the signing policy have to be the repository's own rather than the box's.
+    letibot_tools::testing::repo_config(&repo);
     std::fs::write(repo.join("AGENTS.md"), GATE_MD).unwrap();
     std::fs::write(repo.join("a.txt"), "one\n").unwrap();
     sh(&repo, &["add", "."]);
@@ -3166,8 +3167,7 @@ fn repo_with_agents(under: &Path, name: &str, agents: Option<&str>) -> PathBuf {
     let repo = under.join(name);
     std::fs::create_dir_all(&repo).unwrap();
     sh(&repo, &["init", "-q", "-b", "main"]);
-    sh(&repo, &["config", "user.email", "q@test"]);
-    sh(&repo, &["config", "user.name", "queue test"]);
+    letibot_tools::testing::repo_config(&repo);
     sh(
         &repo,
         &[

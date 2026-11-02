@@ -275,8 +275,7 @@ impl Fixture {
         // clones the row's repository at its `head_sha`, so a fixture with none would measure the
         // raise, not the review.
         crate::mergequeue::serve::tests::sh(&ws, &["init", "-q", "-b", "main"]);
-        crate::mergequeue::serve::tests::sh(&ws, &["config", "user.email", "q@test"]);
-        crate::mergequeue::serve::tests::sh(&ws, &["config", "user.name", "queue test"]);
+        letibot_tools::testing::repo_config(&ws);
         std::fs::write(ws.join("a.txt"), "one\n").expect("a file");
         crate::mergequeue::serve::tests::sh(&ws, &["add", "."]);
         crate::mergequeue::serve::tests::sh(&ws, &["commit", "-q", "-m", "base"]);

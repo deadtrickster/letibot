@@ -853,11 +853,15 @@ impl Retrieval for Scripted {
 /// A fixture's `git`, with none of this box's configuration in it. A box whose global config sets
 /// `commit.gpgsign` signs every fixture commit and refuses it with no key, so global and system
 /// config are dropped, the identity is supplied here, and nothing may prompt.
+///
+/// This covers the commands a TEST runs. The commands the code under test runs (the queue's landing
+/// rebases) inherit the daemon's environment, which is what [`repo_config`] is for.
 pub fn git(dir: &std::path::Path) -> std::process::Command {
     let mut cmd = std::process::Command::new("git");
     cmd.current_dir(dir)
         // `/dev/null` is this tree's only spelling: every box it builds on is a unix.
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_AUTHOR_NAME", "letibot fixture")
@@ -865,6 +869,86 @@ pub fn git(dir: &std::path::Path) -> std::process::Command {
         .env("GIT_COMMITTER_NAME", "letibot fixture")
         .env("GIT_COMMITTER_EMAIL", "fixture@letibot.invalid");
     cmd
+}
+
+/// The identity and the signing policy a fixture repository states in its own config, where git
+/// reads it after the box's. Necessary on top of [`git`] because the commands the code under test
+/// runs inherit the daemon's environment: with `commit.gpgsign` set globally, every landing's
+/// `git rebase` asks for a key no host has and the landing fails as a rebase conflict.
+pub fn repo_config(repo: &std::path::Path) {
+    for (key, value) in [
+        ("user.name", "letibot fixture"),
+        ("user.email", "fixture@letibot.invalid"),
+        ("commit.gpgsign", "false"),
+        ("tag.gpgSign", "false"),
+    ] {
+        let out = git(repo)
+            .args(["config", key, value])
+            .output()
+            .expect("git config runs");
+        assert!(
+            out.status.success(),
+            "git config {key} in {}: {}",
+            repo.display(),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+/// The red this helper exists for: a box whose global config signs every commit with a key it has
+/// not got. A fixture repository must still commit, and the queue's landing rebases into one with
+/// the daemon's environment, so what the repository says in its own config is the whole remedy.
+#[cfg(test)]
+mod git_fixture {
+    use super::*;
+
+    /// Where a commit made in a fixture repository lands its message, with `box_config` inherited
+    /// the way the daemon's own `git` inherits it - no [`git`] in between, on purpose.
+    fn commit_inheriting(
+        repo: &std::path::Path,
+        box_config: &std::path::Path,
+    ) -> std::process::Output {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(["commit", "-q", "-m", "a commit under the box's config"])
+            .env("GIT_CONFIG_GLOBAL", box_config)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .output()
+            .expect("git runs")
+    }
+
+    /// The fixture spelling every harnessd repository used: an init and an identity, and signing
+    /// left to whatever the box says - red until [`repo_config`] said it in the repository.
+    #[test]
+    fn a_fixture_repository_commits_under_a_box_that_signs() {
+        let dir = std::env::temp_dir().join(format!("letibot-git-fixture-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let repo = dir.join("repo");
+        std::fs::create_dir_all(&repo).expect("a directory for the repository");
+        let signing = dir.join("gitconfig");
+        std::fs::write(
+            &signing,
+            "[commit]\n\tgpgsign = true\n[tag]\n\tgpgSign = true\n[gpg]\n\tprogram = \
+             /nonexistent-gpg-for-this-test\n",
+        )
+        .expect("the box's config");
+
+        let init = git(&repo).args(["init", "-q", "-b", "main"]).output();
+        assert!(init.expect("git init").status.success(), "git init");
+        repo_config(&repo);
+        std::fs::write(repo.join("a.txt"), "one\n").expect("a file to commit");
+        let added = git(&repo).args(["add", "-A"]).output();
+        assert!(added.expect("git add").status.success(), "git add");
+
+        let out = commit_inheriting(&repo, &signing);
+        assert!(
+            out.status.success(),
+            "a fixture repository commits under the box's config: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 /// Write an executable stub and return only once it can be exec'd: a file written then exec'd
