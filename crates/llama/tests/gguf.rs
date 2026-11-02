@@ -20,8 +20,8 @@ mod tests {
     /// > health of `std::fs::exists`.
     ///
     /// **That is right about a QUIET skip**, and it is the reason this one is loud:
-    /// `apparatus::present_gguf` names the path, says which variable overrides it,
-    /// and prints `THIS IS NOT A PASS`. What it stops doing is reporting ABSENT
+    /// `letibot_llama::apparatus::present_gguf` names the path, says which variable overrides
+    /// it, and prints `THIS IS NOT A PASS`. What it stops doing is reporting ABSENT
     /// APPARATUS as a FAILED ASSERTION, which is a different finding — MEASURED on a
     /// runner: 2074 passed, 84 failed, not one of them a defect, and the suite could
     /// never go green there, so its red mark was a constant and a real failure inside
@@ -31,7 +31,7 @@ mod tests {
     /// turns the skip back into a failure, so a run on the box that has it can refuse
     /// to skip and prove full coverage.
     fn vocab() -> Option<Vocab> {
-        let p = apparatus::present_gguf()?;
+        let p = letibot_llama::apparatus::present_gguf()?;
         Some(letibot_llama::load(&p).expect("the vocabulary must load"))
     }
 

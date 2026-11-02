@@ -156,12 +156,12 @@ fn start_daemon(dir: &Path, log: &Path, socket: &Path, store: &Path, session: &s
     // optional (a daemon on the byte vocabulary needs none). Without this the daemon exits
     // with `no vocabulary: a local model needs the GGUF it serves` and the test fails at
     // "the daemon never served", which reads like a broken test rather than a missing
-    // argument. The question is the same one these tests' own `present_gguf` gate asks, so it
+    // argument. The question is the same one these tests' own `vocab_gguf` gate asks, so it
     // is asked the same way: the operator's `LETIBOT_VOCAB_GGUF` if set, else the box's GGUF.
     if let Some(gguf) = std::env::var("LETIBOT_VOCAB_GGUF")
         .ok()
         .map(std::path::PathBuf::from)
-        .or_else(letibot_tokencore::apparatus::present_gguf)
+        .or_else(letibot_harnessd::vocab_gguf)
     {
         cmd.arg("--vocab").arg(gguf);
     }

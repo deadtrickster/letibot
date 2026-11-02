@@ -135,7 +135,7 @@ fn session(tag: &str) -> (TempDir, Config, Parts) {
     cfg.vocab_gguf = std::env::var("LETIBOT_VOCAB_GGUF")
         .ok()
         .map(std::path::PathBuf::from)
-        .or_else(letibot_tokencore::apparatus::present_gguf);
+        .or_else(letibot_harnessd::vocab_gguf);
     let parts = Parts::load(&cfg).expect("the vocabulary must load");
     (dir, cfg, parts)
 }

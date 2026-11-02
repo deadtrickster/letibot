@@ -217,7 +217,7 @@ fn config(session_id: &str, endpoint: Endpoint, store: &Path) -> Config {
     cfg.vocab_gguf = std::env::var("LETIBOT_VOCAB_GGUF")
         .ok()
         .map(std::path::PathBuf::from)
-        .or_else(letibot_tokencore::apparatus::present_gguf);
+        .or_else(letibot_harnessd::vocab_gguf);
     // **The reviewers' clones go in this fixture's own directory.** A review's tree is a clone of
     // the row's repository (`mergequeue::review::start_reviewer`), and the sweep that removes the
     // ones nobody is on refuses any directory not named `CLONES_DIR` — so a test that forgot this

@@ -162,35 +162,41 @@ pub use sessions::{Outcome, OutcomeSaid, Sessions};
 pub use tasks::{TaskEntry, TaskJournal};
 pub use term::Terminals;
 
-/// **The vocabulary GGUF, for a test — or `None` with the skip announced.**
+/// **The vocabulary GGUF this build can LOAD, for a test**: `None` with the skip announced.
 ///
-/// `letibot_tokencore::apparatus::present_gguf` asks whether the FILE is there. A harnessd
-/// built without `local` (no llama.cpp on the box — `--no-default-features`) cannot load it
-/// even when it is, so the file's presence is not the apparatus: llama.cpp is part of it. This
-/// asks both, and under `LETIBOT_REQUIRE_APPARATUS` a missing half is a failure, as always.
+/// A file on disk is not the apparatus: a shard whose siblings are missing, or an architecture
+/// this llama.cpp does not know, is a file that is there and cannot be read, and forty-seven
+/// harnessd tests failed on one such file instead of skipping. A harnessd built without `local`
+/// (no llama.cpp on the box) cannot load any of them, so llama.cpp is part of the apparatus too.
+/// Under `LETIBOT_REQUIRE_APPARATUS` each missing half is a failure, as always.
 pub fn vocab_gguf() -> Option<std::path::PathBuf> {
-    if !cfg!(feature = "local") {
-        letibot_tokencore::apparatus::absent(
-            "llama.cpp — this harnessd was built without the `local` feature, so a vocabulary \
-             GGUF cannot be loaded",
-        );
-        return None;
+    #[cfg(feature = "local")]
+    {
+        letibot_llama::apparatus::present_gguf()
     }
-    letibot_tokencore::apparatus::present_gguf()
+    #[cfg(not(feature = "local"))]
+    {
+        letibot_tokencore::apparatus::absent(NO_LLAMA);
+        None
+    }
 }
 
-/// [`vocab_gguf`] for a named file: the file must be there AND this build must be able to load
-/// it. For a test that pins its own GGUF rather than the box's default one.
+/// [`vocab_gguf`] for a named file: it must LOAD here, not merely exist. For a test that pins its
+/// own GGUF rather than the box's default one.
 pub fn vocab_file(path: &std::path::Path) -> Option<()> {
-    if !cfg!(feature = "local") {
-        letibot_tokencore::apparatus::absent(
-            "llama.cpp — this harnessd was built without the `local` feature, so a vocabulary \
-             GGUF cannot be loaded",
-        );
-        return None;
+    #[cfg(feature = "local")]
+    {
+        letibot_llama::apparatus::present_file(path)
     }
-    letibot_tokencore::apparatus::present(
-        &format!("a vocabulary GGUF ({})", path.display()),
-        path.is_file(),
-    )
+    #[cfg(not(feature = "local"))]
+    {
+        let _ = path;
+        letibot_tokencore::apparatus::absent(NO_LLAMA);
+        None
+    }
 }
+
+/// What a build without `local` says about the vocabulary it cannot load.
+#[cfg(not(feature = "local"))]
+const NO_LLAMA: &str = "llama.cpp: this harnessd was built without the `local` feature, so a \
+                       vocabulary GGUF cannot be loaded";

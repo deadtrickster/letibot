@@ -140,7 +140,7 @@ fn a_summary_turn(thought: &[u32], answer: &[u32], n_prompt: u64, cache_n: u64) 
 ///   with no reconciliation between them.
 #[test]
 fn compaction_appends_the_instruction_and_reads_the_summary_off_the_turn() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_llama::apparatus::present_gguf() else {
         return;
     };
     let _lock = serial();
@@ -227,7 +227,7 @@ fn compaction_appends_the_instruction_and_reads_the_summary_off_the_turn() {
 /// swallowed: the outcome carries the tool calls and the caller refuses.
 #[test]
 fn a_summary_turn_that_calls_tools_surfaces_them() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_llama::apparatus::present_gguf() else {
         return;
     };
     let _lock = serial();
@@ -286,7 +286,7 @@ fn a_summary_turn_that_calls_tools_surfaces_them() {
 /// a compaction that did not run must say so, not vanish into retries.
 #[test]
 fn a_summary_turn_that_never_says_anything_exhausts_the_salvage_and_fails_the_compaction() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_llama::apparatus::present_gguf() else {
         return;
     };
     let _lock = serial();
@@ -404,7 +404,7 @@ fn token_frames(ids: &[u32]) -> Vec<Frame> {
 /// the wall with `/compact` retrying into the same wall.
 #[test]
 fn an_unfinished_reasoning_summary_turn_is_salvaged_and_the_compaction_completes() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_llama::apparatus::present_gguf() else {
         return;
     };
     let _lock = serial();
@@ -523,7 +523,7 @@ fn an_unfinished_reasoning_summary_turn_is_salvaged_and_the_compaction_completes
 /// (262144)` from qwen for the SUMMARY. The second is this bug.
 #[test]
 fn a_summary_turn_goes_to_the_provider_when_there_is_one() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_llama::apparatus::present_gguf() else {
         return;
     };
     use letibot_backend::{
@@ -671,7 +671,7 @@ fn a_summary_turn_goes_to_the_provider_when_there_is_one() {
 /// append a second instruction per attempt.
 #[test]
 fn a_summary_turn_is_taken_again_when_the_endpoint_says_try_again() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_llama::apparatus::present_gguf() else {
         return;
     };
     let _lock = serial();

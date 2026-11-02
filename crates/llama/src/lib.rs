@@ -9,6 +9,7 @@
 //!
 //! This is the only crate that links llama.cpp. See `Cargo.toml` for why that moved here.
 
+pub mod apparatus;
 mod ffi;
 
 use std::ffi::{CStr, CString, c_char};

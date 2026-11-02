@@ -175,7 +175,7 @@ fn a_thinking_turn(thought: &[u32], answer: &[u32]) -> Vec<Frame> {
 #[test]
 fn a_reasoning_only_length_turn_fails_and_leaves_the_region_untouched() {
     let _lock = serial();
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_llama::apparatus::present_gguf() else {
         return;
     };
     let mut frames = vec![Frame::Progress {
@@ -254,7 +254,7 @@ fn a_reasoning_only_length_turn_fails_and_leaves_the_region_untouched() {
 #[test]
 fn a_turn_that_stops_inside_its_own_reasoning_is_not_an_empty_success() {
     let _lock = serial();
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_llama::apparatus::present_gguf() else {
         return;
     };
     let mut frames = vec![Frame::Progress {
@@ -332,7 +332,7 @@ fn a_turn_that_stops_inside_its_own_reasoning_is_not_an_empty_success() {
 #[test]
 fn a_turn_that_closes_its_reasoning_and_says_something_still_succeeds() {
     let _lock = serial();
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_llama::apparatus::present_gguf() else {
         return;
     };
     let mut frames = vec![Frame::Progress {
@@ -376,7 +376,7 @@ fn a_turn_that_closes_its_reasoning_and_says_something_still_succeeds() {
 #[test]
 fn a_truncated_tool_argument_refuses_the_entire_batch() {
     let _lock = serial();
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_llama::apparatus::present_gguf() else {
         return;
     };
     let mut frames = vec![Frame::Token {
@@ -463,7 +463,7 @@ fn a_truncated_tool_argument_refuses_the_entire_batch() {
 #[test]
 fn the_same_content_succeeds_when_it_was_not_truncated() {
     let _lock = serial();
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_llama::apparatus::present_gguf() else {
         return;
     };
     let mut frames = vec![Frame::Token {
@@ -529,7 +529,7 @@ fn the_same_content_succeeds_when_it_was_not_truncated() {
 #[test]
 fn repetition_collapse_aborts_the_turn_and_raises_a_named_warning() {
     let _lock = serial();
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_llama::apparatus::present_gguf() else {
         return;
     };
     let at = ids_of("@")[0];
@@ -625,7 +625,7 @@ impl SteeringSource for Once {
 #[test]
 fn a_rounds_tail_is_in_the_prompt_and_not_in_the_log() {
     let _g = serial();
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_llama::apparatus::present_gguf() else {
         return;
     };
     let answer = ids_of("Blue.");
@@ -726,7 +726,7 @@ fn a_rounds_tail_is_in_the_prompt_and_not_in_the_log() {
 #[test]
 fn a_message_already_waiting_is_read_before_the_model_speaks() {
     let _lock = serial();
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_llama::apparatus::present_gguf() else {
         return;
     };
     let mut frames = vec![
@@ -812,7 +812,7 @@ fn a_message_already_waiting_is_read_before_the_model_speaks() {
 #[test]
 fn an_ordinary_steering_message_is_injected_after_the_generation_completes() {
     let _lock = serial();
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_llama::apparatus::present_gguf() else {
         return;
     };
     let mut frames = vec![Frame::Token {
@@ -893,7 +893,7 @@ fn an_ordinary_steering_message_is_injected_after_the_generation_completes() {
 #[test]
 fn a_failed_turn_gives_the_operators_words_back_to_the_source() {
     let _lock = serial();
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_llama::apparatus::present_gguf() else {
         return;
     };
     let mut frames = vec![Frame::Progress {
@@ -974,7 +974,7 @@ fn a_failed_turn_gives_the_operators_words_back_to_the_source() {
 #[test]
 fn an_urgent_message_interrupts_the_generation_rather_than_waiting_for_it() {
     let _lock = serial();
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_llama::apparatus::present_gguf() else {
         return;
     };
     let mut frames = vec![Frame::Token {
@@ -1038,7 +1038,7 @@ fn an_urgent_message_interrupts_the_generation_rather_than_waiting_for_it() {
 #[test]
 fn two_turns_hold_the_invariant_and_the_reuse_is_reported_separately() {
     let _lock = serial();
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_llama::apparatus::present_gguf() else {
         return;
     };
     let make = |n: u64, cache: u64| {
@@ -1149,7 +1149,7 @@ fn two_turns_hold_the_invariant_and_the_reuse_is_reported_separately() {
 #[test]
 fn the_first_delta_of_a_turn_is_reasoning_because_the_generation_prompt_opened_it() {
     let _lock = serial();
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_llama::apparatus::present_gguf() else {
         return;
     };
     let thought = ids_of("The user wants the days of the week.");
@@ -1197,7 +1197,7 @@ fn the_first_delta_of_a_turn_is_reasoning_because_the_generation_prompt_opened_i
 #[test]
 fn a_boundary_literal_is_cut_out_of_the_stream_rather_than_shown_to_a_head() {
     let _lock = serial();
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_llama::apparatus::present_gguf() else {
         return;
     };
     let thought = ids_of("Seven of them.");
@@ -1241,7 +1241,7 @@ fn a_boundary_literal_is_cut_out_of_the_stream_rather_than_shown_to_a_head() {
 #[test]
 fn a_heads_deltas_split_by_channel_equal_the_rows_the_turn_committed() {
     let _lock = serial();
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_llama::apparatus::present_gguf() else {
         return;
     };
     let thought = ids_of("They want seven lines and nothing else.");
@@ -1304,7 +1304,7 @@ fn a_heads_deltas_split_by_channel_equal_the_rows_the_turn_committed() {
 #[test]
 fn the_body_of_a_tool_call_is_never_announced_as_assistant_text() {
     let _lock = serial();
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_llama::apparatus::present_gguf() else {
         return;
     };
     let mut frames = vec![Frame::Token {
@@ -1416,7 +1416,7 @@ fn suppressed_script(head: &[u32], tail: &[u32]) -> Vec<Frame> {
 #[test]
 fn a_suppressed_token_costs_the_tail_of_a_turn_and_not_the_whole_of_it() {
     let _g = serial();
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_llama::apparatus::present_gguf() else {
         return;
     };
     let head = ids_of("Reading it now.");
@@ -1529,7 +1529,7 @@ fn a_suppressed_token_costs_the_tail_of_a_turn_and_not_the_whole_of_it() {
 #[test]
 fn the_ids_after_an_unaccountable_frame_never_reach_the_ledger() {
     let _g = serial();
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_llama::apparatus::present_gguf() else {
         return;
     };
     let head = ids_of("Reading it now.");
@@ -1602,7 +1602,7 @@ impl SteeringSource for After {
 #[test]
 fn a_stopped_thought_costs_the_next_turn_a_sentence_not_the_thought() {
     let _lock = serial();
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_llama::apparatus::present_gguf() else {
         return;
     };
 
@@ -1680,7 +1680,7 @@ fn a_stopped_thought_costs_the_next_turn_a_sentence_not_the_thought() {
 #[test]
 fn a_streaming_turn_reports_the_servers_counter_on_every_frame_that_advances_it() {
     let _lock = serial();
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_llama::apparatus::present_gguf() else {
         return;
     };
     let thought = ids_of("The user wants the days of the week.");
@@ -1762,7 +1762,7 @@ impl letibot_backend::MessagesBackend for NeverReached {
 #[test]
 fn an_unreached_provider_is_an_io_failure_and_not_a_malformed_answer() {
     let _lock = serial();
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_llama::apparatus::present_gguf() else {
         eprintln!("SKIPPED: no vocabulary GGUF, so the engine cannot open a session");
         return;
     };
@@ -1869,7 +1869,7 @@ impl letibot_backend::MessagesBackend for SaysOneThing {
 #[test]
 fn an_interrupt_taken_at_the_end_of_a_successful_round_goes_back_to_the_source() {
     let _lock = serial();
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_llama::apparatus::present_gguf() else {
         eprintln!("SKIPPED: no vocabulary GGUF, so the engine cannot open a session");
         return;
     };

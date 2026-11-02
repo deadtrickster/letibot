@@ -478,7 +478,7 @@ fn config(store: &std::path::Path, session_id: &str) -> Config {
     cfg.session_id = session_id.to_string();
     // The daemon's own vocabulary, named as a daemon would name it: main made
     // `vocab_gguf` optional and `for_this_box` no longer carries this box's
-    // default, so the test states the GGUF its own gate (`present_gguf`, at
+    // default, so the test states the GGUF its own gate (`vocab_gguf`, at
     // each test) checked for — the qwen one the harness must tokenize with.
     cfg.vocab_gguf = Some(apparatus::gguf_path());
     if let Ok(g) = std::env::var("LETIBOT_VOCAB_GGUF") {

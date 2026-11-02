@@ -285,16 +285,6 @@ pub fn check_real_store() -> bool {
     false
 }
 
-/// The vocabulary, or `None` with the skip already announced.
-///
-/// The convenience most tests want, because "does the GGUF exist" is the whole
-/// probe for all of them.
-pub fn present_gguf() -> Option<PathBuf> {
-    let p = gguf_path();
-    present(&format!("a vocabulary GGUF ({})", p.display()), p.is_file())?;
-    Some(p)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -66,7 +66,7 @@ fn config(session: &str, socket: &std::path::Path, model_port: u16) -> Config {
     cfg.web_search = None;
     cfg.permission = Vec::new();
     cfg.dialect = Dialect::Qwen;
-    // **The `present_gguf` gate at each test says this box HAS a vocabulary; this is the
+    // **The `vocab_gguf` gate at each test says this box HAS a vocabulary; this is the
     // one it was talking about.** `Config::for_this_box` carries no default any more — a
     // daemon on the byte vocabulary needs none, which is main's change — so a harness
     // built here must be handed one. `LETIBOT_VOCAB_GGUF` wins, as everywhere else; the
@@ -74,7 +74,7 @@ fn config(session: &str, socket: &std::path::Path, model_port: u16) -> Config {
     cfg.vocab_gguf = std::env::var("LETIBOT_VOCAB_GGUF")
         .ok()
         .map(std::path::PathBuf::from)
-        .or_else(letibot_tokencore::apparatus::present_gguf);
+        .or_else(letibot_harnessd::vocab_gguf);
     cfg.session_id = session.into();
     cfg.socket = socket.to_path_buf();
     cfg.endpoint = Endpoint::new("127.0.0.1", model_port);
@@ -85,11 +85,11 @@ fn config(session: &str, socket: &std::path::Path, model_port: u16) -> Config {
     // `Config::for_this_box` carries no vocabulary default any more (a daemon on
     // the byte vocabulary needs none), so a harness built here is handed one: the
     // operator's `LETIBOT_VOCAB_GGUF` if it is set, else the box's own GGUF — the
-    // same path this file's `present_gguf` gate consults.
+    // same path this file's `vocab_gguf` gate consults.
     cfg.vocab_gguf = std::env::var("LETIBOT_VOCAB_GGUF")
         .ok()
         .map(std::path::PathBuf::from)
-        .or_else(letibot_tokencore::apparatus::present_gguf);
+        .or_else(letibot_harnessd::vocab_gguf);
     cfg
 }
 

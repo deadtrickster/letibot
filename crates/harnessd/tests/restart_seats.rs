@@ -49,7 +49,7 @@
 //!
 //! The vocabulary GGUF, because `Harness::open` renders its stable prefix — `resume.rs`'s,
 //! `session_channel.rs`'s and `review_pass.rs`'s situation exactly, answered the same way:
-//! [`present_gguf`] announces a skip when it is not here rather than failing, and
+//! [`vocab_gguf`] announces a skip when it is not here rather than failing, and
 //! `LETIBOT_REQUIRE_APPARATUS=1` refuses that skip.
 //!
 //! **And NOT a provider, and not a model.** A `ProviderConfig` is not this file's to name: the
