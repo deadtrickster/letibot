@@ -1,80 +1,44 @@
-//! **The bash an operator's own `!` line is handed to, chosen from what this box has.**
-//!
-//! # The defect, measured
-//!
-//! [`crate::exec::console::shell`] is `/bin/bash -ic`, and `-i` is the whole of it: bash
-//! sources `~/.bashrc` for an interactive shell and for no other, which is what makes the
-//! operator's aliases exist on a `!` line. On a stock Mac `/bin/bash` is **3.2.57 (2007)**,
-//! while the rc chain an operator actually has is written for bash 4 or later. MEASURED
-//! 2026-10-29 on the operator's Mac: the row for `! cp …` came back as
+//! Which bash an operator's `!` line is handed to: a bash 4+ from `$SHELL` or
+//! `PATH`, else `/bin/bash`. The `-ic` flags stay [`crate::exec::console`]'s.
 //!
 //! ```text
 //! bash: declare: -A: invalid option
 //! declare: usage: declare [-afFirtx] [-p] [name[=value] ...]
 //! ```
 //!
-//! and that is `~/.emacs.d/shell/integration.bash`'s `declare -A`, which `~/.bashrc` sources,
-//! refused by 3.2 before the operator's own command. The same line under the `bash` on `PATH`
-//! — 5.3.20 on that box — loads the rc cleanly.
-//!
-//! # The program is probed; the flags are not
-//!
-//! `-ic` is [`crate::exec::console`]'s decision and stays there. What this module answers is
-//! *which bash*, and the candidates are ordered by what the person would get if they typed
-//! it themselves:
-//!
-//! | candidate | taken when |
-//! |---|---|
-//! | `$SHELL` | it is a bash whose major version is 4 or more — the console that started the daemon is the operator's own |
-//! | `bash` on `PATH` | its major version is 4 or more |
-//! | `/bin/bash` | always, as the last word |
-//!
-//! **`$SHELL` is not followed when it is not a bash 4 or later**, and this box is why:
-//! `$SHELL` is `/bin/zsh` here. The line the operator typed is a bash line — its word
-//! splitting, its `~`, its `!` — and `-ic` is bash's and zsh's but not fish's, so following
-//! `$SHELL` wherever it points would run a different command than the one that was written,
-//! and on a console whose shell is fish would not run at all. A bash 4+ is the smallest
-//! change that makes the operator's rc work, and it is what `bash` on their `PATH` already is.
-//!
-//! **The last word is a bash that may be 3.2, and that is deliberate.** A 3.2 that prints its
-//! rc's error still runs `cp`: refusing to start, or refusing the line, would turn a noisy row
-//! into a shell escape that cannot run anything, which is worse than the row.
-//!
-//! # Where it is used, and where it is not
-//!
-//! [`crate::backend::HostBackend::executable`] — the unconfined exec path, which is the
-//! leticode seat and the Mac's boundary-less fallback — sets it. **A confined backend keeps
-//! `/bin/bash`**, and the two reasons are one fact: the view's `$HOME` is a tmpfs, so
-//! `~/.bashrc` inside it is not the operator's and there is no rc to fail — and a bash found
-//! here lives at a path outside that view, which a command inside the boundary cannot exec.
+//! `-i` is what reads `~/.bashrc`, and the operator's rc is written for bash 4+, so a
+//! 3.2 refuses it before their command. A 3.2 last word is still deliberate - it runs
+//! `cp` - and `$SHELL` is skipped unless it is a bash 4+, since the line typed is a bash
+//! line. A confined backend keeps `/bin/bash`: its `$HOME` is a tmpfs with no operator
+//! rc, and a bash found here is outside the view it may exec from.
 
 use std::path::Path;
 use std::sync::OnceLock;
 
-/// **The major version the operator's rc chain is written in** — `declare -A`, `mapfile` and
-/// `${x,,}` are all bash 4.0's.
+/// The major version the operator's rc chain is written in - `declare -A`,
+/// `mapfile` and `${x,,}` are all bash 4.0's.
 const FIRST_BASH_THAT_READS_THEIR_RC: u32 = 4;
 
 /// What the last word is when this box has no bash 4 anywhere.
 const FALLBACK: &str = "/bin/bash";
 
-/// **The console's shell, with the program chosen for this box.** The flags are
-/// [`crate::exec::console::shell`]'s and are not touched: `-ic` is that module's decision.
+/// The console's shell, with the program chosen for this box. The flags are
+/// [`crate::exec::console::shell`]'s and are not touched: `-ic` is that module's
+/// decision.
 pub fn shell() -> Vec<String> {
     let mut argv = crate::exec::console::shell();
     match argv.first() {
         Some(program) if is_bash(program) => {}
-        // **The flags are this module's input, not its subject.** If `exec::console` ever
-        // names a program that is not a bash, that decision wins and nothing here
-        // second-guesses it.
+        // The flags are this module's input, not its subject: if `exec::console` ever
+        // names a program that is not a bash, that decision wins.
         _ => return argv,
     }
     argv[0] = chosen();
     argv
 }
 
-/// The program, resolved once per process: the probe is two `fork`s, and a daemon opens many
-/// sessions.
+/// The program, resolved once per process: the probe is two `fork`s, and a daemon
+/// opens many sessions.
 fn chosen() -> String {
     static CHOSEN: OnceLock<String> = OnceLock::new();
     CHOSEN
@@ -86,11 +50,12 @@ fn chosen() -> String {
         .clone()
 }
 
-/// **The rule, with the box injected** — the whole of it, assertable without a process.
+/// The rule, with the box injected, so the whole of it is assertable without a
+/// process.
 ///
-/// `major` answers a program's bash major version, and `None` for anything that is not a bash
-/// this box can run (the probe is `-c` and non-interactive, so no rc file is read and nothing
-/// of the operator's runs).
+/// `major` answers a program's bash major version, and `None` for anything that
+/// is not a bash this box can run - the probe is `-c` and non-interactive, so no
+/// rc file is read and nothing of the operator's runs.
 fn choose(
     console_shell: Option<&str>,
     path_bash: Option<&str>,
@@ -111,8 +76,9 @@ fn choose(
     FALLBACK.to_string()
 }
 
-/// A program this module is willing to call a bash: the file's own name, because `$SHELL` and
-/// a `PATH` entry can both be a symlink or an absolute path and neither changes what runs.
+/// A program this module is willing to call a bash: the file's own name, because
+/// `$SHELL` and a `PATH` entry can both be a symlink or an absolute path and
+/// neither changes what runs.
 fn is_bash(program: &str) -> bool {
     Path::new(program)
         .file_name()
@@ -120,9 +86,9 @@ fn is_bash(program: &str) -> bool {
         == Some("bash")
 }
 
-/// **`bash` on `PATH`, as an absolute path.** Absolute because the program is handed to a
-/// process this daemon starts, and a bare name would be resolved against whatever `PATH` that
-/// process ends up with rather than the one this choice was measured against.
+/// `bash` on `PATH`, as an absolute path: the program is handed to a process this
+/// daemon starts, and a bare name would be resolved against whatever `PATH` that
+/// process ends up with rather than the one this choice was made against.
 fn on_path(name: &str) -> Option<String> {
     let path = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&path) {
@@ -145,9 +111,9 @@ fn is_executable(path: &Path) -> bool {
     }
 }
 
-/// **The major version a program answers with**, or `None` when it is not a bash at all — the
-/// probe prints `${BASH_VERSINFO[0]}`, which a dash refuses as a bad substitution and a zsh
-/// leaves empty.
+/// The major version a program answers with, or `None` when it is not a bash at
+/// all - the probe prints `${BASH_VERSINFO[0]}`, which a dash refuses as a bad
+/// substitution and a zsh leaves empty.
 pub(crate) fn major_version(program: &str) -> Option<u32> {
     let out = std::process::Command::new(program)
         .arg("-c")
@@ -176,8 +142,8 @@ mod tests {
         }
     }
 
-    /// **`$SHELL` wins when it is a bash 4 or later**: the console that started the daemon is
-    /// the operator's own, so its shell is the one their rc belongs to.
+    /// `$SHELL` wins when it is a bash 4 or later: the console that started the
+    /// daemon is the operator's own, so its shell is the one their rc belongs to.
     #[test]
     fn a_console_shell_that_is_a_bash_four_is_taken() {
         let major = versions(&[("/opt/homebrew/bin/bash", 5), ("/usr/bin/bash", 5)]);
@@ -192,8 +158,8 @@ mod tests {
         );
     }
 
-    /// **A `$SHELL` that is not a bash is not followed.** This box's is `/bin/zsh`; the line
-    /// the operator typed is a bash line, and `-ic` is bash's and zsh's but not fish's.
+    /// A `$SHELL` that is not a bash is not followed: the line the operator typed is
+    /// a bash line, and `-ic` is bash's and zsh's but not fish's.
     #[test]
     fn a_console_shell_that_is_not_a_bash_is_left_alone() {
         let major = versions(&[("/usr/bin/bash", 5)]);
@@ -206,8 +172,8 @@ mod tests {
         }
     }
 
-    /// **The measured defect**: a console bash of 3.2 is skipped for a 4+ on `PATH` — that is
-    /// what turned `! cp …` into two lines of `declare` usage.
+    /// A console bash of 3.2 is skipped for a 4+ on `PATH`: otherwise the row is two
+    /// lines of `declare` usage instead of the operator's command.
     #[test]
     fn a_console_bash_three_is_skipped_for_a_four_on_the_path() {
         let major = versions(&[("/bin/bash", 3), ("/opt/homebrew/bin/bash", 5)]);
@@ -218,9 +184,9 @@ mod tests {
         );
     }
 
-    /// **And when nothing on the box is a 4+, the last word is `/bin/bash`.** A 3.2 that
-    /// prints its rc's error still runs `cp`, and a shell escape that refuses the line is
-    /// worse than a noisy row.
+    /// And when nothing on the box is a 4+, the last word is `/bin/bash`: a 3.2 that
+    /// prints its rc's error still runs `cp`, and a shell escape that refuses the line
+    /// is worse than a noisy row.
     #[test]
     fn nothing_newer_anywhere_still_answers_the_bash_the_box_has() {
         let major = versions(&[("/bin/bash", 3), ("/usr/bin/bash", 3)]);
@@ -240,8 +206,8 @@ mod tests {
         );
     }
 
-    /// **The wiring, on whatever box this runs on**: the flags are `exec::console`'s, only the
-    /// program is chosen, and the program is a bash that exists here.
+    /// The wiring, on whatever box this runs on: the flags are `exec::console`'s,
+    /// only the program is chosen, and the program is a bash that exists here.
     #[test]
     fn the_flags_are_the_consoles_and_only_the_program_is_chosen() {
         let console = crate::exec::console::shell();
@@ -257,8 +223,8 @@ mod tests {
         eprintln!("the operator's own run is handed to {mine:?}");
     }
 
-    /// **No 3.2 is chosen while a 4+ is reachable on this box.** The measured defect, as an
-    /// assertion about the machine the test is running on rather than about a table.
+    /// No 3.2 is chosen while a 4+ is reachable on this box - an assertion about the
+    /// machine the test is running on rather than about a table.
     #[test]
     fn a_four_this_box_has_is_never_passed_over_for_a_three() {
         let program = shell()[0].clone();

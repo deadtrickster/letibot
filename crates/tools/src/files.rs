@@ -1,31 +1,13 @@
-//! The lines this session was shown of each file, and what it may therefore
-//! change.
+//! The lines this session was shown of each file, and what it may therefore change.
 //!
-//! # The line-level rule (R111)
+//! An `edit` may only replace lines a tool displayed: a `read` window, a search hit with
+//! its context, or the region of this session's own earlier edit. Only the displayed
+//! lines count, never their neighbours - the showing tools carry their own context, so
+//! the boundary is where display stopped.
 //!
-//! An `edit` may only replace lines a tool **displayed** to the model: a `read`
-//! window, a search hit with its context, or the region of this session's own
-//! earlier edit. The ledger keeps one fingerprint per line, so the two facts the
-//! old whole-file digest could not say apart are separate here:
-//!
-//! - a formatter touching line 900 does not disturb what was shown at line 12,
-//!   so an edit at 12 still lands;
-//! - a change to the shown lines themselves makes the stored fingerprint
-//!   mismatch, and the edit is refused with the range to read.
-//!
-//! How near to a shown line counts as seen: **only the displayed lines**.
-//! Adjacency is not display, and the showing tools already carry their own
-//! context (a search hit can ask for lines around it, an edit's result shows
-//! three lines either side), so the boundary is where the display stopped.
-//!
-//! # Fingerprints, not an mtime and not a whole-file digest
-//!
-//! An mtime moves on a `touch` and on a checkout that writes the same bytes
-//! back. A whole-file digest answers "did anything change" when the question is
-//! "did *these* lines change". One fingerprint per shown line answers that
-//! exactly, over a backend that has no mtime at all. The hashes live in this
-//! process only; they are never serialised, so they need no stable cross-version
-//! definition.
+//! One fingerprint per shown line, not an mtime and not a whole-file digest: an mtime
+//! moves on a `touch`, and a whole-file digest answers "did anything change" when the
+//! question is "did these lines change".
 
 use std::collections::BTreeMap;
 use std::collections::hash_map::DefaultHasher;
@@ -49,10 +31,10 @@ fn fp_line(line: &str) -> u64 {
 /// `str::lines()` numbers every showing tool numbers by.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Seen {
-    /// Fingerprint of the **whole file** at the last whole-file fact (`read`
-    /// that showed all of it, or this session's own write). `write`'s
-    /// staleness check reads this: an overwrite discards everything, so its
-    /// question is about the whole file.
+    /// Fingerprint of the whole file at the last whole-file fact (`read` that
+    /// showed all of it, or this session's own write). `write`'s staleness check
+    /// reads this: an overwrite discards everything, so its question is about the
+    /// whole file.
     pub digest: String,
     pub bytes: usize,
     table: Vec<Option<u64>>,
@@ -155,7 +137,7 @@ pub enum Cover {
 
 /// Per-session: the lines shown, per path.
 ///
-/// Interior mutability because [`crate::runtime::Tool::invoke`] takes `&self` —
+/// Interior mutability because [`crate::runtime::Tool::invoke`] takes `&self` -
 /// tools are values in a registry and are shared across calls.
 #[derive(Debug, Default)]
 pub struct FileLedger {
@@ -173,9 +155,9 @@ impl FileLedger {
         self.seen.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// The whole file was shown (a `read` that displayed every line) or the
-    /// whole file was authored by this session (`write`). Marks every line and
-    /// records the whole-file digest.
+    /// The whole file was shown (a `read` that displayed every line) or was
+    /// authored by this session (`write`). Marks every line and records the
+    /// whole-file digest.
     pub fn mark_whole(&self, path: &str, content: &[u8]) {
         let text = String::from_utf8_lossy(content);
         let lines: Vec<&str> = display_lines(&text);
@@ -188,7 +170,7 @@ impl FileLedger {
     }
 
     /// A partial read: mark the lines it displayed, in full. A line `read`
-    /// clipped is not marked — the model saw a prefix of it. The whole-file
+    /// clipped is not marked, because the model saw a prefix of it. The whole-file
     /// digest is still recorded: the bytes were read, which is `write`'s fact.
     pub fn mark_read(&self, path: &str, content: &[u8], shown: &[usize]) {
         let text = String::from_utf8_lossy(content);
@@ -220,9 +202,9 @@ impl FileLedger {
     }
 
     /// This session's own edit landed: reseat the table across the change and
-    /// mark the region the result displayed. `mark_from`/`mark_to` are line
-    /// numbers in `after`; `on_disk` is what was written, whose whole-file
-    /// digest must match what a later `read` hashes.
+    /// mark the region the result displayed. `mark_from`/`mark_to` are line numbers
+    /// in `after`; `on_disk` is what was written, whose whole-file digest must
+    /// match what a later `read` hashes.
     pub fn mark_edit(
         &self,
         path: &str,
@@ -292,9 +274,9 @@ impl FileLedger {
 
 /// The key two spellings of one path share.
 ///
-/// `./src/lib.rs`, `src//lib.rs` and `src/lib.rs` are one file, and a ledger that
-/// keyed on the model's spelling would let a re-spelling walk past the guard.
-/// This is lexical only: the backend's own `stat` is what resolves a symlink.
+/// `./src/lib.rs`, `src//lib.rs` and `src/lib.rs` are one file, and a ledger keyed
+/// on the model's spelling would let a re-spelling walk past the guard. This is
+/// lexical only: the backend's own `stat` is what resolves a symlink.
 pub fn normalise(path: &str) -> String {
     let mut out: Vec<&str> = Vec::new();
     for seg in path.split('/') {

@@ -1,43 +1,9 @@
-//! One shape for **"the infrastructure this tool needs is not attached"**.
+//! The one shape for "the infrastructure this tool needs is not attached".
 //!
-//! There were two of these before this module: `retrieval`'s `Unavailable` wrote
-//! its own sentence, and every tool in [`crate::builtins::external`] would have
-//! written another. Two shapes for one fact is how the two stop agreeing about
-//! what the fact *is* — and the fact is precise enough that drifting off it is a
-//! correctness bug, not a style one.
-//!
-//! # The fact, stated once
-//!
-//! §8.1 clause 3 and the design brief §2.3:
-//!
-//! > `ask_code` returns `not_run` rather than "the corpus does not cover this",
-//! > because nothing was queried and saying otherwise would be a claim about a
-//! > corpus nobody searched.
-//!
-//! So a tool with no backend behind it produces **[`ToolOutcome::NotRun`]**, and
-//! the three neighbouring outcomes are all wrong in the same way:
-//!
-//! | wrong outcome | what it would claim |
-//! |---|---|
-//! | `ok` with an empty body | it ran, and this emptiness is the answer |
-//! | `abstained` | it ran, looked, and the thing is not out there |
-//! | `failed` | it ran and something went wrong on the way |
-//!
-//! None of those happened. Nothing ran.
-//!
-//! # And the refusal carries the fix
-//!
-//! §3's last rule — *"errors carry the fix"* — applies to a refusal exactly as it
-//! applies to a miss. A tool that says only *"not configured"* has told the model
-//! something it can do nothing with, and the model's next move is to guess. So
-//! [`NotAttached`] has a field for **how to attach the thing**, one for **what
-//! still works in this session**, and neither is optional prose: they are the
-//! difference between a dead end and a dead end with a door in it.
-//!
-//! The one thing this must never do is suggest a way around the guard. *"Use
-//! `grep` on the tree"* is a different, honest capability. *"Try phrasing the
-//! question so the model answers from memory"* would be the failure §8.2 exists
-//! to prevent, wearing a helpful voice.
+//! A tool with no backend behind it answers [`ToolOutcome::NotRun`]: `ok` would
+//! claim the emptiness is the answer, `abstained` that the thing is not out
+//! there, `failed` that something broke - and nothing ran. The refusal carries
+//! how to attach the thing and what still works, never a way around the guard.
 
 use letibot_transcript::ToolOutcome;
 
@@ -46,26 +12,24 @@ use crate::runtime::Invocation;
 /// A tool whose backend is not attached, and everything the caller needs to
 /// either attach it or work without it.
 ///
-/// Every field is required except [`NotAttached::instead`], and the required ones
-/// are required because each was a sentence somebody would otherwise have left
-/// out.
+/// Every field but [`NotAttached::instead`] is required: each one is a sentence
+/// a caller would otherwise leave out.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NotAttached {
     /// The tool that did not run, as declared.
     pub tool: String,
-    /// What is missing, phrased as a **negative noun phrase** so it reads as the
-    /// subject of "… is attached to this session": `"no search provider"`, `"no
-    /// retrieval backend"`.
+    /// What is missing, as a negative noun phrase so it reads as the subject of
+    /// "... is attached to this session": `"no search provider"`.
     pub missing: String,
-    /// What did *not* happen, in the tool's own terms: `"nothing was searched and
+    /// What did not happen, in the tool's own terms: `"nothing was searched and
     /// no request left this box"`. This is the sentence that stops the model
     /// reading the refusal as a finding.
     pub nothing_happened: String,
     /// How to attach it, imperative, aimed at the operator: `"start the daemon
     /// with --web-search PROVIDER"`.
     pub attach: String,
-    /// What still works here. `None` when there is honestly nothing — which is
-    /// itself worth saying by omission rather than by inventing a detour.
+    /// What still works here. `None` when there is honestly nothing, which is
+    /// worth saying by omission rather than by inventing a detour.
     pub instead: Option<String>,
 }
 
@@ -115,9 +79,9 @@ impl NotAttached {
         out
     }
 
-    /// The whole thing as one invocation. **Always `NotRun`** — there is no
-    /// constructor here that can produce any other outcome, which is §2.4 applied
-    /// to this module: the mistake is not warned about, it is unspellable.
+    /// The whole thing as one invocation. Always `NotRun`: nothing here can
+    /// build another outcome, so the mistake is unspellable rather than warned
+    /// about.
     pub fn invocation(&self) -> Invocation {
         Invocation::not_run(self.why(), self.body())
     }
@@ -165,8 +129,8 @@ mod tests {
 
     #[test]
     fn it_never_claims_the_thing_is_not_out_there() {
-        // The whole reason this is `NotRun` and not `Abstained`. A refusal that
-        // reads as a finding is the §8.2 failure with a different mask on.
+        // The whole reason this is `NotRun` and not `Abstained`: a refusal that
+        // reads as a finding is the failure with a different mask on.
         let body = sample().body().to_lowercase();
         for claim in [
             "not found",
