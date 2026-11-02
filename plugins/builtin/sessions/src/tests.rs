@@ -282,12 +282,9 @@ fn the_family_view_has_no_tree() {
 /// The review queue's own id, as a daemon's is: `s-gatekeeper-<12 hex>`.
 const GATEKEEPER: &str = "s-gatekeeper-0123456789ab";
 
-/// **A family is a family whatever group its members are drawn in** — a reviewer's parent is the
-/// gatekeeper (`gatekeepers`) and the reviewer itself is a `reviewer`, so a family walked in the
-/// PARENT's branch dropped every child and drew one row: the gatekeeper, with the session the head
-/// was standing in missing from the list.
-///
-/// The group is a fact about where a row is DRAWN, and it must not decide who is kin.
+/// A family is a family whatever group its members are drawn in: a reviewer's parent is the gatekeeper
+/// and the reviewer a `reviewer`, so a family walked in the parent's branch dropped every child. The
+/// group says where a row is DRAWN and must not decide who is kin.
 #[test]
 fn a_family_is_drawn_across_the_groups_its_members_are_in() {
     let reviewer = format!("{GATEKEEPER}-sub-1791759365511364772");
@@ -334,11 +331,8 @@ fn a_keeper_child_of_a_conversation_is_in_its_family() {
     );
 }
 
-/// **A `-` over a row whose child is on the screen** — the person can fold the parent of the
-/// session they are standing in away, and the walk still draws that session: the chain to `here`
-/// is always on the list. The glyph read the person's fold first, so it drew `+` directly over the
-/// row below it. The head's rule is `children_open`, `expanded || child_on_path`, and the chain
-/// wins.
+/// A `-` over a row whose child is on the screen: the person can fold the parent of the session they
+/// stand in away and the walk still draws that session, so the glyph must take the chain first.
 #[test]
 fn a_row_whose_child_is_on_the_path_is_drawn_open_though_it_was_folded() {
     let mut child = session("s-c", "read the repo");
@@ -366,13 +360,8 @@ fn a_row_under_is_the_id_and_a_shortened_path() {
     assert_eq!(draw(&f, &[])[1].under[0], "s-a  ~/Projects/letibot");
 }
 
-/// **A box with several projects draws every project's line and NO session row under the ones the
-/// head is not standing in** — the operator's *"make sessions tree collapsed by default"*, at the
-/// top level.
-///
-/// The list is a map of the box first: which projects there are, and how many sessions each holds.
-/// A person opens the one they are working on; the others cost one line each instead of every
-/// session they contain.
+/// A box with several projects draws every project's line and no session row under the ones the head
+/// is not standing in: the list is a map of the box first, and a person opens the one they work on.
 #[test]
 fn every_project_line_is_drawn_and_no_session_under_the_ones_you_are_not_in() {
     let mut here = session("s-here", "the one i am in");

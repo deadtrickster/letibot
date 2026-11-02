@@ -266,11 +266,9 @@ fn opening_the_fold_draws_the_history_and_says_how_to_close_it() {
     );
 }
 
-/// **A row says the one verb that would do something** — `approve · veto · rm` on a `reviewing` row,
-/// and on a row nothing would move, the verb you would reach for with the reason it would not.
-///
-/// This is the operator's second complaint: the pane printed four verbs of prose, and the bar
-/// printed the same four keys in other words. One phrase, and the legend has the meaning.
+/// A row says the one verb that would do something, and on a row nothing would move, the verb you
+/// would reach for with the reason it would not: the pane used to print four verbs of prose and the bar
+/// the same four keys in other words.
 #[test]
 fn a_row_says_the_verb_that_would_move_it_and_why_when_none_would() {
     let feed = a_queue();
@@ -611,11 +609,8 @@ fn a_target_review_says_red_target() {
     assert_eq!(cells[1], "RED TARGET main", "{cells:?}");
 }
 
-/// **A `gating` row says which step its gate is on, and how long it has been there** — the question
-/// the row is asked and could not answer, in the one line it has room for.
-///
-/// The tail itself is not in the feed: a guest cannot read a file, and a row is one line. The
-/// detail the host draws on Enter carries it (`ui::panes::queue::running_gate_lines`).
+/// A `gating` row says which step its gate is on and how long it has been there. The tail itself is
+/// not in the feed, since a guest cannot read a file; the host draws it on Enter.
 #[test]
 fn a_gating_row_says_which_step_its_gate_is_on() {
     let mut feed = a_queue();

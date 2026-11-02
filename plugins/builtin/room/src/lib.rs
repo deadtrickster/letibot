@@ -91,10 +91,8 @@ use serde_json::{Value, json};
 /// (`lease_ms`), so this is only the fallback for a feed that did not say.
 const DEFAULT_LEASE_MS: u64 = 90_000;
 
-/// **The feed, as this layer reads it.**
-///
-/// Every age in it is already milliseconds against the host's clock — a guest has none — so the
-/// `now_ms` the feed also carries is not read here: this layer never needs an age it was not handed.
+/// The feed as this layer reads it. Every age in it is already milliseconds against the host's clock,
+/// so the `now_ms` the feed carries is not read here: a guest has no clock.
 #[derive(Debug, Default, Deserialize)]
 struct Feed {
     /// `Server::identity()` — the sentence a person reads before believing the queues.
@@ -308,14 +306,9 @@ fn no_feed() -> Value {
 
 /// **The whole view.**
 fn view(feed: &Feed) -> Value {
-    // **A room that could not be read says so instead of drawing an empty queue.** *Nothing is
-    // queued* and *nobody answered* are two facts, and a screen that shows one for the other is a
-    // screen a person cannot act on.
-    //
-    // **And the restart stays on it.** An unreadable room is the one most likely to be dead, and
-    // that is exactly when a person wants the key: the panel below is the supervisor's, it needs
-    // nothing from the room, and a pane that hid the control at the moment it was needed would be
-    // the control's own argument against itself.
+    // A room that could not be read says so instead of drawing an empty queue: *nothing is queued* and
+    // *nobody answered* are two facts. The restart control stays, since a dead room is when a person
+    // wants it.
     if let Some(why) = &feed.unreadable {
         return json!({
             "title": "the room",
@@ -408,11 +401,8 @@ fn header(feed: &Feed) -> Value {
         "role": "faint",
         "tail": format!("{} session(s) connected", feed.connected.len()),
     }));
-    // **The bell, and who can hear it.** A person who reads a queue and waits for something to
-    // happen on this screen is waiting for a turn: the head holds no room connection, so a room
-    // event arrives as the notice row of the turn the daemon ran for it (`docs/room.md` § *The
-    // bell, per client*). Said here rather than left to be discovered, because the absence looks
-    // exactly like a room where nothing is happening.
+    // The bell, and who can hear it: the head holds no room connection, so a room event arrives as the
+    // notice row of the turn the daemon ran. Said here because the absence looks like a quiet room.
     lines.push(json!({
         "label": "bell",
         "value": "a room event starts a turn in the session it names",
@@ -454,16 +444,10 @@ fn header(feed: &Feed) -> Value {
     })
 }
 
-/// **The server itself** — the restart control, and the note the last restart left.
+/// The server itself: the restart control, and the note the last restart left.
 ///
-/// Two of the operator's three requirements live here and the third is the identity above them:
-/// *the control* (`docs/room.md` § *Still owed* 1 — *"that panel must explicitly let me to restart
-/// the server"*), and *the marker* — when, and why. **What survives is stated, not assumed**: every
-/// line below says the room keeps no store, so a restart begins with no items at all.
-///
-/// **A key is only offered where it would do something.** A host with no supervisor (the
-/// coordinator's own daemon, a box with no launcher, a fixture) draws the reason instead of the
-/// key, because a control that always refuses teaches a person not to press keys.
+/// Every line below says the room keeps no store, so a restart begins with no items at all. A key is
+/// only offered where it would do something: a host with no supervisor draws the reason instead.
 fn server(feed: &Feed) -> Value {
     let mut under: Vec<String> = Vec::new();
     let mut facts: Vec<Cell> = Vec::new();
@@ -475,10 +459,9 @@ fn server(feed: &Feed) -> Value {
     }
     match &feed.restart.marker {
         Some(m) => {
-            // **The note is the point of the panel.** *Restarted clean* and *restarted empty* are
-            // the same picture without it, and a room that comes back with no memory of the last
-            // minute is the thing this whole control exists to remove. The role is the cause's: a
-            // room that crashed is a failure, a key that was pressed is attention.
+            // The note is the point of the panel: *restarted clean* and *restarted empty* are the same
+            // picture without it. The role is the cause's, a crash being a failure and a key press
+            // attention.
             facts.push(Cell::role(age(m.age_ms), cause_role(&m.cause)));
             under.push(m.sentence.clone());
         }
@@ -587,16 +570,9 @@ fn queues(feed: &Feed) -> Value {
     })
 }
 
-/// **Who owns a tag's queue, or that nobody does** — the one fact a person needs before posting.
-///
-/// Two sentences and never a blank, which is the operator's requirement: *a tag with an agent says
-/// so (who it is, whether it is up, its re-seat count), and a tag with none says that too rather
-/// than looking the same*. A blank column would read as *an agent, details unknown* — the one
-/// reading that is never true.
-///
-/// **The re-seat count is printed only when there is one**, and in the role that makes a person
-/// look: a tag whose agent has been brought back twice is a tag something keeps killing, and that
-/// is a fact about the tag rather than noise to smooth over.
+/// Who owns a tag's queue, or that nobody does: the one fact a person needs before posting. Two
+/// sentences and never a blank, since a blank would read as *an agent, details unknown*. The re-seat
+/// count is printed only when there is one.
 fn agent_cell(agent: Option<&Agent>) -> Cell {
     match agent {
         None => Cell::role("no agent", Role::Faint),

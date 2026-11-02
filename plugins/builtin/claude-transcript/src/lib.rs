@@ -163,12 +163,8 @@ impl Step {
     }
 }
 
-/// **The ceiling on one answer**, said out loud when it is reached.
-///
-/// Every operation is bounded already, and the bounds multiply: 400 lines at 720 characters is a
-/// quarter of a megabyte. This is the last gate before the answer becomes a tool result the
-/// runtime has to spill — which is the cost this tool exists to avoid — so it cuts on a character
-/// boundary and tells the model what to ask for instead.
+/// The ceiling on one answer, said out loud when it is reached: the bounds multiply to a quarter of a
+/// megabyte, which is the last gate before the answer becomes a result the runtime has to spill.
 fn cap(payload: String) -> String {
     if payload.len() <= PAYLOAD_CAP {
         return payload;
@@ -877,12 +873,9 @@ enum Row {
     Conclusion { text: String },
 }
 
-/// **One line of `~/.claude/projects/<project>/<uuid>.jsonl`**, read for what a reader would see.
-///
-/// The store is not documented and does not need to be: this reads the fields that are stable in
-/// every version the tool has written — `type`, `isSidechain`, `userType`, `message.role` and
-/// `message.content` — and answers `None` for a row that is not conversation. A row whose `text`
-/// was cut by the host is not parsed at all rather than parsed into a half sentence.
+/// One line of a transcript, read for what a reader would see: the fields stable in every version the
+/// tool has written, and `None` for a row that is not conversation. A cut text is not parsed at all
+/// rather than parsed into half a sentence.
 fn row_of(text: &str) -> Option<Row> {
     if !text.trim_start().starts_with('{') || !text.trim_end().ends_with('}') {
         return None;
@@ -900,9 +893,10 @@ fn row_of(text: &str) -> Option<Row> {
             // `userType: "internal"` is the harness talking to itself; a `content` that is a list
             // is a tool result being handed back. Neither is the operator asking anything.
             if let Some(t) = value.get("userType").and_then(Value::as_str)
-                && t != "external" {
-                    return None;
-                }
+                && t != "external"
+            {
+                return None;
+            }
             if message.get("role").and_then(Value::as_str) != Some("user") {
                 return None;
             }
@@ -976,13 +970,9 @@ fn listing_root(args: &Args, feeds: &Feeds) -> Result<String, (String, String)> 
     }
 }
 
-/// **Where a project's transcripts are.** `args.project` is a path (`/Users/me/Projects/x`) or the
-/// directory name Claude Code gave it; absent is this session's workspace.
-///
-/// The name is the path with every character that is not a letter, a digit or `-` turned into `-`,
-/// which is what `~/.claude/projects` holds on this box (`/Users/dead/.emacs.d` →
-/// `-Users-dead--emacs-d`). It is a best-effort match and that is safe: a wrong guess is answered
-/// with the directory that is missing, and `sessions` lists the names that exist.
+/// Where a project's transcripts are: `args.project` is a path or the directory name Claude Code gave
+/// it, and absent is this session's workspace. The name is the path with everything but letters,
+/// digits and `-` turned into `-`, and a wrong guess is answered by naming the missing directory.
 fn project_dir(args: &Args, feeds: &Feeds) -> Result<String, (String, String)> {
     let root = root(feeds)?;
     let named = args
@@ -1177,11 +1167,9 @@ fn size(bytes: u64) -> String {
     }
 }
 
-/// **When a file last changed**, in the caller's own units: the clock, and how long ago.
-///
-/// The arithmetic is here rather than in a dependency because a guest is embedded in a binary and
-/// a date library for two lines is not worth the bytes. `now_ms == 0` is a caller that has no
-/// clock to compare with, and then only the stamp is printed.
+/// When a file last changed, in the caller's own units: the arithmetic is here rather than in a date
+/// library, since a guest is embedded in a binary. `now_ms == 0` is a caller with no clock, and then
+/// only the stamp is printed.
 fn stamp(ms: u64, now_ms: u64) -> String {
     let secs = ms / 1000;
     let days = (secs / 86_400) as i64;

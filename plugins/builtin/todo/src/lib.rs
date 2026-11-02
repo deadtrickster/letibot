@@ -92,13 +92,9 @@ fn answer(bytes: &[u8]) -> Option<String> {
     Some(serde_json::json!({"act": {"name": ACT, "args": {"content": content}}}).to_string())
 }
 
-/// **The row's words, out of the line** — `Some(content)` when the line adds a row, `None` when it
-/// is one of the head's verbs or names nothing.
-///
-/// `title:"…"` and `body:"…"` are read in either order and either may be bare
-/// (`title:werwer`), because a person types both; quotes may contain the other field's name and a
-/// colon, which is why the scan is quote-aware rather than a split on whitespace. Text with no
-/// field name at all is the title, which is what `/todo buy milk` has always meant.
+/// The row's words out of the line: `Some(content)` when the line adds a row, `None` when it is one of
+/// the head's verbs or names nothing. The scan is quote-aware because a quoted value may hold a colon
+/// and the other field's name, and text with no field name is the title.
 pub fn parse(line: &str) -> Option<String> {
     let line = line.trim();
     if line.is_empty() {
@@ -223,13 +219,9 @@ mod tests {
         assert_eq!(v["act"]["args"]["content"], "werwer — blabla");
     }
 
-    /// **The feeds are the head's, and this layer reads none of them** — the input arrives whole
-    /// and the answer is exactly what the line alone would produce.
-    ///
-    /// A layer that read a feed would be a layer whose answer changes when the BOARD changes, and
-    /// that is a policy nobody has written yet: this test is the statement that the shape is handed
-    /// over and nothing more. It is also the only place the three feed names are spelled against a
-    /// real input, so a head that renamed one would be a diff here.
+    /// The feeds are the head's and this layer reads none: the answer is exactly what the line alone
+    /// would produce. A layer that read a feed would answer differently when the board changed, which
+    /// is a policy nobody has written.
     #[test]
     fn the_feeds_arrive_and_change_nothing() {
         let input = serde_json::json!({

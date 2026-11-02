@@ -142,12 +142,8 @@ impl State {
         }
     }
 
-    /// **The roster, in the order the rows are drawn**: the ids of this call when the set has
-    /// changed, and last call's order when it has not.
-    ///
-    /// `wanted` arrives already sorted by the rule, so this is the one place *stability* is
-    /// decided: a set that is the same set keeps its order even though a member started working
-    /// since — a row that moves under the cursor is a row the person has to find again.
+    /// The roster in the order the rows are drawn: the ids when the set has changed, and last call's
+    /// order when it has not, because a row that moves under the cursor is a row to find again.
     fn roster(&mut self, wanted: Vec<String>) -> Vec<String> {
         let same =
             self.order.len() == wanted.len() && wanted.iter().all(|id| self.order.contains(id));
@@ -267,10 +263,8 @@ fn no_feed() -> Value {
     })
 }
 
-/// **The hidden pane**: one strip instead of nothing. A pane that hides itself to zero height is
-/// a pane somebody has to guess their way back into; the strip is the bookmark, and it is a STOP
-/// (an `id` of its own) so that the `h` that brings the list back is still on a row the cursor can
-/// rest on.
+/// The hidden pane: one strip instead of nothing, since a pane that hides to zero height has to be
+/// guessed at. The strip is a stop of its own, so the key that brings the list back rests on a row.
 fn strip(feed: &Feed, st: &State, rect: usize) -> Value {
     let counts = counts(feed, st);
     let said = format!(
@@ -374,10 +368,8 @@ fn list(feed: &Feed, st: &mut State, rect: usize) -> Value {
         }
     }
     if inside.is_empty() && outside.is_empty() {
-        // **A list with nothing in it is still a row, not an `empty` sentence** — the sentence
-        // leaves the pane with no stop at all, and the keys that widen the column, hide it or
-        // widen the scope again are on a stop. So the empty state IS the row, and it says what it
-        // is: the daemon has not answered, or there is nothing here to list.
+        // A list with nothing in it is still a row, not an `empty` sentence: the sentence leaves the
+        // pane with no stop, and the keys that widen or hide the column are on a stop.
         rows.push(json!({
             "id": EMPTY,
             "cells": [Cell::role(
@@ -427,12 +419,7 @@ fn list(feed: &Feed, st: &mut State, rect: usize) -> Value {
 /// The empty scope's row id — a stop, so the keys stay reachable when there is nothing to switch to.
 const EMPTY: &str = "·empty";
 
-/// **One session's row**: a mark, a name, and one fact pinned to the column's right edge.
-///
-/// **The fact is not a `facts` cell.** The host right-aligns `facts` against the RECTANGLE, so on a
-/// wide screen the fact would sit at column 100 with a name at column 3 — a column that stretches
-/// is not a column. So the fact is the row's third cell and the name is padded to push it there,
-/// which is what makes the column the width the person chose whatever the rectangle is.
+/// One session's row: a mark, a name, and one fact pinned to the column's right edge.
 fn session_row(s: &Session, width: usize, here: &str, now: u64, home: &str) -> Value {
     let (mark, mark_role) = mark_of(s, here);
     let (fact, fact_role) = fact_of(s, now);
@@ -457,10 +444,9 @@ fn session_row(s: &Session, width: usize, here: &str, now: u64, home: &str) -> V
     })
 }
 
-/// **The four keys, on every stop.** They are row actions rather than pane keys because the
-/// contract's keys are the host's: a plugin binds letters through a row's `actions`, so a letter
-/// works wherever the cursor rests — and these four work on every row, which is what makes them
-/// feel like the pane's own.
+/// The four keys, on every stop. They are row actions rather than pane keys because the contract's keys
+/// are the host's: a plugin binds letters through a row's `actions`, so a letter works wherever the
+/// cursor rests.
 fn actions(hidden: bool) -> Value {
     json!([
         {"key": "w", "label": "wider", "event": "wider"},
@@ -766,10 +752,8 @@ fn fit(text: &str, room: usize) -> String {
     out
 }
 
-/// **How many columns a run of text takes**, in the terminal's cells rather than in characters: a
-/// name is somebody's, and a title in a script with wide glyphs measured by `chars().count()`
-/// pushes the fact column one column right per glyph — the misalignment this layer exists not to
-/// have.
+/// How many columns a run of text takes, in cells: a wide glyph measured by `chars().count()` pushes
+/// the fact column right, which is the misalignment this layer exists not to have.
 fn cells(text: &str) -> usize {
     text.chars().map(char_cells).sum()
 }

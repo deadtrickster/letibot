@@ -61,10 +61,8 @@ static OUT: Shared<Arena> = Shared(UnsafeCell::new(Arena {
 /// The result block the host reads after a hook answers: `out_ptr`, `out_len`.
 static BLOCK: Shared<[u32; 2]> = Shared(UnsafeCell::new([0, 0]));
 
-/// **Where the host writes the input** — the address `rano_alloc` hands back.
-///
-/// `rano_alloc` is exported from here rather than from each guest so that every built-in module
-/// answers the same way, and so that a guest's `Cargo.toml` cannot forget it.
+/// Where the host writes the input: the address `rano_alloc` handed back. It is exported here rather
+/// than from each guest so every built-in module answers the same way.
 #[unsafe(no_mangle)]
 pub extern "C" fn rano_alloc(n: i32) -> i32 {
     match usize::try_from(n) {
@@ -81,17 +79,14 @@ pub extern "C" fn rano_abi() -> i32 {
     1
 }
 
-/// The input of the hook being called, as bytes — the region `rano_alloc` answered with.
+/// The input of the hook being called, as bytes.
 ///
-/// **`ptr` is an ABSOLUTE address in this module's memory**, not an offset into the arena: `rano_alloc`
-/// answers the arena's own address and the host writes at it, so the window is
-/// `[arena_start + 0, arena_start + IN_CAP)` and a pointer outside it is a host that broke its own
-/// contract — answered *unchanged* rather than by a panic or a slice out of bounds.
+/// `ptr` is an absolute address in this module's memory, so a pointer outside the arena is a host
+/// that broke its own contract and is answered unchanged rather than by a panic.
 ///
 /// # Safety
 ///
-/// Called only from inside a hook, with the `(ptr, len)` rano handed that hook. The bounds check
-/// makes that claim true for every input the host can actually send.
+/// Called only from inside a hook with the `(ptr, len)` rano handed that hook.
 pub fn input(ptr: i32, len: i32) -> &'static [u8] {
     let base = INPUT.0.get() as usize;
     let at = usize::try_from(ptr).unwrap_or(usize::MAX);
@@ -136,12 +131,9 @@ pub fn answer(text: &str) -> i32 {
     BLOCK.0.get() as usize as i32
 }
 
-/// **Answer the hook with what `f` makes of its input** — the three lines every export in
-/// `plugins/builtin` is, so a guest's `lib.rs` is its logic and nothing else.
-///
-/// A hook whose logic answers nothing is `-1`: *unchanged*, the layer passes, and the stack asks
-/// the layer below — the fail-down rule of `docs/plugins-plan.md` §1, principle 4, which is what
-/// makes a broken built-in a plain list rather than a broken screen.
+/// Answer the hook with what `f` makes of its input: the three lines every export in
+/// `plugins/builtin` is. A hook whose logic answers nothing is `-1`, which is *unchanged* and asks
+/// the layer below, so a broken built-in is a plain list rather than a broken screen.
 pub fn hook(ptr: i32, len: i32, f: impl FnOnce(&[u8]) -> Option<String>) -> i32 {
     reset();
     let bytes = input(ptr, len);

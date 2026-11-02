@@ -42,12 +42,9 @@ use letibot_plugin::pane::{Act, Cell, Fold, Input, Role};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-/// **The groups under a project's `system` branch, in the order the list draws them** — the words,
-/// and the sentence under each line.
-///
-/// **Which session is in which is not decided here.** A guest cannot walk a store, and the rule
-/// needs the whole chain (a reviewer is known by the queue's session above it), so the head decides
-/// it and the feed carries the answer as `system`. This table is only what a group is CALLED.
+/// The groups under a project's `system` branch, in the order the list draws them, with the sentence
+/// under each line. Which session is in which is the head's answer: this table is only what a group is
+/// called.
 const SYSTEM: [(&str, &str); 3] = [
     (
         "gatekeepers",
@@ -68,11 +65,8 @@ const MAX_DEPTH: usize = 64;
 /// tree caps at the same number, so the two pictures are one.
 const MAX_INDENT: usize = 3;
 
-/// **The branch a walk is inside** — the project, and the `system` group when the walk is under
-/// `system`.
-///
-/// **`None` is the FAMILY view, and it holds every session**: kinship is not a display category,
-/// so a family is walked with no branch at all. See [`Ctx::in_branch`].
+/// The branch a walk is inside: the project, and the `system` group when the walk is under it. `None`
+/// is the family view, which holds every session because kinship is not a display category.
 type Branch<'a> = Option<(&'a str, Option<&'a str>)>;
 
 /// The feed, as this layer reads it.
@@ -175,27 +169,16 @@ impl Ctx<'_> {
         self.folded.get(id).copied()
     }
 
-    /// **Whether a node's rows are on the list** — the person's answer, then whether this head is
-    /// standing in it.
-    ///
-    /// **Every node's default is CLOSED**, the project's line included, and that is why there is no
-    /// default parameter: the operator, on the pane they use most, *"make sessions tree collapsed
-    /// by default"* — a box with a hundred sessions drew a hundred rows because a project and its
-    /// `system` branch were open, and the one row a person was looking for was somewhere in the
-    /// middle of them. What a closed list must still answer is *where am I*, and that is
-    /// [`Ctx::on_the_way`]'s job, not a default's.
+    /// Whether a node's rows are on the list: the person's answer, then whether this head is standing
+    /// in it. Every node defaults to closed, since a box with a hundred sessions drew a hundred rows;
+    /// what a closed list must still answer is *where am I*.
     fn node_open(&self, key: &str) -> bool {
         self.opened(key).unwrap_or_else(|| self.on_the_way(key))
     }
 
-    /// **Whether a node is on the chain to where this head is standing** — the project, the
-    /// `system` branch and the group of the session `here`. A list that hides where you are cannot
-    /// answer *where am I*.
-    ///
-    /// **The `system` branch is on the chain only when `here` is drawn in it.** A head standing in
-    /// an ordinary conversation is not standing in `system`, and opening the branch anyway drew a
-    /// group line per kind for a branch the person is nowhere near — which is the same over-broad
-    /// default this file just stopped taking at the project's line.
+    /// Whether a node is on the chain to where this head stands: the project, the `system` branch and
+    /// the group of `here`. The branch is on the chain only when `here` is drawn in it, or a head in an
+    /// ordinary conversation opens a branch it is nowhere near.
     fn on_the_way(&self, key: &str) -> bool {
         let Some(here) = self.at(self.here) else {
             return false;
@@ -232,16 +215,9 @@ impl Ctx<'_> {
         out
     }
 
-    /// **Whether a session is drawn in this branch** — the project, and the `system` group when the
-    /// walk is under `system`.
-    ///
-    /// **`None` holds every session, and it is the family view's branch**: kinship is not a display
-    /// category. A reviewer's parent is the gatekeeper (`system = "gatekeepers"`) and the reviewer
-    /// itself is a `reviewer`; a notes keeper spawned as a `task` child of an ordinary conversation
-    /// has a parent with no group at all. Filtered by the parent's group, a family is the one row
-    /// you are standing NEXT TO and never the row you are standing IN — so the family walk passes no
-    /// branch, which is also what the head's own family walk does (`App::session_rows` walks it
-    /// with `branch: None`).
+    /// Whether a session is drawn in this branch. `None` holds every session and is the family view's
+    /// branch: a reviewer's parent is the gatekeeper and a notes keeper's has no group, so filtering by
+    /// the parent's group would draw the one row you stand beside, never the one you stand in.
     fn in_branch(&self, i: usize, branch: Branch<'_>) -> bool {
         let Some((project, system)) = branch else {
             return true;
@@ -268,17 +244,11 @@ impl Ctx<'_> {
             .any(|s| s.parent.as_deref() == Some(id) && self.path.contains(&s.id))
     }
 
-    /// A session's fold state — **the chain to `here` first**, then the person's answer.
-    ///
-    /// The two facts a row's children are drawn by are the person's fold and the chain to `here`
-    /// ([`children`]), and the glyph is those two and nothing else — the head's `children_open`,
-    /// `expanded || child_on_path`, in one line.
+    /// A session's fold state: the chain to `here` first, then the person's answer. Those two facts are
+    /// what a row's glyph is, and nothing else.
     fn fold_state(&self, id: &str) -> Fold {
-        // **A `+` over a row whose child is on the screen** is the one thing this list must not
-        // say, and the chain is drawn whatever the person last said about the fold: a session the
-        // head is standing in cannot be hidden, so its parent says `-` even when it was folded
-        // away. That is also the whole of the family view's first level — the parent of the row
-        // you are in is a row whose child is on the chain — so there is no second rule here.
+        // A `+` over a row whose child is on the screen is the one thing this list must not say: a
+        // session the head stands in cannot be hidden, so its parent says `-` even when folded.
         if self.child_on_path(id) {
             return Fold::Open;
         }
@@ -289,19 +259,11 @@ impl Ctx<'_> {
     }
 }
 
-/// **The whole list**, in drawing order — a tree of projects, and a `system` branch inside each.
-///
-/// The shape is the head's (`App::session_rows`), and the two are held together by
-/// `the_heads_list_and_the_plugins_list_draw_the_same_rows`: a project's line, the sessions nobody
-/// spawned in it and their children at any depth, then `system` with one folded line per group.
+/// The whole list in drawing order: a tree of projects, and a `system` branch inside each. The shape
+/// is the head's own, and a test holds the two to each other.
 fn rows(ctx: &Ctx<'_>) -> Vec<Out> {
-    // **A head standing in a sub-session draws its FAMILY**: the parent and its children, and no
-    // tree at all — a list of two or three rows around the one the person is in.
-    //
-    // **The family is walked with NO BRANCH**, because kinship is not a display category: the
-    // parent's `system` group is a fact about where a row is DRAWN, and a reviewer's parent is a
-    // gatekeeper while the reviewer is a `reviewer` — filtered by the parent's group, this walk
-    // dropped every child and drew the one row the head was standing beside (see `in_branch`).
+    // A head standing in a sub-session draws its FAMILY, and the family is walked with no branch:
+    // filtered by the parent's group, the walk dropped every child and drew the row beside the head.
     if let Some(parent) = ctx
         .at(ctx.here)
         .and_then(|i| ctx.sessions[i].parent.clone())
@@ -459,10 +421,8 @@ fn has_fold(ctx: &Ctx<'_>, at: usize, branch: Branch<'_>) -> Option<Fold> {
     ctx.kids_in(id, branch).then(|| ctx.fold_state(id))
 }
 
-/// A session's children, one step deeper — the recursive half of [`rows`].
-///
-/// `branch` is the row's place in the tree, and `None` is the family view's own walk — see
-/// [`Ctx::in_branch`] for why a family passes none.
+/// A session's children, one step deeper: the recursive half of [`rows`]. `branch` is the row's place
+/// in the tree, and `None` is the family walk.
 #[allow(clippy::too_many_arguments)]
 fn children(
     ctx: &Ctx<'_>,

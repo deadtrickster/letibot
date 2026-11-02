@@ -113,11 +113,8 @@ struct Feed {
 struct Scope {
     #[serde(default)]
     words: String,
-    /// **Whether a row has to name its repository** - the host's answer to *is there more than one
-    /// in scope to tell apart?* It is a field and not a reading of `words` because the words are
-    /// prose: a path scope's contain no separator and a one-repository project's contain one, so
-    /// grepping them names the repository when it is redundant and omits it when it is the only
-    /// thing that says where a row is from.
+    /// Whether a row has to name its repository: the host's answer to *is there more than one in scope
+    /// to tell apart?* It is a field rather than a reading of `words`, whose prose cannot say.
     #[serde(default)]
     several: bool,
 }
@@ -354,11 +351,9 @@ struct Out {
     detail: String,
 }
 
-/// **The phrase a person can act on**, from the feed's own answer - the verb that would move the
-/// row, or the one they would reach for with the reason it would not.
-///
-/// One phrase per row is the whole design: four verbs of prose per row was what made the pane this
-/// replaced illegible. One phrase, and the legend carries the meaning.
+/// The phrase a person can act on: the verb that would move the row, or the one they would reach for
+/// with the reason it would not. One phrase per row is the design, since four verbs of prose per row
+/// made the pane this replaced illegible.
 fn the_verb(verbs: &[VerbWhy]) -> Option<String> {
     let acts: Vec<&str> = verbs
         .iter()
@@ -589,10 +584,8 @@ fn role_of(state: &str) -> Role {
     }
 }
 
-/// **The history, folded away behind one line** - the count, and whether it is open.
-///
-/// `act = ["fold"]` and the host's `folded` map are the mechanism: the fold is instant, it survives
-/// the next answer, and a pane nobody has opened asks for nothing.
+/// The history, folded away behind one line. `act = ["fold"]` and the host's `folded` map are the
+/// mechanism: the fold is instant and survives the next answer.
 fn history_row(feed: &Feed, folded: bool) -> Out {
     let n = feed.counts.finished;
     let shown = feed.reviews.iter().filter(|r| !r.live).count()
@@ -629,12 +622,9 @@ fn history_row(feed: &Feed, folded: bool) -> Out {
     }
 }
 
-/// **The chrome above the rows**: the emergencies, the targets' health, whose queues these are,
-/// and who serves them.
-///
-/// One `lines` block, so it is a few rows and never a paragraph. Every target state is drawn: red
-/// and unjudged as alarms, gating as the fact that a gate is on it, green as the quiet line that
-/// says where the target stands.
+/// The chrome above the rows: the emergencies, the targets' health, whose queues these are and who
+/// serves them. One `lines` block, so it is a few rows and never a paragraph, with every target state
+/// drawn.
 fn chrome(feed: &Feed) -> Vec<Value> {
     let mut lines: Vec<Value> = Vec::new();
     if let Some(why) = &feed.unreadable {
@@ -988,12 +978,9 @@ fn target_gate_of<'a>(feed: &'a Feed, m: &Merge) -> Option<&'a RunningGate> {
         .and_then(|t| t.running_gate.as_ref())
 }
 
-/// **A gate in flight, read whole**: which step of how many, the step itself, whether its output
-/// has moved, and the end of what it has written - the answer to *is it stuck?*.
-///
-/// `waiting` says the gate is the TARGET's rather than the row's own, so the reader knows whose
-/// step they are reading. A snapshot older than [`GATE_SNAPSHOT_STALE_MS`] is said as no answer
-/// and never turned into a verdict about the gate.
+/// A gate in flight, read whole: which step of how many, whether its output has moved and the end of
+/// what it wrote. `waiting` says the gate is the target's, and a stale snapshot is said as no answer
+/// rather than turned into a verdict.
 fn gate_detail(g: &RunningGate, waiting: bool, feed: &Feed) -> Vec<String> {
     let head = if waiting {
         format!(

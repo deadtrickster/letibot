@@ -380,11 +380,8 @@ fn an_empty_room_says_that_emptiness_is_what_a_start_looks_like() {
     assert_eq!(view["badge"]["text"], json!("0 live"));
 }
 
-/// **A long-lived empty room and a just-restarted one are two different screens** — the operator's
-/// requirement in as many words, and the reason the identity sentence and the note both exist.
-///
-/// Both are empty, both say the room keeps no store, and the difference is the two lines a person
-/// reads first: how long it has been up, and whether anything restarted it.
+/// A long-lived empty room and a just-restarted one are two different screens: both are empty and both
+/// say the room keeps no store, and the difference is how long it has been up and what restarted it.
 #[test]
 fn an_empty_room_that_was_just_restarted_is_not_an_empty_room_that_has_been_quiet() {
     // The room that has been up for hours with nothing in it: no note, and the identity's age.
@@ -430,10 +427,8 @@ fn an_empty_room_that_was_just_restarted_is_not_an_empty_room_that_has_been_quie
     assert_ne!(quiet_drawn, fresh_drawn, "two empty rooms, two screens");
 }
 
-/// **The restart is a declared row, and it is offered only where it would do something.**
-///
-/// The `s` panel is the operator's control (*"that panel must explicitly let me to restart the
-/// server"*); a host with no supervisor draws the reason instead of a key that would refuse.
+/// The restart is a declared row, offered only where it would do something; a host with no supervisor
+/// draws the reason instead of a key that would refuse.
 #[test]
 fn the_restart_control_is_a_declared_row_and_is_not_offered_without_a_supervisor() {
     let offered = view(&feed(json!([]), json!([])));
@@ -515,10 +510,8 @@ fn no_feed_is_its_own_sentence() {
     assert!(drawn.contains("hands no `room` feed"), "{drawn}");
 }
 
-/// **Every act in the view is one of the five the manifest declares** — the half of
-/// `View::validate_for` this layer can check on its own. The host runs the real one (`validate`
-/// plus the manifest) before the pane is drawn; what is asserted here is that the layer never
-/// reaches for a sixth word, which is the defect that check would find.
+/// Every act in the view is one of the five the manifest declares. The host runs the real check; what
+/// is asserted here is that the layer never reaches for a sixth word.
 #[test]
 fn every_act_names_one_of_the_five_controls() {
     let feed = feed(
