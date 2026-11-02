@@ -1,69 +1,30 @@
-//! **`web_fetch` behind `curl`, rendered for the model, not for a browser.**
+//! `web_fetch` behind `curl`, rendered for the model rather than for a browser.
 //!
-//! `letibot-tools` ships `web_fetch` as a tool that refuses: the schema is fixed
-//! (it is prompt bytes in the stable prefix, so the argument names had to be right
-//! before anything cached against them) and [`Fetcher`] is the seam an
-//! implementation attaches through. This crate is one implementation.
+//! `letibot-tools` ships `web_fetch` as a tool that refuses, with [`Fetcher`] as the seam an
+//! implementation attaches through; this crate is one implementation.
 //!
-//! The transport is a `curl` subprocess, and that is deliberate: the TLS stack,
-//! the compression and the protocol edge cases belong to a binary that is already
-//! on the box, this crate's dependency list stays free of any of it, and a hang
-//! or a crash in the fetch is a dead child, not a dead turn. What curl does not
-//! have — and what nobody should ask curl to have — is the policy, which lives
-//! here in the open:
+//! The transport is a `curl` subprocess because the TLS stack, the compression and the protocol
+//! edge cases belong to a binary already on the box: this crate's dependencies stay free of them,
+//! and a hang is a dead child rather than a dead turn. The policy is here, in the open:
 //!
-//! - **DNS must resolve to a public address, and the connection is pinned to the
-//!   address that was checked.** The host is resolved with the ordinary resolver
-//!   first, every address is checked against the private set (loopback, RFC1918,
-//!   link-local, CGNAT, unique-local, unspecified, and IPv4-mapped IPv6, which is
-//!   the same set wearing a sixth hat), and the first public address is then
-//!   handed to curl as `--resolve` — so the name cannot resolve somewhere else
-//!   between the check and the connect. Loopback is first among the refused for a
-//!   reason this box knows personally: the model server itself listens on
-//!   127.0.0.1, and a fetch tool that would dial it on request is a fetch tool
-//!   the operator has to think about every time a page suggests a url.
-//! - **Same-origin redirects only, followed by hand.** A `Location` that leaves
-//!   the origin — host, port, or https downgraded to http — is a refusal, and
-//!   every hop re-resolves and re-pins. `--location` would follow anywhere, and
-//!   a redirect to an intranet host is the classic way a fetch tool becomes a
-//!   port scanner. The model can fetch the new address as its own call, where
-//!   the decision is visible.
-//! - **The body is capped while it is read**, and a fetch that stops early says
-//!   so (`FetchedPage::truncated`) instead of presenting a half page as a page.
+//! - DNS must resolve to a public address, and the connection is pinned to the address that was
+//!   checked: every resolved address is held against the private set, and the first public one is
+//!   handed to curl as `--resolve`, so the name cannot resolve elsewhere between check and connect.
+//!   Loopback is refused first because the model server itself listens on 127.0.0.1, and a fetch
+//!   tool that would dial it on request is one the operator has to think about every time.
+//! - Same-origin redirects only, followed by hand, re-resolving and re-pinning at every hop.
+//!   `--location` would follow anywhere, and a redirect to an intranet host is how a fetch tool
+//!   becomes a port scanner. The model can fetch the new address as its own call, visibly.
+//! - The body is capped while it is read, and a fetch that stops early says so.
 //!
-//! # The body is rendered, not dumped
+//! The body is rendered, not dumped: raw HTML is the noise the quarantine envelope sits around,
+//! so an HTML body goes through reader-mode extraction ([`dom_smoothie`]) and then markdown
+//! ([`htmd`]) or prose ([`html2text`]). When extraction finds no confident main content the whole
+//! document is converted instead and [`FetchedPage::notes`] says which path ran, because a silent
+//! rewrite of a page is the defect the quarantine exists to make visible.
 //!
-//! Raw HTML in a tool result is the noise the quarantine envelope was meant to
-//! sit *around*, not ship: markup, nav menus and boilerplate are prompt bytes
-//! that defocus the reader and cost tokens for nothing. So an HTML body goes
-//! through the pipeline the LLM-reader services converged on — the same one
-//! Firefox Reader Mode uses, cited for ~70% token reduction against raw HTML:
-//!
-//! 1. **Reader-mode extraction** ([`dom_smoothie`], a Rust implementation that
-//!    closely follows Mozilla's Readability.js): the scoring exists to find the
-//!    thread in a forum page and drop the nav, the ads and the boilerplate
-//!    around it. The page's own url is handed in, so relative links resolve.
-//! 2. **Markdown conversion** ([`htmd`], turndown.js-inspired, passes
-//!    turndown's own test cases): headings stay headings, lists stay lists,
-//!    tables stay tables, links keep their targets — the semantic blocks the
-//!    model needs to know where it is. `format: text` renders prose with
-//!    [`html2text`] instead; `format: html` passes the document through
-//!    verbatim, for the rare call that wants the markup itself.
-//!
-//! When the extraction finds no confident main content — an index page, an API
-//! reference, anything the article heuristics were never written for — the whole
-//! document is converted instead, and [`FetchedPage::notes`] says which path
-//! ran. A silent rewrite of a page is the defect the quarantine exists to make
-//! visible; the note is that visibility.
-//!
-//! # What this does not do
-//!
-//! It does not run JavaScript. A page that renders in the browser only comes
-//! back as the shell the server sent; many forums and docs sites keep a print
-//! or plain view that renders without it, and asking for that address is the
-//! model's move, not this crate's. It does not keep state between calls: no
-//! cookie jar, no session, every fetch a fresh process. It does not cache. And
-//! it never presents a body it did not receive whole without saying so.
+//! It does not run JavaScript, keep state between calls, or cache, and it never presents a body it
+//! did not receive whole without saying so.
 
 use std::io::Read;
 use std::net::{IpAddr, ToSocketAddrs};
@@ -78,12 +39,11 @@ use letibot_tools::builtins::external::web::{
 // github.com: the page is chrome, the file is the page
 // ---------------------------------------------------------------------------
 
-/// github.com's own first path segments — never an owner, always a site page.
-/// Not the whole of github's reserved list (which github does not publish in
-/// full); the site's own surfaces, which is the part a model is ever handed.
-/// A name on this list means "there is no repo here", so the rewrite stops
-/// before it can build `raw…/settings/profile/HEAD/README.md` — an address
-/// nobody asked for and nothing serves.
+/// github.com's own first path segments: never an owner, always a site page.
+///
+/// Not the whole of github's reserved list, which it does not publish: the site's own surfaces,
+/// which is the part a model is ever handed. A name here means there is no repo, so the rewrite
+/// cannot build `raw…/settings/profile/HEAD/README.md`.
 const GITHUB_SITE_SEGMENTS: &[&str] = &[
     "about",
     "billing",
@@ -108,23 +68,17 @@ const GITHUB_SITE_SEGMENTS: &[&str] = &[
     "trending",
 ];
 
-/// The `gh` argv that answers a github.com page **better than the page** —
-/// the shapes whose value is the discussion or the diff, not the chrome.
+/// The `gh` argv that answers a github.com page better than the page: the shapes whose value is
+/// the discussion or the diff, not the chrome.
 ///
-/// The operator, 2026-10-04: *"regarding issues and pulls and commits — we have
-/// gh tool here. so maybe if it is present and authenticated it is worth using
-/// it for fetching pull requests and issues and commits."* `gh issue view` and
-/// `gh pr view` render the title, the body AND the comments as markdown, which
-/// is exactly what a reader of an issue wants and exactly what the HTML page
-/// buries under navigation; `gh api` answers a commit as the structured JSON
-/// the model reads natively. A tree has no such view — the ref and the path
-/// share one path component list and cannot be split without asking the API
-/// which branches exist — so trees stay the page they are, said rather than
-/// silently guessed.
+/// `gh issue view` and `gh pr view` render the title, the body and the comments as markdown,
+/// which is what a reader of an issue wants and what the HTML page buries under navigation.
+/// `gh api` answers a commit as JSON. A tree has no such view - its ref and path share one path
+/// component list, and splitting them means asking the API which branches exist - so trees stay
+/// the page they are.
 ///
-/// Returns the argv and a word for the note ("issue", "pull request",
-/// "commit"), or `None` when the address is not one of these. `/pull/N/files`
-/// and its siblings view the PR itself, because the suffix tabs are chrome too.
+/// Returns the argv and a word for the note, or `None` when the address is not one of these.
+/// `/pull/N/files` and its siblings view the PR itself, because the suffix tabs are chrome too.
 fn gh_args(url: &UrlParts) -> Option<(Vec<String>, &'static str)> {
     if url.host != "github.com" && url.host != "www.github.com" {
         return None;
@@ -164,8 +118,8 @@ fn gh_args(url: &UrlParts) -> Option<(Vec<String>, &'static str)> {
     }
 }
 
-/// `gh` on PATH or not. Asked only for the shapes that want it, so the common
-/// fetch pays nothing for a tool it will never spawn.
+/// `gh` on PATH or not. Asked only for the shapes that want it, so the common fetch pays nothing
+/// for a tool it will never spawn.
 fn gh_present() -> bool {
     Command::new("gh")
         .arg("--version")
@@ -177,10 +131,8 @@ fn gh_present() -> bool {
 
 /// Run `gh`, capped and timed out the way curl is capped and timed out.
 ///
-/// A hang is a dead child and a refusal, not a dead turn — the same rule the
-/// crate's transport doc states for curl, held for the second binary it is
-/// willing to spawn. `Err` carries gh's own stderr, which is where "not
-/// authenticated" says itself.
+/// A hang is a dead child and a refusal, not a dead turn. `Err` carries gh's own stderr, which is
+/// where "not authenticated" says itself.
 fn run_gh(argv: &[String], cap: usize) -> Result<(Vec<u8>, bool), String> {
     let mut child = Command::new("gh")
         .args(argv)
@@ -230,34 +182,22 @@ fn run_gh(argv: &[String], cap: usize) -> Result<(Vec<u8>, bool), String> {
     Ok((out, truncated))
 }
 
-/// Rewrite a github.com address to the raw file it names — or, for a bare
-/// repo, its README.
+/// Rewrite a github.com address to the raw file it names, or for a bare repo to its README.
 ///
-/// MEASURED, 2026-10-04, on this harness's own tooling: fetching a repo page
-/// returned 262 KB of navigation chrome with the README below the cap, while
-/// the same document from `raw.githubusercontent.com` came back as 26 KB of
-/// actual text. Every path here was chosen against that:
+/// A repo page is navigation chrome around a file: the same document from
+/// `raw.githubusercontent.com` is a tenth of the bytes, and every rule here follows from that.
 ///
-/// * `/OWNER/REPO/blob/REF/PATH` (and github's own `/raw/` alias) → the same
-///   `REF` and `PATH` on `raw.githubusercontent.com`, query and fragment
-///   stripped — `?plain=1` is a rendering hint for the HTML view and noise for
-///   a raw file.
-/// * `/OWNER/REPO` → `HEAD/README.md`: `HEAD` is raw's own spelling of the
-///   default branch, so the master/main guess is not ours to make. The file
-///   name is case-sensitive there, so a second candidate `readme.md` follows,
-///   tried only on a 404 — and if both miss, the 404 that comes back names the
-///   first, which is the honest answer for a repo with no readme at all.
-/// * Everything else — `/tree/…` (a directory listing), `/issues/N`, `/pull/N`,
-///   `/releases`, `/wiki`, `/commit/…` — is left as the HTML page it is. Those
-///   have no raw spelling, and a rewrite that guessed one would be a fetch of
-///   something the caller did not name.
+/// - `/OWNER/REPO/blob/REF/PATH`, and github's own `/raw/` alias, keep `REF` and `PATH` on the
+///   raw host with the query and fragment stripped: `?plain=1` is a hint for the HTML view.
+/// - `/OWNER/REPO` becomes `HEAD/README.md`. `HEAD` is raw's spelling of the default branch, so
+///   the master/main guess is not ours, and the lowercase spelling follows on a 404 only because
+///   raw is case-sensitive. If both miss, the 404 that comes back names the first.
+/// - Everything else - a tree, an issue, a PR, a release, a wiki - stays the page it is: none has
+///   a raw spelling, and a rewrite that guessed one would fetch something unnamed.
 ///
-/// Returns `None` when nothing about the address is ours to change. The
-/// rewrite is a **named decision, not a redirect**: it happens at the front
-/// door, the note says what was asked for and what was fetched instead, and
-/// every check that guards an ordinary fetch (host pinning, the redirect
-/// policy on the new origin) runs on the rewritten address exactly as it
-/// would have on the original.
+/// `None` when nothing about the address is ours to change. The rewrite is a named decision, not
+/// a redirect: the note says what was asked for and what was fetched instead, and every check
+/// that guards an ordinary fetch runs on the rewritten address too.
 fn github_raw(url: &UrlParts) -> Option<Vec<String>> {
     if url.host != "github.com" && url.host != "www.github.com" {
         return None;
@@ -267,9 +207,8 @@ fn github_raw(url: &UrlParts) -> Option<Vec<String>> {
     if segs.len() < 2 {
         return None; // github.com's own pages — the feed, the login, the search
     }
-    // **A site page is not a repo**, even when it wears two segments:
-    // `settings/profile` must not become a readme lookup on a "settings" owner
-    // that does not exist.
+    // A site page is not a repo, even when it wears two segments:
+    // `settings/profile` must not become a readme lookup on a "settings" owner.
     if GITHUB_SITE_SEGMENTS.contains(&segs[0]) {
         return None;
     }
@@ -293,9 +232,10 @@ fn github_raw(url: &UrlParts) -> Option<Vec<String>> {
     }
 }
 
-/// The note that names a rewrite: both addresses and the reason. A silent
-/// rewrite is the defect the quarantine exists to make visible; this is the
-/// visibility, and it is a function so a test can hold it to exactly that.
+/// The note that names a rewrite: both addresses and the reason.
+///
+/// A silent rewrite is the defect the quarantine exists to make visible, and this is the
+/// visibility, in a function so a test can hold it to exactly that.
 fn rewrite_note(asked: &UrlParts, first: &str) -> String {
     format!(
         "rewrote the github.com page to the raw file it names: {} → {first} \
@@ -304,19 +244,15 @@ fn rewrite_note(asked: &UrlParts, first: &str) -> String {
     )
 }
 
-/// How long one hop may take before it is a transport failure. A page the
-/// model is waiting on is a turn nobody can interrupt, so this is short; a
-/// slow print view is still a page, and 30s covers one.
+/// How long one hop may take before it is a transport failure. A page the model is waiting on is
+/// a turn nobody can interrupt, so this is short; 30s still covers a slow print view.
 pub const TIMEOUT: Duration = Duration::from_secs(30);
 
-/// The body cap, in bytes read from curl. 256 KiB of HTML is a book chapter;
-/// whatever survives extraction into prompt bytes is a fraction of that, and
-/// a page that will not fit is reported (`truncated`) rather than silently
-/// shortened.
+/// The body cap, in bytes read from curl. A page that will not fit is reported as `truncated`
+/// rather than silently shortened.
 pub const MAX_BODY: usize = 256 * 1024;
 
-/// Redirect hops followed by hand. Five is already more than any honest site
-/// needs; a longer chain is a loop or a tracker, and neither is a page.
+/// Redirect hops followed by hand. A longer chain is a loop or a tracker, and neither is a page.
 pub const MAX_HOPS: usize = 5;
 
 /// How wide `format: text` wraps. Wide enough that a sentence rarely breaks;
@@ -325,30 +261,25 @@ const TEXT_WIDTH: usize = 100;
 
 const USER_AGENT: &str = concat!("letibot-webfetch/", env!("CARGO_PKG_VERSION"));
 
-/// Appended to the body on stdout by curl's `--write-out`, and split off
-/// again by its **last** occurrence. A body that contains the sentinel cannot
-/// forge it: the real one is always written after the body, so the last
-/// occurrence is the real one.
+/// Appended to the body on stdout by curl's `--write-out`, and split off again by its last
+/// occurrence: the real one is always written after the body, so a body that contains the
+/// sentinel cannot forge it.
 const SENTINEL: &str = "\n--letibot-fetch-meta--";
 
 /// curl, attached.
 pub struct CurlFetcher {
-    /// The first line of `curl --version`, for the disclosure. Never parsed
-    /// again.
+    /// The first line of `curl --version`, for the disclosure. Never parsed again.
     version: String,
-    /// The private-address refusal. Off only for tests, which talk to a
-    /// stand-in on loopback — the one host the policy exists to refuse.
+    /// The private-address refusal. Off only for tests, which talk to a stand-in on loopback,
+    /// the one host the policy exists to refuse.
     check_hosts: bool,
-    /// The body cap. `MAX_BODY` in production; small in tests, so truncation
-    /// can be reached without shipping a large page through the stand-in.
+    /// The body cap. `MAX_BODY` in production, small in tests so truncation can be reached.
     cap: usize,
 }
 
 impl CurlFetcher {
-    /// Attach, checking that curl is there. The error is the operator's to
-    /// read: refusing at attach rather than at the first fetch, where it
-    /// would be a transport error that names nothing — the same rule the
-    /// Brave provider follows for a missing key.
+    /// Attach, checking that curl is there. The error is the operator's to read: refusing at
+    /// attach rather than at the first fetch, where it would be a transport error naming nothing.
     pub fn attach() -> Result<CurlFetcher, String> {
         let out = Command::new("curl")
             .arg("--version")
@@ -378,10 +309,10 @@ impl CurlFetcher {
         })
     }
 
-    /// The pieces given outright — for a test against a local stand-in.
-    /// `version` is whatever the test says, and the host check is off,
-    /// because the stand-in lives on loopback, the one host the policy
-    /// refuses.
+    /// The pieces given outright, for a test against a local stand-in.
+    ///
+    /// `version` is whatever the test says, and the host check is off because the stand-in lives
+    /// on loopback, the one host the policy refuses.
     pub fn for_test(version: &str) -> CurlFetcher {
         CurlFetcher {
             version: version.into(),
@@ -397,11 +328,9 @@ impl Fetcher for CurlFetcher {
         // explicit that a fetcher does its own checks, because the tool's
         // are one refactor away from gone.
         let mut url = parse_url(&request.url).map_err(FetchError::Refused)?;
-        // **A github.com address becomes the raw file it names, before anything
-        // else runs.** The note goes on the result rather than in a log: a silent
-        // rewrite is the defect the quarantine exists to make visible, and the
-        // caller should be able to cite what they asked for against what came
-        // back. `final_url` shows the raw address; the note shows the original.
+        // A github.com address becomes the raw file it names before anything else runs, and the
+        // note goes on the result rather than in a log: a caller must be able to cite what it
+        // asked for against what came back.
         let (candidates, mut notes) = match github_raw(&url) {
             Some(raws) => {
                 let note = rewrite_note(&url, &raws[0]);
@@ -409,13 +338,10 @@ impl Fetcher for CurlFetcher {
             }
             None => (vec![url.to_string()], Vec::new()),
         };
-        // **Issues, PRs and commits go to `gh` when it is on the box** — the
-        // operator's call, and the same bargain as the raw rewrite: the page's
-        // value is the discussion or the diff, `gh` renders exactly that, and
-        // the note says which door answered. gh absent leaves the page untouched;
-        // gh present but refusing (not authenticated says itself in gh's stderr)
-        // still answers with the HTML page, and a note carries why gh did not —
-        // never silently.
+        // Issues, PRs and commits go to `gh` when it is on the box, on the same bargain as the raw
+        // rewrite: the page's value is the discussion or the diff and `gh` renders exactly that.
+        // gh absent leaves the page alone; gh refusing still answers with the page and a note
+        // saying why, never silently.
         if let Some((argv, kind)) = gh_args(&url)
             && gh_present()
         {
@@ -441,9 +367,9 @@ impl Fetcher for CurlFetcher {
                 )),
             }
         }
-        // The README case carries two candidates; only a 404 tries the next, and
-        // the 404 that survives names the FIRST — a repo with no readme in either
-        // spelling answers with the spelling everybody uses, not the fallback.
+        // The README case carries two candidates; only a 404 tries the next, and the 404 that
+        // survives names the first: a repo with no readme in either spelling answers with the
+        // spelling everybody uses, not the fallback.
         let mut first_404 = None;
         for candidate in &candidates {
             url = parse_url(candidate).map_err(FetchError::Refused)?;
@@ -479,9 +405,10 @@ impl Fetcher for CurlFetcher {
 }
 
 impl CurlFetcher {
-    /// One address through the hop loop — pin, fetch, redirect policy, render.
-    /// Everything in the trait impl above is the decision about WHICH address;
-    /// this is everything that happens once it is decided.
+    /// One address through the hop loop: pin, fetch, redirect policy, render.
+    ///
+    /// Everything in the trait impl above is the decision about which address; this is
+    /// everything that happens once it is decided.
     fn fetch_one(&self, url: &UrlParts, format: PageFormat) -> Result<FetchedPage, FetchError> {
         let mut url = url.clone();
         let mut hops = 0usize;
@@ -565,9 +492,8 @@ fn run_curl(url: &UrlParts, pin: Option<IpAddr>, cap: usize) -> Result<Hop, Fetc
         .arg("--compressed")
         .arg("--user-agent")
         .arg(USER_AGENT)
-        // Headers to a file, the body to stdout, and the metadata line after
-        // the body on stdout — so the page's bytes never touch the disk, and
-        // the split between body and metadata has one unambiguous owner.
+        // Headers to a file, the body to stdout, and the metadata line after the body on stdout,
+        // so the page's bytes never touch the disk and the split has one unambiguous owner.
         .arg("--dump-header")
         .arg(&header_file)
         .arg("--write-out")
@@ -577,9 +503,8 @@ fn run_curl(url: &UrlParts, pin: Option<IpAddr>, cap: usize) -> Result<Hop, Fetc
         .arg("--output")
         .arg("-");
     if let Some(ip) = pin {
-        // The connection is pinned to the address that was checked, so the
-        // name cannot resolve somewhere else between the check and the
-        // connect. With a pin, curl does no resolving of its own.
+        // The connection is pinned to the address that was checked, so the name cannot resolve
+        // somewhere else between the check and the connect. With a pin, curl resolves nothing.
         cmd.arg("--resolve")
             .arg(format!("{}:{}:{}", url.host, url.port, ip));
     }
@@ -601,10 +526,9 @@ fn run_curl(url: &UrlParts, pin: Option<IpAddr>, cap: usize) -> Result<Hop, Fetc
                 if buf.len() + n > cap {
                     buf.extend_from_slice(&scratch[..cap - buf.len()]);
                     truncated = true;
-                    // The cap is ours, not curl's: stop the child, because a
-                    // body that will not fit is not worth the rest of the
-                    // download. The metadata line never arrives for a killed
-                    // run, so the headers file carries the status instead.
+                    // The cap is ours, not curl's: stop the child, because a body that will not
+                    // fit is not worth the rest of the download. A killed run never writes the
+                    // metadata line, so the headers file carries the status instead.
                     let _ = child.kill();
                     break;
                 }
@@ -692,8 +616,8 @@ fn run_curl(url: &UrlParts, pin: Option<IpAddr>, cap: usize) -> Result<Hop, Fetc
     })
 }
 
-/// The parts of a header dump this crate acts on. The **last** status line
-/// wins, because a proxy's `100 Continue` arrives before the real one.
+/// The parts of a header dump this crate acts on. The last status line wins, because a proxy's
+/// `100 Continue` arrives before the real one.
 fn parse_headers(text: &str) -> (Option<u16>, Option<String>, Option<String>) {
     let mut status = None;
     let mut content_type = None;
@@ -714,8 +638,8 @@ fn parse_headers(text: &str) -> (Option<u16>, Option<String>, Option<String>) {
     (status, content_type, location)
 }
 
-/// A name for the header dump that cannot collide with a concurrent fetch in
-/// this process, let alone another one.
+/// A name for the header dump that cannot collide with a concurrent fetch in this process, let
+/// alone another one.
 fn unique() -> u128 {
     use std::sync::atomic::{AtomicU64, Ordering};
     static C: AtomicU64 = AtomicU64::new(0);
@@ -727,9 +651,10 @@ fn unique() -> u128 {
 // rendering
 // ---------------------------------------------------------------------------
 
-/// The body, rendered for the model, plus the notes that say what was done
-/// to it. A non-textual content type renders to nothing: the tool abstains
-/// on an empty body, and the content type it prints is the reason.
+/// The body, rendered for the model, plus the notes that say what was done to it.
+///
+/// A non-textual content type renders to nothing: the tool abstains on an empty body, and the
+/// content type it prints is the reason.
 fn render_body(
     raw: &[u8],
     content_type: &str,
@@ -740,12 +665,9 @@ fn render_body(
         return (String::new(), Vec::new());
     }
     let body = String::from_utf8_lossy(raw).into_owned();
-    // **A body that is not HTML is already plain — pass it through.** The
-    // reader-mode pipeline is for documents; a `text/plain` body (a raw file, a
-    // `.md` from raw.githubusercontent, a curl of an API endpoint) that goes
-    // through it comes out ESCAPED — `\#`, `\*\*` — which is a corruption of
-    // exactly the bodies the github rewrite exists to serve. Found by running
-    // the crate's own example against a real repo the day the rewrite landed.
+    // A body that is not HTML is already plain, so it passes through: the reader-mode pipeline
+    // would escape its markdown (`\#`, `\*\*`) and corrupt exactly the files the github rewrite
+    // exists to deliver.
     if !content_type.to_lowercase().contains("html") {
         return (body, Vec::new());
     }
@@ -755,12 +677,12 @@ fn render_body(
     }
 }
 
-/// Reader mode first, the whole document as the fallback. The scoring in
-/// Mozilla's Readability.js exists to find the thread in a forum page and
-/// drop the nav around it; an index page or an API reference is exactly what
-/// it was never written for, and the fallback is what keeps those honest —
-/// with a note either way, because a silent rewrite of a page is the defect
-/// the quarantine exists to make visible.
+/// Reader mode first, the whole document as the fallback.
+///
+/// The scoring in Readability.js exists to find the thread in a forum page and drop the nav around
+/// it; an index page or an API reference is what it was never written for, and the fallback is
+/// what keeps those honest. There is a note either way, because a silent rewrite of a page is the
+/// defect the quarantine exists to make visible.
 fn extract_and_convert(html: &str, final_url: &str, format: PageFormat) -> (String, Vec<String>) {
     let total = html.len();
     let mut reader = match dom_smoothie::Readability::new(html, Some(final_url), None) {
@@ -807,10 +729,8 @@ fn convert(html: &str, format: PageFormat) -> String {
     }
 }
 
-/// The markdown converter, with the tags whose contents are program text and
-/// layout rather than prose. turndown.js drops these the same way; a page's
-/// script reaching the model as text is exactly the noise this pipeline
-/// exists to kill.
+/// The markdown converter, with the tags whose contents are program text and layout rather than
+/// prose. A page's script reaching the model as text is the noise this pipeline exists to kill.
 fn markdown_converter() -> htmd::HtmlToMarkdown {
     htmd::HtmlToMarkdown::builder()
         .skip_tags(vec!["script", "style", "noscript", "template"])
@@ -823,8 +743,8 @@ fn plain_text(html: &str) -> String {
         .unwrap_or_else(|_| String::new())
 }
 
-/// Whether the bytes can be prose at all. The parameter half
-/// (`; charset=utf-8`) is beside the point; the type decides.
+/// Whether the bytes can be prose at all. The parameter half (`; charset=utf-8`) is beside the
+/// point; the type decides.
 fn is_textual(content_type: &str) -> bool {
     let ct = content_type.to_lowercase();
     ct.starts_with("text/")
@@ -879,9 +799,10 @@ fn default_port(scheme: &str) -> u16 {
     if scheme == "https" { 443 } else { 80 }
 }
 
-/// The fetcher's own scheme and credential checks. The tool makes the same
-/// two before calling; the trait doc is explicit that a fetcher repeats them,
-/// because the tool's are one refactor away from gone.
+/// The fetcher's own scheme and credential checks.
+///
+/// The tool makes the same two before calling, and the fetcher repeats them because the tool's are
+/// one refactor away from gone.
 fn parse_url(url: &str) -> Result<UrlParts, String> {
     let (scheme, rest) = url.split_once("://").ok_or("the address has no scheme")?;
     let scheme = scheme.to_lowercase();
@@ -934,8 +855,8 @@ fn parse_url(url: &str) -> Result<UrlParts, String> {
     })
 }
 
-/// The private set, stated once. Loopback is first among these for a reason
-/// this box knows personally: the model server listens on 127.0.0.1.
+/// The private set, stated once. Loopback is refused first because the model server listens on
+/// 127.0.0.1.
 fn addr_is_public(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => {
@@ -962,8 +883,8 @@ fn addr_is_public(ip: IpAddr) -> bool {
     }
 }
 
-/// Resolve, then refuse anything private. The returned address is the one
-/// curl is pinned to, so this is also the only resolving that happens.
+/// Resolve, then refuse anything private. The returned address is the one curl is pinned to, so
+/// this is also the only resolving that happens.
 fn first_public_addr(host: &str, port: u16) -> Result<IpAddr, String> {
     let addrs: Vec<IpAddr> = (host, port)
         .to_socket_addrs()
@@ -986,10 +907,10 @@ fn first_public_addr(host: &str, port: u16) -> Result<IpAddr, String> {
     ))
 }
 
-/// Same-origin redirects only, and never a scheme downgrade. A redirect that
-/// leaves the origin is the classic way a fetch tool is turned into a port
-/// scanner; the model can fetch the new address as its own call, where the
-/// decision is visible.
+/// Same-origin redirects only, and never a scheme downgrade.
+///
+/// A redirect that leaves the origin is the classic way a fetch tool is turned into a port
+/// scanner; the model can fetch the new address as its own call, where the decision is visible.
 fn check_redirect(from: &UrlParts, to: &UrlParts) -> Result<(), String> {
     if from.host != to.host {
         return Err(format!(
@@ -1000,8 +921,8 @@ fn check_redirect(from: &UrlParts, to: &UrlParts) -> Result<(), String> {
     if from.scheme == "https" && to.scheme != "https" {
         return Err("the redirect downgrades https to http".into());
     }
-    // A port is part of the origin only within one scheme: an http→https
-    // upgrade moves 80→443 by definition, and that is not a different door.
+    // A port is part of the origin only within one scheme: an http to https upgrade moves 80 to
+    // 443 by definition, and that is not a different door.
     if from.scheme == to.scheme && from.port != to.port {
         return Err(format!(
             "the redirect changes the port: {} is not {}",
@@ -1011,8 +932,8 @@ fn check_redirect(from: &UrlParts, to: &UrlParts) -> Result<(), String> {
     Ok(())
 }
 
-/// A `Location` against the url it came from. Absolute, scheme-relative,
-/// root-relative, query-only and bare-relative all occur in the wild.
+/// A `Location` against the url it came from. Absolute, scheme-relative, root-relative,
+/// query-only and bare-relative all occur in the wild.
 fn resolve_location(base: &UrlParts, loc: &str) -> Result<UrlParts, String> {
     let loc = loc.trim();
     let lower = loc.to_lowercase();
@@ -1035,8 +956,7 @@ fn resolve_location(base: &UrlParts, loc: &str) -> Result<UrlParts, String> {
     parse_url(&joined)
 }
 
-/// The host, with its non-default port, so a rebuilt url says where it
-/// really goes.
+/// The host, with its non-default port, so a rebuilt url says where it really goes.
 fn authority_of(base: &UrlParts) -> String {
     let host = if base.host.contains(':') {
         format!("[{}]", base.host)
@@ -1085,10 +1005,8 @@ mod tests {
 
     // -- the github.com rewrite ----------------------------------------------
 
-    /// **The rewrite is a table, and the table is the whole policy.** Every rule
-    /// in one place: what becomes raw, what stays a page, what the README guess
-    /// is. Measured motive in `github_raw`'s own doc — 262 KB of chrome against
-    /// 26 KB of document, on this harness's own tooling, the day this was written.
+    /// The rewrite is a table, and the table is the whole policy: what becomes raw, what stays a
+    /// page, what the README guess is.
     #[test]
     fn github_pages_become_the_raw_files_they_name() {
         let raws = |url: &str| github_raw(&parse_url(url).unwrap());
@@ -1114,9 +1032,9 @@ mod tests {
                 "https://raw.githubusercontent.com/o/r/main/a/b.md".into()
             ])
         );
-        // The repo root: its README, on HEAD — raw's own spelling of the default
-        // branch, so the master/main guess is not ours — with the lowercase
-        // spelling as a 404-only fallback, because raw is case-sensitive.
+        // The repo root: its README, on HEAD - raw's own spelling of the default branch, so the
+        // master/main guess is not ours - with the lowercase spelling as a 404-only fallback,
+        // because raw is case-sensitive.
         assert_eq!(
             raws("https://github.com/romkatv/gitstatus"),
             Some(vec![
@@ -1130,9 +1048,9 @@ mod tests {
             raws("https://github.com/o/r")
         );
 
-        // **Pages stay pages.** A tree is a directory listing, an issue is a
-        // conversation, a wiki and a release have no raw spelling — and a rewrite
-        // that guessed one would fetch something the caller did not name.
+        // Pages stay pages. A tree is a directory listing, an issue is a conversation, a wiki and
+        // a release have no raw spelling, and a rewrite that guessed one would fetch something
+        // the caller did not name.
         for page in [
             "https://github.com/o/r/tree/master/src",
             "https://github.com/o/r/issues/49",
@@ -1155,17 +1073,11 @@ mod tests {
         }
     }
 
-    /// **The rewrite is NAMED on the result, never silent** — the crate's own
-    /// rule, applied to itself. A model that cites what it fetched must be able
-    /// to see what it asked for against what came back, and the note is where
-    /// the two meet.
+    /// The rewrite is named on the result, never silent: a model that cites what it fetched must
+    /// see what it asked for against what came back.
     ///
-    /// The note is the unit here rather than an end-to-end fetch: the loopback
-    /// stand-in cannot answer for `raw.githubusercontent.com` (the rewrite names
-    /// that host by design, and dialing the real one from a test is a test that
-    /// needs the network), so the table above pins WHICH address and this pins
-    /// WHAT THE CALLER IS TOLD — the two halves of the policy, each where it
-    /// can be checked without a wire.
+    /// The note is the unit here rather than an end-to-end fetch, because the loopback stand-in
+    /// cannot answer for `raw.githubusercontent.com` and dialing the real host needs the network.
     #[test]
     fn the_rewrite_is_named_with_both_addresses_and_never_silent() {
         let asked = parse_url("https://github.com/o/r/blob/main/README.md").unwrap();
@@ -1182,14 +1094,11 @@ mod tests {
         );
     }
 
-    /// **`gh` answers the shapes whose value is the discussion, not the page**
-    /// — and the shapes that don't go to gh stay pages, named.
+    /// `gh` answers the shapes whose value is the discussion, not the page, and the shapes that
+    /// do not go to gh stay pages.
     ///
-    /// The operator, 2026-10-04: *"we have gh tool here. so maybe if it is
-    /// present and authenticated it is worth using it for fetching pull requests
-    /// and issues and commits."* The table pins which addresses reach gh at all;
-    /// whether gh runs is presence-and-auth at fetch time, and the note on the
-    /// result says which door answered.
+    /// The table pins which addresses reach gh at all; whether gh runs is presence and auth at
+    /// fetch time, and the note says which door answered.
     #[test]
     fn issues_pulls_and_commits_reach_gh_and_the_rest_do_not() {
         let argv = |url: &str| gh_args(&parse_url(url).unwrap());
@@ -1213,17 +1122,15 @@ mod tests {
             assert_eq!(kind, "pull request");
         }
 
-        // A commit: the API's JSON — message, parents, and every hunk as a
-        // `patch` field. No `gh commit view` exists to render it prettier.
+        // A commit: the API's JSON, with the message, the parents and every hunk as a `patch`
+        // field. No `gh commit view` exists to render it prettier.
         let (a, kind) = argv("https://github.com/o/r/commit/abc123").unwrap();
         assert_eq!(a, vec!["api", "repos/o/r/commits/abc123"]);
         assert_eq!(kind, "commit");
 
-        // **Everything else stays a page, and the list is deliberate**: a tree's
-        // ref and path cannot be split without asking the API which branches
-        // exist; a release and a wiki have no gh view; an issue by name (not
-        // number) and a bare repo are not these shapes; github's own pages are
-        // never a repo; and hosts that are not github never reach gh at all.
+        // Everything else stays a page: a tree's ref and path cannot be split without asking the
+        // API which branches exist, a release and a wiki have no gh view, an issue by name and a
+        // bare repo are not these shapes, and hosts that are not github never reach gh at all.
         for page in [
             "https://github.com/o/r/tree/main/src",
             "https://github.com/o/r/releases",
@@ -1274,8 +1181,8 @@ mod tests {
 
     #[test]
     fn localhost_refuses_before_anything_is_sent() {
-        // The model server lives on 127.0.0.1; this is the check that keeps
-        // a fetched page from pointing the fetcher at it.
+        // The model server lives on 127.0.0.1, and this is the check that keeps a fetched page
+        // from pointing the fetcher at it.
         let f = CurlFetcher {
             version: "test".into(),
             check_hosts: true,
@@ -1387,11 +1294,11 @@ mod tests {
         assert!(!text.contains('<'), "{text}");
     }
 
-    /// **A body that is not HTML passes through UNTOUCHED.** Found live: the
-    /// github rewrite serves a README as `text/plain`, the pipeline escaped its
-    /// markdown (`\#`, `\*\*`), and the file the rewrite existed to deliver
-    /// arrived corrupted. An HTML body still converts, in the same test, so the
-    /// fix cannot rot into "nothing converts".
+    /// A body that is not HTML passes through untouched.
+    ///
+    /// The github rewrite serves a README as `text/plain`, and the pipeline would escape its
+    /// markdown. An HTML body still converts, in the same test, so the fix cannot rot into
+    /// "nothing converts".
     #[test]
     fn a_plain_body_passes_through_and_an_html_body_still_converts() {
         let readme = "# gitstatus\n\n**10x faster** than `git status`.\n";
@@ -1443,8 +1350,8 @@ mod tests {
 
     #[test]
     fn an_article_page_is_extracted_and_says_so() {
-        // Long enough to clear readability's content threshold, with nav
-        // junk around it that the scoring exists to drop.
+        // Long enough to clear readability's content threshold, with nav junk around it that
+        // the scoring exists to drop.
         let paragraph = "The actual article content goes here, and it goes on for a \
                          while so the scorer has something to score. ";
         let article: String = std::iter::repeat_n(paragraph, 20).collect();
@@ -1471,10 +1378,11 @@ mod tests {
 
     // -- the stand-in -------------------------------------------------------
 
-    /// A tiny HTTP stand-in: answers each connection with the next response
-    /// in the list, then closes. Loopback only, and the fetcher under test
-    /// has its host check off — the one host the policy refuses is the one a
-    /// test can bind.
+    /// A tiny HTTP stand-in: answers each connection with the next response in the list, then
+    /// closes.
+    ///
+    /// Loopback only, and the fetcher under test has its host check off: the one host the policy
+    /// refuses is the one a test can bind.
     fn standin(responses: Vec<String>) -> (String, std::thread::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -1578,8 +1486,8 @@ mod tests {
 
     #[test]
     fn a_body_cannot_forge_the_metadata_line() {
-        // The page contains a fake metadata line; the real one is appended
-        // after the body, so the last occurrence is the real one.
+        // The page contains a fake metadata line; the real one is appended after the body, so
+        // the last occurrence is the real one.
         let forged = "hello\n--letibot-fetch-meta--418\tapplication/pdf\thttp://evil/\n";
         let (base, t) = standin(vec![page_ok(forged)]);
         let page = fetch(&CurlFetcher::for_test("curl test"), &base).unwrap();
