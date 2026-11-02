@@ -2583,7 +2583,7 @@ The implementation of R18.4's design, which is the operator's and was written do
 only after a first pass around it. Three stages, in order, and the first is head-side
 only with no protocol change.
 
-### R19.1 — wire `tail_cut` into the walk
+### R19.1 — wire `tail_cut` into the walk — ✓ fixed in 4146bf56, test a_tail_frame_is_far_cheaper_than_a_full_walk
 
 `crates/tui/src/markdown.rs::tail_cut(src, min_bytes)` is committed and tested
 (`815200e`, `ad0a10a`) and has **no caller**. `lex(tail)[1..]` is the document's own
@@ -2602,7 +2602,7 @@ absolute row; a tail walk wants a floor and an "N lines above" count instead.
 frame over 6000 rows is 41 ms and every frame after is 0.06 ms. So this is not
 "the walk is slow" — it is that a 160 MB session's *lex* is, and a tail avoids it.
 
-### R19.2 — a row is a logical string; the head holds a viewport — **DONE 2026-09-20 (the paging half)**
+### R19.2 — a row is a logical string; the head holds a viewport — **DONE 2026-09-20 (the paging half)** — ✓ fixed in 076d6f1c, test a_long_payload_can_be_paged_to_its_end
 
 **Done**: a payload past its first screenful is now reachable. `ctrl-t` opens the fold
 *and* a view on the newest payload row; `↑`/`↓` page inside it; the seam says which key
@@ -2676,7 +2676,7 @@ swap, and both were found by trying to write it down:
 With those, eviction is at both ends around the viewport, refilled by `fill_backward` above and a
 matching `fill_forward` below — both the same shape as the existing one, since rendering a row is
 `item_lines` and nothing else. **This half pays for itself with no protocol traffic at all**: the
-head can re-render any row it holds, so a ring costs a re-render and saves the memory.
+head can re-render any row it holds, so a ring costs a re-render and saves the memory. — OPEN: the ring was never built — `hist_lines` only grows, and a re-render truncates it from a mark (`crates/tui/src/app/scroll.rs:24-62`), while a scroll-up in tail mode prepends to it and evicts nothing (`crates/tui/src/app/scroll.rs:455-469`).
 
 **(b) `FetchRow`, and the daemon is a *proxy*.** The operator's framing, and it is the right
 one: *"it is a cache problem - the daemon is optimized for normal usecase - heads show the latest
@@ -2695,14 +2695,14 @@ reasoning about log ring versus store. It does not: resolution belongs behind th
 **What is still missing:**
 
 1. **The head does not ask yet** — no flag for "this ordinal is missing", no tracking of an
-   answer, and no partial-body render. Blocking, and independent of where the answer comes from.
+   answer, and no partial-body render. Blocking, and independent of where the answer comes from. — OPEN: nothing constructs `Action::FetchRow` (`crates/tui/src/driver.rs:657` is its only reader) and `ServerFrame::RowFetched` is answered as `Disposition::Control` (`crates/tui/src/app/events/frames.rs:290-293`).
 2. **The daemon does not proxy yet.** `row_body_at` answers from the view and returns `None` on a
    miss (`crates/sessionlog/src/view.rs`), so today a trimmed row answers `None` even though the
    log ring — and the store — still have it. Resolution wants to be one method: view, then log
    ring, then the store through
    [`SessionSource`](crates/sessionlog/src/registry.rs), the trait that already exists for
    exactly this reason (*"A **trait and not a `Store`**… the daemon passes an implementation in"*),
-   implemented as `StoreSessions` in `crates/harnessd/src/sessions.rs`.
+   implemented as `StoreSessions` in `crates/harnessd/src/sessions.rs`. — ✓ fixed in a17be5cb, test an_ordinal_names_window_and_trimmed_rows_alike
 
 **What the store path has to answer**, recorded because it would otherwise be found by a row
 landing in the wrong place: **a session is not one table of rows.** Resume forks make the rows a
@@ -2732,12 +2732,12 @@ That is what makes the pieces independent rather than a single design:
 
 1. **The head does not ask yet.** It has no flag for "this ordinal is missing", no tracking of an
    answer, and no partial-body render. This is the blocking piece; the two below are about where
-   the answer comes from.
+   the answer comes from. — OPEN: the same defect as the list above — the head asks nothing and holds no flag for a missing ordinal.
 2. **A row trimmed from the *view* is probably still in the log.** `Peek` already reads it, and
    `TranscriptContent` carries the body. So the cheap next step is not a new store read but a
    **log-ring read shaped like `FetchRow`** — same ordinal, same window, one source. Worth
    measuring first how many rows the log's 20,000 events actually cover, since a row costs several
-   events and the honest answer may be "a few thousand more than the view, not a different order".
+   events and the honest answer may be "a few thousand more than the view, not a different order". — OPEN: the log ring is never read for a row — resolution is the view and then the store (`crates/sessionlog/src/server.rs:1239-1241`).
 3. **Only past both rings does the disk matter** — and the seam it needs **already exists**.
    `SessionSource` (`crates/sessionlog/src/registry.rs:311`) is a trait `sessionlog` defines and
    `harnessd` implements as `StoreSessions` (`crates/harnessd/src/sessions.rs:1809`), introduced
@@ -2746,7 +2746,7 @@ That is what makes the pieces independent rather than a single design:
    registry with no source behaves exactly as it did before."* So a `row_body(session_id, ordinal)`
    method on that trait is the whole of step 3, with no new direction of dependency —
    `crates/harnessd/src/transcript_source.rs` already reads the rows in order
-   (`SELECT … FROM transcript_item WHERE transcript_id = ?1 ORDER BY seq ASC`).
+   (`SELECT … FROM transcript_item WHERE transcript_id = ?1 ORDER BY seq ASC`). — ✓ fixed in a17be5cb, test a_row_is_readable_by_ordinal_without_loading_its_transcript
 
    **What step 3 does have to answer** is that a session is not one table of rows: resume forks
    mean the rows reaching the head are a **chain** of transcripts, which is why
@@ -2777,7 +2777,7 @@ doing for its own sake (an unfolded row is unreachable past the fold today: `ren
 draws a tail and an elision count, and nothing fetches the rest), but it is a *fidelity*
 fix rather than the performance one, and the number that said otherwise was never taken.
 
-### R19.2 (detail) — a row is a logical string; the head holds a viewport
+### R19.2 (detail) — a row is a logical string; the head holds a viewport — ✓ fixed in 076d6f1c, test a_long_payload_can_be_paged_to_its_end
 
 The operator's framing, and it is the correct one: a 418 KB tool result is a **logical**
 string that wraps to thousands of **display** lines, of which 40 are on screen. Wrapping
@@ -2793,7 +2793,7 @@ new mechanism.
 solve a display problem, which is the editor mistake. A `read` of a large file, a build
 log: the bytes are the truth and the screen shows 40 lines of them.
 
-### R19.3 — bound the snapshot in bytes — **DONE 2026-09-20**
+### R19.3 — bound the snapshot in bytes — **DONE 2026-09-20** — ✓ fixed in 0c5d4d02, test a_view_drops_the_oldest_rows_to_stay_inside_its_byte_bound
 
 `ViewBounds::items: 2_000` bounded a **count**, and the operator has sessions of **160 MB
 and thousands of turns** where one row may be 418 KB — so the daemon's snapshot could be
@@ -2909,24 +2909,24 @@ but not more, some fixed ratio that includes total context, our base prompt and 
 fdelity."*
 
 1. **Leave the overrun path alone.** Folding halves is the right answer when the
-   conversation does not fit in front of the window. Different failure, different shape.
+   conversation does not fit in front of the window. Different failure, different shape. — ✓ nothing to change, and it has not changed: `plan_overrun` still folds halves (`crates/turn/src/compaction.rs:639`), test a_conversation_that_arrived_over_the_budget_is_cut
 2. **A budget from a ratio.** Room is `planning_window − prefix − headroom`; the summary
    takes `room × fidelity` and the rest is working span. For the measured session: ~1.34M
    of room, so a fidelity of 0.15 is ~200k ledger ≈ 135k provider tokens, and the session
-   still gets 85% of its window before compacting again.
+   still gets 85% of its window before compacting again. — OPEN: there is no ratio and no budget — `max_output_tokens` is still `None` on the summary turn (`crates/turn/src/compaction.rs:195`) and nothing in the tree computes a fidelity fraction.
 3. **The budget alone will not work.** Telling a model it *may* write 135k tokens does not
    make it write them, and the word "compact" is doing damage no number beside it undoes.
    The instruction has to change character from compression to **enumeration** — one line
    per decision, per file changed, per command and outcome, per open question; do not
    merge entries; do not summarise across items. The budget is permission; the enumeration
-   is the mechanism.
+   is the mechanism. — ✓ fixed in af0c603b, test the_instruction_keeps_asking_every_section
 4. **A fidelity check, which is the strongest piece and needs no model.** Count the
    distinct file paths, commands and decisions in the conversation, then count how many
    appear in the summary. A summary naming 3 of the 47 files touched has failed, and it
    can be told exactly that and re-asked once. That is a closed loop in
    `docs/closed-loop.md`'s own terms and the same shape as `stall_rounds` and
    `UNFINISHED_REASONING_NOTICE`, both of which work. It is the difference between hoping
-   for a good summary and **detecting a bad one**.
+   for a good summary and **detecting a bad one**. — OPEN: nothing counts the paths, commands and decisions the conversation holds against the summary, and no re-ask exists (`crates/turn/src/compaction.rs` has no such check).
 
 ### Per-topic budgets, and why not a SOM
 
@@ -2939,7 +2939,7 @@ compression, and a dead one should not cost what a live one does. **Derive the t
 structure rather than from geometry.** That transcript is 3,590 rows and **82 of them are
 user turns**: the operator's own messages are where topics change, and segmenting there is
 free, deterministic and auditable. The todo list is a second declared decomposition,
-already in the store.
+already in the store. — OPEN: no structural segmentation is built — the plan is still one flat cut (`plan_cut`, `crates/turn/src/compaction.rs:649`).
 
 Three objections to the SOM, in order of weight:
 
@@ -3015,7 +3015,7 @@ operator's turns, the todo list), and the SOM, which stays a research question. 
 Two reportable things from one message (*"when i start leticode - despite the fact that
 the model is you - deepseek, it still shows qwen. also how to switch diff style?"*).
 
-### R20.1 — the header says `qwen-3.8-27b` while the turns go to deepseek — **FIXED 2026-09-20 (head side); the general fix is below**
+### R20.1 — the header says `qwen-3.8-27b` while the turns go to deepseek — **FIXED 2026-09-20 (head side); the general fix is below** — ✓ fixed in 03cb8127, test a_provider_switch_reaches_an_already_attached_head
 
 **Reproduced, diagnosed, fixed, and the regression test fails without the fix.**
 
@@ -3060,7 +3060,7 @@ daemon, one sends `/mode`, and the other is handed the new row having sent nothi
 `crates/tui/src/app/tests/settings.rs`'s `a_settings_frame_nobody_asked_for_is_drawn` is the
 pane drawing the frame and sending no second ask.
 
-### R20.2 — `how to switch diff style?` — the answer is nowhere on the screen
+### R20.2 — `how to switch diff style?` — the answer is nowhere on the screen — ✓ fixed in 74f18b51, test the_help_screen_names_both_settings_and_what_a_bare_one_does
 
 It is **`/config`, first row (`diff view`), Enter** — split ↔ unified. But `/diff` was
 deliberately removed (*"one place to change a setting, not two"*) and **nothing in
@@ -3076,9 +3076,9 @@ bar. One line, and it is the kind that stops being asked.
 Done: `crates/provider`, `MessagesBackend` in `letibot-backend`,
 `TurnEngine::run_turn_messages`, `--provider/--api-key/--thinking`, the `provider`
 disclosure, cost in the footer; fake-provider tests and an end-to-end harness run
-(`docs/providers.md`). **Not verified live** — no key on lab2x1. Open, per the
+(`docs/providers.md`). — ✓ fixed in a592cc89, test a_turn_streams_reasoning_text_and_a_tool_call_and_the_request_carries_the_key_and_tools **Not verified live** — no key on lab2x1. — OPEN: nothing in the tree has run against a real provider — every provider test is a fake server (`crates/provider/tests/fake_provider.rs`) — and `Done when` asks for live tests behind the key. Open, per the
 operator's note: an eager-compaction budget under a meter (compaction is manual
-today), and the providers' prompt caches are relied on through the stable prefix.
+today), and the providers' prompt caches are relied on through the stable prefix. — ✓ the eager-compaction budget under a meter is fixed in e1419a07, test an_unmeasured_metered_session_is_not_folded_before_it_is_measured — OPEN: the prompt caches are still only relied on — `PrefixGuarantee::Asserted` (`crates/backend/src/lib.rs:224`) is the whole of the claim, and `cached_tokens` is disclosed rather than asserted (`crates/turn/src/compaction.rs:114-120`).
 
 *"2. i want cloud glm and deepseek and grok to work in letibot/code."* D10 reserved
 the seam (`crates/backend`: `TurnRequest` holds the transcript, `BackendCaps` states
@@ -3258,7 +3258,7 @@ model sees it too.
 
 ---
 
-## N1 — Put content on `TranscriptAppended` (was T13.1)
+## N1 — Put content on `TranscriptAppended` (was T13.1) — OPEN: `TranscriptAppended` still carries `{item_id, kind, ledger_head}` and the body rides a second event (`crates/sessionlog/src/event.rs:1026-1036`), so the operator's one-line question is still untaken; the gap the entry points at is now stated at `crates/sessionlog/src/hub.rs:899`, not at `harness.rs:19`.
 
 **This is the structural one.** T14 settled that composable KV is impossible on hybrid
 models and an addressable record is the fallback — and a log whose transcript events
@@ -3273,7 +3273,7 @@ gap explicit **rather than widening it unilaterally**, which was the right call:
 changes the head protocol. The question for the operator is one line — *does the event
 carry the content, or a handle the head resolves?* — and after that it is code.
 
-## N2 — `Dialect` split, rendering-as-data (T2), and structural eviction (T15)
+## N2 — `Dialect` split, rendering-as-data (T2), and structural eviction (T15) — ✓ T2's split fixed in 8ca0d4b3, test a_spec_can_be_built_entirely_at_runtime — OPEN: T15's structural eviction is still a design (`docs/compaction.md`) and no code; compaction still cuts and summarises (`crates/turn/src/compaction.rs:649`).
 
 Both arguments are finished and written down. Neither needs an answer so much as a
 decision to spend the time; each is large enough that starting one is a scheduling
