@@ -1982,10 +1982,9 @@ impl Surroundings {
         secret_hit(&collapse(&Self::expand_home(path, home)), home)
     }
 
-    /// Hosts the operator's own tooling is already logged into are not unseen: `gh` wrote its hosts
-    /// file and the workspace's remotes name where the code lives, so a first contact with one of
-    /// those is not where an exfiltration and a fetch look identical. Read from files, never by
-    /// running `gh`.
+    /// Hosts the operator's tooling is already logged into are not unseen: `gh` wrote its hosts file
+    /// and the remotes name where the code lives, so first contact with one of those is not where an
+    /// exfiltration and a fetch look identical. Read from files, never by running `gh`.
     pub fn with_known_hosts(mut self) -> Self {
         for h in known_hosts(self.home.as_deref(), self.workspace.as_deref()) {
             self.seen_hosts.insert(h);
@@ -2562,10 +2561,9 @@ impl Baseline {
         // card every standing offer it has.
         let mut fixed = parameters::resolve(command, env);
         let mut n = shell::normalise(&fixed.text);
-        // A `PATH` in force is followed for every stage under it. Three outcomes, and the
-        // third is why this cannot be a guess: when a `PATH` the session supplied cannot be
-        // followed the `PATH` is not resolved at all, so the command is as unread as it was
-        // - a grant for `cargo` must not settle a stage that runs another file.
+        // A `PATH` in force is followed for every stage under it, and when a `PATH` the session
+        // supplied cannot be followed the command stays unread: a grant for `cargo` must not settle a
+        // stage that runs another file.
         let mut renamed: Vec<usize> = Vec::new();
         match apply_path(&mut n, env, fixed.path) {
             Programs::Renamed {
@@ -2602,9 +2600,8 @@ impl Baseline {
             path_decided: false,
         };
 
-        // 0. Can a name mean itself here? A grammar reads text; a shell resolves a bare
-        //    name through aliases, functions and `PATH`. If nobody has stated that the
-        //    execution environment is fixed, a bare name is unresolved - the same grade of
+        // 0. Can a name mean itself here? A grammar reads text; a shell resolves a bare name through
+        //    aliases, functions and `PATH`. Without a stated execution environment a bare name is as
         //    unresolved as `$CMD`, because it is the same fact.
         let shadowable: Vec<String> = match &env.shell {
             ShellTrust::Pinned { .. } => Vec::new(),
@@ -2642,16 +2639,10 @@ impl Baseline {
             ));
         }
 
-        // 1. What an unresolvable construct MEANS, which is no longer a refusal. Nothing
-        //    here says safe; what changed is what happens instead of `NotRun`: an opaque
-        //    fragment could be any value, so the scope becomes the widest it could reach,
-        //    and the widening happens in [`Baseline::absorb_stage`]. `verdict` stays
-        //    [`BaselineVerdict::Ask`], so no mode is special-cased: `allow-all` admits the
-        //    widened scope and a narrow mode refuses it as it refuses the literal spelling.
-        //
-        //    Two cases KEEP `NotRun`, both where there is no scope to widen: a parse error,
-        //    where the recovered tree makes every claim a guess, and a program nobody can
-        //    name, where the intents come from the program itself.
+        // 1. What an unresolvable construct means, which is no longer a refusal: an opaque fragment
+        //    could be any value, so the scope widens to the widest it could reach and the verdict stays
+        //    `Ask`. Two cases keep `NotRun`, both with no scope to widen: a parse error and an
+        //    anonymous program.
         let unreadable_structure = n.partial
             || n.unresolved
                 .iter()
@@ -2692,13 +2683,9 @@ impl Baseline {
             ));
         }
 
-        // 2. Intents and regions, per stage. Computed even for an unresolved command,
-        //    because the audit row is more useful with them and because the blocked tier
-        //    must still be reachable: `cat ~/.ssh/$KEY` is unresolvable AND its known prefix
-        //    is in the secret store, and the stronger fact must not be lost to the weaker.
-        //
-        //    What was substituted to get here is said before any of it, because the card's
-        //    regions are placed against directories the operator never typed.
+        // 2. Intents and regions, per stage, computed even for an unresolved command: the blocked
+        //    tier must stay reachable, since `cat ~/.ssh/$KEY` is unresolvable AND its known prefix is
+        //    in the secret store.
         if !substituted.is_empty() {
             b.findings.push(format!(
                 "the shell's own values were written out before this was read, so what \
@@ -2719,14 +2706,9 @@ impl Baseline {
                 .then(|| stage.program.text().map(str::to_string))
                 .flatten();
             b.absorb_stage(&n, stage, env, egresses, scripts, identity);
-            // A literal `cd` moves the directory for every stage after it. The `cd` itself is
-            // placed against the directory the command STARTED in, and every later stage is
-            // placed against where it landed, so a relative path is judged where it will be
-            // opened. A `cd` with an unresolved or absent target leaves the directory alone:
-            // a wrong cwd would place paths the operator never named.
-            //
-            // `cd` with no operand (a bare `cd`, which means `$HOME`) is left alone, and so is
-            // `cd -`: both are facts about a shell this reader does not model.
+            // A literal `cd` moves the directory for every stage after it, so a relative path is
+            // judged where it will be opened. An unresolved or absent target leaves it alone, as does
+            // `cd -`: a wrong cwd would place paths the operator never named.
             if stage.program_name() == Some("cd")
                 && let Some(target) = stage.argv.first().and_then(|w| w.text())
                 && !target.is_empty()
@@ -2798,26 +2780,16 @@ impl Baseline {
         // what this layer owes its caller is the intent and its scope, never a verdict about
         // a string.
 
-        // 3. The disposition: which of the four outcome classes this is, computed last from
-        //    the intents and their scopes.
-        // The parse is carried before the disposition is computed, because one rule
-        // `settle` applies reads the command's own text: a redirection names its target
-        // nowhere else, so with the order reversed that rule saw `command: None`.
+        // 3. The disposition, computed last from the intents and their scopes. The parse is carried
+        //    before it, because `settle` reads the command's own text for a redirection's target.
         b.command = Some(n);
         b.settle(env);
         b
     }
 
-    /// The scope an unresolvable argument widens to, or nothing when it widens nothing.
-    ///
-    /// An opaque fragment could be any value, so its scope becomes the widest it could
-    /// reach. A non-path operand widens nothing, because [`NON_PATH_OPERANDS`] already says
-    /// `echo "exit=$?"` passes a string and not a place; a known prefix fixes the start of
-    /// the word, so `target/$X` is already placed. Otherwise it is unbounded, and the scoped
-    /// intents go with it, because the always-ask rules are judged on scope.
-    ///
-    /// The same three verbs as the resolved loop's, and the same identity-flag exemption:
-    /// two lists would drift.
+    /// The scope an unresolvable argument widens to, or nothing when it widens nothing: an opaque
+    /// fragment could be any value, so the scope becomes the widest it could reach, while a non-path
+    /// operand widens nothing. The same verbs as the resolved loop, or the two would drift.
     fn widen_argument(
         &mut self,
         n: &Normalised,
@@ -2896,14 +2868,9 @@ impl Baseline {
             let d = "this command powers the machine down or restarts it".to_string();
             ask("machine_power", d, self);
         }
-        // The rules about the rules, and the one thing not read from them. Everything else
-        // on this tier judges an action; this judges the SESSION: a call that writes the
-        // preapproved ruleset or the sensitive-path list decides what the next thousand
-        // calls may do unasked, and nothing in those files can turn it off.
-        //
-        // The whole string, not the parse: `printf x > .../permission.json` produces no
-        // scoped intent, and a false positive here is one prompt while a false negative is a
-        // session that granted itself something quietly. Gated on the call being a write.
+        // The rules about the rules: a call that writes the preapproved ruleset or the sensitive-path
+        // list decides what the next thousand calls may do unasked, and nothing in those files can
+        // turn it off. The whole string is judged, because that write produces no scoped intent.
         if self
             .intents
             .iter()
@@ -2964,12 +2931,9 @@ impl Baseline {
         }
     }
 
-    /// The deterministic reading of a non-shell action: a `write`, an `edit`, a `read` -
-    /// anything whose target is a path argument rather than a command line.
-    ///
-    /// The blocked tier must apply to `read({path: "~/.ssh/id_rsa"})` exactly as it applies
-    /// to `cat ~/.ssh/id_rsa`: a flow rule that only looked at shell commands would be
-    /// routed around by the first tool that takes a path.
+    /// The deterministic reading of a non-shell action: a `write`, an `edit`, a `read`, whose target is
+    /// a path argument. The blocked tier must apply to `read({path: "~/.ssh/id_rsa"})` as it does to
+    /// `cat ~/.ssh/id_rsa`, or the first tool that takes a path routes around the flow rule.
     pub fn of_paths<'a>(
         paths: impl IntoIterator<Item = &'a str>,
         writes: bool,
@@ -3078,13 +3042,9 @@ impl Baseline {
         b
     }
 
-    /// A one-line summary for a human deciding, and for the audit row.
-    ///
-    /// A path-decided action has its class decided by `path_is_inside`, not by the region
-    /// set, and the region classifier cannot place a relative path - so reporting the
-    /// regions said `host_other` about a file inside the workspace. The summary omits the
-    /// clause rather than repeat a fact nobody decided on; a shell action's regions are its
-    /// own reading and still reported.
+    /// A one-line summary for a human deciding, and for the audit row. A path-decided action's regions
+    /// came from a classifier that cannot place a relative path, so the clause is omitted rather than
+    /// reporting `host_other` about a file inside the workspace.
     pub fn summary(&self) -> String {
         let intents: Vec<&str> = self.intents.iter().map(Intent::as_str).collect();
         let regions: Vec<&str> = self.regions.iter().map(Region::as_str).collect();
@@ -3093,11 +3053,8 @@ impl Baseline {
         } else {
             format!(" over [{}]", regions.join(" "))
         };
-        // And whether the meaning was ever read. This string lands on the corpus row and on
-        // the card a person is shown, so it is the only durable place the fact can live:
-        // without it the row would say `ask` and nothing else, claiming a resolution that
-        // never happened. Appended at the end so the `ask - intents [...]` shape callers
-        // already read does not change.
+        // And whether the meaning was ever read: this string is the only durable place the fact can
+        // live, and without it the row would say `ask` and claim a resolution that never happened.
         let unread = if self.resolved {
             String::new()
         } else {
@@ -3181,10 +3138,9 @@ impl Baseline {
             effective = inner;
         }
 
-        // Which stage would a person name if they answered "stop asking me about this"?
-        // Asked here because this is the pass that has the stage's own intents, and a second
-        // reader of the program table would be a second answer to what a stage does. The rule
-        // itself is [`name_stage`].
+        // Which stage would a person name if they answered "stop asking me about this"? Asked here
+        // because this pass has the stage's own intents, and a second reader of the program table would
+        // be a second answer to what a stage does.
         name_stage(
             &mut self.grant_program,
             &mut self.grant_program_weight,
@@ -3228,12 +3184,9 @@ impl Baseline {
             );
         }
 
-        // A here-document going somewhere executable is a program, and is read as one: a
-        // body is opaque bytes to the grammar, and the exfiltration can live inside
-        // `cat > /opt/x.py <<'EOF'` with a `chmod +x` two stages later. The body is read when
-        // it is the stdin of an interpreter, or written to a file that is evidently a program
-        // (a shebang, a script extension, a `bin/` directory, or a stage that runs it). Prose
-        // and configuration stay a write.
+        // A here-document going somewhere executable is a program and is read as one: the exfiltration
+        // can live inside `cat > /opt/x.py <<'EOF'` with a `chmod +x` two stages later. The body is read
+        // when it is an interpreter's stdin or evidently a program; prose and configuration stay writes.
         if let Some(script) = heredoc_program(n, stage, &effective, effective_argv) {
             self.findings.push(format!(
                 "here-document body read as {}: {} ({} bytes)",
@@ -3309,23 +3262,12 @@ impl Baseline {
             self.scan_script(text, env, &effective);
         }
 
-        // The script an interpreter was handed as a PATH: `python3 foo.py` is the same act
-        // as `python3 - <<'PY'`, and a path that is never opened leaves the card saying
-        // `[inspect execute_code]` and nothing about what the file does.
-        //
-        // The body is handed in, not read here: `scripts_for` reads it once, for the brief,
-        // through the backend, so the two halves of one gate cannot disagree about one file.
-        // A classifier that opened files would be a classifier with a disclosure hazard.
-        //
-        // A file can change between this read and the run, and a here-document body cannot.
-        // Three things are done about it: one read is shared with the brief; the finding
-        // carries the digest of the bytes that were read; and `ToolRuntime` re-reads those
-        // bodies after the gate answered and refuses if they changed.
+        // The script an interpreter was handed as a path: `python3 foo.py` is the same act as
+        // `python3 - <<'PY'`, and a path never opened leaves the card saying nothing about what the file
+        // does. The body is handed in, not read here, so the two halves cannot disagree about one file.
         if let Some(path) = script_argument(&effective, &literal_argv(effective_argv)) {
-            // What was handed in, if anything - and the text to judge, or the sentences that
-            // say why there is none. The unreadable cases are kept apart because which one it
-            // is decides what gets scanned: a body that is read is dispatched by language,
-            // exactly as a here-document body is.
+            // What was handed in, if anything, and the text to judge or the sentences that say why there
+            // is none: which case it is decides what gets scanned.
             let handed = scripts.iter().find(|s| s.path == path).map(|s| &s.body);
             // `Truncated` is not `Read`: a body whose tail was never opened cannot make this
             // call a write, and a write the scan could not see is exactly what the exec
@@ -3357,10 +3299,9 @@ impl Baseline {
                 Some(text) => {
                     self.intents.insert(Intent::ExecuteCode);
                     self.findings.push(note);
-                    // The language, from the file itself first: a shebang is the most
-                    // authoritative statement of what a script is, then its extension, then
-                    // the interpreter that was handed it. The heredoc arm has the same
-                    // three sources in the same order.
+                    // The language, from the file itself first: a shebang is the most authoritative
+                    // statement of what a script is, then its extension, then the interpreter it was
+                    // handed to.
                     let lang = ScriptLang::of_shebang(text)
                         .or_else(|| ScriptLang::of_extension(&path))
                         .or_else(|| ScriptLang::of_interpreter(&effective))
@@ -3388,10 +3329,9 @@ impl Baseline {
                 None => {
                     self.intents.insert(Intent::ExecuteCode);
                     match handed {
-                        // Written by an earlier stage of this same command is its own case
-                        // and not a failure: `cat > foo.py <<'EOF'; python3 foo.py` names a
-                        // file that cannot exist yet, and its body was read from the command
-                        // text by the here-document arm above.
+                        // Written by an earlier stage of this same command is its own case:
+                        // `cat > foo.py <<'EOF'; python3 foo.py` names a file that cannot exist yet, and
+                        // its body was read from the command text.
                         Some(ScriptBody::Unreadable(why)) => {
                             match written_by_an_earlier_stage(n, &path) {
                                 Some(how) => self.findings.push(format!(
@@ -3408,10 +3348,9 @@ impl Baseline {
                                 )),
                             }
                         }
-                        // No body was handed in for this path at all: a caller that did not
-                        // read it (a replay, a corpus sweep, `Baseline::of_command`). Said,
-                        // not assumed away: silence here reads exactly like a script that
-                        // does nothing.
+                        // No body was handed in at all: a caller that did not read it, such as a replay
+                        // or a corpus sweep. Said rather than assumed away, because silence here reads
+                        // like a script that does nothing.
                         _ => self.findings.push(format!(
                             "`{path}` is the program `{effective}` runs, and its body was not \
                              read — no finding is made about what it does"
@@ -3421,12 +3360,9 @@ impl Baseline {
             }
         }
 
-        // The subcommand is a VERB, not an operand. `git checkout -- crates/x.rs` scoped
-        // `checkout` as a destroy target and `status` from the NEXT stage's argv, and a verb
-        // read as a path is a refusal that names a file nobody named.
-        //
-        // The knowledge is `git_subcommand`'s, which the `git` intent arm already uses, so
-        // the two cannot disagree about which word in `git -C /x status` is the verb.
+        // The subcommand is a verb, not an operand: `git checkout -- crates/x.rs` scoped `checkout` as a
+        // destroy target, and a verb read as a path is a refusal naming a file nobody named. The
+        // knowledge is `git_subcommand`'s, so the two cannot disagree.
         let subcommand_at: Option<usize> = if effective == "git" {
             let mut i = 0usize;
             let (sub, _) = git_subcommand(&stage.argv);
@@ -3446,9 +3382,7 @@ impl Baseline {
                 continue;
             }
             for w in word.flatten() {
-                // A construct nobody can read is a WIDENED scope, not a missing word: an
-                // opaque fragment could be any value, so the scope becomes the widest it
-                // could reach, and the ordinary machinery answers - the region decides
+                // A construct nobody can read is a widened scope, not a missing word: the region decides
                 // whether this is a read and the scoped intent feeds the destruction rule.
                 if let Word::Unresolved(at) = w {
                     self.widen_argument(n, *at, &effective, i, &identity);
@@ -3458,20 +3392,16 @@ impl Baseline {
                 if text.starts_with('-') || text.is_empty() || text.contains('\n') {
                     continue;
                 }
-                // `sleep 20`, `echo hello`, `seq 1 5`: the operand is a number or a word,
-                // not a place, and placing it made `sleep 20` reach outside the boundary and
-                // ask. A number is never a path, and a program whose operands are not paths
-                // gives them no region.
+                // `sleep 20`, `echo hello`: the operand is a number or a word, not a place, and placing
+                // it made `sleep 20` reach outside the boundary and ask.
                 if (text.bytes().all(|b| b.is_ascii_digit() || b == b'.') && !is_ipv4(text))
                     || NON_PATH_OPERANDS.contains(&effective.as_str())
                 {
                     self.regions.insert(Region::None);
                     continue;
                 }
-                // A relative path is relative to where the command runs: on disk that is
-                // `cwd`/`text` when a cwd is known and the path is not absolute. A host is
-                // not a path - `nc 192.0.2.10 4444` must keep its bare address for the
-                // network arm below, or joining it to the cwd loses the egress.
+                // A relative path is relative to where the command runs: `cwd`/`text`. A host is not a
+                // path, and `nc 192.0.2.10 4444` must keep its bare address for the network arm.
                 let joinable = !looks_remote(text) && !is_ipv4(text);
                 let placed = match (&self.cwd, text.starts_with('/') || text.starts_with('~')) {
                     (Some(cwd), false) if joinable => {
@@ -3507,10 +3437,9 @@ impl Baseline {
                         self.authenticating = Some(effective.clone());
                     }
                 }
-                // The scoped intent: the verb AND its target, which is the line layer B
-                // checks against what the operator said. The STAGE's intents, not the
-                // line's: the union scoped one stage's `Destroy` onto the next stage's
-                // operands, and an intent belongs to the stage that has it.
+                // The scoped intent: the verb and its target, which is the line layer B checks against
+                // what the operator said. The STAGE's intents, since a union scoped one stage's `Destroy`
+                // onto the next stage's operands.
                 for verb in stage_intents(stage) {
                     if matches!(verb, Intent::Destroy | Intent::WriteFile | Intent::Network)
                         && !identity.contains(&i)
@@ -3531,11 +3460,9 @@ impl Baseline {
                 RedirectTarget::HereString(w) => Some(w),
                 _ => None,
             };
-            // A redirection to a file nobody can name writes somewhere unknown: `cat > $F`
-            // reported `reads=true tier=auto regions=[]`, a write to a path decided at run
-            // time read as a harmless look inside the workspace. So the unresolved target
-            // gets the write intent and a region, the region widened because the path could
-            // be anywhere.
+            // A redirection to a file nobody can name writes somewhere unknown: `cat > $F` would
+            // otherwise read as a harmless look inside the workspace, so the unresolved target gets the
+            // write intent and a widened region.
             if let Some(Word::Unresolved(at)) = w {
                 if let Some(u) = n.unresolved.get(*at) {
                     if r.op.writes() {
@@ -3690,12 +3617,9 @@ impl Baseline {
 }
 
 impl Baseline {
-    /// Fold a nested reading into this one. The nested command's findings are the outer
-    /// command's: running a thing through `bash -c` must not be a way to get a different
-    /// answer about it, which is the whole GuardFall class in one line. So the fold only
-    /// tightens. `propagate_not_run` says whether the inner command's unreadable constructs
-    /// make THIS command unreadable: yes for text that runs now, no for a script written to
-    /// a file, whose `$1` is its own.
+    /// Fold a nested reading into this one: running a thing through `bash -c` must not be a way to get
+    /// a different answer about it, so the fold only tightens. `propagate_not_run` says whether the
+    /// inner unreadable constructs make this command unreadable too.
     fn fold(&mut self, inner: Baseline, where_: &str, propagate_not_run: bool) {
         self.intents.extend(inner.intents.iter().copied());
         self.regions.extend(inner.regions.iter().cloned());
@@ -3705,10 +3629,9 @@ impl Baseline {
         if self.authenticating.is_none() {
             self.authenticating = inner.authenticating.clone();
         }
-        // Two ways a folded action can be partially unreadable. `NotRun` means the body was
-        // REFUSED; `!resolved` means it was read and its unknowns were widened. Both leave
-        // the reader owing the same disclosure - the rest is the script's own runtime, not
-        // this call's - which is the point of the arm.
+        // Two ways a folded action can be partially unreadable: `NotRun` means the body was refused,
+        // `!resolved` means it was read and its unknowns widened. Both owe the reader the same
+        // disclosure, that the rest is the script's own runtime.
         let inner_unreadable: Option<String> = match &inner.verdict {
             BaselineVerdict::NotRun { why } if propagate_not_run => {
                 self.verdict = BaselineVerdict::NotRun {
@@ -3738,13 +3661,9 @@ impl Baseline {
         }
     }
 
-    /// A script in a language this layer has no grammar for: what it can still state is
-    /// the hosts it names, the secret-store paths it names and the files it opens for
-    /// writing, all placed through [`Surroundings::region_of`] like an argument would be.
-    ///
-    /// A mention is not a call - a host counts only where the script shows it can reach
-    /// one - and the scan is body-wide, because `host = "..."` above
-    /// `urlopen(f"http://{host}/")` is the shape it exists for.
+    /// A script in a language this layer has no grammar for: what can still be stated is the hosts it
+    /// names, the secret-store paths and the files it opens for writing. A mention is not a call, and
+    /// the scan is body-wide.
     fn scan_script(&mut self, body: &str, env: &Surroundings, program: &str) {
         // A triple-quoted literal is data: the text an edit script replaces,
         // the message a poster sends. Whatever it names, the script does not do.
