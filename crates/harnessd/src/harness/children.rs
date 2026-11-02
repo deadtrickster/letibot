@@ -550,6 +550,22 @@ pub(crate) fn stop_children_first(
     Some(said)
 }
 
+/// **Say what a child left, on the session that owns it**, for the estate a child settles after its
+/// answer is already given. The answer is the parent's MODEL's channel and it is closed by then; this
+/// is the operator's - the head draws a warning where the child's own row is - and it is a warning
+/// rather than silence because a leftover named only in a registry that is about to be dropped is not
+/// named at all.
+pub(crate) fn say_a_childs_estate(hub: Option<Arc<Hub>>, sub_id: &str, said: &str) {
+    let Some(hub) = hub else {
+        return;
+    };
+    hub.publish(letibot_sessionlog::SessionEvent::Warning {
+        code: "subagent_left_over".into(),
+        detail: format!("what `{sub_id}` left when it ended: {said}"),
+        compaction: None,
+    });
+}
+
 /// A child that ends while its own children are still on their task stops them; `None`, and nothing is
 /// stopped, when none is. A child that answers holds for its children, but one whose turn FAILS has no
 /// answer to hold, and its children used to run on with nobody left to report to.
@@ -1091,6 +1107,12 @@ pub(crate) struct HarnessTaskRunner {
     /// The daemon's session registry, so a subagent is a real session an operator
     /// can see and attach rather than a turn hidden inside the parent's.
     pub(crate) registry: Arc<letibot_sessionlog::registry::Registry>,
+    /// **This session, as the heir of its children's estates**: the process host a child's
+    /// survivor is handed to. A slot because the runner is built before the backend's host
+    /// exists - the same reason `tree_watch` is one - and it carries the watchers too
+    /// ([`letibot_tools::exec::ProcessHost::monitors`]), so one field answers both halves of
+    /// *what outlives a child and who takes it*.
+    pub(crate) heir: Arc<std::sync::Mutex<Option<Arc<dyn letibot_tools::exec::ProcessHost>>>>,
     /// The parent's configuration, already resolved (workspace, mode, title) by
     /// [`Harness::open_with_registry`] before this was built. Cloned as the base for
     /// each sub session; only the id, title and seat are overridden.
@@ -1507,6 +1529,13 @@ impl HarnessTaskRunner {
                 "`{handle}` was parked and could not be reopened: {e}. Nothing was sent."
             )),
         }
+    }
+
+    /// **This session, as the heir of its children's estates** - the process host a child hands its
+    /// survivors to. Cloned out of the slot rather than borrowed, so the caller owns it for the
+    /// call and no lock is held across a hand-over.
+    fn heir(&self) -> Option<Arc<dyn letibot_tools::exec::ProcessHost>> {
+        self.heir.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     fn slot(&self, handle: &str) -> Option<Arc<TaskSlot>> {
@@ -2683,10 +2712,13 @@ impl HarnessTaskRunner {
             // No spawn runs through this constructor, so no foreign vocabulary is
             // ever loaded through it: an empty cache is the honest start.
             foreign_vocabs: Default::default(),
-            local_window: Arc::new(std::sync::Mutex::new(None)),
+            local_window: Arc::new(std::sync::Mutex::new(Some(None))),
             point: Arc::new(std::sync::Mutex::new(point)),
             placed: Arc::new(std::sync::Mutex::new(placed)),
             merge_store: Arc::new(std::sync::Mutex::new(None)),
+            // No spawn runs through this constructor, so no child's estate is ever settled
+            // here: `None` is `settle_estate`'s *there is nobody to hand it to*.
+            heir: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -3389,10 +3421,18 @@ impl HarnessTaskRunner {
                 // running with nobody to report to, and a VM child keeps its VM up while it runs, so orphaned
                 // grandchildren held VM slots for a day. Stopped before the backend is closed, as a stop does.
                 a_child_that_ends_stops_its_own(Some(&sub.subagents), &sub.hub);
+                // **And what THIS child was holding ends here too**, said in the failure itself: there is
+                // no answer to carry the line, and a failure is exactly when nobody thinks to go looking
+                // for the build the child had backgrounded.
+                let mut why = e.to_string();
+                let heir = self.heir();
+                if let Some(said) = sub.settle_estate(heir.as_deref()) {
+                    why.push_str(&format!("\n\n[estate] {said}"));
+                }
                 // The backend is closed on this exit too - the other two close it below - so a
                 // child whose first turn failed does not leave its watchers and cgroups behind.
                 sub.close_backend();
-                return Err(fail(e.to_string()));
+                return Err(fail(why));
             }
         };
         // A child with children still on their task is not done: its answer is held, each child's result reaches
@@ -3420,6 +3460,15 @@ impl HarnessTaskRunner {
         }
         let tokens: u64 = reply.metrics.iter().map(|m| m.predicted_tokens).sum();
         let first_line = reply.text.lines().next().unwrap_or("").to_string();
+        // **The estate, settled before the answer is given.** A subagent's answer is the last thing its
+        // parent reads from it, so what the child left is said HERE and nowhere else that anybody is
+        // certain to look: every ending below - the VM branch, the settled answer, a stop during the
+        // park loop - carries it. Settled before the answer rather than at the thread's exit because a
+        // host child parks after answering and its answer is already the record.
+        let heir = self.heir();
+        if let Some(said) = sub.settle_estate(heir.as_deref()) {
+            reply.text.push_str(&format!("\n\n[estate] {said}"));
+        }
         self.tasks.record(crate::tasks::TaskEntry {
             name: sub_id.clone(),
             role: seat.as_str().to_string(),
@@ -3451,6 +3500,14 @@ impl HarnessTaskRunner {
         self.enqueue_finished(&sub_id);
         if serve_child(&mut sub, &sub_hub, &sub_id, turns) == ChildExit::Parked {
             slot.mark_parked();
+        }
+        // **And again, for the turns it ran after answering** - a child that was woken, worked and parked
+        // started its processes after the answer above settled its estate. This one cannot ride the
+        // settlement (it is given), so it goes on the parent's hub, where the head draws the child's
+        // row: a leftover named only in a registry that is about to be dropped is not named at all.
+        let heir = self.heir();
+        if let Some(said) = sub.settle_estate(heir.as_deref()) {
+            say_a_childs_estate(self.registry.get(&parent), &sub_id, &said);
         }
         // The hub closed, a stop arrived, or the child parked. Released here rather than when the harness drops,
         // and there is no placement sentence to add on the host, which `close_backend` says by returning `None`.

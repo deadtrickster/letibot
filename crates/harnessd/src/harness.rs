@@ -3991,6 +3991,11 @@ pub use clear::{ClearReport, clear_reply};
 // that a store already in that state needs, so a conversation is not refused for ever. See the
 // module's header for the shape it is, and why only that shape is repaired.
 mod children;
+// **A session's estate** - what it was still holding when it ended, what ended with it, and what
+// it handed to the session that outlives it. See the module's header for why the substrate's own
+// reaping is not the whole answer for a subagent.
+mod estate;
+pub use estate::{Estate, estate_said, settle_estate};
 mod jobs;
 mod models;
 mod nags;

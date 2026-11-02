@@ -1051,12 +1051,18 @@ impl Harness {
         // is AT rather than the one it opened at. Built here, after the mode is final.
         let point_cell: Arc<std::sync::Mutex<letibot_tools::mode::Mode>> =
             Arc::new(std::sync::Mutex::new(cfg.mode));
+        // **The slot a child of this session hands its survivors to** - this session's process host,
+        // filled once the backend has one, `tree_watch_slot`'s reason: a child's estate is settled
+        // against the session that outlives it, and a leftover with nowhere to go is an orphan.
+        let heir_slot: Arc<std::sync::Mutex<Option<Arc<dyn letibot_tools::exec::ProcessHost>>>> =
+            Default::default();
         let task_runner: Arc<dyn letibot_tools::builtins::task::TaskRunner> =
             Arc::new(HarnessTaskRunner {
                 vocab: parts.vocab.clone(),
                 wiring: parts.wiring.clone(),
                 mode_store: parts.mode_store.clone(),
                 registry: session_registry.clone(),
+                heir: heir_slot.clone(),
                 base: cfg.clone(),
                 tasks: parts.tasks.clone(),
                 skills: parts.skills.clone(),
@@ -1847,6 +1853,9 @@ impl Harness {
         // unprompted turn, built whether or not this session can start a process: `task` needs no host.
         let bell = Some(Arc::clone(session_registry.bell()));
         let processes = backend.processes_arc();
+        // The heir's slot, filled the moment the host exists: a child that ends hands its survivors
+        // here, and a slot filled later is a child whose estate had nowhere to go.
+        *heir_slot.lock().unwrap_or_else(|e| e.into_inner()) = processes.clone();
         let job_watch = match &processes {
             Some(h) => JobWatchers::new(h, &hub, bell),
             None => JobWatchers::watching_tasks(&hub, bell),
