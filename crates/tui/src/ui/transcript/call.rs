@@ -331,7 +331,12 @@ pub(crate) fn call_card(
                 c.started_ms
             };
             Live::Running {
-                elapsed_ms: now_ms.saturating_sub(from),
+                // No anchor at all (a replay before the clock is set) shows zero, not the epoch.
+                elapsed_ms: if from == 0 {
+                    0
+                } else {
+                    now_ms.saturating_sub(from)
+                },
                 note: c.note.clone(),
             }
         }

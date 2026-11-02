@@ -1727,6 +1727,38 @@ fn the_header_can_name_what_the_session_is_talking_to_before_any_turn() {
 }
 
 #[test]
+fn a_running_call_joined_from_a_snapshot_shows_no_epoch() {
+    // Seen live as `◐ Editing jobs.rs · 498235h48m`: the card measured from 0.
+    let hub = Hub::new("s");
+    hub.publish(testing::turn_started("t1"));
+    hub.publish(testing::proposed_on("t1", "c1", "edit", "jobs.rs"));
+    hub.publish(SessionEvent::ToolStarted {
+        turn_id: "t1".into(),
+        call_id: "c1".into(),
+        name: "edit".into(),
+        access: "write".into(),
+    });
+    let mut a = app();
+    a.now_ms = 1_788_984_000_000;
+    a.apply(hello("s", vec![], hub.snapshot()));
+    a.apply(ServerFrame::Event(env_at(
+        99,
+        a.now_ms + 3_000,
+        testing::tool_progress("c1", "half"),
+    )));
+    a.now_ms += 3_000;
+    let screen = a.screen(120, 30).join("\n");
+    assert!(screen.contains("jobs.rs"), "{screen}");
+    let chars: Vec<char> = screen.chars().collect();
+    assert!(
+        !chars
+            .windows(2)
+            .any(|w| w[0].is_ascii_digit() && w[1] == 'h'),
+        "an epoch rendered as a duration: {screen}"
+    );
+}
+
+#[test]
 fn a_turn_joined_from_a_snapshot_shows_no_elapsed_rather_than_an_epoch() {
     // Found by switching into a session that was mid-turn — the case the whole
     // switch feature exists for. A snapshot has no timestamps, `started_ms` is

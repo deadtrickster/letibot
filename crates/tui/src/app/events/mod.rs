@@ -524,6 +524,7 @@ impl App {
             }
         }
         self.heads = s.heads.len();
+        let now = self.now_ms;
         self.turn = s.turn.map(|t| {
             self.model = t.model.clone();
             let mut pane = TurnPane {
@@ -539,10 +540,9 @@ impl App {
                         target: c.target,
                         state: c.state,
                         started_ms: 0,
-                        // The same rule one field along: a snapshot carries no
-                        // timestamps, so there is no anchor to measure against
-                        // either.
-                        started_at: 0,
+                        // A snapshot has no timestamps, so a running call is measured from
+                        // when this head first saw it: a lower bound, never an epoch.
+                        started_at: now,
                         ended_ms: 0,
                         note: None,
                         decision: None,
