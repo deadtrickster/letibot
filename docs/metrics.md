@@ -31,14 +31,12 @@ thing** (a tap in `Hub::publish` costs a clone and a send), and **nothing on the
 
 ### 2.1 A sibling database, not a table in the store
 
-1. **Write contention.** The store is one writer lock shared by every daemon on the box, and "sqlite: database
-   is locked" is how the queue thread has died. Tens of thousands of rows a day must not join that lock.
-2. **Schema versioning across mixed builds.** A table in the store is a migration and a `schema_version` bump,
-   and an older daemon meeting a newer store refuses to open it. A kind-tolerant table (§2.2) lets a build that
-   knows fewer kinds write beside one that knows more.
-3. **Retention.** Pruning and vacuuming are cheap on a small sibling file, and they fragment the 3 GB store
-   every transcript read walks.
-4. **Privacy.** The file holds no content by default (§2.8), so it can be copied without a prompt.
+The store is one writer lock shared by every daemon on the box, and "sqlite: database is locked" is how the
+queue thread has died - tens of thousands of rows a day must not join that lock. A table in the store is also a
+migration and a `schema_version` bump, and an older daemon meeting a newer store refuses to open it, while a
+kind-tolerant table (§2.2) lets a build that knows fewer kinds write beside one that knows more. Pruning and
+vacuuming are cheap on a small sibling file and fragment the 3 GB store every transcript read walks, and a file
+with no content in it (§2.8) can be copied without a prompt.
 
 The cost is no cross-file foreign keys: analysis joins with `ATTACH 'sessions.db' AS s` and the shared ids
 (`session_id`, `transcript_id`, `turn_id`, `request_id`, `entry_id`) are strings. A dangling id is acceptable -
