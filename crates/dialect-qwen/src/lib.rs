@@ -267,4 +267,78 @@ mod tests {
         assert!(ct.by_literal("<parameter=").is_none());
         assert!(ct.by_literal("<tool_call>").is_some());
     }
+
+    #[test]
+    fn every_stop_token_is_a_declared_control_token() {
+        // A stop literal missing from the control table is a literal nobody proved is one vocab
+        // entry, and a stop token that is really a sequence never fires -- the turn runs to
+        // `n_ctx` with nothing saying why. `resolve_stops` reports the failure by the role.
+        let ct = ControlTokens::borrowed(QWEN_TOKENS);
+        for stop in QWEN_STOP_TOKENS {
+            let found = ct
+                .by_literal(&stop.literal)
+                .unwrap_or_else(|| panic!("stop token {} is not in QWEN_TOKENS", stop.literal));
+            assert_eq!(
+                found.role, stop.role,
+                "stop token {} disagrees with the control table about its role",
+                stop.literal
+            );
+        }
+    }
+
+    #[test]
+    fn the_image_triplet_has_three_roles_and_media_reads_them() {
+        // The three roles are load-bearing, not labels: `media_spans` counts `ImageOpen` and
+        // `spans_to_string_with_media` places one marker there while dropping the pad and the
+        // close, so a triplet declared as three `Other`s carries no picture or three copies.
+        use letibot_dialect::{
+            RenderSpan, media_spans, spans_to_string, spans_to_string_with_media,
+        };
+
+        let ct = ControlTokens::borrowed(QWEN_TOKENS);
+        assert_eq!(
+            ct.by_literal("<|vision_start|>").unwrap().role,
+            ControlRole::ImageOpen
+        );
+        assert_eq!(
+            ct.by_literal("<|image_pad|>").unwrap().role,
+            ControlRole::Image
+        );
+        assert_eq!(
+            ct.by_literal("<|vision_end|>").unwrap().role,
+            ControlRole::ImageClose
+        );
+
+        let spans: Vec<RenderSpan> = [
+            "before",
+            "<|vision_start|>",
+            "<|image_pad|>",
+            "<|vision_end|>",
+            "after",
+        ]
+        .iter()
+        .map(|lit| match ct.by_literal(lit) {
+            Some(t) => RenderSpan::Control(t.clone()),
+            None => RenderSpan::Text((*lit).to_string()),
+        })
+        .collect();
+
+        assert_eq!(media_spans(&spans), 1);
+        assert_eq!(
+            spans_to_string_with_media(&spans, "<IMG>"),
+            "before<IMG>after"
+        );
+        assert_eq!(
+            spans_to_string(&spans),
+            "before<|vision_start|><|image_pad|><|vision_end|>after"
+        );
+    }
+
+    #[test]
+    fn im_start_is_other_on_purpose() {
+        // Qwen writes the role as text after this token (`<|im_start|>user\n`), so no per-role
+        // turn-start token exists to declare. `Other` is what this contract calls a role it has
+        // not modelled, and it is greppable: a sweep fixing every `Other` must not touch this.
+        assert_eq!(tokens::IM_START.role, ControlRole::Other);
+    }
 }
