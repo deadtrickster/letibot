@@ -1,84 +1,6 @@
-//! **The reference checker — what a note claims about the tree, and whether the tree still
-//! says it.**
-//!
-//! The design's ruling, verbatim: *"and then we need a periodic poke to review notes for
-//! being up-to-dater"*, and its own account of why this half comes first:
-//!
-//! > **References.** A checker can verify these mechanically: does the path exist, is the
-//! > commit sha still reachable, does the symbol still appear, is the line range still inside
-//! > the file. That is the shape `warning.rs`'s census test and `check-fmt.sh` already have —
-//! > a thing that cannot drift silently — and it produces **evidence** rather than a feeling.
-//! > A note whose references no longer resolve is the cheapest honest staleness signal
-//! > available.
-//!
-//! So this module is the cheap half of the keeper: **no model, no network, deterministic**,
-//! and it answers a question a reader can check by hand. The keeper's session
-//! ([`crate::notes_keeper`]) is asked *after* this has run, and is handed the answer.
-//!
-//! # The four kinds, and what "resolved" means for each
-//!
-//! | kind | the claim | resolved means |
-//! |---|---|---|
-//! | [`RefKind::Path`] | a file or directory is there | it exists under one of the roots |
-//! | [`RefKind::Lines`] | `path:120-140` is inside the file | the path exists and has that many lines |
-//! | [`RefKind::Sha`] | a commit is real and reachable | `cat-file -e` finds it, and `merge-base --is-ancestor` says whether it is on `HEAD` |
-//! | [`RefKind::Symbol`] | a name appears in the code | `git grep` finds it |
-//!
-//! **A sha that exists but is not an ancestor of `HEAD` is `Resolved`, and it says so.** That
-//! is not a dodge: a note citing an unlanded branch's tip is *accurate* while the branch is
-//! unlanded, and a note citing a sha that was rebased away is not — and only the keeper, with
-//! the note in front of it, can tell those apart. The checker's job is to produce the fact,
-//! not to grade it.
-//!
-//! # Which tree a note is about — and why the workspace is not always the answer
-//!
-//! MEASURED on this box, and it is the reason [`tree_roots`] exists: the operator's workspace
-//! is `/home/dead/Projects/letibot`, its notes are in `.letibot/notes/` there, and the code
-//! those notes cite (`crates/tools/src/…`) is in `/home/dead/Projects/letibot/**letibot**/`.
-//! The workspace is not a repository at all — it holds five — so resolving `crates/…` against
-//! the workspace would report every path in every note as stale, which is the failure mode
-//! this whole feature must not have: *"the first time a reader learns to ignore the hint line,
-//! the feature is dead."*
-//!
-//! So the roots are the workspace itself **and the repositories at and under it**, in that
-//! order, and the report names the root each path resolved under. Git is asked of the first
-//! root that is a repository — for this box, the main tree.
-//!
-//! # The noise rule, which is not decoration
-//!
-//! A checker that cries *stale* on a good note is worse than no checker — the design's own rule
-//! about hints applies to reports: *"the first time a reader learns to ignore the hint line, the
-//! feature is dead."*
-//!
-//! **This was measured, not reasoned.** The first version of this module, run over this box's 26
-//! notes, reported **125 of 582** references stale — 21%, nearly all of them prose:
-//!
-//! | what it read | what it was |
-//! |---|---|
-//! | `/queue`, `/notes`, `/reseat` | slash commands, read as absolute paths |
-//! | `*.md`, `crates/harnessd/src/*.rs`, `<slug>` | a glob or a template, read as a filename |
-//! | `duration/edit/decision` | prose wearing a slash |
-//! | `tools/builtins/todo.rs`, `daemon.rs:155` | the note's own shorthand for a path further down |
-//! | `.md`, `file://` | a suffix being discussed, and a URL |
-//!
-//! Each is now a rule, and each errs toward silence:
-//!
-//! * **A token is only a citation when it looks like one.** A path needs a known extension with a
-//!   stem, an absolute or `~` or `./` head with a second segment, or a slash whose head is a
-//!   directory the tree has; a symbol needs `::`, a call, or a snake_case name. `2.7`, `the`,
-//!   `Verbatim:`, `**bold**`, `/queue` and `.md` are none of those.
-//! * **A note's shorthand is followed, once.** `tools/builtins/todo.rs` resolves to
-//!   `crates/tools/src/builtins/todo.rs` when exactly one tracked path contains those components
-//!   in order; when several do, the reference is `Uncheckable` — *nobody looked* — rather than a
-//!   guess at which one the note meant.
-//! * **A two-segment token with no extension is a citation only when it resolves** — as a path or
-//!   as a git ref. `agent/notes-offer` is a branch and resolves; `and/or` and `read/write` are
-//!   prose and do not, and are dropped rather than reported. The cost is stated rather than
-//!   hidden: a note naming a branch that has since been deleted is *not* flagged by this rule.
-//!
-//! A note whose references cannot be checked at all — no git, no repository — is
-//! [`Outcome::Uncheckable`], never `Unresolved`. A checker that cannot check has not found
-//! anything, and saying otherwise is the one thing it must not do.
+//! The reference checker: what a note claims about the tree, and whether the tree still says it.
+//! No model, no network, deterministic. A sha that exists but is off `HEAD` is `Resolved` and
+//! says so, and a checker that could not check at all is `Uncheckable`, never `Unresolved`.
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -98,9 +20,9 @@ pub enum RefKind {
 }
 
 impl RefKind {
-    /// Every kind, in the order the report renders them — the one list, for the reason
-    /// [`crate::gatekeeper::Decision::ALL`] is one: the parse and the rendering both ask
-    /// *which of the values is this*, and a second list is a second answer.
+    /// Every kind, in the order the report renders them: the one list, for the reason
+    /// [`crate::gatekeeper::Decision::ALL`] is one, since the parse and the rendering both ask
+    /// *which of the values is this* and a second list is a second answer.
     pub const ALL: [RefKind; 4] = [RefKind::Path, RefKind::Lines, RefKind::Sha, RefKind::Symbol];
 
     pub fn as_str(&self) -> &'static str {
@@ -112,18 +34,16 @@ impl RefKind {
         }
     }
 
-    /// The kind a word names, if it names one. `None` for anything else — never a default,
+    /// The kind a word names, if it names one. `None` for anything else, never a default,
     /// because a kind nobody knows is a reference nobody can render.
     pub fn parse(s: &str) -> Option<RefKind> {
         Self::ALL.into_iter().find(|k| k.as_str() == s)
     }
 }
 
-/// What the tree says about one reference.
-///
-/// Three outcomes and not two, because *"I could not check"* is not *"it is gone"*: a checker
-/// with no repository under it has found nothing, and reporting that as staleness would be
-/// inventing the evidence the keeper is supposed to be handed.
+/// What the tree says about one reference. Three outcomes and not two, because "I could not
+/// check" is not "it is gone": a checker with no repository under it has found nothing, and
+/// reporting that as staleness would be inventing the evidence the keeper is handed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
     /// The tree still says it. The string is what it resolved to, in the reader's words.
@@ -144,7 +64,7 @@ impl Outcome {
         }
     }
 
-    /// The evidence — what it resolved to, or why it did not.
+    /// The evidence: what it resolved to, or why it did not.
     pub fn why(&self) -> &str {
         match self {
             Outcome::Resolved(s) | Outcome::Unresolved(s) | Outcome::Uncheckable(s) => s,
@@ -164,11 +84,11 @@ impl Outcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Reference {
     pub kind: RefKind,
-    /// The token as it is looked up — a call's own name for a symbol (`nearest(want: &str)`
-    /// is looked up as `nearest`), the note's spelling for everything else. The first
-    /// spelling of a token wins; a note that cites one path five times is one reference.
+    /// The token as it is looked up: a call's own name for a symbol (`nearest(want: &str)` is
+    /// looked up as `nearest`), the note's spelling for everything else. The first spelling of a
+    /// token wins, so a note that cites one path five times is one reference.
     pub text: String,
-    /// The line of the note it is on, 1-based — so a report can be read beside the note.
+    /// The line of the note it is on, 1-based, so a report can be read beside the note.
     pub line: usize,
     pub outcome: Outcome,
 }
@@ -206,15 +126,15 @@ impl ReferenceReport {
             .collect()
     }
 
-    /// **No reference is unresolved** — the cheap honest staleness signal, at its cheapest.
-    /// Unchecked references are not a clean bill of health, and `is_clean` says nothing about
-    /// them; the count is in [`ReferenceReport::render`] where a reader cannot miss it.
+    /// No reference is unresolved: the cheap honest staleness signal, at its cheapest. Unchecked
+    /// references are not a clean bill of health, and `is_clean` says nothing about them; the
+    /// count is in [`ReferenceReport::render`] where a reader cannot miss it.
     pub fn is_clean(&self) -> bool {
         self.unresolved().is_empty()
     }
 
-    /// The evidence, as the keeper's prompt carries it and as the operator's pane shows it:
-    /// **the unresolved first**, because that is what a review is about, then the rest.
+    /// The evidence, as the keeper's prompt carries it and as the operator's pane shows it: the
+    /// unresolved first, because that is what a review is about, then the rest.
     pub fn render(&self) -> String {
         let mut out = format!(
             "{} reference(s) checked against {} — {} resolved, {} unresolved, {} unchecked.\n",
@@ -261,16 +181,9 @@ impl ReferenceReport {
     }
 }
 
-/// **The trees a note in this workspace describes**, in the order they are tried.
-///
-/// The workspace itself first — a workspace that IS a repository answers everything — then
-/// every repository at or directly under it, by name. See the module doc for the measurement
-/// that made this necessary: on this box the workspace holds the notes and the repositories
-/// hold the code, so one root would report every path in every note as stale.
-///
-/// One level, deliberately: `repos_under`-style deep search is the daemon's business (it names
-/// the repositories a workspace holds), and a checker that descended three levels would start
-/// resolving a note's `crates/x.rs` against somebody's vendored copy.
+/// The trees a note in this workspace describes, in the order they are tried: the workspace
+/// itself, then every repository directly under it. A workspace that holds repositories rather
+/// than being one would otherwise report every path in every note stale. One level, deliberately.
 pub fn tree_roots(workspace: &Path) -> Vec<PathBuf> {
     let mut roots = vec![workspace.to_path_buf()];
     if let Ok(entries) = std::fs::read_dir(workspace) {
@@ -284,10 +197,8 @@ pub fn tree_roots(workspace: &Path) -> Vec<PathBuf> {
     roots
 }
 
-/// **Every reference one note makes, resolved.** The one entry point.
-///
-/// `workspace` is the workspace the note lives in — the directory whose `.letibot/notes/` the
-/// harness reads — and [`tree_roots`] turns it into the trees that are actually searched.
+/// Every reference one note makes, resolved: the one entry point. `workspace` is the directory
+/// whose `.letibot/notes/` the harness reads, and [`tree_roots`] turns it into the trees searched.
 pub fn check(workspace: &Path, text: &str) -> ReferenceReport {
     let roots = tree_roots(workspace);
     let repo = roots.iter().find(|r| is_a_repo(r)).cloned();
@@ -303,13 +214,9 @@ pub fn check(workspace: &Path, text: &str) -> ReferenceReport {
         }
     }
 
-    // **One git call per kind, not one per reference.** A note cites twenty symbols and a
-    // `git grep` per symbol would be twenty processes for one question.
-    //
-    // A qualified symbol is looked up twice, and the second lookup is what keeps a module alias
-    // from reading as staleness: `view::SettledDecision::kind` is written that way in a note and
-    // as `SettledDecision::kind` in the tree, so the last segment is asked for too. What the
-    // checker does with the two answers is [`Ctx::symbol`]'s.
+    // One git call per kind, not one per reference: a note cites twenty symbols and a `git grep`
+    // each would be twenty processes for one question. A qualified symbol is looked up twice,
+    // because a note's `view::SettledDecision::kind` is `SettledDecision::kind` in the tree.
     let symbols: Vec<String> = candidates
         .iter()
         .filter(|(k, _, _)| *k == RefKind::Symbol)
@@ -360,12 +267,9 @@ pub fn check(workspace: &Path, text: &str) -> ReferenceReport {
     }
 }
 
-/// What resolution needs, gathered once.
-///
-/// `symbol_hits` and `shorthand` are `None` when git could not be asked at all — a box with no
-/// git, or a call that failed for a reason that is not *no matches*. The distinction is the
-/// module's whole three-outcome rule: a symbol nobody looked for is `Uncheckable`, never
-/// `Unresolved`, because reporting it stale would be inventing evidence.
+/// What resolution needs, gathered once. `symbol_hits` and `shorthand` are `None` when git could
+/// not be asked at all, which is the whole three-outcome rule: a symbol nobody looked for is
+/// `Uncheckable`, never `Unresolved`.
 struct Ctx<'a> {
     roots: &'a [PathBuf],
     repo: Option<&'a Path>,
@@ -386,17 +290,17 @@ enum Shorthand {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Placement {
     At(PathBuf),
-    /// A git ref — a branch or a tag, which is a thing the tree really holds.
+    /// A git ref: a branch or a tag, which is a thing the tree really holds.
     Ref(String),
     /// The shorthand matched several files.
     Many(usize),
-    /// Nowhere, and [`Ctx::not_a_citation`] decides whether that is a finding or prose.
+    /// Nowhere, and [`Ctx::is_a_citation`] decides whether that is a finding or prose.
     Nothing,
 }
 
 impl Ctx<'_> {
-    /// `None` means **this is not a citation** — a token that resolved as nothing and is not
-    /// shaped like a claim about the tree. See the module doc's noise rule.
+    /// `None` means this is not a citation: a token that resolved as nothing and is not shaped
+    /// like a claim about the tree. See [`Ctx::is_a_citation`].
     fn resolve(&self, kind: RefKind, text: &str) -> Option<Outcome> {
         match kind {
             RefKind::Path => self.path(text),
@@ -406,10 +310,9 @@ impl Ctx<'_> {
         }
     }
 
-    /// **Where a token is**, in the order the lookups are cheap and the answers are specific:
-    /// the path as written under each root, then a bare name under that root's own
-    /// `.letibot/notes/` (a note citing another note spells it by name), then a git ref, then the
-    /// shorthand index.
+    /// Where a token is, in the order the lookups are cheap and the answers specific: the path
+    /// under each root, then a bare name under that root's `.letibot/notes/`, then a git ref,
+    /// then the shorthand index.
     fn locate(&self, token: &str) -> Placement {
         for root in self.roots {
             let at = join(root, token);
@@ -502,14 +405,9 @@ impl Ctx<'_> {
         }
     }
 
-    /// **Whether a token that resolved as nothing is a finding rather than prose.**
-    ///
-    /// Every rule here errs toward silence, and each one was written because the corpus said so:
-    /// on this box's 26 notes, a checker without them reported **125 of 582** references stale,
-    /// almost all of them prose — `/queue` and `/notes` read as absolute paths, `*.md` and
-    /// `<slug>` read as filenames, `duration/edit/decision` read as a path, and
-    /// `tools/builtins/todo.rs` read as a path from the root when it is a shorthand for a file
-    /// four directories down. A checker that cries stale on a good note is worse than none.
+    /// Whether a token that resolved as nothing is a finding rather than prose. Every rule here
+    /// errs toward silence: a checker that cries stale on a good note teaches its reader to
+    /// ignore the report, and then the report is worth nothing.
     fn is_a_citation(&self, token: &str) -> bool {
         // A URL, a glob, or a template: not a claim about where a file is.
         if token.contains("://") {
@@ -521,9 +419,8 @@ impl Ctx<'_> {
         {
             return false;
         }
-        // An absolute token needs a second segment or an extension: `/queue`, `/notes` and
-        // `/reseat` are slash commands, and a checker that read them as paths reported five of
-        // them in one note.
+        // An absolute token needs a second segment or an extension: `/queue` and `/notes` are
+        // slash commands rather than paths.
         if let Some(rest) = token.strip_prefix('/') {
             return rest.contains('/') || has_extension(token);
         }
@@ -533,8 +430,8 @@ impl Ctx<'_> {
                 return false;
             }
             // A multi-segment token with no extension is a citation only when its head is a
-            // directory the tree really has (`crates/tools/src`) — otherwise it is prose wearing
-            // a slash, or a branch name that has since gone, and both are silence.
+            // directory the tree really has (`crates/tools/src`); otherwise it is prose wearing a
+            // slash, or a branch name that has since gone, and both are silence.
             let head = token.split('/').next().unwrap_or("");
             return self.roots.iter().any(|r| r.join(head).is_dir());
         }
@@ -574,11 +471,9 @@ impl Ctx<'_> {
         if let Some(n) = hits.get(token) {
             return Outcome::Resolved(format!("{n} hit(s) of `{token}` in this repository"));
         }
-        // **A qualified name that is absent while its last segment is present is NOT stale.**
-        // A note writes `view::SettledDecision::kind` for a `use`-aliased path, and a checker
-        // that called that stale would be reporting its own lack of a name resolver. Nobody
-        // looked at whether the symbol moved, so the answer is `Uncheckable` — and the evidence
-        // for the reader to judge is in the sentence.
+        // A qualified name that is absent while its last segment is present is NOT stale: a note
+        // writes `view::SettledDecision::kind` for a `use`-aliased path, and nobody looked at
+        // whether the symbol moved, so the answer is `Uncheckable` and the sentence says why.
         let last = token.rsplit("::").next().unwrap_or(token);
         if last != token {
             if let Some(n) = hits.get(last) {
@@ -624,14 +519,9 @@ fn describe_roots(roots: &[PathBuf]) -> String {
     }
 }
 
-// --- the extraction -----------------------------------------------------------------------
-
-/// Every token the note cites, with the line it is on.
-///
-/// Backticked spans are the house's way of naming code and are read as such; the prose around
-/// them is read too, because this corpus cites `crates/tools/src/x.rs` in a sentence at least
-/// as often as in backticks. Fenced code blocks are skipped: a block is a quotation of code,
-/// not a claim about where code lives.
+/// Every token the note cites, with the line it is on. Backticked spans are the house's way of
+/// naming code and the prose around them is read too; fenced code blocks are skipped, because a
+/// block is a quotation of code and not a claim about where code lives.
 fn cited(text: &str) -> Vec<(usize, String)> {
     let mut out = Vec::new();
     let mut fenced = false;
@@ -652,7 +542,7 @@ fn cited(text: &str) -> Vec<(usize, String)> {
     out
 }
 
-/// A token with the punctuation a sentence puts around it taken off — but never a leading `.`
+/// A token with the punctuation a sentence puts around it taken off, but never a leading `.`
 /// (`.letibot/notes/x.md` is a path) and never a trailing `:` that a line number follows.
 fn trim_token(raw: &str) -> Option<String> {
     let mut t = raw.trim_matches(|c: char| {
@@ -668,7 +558,7 @@ fn trim_token(raw: &str) -> Option<String> {
     Some(t.to_string())
 }
 
-/// What a token is, if it is a citation at all — and the text it is looked up by.
+/// What a token is, if it is a citation at all, and the text it is looked up by.
 fn classify(token: &str) -> Option<(RefKind, String)> {
     if let Some(sha) = as_sha(token) {
         return Some((RefKind::Sha, sha));
@@ -684,9 +574,8 @@ fn classify(token: &str) -> Option<(RefKind, String)> {
     as_symbol(token).map(|s| (RefKind::Symbol, s))
 }
 
-/// A commit abbreviation: 7 to 40 lowercase hex characters, and — below the full length — at
-/// least one digit, so that an English word spelled entirely in `abcdef` (`defaced`) is not
-/// read as a sha.
+/// A commit abbreviation: 7 to 40 lowercase hex characters, and below the full length at least
+/// one digit, so that an English word spelled entirely in `abcdef` (`defaced`) is not a sha.
 fn as_sha(token: &str) -> Option<String> {
     if token.len() < 7 || token.len() > 40 {
         return None;
@@ -731,9 +620,9 @@ fn has_extension(token: &str) -> bool {
     })
 }
 
-/// **Whether a token is shaped like a path** — not whether it resolves. Every slash token is a
+/// Whether a token is shaped like a path, not whether it resolves. Every slash token is a
 /// candidate, because `agent/notes-offer` is a branch and this is where it is recognised;
-/// [`Ctx::is_a_citation`] is what decides whether one that resolved as nothing is a finding.
+/// [`Ctx::is_a_citation`] decides whether one that resolved as nothing is a finding.
 fn looks_like_a_path(token: &str) -> bool {
     if token.contains("::") || token.contains('(') || token.contains(')') || token.contains(' ') {
         return false;
@@ -747,12 +636,8 @@ fn looks_like_a_path(token: &str) -> bool {
 }
 
 /// The name a symbol-like token is looked up by: `Corpus::nearest` as itself, a call as the
-/// function it calls (`nearest(want: &str, …)` is looked up as `nearest`), and a snake_case
-/// identifier as itself.
-///
-/// The snake_case rule requires an underscore and four characters, which is what keeps `main`,
-/// `read`, `list` and `bash` out of it: those are words a note uses in prose, and every one of
-/// them appears in the tree, so they would resolve and tell a reader nothing.
+/// function it calls, and a snake_case identifier as itself. The snake_case rule needs an
+/// underscore and four characters, which keeps `main`, `read` and `bash` out of it.
 fn as_symbol(token: &str) -> Option<String> {
     if token.contains("::") {
         let parts: Vec<&str> = token.split("::").collect();
@@ -774,8 +659,8 @@ fn as_symbol(token: &str) -> Option<String> {
     snake.then(|| token.to_string())
 }
 
-/// The needles one symbol is looked up by: the token itself, and — for a qualified name — its
-/// last segment, so that a note's `use`-alias is not read as a rename. See [`Ctx::symbol`].
+/// The needles one symbol is looked up by: the token itself, and for a qualified name its last
+/// segment, so that a note's `use`-alias is not read as a rename. See [`Ctx::symbol`].
 fn symbol_needles(token: &str) -> Vec<String> {
     match token.rsplit_once("::") {
         Some((_, last)) if !last.is_empty() && last != token => {
@@ -791,8 +676,6 @@ fn is_ident(s: &str) -> bool {
         && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
-// --- git ----------------------------------------------------------------------------------
-
 fn git(root: &Path, args: &[&str]) -> Option<std::process::Output> {
     Command::new("git")
         .arg("-C")
@@ -806,14 +689,14 @@ fn git_ok(root: &Path, args: &[&str]) -> bool {
     git(root, args).is_some_and(|o| o.status.success())
 }
 
-/// Whether git considers `root` a repository — the question every other git call depends on, so
+/// Whether git considers `root` a repository: the question every other git call depends on, so
 /// a box with no git answers `false` here and every reference becomes `Uncheckable` rather than
 /// `Unresolved`.
 fn is_a_repo(root: &Path) -> bool {
     git(root, &["rev-parse", "--show-toplevel"]).is_some_and(|o| o.status.success())
 }
 
-/// A ref by that name, resolved to its full name — `agent/notes-offer` in a note is a branch,
+/// A ref by that name, resolved to its full name: `agent/notes-offer` in a note is a branch,
 /// and a note that names a branch is naming something the tree really holds.
 fn git_ref(root: &Path, name: &str) -> Option<String> {
     if name.contains('.') && has_extension(name) {
@@ -827,19 +710,9 @@ fn git_ref(root: &Path, name: &str) -> Option<String> {
     (!full.is_empty()).then_some(full)
 }
 
-/// How many times each symbol appears, in one `git grep` for all of them.
-///
-/// `-F` because a symbol is a string and not a pattern — `::` and `(` are regex metacharacters
-/// and a search that quietly compiled them would answer a different question. `-o` so each
-/// match arrives as its own record and the needle can be read back out of it, which is what
-/// makes one call enough for twenty symbols. **`-n` is required beside `-o`**: without it git
-/// prints `path:match` and drops the line number, which is a record this parser cannot read
-/// (MEASURED, git 2.53).
-///
-/// **`None` is *git could not be asked*, and it is not the same answer as *no matches*.** A
-/// `git grep` that found nothing exits 1, which is an answer; anything else (128, no git, a
-/// broken index) is not, and a caller that read the second as the first would report every
-/// symbol in every note as stale.
+/// How many times each symbol appears, in one `git grep` for all of them. `-F` because a symbol
+/// is a string and not a pattern; `-o` with `-n` so each match arrives as its own readable
+/// record. `None` is git could not be asked, which is not the same answer as no matches.
 fn grep_symbols(repo: &Path, symbols: &[String]) -> Option<HashMap<String, usize>> {
     let mut args: Vec<&str> = vec!["grep", "-F", "-o", "-n", "--no-color", "-I"];
     let needles: Vec<String> = symbols.iter().map(|s| format!("-e{s}")).collect();
@@ -862,18 +735,9 @@ fn grep_symbols(repo: &Path, symbols: &[String]) -> Option<HashMap<String, usize
     Some(hits)
 }
 
-/// **The shorthand index** — where a note's own way of naming a file lands.
-///
-/// This corpus cites `tools/builtins/todo.rs` for `crates/tools/src/builtins/todo.rs`,
-/// `daemon.rs:155` for one file of that name, and `tokencore/store.rs` for a path three
-/// directories down. None of those is a path from any root, and MEASURED against the corpus
-/// they were the largest single source of false staleness — which is the failure this whole
-/// feature must not have.
-///
-/// So: a token whose components appear **in order** inside a tracked path is that path, when
-/// exactly one tracked path contains them; when several do, nobody looked, and the outcome is
-/// `Uncheckable` rather than a guess. One `git ls-files` answers it for every token at once.
-/// `None` is *git could not be asked*, on [`grep_symbols`]' rule.
+/// The shorthand index: where a note's own way of naming a file lands. A token whose components
+/// appear in order inside a tracked path is that path when exactly one tracked path contains
+/// them; when several do, nobody looked and the outcome is `Uncheckable` rather than a guess.
 fn index_shorthand(repo: &Path, tokens: &[String]) -> Option<HashMap<String, Shorthand>> {
     let out = git(repo, &["ls-files"])?;
     if !out.status.success() {
@@ -1016,7 +880,7 @@ mod tests {
     }
 
     /// A sha on `HEAD` resolves; a sha that exists nowhere does not; and a sha that exists but
-    /// is off `HEAD` resolves **and says which it is** — the note about an unlanded branch is
+    /// is off `HEAD` resolves and says which it is, because the note about an unlanded branch is
     /// accurate and the checker must not call it stale.
     #[test]
     fn a_sha_says_whether_it_is_on_head() {
@@ -1069,7 +933,7 @@ mod tests {
         assert!(missing.outcome.is_unresolved(), "{missing:?}");
     }
 
-    /// A symbol the tree holds resolves; one it does not is unresolved — and the needle for a
+    /// A symbol the tree holds resolves; one it does not is unresolved, and the needle for a
     /// call is the function's name, not the call's arguments.
     #[test]
     fn a_symbol_is_looked_up_by_its_name() {
@@ -1099,8 +963,8 @@ mod tests {
         assert!(missing.outcome.is_unresolved(), "{missing:?}");
     }
 
-    /// **The noise rule.** Prose that happens to contain a slash is not a reference, and a
-    /// checker that reported it would be teaching its reader to ignore the report.
+    /// The noise rule: prose that happens to contain a slash is not a reference, and a checker
+    /// that reported it would be teaching its reader to ignore the report.
     #[test]
     fn prose_wearing_a_slash_is_not_a_reference() {
         let root = tree("noise");
@@ -1124,7 +988,7 @@ mod tests {
         assert!(dir.outcome.is_resolved(), "{dir:?}");
     }
 
-    /// A branch name is a reference, and it resolves while the branch is there — the two-segment
+    /// A branch name is a reference, and it resolves while the branch is there: the two-segment
     /// rule, which is what keeps `agent/notes-offer` out of the noise bin.
     #[test]
     fn a_branch_name_resolves_as_a_ref() {
@@ -1163,8 +1027,8 @@ mod tests {
         assert!(gone.outcome.is_unresolved(), "{gone:?}");
     }
 
-    /// **No repository is not a stale reference.** The three-outcome rule, as a test: the paths
-    /// still resolve (they need no git), the symbols and shas say *nobody looked*.
+    /// No repository is not a stale reference. The three-outcome rule, as a test: the paths
+    /// still resolve (they need no git), and the symbols and shas say nobody looked.
     #[test]
     fn without_a_repository_a_symbol_is_unchecked_rather_than_stale() {
         let root =
@@ -1212,9 +1076,9 @@ mod tests {
         assert_eq!(all[0].line, 1);
     }
 
-    /// **The workspace that is not the tree**, which is this box's own shape: the notes live in
-    /// a workspace that holds the repositories rather than being one. Resolving against the
-    /// workspace alone would call every path in every note stale.
+    /// The workspace that is not the tree: the notes live in a workspace that holds the
+    /// repositories rather than being one. Resolving against the workspace alone would call
+    /// every path in every note stale.
     #[test]
     fn a_workspace_holding_a_repository_resolves_against_it() {
         let outer =
@@ -1271,9 +1135,9 @@ mod tests {
         assert!(out.contains("no such path"), "{out}");
     }
 
-    /// **The note's own shorthand is followed, once.** `src/here.rs` is how this corpus cites
-    /// `crates/tools/src/here.rs`, and a checker that read it as a path from the root reported
-    /// every such citation stale — MEASURED, the largest single source of false staleness.
+    /// The note's own shorthand is followed, once: `src/here.rs` is how this corpus cites
+    /// `crates/tools/src/here.rs`, and a checker that read it as a path from the root would call
+    /// every such citation stale.
     #[test]
     fn a_notes_shorthand_is_followed_when_exactly_one_file_matches() {
         let root = tree("shorthand");
@@ -1292,7 +1156,7 @@ mod tests {
         }
     }
 
-    /// **And it is followed only when the answer is one file.** Two files of one name is not an
+    /// And it is followed only when the answer is one file: two files of one name is not an
     /// answer, and a checker that picked the first would be guessing at what the note meant.
     #[test]
     fn a_shorthand_that_matches_several_files_is_unchecked_rather_than_guessed() {
@@ -1312,9 +1176,9 @@ mod tests {
         assert!(r.is_clean(), "nobody looked is not staleness");
     }
 
-    /// **A qualified name that is absent while its last segment is present is NOT stale.** A
-    /// note writes `view::SettledDecision::kind` for a `use`-aliased path, and a checker that
-    /// called that stale would be reporting its own lack of a name resolver.
+    /// A qualified name that is absent while its last segment is present is NOT stale: a note
+    /// writes `view::SettledDecision::kind` for a `use`-aliased path, and a checker that called
+    /// that stale would be reporting its own lack of a name resolver.
     #[test]
     fn a_qualified_symbol_absent_as_written_is_unchecked_when_its_name_is_there() {
         let root = tree("alias");
@@ -1341,10 +1205,8 @@ mod tests {
         assert!(gone.outcome.why().contains("nor"), "{gone:?}");
     }
 
-    /// **Slash commands, globs and templates are not paths.** MEASURED on this box's corpus:
-    /// `/queue`, `/notes` and `/reseat` were read as absolute paths, and `*.md`,
-    /// `crates/harnessd/src/*.rs` and `<slug>` as filenames — twelve findings, none of them a
-    /// claim about where a file is.
+    /// Slash commands, globs and templates are not paths: `/queue` and `/notes` are commands,
+    /// and `*.md` and `<slug>` are not filenames, so neither is a claim about where a file is.
     #[test]
     fn a_slash_command_a_glob_and_a_template_are_not_references() {
         let root = tree("shapes");

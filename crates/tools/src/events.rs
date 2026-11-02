@@ -1,16 +1,6 @@
-//! The three tool-lifecycle events, and the sink they go to.
-//!
-//! §4.5 gives them by name only — `ToolStarted / ToolProgress / ToolFinished{call_id,
-//! outcome, …}` — and `TODO.md` T13.4 records that their shapes are W8's invention
-//! and that *"W9 will find out whether they are right"*. This is what W9 found,
-//! stated as a type. `crates/sessionlog/src/lift_tools.rs` is the mapping into
-//! §4.5's enum, and the differences are argued there.
-//!
-//! The rule the turn engine states about `Delta` applies here for the same reason:
-//! **no event carries the payload**. An event fans out to every attached head, and
-//! a 200 KB `grep` result sent to four heads is four copies of a thing that is
-//! already in the transcript. Events carry a digest and a byte count; the bytes
-//! live in the transcript and, when they are large, in the spill store.
+//! The three tool-lifecycle events, and the sink they go to. No event carries the payload:
+//! an event fans out to every attached head, so a 200 KB result sent to four heads is four
+//! copies. Events carry a digest and a byte count; the bytes live in the transcript or a spill.
 
 use letibot_transcript::ToolOutcome;
 
@@ -21,25 +11,23 @@ use crate::schema::Access;
 #[allow(clippy::large_enum_variant)] // the payload rides the Finished event once per call; boxing it spreads over every constructor
 pub enum ToolEvent {
     Started {
-        /// **Not in W8's shape.** Every other turn-scoped event in §4.5 carries
-        /// one, and without it a head cannot attribute a call once subagents run
-        /// concurrently (§8.4's whole argument for them).
+        /// Every other turn-scoped event carries one, and without it a head cannot
+        /// attribute a call once subagents run concurrently.
         turn_id: String,
         call_id: String,
         name: String,
-        /// **Not in W8's shape.** Clause 4's declaration is the fact a head needs
-        /// to show *why* a call did or did not stop for a decision, and it is
-        /// known at the moment the call starts.
+        /// The declared access class: the fact a head needs to show why a call did or did
+        /// not stop for a decision, and it is known the moment the call starts.
         access: Access,
     },
-    /// Liveness, and §8.5 requires it to count as such. Interactive: a late head is
-    /// never replayed partial tool output.
+    /// Liveness, and it counts as such. Interactive: a late head is never replayed
+    /// partial tool output.
     Progress {
         turn_id: String,
         call_id: String,
-        /// Free text, and this **is** the right shape: `grep` and `glob` do not
-        /// know a total until they have finished walking, so a `done/total` pair
-        /// would be a denominator invented for the display's benefit.
+        /// Free text, and this is the right shape: `grep` and `glob` do not know a
+        /// total until they have finished walking, so a `done/total` pair would be a
+        /// denominator invented for the display's benefit.
         note: String,
     },
     Finished {
@@ -49,27 +37,18 @@ pub enum ToolEvent {
         payload_digest: String,
         /// What the model actually received.
         inline_bytes: u64,
-        /// What the tool produced. **Not in W8's shape**, where a single `bytes`
-        /// could not distinguish the two — and under spill they differ, which is
-        /// the number that says spilling is working.
+        /// What the tool produced, as against what the model received: under spill the two
+        /// differ, and that gap is the number that says spilling is working.
         full_bytes: u64,
         /// The spill locator, when the output spilled. Durable, so a head can
         /// offer the rest of it rather than only mentioning that there is more.
         spill: Option<String>,
-        /// How many of clause 2's repairs this call needed. A head that cannot see
-        /// this cannot see a model steadily emitting malformed calls, which is the
-        /// signal that a dialect or a schema is wrong.
+        /// How many argument repairs this call needed. A head that cannot see this cannot
+        /// see a model steadily emitting malformed calls, the signal a dialect is wrong.
         repairs: u32,
-        /// Both sides of the file this call changed, bounded to the region
-        /// that differs ([`ToolEditExcerpt`]). **The exception to this
-        /// module's no-payload rule**, and the reason it is safe: that rule
-        /// exists because a payload is already in the transcript and an
-        /// event fans out to every head — but the *before* side of an edit
-        /// is in neither. Once the write lands the old bytes are gone, the
-        /// model-facing payload numbers only the after lines, and a head
-        /// that attaches later can never recover the pair. So the bounded
-        /// pair rides here, capped, once, and a head draws the change from
-        /// it instead of pretending the excerpt is a diff.
+        /// Both sides of the file this call changed, bounded to the region that differs
+        /// ([`ToolEditExcerpt`]). The one exception to the no-payload rule: the before side
+        /// is in neither the transcript nor the model's payload, and is gone once it lands.
         edit: Option<ToolEditExcerpt>,
     },
 }
