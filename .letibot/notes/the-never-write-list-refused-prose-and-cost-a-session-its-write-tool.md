@@ -1,70 +1,20 @@
-<!-- abstract: MEASURED 2026-10-26 (RH5): the never-write precheck split every string argument on '/' AND the backslash, so a source file whose CONTENT quoted the operator's ssh directory was refused as if it were writing there — three refusals opened the write breaker for the whole session; the check now skips content/pattern arguments and asks the resolved path instead. -->
-
-<!-- abstract: MEASURED 2026-10-26 (RH5): the never-write precheck split every string argument on '/' AND the backslash, so a source file whose CONTENT quoted the operator's ssh directory was refused as if it were writing there — three refusals opened the write breaker for the whole session; the check now skips content/pattern arguments and asks the resolved path instead. -->
+<!-- abstract: `never_hit` splits every non-content string argument on both separators and refuses a SEGMENT that equals a never-write entry, so prose quoting the ssh directory was refused as if it were writing there - and three refusals open the write breaker. -->
 
 # The never-write list refused prose, and cost a session its write tool
 
-MEASURED 2026-10-26, package RH5 (`crates/tools/src/adjudicate.rs`), while trying to create one
-source file whose subject *is* the operator's ssh directory.
+`never_hit` (`crates/tools/src/adjudicate.rs:3397`) splits every string argument on `/` and on
+the backslash, and refuses when a SEGMENT equals an entry of `NEVER_WRITE` (`:1257`). Content is
+exempt (`CONTENT_ARGUMENTS`, `:3321`): a `write` body, a replacement's text, a search pattern.
+`bash`'s `command` is not, so a heredoc's prose is scanned as a path - write prose with
+`write`/`edit`. This is live: a `git grep` whose pattern named the directory was refused while
+these notes were cut.
 
-## The mechanism, exactly
+The cost is the breaker: three refusals open it for `write`, `write_file`, `host_project` and
+`host_other`, and only the operator lifts it (`:2586`). `edit` still works; a new file cannot be
+made with it.
 
-`never_hit(args)` took every string value of a tool call, split it on the two path separators, and
-refused when a SEGMENT equalled an entry of `NEVER_WRITE`. So the rule was applied to the
-**content** of a `write` (and to a `grep`'s pattern) as if the content were a path. Three shapes
-cost three refusals, and each was one character away from the last:
+A literal check answers a spelling, so `ssh_resolution_hit` also resolves every path argument -
+symlinks, and a leaf that does not exist yet - and refuses if it lands in the home's ssh store.
 
-| the file had | the segment that matched |
-|---|---|
-| the directory's name as the last path component of a joined path | `.ssh`, because of the separator before it |
-| a doc comment that put another path component after it | `.ssh`, between two separators |
-| a Rust string where an **escaped quote** followed it | `.ssh`, because the escape's backslash is a separator too |
-
-The third one is the trap worth keeping: **the backslash splits as well as the slash**, so in Rust
-source an escaped quote right after the directory name produces an exact segment. A markdown code
-span (a backtick follows) or a `join("` with the name alone (no separator adjacent) is accepted —
-that is not a way around the rule, it is the rule's own matcher, and it is why the fix belongs in
-the gate and not in the content.
-
-## What it cost
-
-After the third refusal the **circuit breaker opened for `write`** — "open for
-`write|write_file|host_project|host_other` after 3 consecutive refusals … only the operator lifts
-this" — so the session could not write ANY file; `edit` still worked, and a new file cannot be made
-with `edit`. The breaker counts by task direction, and a rule that refuses a whole file for one
-segment inside it turns an argument-matcher's false positive into a lost tool.
-
-The orchestrator's ruling (2026-10-26) was to narrow the rule rather than the content: a
-replacement's text, a file's body and a search pattern are not paths and are not scanned
-(`CONTENT_ARGUMENTS` in `adjudicate.rs`); a **path argument** still is, and so is `bash`'s
-`command`, which is how a command names a path.
-
-## And the half the list could never do
-
-The literal check answers a *spelling*. A link in the workspace named `keys` and pointing at that
-directory passes every segment test and lands in it, which is why RH5 added
-`ssh_resolution_hit`: each path argument is resolved — every symlink, and a leaf that does not
-exist yet — and refused if it lands in the home directory's ssh store. **A guard that reads
-arguments as text is a guard a symlink routes around.**
-
-## The rake, for the next session that hits it
-
-A `write` coming back `denied (boundary:host)` with basis "… is on the never-write list (§11.4)"
-is not about the file's path — it is about a segment ANYWHERE in an argument, including the body.
-The answer is `never_hit`'s key filter, not a different path and not a different spelling; and if
-the breaker has already opened, only the operator can lift it.
-
-## And `bash`'s own text is still scanned, which catches documentation (MEASURED 2026-10-26, RH3)
-
-RH5 narrowed the list to *path arguments* — a `write`'s body, a replacement's text, a search
-pattern — but `bash`'s `command` argument is still scanned, and a **heredoc is part of it**. So
-`cat >> docs/remote-hosts.md <<'DOC' … DOC` whose prose contains the operator's ssh path was
-refused by `boundary:host` before anything ran, twice, and the doc section had to be written with
-the `edit` tool. Two consequences worth keeping:
-
-* **Write prose with `edit`/`write`, never a heredoc** — it is faster anyway, and the file tools'
-  body arguments are the ones RH5 exempted.
-* A `bash` command that *reads* a path in that directory to demonstrate something (my first smoke
-  test had `cat <that path>` in a pipeline to prove the boundary hides it) is `Tier::Blocked`:
-  *"no context, no classifier verdict and no operator instruction promotes it"*. Prove it by
-  asserting the **argv** does not mention the path, which is what `remote_confine.rs` does.
+Rule: a refusal saying "is on the never-write list" is about a segment anywhere in an argument,
+not about the file's path. The answer is the key filter, not another path or another spelling.
