@@ -1147,6 +1147,128 @@ fn the_ladder_cycles_through_the_conversation_rung_by_name() {
     }
 }
 
+/// **One honest line per compaction, as the frame draws it** (R73). The operator read a single
+/// compaction as eight lines of notes and two numbers that added to 1.95M tokens; what a reader
+/// gets now is one row carrying the size before and after in the provider's unit, what the
+/// summary stands in for, and what was dropped. Pinned through the FRAME rather than through the
+/// card, because the `session ·` lead, the clock and the cut to the terminal's width are what a
+/// reader actually meets.
+#[test]
+fn a_compaction_draws_one_row_with_its_unit_and_what_it_kept_and_dropped() {
+    let hub = Hub::new("s");
+    let att = hub.attach("tui", "test", Caps::default(), 0);
+    let mut a = app();
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", true)],
+        Hub::new("s").snapshot(),
+    ));
+    // The sentence `compaction_said` writes for a remote compaction that carried a tail and
+    // dropped part of it - the four facts, and its own tests hold the other end of this shape.
+    hub.publish(SessionEvent::Warning {
+        code: "compacted".into(),
+        detail: "compacted: 958397 → 100005 deepseek tokens, kept 12 item(s) verbatim plus a \
+                 13532-character summary, 2 item(s) dropped at the seam, on transcript s#t25."
+            .into(),
+        compaction: None,
+    });
+    feed(&mut a, &hub, &att.head_id);
+    let frame = a.screen(150, 30);
+    let rows: Vec<&String> = frame.iter().filter(|l| l.contains("compacted")).collect();
+    assert_eq!(
+        rows.len(),
+        1,
+        "one compaction is one row:\n{}",
+        frame.join("\n")
+    );
+    let row = rows[0];
+    assert!(
+        row.contains("958k → 100k deepseek tokens"),
+        "the size before and after, in the unit the daemon counted it in: {row:?}"
+    );
+    assert!(
+        row.contains("kept 12 items + a 13.5k-char summary"),
+        "what it kept: {row:?}"
+    );
+    assert!(row.contains("2 dropped"), "what it dropped: {row:?}");
+    assert!(
+        !row.contains("958397"),
+        "the raw ledger counts are not what a reader reads: {row:?}"
+    );
+}
+
+/// The announcement is not a row: it says why the fold is running, so the head keeps it as the
+/// state behind the progress line, and the one row a compaction leaves is its report.
+#[test]
+fn a_compactions_announcement_is_state_and_the_report_is_the_row() {
+    let hub = Hub::new("s");
+    let att = hub.attach("tui", "test", Caps::default(), 0);
+    let mut a = app();
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", true)],
+        Hub::new("s").snapshot(),
+    ));
+    let announced = "938065 of 999999 deepseek tokens resident — compacting now";
+    hub.publish(SessionEvent::Warning {
+        code: "compacting".into(),
+        detail: announced.into(),
+        compaction: None,
+    });
+    feed(&mut a, &hub, &att.head_id);
+    let drawn = a.screen(140, 30).join("\n");
+    assert!(
+        !drawn.contains("compacting now"),
+        "the announcement drew a row of its own:\n{drawn}"
+    );
+    assert_eq!(
+        a.compacting_why.as_deref(),
+        Some(announced),
+        "the reason is kept as state, which is where the progress line reads it"
+    );
+
+    // The fold is running: the progress line's click says why.
+    hub.publish(SessionEvent::CompactionProgress {
+        half: 1,
+        halves: 2,
+        prompt_tokens: 66_000,
+        processed: 1_000,
+        written: 0,
+        unit: "tokens".into(),
+    });
+    feed(&mut a, &hub, &att.head_id);
+    a.screen(140, 30);
+    let details: Vec<String> = a.progresses().into_iter().map(|p| p.detail).collect();
+    assert!(
+        details.iter().any(|d| d.contains("compacting now")),
+        "the progress line does not say why the fold is running: {details:?}"
+    );
+
+    // And the report ends it: one row, and the why goes with the fold.
+    hub.publish(SessionEvent::Warning {
+        code: "compacted".into(),
+        detail: "compacted: 958397 → 100005 deepseek tokens, kept 12 item(s) verbatim plus a \
+                 13532-character summary, nothing dropped, on transcript s#t25."
+            .into(),
+        compaction: None,
+    });
+    feed(&mut a, &hub, &att.head_id);
+    let after = a.screen(140, 30).join("\n");
+    assert!(
+        after.contains("compacted · 958k → 100k deepseek tokens"),
+        "the report is the one row:\n{after}"
+    );
+    assert!(
+        !after.contains("compacting now"),
+        "a finished fold's reason stayed on the screen:\n{after}"
+    );
+    assert!(
+        a.compacting_why.is_none(),
+        "the why outlived the fold: {:?}",
+        a.compacting_why
+    );
+}
+
 /// R16: an echo whose prompt landed under a transcript that was then replaced. A fork announces
 /// itself before and after, so the echoes in the air when it began are resolved and the ones queued
 /// after it are left alone, since those belong to the new transcript and their rows are still coming.

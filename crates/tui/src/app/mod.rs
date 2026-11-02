@@ -963,6 +963,10 @@ pub struct App {
     /// When the fold in [`App::compacting`] started, on this head's clock: its first
     /// `CompactionProgress`. See [`App::filling_since`].
     pub(crate) compacting_since: u64,
+    /// Why this fold is running, in the daemon's own words: the wall, a refusal, which fold was
+    /// chosen. State and not a note, so it can be the progress line's click while the one row a
+    /// compaction leaves is its report.
+    pub(crate) compacting_why: Option<String>,
     /// What a click on the status row opens, as the last frame drew it: `(title, text)`, or `None`
     /// when the row said everything it had. A cut flash notice, or a progress whose row form left
     /// something out. See [`App::status_row`].
@@ -1305,6 +1309,7 @@ impl App {
             store_newer: None,
             compacting: None,
             compacting_since: 0,
+            compacting_why: None,
             status_click: None,
             held: None,
             activity: letibot_sessionlog::activity::Activity::Quiet,

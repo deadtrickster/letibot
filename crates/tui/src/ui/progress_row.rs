@@ -157,10 +157,16 @@ impl App {
                 (None, format!("{} {} written", thousands(c.written), c.unit))
             };
             out.push(Progress {
+                // The click says why the fold is running: the daemon's announcement is where a
+                // reader asks that, and it is no longer a row of its own.
                 detail: format!(
-                    "compacting half {} of {} — {counts}\n\nNothing shows on the transcript until \
-                     it lands, and the conversation is kept either way.",
-                    c.half, c.halves
+                    "compacting half {} of {} — {counts}\n\n{}",
+                    c.half,
+                    c.halves,
+                    self.compacting_why.as_deref().unwrap_or(
+                        "Nothing shows on the transcript until it lands, and the conversation is \
+                         kept either way."
+                    )
                 ),
                 label,
                 role: Role::Pending,

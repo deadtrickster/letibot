@@ -320,11 +320,11 @@ mod tests {
             ..RenderConfig::default()
         };
         let detail = format!(
-            "auto_compact: {}. {}",
+            "compacting: {}. {}",
             "leaving less than the headroom the next turn needs — compacting now".repeat(3),
             "This is the wall, not a judgement about the conversation."
         );
-        let rows = note_lines(&cfg, &warned("auto_compact", &detail));
+        let rows = note_lines(&cfg, &warned("compacting", &detail));
         assert_eq!(rows.len(), 1, "still one row at a narrow width: {rows:?}");
         assert!(rows[0].contains('…'), "the elision is visible: {rows:?}");
         assert!(

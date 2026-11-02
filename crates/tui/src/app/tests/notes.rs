@@ -2111,16 +2111,22 @@ fn an_edge_bound_warning_raises_the_alarm_and_never_becomes_a_row() {
             1,
             SessionEvent::Warning {
                 code: "compacted".into(),
-                detail: "compacted: 940188 → 9181 tokens".into(),
+                // The sentence `compaction_said` writes: the figures, then what the summary
+                // stands in for and what was dropped, then the transcript. A detail cut short
+                // is not a shape the daemon sends.
+                detail: "compacted: 940188 → 9181 tokens, kept as a 9000-character summary, \
+                         nothing dropped, on transcript s#t25."
+                    .into(),
                 compaction: None,
             },
         ))),
         Disposition::Rendered,
         "a compaction changes the conversation and is a row in it"
     );
+    let drawn = b.screen(80, 24).join("\n");
     assert!(
-        b.screen(80, 24).join("\n").contains("940k → 9k tokens"),
-        "the compaction's own figures are not drawn"
+        drawn.contains("940k → 9k tokens"),
+        "the compaction's own figures are not drawn: {drawn}"
     );
     assert_eq!(b.slow_first_byte, 0, "a compaction is not the weather");
     assert!(

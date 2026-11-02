@@ -37,10 +37,16 @@ pub(crate) fn short(s: &str, n: usize) -> String {
 
 /// `18.7k chars`, `912 chars`.
 fn chars(n: usize) -> String {
+    format!("{} chars", chars_words(n))
+}
+
+/// The number `chars` puts its unit on: `18.7k`, `912`. Shared so a compaction's line and the
+/// `system · compacted summary` row beside it cannot disagree about how big a summary is.
+fn chars_words(n: usize) -> String {
     if n < 1000 {
-        format!("{n} chars")
+        n.to_string()
     } else {
-        format!("{:.1}k chars", n as f64 / 1000.0)
+        format!("{:.1}k", n as f64 / 1000.0)
     }
 }
 
@@ -576,7 +582,9 @@ pub(crate) fn warning_notice(code: &str, detail: &str, mark: &str, role: Role) -
         .strip_prefix(code)
         .and_then(|r| r.strip_prefix(": "))
         .unwrap_or(detail.trim());
-    let said = compaction_figures(body).unwrap_or_else(|| gist(body));
+    let said = compaction_of(body)
+        .map(|c| compaction_line(&c))
+        .unwrap_or_else(|| gist(body));
     // The routine mark is the `·` the frame's own `session ·` already ends in: drawn twice it
     // reads as a stutter, so the quiet register is the code alone (and still not red).
     let lead = if mark == "·" {
@@ -592,13 +600,105 @@ pub(crate) fn warning_notice(code: &str, detail: &str, mark: &str, role: Role) -
     )
 }
 
-/// `958397 → 100005 tokens, …` → `958k → 100k tokens`.
-fn compaction_figures(body: &str) -> Option<String> {
+/// A compaction's own sentence, read. `compaction_said` writes it and this is the only reader, so
+/// the shape is a contract with two ends: the size in the daemon's unit, then what was kept and
+/// what was dropped. Only the size is guaranteed, because logs written before this carry it alone.
+struct Compaction {
+    before: u64,
+    after: u64,
+    /// The after-count is an estimate until a round on the new base measures it.
+    estimated: bool,
+    /// The daemon's own word for what the numbers count - `deepseek tokens`, `tokens`.
+    unit: String,
+    /// Items of the newest exchange carried as they were written.
+    verbatim: u64,
+    /// How big the summary standing in for the rest of the history is.
+    summary_chars: Option<usize>,
+    /// Items dropped at the seam because the verbatim part begins inside an exchange.
+    /// `None` is a sentence that did not say, which is not the same as `Some(0)`.
+    dropped: Option<u64>,
+    cut_off: bool,
+}
+
+/// **The facts in a compaction's sentence**, or `None` when the text is not that shape.
+fn compaction_of(body: &str) -> Option<Compaction> {
     let (before, rest) = body.split_once(" → ")?;
-    let (after, _) = rest.split_once(" tokens")?;
     let before: u64 = before.trim().parse().ok()?;
+    let (estimated, rest) = match rest.strip_prefix('≈') {
+        Some(r) => (true, r.trim_start()),
+        None => (false, rest),
+    };
+    let (after, rest) = rest.split_once(' ')?;
     let after: u64 = after.trim().parse().ok()?;
-    Some(format!("{} → {} tokens", tokens(before), tokens(after)))
+    // The unit runs to the comma that opens the next fact, and its absence means this is not
+    // the sentence a compaction writes.
+    let (unit, _) = rest.split_once(", ")?;
+    Some(Compaction {
+        before,
+        after,
+        estimated,
+        unit: unit.trim().to_string(),
+        verbatim: count_before(body, " item(s) verbatim").unwrap_or(0),
+        summary_chars: count_before(body, "-character summary").map(|n| n as usize),
+        dropped: if body.contains("nothing dropped") {
+            Some(0)
+        } else {
+            count_before(body, " item(s) dropped")
+        },
+        cut_off: body.contains("CUT OFF"),
+    })
+}
+
+/// The one line a compaction draws: the size before and after in the daemon's unit, what the
+/// summary stands in for, what was kept and what was dropped. Ordered by what a reader asks
+/// first, and `Card::cut` keeps the size when a narrow terminal cuts the rest.
+fn compaction_line(c: &Compaction) -> String {
+    let mut parts = vec![format!(
+        "{} → {}{} {}",
+        tokens(c.before),
+        if c.estimated { "≈ " } else { "" },
+        tokens(c.after),
+        c.unit
+    )];
+    let kept = match (c.verbatim, c.summary_chars) {
+        (0, None) => None,
+        (0, Some(chars)) => Some(format!("kept a {}-char summary", chars_words(chars))),
+        (n, None) => Some(format!("kept {}", items(n))),
+        (n, Some(chars)) => Some(format!(
+            "kept {} + a {}-char summary",
+            items(n),
+            chars_words(chars)
+        )),
+    };
+    parts.extend(kept);
+    // `Some(0)` is the sentence saying nothing was dropped, which the line keeps: a reader
+    // deciding whether a verbatim tail opens mid-exchange has to be told either way.
+    if let Some(dropped) = c.dropped {
+        parts.push(match dropped {
+            0 => "nothing dropped".to_string(),
+            n => format!("{n} dropped"),
+        });
+    }
+    if c.cut_off {
+        parts.push("summary CUT OFF".to_string());
+    }
+    parts.join(" · ")
+}
+
+/// `1 item`, `12 items` - a count and its noun, so a drawn line never says `1 item(s)`.
+fn items(n: u64) -> String {
+    if n == 1 {
+        "1 item".to_string()
+    } else {
+        format!("{n} items")
+    }
+}
+
+/// The number that ends where `marker` begins - `12` in `kept 12 item(s) verbatim`. A count is
+/// only a fact when it is written as one, so a marker with no number in front of it is `None`
+/// rather than a zero nobody said.
+fn count_before(text: &str, marker: &str) -> Option<u64> {
+    number_before(text, marker)?.parse().ok()
 }
 
 #[cfg(test)]
@@ -743,22 +843,73 @@ mod tests {
         }
     }
 
+    /// **One honest line per compaction** (R73): the size before and after in the daemon's own
+    /// unit, what the summary stands in for, what was kept verbatim and what was dropped at the
+    /// seam - the four facts a reader needs from a compaction, and the hint last. The bodies here
+    /// are the shapes `compaction_said` (`crates/harnessd/src/sessions.rs`) writes; that sentence
+    /// is the contract, and its own tests hold the other end of it.
+    #[test]
+    fn a_compaction_draws_the_size_the_unit_and_what_it_kept_and_dropped() {
+        let ones = |detail: &str| warning_notice("compacted", detail, "·", Role::Faint).line;
+        // The unit is the daemon's word and it is carried whole: `deepseek tokens`, never the
+        // bare `tokens` the line used to print beside a provider's number.
+        assert_eq!(
+            ones(
+                "compacted: 958397 → 100005 deepseek tokens, kept 12 item(s) verbatim plus a \
+                 13532-character summary, 2 item(s) dropped at the seam, on transcript s#t25."
+            ),
+            "compacted · 958k → 100k deepseek tokens · kept 12 items + a 13.5k-char summary · \
+             2 dropped · click for details"
+        );
+        // No tail: the summary IS what it kept, and `kept 0 items` would read as a compaction
+        // that kept nothing at all.
+        assert_eq!(
+            ones(
+                "compacted: 240000 → 9000 tokens, kept as a 17000-character summary, nothing \
+                 dropped, on transcript s#t1."
+            ),
+            "compacted · 240k → 9k tokens · kept a 17.0k-char summary · nothing dropped · \
+             click for details"
+        );
+        // An estimate keeps its `≈` in front of the number it is about, and says so.
+        assert_eq!(
+            ones(
+                "compacted: 958397 → ≈ 100005 deepseek tokens, kept as a 13532-character \
+                 summary, nothing dropped, estimated until the next round measures it, on \
+                 transcript s#t25."
+            ),
+            "compacted · 958k → ≈ 100k deepseek tokens · kept a 13.5k-char summary · nothing \
+             dropped · click for details"
+        );
+        // A summary that came back cut off says so on the one line: it is the fact that changes
+        // what the reader can trust, and the popup is not where a reader learns it first.
+        assert_eq!(
+            ones(
+                "compacted: 958397 → 100005 tokens, kept 12 item(s) verbatim plus a 13532-\
+                 character summary, nothing dropped, on transcript s#t25. The summary was CUT \
+                 OFF at the model's length limit — it is incomplete, and the base says so too."
+            ),
+            "compacted · 958k → 100k tokens · kept 12 items + a 13.5k-char summary · nothing \
+             dropped · summary CUT OFF · click for details"
+        );
+        // **A sentence this head cannot read is not guessed at**: an old log's figures still
+        // draw, and one with no figures at all falls back to the words it has.
+        assert_eq!(
+            ones("compacted: 940188 → 9181 tokens, on transcript s#t25."),
+            "compacted · 940k → 9k tokens · click for details"
+        );
+        assert_eq!(
+            ones("compacted: the model wrote a poem and nothing else happened."),
+            "compacted · the model wrote a poem and nothing else happened · click for details"
+        );
+    }
+
     #[test]
     fn a_system_row_and_a_warning_are_one_line_and_say_the_code_once() {
         let summary = format!("This conversation was compacted: {}", "x".repeat(18_650));
         assert_eq!(
             system_notice(&summary, false).line,
             "system · compacted summary (18.7k chars) · click for details"
-        );
-        assert_eq!(
-            warning_notice(
-                "compacted",
-                "compacted: 958397 → 100005 tokens, on transcript s#t25. The rest.",
-                "·",
-                Role::Faint
-            )
-            .line,
-            "compacted · 958k → 100k tokens · click for details"
         );
         assert_eq!(
             warning_notice(

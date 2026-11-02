@@ -74,6 +74,19 @@ impl App {
                 // The fork has two halves: this warning precedes it, `compacted` and
                 // `reseated` follow. Resolving at the first half stops an echo saying
                 // `queued` for ever over a row the fork summarised away.
+                //
+                // An announcement is state, not a row: it says why the fold is running, which is
+                // what the progress line's click shows. Drawing it as a note made one compaction
+                // three rows.
+                if code == "compacting" {
+                    self.mark_fork();
+                    self.compacting_why = Some(detail.clone());
+                    self.redraw = true;
+                    return Disposition::Filtered;
+                }
+                // An older daemon sends the same announcement under this code: mark the fork and
+                // draw the note it always drew, so a head one version ahead still says what is
+                // happening rather than nothing.
                 if code == "auto_compact" {
                     self.mark_fork();
                 }
@@ -84,9 +97,11 @@ impl App {
                     // durable warning that the fork landed is what ends the walking line.
                     // A fold that failed ends it too, below: not a fold still running.
                     self.compacting = None;
+                    self.compacting_why = None;
                 }
                 if code == "auto_compact_failed" {
                     self.compacting = None;
+                    self.compacting_why = None;
                 }
                 // The "N rows are being loaded" line is this head's own claim, so the
                 // daemon's `resume_failed` is the one fact that ends it without rows. A
