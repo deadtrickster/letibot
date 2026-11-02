@@ -1,31 +1,9 @@
-//! The head server: a Unix socket at `$XDG_RUNTIME_DIR/harnessd.sock`.
+//! The head server: a Unix socket per folder, mode 0600, with filesystem permissions as the
+//! whole of the auth and no password anywhere.
 //!
-//! §13.4: *"unix socket … filesystem permissions are the auth; no ceremony"*. So
-//! the socket is created mode 0600 and there is no handshake beyond the protocol
-//! version. A remote head (W8's WebSocket, not built here) adds TLS and a bearer
-//! token in front of the same frames.
-//!
-//! # One socket, many sessions
-//!
-//! The socket serves a [`Registry`], not a `Hub`. A connection resolves its session
-//! at ATTACH and can move to another with `Switch` — see [`serve_conn`], and
-//! [`crate::registry`] for why the resolution is a refusal rather than a fallback.
-//! [`serve`] is the single-session form and builds a one-entry registry, so there
-//! is exactly one attach path.
-//!
-//! # Threads
-//!
-//! One accept thread. Per connection, two: a **writer** that blocks in
-//! [`Hub::next_batch`] and a **reader** that blocks on the socket. They are
-//! separate because the two directions are genuinely independent — a head that is
-//! rendering a long turn must still be able to send an interrupt, and a head that
-//! is typing must still be receiving deltas. A single-threaded select over both
-//! would need a poll loop and would put a latency floor under both.
-//!
-//! **Nothing in here can stall the engine.** The writer thread is the only thing
-//! that touches the socket for output, and if it blocks on a slow client the hub's
-//! bounded queue fills and that head is demoted — [`crate::hub`] — while
-//! `publish` returns immediately.
+//! One socket per workspace, one connection per head, and every frame either answers one
+//! connection or is fanned out by the hub. The protocol version is compared here, on this
+//! thread, before a head is seated.
 
 use std::io;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -45,8 +23,8 @@ use crate::protocol::{
 use crate::registry::{Registry, SessionWiring};
 use crate::wire::{FrameReader, FrameWriter, WireError};
 
-/// The default socket path, per §13.4. Falls back to `/tmp` when
-/// `XDG_RUNTIME_DIR` is unset, which is the case in a bare test environment.
+/// The default socket path. Falls back to `/tmp` when `XDG_RUNTIME_DIR` is unset, which
+/// is the case in a bare test environment.
 pub fn default_socket_path() -> PathBuf {
     match std::env::var_os("XDG_RUNTIME_DIR") {
         Some(d) => PathBuf::from(d).join("harnessd.sock"),
@@ -55,10 +33,9 @@ pub fn default_socket_path() -> PathBuf {
 }
 
 fn libc_getuid() -> u32 {
-    // Avoiding a `libc` dependency in a crate that otherwise has none: `getuid` is in the C
-    // library every target links, and declaring it works on Linux and macOS alike, where
-    // the `/proc/self/status` read this replaced fell back to 0 on a Mac — one fallback
-    // socket for every user. The uid is only used to keep two users' fallback sockets apart.
+    // No `libc` dependency in a crate that otherwise has none: `getuid` is in the C library
+    // every target links, and declaring it works on Linux and macOS alike. The uid only
+    // keeps two users' `/tmp` fallback sockets apart.
     unsafe extern "C" {
         fn getuid() -> u32;
     }
@@ -66,55 +43,25 @@ fn libc_getuid() -> u32 {
     unsafe { getuid() }
 }
 
-/// A running server. Dropping it does **not** stop the session: see
+/// A running server. Dropping it does not stop the session: see
 /// [`ServerHandle::shutdown`].
 pub struct ServerHandle {
     path: PathBuf,
     registry: Arc<Registry>,
     accept: Option<JoinHandle<()>>,
-    /// **(dev, ino) of the socket this daemon bound**, so going away can remove *its own*
-    /// file and never whatever is at that path by then. See [`unlink_if_ours`].
+    /// (dev, ino) of the socket this daemon bound, so going away removes its own file and
+    /// never whatever is at that path by then. See [`unlink_if_ours`].
     socket_id: Option<(u64, u64)>,
-    /// **The claim on this folder.** Held for the process's life, and named `claim` rather
-    /// than `lock` because being clear about what it is is the whole point: the kernel
-    /// releases it when this process goes, so it cannot be left behind by a shutdown path
-    /// that unlinked something and did not exit. Dropped LAST (declaration order), after
-    /// the socket file has been removed, so no daemon can slip in between.
+    /// The claim on this folder, held for the process's life. Dropped LAST (declaration
+    /// order), after the socket file is gone, so no daemon can slip in between.
     claim: Option<FolderClaim>,
 }
 
-/// **The lock that says a folder has a daemon, because a filename cannot.**
-///
-/// The operator's own words for the defect this exists to close, and the diagnosis was
-/// theirs (2026-10-04, `TODO.md`): *"Liveness is being inferred from a filename, and an
-/// unlinked socket is indistinguishable from a dead daemon."* MEASURED on their box and
-/// reproduced here, on a scratch socket: the file in `$XDG_RUNTIME_DIR` is UNLINKED by
-/// `ServerHandle::shutdown` and by `Drop`, and a daemon asked to stop can unlink it and then
-/// keep listening on the now-nameless inode. The next start finds no file, probes nothing,
-/// and binds a second socket at the same path — Linux is happy to — so two daemons serve one
-/// folder against one store. The transcript trigger then refuses every append
-/// (`transcript_item seq must be the next one`), and the SESSION IS BRICKED: nothing can be
-/// said to it, because saying anything is a write.
-///
-/// **An `flock` dies with the process**, including on `SIGKILL`, which no `Drop` survives —
-/// and that is the property `$KEY.sock` does not have. It is the answer the tree already had
-/// written down (2026-08-29: *"Single-instance guards: pidfile is defeatable, pgrep matches
-/// its own launcher, use flock"*).
-///
-/// `std::fs::File`'s locks are `flock` on Unix and this crate takes **no new dependency**
-/// for them (it says in as many words a few lines down that it does not depend on `libc`,
-/// and it should not start).
-///
-/// **The lock file is not unlinked by anything here, deliberately.** The socket file is
-/// unlinked by this daemon's own shutdown path, which is exactly what made a filename
-/// worthless as a liveness test; the lock file is only ever created and written, so its name
-/// keeps pointing at the inode that holds the claim. An operator who deletes it by hand
-/// defeats it — and that is a hand on the box, not a code path, which is the distinction
-/// the socket file could not make.
+/// The lock that says a folder has a daemon, because a filename cannot: a stopping daemon
+/// unlinks the socket file while a new one binds, so the file is not the fact.
 struct FolderClaim {
-    /// **Held, never read.** The lock lives in this open file description, and dropping it is
-    /// what releases the claim; there is deliberately no getter, and the absent reader is the
-    /// design rather than an oversight (`_` so the compiler is told the same thing).
+    /// Held, never read: the lock lives in this open file description and dropping it
+    /// releases the claim. The `_` prefix tells the compiler the absent reader is the design.
     _file: std::fs::File,
     path: PathBuf,
 }
@@ -125,7 +72,7 @@ impl FolderClaim {
         socket.with_extension("lock")
     }
 
-    /// **Take the claim, or say who has it.**
+    /// Take the claim, or say who has it.
     fn take(socket: &Path) -> Result<FolderClaim, ClaimRefusal> {
         let path = Self::path_for(socket);
         let file = match std::fs::OpenOptions::new()
@@ -145,17 +92,15 @@ impl FolderClaim {
                     pid: Self::holder_pid(&path),
                 });
             }
-            // **Not a held lock: a filesystem that cannot lock at all.** Said out loud and
-            // fallen back on, because refusing to START a daemon is a worse outcome than
-            // failing to catch a second one, and silence here would be the failure mode
-            // this whole change is about.
+            // Not a held lock but a filesystem that cannot lock at all: said out loud and
+            // fallen back on, because refusing to start a daemon is worse than failing to
+            // catch a second one, and silence here is the failure mode itself.
             Err(std::fs::TryLockError::Error(e)) => {
                 return Err(ClaimRefusal::Unavailable { why: e.to_string() });
             }
         }
-        // **Our pid, inside it, so a refusal can name somebody.** Not the source of truth —
-        // the lock is — but a refusal that says *"already served by a live daemon"* and
-        // stops is a refusal the operator cannot act on.
+        // Our pid inside it so a refusal can name somebody. Not the source of truth - the
+        // lock is - but a refusal that only says a daemon is live is one nobody can act on.
         if let Err(e) = Self::write_pid(&file) {
             eprintln!(
                 "could not write the claiming pid into {}: {e}. The claim itself is held, so \
@@ -178,7 +123,7 @@ impl FolderClaim {
         f.flush()
     }
 
-    /// The pid the holder wrote, or `None` when the file is empty — a holder that took the
+    /// The pid the holder wrote, or `None` when the file is empty - a holder that took the
     /// lock and died between the lock and the write, which the caller words as unknown
     /// rather than inventing a number.
     fn holder_pid(path: &Path) -> Option<u32> {
@@ -192,24 +137,18 @@ impl FolderClaim {
     }
 }
 
-/// Why a claim was not taken. Three outcomes, and the middle one is the only one that stops
-/// a daemon from starting.
+/// Why a claim was not taken: somebody else is serving this folder, or the filesystem
+/// cannot hold the claim at all.
 enum ClaimRefusal {
     /// Somebody else is serving this folder, and here is who.
     Live { pid: Option<u32> },
     /// This filesystem cannot hold the claim (no writable directory, an exotic mount). The
-    /// caller falls back to the probe it used before there was a lock.
+    /// caller falls back to the socket-file probe.
     Unavailable { why: String },
 }
 
-/// **Remove a socket file only if the path still names OUR socket.**
-///
-/// `shutdown`, `Drop` and the accept thread all used to call `remove_file(&self.path)`,
-/// which removes *whatever is at that path* — and the path is shared state. Once a second
-/// daemon could take a folder (see [`FolderClaim`]) this became the way the loop repeats:
-/// the old daemon's `Drop` unlinks the NEW daemon's socket, which makes the new daemon the
-/// one whose file the next start cannot see. Comparing (dev, ino) makes the removal mean
-/// *mine* rather than *that name*.
+/// Remove a socket file only if the path still names OUR socket. The path is shared state, so
+/// a plain removal deletes the socket of the daemon that replaced this one.
 fn unlink_if_ours(path: &Path, id: (u64, u64)) {
     match std::fs::metadata(path) {
         Ok(m) if (m.dev(), m.ino()) == id => {
@@ -227,7 +166,7 @@ impl ServerHandle {
         &self.path
     }
 
-    /// **Where this daemon's claim lives**, for a caller that wants to say so — the launcher
+    /// Where this daemon's claim lives, for a caller that wants to say so - the launcher
     /// names it in the refusal it prints when a socket file has gone missing under a live
     /// daemon, which is the state a person has to clean up by hand.
     pub fn claim_path(&self) -> Option<&Path> {
@@ -238,17 +177,15 @@ impl ServerHandle {
         &self.registry
     }
 
-    /// The session a bare attach lands on. `None` for a registry with nothing in
-    /// it, which is a daemon that has not opened one yet — not an error, and not a
-    /// reason to invent one.
+    /// The session a bare attach lands on. `None` for a registry with nothing in it, which is
+    /// a daemon that has not opened one yet - not an error, and not a reason to invent one.
     pub fn default_hub(&self) -> Option<Arc<Hub>> {
         self.registry.resolve("")
     }
 
     /// Stop accepting, wake every head with `Closed`, remove the socket.
     ///
-    /// This is the case §13.2 calls daemon shutdown, which *is* an abort — as
-    /// against a head detaching, which is not.
+    /// A daemon shutdown is an abort, as against a head detaching, which is not.
     pub fn shutdown(mut self) {
         self.registry.close();
         // Unblock the accept loop by connecting to it once.
@@ -256,8 +193,8 @@ impl ServerHandle {
         if let Some(h) = self.accept.take() {
             let _ = h.join();
         }
-        // **Our own file, and only ours** — see [`unlink_if_ours`]. The accept thread removes
-        // the socket when it ends too, and removing it twice is an ignored `ENOENT`.
+        // Our own file, and only ours - see [`unlink_if_ours`]. The accept thread removes it
+        // when it ends too, and removing it twice is an ignored `ENOENT`.
         if let Some(id) = self.socket_id {
             unlink_if_ours(&self.path, id);
         }
@@ -269,14 +206,8 @@ impl ServerHandle {
 
 impl Drop for ServerHandle {
     fn drop(&mut self) {
-        // Best effort only. An abandoned handle leaves the socket, which is
-        // recoverable; taking the session down on a drop would not be.
-        //
-        // **And it removes the socket only if that path still names OUR socket.** This was
-        // the way the two-daemon loop repeated: an old daemon's `Drop` unlinked whatever
-        // file was at the path, which by then could be the NEW daemon's, leaving the live
-        // one invisible to every liveness test the box has. `unlink_if_ours` compares
-        // (dev, ino); a path that now holds somebody else's socket is left alone.
+        // Best effort only. An abandoned handle leaves the socket, which is recoverable; taking
+        // the session down on a drop would not be.
         if let Some(id) = self.socket_id {
             unlink_if_ours(&self.path, id);
         }
@@ -289,13 +220,8 @@ impl Drop for ServerHandle {
 const EMFILE: i32 = 24;
 const ENFILE: i32 = 23;
 
-/// **Can this `accept` error be retried?**
-///
-/// `ConnectionAborted` is a client that went away between `connect` and
-/// `accept`, and is ordinary. The two out-of-descriptors errnos are the process
-/// or the box being briefly out of room, which other threads are already fixing.
-/// `Interrupted` and `WouldBlock` are the usual suspects and cost nothing to
-/// include. Everything else means the listener itself is broken.
+/// Can this `accept` error be retried? `ConnectionAborted` is a client that went away between
+/// `connect` and `accept`, which is ordinary.
 fn is_transient(e: &io::Error) -> bool {
     matches!(
         e.kind(),
@@ -306,25 +232,8 @@ fn is_transient(e: &io::Error) -> bool {
     ) || matches!(e.raw_os_error(), Some(EMFILE) | Some(ENFILE))
 }
 
-/// Bind and start accepting for a single session.
-///
-/// Kept because most of the workspace has exactly one hub and does not want to
-/// know about a registry to serve it. It is a thin wrapper and not a second
-/// implementation: [`Registry::of`] wraps the hub and [`serve_registry`] does the
-/// work, so there is one attach path and one switch path.
-/// **Nobody gave a password, and WHICH silence that was** — the sentence the daemon puts on
-/// the frame the `askpass` helper reads.
-///
-/// Built here, where the head count is known, because the helper cannot know it: it held
-/// one connection and got a `None`. That `None` was three facts wearing one word —
-/// *no head was attached*, *a head was attached and nobody answered*, and *a person
-/// declined* (that one is written at the call site, where the refusal arrives) — and the
-/// operator's report was that the sentence they got covered all three and told them
-/// nothing. The first is a fault in the wiring and the second is a person who did not act;
-/// they need different next actions, so they are different sentences.
-///
-/// MEASURED 2026-10-08: `no password was given — no head answered before the deadline, or
-/// the person refused`.
+/// The sentence the daemon puts on the frame the `askpass` helper reads, saying nobody gave a
+/// password, and why not.
 fn no_password_sentence(heads: usize) -> String {
     if heads == 0 {
         "no head was attached to this session, so no card could reach anybody".to_string()
@@ -339,12 +248,8 @@ fn no_password_sentence(heads: usize) -> String {
 mod no_password_tests {
     use super::no_password_sentence;
 
-    /// **The two silences are two sentences**, and neither says "or the person refused".
-    ///
-    /// This test cannot fail on the code before it: the function did not exist. What it
-    /// pins is the distinction the old wording destroyed — no head attached is a bug, a
-    /// head attached and silent is a person who did not act — and that a refusal is not
-    /// among them (it is written where the refusal arrives, as a decision).
+    /// The two silences are two sentences, and neither claims a person refused: no head attached
+    /// is a bug, and a head that closed the card is a refusal.
     #[test]
     fn no_password_says_which_silence_it_was() {
         let nobody = no_password_sentence(0);
@@ -363,22 +268,18 @@ mod no_password_tests {
     }
 }
 
+/// Bind and start accepting for a single session: most of the workspace has one hub and does
+/// not want to know about a registry.
 pub fn serve(hub: Arc<Hub>, path: impl AsRef<Path>) -> io::Result<ServerHandle> {
     serve_registry(Registry::of(hub), path)
 }
 
-/// The most bytes one `FetchRow` may return, whatever the head asked for.
-///
-/// **The daemon's cap, not the head's request.** A head that sent a large `len` — by a bug,
-/// or by a version that meant something else by it — must not be able to make the daemon
-/// serialise a megabyte onto the wire. The head pages in windows of a screenful, so this is
-/// an order of magnitude above any window it draws and far below a payload.
+/// The most bytes one `FetchRow` may return, whatever the head asked for: the cap is the
+/// daemon's, because the memory is the daemon's.
 pub const MAX_FETCH_ROW: usize = 64 * 1024;
 
-/// The nearest character boundary at or below `at`, for slicing a body.
-///
-/// A byte window can land inside a multi-byte character, and a head cannot render half a
-/// glyph. The daemon is the side that knows the encoding, so it is the side that rounds.
+/// The nearest character boundary at or below `at`, for slicing a body: a byte window can land
+/// inside a multi-byte character.
 fn clamp_char(s: &str, at: usize) -> usize {
     let mut at = at.min(s.len());
     while at > 0 && !s.is_char_boundary(at) {
@@ -390,14 +291,8 @@ fn clamp_char(s: &str, at: usize) -> usize {
 /// Bind and start accepting for every session in `registry`.
 pub fn serve_registry(registry: Arc<Registry>, path: impl AsRef<Path>) -> io::Result<ServerHandle> {
     let path = path.as_ref().to_path_buf();
-    // **THE CLAIM COMES FIRST, AND IT DOES NOT ASK WHETHER THE FILE IS THERE.**
-    //
-    // This is the whole fix for the operator's 2026-10-04 entry, and the order is the
-    // substance of it: the check below is gated on `path.exists()`, so a folder whose socket
-    // file was unlinked by a stopping daemon had NO check at all — the bind then succeeded
-    // at a path that already had a live listener on a nameless inode, and two daemons served
-    // one store until the transcript trigger refused every write. A held `flock` says what
-    // the filename cannot: somebody is here. See [`FolderClaim`].
+    // THE CLAIM COMES FIRST, AND IT DOES NOT ASK WHETHER THE FILE IS THERE. The check below is
+    // gated on `path.exists()`, which a racing binder makes true and stale.
     let claim = match FolderClaim::take(&path) {
         Ok(c) => Some(c),
         Err(ClaimRefusal::Live { pid }) => {
@@ -422,9 +317,9 @@ pub fn serve_registry(registry: Arc<Registry>, path: impl AsRef<Path>) -> io::Re
                 },
             ));
         }
-        // **A filesystem that cannot hold the claim does not stop a daemon starting.** The
-        // probe below is still the belt; it is only the braces that are missing, and this is
-        // said out loud rather than swallowed, because silence is the shape of the bug.
+        // A filesystem that cannot hold the claim does not stop a daemon starting: the probe
+        // below is still the belt, and this is said out loud rather than swallowed, because
+        // silence is the shape of the bug.
         Err(ClaimRefusal::Unavailable { why }) => {
             eprintln!(
                 "sessionlog: cannot take the folder claim on {} ({why}). Starting anyway, with \
@@ -435,12 +330,8 @@ pub fn serve_registry(registry: Arc<Registry>, path: impl AsRef<Path>) -> io::Re
             None
         }
     };
-    // **The belt, still worn** — and its comment corrected, because the version of it that
-    // stood here is why nobody looked further: *"the bind is what would then fail"* is true
-    // only while the live daemon's file still HAS that name. Unlink it and the bind succeeds
-    // at a fresh inode, which is exactly the hole above. This still catches the cases the
-    // lock cannot: a daemon from a build older than this one, and any other program that
-    // bound the path without taking the claim.
+    // The belt, still worn: it catches what the lock cannot, a daemon from an older build, and
+    // any other program that binds this path.
     if path.exists() {
         match UnixStream::connect(&path) {
             Ok(_) => {
@@ -459,28 +350,13 @@ pub fn serve_registry(registry: Arc<Registry>, path: impl AsRef<Path>) -> io::Re
         }
     }
     let listener = UnixListener::bind(&path)?;
-    // Filesystem permissions are the auth (§13.4).
+    // Filesystem permissions are the auth: no ceremony beyond the protocol version.
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
-    // **THE ACCEPT LOOP MUST BE WAKABLE WITHOUT THE SOCKET FILE EXISTING.**
-    //
-    // `shutdown` unblocks the loop by connecting to the path — which works exactly once, in
-    // the state where the path still names this listener. Unlink the file (which `shutdown`
-    // and `Drop` themselves do, and which is the ordinary state of a daemon that was asked to
-    // stop) and the connect goes to `ENOENT`, the accept thread stays blocked in `accept()` on
-    // a nameless inode, and the `join` in `shutdown` waits forever. MEASURED 2026-10-05, and it
-    // is the operator's own field note from 2026-10-04: *"`2210747` went on TERM, `2124394`
-    // ignored TERM for fourteen seconds and needed KILL"* — a daemon that has lost its file
-    // cannot be stopped politely.
-    //
-    // So the loop is non-blocking and checks the registry's flag between polls. The cost is a
-    // poll interval on the IDLE path (20 ms between a head's connect and its accept, once per
-    // attach) and the gain is a stop that does not depend on a filename. The `WouldBlock` arm
-    // below is deliberately before `is_transient`, which would classify it as transient and
-    // print a line every 50 ms for as long as the daemon is idle.
+    // THE ACCEPT LOOP MUST BE WAKABLE WITHOUT THE SOCKET FILE EXISTING: `shutdown` unblocks it
+    // by connecting, and a path a racing daemon unlinked would leave it blocked for ever.
     let _ = listener.set_nonblocking(true);
-    // **What we bound, so going away can remove this and not somebody else's socket.**
-    // Read off the path immediately after the bind, before any other start can be looking at
-    // the same name.
+    // What we bound, so going away can remove this and not somebody else's socket. Read off
+    // the path immediately after the bind, before any other start can look at the same name.
     let socket_id = std::fs::metadata(&path).ok().map(|m| (m.dev(), m.ino()));
 
     let r = registry.clone();
@@ -489,28 +365,8 @@ pub fn serve_registry(registry: Arc<Registry>, path: impl AsRef<Path>) -> io::Re
     let accept = std::thread::Builder::new()
         .name("head-accept".into())
         .spawn(move || {
-            // **A failed `accept` is almost never a reason to stop accepting.**
-            //
-            // This loop used to read `Err(_) => break`, and a daemon paid for it in
-            // the field: the accept thread ended, the `UnixListener` it owns was
-            // dropped, the fd closed — and nothing else changed. The socket FILE
-            // stayed, because the `remove_file` lives on `ServerHandle::drop` and
-            // main still held the handle. The worker went on sleeping in
-            // `daemon.run`. So the process was alive, logged nothing, looked
-            // healthy, and was permanently deaf; a head then sat on a socket path
-            // with no listener, polling forever, because "not up yet" and "never
-            // coming back" are the same thing from out there.
-            //
-            // Measured on 2026-09-20: pid 1023699, 26 fds and not one socket, no
-            // `head-accept` thread, `5a0a8f3c88f8.sock` on disk with nothing behind
-            // it. The trigger was a head that died while its connection was still
-            // in the backlog — the operator quit the daemon that had spawned it —
-            // which is `ECONNABORTED`, the most ordinary accept error there is.
-            //
-            // The errno was discarded by `Err(_)`, so it could not even be named
-            // afterwards. Now: transients are retried, everything else is said out
-            // loud, and a loop that really does end takes the daemon with it
-            // instead of leaving a deaf process holding a lie.
+            // A failed `accept` is almost never a reason to stop accepting: `Err(_) => break` left a
+            // daemon alive and deaf.
             let mut transient = 0u32;
             loop {
                 if r.is_closed() {
@@ -518,10 +374,9 @@ pub fn serve_registry(registry: Arc<Registry>, path: impl AsRef<Path>) -> io::Re
                 }
                 match listener.accept() {
                     Ok((s, _)) => {
-                        // **A blocking stream, explicitly.** The listener is non-blocking (see
-                        // above); Linux does not pass that flag on to an accepted socket, and
-                        // "the platform does not do the surprising thing" is not something a
-                        // daemon whose reads are blocking by design should rely on.
+                        // A blocking stream, explicitly: Linux does not pass the listener's
+                        // non-blocking flag on to an accepted socket, and a daemon whose reads
+                        // are blocking by design should not rely on the platform being kind.
                         let _ = s.set_nonblocking(false);
                         transient = 0;
                         if r.is_closed() {
@@ -541,21 +396,15 @@ pub fn serve_registry(registry: Arc<Registry>, path: impl AsRef<Path>) -> io::Re
                                     }
                                 });
                     }
-                    // **Idle, and not an error.** See the `set_nonblocking` above: this is
-                    // what makes `shutdown` able to stop a daemon whose socket file is gone,
-                    // and it is silent on purpose — the transient arm below prints, and a line
-                    // every poll interval from a healthy idle daemon is noise that hides the
-                    // lines that matter.
+                    // Idle, and not an error: this is what makes `shutdown` able to stop a
+                    // daemon whose socket file is gone. Silent on purpose - a line every poll
+                    // from a healthy daemon is noise that hides the lines that matter.
                     Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
                         std::thread::sleep(std::time::Duration::from_millis(20));
                     }
                     Err(e) if is_transient(&e) => {
-                        // A client that vanished before it was picked up costs
-                        // nothing and is not worth a line. Running out of file
-                        // descriptors is worth one, and is worth a pause: spinning
-                        // on `EMFILE` burns a core and frees nothing, while the
-                        // descriptors that would fix it are being closed by other
-                        // threads.
+                        // A client that vanished before it was picked up costs nothing; running out of
+                        // descriptors is worth a line and a pause.
                         transient = transient.saturating_add(1);
                         if e.kind() != io::ErrorKind::ConnectionAborted {
                             eprintln!(
@@ -565,9 +414,9 @@ pub fn serve_registry(registry: Arc<Registry>, path: impl AsRef<Path>) -> io::Re
                         }
                     }
                     Err(e) => {
-                        // Nothing here is recoverable — a listener that is not a
-                        // listener any more. Say which errno, because the whole
-                        // point of the incident above was that nobody could.
+                        // Nothing here is recoverable - a listener that is not a listener any
+                        // more. Say which errno, because the last time this happened nobody
+                        // could name it.
                         eprintln!(
                             "head accept failed and cannot continue: {e} ({:?}). This daemon \
                              can no longer be reached, so it is stopping rather than \
@@ -578,22 +427,13 @@ pub fn serve_registry(registry: Arc<Registry>, path: impl AsRef<Path>) -> io::Re
                     }
                 }
             }
-            // **The socket file goes when the listener does — if it is still ours.**
-            //
-            // Whatever ended this loop, the path must stop advertising a door: a head gets a
-            // refusal it can report instead of an eternal poll. The handle's own `Drop`
-            // removes it too, and removing it twice is an ignored `ENOENT` — much cheaper
-            // than the case this prevents. `unlink_if_ours` is what keeps "the path" from
-            // meaning "whatever is there now", which for a daemon that is on its way out can
-            // be a newer daemon's socket.
+            // The socket file goes when the listener does, if it is still ours: the path must stop
+            // advertising a door, so a head does not connect to nothing.
             if let Some(id) = deaf_id {
                 unlink_if_ours(&deaf_path, id);
             }
-            // And the daemon comes down with it, gracefully: every head wakes with
-            // `Bye`, every worker falls out of `next_command`, and the operator
-            // sees a session end instead of a process that answers nothing. A
-            // shutdown that got here first has already done this and closing twice
-            // is idempotent.
+            // And the daemon comes down with it, gracefully: every head wakes with `Bye`,
+            // every worker falls out of `next_command`, and closing twice is idempotent.
             r.close();
         })?;
 
@@ -612,34 +452,20 @@ struct Seat {
     hub: Arc<Hub>,
     head_id: String,
     /// Set before the reader detaches this head so it can move. The pump wakes with
-    /// [`Delivery::Closed`] either way — the hub cannot tell it why — so without
-    /// this the head would be sent `Bye` for a switch, and a head that is told the
-    /// daemon is going away closes the window.
+    /// [`Delivery::Closed`] either way.
     switching: Arc<AtomicBool>,
     pump: Option<JoinHandle<()>>,
 }
 
-/// **A seat is detached however the connection ends** — measured. 2026-10-26.
-///
-/// The loop below writes to the head in ~45 places, every one of them a `?`, and any of them
-/// returns from `serve_conn` through the error arm — which used to leave the head REGISTERED: the
-/// hub had counted it since `Hub::attach`, so `attached_heads` said 3 where a caller expected 2,
-/// the pane kept a pump that was `Closed`-bound, and nothing would ever remove it. There is no
-/// telling a closed socket from a live one at that point, so the only correct answer on every path
-/// is detach, and a `Drop` is how you get *every* path.
-///
-/// **`Hub::detach` is idempotent**, which is what makes this safe beside the explicit detaches the
-/// reader and the `Switch` arm already do: a head already gone is not an error and not a second
-/// event. The pump's `JoinHandle` is *not* joined here — the two callers that need the frames in
-/// order ([`leave`] and the read loop's own ending) join it themselves, before the next session's
-/// `Hello` can be written.
+/// A seat is detached however the connection ends: the loop below returns through an error arm
+/// in forty-odd places, and a head left registered would be counted for ever.
 impl Drop for Seat {
     fn drop(&mut self) {
         self.hub.detach(&self.head_id);
     }
 }
 
-/// One connection, from ATTACH to detach — through however many sessions.
+/// One connection, from ATTACH to detach - through however many sessions.
 pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), WireError> {
     let out = stream.try_clone()?;
     let mut reader = FrameReader::new(stream);
@@ -662,32 +488,8 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
         return Ok(());
     };
 
-    // **A differing protocol version is ACCEPTED, and said — never refused on the
-    // number alone.**
-    //
-    // The operator's ruling, on losing a 17-day-old daemon to a bare `Bye` while a
-    // *newer* head stood there unable to read the conversation its warm KV cost
-    // minutes to rebuild: *"so ideally it would be like - connect, look around and
-    // make informed decision"*. This side of the socket cannot make that decision
-    // for the person — it does not know what they came for — but it can do the
-    // first two thirds: connect them, and hand over everything it holds. The
-    // `Hello` below states this daemon's own `PROTOCOL_VERSION`, so the head can
-    // compare and decide; a head with no comparator of its own is still seated,
-    // because a conversation readable-and-scrollable beats a closed door.
-    //
-    // What the old gate protected is still protected, one level up: §17-S6's rule
-    // — *"a silent version skew looks like a bug in the other half, forever"* —
-    // survives as LOUDNESS rather than as a refusal. This paragraph is the
-    // daemon's own record of the skew, on the stderr a person reads when they
-    // wonder why a head is cautious; the head's record is the `protocol_skew`
-    // sentence its `Hello` comparison produces; and if the two builds later
-    // exchange a frame one of them cannot read, the read loop below still answers
-    // with a `Bye` naming both versions before the socket goes. Nothing about the
-    // skew is silent in any direction — the door is simply open.
-    //
-    // **This cannot rescue a daemon already running.** A daemon built before this
-    // change carries the old gate and goes on refusing until it is restarted; the
-    // acceptance here is a fact about every daemon started from this build on.
+    // A differing protocol version is ACCEPTED, and said, never refused on the number alone.
+    // This side cannot decide which of the two is wrong.
     if protocol_version != PROTOCOL_VERSION {
         let which = if protocol_version > PROTOCOL_VERSION {
             "newer"
@@ -721,8 +523,8 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
 
     let mut seat = seat_in(&registry, hub, since_seq, &kind, &identity, &caps, &writer)?;
 
-    // The reader loop. Ends on Detach or on the peer closing — and **TCP close is
-    // detach, never abort** (§13.2): nothing below cancels a turn.
+    // The reader loop. Ends on Detach or on the peer closing - and a TCP close is detach,
+    // never abort: nothing below cancels a turn.
     let result = loop {
         match reader.read::<ClientFrame>() {
             Ok(ClientFrame::Ack(ack)) => seat.hub.ack(&seat.head_id, ack),
@@ -738,15 +540,8 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 break Ok(());
             }
             Ok(ClientFrame::Askpass { prompt, command }) => {
-                // `sudo` in this session wants a password. Raise it, wait here —
-                // this connection is the helper's and sends nothing else — and
-                // answer on it. The deadline is sudo's patience, roughly: past it
-                // the helper exits and sudo reports that no password was given.
-                //
-                // **The head count is taken BEFORE the card is raised, and it is what
-                // makes the failure readable.** `None` on the wire says only that no
-                // password came back; whether that is *the card reached nobody* or *a
-                // person did not answer* is decided by whether there was anybody to ask.
+                // `sudo` in this session wants a password. Raise it and wait here: this connection is
+                // the helper's, and it sends nothing else.
                 const PATIENCE: std::time::Duration = std::time::Duration::from_secs(120);
                 let deadline = crate::event::now_ms() + PATIENCE.as_millis() as u64;
                 let heads = seat.hub.attached_heads();
@@ -760,8 +555,7 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                         None,
                         Some("a head was shown the card and the person declined it".to_string()),
                     ),
-                    // The deadline — and WHICH silence, which is the fact one sentence
-                    // could not carry.
+                    // The deadline - and WHICH silence, which the one sentence cannot carry.
                     Err(_) => {
                         seat.hub
                             .abandon_secret(&req_id, "nobody, before the deadline");
@@ -800,14 +594,8 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 // after the tool call that asked has given up.
                 seat.hub.give_screen(&req_id, cols, rows_n, rows);
             }
-            // **The operator answered a command that asked them something.**
-            //
-            // Off the queue, and this is the sharpest case of it in the file: the run's own
-            // thread is **blocked inside the very command that is asking** (it waits on the
-            // job; a `!` run has had a thread of its own since this path stopped holding the
-            // daemon's worker), and the worker — which serves every session — may be inside
-            // another session's turn. A line queued behind either would be drained by neither.
-            // See `PROTOCOL_VERSION` 33.
+            // The operator answered a command that asked them something: off the queue, because the
+            // thread that would drain it is the one blocked on the answer.
             Ok(ClientFrame::PromptAnswer { req_id, line }) => {
                 let session = seat.hub.session_id().to_string();
                 match registry.prompt(&session) {
@@ -823,9 +611,9 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                         });
                     }
                     Some(driver) => match driver.send(&session, Some(&req_id), &line) {
-                        // A card was up and this settled it. The line is nowhere on the
-                        // log — the settlement is the record, exactly as `SecretSettled`
-                        // is for a password.
+                        // A card was up and this settled it. The line is nowhere on the log -
+                        // the settlement is the record, exactly as `SecretSettled` is for a
+                        // password.
                         Ok(settled) => {
                             if let Some(id) = settled {
                                 seat.hub.publish(crate::event::SessionEvent::PromptSettled {
@@ -835,11 +623,9 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                                 });
                             }
                         }
-                        // **Late, and said rather than refused.** The command ended, or
-                        // another head answered first, so nothing was written — the same
-                        // shape and the same sentence as `secret_late`, and for its
-                        // reason: the person typed an answer and the command did not get
-                        // it, which is worth a red line.
+                        // Late, and said rather than refused: the command ended, or another
+                        // head answered first, so nothing was written. Worth a red line - the
+                        // person typed an answer and the command did not get it.
                         Err(why) => {
                             seat.hub.publish(crate::event::SessionEvent::Warning {
                                 code: "prompt_late".into(),
@@ -850,9 +636,9 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                     },
                 }
             }
-            // **One line to the running command, on demand** — `!send`, the manual floor
-            // under the card. Off the queue for the reason above, and with no `req_id`: it
-            // addresses whatever operator command this session is running right now.
+            // One line to the running command, on demand - the manual floor under the card.
+            // Off the queue for the reason above, and with no `req_id`: it addresses whatever
+            // operator command this session is running right now.
             Ok(ClientFrame::SendLine { line }) => {
                 let session = seat.hub.session_id().to_string();
                 match registry.prompt(&session) {
@@ -868,9 +654,9 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                     }
                     Some(driver) => match driver.send(&session, None, &line) {
                         Ok(settled) => {
-                            // A card was up and this answered it, so the card comes down
-                            // for every head — the same settlement the card's own field
-                            // would have produced.
+                            // A card was up and this answered it, so the card comes down for
+                            // every head - the same settlement the card's own field would have
+                            // produced.
                             if let Some(id) = settled {
                                 seat.hub.publish(crate::event::SessionEvent::PromptSettled {
                                     req_id: id,
@@ -879,9 +665,8 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                                 });
                             }
                         }
-                        // **Nothing of yours is running**, or its stdin is gone. A refusal
-                        // and not a failure: the act had nothing to act on, which is
-                        // `!term` with no pane one verb over.
+                        // Nothing of yours is running, or its stdin is gone. A refusal and not
+                        // a failure: the act had nothing to act on.
                         Err(why) => {
                             seat.hub.publish(crate::event::SessionEvent::Warning {
                                 code: "nothing_to_send_to".into(),
@@ -901,10 +686,9 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 writer.lock().unwrap().write(&f)?;
             }
             Ok(ClientFrame::ListJobs) => {
-                // Answered here and now, off the registry, rather than queued as a
-                // command: `/job` went through the command queue and so arrived
-                // after the turn it was asked during. A pane that opens must answer
-                // while it is open.
+                // Answered here and now, off the registry, rather than queued as a command: a
+                // pane that opens must answer while it is open, and a queued answer arrives
+                // after the turn it was asked during.
                 let f = ServerFrame::Jobs {
                     session_id: seat.hub.session_id().to_string(),
                     jobs: registry.jobs(&seat.hub.session_id()),
@@ -912,11 +696,8 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 };
                 writer.lock().unwrap().write(&f)?;
             }
-            // **The standing-notes pane's bootstrap read.** The rows are the harness's own
-            // — published into the registry wherever the section can have changed, the way
-            // the job table and the settings are — because the form each note has is decided
-            // with the session's token counter and this thread holds no vocabulary. See
-            // `ClientFrame::ListNotes` and `Registry::notes`.
+            // The standing-notes pane's bootstrap read: the rows are published into the registry
+            // wherever the section can have changed.
             Ok(ClientFrame::ListNotes) => {
                 let f = ServerFrame::StandingNotes {
                     session_id: seat.hub.session_id().to_string(),
@@ -924,7 +705,7 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 };
                 writer.lock().unwrap().write(&f)?;
             }
-            // **The skills pane's bootstrap read** — the rows the index names, and never a body:
+            // The skills pane's bootstrap read - the rows the index names, and never a body:
             // the body travels when somebody presses Enter (`ClientFrame::LoadSkill`), which is
             // also the only door a fabric skill's body could come through.
             Ok(ClientFrame::ListSkills) => {
@@ -934,9 +715,9 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 };
                 writer.lock().unwrap().write(&f)?;
             }
-            // **The operator hands this session one skill** — `/skills NAME rest`, and the
-            // pane's Enter. Queued like `OperatorShell`: it is the operator's own line, and a
-            // turn already running reads it at its next round boundary.
+            // The operator hands this session one skill - `/skills NAME rest`, and the pane's
+            // Enter. Queued like `OperatorShell`: it is the operator's own line, and a turn
+            // already running reads it at its next round boundary.
             Ok(ClientFrame::LoadSkill {
                 client_request_id,
                 expected_seq,
@@ -964,9 +745,9 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 }
             }
             Ok(ClientFrame::ListTodos) => {
-                // The bootstrap read: the snapshot carries items, not events, so
-                // a head attaching fresh has nothing to replay. From here the
-                // `TodosUpdated` events carry every change.
+                // The bootstrap read: the snapshot carries items, not events, so a head
+                // attaching fresh has nothing to replay. From here the `TodosUpdated` events
+                // carry every change.
                 let f = ServerFrame::Todos {
                     session_id: seat.hub.session_id().to_string(),
                     todos: registry.todos(&seat.hub.session_id()),
@@ -974,12 +755,8 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 writer.lock().unwrap().write(&f)?;
             }
             Ok(ClientFrame::ListMergeQueue) => {
-                // The bootstrap read, the way `ListTodos` is, answered here and now off the
-                // registry: a pane that opens must answer while it is open. Both queues, every
-                // state, with the leases, the targets' health and the last moves; a store that
-                // could not be read is said in the snapshot (R61), never sent as an empty queue.
-                // The asking session's repository rides along (R92 item 5): the pane and the
-                // edge are scoped to it by default.
+                // The bootstrap read, answered here and now off the registry: a pane that opens must
+                // answer without a turn.
                 let f = ServerFrame::Queues {
                     snapshot: registry.queues_for(&seat.hub.session_id()),
                 };
@@ -990,31 +767,21 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 title,
                 workspace,
             }) => {
-                // The id is the daemon's to mint: two heads racing to create
-                // "scratch" would otherwise get one success and one confusing
-                // refusal, and neither of them asked for a name collision.
+                // The id is the daemon's to mint: two heads racing to create "scratch" would
+                // otherwise get one success and one confusing refusal, and neither of them
+                // asked for a name collision.
                 let id = mint_session_id(&registry);
                 let mut wiring = registry.wiring(&seat.hub.session_id());
-                // The head's tree, when it named one. The model, dialect and endpoint
-                // stay the daemon's: those are what it is talking to and a head does
-                // not get to change them by asking for a session.
+                // The head's tree, when it named one. The model, dialect and endpoint stay the
+                // daemon's: those are what it is talking to, and a head does not get to change
+                // them by asking for a session.
                 if !workspace.is_empty() {
                     wiring.workspace = workspace;
                 }
                 let f = match registry.create(&id, title, wiring) {
                     Ok(_) => {
-                        // **WHO ASKED, which is the one thing a session's row cannot otherwise
-                        // say.** A conversation a person's terminal opened and one a package
-                        // opened are the same shape of row, and a picker that draws them in one
-                        // column puts six of `letim`'s among the two the operator is working in
-                        // (`crate::origin`, and their words: *"so my vs auto"*). The two facts
-                        // that say which it was are already on this connection — the `kind` and
-                        // `identity` its `ATTACH` carried — so this takes no new frame and a
-                        // head built before it keeps working, recorded as the operator's.
-                        //
-                        // The row itself is written by the worker when it opens the session, so
-                        // this is the memory half; `Sessions::open` writes the other (see
-                        // `Registry::record_origin`).
+                        // WHO ASKED, which a session's row cannot otherwise say: a terminal and a package
+                        // make the same shape of row.
                         registry.record_origin(&id, SessionOrigin::of_opener(&kind, &identity));
                         ServerFrame::Sessions {
                             sessions: registry.list(),
@@ -1031,10 +798,8 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 };
                 writer.lock().unwrap().write(&f)?;
             }
-            // Bring a stored session into this daemon. Idempotent, and refused by
-            // name when nothing anywhere has heard of the id: a typo that silently
-            // created an empty session named after the typo would look exactly like a
-            // resume that found nothing to restore.
+            // Bring a stored session into this daemon: idempotent, and refused by name when nothing
+            // anywhere has heard of the id.
             Ok(ClientFrame::ResumeSession {
                 client_request_id,
                 session_id,
@@ -1047,12 +812,8 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                     }
                 } else {
                     match registry.resumable(&session_id) {
-                        // **R6: an `oc-` id is imported, not resumed.** `oc-` marks an
-                        // opencode conversation; the rest is opencode's own id. There is
-                        // nothing in the store to restore on the first ask, so the session
-                        // is created here and the daemon's open reads the database in. A
-                        // *second* ask finds it in the store and takes the resume arm above,
-                        // so re-running the same id resumes rather than importing twice.
+                        // An `oc-` id is imported, not resumed: it marks an opencode conversation, and
+                        // nothing is in the store to restore one.
                         None if session_id.starts_with("oc-") => {
                             match registry.create(&session_id, "", SessionWiring::default()) {
                                 Ok(_) => ServerFrame::Sessions {
@@ -1075,18 +836,8 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                             actual_seq: seat.hub.head_seq(),
                         },
                         Some(brief) => {
-                            // The session's own wiring, from the store — not this
-                            // connection's. A resumed conversation belongs to the
-                            // workspace it was had in, and copying the current
-                            // session's would put the wrong root on the picker row
-                            // for the whole of its life.
-                            // **And its parent, from the same row** (R68.6): the registry's own
-                            // entry is where a worker asks *is this somebody's subagent?*
-                            // (`Registry::parent_of`) instead of re-reading every stored session
-                            // on each open, so a resumed child must arrive knowing it is one.
-                            // Asked through `Registry::parent_for`, the tree's one rule — the
-                            // same function `Harness::open` asks, so a session resumed by a head
-                            // and one opened by the worker cannot be nested differently.
+                            // The session's own wiring, from the store and not from this connection: a resumed
+                            // conversation belongs to the workspace it was held in.
                             let parent = registry.parent_for(
                                 &session_id,
                                 None,
@@ -1099,30 +850,11 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                                 parent,
                             ) {
                                 Ok(hub) => {
-                                    // **Who it is for, from its own row** — a session resumed
-                                    // after a restart comes back knowing whether a package or a
-                                    // one-shot made it, and the running daemon's entry has to
-                                    // carry that or its picker would re-group it as *mine* for
-                                    // as long as it holds it. The row is the record; the entry
-                                    // is this daemon's memory of it.
+                                    // Who it is for, from its own row: a session resumed after a restart comes back
+                                    // knowing whether a package or a one-shot made it.
                                     registry.record_origin(&session_id, brief.origin);
-                                    // **THE RESTORE IS ANNOUNCED HERE, BEFORE IT CAN START.**
-                                    //
-                                    // A session is registered the moment a head asks for it and
-                                    // opened when the worker gets to it — behind whatever turn it is
-                                    // running, which on this box has been minutes. Between the two
-                                    // the hub holds nothing, and a head that switches now is handed
-                                    // an empty snapshot: MEASURED 2026-10-26, the operator's
-                                    // `leticode --session s-1793…` drew *"attached, and this session
-                                    // has said nothing yet"* over a conversation of 166 stored rows.
-                                    //
-                                    // The store's own count is the whole of what is missing and it
-                                    // is in hand here (`brief.items`), so the layer that owns the fact
-                                    // states it — this tree's rule for an indicator. The hub
-                                    // republishes the last `Filling` to every head that attaches
-                                    // (`Hub::attach`), so the sentence arrives WITH the empty
-                                    // snapshot; `Harness::open` then walks the same name row by row
-                                    // and ends it (`letibot_sessionlog::RESTORING_ROWS`).
+                                    // THE RESTORE IS ANNOUNCED HERE, BEFORE IT CAN START: a session is registered
+                                    // when a head asks for it and opened later, so the wait has to be visible.
                                     if brief.items > 0 {
                                         hub.publish(SessionEvent::Filling {
                                             what: crate::RESTORING_ROWS.into(),
@@ -1149,10 +881,8 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 };
                 writer.lock().unwrap().write(&f)?;
             }
-            // Naming a session the daemon holds. A session that is only in the store
-            // is refused here rather than renamed behind the daemon's back: the store
-            // is the daemon's to write, and two writers on one row is how a title
-            // set in a picker vanishes when the other daemon exits.
+            // Naming a session the daemon holds. A session that is only in the store is refused here
+            // rather than renamed behind a resume.
             Ok(ClientFrame::RenameSession {
                 client_request_id,
                 session_id,
@@ -1174,9 +904,9 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                             actual_seq: seat.hub.head_seq(),
                         },
                         Ok(()) => {
-                            // On the renamed session's own log, so that every head
-                            // watching *it* is told — not only the head that asked,
-                            // and not only the session this connection is sitting in.
+                            // On the renamed session's own log, so that every head watching *it*
+                            // is told - not only the head that asked, and not only the session
+                            // this connection is sitting in.
                             if let Some(hub) = registry.get(&session_id) {
                                 hub.publish(crate::SessionEvent::SessionRenamed {
                                     title: title.clone(),
@@ -1198,10 +928,9 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
             }) => {
                 match registry.resolve(&session_id) {
                     None => {
-                        // Refused, and the connection **stays where it is**. A
-                        // switch that half-happened would leave a head attached to
-                        // nothing, which is the one state the mid-turn attach
-                        // machinery cannot recover from.
+                        // Refused, and the connection stays where it is: a switch that
+                        // half-happened would leave a head attached to nothing, which the
+                        // mid-turn attach machinery cannot recover from.
                         let f = ServerFrame::Rejected {
                             client_request_id: format!("switch:{session_id}"),
                             reason: format!("{REJECT_UNKNOWN_SESSION} {session_id:?}"),
@@ -1211,8 +940,8 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                         writer.lock().unwrap().write(&f)?;
                     }
                     Some(next) if next.session_id() == seat.hub.session_id() => {
-                        // Already here. Answered rather than ignored: "I pressed the
-                        // key and nothing happened" is the report this avoids.
+                        // Already here. Answered rather than ignored: "I pressed the key and
+                        // nothing happened" is the report this avoids.
                         let f = ServerFrame::Sessions {
                             sessions: registry.list(),
                             current: seat.hub.session_id(),
@@ -1228,19 +957,8 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                     }
                 }
             }
-            // **The operator's own call, admitted before it runs** — R24 part two,
-            // decision 4.
-            //
-            // **The allowlist is enforced HERE, on the connection's thread**, and that is
-            // the whole reason it is a constant in this crate rather than a field on the
-            // head. A head is going to run the thing either way — it is in the operator's
-            // own terminal — so what the daemon owns is *what may be recorded as part of
-            // the conversation*. A daemon that trusted the name it was sent would bound
-            // nothing.
-            //
-            // **Refused in a sentence.** A `Rejected` naming the list, not a dropped
-            // frame: a head that cannot say why is a head that retries, and the operator
-            // is the one who would have to guess.
+            // The operator's own call, admitted before it runs. The allowlist is enforced HERE, on
+            // the connection's thread, before the worker sees the frame.
             Ok(ClientFrame::OperatorCall {
                 client_request_id,
                 expected_seq,
@@ -1288,12 +1006,8 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                     writer.lock().unwrap().write(&f)?;
                 }
             }
-            // **What the operator's call produced.**
-            //
-            // No `expected_seq`: this frame does not move the session, it hands over a fact
-            // the session is missing. A `call_id` this daemon is not holding is refused by
-            // name rather than appended — see `CommandKind::OperatorResult`'s own handling,
-            // which is where the pending set lives.
+            // What the operator's call produced. No `expected_seq`: this frame does not move the
+            // session, it hands over a fact.
             Ok(ClientFrame::OperatorResult {
                 call_id,
                 outcome,
@@ -1311,19 +1025,8 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 );
                 writer.lock().unwrap().write(&f)?;
             }
-            // **The operator's own shell line — a `!` command the DAEMON runs.**
-            //
-            // No allowlist to check, because there is no tool name: the line owns itself, and
-            // the frame's own docs record why the door was not widened instead. What IS
-            // checked here is the bang — the one fact that separates *the operator's shell
-            // line* from *a sentence this frame could otherwise file as one* — and it is
-            // checked on the connection's thread for the same reason the door's list is: a
-            // daemon that trusted the line it was sent would write rows nothing stands behind.
-            //
-            // **No gate, no adjudication row, no `OperatorCallAllowed`.** The operator typed
-            // the line; there was nobody left to ask, and saying otherwise would be a decision
-            // nobody made. The gate is also structurally out of reach: the run goes through
-            // `ToolRuntime::invoke_operator`, which is the door's own ungated path.
+            // The operator's own shell line: a `!` command the DAEMON runs. No allowlist, because
+            // there is no tool name to check: the daemon mints the call itself.
             Ok(ClientFrame::OperatorShell {
                 client_request_id,
                 expected_seq,
@@ -1342,7 +1045,7 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                     };
                     writer.lock().unwrap().write(&f)?;
                 } else {
-                    // The identity, not the head id — the row's `CallOrigin` and the door's
+                    // The identity, not the head id - the row's `CallOrigin` and the door's
                     // records name the actor the same way.
                     let who = seat
                         .hub
@@ -1357,22 +1060,8 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                     writer.lock().unwrap().write(&f)?;
                 }
             }
-            // **The model's half of the `!` completion.** The history is the head's own and is
-            // the first answer; this is what the head asks for when the history has no match
-            // for the prefix. The daemon builds the prompt from the session's own rows and
-            // asks the LOCAL model — the suggester the daemon installed, or nothing when it
-            // installed none.
-            //
-            // **Answered here and now, off the queue, for the reason `ListJobs` is**: a
-            // completion must arrive while the operator is still typing, and queueing it
-            // behind a running turn would guarantee it arrives after the line is sent. The
-            // call is bounded by the suggester (a small output cap and a timeout), and a
-            // suggestion that does not arrive is nothing: the answer is an empty list, never
-            // a wait.
-            //
-            // **Nothing is submitted.** The answer is a list of candidate lines; the head
-            // draws them as candidates, marked as the model's, and only a Tab fills the
-            // composer with one. Enter is still the operator's.
+            // The model's half of `!` completion, for a prefix the history has no match for: answered
+            // here and now, off the queue.
             Ok(ClientFrame::SuggestShell {
                 client_request_id,
                 expected_seq: _,
@@ -1393,18 +1082,8 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 };
                 writer.lock().unwrap().write(&f)?;
             }
-            // **A program that owns the screen, in a pane the daemon owns.** (`!term`.)
-            //
-            // Not a command, and the sharpest case of it in this file: this appends no row,
-            // moves no seq and is answered on this connection. Queueing a pane behind a
-            // running turn would make it open minutes after it was asked for.
-            //
-            // **Every refusal is a `TermEnded`, and there is no second spelling.** A pane
-            // that could not start is a pane that is over before it began, and the head's act
-            // is the same either way — close the pane and say why — so the sentence is the
-            // whole of the difference. `Rejected` would need a `client_request_id` and an
-            // `expected_seq`, and this frame has neither: it is not a command and it has
-            // nothing to be stale against.
+            // A program that owns the screen, in a pane the daemon owns (`!term`). Not a command: it
+            // appends no row and moves no transcript.
             Ok(ClientFrame::TermOpen { line, cols, rows }) => {
                 let said = match crate::term_line(&line) {
                     // Not this verb at all. A head that sent one is a head this daemon does
@@ -1413,12 +1092,8 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                         "`{line}` is not a `!term` line: the verb is `!term`, and it has to be \
                          followed by whitespace. Nothing ran."
                     )),
-                    // **The verb with no command is ATTACH** — see `TerminalDriver::attach`.
-                    // It was a refusal (*"`!term` needs a command to run"*), and the refusal
-                    // was wrong for the reason the operator hit: the pane is the session's,
-                    // so a person whose head lost the rectangle still has a program running
-                    // and nothing to leave. A session with no pane answers with a sentence
-                    // through the same `TermEnded` every other unstartable pane uses.
+                    // The verb with no command is ATTACH: the pane is the session's, so a person whose head
+                    // lost the rectangle still has the program.
                     Some(crate::TermLine::Attach(pane)) => match registry.terminal() {
                         None => Err("this daemon has no terminal driver, so there is no pane \
                                      to attach to. Nothing was attached."
@@ -1427,13 +1102,8 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                             .attach(&seat.hub.session_id(), pane, &seat.hub, cols, rows)
                             .map(drop),
                     },
-                    // **`!term close` is the ending, and it is the head's act.** The head
-                    // asks the operator to confirm it and then sends `TermClose` — see
-                    // `PROTOCOL_VERSION`'s 34 section — so a `TermOpen` carrying this line is
-                    // a head that did not do that, and running a program called `close`
-                    // instead would be this daemon and the head disagreeing about what the
-                    // same bytes mean. The sentence names the way to run such a program,
-                    // because that is the cost of the word and it is paid in the open.
+                    // `!term close` is the ending, and it is the head's act: the head asks the operator to
+                    // confirm and then sends this.
                     Some(crate::TermLine::Close(_)) => Err(
                         "`!term close` is not a command to run: it is how a pane is ENDED, and \
                          the head sends that as its own act (after asking). Nothing ran — a \
@@ -1456,48 +1126,34 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                         .write(&ServerFrame::TermEnded { pane: None, reason })?;
                 }
             }
-            // **The operator's keys, verbatim.** Not a command either, and for a sharper
-            // reason than the pane's: a keystroke that queued behind a running turn would be
-            // a key that arrives after the thing it was answering.
+            // The operator's keys, verbatim. Not a command either, and for a sharper reason
+            // than the pane's: a keystroke that queued behind a running turn would be a key that
+            // arrives after the thing it was answering.
             Ok(ClientFrame::TermInput { pane, bytes }) => {
                 if let Some(driver) = registry.terminal() {
                     // A failed write is the pty's far end being gone, which the pane's own
                     // reader thread is about to report with a better sentence than this arm
-                    // could — so it is dropped here rather than turned into a second ending.
+                    // could - so it is dropped here rather than turned into a second ending.
                     let _ = driver.input(&seat.hub.session_id(), pane, &bytes);
                 }
             }
-            // **The pane's rectangle moved** — the head's fact, since the daemon has no
-            // screen. `TIOCSWINSZ` on the pty, and the kernel raises `SIGWINCH` for the
-            // program's foreground process group by itself.
+            // The pane's rectangle moved - the head's fact, since the daemon has no screen.
+            // `TIOCSWINSZ` on the pty, and the kernel raises `SIGWINCH` for the program's
+            // foreground process group by itself.
             Ok(ClientFrame::TermResize { pane, cols, rows }) => {
                 if let Some(driver) = registry.terminal() {
                     let _ = driver.resize(&seat.hub.session_id(), pane, cols, rows);
                 }
             }
-            // **The operator left.** Idempotent and quiet when there is no pane: *"stop"* is
-            // not a request that can be wrong about anything, and a head that leaves twice
-            // gets nothing rather than a refusal. The ending itself comes from the driver's
-            // reader thread, with the operator's own act in the sentence — see
-            // `TermSession::close`.
+            // The operator left. Idempotent and quiet when there is no pane: stop cannot be wrong about
+            // anything.
             Ok(ClientFrame::TermClose { pane }) => {
                 if let Some(driver) = registry.terminal() {
                     let _ = driver.close(&seat.hub.session_id(), pane);
                 }
             }
-            // **What this session's pane is running, or nothing.** A read, answered on this
-            // connection like every other pane frame: a question about a live program queued
-            // behind a running turn would be an answer about the past.
-            //
-            // **It is what a head draws instead of a row.** A head that has detached, or
-            // switched session, still has to say *something is running in here* — and the
-            // operator's rule is that a detach is not an event, so there is no row to file.
-            // The `None` arm is not an error: a session nobody ran `!term` in has no pane,
-            // and the head draws nothing at all.
-            //
-            // A daemon with no terminal driver answers `None` rather than refusing: *there is
-            // no pane* is the true statement, and it is the same one a driver with no pane for
-            // this session gives.
+            // What this session's pane is running, or nothing: a read, answered on this connection like
+            // every other pane frame.
             Ok(ClientFrame::TermStatus) => {
                 let panes = registry
                     .terminal()
@@ -1508,15 +1164,8 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                     .unwrap()
                     .write(&ServerFrame::TermStatus { panes })?;
             }
-            // **R11's locator, leticl's ask.** A head names one decision and one half of its
-            // exchange; the daemon answers with the bytes or with *not recorded*. The same
-            // shape `FetchRow` uses, and for the same reason: this is the head asking for
-            // something big it does not normally hold.
-            //
-            // **Answered even when there is nothing**, and that is the point of
-            // `body: Option`: an empty `body` and a `body` of `""` are different facts, and a
-            // head that could not tell them apart would draw "the oracle said nothing" over
-            // "nobody kept this".
+            // A head names one decision and one half of its exchange; the daemon answers with the
+            // bytes or with not recorded.
             Ok(ClientFrame::FetchDiagnostic { request_id, kind }) => {
                 let body = registry.diagnostic(&request_id, kind);
                 let total = body.as_ref().map(|b| b.len()).unwrap_or(0);
@@ -1535,26 +1184,8 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 writer.lock().unwrap().write(&f)?;
             }
             Ok(ClientFrame::Peek { session_id, shape }) => {
-                // A read, not a move: the seat, its acks and its live events are
-                // untouched, and the answer is the named session's scrollback
-                // scrubbed exactly as a replay would be — a peek IS a replay, so
-                // it gets the replay's wire hygiene and the ring's cap. A session
-                // this daemon does not hold is a Rejected naming it, never an
-                // empty Peeked: an empty answer and a missing session must not
-                // look alike.
-                //
-                // **`PeekShape::Rows` answers with the session's own view instead**, and it is
-                // the same read rather than a second one: a child IS a session — the operator,
-                // 2026-10-03: *"yes subagents are not even scratch session they are session, just
-                // sub sessions"* — so the rows an attach would be given are the rows this returns.
-                // **The two shapes are alternatives and not a pair**: a head that asked for rows
-                // gets the snapshot and an EMPTY ring, because sending both would put the same
-                // session on the wire twice and leave a head free to draw it twice.
-                //
-                // **No scrub on the rows**, and the asymmetry is the point: `scrub_replay`
-                // exists because a ring of *events* carries interactive-only frames a late reader
-                // must not act on, and a `Snapshot` is built from the view — which is already the
-                // durable half of that stream. Scrub what is a replay; a view is not one.
+                // A read, not a move: the seat, its acks and its live events are untouched, and the
+                // answer is the session's scrollback.
                 match registry.resolve(&session_id) {
                     Some(hub) => {
                         let (events, snapshot) = match shape {
@@ -1591,15 +1222,8 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 at,
                 len,
             }) => {
-                // A read, not a move — the same contract `Peek` above keeps, and the
-                // reason both live in this arm of the match rather than in the seat.
-                //
-                // **The window is clamped here, not trusted from the head.** `len` is what
-                // the head *asked* for; one request must not be able to return a megabyte
-                // because a head sent a big number, so the cap is the daemon's. And `at`
-                // is clamped to the body rather than refused, because a head paging
-                // forward does not know where the end is and asking past it is how it
-                // finds out.
+                // A read, not a move, the same contract `Peek` keeps: both live in this arm of the match
+                // rather than on the queue.
                 let Some(hub) = registry.resolve(&session_id) else {
                     let f = ServerFrame::Rejected {
                         client_request_id: format!("fetchrow:{session_id}/{row}"),
@@ -1610,12 +1234,8 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                     writer.lock().unwrap().write(&f)?;
                     continue;
                 };
-                // **The view first, then the store.** The view is one lock and a `Vec`
-                // index, so it is the fast path for a row this daemon is holding; the
-                // store is the answer for an ordinal its bounded view has trimmed
-                // (2,000 rows, 8 MB of bodies), which is the case `FetchRow` exists for.
-                // A registry with no store answers `None` here and behaves exactly as it
-                // always did. See [`letibot_sessionlog::registry::RowSource`].
+                // The view first, then the store: the view is one lock and a `Vec` index, so it is the
+                // fast path for a row this daemon already holds.
                 let full = hub
                     .row_body_at(row)
                     .or_else(|| registry.row_body_from_store(&session_id, row));
@@ -1627,9 +1247,9 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                         let end = clamp_char(&full, (start + want).min(total));
                         (Some(full[start..end].to_string()), total, start)
                     }
-                    // Nowhere holds it: past the end of the session, or a store this
-                    // daemon cannot reach. `None` rather than an empty string, because
-                    // "nobody has it" and "it is empty" must not look alike.
+                    // Nowhere holds it: past the end of the session, or a store this daemon
+                    // cannot reach. `None` rather than an empty string, because "nobody has it"
+                    // and "it is empty" must not look alike.
                     None => (None, 0, 0),
                 };
                 let f = ServerFrame::RowFetched {
@@ -1661,11 +1281,9 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 items,
                 moved,
             }) => {
-                // **Not gated and not a decision.** The operator's own todo list is their own
-                // authoring, sent to the daemon that keeps the board — the same trust as a prompt.
-                // `moved` is the same act one row over: the state the operator asked for on a row
-                // they did not write, which is a state and never a membership — a head cannot add,
-                // remove or re-author a model's row through this door.
+                // Not gated and not a decision: the operator's own list is their own authoring,
+                // the same trust as a prompt. `moved` is the same act one row over - a state on
+                // a row they did not write, never a membership, so no row is added or reworded.
                 let f = seat.hub.submit(
                     &seat.head_id,
                     client_request_id,
@@ -1686,16 +1304,8 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 );
                 writer.lock().unwrap().write(&f)?;
             }
-            // **Closing ONE session does not go through the command queue either**, for
-            // `Stop`'s reason three arms below: the worker may be inside a turn, and a close
-            // that queued behind one would wait for the very thing it is trying to stop. The
-            // session goes at once — its hub closed, every other head told — and the worker is
-            // rung to let go of the harness, which is the half only it can do
-            // (`Work::Close`).
-            //
-            // The announcement is a `Warning` on THIS session's log, before the hub closes, so
-            // a second head of the same session is not left reading a transcript that has
-            // stopped with no word about why.
+            // Closing ONE session does not go through the command queue either, for `Stop`'s reason:
+            // the worker may be inside a turn.
             Ok(ClientFrame::CloseSession {
                 client_request_id,
                 expected_seq: _,
@@ -1713,10 +1323,8 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                     ),
                     compaction: None,
                 });
-                // **Closed before it is acked**: `--migrate` copies the session the moment it
-                // reads `Accepted`, so the answer has to mean the registry has let go. Acked
-                // first, a busy box let the copy (and the test) see the session still held.
-                // This seat keeps its own hub, so the write below still reaches the head.
+                // Closed before it is acked: `--migrate` copies the session the moment it reads
+                // `Accepted`, so the answer has to mean the rows are already written.
                 let seq = seat.hub.head_seq();
                 registry.close_session(&session);
                 let f = crate::protocol::ServerFrame::Accepted {
@@ -1726,19 +1334,8 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 };
                 writer.lock().unwrap().write(&f)?;
             }
-            // **The stop does NOT go through the command queue**, and that was
-            // the whole of its first version's failure. One worker drains that
-            // queue and a running turn owns it, so a `Stop` submitted mid-turn
-            // sat behind the turn doing nothing — the operator, 2026-09-17:
-            // *"i stopped mid turn and harness kept it running"*. Right, and
-            // the signal path never had that problem: `catch_signals` closes
-            // the REGISTRY from its own thread, and the worker falls out of
-            // `next_command` wherever it happens to be.
-            //
-            // So this rings the same bell from this connection's thread. The
-            // announcement goes first, while the hubs are still open and every
-            // other head can still be reached; then the registry closes and
-            // that is the stop.
+            // The stop does NOT go through the command queue: one worker drains that queue and a
+            // running turn owns it, so a stop queued behind a turn never arrives.
             Ok(ClientFrame::Stop {
                 client_request_id,
                 expected_seq: _,
@@ -1761,15 +1358,11 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                         });
                     }
                 }
-                // **What this stop is about to end is SAID FIRST, before the ack.** The sentence
-                // a head needs is *what the daemon killed*, and the only way it can be overtaken
-                // is to be produced after the kills: MEASURED on a 24-core host, `Bye` 11.7 ms
-                // after the stop while the run was still being killed at 313, and no sentence
-                // ever arrived. So the runs are named here, from the tables that know them
-                // without ending them, and `Registry::close` does not say it again.
+                // What this stop is about to end is SAID FIRST, before the ack: the sentence a head
+                // needs is what the daemon killed, not what it was asked to.
                 registry.announce_runs_ending();
-                // Acked before the close, because after it there is no socket to
-                // ack on and a head waiting for one would wait forever.
+                // Acked before the close, because after it there is no socket to ack on and a
+                // head waiting for one would wait forever.
                 let f = crate::protocol::ServerFrame::Accepted {
                     client_request_id,
                     seq: seat.hub.head_seq(),
@@ -1796,11 +1389,8 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 client_request_id,
                 expected_seq,
             }) => {
-                // Two halves: the flag the `bash` wait loop honours mid-turn, and the
-                // queued command that announces the between-turns case. The flag has
-                // to be set here — the waiter (a turn's bash wait, or the operator's
-                // own run on its thread) is blocked inside the wait it would
-                // otherwise be asked to deliver this to.
+                // Two halves: the flag the `bash` wait loop honours mid-turn, and the queued command
+                // that announces the between-turn interrupt.
                 seat.hub.request_promote_from(&seat.head_id);
                 let f = seat.hub.submit(
                     &seat.head_id,
@@ -1849,12 +1439,8 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 );
                 writer.lock().unwrap().write(&f)?;
             }
-            // **The ASK, and the person's answer to it** (`PROTOCOL_VERSION` 54, B8). Both ride
-            // the command queue like `Mode` does — the worker is the one writer of the session's
-            // state, and the pending request is harness state. What is decided here and nowhere
-            // else: a consent from a head that declared `can_decide: false` is refused at the door
-            // (`Hub::submit`), and the rest of it — was this head ASKED, is the request still
-            // open — is the harness's, because that is where the open request lives.
+            // The ASK and the person's answer to it both ride the command queue like `Mode` does: the
+            // worker is the one writer of a session's transcript.
             Ok(ClientFrame::ModeConfirm {
                 client_request_id,
                 expected_seq,
@@ -1887,15 +1473,8 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 job,
                 offset,
             }) => {
-                // **Answered here and now, off the queue, for the reason `ListJobs` is** — when
-                // the session's host still holds the job. The queue's one reader is the worker,
-                // and the worker is the thread running the turn: a read queued behind a turn
-                // left the pane at `reading…` for as long as the turn ran, over a job the list
-                // beside it said was writing. See `registry::JobOutputSource`.
-                //
-                // Published on the hub exactly as the worker publishes it, so both heads see
-                // the window and the head's handling is unchanged. No `Accepted` is written:
-                // nothing was queued, and the head drops this request's id anyway.
+                // Answered here and now, off the queue, for `ListJobs`'s reason, when the session's
+                // host still holds the job.
                 if let Some(event) = registry.job_output(&seat.hub.session_id(), &job, offset) {
                     seat.hub.publish(event);
                     continue;
@@ -1921,8 +1500,8 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 );
                 writer.lock().unwrap().write(&f)?;
             }
-            // **An operator's mark** (TODO R81): answered HERE, on this thread, and never queued —
-            // the worker may be pinned, and a mark that waits lands on the wrong turn.
+            // An operator's mark: answered HERE, on this thread, and never queued - the worker
+            // may be pinned, and a mark that waits lands on the wrong turn.
             Ok(ClientFrame::Feedback {
                 at_ms,
                 polarity,
@@ -1961,9 +1540,9 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 );
                 writer.lock().unwrap().write(&f)?;
             }
-            // A question's answer, not a permission's (`PROTOCOL_VERSION` 5). Same
-            // command, same `req_id`, different payload — and `Hub::submit` refuses a
-            // malformed one by name rather than letting it settle the question.
+            // A question's answer, not a permission's. Same command, same `req_id`, different
+            // payload - and `Hub::submit` refuses a malformed one by name rather than letting it
+            // settle the question.
             Ok(ClientFrame::AnswerQuestion {
                 client_request_id,
                 req_id,
@@ -1980,9 +1559,9 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 );
                 writer.lock().unwrap().write(&f)?;
             }
-            // **A todo row's question, answered** (`PROTOCOL_VERSION` 47). A command and not a
-            // sink delivery: nothing is blocked waiting for it, and the board it changes is the
-            // worker's (or, mid-turn, the steering poll's).
+            // A todo row's question, answered. A command and not a sink delivery: nothing is
+            // blocked waiting for it, and the board it changes is the worker's (or, mid-turn,
+            // the steering poll's).
             Ok(ClientFrame::AnswerTodo {
                 client_request_id,
                 content,
@@ -2001,28 +1580,17 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 );
                 writer.lock().unwrap().write(&f)?;
             }
-            // **A plugin pane, opened or keyed** (`PROTOCOL_VERSION` 49).
-            //
-            // The daemon half of C4 is the plugin stack's: the layers, the looks and the gate are
-            // discovered per session by the daemon, which installs a [`crate::registry::PaneDriver`]
-            // for each session it opens. Both frames are read here rather than queued because they
-            // are a screen's questions, not the session's acts — the reason `ListJobs` is answered
-            // here and `Slash` is not — and because a pane must answer while a turn owns the
-            // worker. A session with no driver answers nothing, which is what a head draws as the
-            // view it already holds.
-            //
-            // `PaneAction.action` is the stop's `event` word or `"look"`; a pane's `say` never
-            // travels as one (see `ClientFrame::PaneAction`).
+            // A plugin pane, opened or keyed: the daemon half of the stack is the layers, the looks
+            // and the gate, and all three are the harness's.
             Ok(ClientFrame::PaneOpen { pane, w, h }) => {
                 let session_id = seat.hub.session_id();
                 if let Some(driver) = registry.pane_driver(&session_id) {
                     driver.open(&session_id, &seat.hub, &pane, (w, h));
                 }
             }
-            // **The head closed the pane** (`PROTOCOL_VERSION` 51): the daemon drops it from the
-            // refresh clock. Nothing is answered — the head that stopped drawing it is the one
-            // that said so — and a pane this session never had is not an error, the same quiet
-            // `TermClose` keeps.
+            // The head closed the pane: the daemon drops it from the refresh clock. Nothing is
+            // answered - the head that stopped drawing it is the one that said so - and a pane
+            // this session never had is not an error.
             Ok(ClientFrame::PaneClose { pane }) => {
                 let session_id = seat.hub.session_id();
                 if let Some(driver) = registry.pane_driver(&session_id) {
@@ -2037,24 +1605,8 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
             }
             // A head going away is the normal case and says nothing.
             Err(WireError::Eof) => break Ok(()),
-            // **Anything else is said before the connection goes.**
-            //
-            // This read `break Err(e)` and hung up in silence, which is how a
-            // version skew presented: the head sent a frame this daemon had never
-            // heard of, the deserialize failed here, the socket closed, and the
-            // head exited with `the daemon closed the connection` — true, useless,
-            // and identical to a crash. Measured 2026-09-20: `ReadJobOutput` from
-            // a new head to a daemon started twenty-eight minutes before it landed
-            // killed the head on every Enter, with nothing on either screen naming
-            // a version.
-            //
-            // §17-S6's rule is already written down for the ATTACH check a few
-            // hundred lines up — *"a silent version skew looks like a bug in the
-            // other half, forever"* — and it is no less true after ATTACH than
-            // during it. A frame this daemon cannot read is almost always a head
-            // from the future, so the reason says both numbers and what to do.
-            // Best effort: the socket may already be gone, which is why the write
-            // is not `?`.
+            // Anything else is said before the connection goes: hanging up in silence is how a
+            // version skew presents itself.
             Err(e) => {
                 let reason = format!(
                     "this connection sent a frame this daemon could not read ({e}). \
@@ -2077,12 +1629,8 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
     result
 }
 
-/// Attach to `hub`, send the `Hello`, hand over the backlog and start the pump.
-///
-/// The whole of "you are now in this session", in one function, so that the
-/// first attach and a `Switch` cannot drift: a switch that forgot the backlog would
-/// lose exactly the events between the snapshot and the first pumped one, which is
-/// the gap §13.2 spends a page closing.
+/// Attach to `hub`, send the `Hello`, hand over the backlog and start the pump: the whole of
+/// *you are now in this session*, in one place.
 fn seat_in(
     registry: &Arc<Registry>,
     hub: Arc<Hub>,
@@ -2095,24 +1643,8 @@ fn seat_in(
     let a = hub.attach(kind, identity, caps.clone(), since_seq);
     let head_id = a.head_id.clone();
     let session_id = hub.session_id();
-    // **What this session's harness found about its frozen prefix, said NOW.**
-    //
-    // The comparison was made when the harness opened — that is the only moment both
-    // facts are in one place — and the SENTENCE belongs here, because a warning published
-    // before this head arrived is filed by it as `Placed::Before`: listed by `/notes`,
-    // counted by `/status`, and not drawn. A head attaching to a session whose prompt has
-    // moved must be told while it is watching, which is also what the operator asked for
-    // in the words *"the `!` warning lines"*.
-    //
-    // After `attach` and before the pump starts, so the head receives the `Hello`, then
-    // this event — in that order on one socket, from one writer. Nothing is said for a
-    // session no harness has opened (there is no entry to hold a sentence) and nothing is
-    // said when the harness found the prefixes equal, which is every ordinary attach.
-    //
-    // **Said on every attach**, deliberately: the session goes on speaking the old prompt
-    // until somebody re-seats it, so a second head — or the same one tomorrow — is told the
-    // same true thing about the same unchanged state. Silence on the second attach would be
-    // a reader who was not there the first time being told nothing.
+    // What this session's harness found about its frozen prefix, said NOW: the comparison is
+    // made when the harness opens, and this is the one moment to say it.
     if let Some(said) = registry.stale_prefix(&session_id) {
         hub.publish(SessionEvent::Warning {
             code: "prefix_stale".into(),
@@ -2120,19 +1652,8 @@ fn seat_in(
             compaction: None,
         });
     }
-    // **And that this daemon's binary is older than the store it is serving** — the operator's ask
-    // of 2026-10-26, verbatim: *an older binary should keep working when the newer schema only
-    // ADDED things, and must say so in red on the head's usual status line*. The opening half is
-    // `store::floor`'s (the store records the lowest schema a reader may know, so an additive
-    // migration by a newer build does not stop an older daemon); this is the saying half.
-    //
-    // **Every attach, for `prefix_stale`'s reason and more so**: the fact does not expire until
-    // the process is restarted, so a second head, or the same one after a reconnect, is owed the
-    // same true sentence. A head that reconnects across a `Switch` on the same socket is told
-    // again too, which is a repeated true sentence — the direction that costs nothing.
-    //
-    // A daemon that opened a store it may read says `None` here and this publishes nothing, which
-    // is every ordinary attach in this tree.
+    // And that this daemon's binary is older than the store it is serving. The store's floor is
+    // the other half of that, said at the door.
     if let Some(said) = registry.store_older() {
         hub.publish(SessionEvent::Warning {
             code: "store_newer".into(),
@@ -2142,13 +1663,8 @@ fn seat_in(
     }
     {
         let mut w = writer.lock().unwrap();
-        // **A head this daemon registered but could not tell it is here must not stay
-        // registered** (measured, 2026-10-26). The `Hello` and the backlog are the first things a
-        // head is sent, and a head whose socket has already gone — a caller that attached, learned
-        // what it wanted and dropped the connection, which is exactly what a bridge `wait` does —
-        // fails this write. Returning on that error used to leave the head in the hub for ever:
-        // `attached_heads` counted it, nothing would ever detach it, and the `Seat` that owns the
-        // detach had not been built yet. So the write's failure is answered here by hand.
+        // A head this daemon registered but could not tell it is here must not stay registered: the
+        // `Hello` and the backlog go out, and a failure detaches.
         let wrote = w
             .write(&ServerFrame::Hello {
                 protocol_version: PROTOCOL_VERSION,
@@ -2177,11 +1693,8 @@ fn seat_in(
         }
     }
 
-    // **And the panes this session has, so a head that has just arrived has a list with titles
-    // before anybody opens one.** C4 makes a head learn a pane from `SessionEvent::PluginPane`,
-    // and a view is also its title — so the driver asks every pane for its first frame here,
-    // after the `Hello` and the backlog, which puts them on this head's queue in order and on
-    // the log for the next head too. Silent for a session with no layers, which is most of them.
+    // And the panes this session has, so a head that has just arrived has a list with titles
+    // before anybody opens one.
     if let Some(driver) = registry.pane_driver(&session_id) {
         driver.attach(&session_id, &hub);
     }
@@ -2203,11 +1716,8 @@ fn seat_in(
                     };
                     let r = match d {
                         Delivery::Frames(frames) => {
-                            // **Frames that are not the record**: the pane's byte stream.
-                            // See [`Delivery::Frames`] — they are written ahead of the
-                            // events because a screen's repaint must not sit behind a batch
-                            // of deltas, and none of them touches the log, the seq or the
-                            // ack.
+                            // Frames that are not the record: the pane's byte stream. They go ahead of the
+                            // events because a terminal that falls behind is a terminal that is wrong.
                             let mut r = Ok(());
                             for f in frames {
                                 r = w.write(&f);
@@ -2239,9 +1749,8 @@ fn seat_in(
                             scrubbed,
                         }),
                         Delivery::Closed => {
-                            // Two very different things arrive here: the daemon is
-                            // going away, or this head has left for another
-                            // session. Only the first is a `Bye`.
+                            // Two very different things arrive here: the daemon is going away, or
+                            // this head has left for another session. Only the first is a `Bye`.
                             if !switching.load(Ordering::SeqCst) {
                                 let _ = w.write(&ServerFrame::Bye {
                                     reason: "daemon shutting down".into(),
@@ -2266,25 +1775,20 @@ fn seat_in(
     })
 }
 
-/// Detach from the session this seat is in, and stop its pump, without telling the
-/// head the daemon is going away.
+/// Detach from the session this seat is in, and stop its pump, without telling the head the
+/// daemon is going away.
 fn leave(seat: &mut Seat) {
     seat.switching.store(true, Ordering::SeqCst);
-    // `detach` is what wakes the pump: `next_batch` returns `Closed` for a head id
-    // that is no longer registered. Joining before attaching elsewhere is what
-    // keeps the frames on this socket in one order — two pumps writing through one
-    // mutex would interleave the old session's tail into the new one's `Hello`.
+    // `detach` is what wakes the pump: `next_batch` returns `Closed` for a head id that is no
+    // longer registered.
     seat.hub.detach(&seat.head_id);
     if let Some(p) = seat.pump.take() {
         let _ = p.join();
     }
 }
 
-/// A new session id, unique in this registry.
-///
-/// Monotonic wall-clock nanos, which is what `harnessd` already mints for its
-/// first session, with a counter behind it for the case two heads ask in the same
-/// nanosecond.
+/// A new session id, unique in this registry: monotonic wall-clock nanos, with a counter behind
+/// them for the case where the clock does not move.
 fn mint_session_id(registry: &Arc<Registry>) -> String {
     let base = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -2303,17 +1807,8 @@ fn mint_session_id(registry: &Arc<Registry>) -> String {
 mod accept_tests {
     use super::*;
 
-    /// **The errnos that must not take a daemon's ears off.**
-    ///
-    /// This loop read `Err(_) => break` and a daemon paid for it: pid 1023699 on
-    /// 2026-09-20, alive with no `head-accept` thread, no socket among its 26 fds,
-    /// and a socket file on disk with nothing behind it. The trigger was a head
-    /// that died while its connection was still in the backlog — `ECONNABORTED`,
-    /// the most ordinary accept error there is.
-    ///
-    /// Asserted as a classification rather than through a real `accept`, because
-    /// making a listener return `EMFILE` on demand means exhausting the process's
-    /// descriptors and that is a test which breaks whatever runs beside it.
+    /// The errnos that must not take a daemon's ears off: `ECONNABORTED` is the most ordinary accept
+    /// error there is.
     #[test]
     fn an_aborted_client_and_a_full_table_are_both_retryable() {
         for (kind, why) in [

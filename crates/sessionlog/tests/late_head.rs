@@ -1,19 +1,6 @@
-//! A late head attaching mid-turn, over a real socket, against a live producer.
-//!
-//! This is the case where §13.2b's mechanics either work or do not. Every one of
-//! them is reachable from here:
-//!
-//! - snapshot and register under one lock → **not one byte missing, not one twice**
-//! - non-blocking fan-out → the producer's rate does not depend on the head's
-//! - bounded queue → a head that stops reading is demoted, and told
-//! - idle is quiet → detaching every head mid-turn changes nothing
-//! - scrub as projection → a settled decision is never re-asked
-//! - ack after render → a head that dies unacked gets duplicates, never a gap
-//!
-//! The reconstruction assertion is the sharp one: `snapshot.turn.text` plus every
-//! `Delta` that follows must equal, **exactly**, what the producer emitted. A gap
-//! at the attach boundary loses a byte; an overlap repeats one. *"The missing byte
-//! is usually the prompt."*
+//! A late head attaching mid-turn over a real socket, against a live producer.
+//! The sharp assertion is that the snapshot's text plus every `Delta` after it equals
+//! what the producer emitted: a gap at the boundary loses a byte, an overlap repeats one.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Barrier};
@@ -75,7 +62,6 @@ fn produce(hub: Arc<Hub>, go: Arc<Barrier>) -> std::thread::JoinHandle<()> {
 }
 
 /// Attach over the socket and read to the sentinel, reconstructing the text.
-///
 /// Returns `(text, dropped, resyncs)`.
 fn read_to_end(path: &std::path::Path, since: u64) -> (String, u64, usize) {
     let (mut client, hello, reader) = HeadClient::attach(
@@ -361,22 +347,9 @@ fn a_reattaching_head_is_never_re_asked_a_settled_question() {
     server.shutdown();
 }
 
-/// **A differing protocol version is SERVED, not refused** — the reversal of the gate this
-/// file used to pin.
-///
-/// The operator lost a 17-day-old daemon to a bare `Bye` while a *newer* head stood there
-/// unable to read the conversation its warm KV cost minutes to rebuild, and ruled: *"so
-/// ideally it would be like - connect, look around and make informed decision"*. Both
-/// directions are asserted, because the ruling is not about one of them: a head from the
-/// future (`+99`) and a head from the past (the operator's own case — a head speaking 22
-/// against this daemon's 36) are both seated, and the `Hello` each gets states **this
-/// daemon's** version, which is the fact the head's own informed decision is made from.
-/// The daemon's loudness for a skew is its stderr record at the attach, and the louder
-/// guard — the `Bye` naming both builds when a frame genuinely cannot be read — is the
-/// read loop's, unchanged and further down this file.
-///
-/// "Serves" is asserted, not implied: a read the oldest head and the newest daemon share
-/// (`ListSessions`, protocol 2) is asked on the skewed connection and answered on it.
+/// A differing protocol version is served, not refused, in both directions: the `Hello`
+/// states this daemon's version so the head can decide for itself, and a read both sides
+/// speak is answered on the skewed connection. Refusing would strand a warm conversation.
 #[test]
 fn a_version_mismatch_is_served_not_refused() {
     let (_hub, server) = start("version");
@@ -457,11 +430,9 @@ fn a_head_that_falls_behind_is_demoted_and_told_where_it_now_is() {
     }
 }
 
-/// A peek reads another session's scrollback and leaves the connection where it
-/// was. Those two facts are the whole feature: the child's events arrive as the
-/// answer, and the parent's next event arrives after them on the same stream —
-/// no `Hello`, no rebuild, no window in which this head is attached to the
-/// wrong session.
+/// A peek reads another session's scrollback and leaves the connection where it was: the
+/// child's events arrive as the answer and the parent's next event arrives after them on the
+/// same stream, so there is no window in which this head is attached to the wrong session.
 #[test]
 fn a_peek_reads_another_session_without_moving_the_head() {
     let registry = Registry::new();
@@ -498,9 +469,8 @@ fn a_peek_reads_another_session_without_moving_the_head() {
 
     w.write(&ClientFrame::Peek {
         session_id: "s-child".into(),
-        // **The default, spelled.** This test is about the ring, and it is also the assertion
-        // that the default shape really is `Events`: a head that asks for nothing keeps getting
-        // exactly what it always got, which is what makes the rows field additive.
+        // The default, spelled: a head that asks for nothing gets events, which is what
+        // makes the rows field additive.
         shape: PeekShape::Events,
     })
     .expect("peek");
@@ -537,30 +507,9 @@ fn a_peek_reads_another_session_without_moving_the_head() {
     ));
 }
 
-/// **The other shape a peek can answer with: the session's own ROWS** — and it is the operator's
-/// correction of 2026-10-03 that made it exist: *"yes subagents are not even scratch session they
-/// are session, just sub sessions."*
-///
-/// # Why the ring was not enough, in one line
-///
-/// [`ServerFrame::Peeked`]'s own docstring is what forced the second renderer: the events it
-/// returns are *"for reading, not for folding into the head's state"* — so a head could do nothing
-/// with them but **draw them by hand**, and that hand-written plain-string renderer is
-/// `sub_out_lines` in letibot and `subagent-out-lines` in leticl. A child is a session, so it can
-/// be asked for what an attach returns: rows, with their bodies. Both heads then draw it with the
-/// renderer they already have and **delete** their copy of the other one.
-///
-/// # The three properties, and each one is a way this could be wrong
-///
-/// * **The rows are the CHILD's.** A peek that answered with the caller's own session would be the
-///   same frame with the wrong contents, which is the one failure a head cannot detect.
-/// * **The rows carry the BODY.** That is the whole reason for the shape: the ring carries an
-///   announcement with no text and a content event beside it, and a snapshot's row carries the
-///   text. This asserts the text, because a row without its body is the defect wearing the fix's
-///   frame name.
-/// * **The two shapes are alternatives, not a pair.** Sending both would put one session on the
-///   wire twice and leave a head free to draw it twice — and it would cost the snapshot's bytes on
-///   every peek that only wanted the ring.
+/// A peek can answer with the session's own rows instead of its event ring. The rows must be
+/// the CHILD's - the caller's own would be a frame with undetectable wrong contents - and must
+/// carry their bodies, or the answer is the announcement the ring already had. Never both.
 #[test]
 fn a_peek_can_ask_for_rows_and_gets_the_session_it_names() {
     let registry = Registry::new();
@@ -570,7 +519,7 @@ fn a_peek_can_ask_for_rows_and_gets_the_session_it_names() {
         .expect("create");
     let child = registry.create("s-child", "child", wiring).expect("create");
     child.publish(turn_started("t2"));
-    // A row, announced and then given its body — the same two steps the daemon performs.
+    // A row, announced and then given its body - the same two steps the daemon performs.
     child.publish(appended("s-child.0", "user"));
     child.publish(content("s-child.0", "a child's own words"));
 
@@ -624,7 +573,7 @@ fn a_peek_can_ask_for_rows_and_gets_the_session_it_names() {
                 .iter()
                 .find(|it| it.item_id == "s-child.0")
                 .expect("the child's own row is in the child's snapshot");
-            // **The body**, which is the one thing this shape exists to deliver.
+            // The body, which is the one thing this shape exists to deliver.
             let text = match row.item.as_ref() {
                 Some(letibot_transcript::TranscriptItem::User { parts, .. }) => parts
                     .iter()
@@ -652,9 +601,9 @@ fn a_peek_can_ask_for_rows_and_gets_the_session_it_names() {
     ));
 }
 
-/// A peek at a session this daemon does not hold is a Rejected naming it —
-/// never an empty `Peeked`, which would read as "this subagent said nothing",
-/// a lie in exactly the voice the operator cannot distinguish from the truth.
+/// A peek at a session this daemon does not hold is a Rejected naming it, never an empty
+/// `Peeked` - which would read as "this subagent said nothing", a lie in the voice nobody can
+/// tell from the truth.
 #[test]
 fn a_peek_at_an_unknown_session_is_rejected_by_name() {
     let registry = Registry::new();
@@ -697,9 +646,9 @@ fn a_peek_at_an_unknown_session_is_rejected_by_name() {
     }
 }
 
-/// A head asks for the settings its session runs under and gets what the
-/// harness last published — and nothing, honestly, for a session whose harness
-/// has not published yet. The connection does not move either way.
+/// A head asks for the settings its session runs under and gets what the harness last
+/// published - and nothing, honestly, for a session whose harness has not published yet.
+/// The connection does not move either way.
 #[test]
 fn settings_are_answered_from_what_the_harness_published() {
     let registry = Registry::new();

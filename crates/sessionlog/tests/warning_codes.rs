@@ -1,42 +1,6 @@
-//! **R19's guard: every warning code in this tree has been given a severity.**
-//!
-//! `head-parity-2026-09-21.md` **R19**, the operator's ruling of 2026-09-22, second
-//! fault: *routine is painted as failure* — `compacted` and `auto_compact` arriving in
-//! the same red as a denial. The split lives in [`letibot_sessionlog::warning`], and this
-//! is what keeps it from rotting: **it reads this tree**, finds every warning code in it,
-//! and fails until each one has a row in the table.
-//!
-//! It is the instrument §11.5 ruled for the other table that had this shape (*leave the
-//! copy; point the GUARD at the thing it guards*) — one head's fence-token table was a
-//! copy of `rano`'s, and the test guarding the copy restated it a third time, so the
-//! drift it existed to catch was exactly the one it could not see.
-//!
-//! # What the scan can see, and what it cannot
-//!
-//! It finds two shapes, which between them are every code that is *named at its emission
-//! site*:
-//!
-//! * `Warning { code: "…" }` and `Warned { code: "…" }` — including a `code:` whose value
-//!   is an `if`/`else`, which is how the daemon says `slash` and `slash_refused` from one
-//!   call site;
-//! * `import_note("…", …)` — the import's one writer, whose codes are arguments rather
-//!   than an initialiser.
-//!
-//! **It cannot see a code that reaches the wire through a variable**, and there are four
-//! in this tree: the turn engine's guards (`code: trip.code`), the prefix check
-//! (`code` from `check.warning()`), and the `Trip` literals those come from. That is
-//! stated in [`letibot_sessionlog::warning`]'s own doc as the reason its table defaults an
-//! unknown code to `Failure`, and it is the reason this test asserts only one direction:
-//! every code it can see is classified, not every classified code is visible.
-//!
-//! # Two vacuity guards
-//!
-//! A scan that found nothing would pass the assertion above every time, and a scan is
-//! exactly the kind of instrument that quietly rots when a file moves. So the test also
-//! asserts a floor on how many codes it found, and that it saw a named few — one from each
-//! shape, and one from each of the three crates that emit. Falsified by hand while it was
-//! written: adding `("not_a_code", Class::Routine)` to the table changes nothing, and
-//! **removing a row makes it fail** — which is the direction that matters.
+//! Every warning code named in this tree has a severity, and this test keeps the table from
+//! rotting: it reads the tree, finds each code named at its emission site and fails until it has a
+//! row. A code reaching the wire through a variable is invisible, so only one direction is asserted.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -45,8 +9,8 @@ fn is_ident_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
 
-/// **The shape every code in this tree has.** Lowercase words joined by underscores;
-/// `guard.empty` is the one with a dot, and it is why a dot is allowed.
+/// The shape every code in this tree has: lowercase words joined by underscores, with a dot
+/// allowed because `guard.empty` has one.
 fn looks_like_a_code(s: &str) -> bool {
     !s.is_empty()
         && s.starts_with(|c: char| c.is_ascii_lowercase())
@@ -72,9 +36,8 @@ fn past_string(b: &[u8], i: usize) -> usize {
     b.len()
 }
 
-/// Skip a `//` comment or a `/* … */` block, returning where the scanner resumes.
-/// `None` when this is not a comment. Bytes only: the scanner walks byte by byte and a
-/// multi-byte character in a doc comment must not be sliced through.
+/// Skip a `//` comment or a `/* ... */` block, returning where the scanner resumes, or `None` when
+/// this is not a comment. Bytes only: a multi-byte character in a doc comment must not be sliced.
 fn past_comment(b: &[u8], i: usize) -> Option<usize> {
     if b[i] != b'/' {
         return None;
@@ -101,13 +64,9 @@ fn past_comment(b: &[u8], i: usize) -> Option<usize> {
     }
 }
 
-/// **The value of every `code:` key inside one `{ … }` literal**, whose opening brace is
-/// at `open`.
-///
-/// A `code:` expression ends at the first comma at the depth the key was found, so an
-/// `if`/`else` is one expression and its two strings are both codes — while a `detail:`
-/// after that comma is not scanned, which is what keeps a sentence like `"off"` (there is
-/// one in `auto_compact_skipped`) out of the answer.
+/// The value of every `code:` key inside one `{ ... }` literal whose opening brace is at `open`.
+/// A `code:` expression ends at the first comma at the depth the key was found, so an `if`/`else`
+/// is one expression and both its strings are codes, while a `detail:` after that comma is not.
 fn codes_in_literal(src: &str, open: usize) -> Vec<String> {
     let b = src.as_bytes();
     let mut out = Vec::new();
@@ -145,8 +104,8 @@ fn codes_in_literal(src: &str, open: usize) -> Vec<String> {
                 }
             }
             b':' => {
-                // The four bytes before the colon spell `code`, and the one before them
-                // is a struct literal's separator — not `.code:` and not `::code:`.
+                // The four bytes before the colon spell `code`, and the one before them is a
+                // struct literal's separator - not `.code:` and not `::code:`.
                 let field = i >= 5
                     && &b[i - 4..i] == b"code"
                     && matches!(b[i - 5], b' ' | b'\t' | b'\n' | b'{' | b',' | b'(');
@@ -161,7 +120,7 @@ fn codes_in_literal(src: &str, open: usize) -> Vec<String> {
     out
 }
 
-/// **Every warning code this file names.** See the module doc for the two shapes.
+/// Every warning code in one file's source; the module doc names the two shapes.
 fn codes_in(src: &str) -> Vec<String> {
     let b = src.as_bytes();
     let mut out = Vec::new();
@@ -175,10 +134,9 @@ fn codes_in(src: &str) -> Vec<String> {
             i = past_string(b, i);
             continue;
         }
-        // An identifier boundary on the left: `Self::Warning` is a site, and the tail of
-        // a longer name is not. A dot is deliberately **not** excluded — `warning` is not
-        // a method name here, and `self.import_note("…")` is one of the two shapes this
-        // scan exists to find.
+        // An identifier boundary on the left: `Self::Warning` is a site and the tail of a longer
+        // name is not. A dot is deliberately not excluded, because `self.import_note("...")` is one
+        // of the two shapes this scan exists to find.
         let prev = if i == 0 { b' ' } else { b[i - 1] };
         if is_ident_byte(prev) {
             i += 1;
@@ -190,8 +148,8 @@ fn codes_in(src: &str) -> Vec<String> {
                 continue;
             };
             if kw == b"import_note" {
-                // `import_note("code", detail)` — the import's one writer, whose codes
-                // are arguments and never an initialiser.
+                // `import_note("code", detail)` - the import's one writer, whose codes are
+                // arguments and never an initialiser.
                 let skip = |s: &[u8]| s.iter().position(|c| !matches!(c, b' ' | b'\t' | b'\n'));
                 let Some(at) = skip(tail) else { continue };
                 let Some(after) = tail[at..].strip_prefix(b"(") else {
@@ -211,7 +169,7 @@ fn codes_in(src: &str) -> Vec<String> {
                 }
                 break;
             }
-            // `Warning { … }` / `Warned { … }`
+            // `Warning { ... }` / `Warned { ... }`
             let skip = |s: &[u8]| s.iter().position(|c| !matches!(c, b' ' | b'\t' | b'\n'));
             let Some(at) = skip(tail) else { continue };
             if tail[at..].first() != Some(&b'{') {
@@ -240,7 +198,7 @@ fn sources(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// **Every warning code named anywhere in this tree has a severity.**
+/// Every warning code named anywhere in this tree has a severity.
 #[test]
 fn every_warning_code_in_the_tree_is_classified() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -254,7 +212,7 @@ fn every_warning_code_in_the_tree_is_classified() {
     sources(&crates, &mut files);
     assert!(files.len() > 100, "{} source files", files.len());
 
-    // Code → the files it was found in, for a failure that says where to look.
+    // Code -> the files it was found in, for a failure that says where to look.
     let mut found: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for path in &files {
         let Ok(text) = std::fs::read_to_string(path) else {
@@ -273,8 +231,8 @@ fn every_warning_code_in_the_tree_is_classified() {
         }
     }
 
-    // **The vacuity guards.** A scan is the kind of instrument that rots silently when a
-    // file moves, and a scan that found nothing passes everything below.
+    // The vacuity guards: a scan rots silently when a file moves, and a scan that found nothing
+    // passes everything below.
     assert!(
         found.len() > 50,
         "the scan found {} codes, which is too few to be this tree — the scan is broken, \
@@ -284,13 +242,13 @@ fn every_warning_code_in_the_tree_is_classified() {
     for must in [
         // A code the operator was met by.
         "compacted",
-        // …the other one, from a different crate and a different site.
+        // ...the other one, from a different crate and a different site.
         "daemon_stopping",
-        // …a `Warned { }` rather than a `Warning { }`, which is the head's own.
+        // ...a `Warned { }` rather than a `Warning { }`, which is the head's own.
         "log_gap",
-        // …a `code:` whose value is an `if`/`else`.
+        // ...a `code:` whose value is an `if`/`else`.
         "slash_refused",
-        // …and the import's writer, which is the second shape.
+        // ...and the import's writer, which is the second shape.
         "import_failed",
     ] {
         assert!(

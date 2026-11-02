@@ -1,18 +1,6 @@
-//! **Closing one session, and the daemon staying up** — `ClientFrame::CloseSession`
-//! (`PROTOCOL_VERSION` 53), which a migration sends before it copies a conversation to
-//! another machine (`docs/remote-hosts.md` RH4).
-//!
-//! What this pins is the difference between the three verbs a person can reach for here, and
-//! each of them was wrong for the job: `Stop` ends the DAEMON and every session in it, a
-//! detach leaves the session open and still acting, and an interrupt ends a turn and nothing
-//! else. A close is *this session, gone, and the daemon still serving the rest* — so the test
-//! holds TWO sessions and asserts that the one that was not closed is still there.
-//!
-//! The second half is the ring: the session is out of the registry by the time the worker is
-//! told (that is what stops anything appending), so [`Work::Close`] is the one work item that
-//! must NOT be filtered for *the registry no longer holds it* — the harness, its backend and
-//! its children are the worker's, and dropping the ring would keep them for the life of the
-//! daemon.
+//! A close is one session gone while the daemon keeps serving the rest - the test holds two and
+//! asserts the other survives. [`Work::Close`] is the one ring item not filtered for *the registry
+//! no longer holds it*: dropping it would hold the harness for the daemon's life.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -100,10 +88,9 @@ fn closing_one_session_leaves_the_others_and_rings_the_worker_to_let_go() {
          frame that took them with it would be `Stop` wearing a different name"
     );
 
-    // And the worker is told to drop the harness, which is the half only it can do.
-    // **Other work may come first**: the session that stays can be opened or woken before the
-    // close reaches the worker, and under a loaded gate it was (2026-10-26). What matters is that
-    // the close arrives, for the closed session, before the deadline.
+    // And the worker is told to drop the harness, which is the half only it can do. Other work
+    // may come first - the session that stays can be opened or woken before the close reaches the
+    // worker - so what matters is that the close arrives before the deadline.
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         match registry.next_work_until(Some(deadline)) {

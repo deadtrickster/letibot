@@ -351,12 +351,9 @@ pub fn one_of_each() -> Vec<SessionEvent> {
     ]
 }
 
-/// A realistic session: a user turn, reasoning, a tool call gated by a decision,
-/// and an answer with markdown in it.
-///
-/// The text is deliberately long enough and blocky enough to exercise §13.3's
-/// incremental lexer — several paragraphs, a fenced code block, a list — and it is
-/// emitted as small deltas, which is how it arrives from the engine.
+/// A realistic session: a user turn, reasoning, a tool call gated by a decision, and an answer
+/// with markdown in it — long and blocky enough to exercise §13.3's incremental lexer, emitted
+/// as small deltas, which is how it arrives from the engine.
 pub fn recorded_session() -> Vec<SessionEvent> {
     let mut out = vec![
         appended("s.0", "system"),
@@ -385,17 +382,9 @@ pub fn recorded_session() -> Vec<SessionEvent> {
         access: "read".into(),
     });
     out.push(tool_progress("c1", "40 of 276 lines"));
-    // The assistant row that MADE the call, appended before the row that answers
-    // it — which is what the daemon does (`harnessd::harness` appends the
-    // assistant item, invokes the round, then appends its results) and what the
-    // store holds for every real session.
-    //
-    // It was missing, and it is the row a head reads a settled call's display
-    // target out of: the arguments live on it and nowhere else once the proposal
-    // event has gone by. So `--demo` — the fixture people look at to decide
-    // whether the head is any good — rendered `▸ Read (c1)`, demonstrating the
-    // thing §4.1 fixed as though it had not been. A fixture missing a row the real
-    // producer always emits is a fixture that exercises a head nobody runs.
+    // The assistant row that MADE the call, appended before the row that answers it — which is
+    // what the daemon does and what the store holds for every real session. It is also the row a
+    // head reads a settled call's display target out of: the arguments live on it and nowhere else.
     out.push(appended("s.2", "assistant"));
     out.push(SessionEvent::ToolFinished {
         turn_id: "s#1".into(),
@@ -521,27 +510,9 @@ behaviour on a hybrid model, which is a measurement of llama.cpp and not a
 violation of the invariant.
 ";
 
-/// **Where a test's scratch directory goes**: the system temp dir — reached through a short path
-/// when the temp dir's own is long, and on macOS `/tmp`.
-///
-/// A Unix socket's path has to fit `sockaddr_un.sun_path`: 104 bytes on macOS, 108 on Linux. On
-/// macOS `std::env::temp_dir()` is the per-user `/var/folders/…/T/`, about fifty of those bytes
-/// before a test has named anything, so a scratch dir with a pid and a timestamp in it and a
-/// `harnessd.sock` inside runs past the limit and `bind` refuses it — a test that passes on Linux
-/// and fails on a Mac for a reason that has nothing to do with what it tests. The same length
-/// pushes a path drawn in a pane past the pane's width. `/tmp` is short on both counts.
-///
-/// **Linux has the same failure under a long `TMPDIR`.** MEASURED 2026-10-14: with `TMPDIR` a
-/// 41-byte directory in `$HOME`, eight tests across `restart_seats`, `sudo_ask_live` and
-/// `stop_force` failed `path must be shorter than SUN_LEN`, and with `TMPDIR` inside a worktree
-/// another run counted about sixty. Which tests fail depends only on how long each one's tag is,
-/// so a per-test fix is a list that is never finished. So when the temp dir's path is longer
-/// than [`SHORT_ROOT`] bytes, this returns `/tmp/lbt-<pid>`, a symlink to it: every scratch path
-/// is short, and every file still lands where `TMPDIR` put it — a `TMPDIR` on disk is usually
-/// there to keep a test run's files out of a RAM-backed `/tmp`, and moving them back would undo
-/// the reason it was set. One link per process; links whose process is gone are removed when
-/// the next one is made (symlinks of exactly that name only). Under the default `/tmp` nothing
-/// changes.
+/// **Where a test's scratch directory goes**: the system temp dir, reached through a short path
+/// when the temp dir's own is long. A Unix socket's path has to fit `sun_path` (104 bytes on
+/// macOS, 108 on Linux), and `TMPDIR` on a Mac is ~50 of those before a test has named anything.
 pub fn scratch_root() -> std::path::PathBuf {
     #[cfg(target_os = "macos")]
     {
@@ -588,22 +559,8 @@ fn short_alias_at(temp: std::path::PathBuf, link: &str) -> std::path::PathBuf {
 }
 
 /// **Where a test binds `dir`'s socket**: `dir/<name>` when that fits `sun_path`, otherwise the
-/// same file reached through a short symlink in `/tmp`.
-///
-/// [`scratch_root`] is the system temp dir, and a test's scratch dir name carries a tag, a pid
-/// and a nanosecond clock. Under the default `/tmp` that leaves room for `harnessd.sock`; under
-/// `TMPDIR=$HOME/.cache/letibot-test-tmp-…` it does not. MEASURED 2026-10-14 with a 41-byte
-/// `TMPDIR`: `restart_seats`, `sudo_ask_live` and `tui`'s `stop_force` all failed binding
-/// (`path must be shorter than SUN_LEN`), for a reason that has nothing to do with what they
-/// test. The limit is the KERNEL's — 108 bytes with the NUL on Linux, 104 on macOS — so the
-/// product refusing such a path is correct, and the fix belongs here.
-///
-/// The symlink keeps the scratch dir where `TMPDIR` put it: `/tmp/letibot-sk-<pid>-<n>` points
-/// at `dir`, the socket is bound through it, and the socket file itself lands in `dir` and goes
-/// when `dir` does. Only the dangling link is left, a few bytes; each call removes the links of
-/// processes that no longer exist (Linux, by `/proc`; elsewhere they stay rather than guess).
-/// [`scratch_root`] already keeps the common case short; this covers a dir made elsewhere and a
-/// socket name longer than `harnessd.sock`.
+/// same file reached through a short symlink in `/tmp`. The limit is the kernel's, so the product
+/// refusing such a path is correct and the fix belongs here.
 pub fn socket_path(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
     use std::os::unix::ffi::OsStrExt;
     // sun_path minus its NUL: 104 on macOS, 108 on Linux.

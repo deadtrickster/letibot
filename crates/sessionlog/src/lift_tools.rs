@@ -1,16 +1,13 @@
-//! The tool runtime's events, lifted into §4.5's enum.
+//! The tool runtime's events, lifted into [`SessionEvent`].
 //!
-//! The same shape as [`crate::lift`] and for the same reason: `letibot-tools`
-//! defines the three lifecycle events it emits, this crate defines what a head
-//! sees, and exactly one object knows both. Keeping the runtime free of the log
-//! is what lets `cargo build -p letibot-tools` prove that a tool cannot reach a
-//! head, a socket or a model.
+//! The same shape as [`crate::lift`] and for the same reason: `letibot-tools` defines the three
+//! lifecycle events it emits, this crate defines what a head sees, and exactly one object knows
+//! both. Keeping the runtime free of the log is what lets `cargo build -p letibot-tools` prove that
+//! a tool cannot reach a head, a socket or a model.
 //!
-//! **This mapping is total and lossless**, which was not true before W9: the
-//! fields it needs are the fields §4.5's `…` did not name, and they were added to
-//! [`crate::event::SessionEvent`] rather than dropped here. A lift that silently
-//! discards a field is how a head ends up unable to show something the runtime
-//! knew.
+//! The mapping is total and lossless: where a field was needed the event grew one, rather than
+//! dropping it here, because a lift that silently discards a field leaves a head unable to show
+//! something the runtime knew.
 
 use letibot_tools::events::{ToolEvent, ToolEventSink};
 
@@ -60,11 +57,9 @@ pub fn from_tool_event(e: ToolEvent) -> SessionEvent {
             full_bytes,
             spill,
             repairs,
-            // One type on both sides now: the runtime's excerpt *is*
-            // `letibot_transcript::ToolEditExcerpt`, and the event enum
-            // depends on transcript, not on `tools`, so the lift is the
-            // value itself. The old field-by-field map was how two copies
-            // of the struct stayed in step; there is one copy now.
+            // One type on both sides: the runtime's excerpt is
+            // `letibot_transcript::ToolEditExcerpt`, and the event enum depends on transcript, not
+            // on `tools`, so the lift is the value itself rather than a field-by-field copy.
             edit,
         },
     }
@@ -101,9 +96,9 @@ mod tests {
 
     #[test]
     fn a_real_call_reaches_a_head_with_everything_the_runtime_knew() {
-        // Not a hand-built event: a real `read` of a large file, spilled, through
-        // the real runtime — so the mapping is tested against what is actually
-        // emitted rather than against what this file assumes is emitted.
+        // Not a hand-built event: a real `read` of a large file, spilled, through the real runtime -
+        // so the mapping is tested against what is actually emitted rather than against what this
+        // file assumes is emitted.
         let hub = Hub::new("s");
         hub.publish(SessionEvent::TurnStarted {
             turn_id: "t1".into(),

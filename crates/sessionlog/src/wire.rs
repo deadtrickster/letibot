@@ -1,16 +1,12 @@
 //! Newline-delimited JSON over any `Read`/`Write`.
 //!
-//! §13.4 requires the remote head to speak *"the same frames as the socket"*. The
-//! way to make that true rather than aspirational is for the framing to know
-//! nothing about the transport: a Unix socket, a TCP stream and a WebSocket text
-//! channel are all a `Read` and a `Write` here.
+//! The framing knows nothing about the transport, which is what makes the remote head speak the
+//! same frames as the socket: a Unix socket, a TCP stream and a WebSocket text channel are all a
+//! `Read` and a `Write` here.
 //!
-//! NDJSON rather than a length-prefixed binary encoding, for one reason that is not
-//! taste: a session log is the thing an operator reads when something went wrong,
-//! and `nc -U` plus `jq` beats a decoder you have to build first. The control
-//! channel (§3.3, W15) is where the binary encoding belongs, because that one is on
-//! the hot path and this one is not — a head's traffic is bounded by what a human
-//! can read.
+//! NDJSON rather than a length-prefixed binary encoding because a session log is what an operator
+//! reads when something went wrong, and `nc -U` plus `jq` beats a decoder you have to build first.
+//! The control channel is where the binary encoding belongs: that one is on the hot path.
 
 use std::io::{BufRead, BufReader, Read, Write};
 
@@ -27,7 +23,7 @@ pub enum WireError {
         line: String,
         detail: String,
     },
-    /// The peer closed. Not an error in itself — for a head, this is detach.
+    /// The peer closed. Not an error in itself: for a head, this is detach.
     Eof,
 }
 
@@ -85,9 +81,9 @@ impl<R: Read> FrameReader<R> {
     }
 }
 
-/// Frame writer. Flushes every frame: a head that renders in real time cannot wait
-/// for a buffer to fill, and this is exactly the mistake §8.5's server-warming rule
-/// is written against on the other side of the connection.
+/// Frame writer. Flushes every frame: a head that renders in real time cannot wait for a buffer to
+/// fill, and a client left waiting on an unflushed frame is the same defect as a server that warms
+/// up in silence.
 pub struct FrameWriter<W: Write> {
     inner: W,
     buf: Vec<u8>,

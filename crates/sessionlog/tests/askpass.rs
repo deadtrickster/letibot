@@ -1,6 +1,6 @@
 //! `sudo` wants a password: the helper asks on its own connection, every head is
 //! shown the request, one head answers, the helper gets the secret and nothing
-//! else does — not the log, not the view, not the other head.
+//! else does - not the log, not the view, not the other head.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -77,8 +77,8 @@ fn the_secret_reaches_the_helper_and_nothing_else() {
         })
     });
 
-    // The head sees the request — with the command and the prompt, without any
-    // secret — and answers.
+    // The head sees the request - with the command and the prompt, without any
+    // secret - and answers.
     let req_id = wait_for(&mut head_reader, |f| match f {
         ServerFrame::Event(env) => match &env.event {
             SessionEvent::SecretRequested {

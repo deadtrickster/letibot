@@ -1,21 +1,17 @@
 //! The append-only event log: monotonic `seq`, bounded scrollback, and a `dropped`
 //! count that is **present and zero** rather than absent.
 //!
-//! §13.2 makes the log authoritative state. §13.2b makes the boundedness a
-//! disclosure: *"an absent field and a zero field must not look the same when the
-//! field is the disclosure"*. So `dropped` is a `u64` on every `Hello`, and the
-//! serialiser is forbidden from eliding it — there is a test.
+//! An absent field and a zero field must not look the same when the field is the
+//! disclosure, so `dropped` is a `u64` on every `Hello` and the serialiser is
+//! forbidden from eliding it - there is a test.
 
 use std::collections::VecDeque;
 
 use crate::event::{Envelope, SessionEvent, now_ms};
 
-/// How much scrollback to keep, and when a gap is too big to replay.
-///
-/// §13.2's numbers: *"if the gap exceeds a bound (default 5,000 events or 4 MiB)
-/// the daemon answers `RESYNC`"*. Kept as configuration rather than as constants
-/// because §13.3's matching rule — the head's buffer size — is configurable too,
-/// and a bound you cannot move is a bound somebody reimplements next to yours.
+/// How much scrollback to keep, and when a gap is too big to replay: past these
+/// bounds the daemon answers RESYNC. Configuration rather than constants, because the
+/// head's own buffer size is configurable too.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LogBounds {
     /// Events retained. Older ones are dropped and counted.
@@ -64,18 +60,9 @@ pub struct SessionLog {
     head_seq: u64,
     /// How many events have fallen off the back. Present and zero, always.
     dropped: u64,
-    /// **A scratch buffer for measuring an event's serialised size.**
-    ///
-    /// `append` needs the byte length of the event as JSON — it is the unit the retention bounds
-    /// are kept in — and it used to get it from `serde_json::to_string(&env)`, which builds the
-    /// whole JSON as a `String` and throws it away. That is once per event, and one event is one
-    /// token on the wire path, so it was a full re-serialisation of every event purely to count
-    /// its characters.
-    ///
-    /// A `Vec<u8>` on the log rather than a local, so its capacity survives from event to event:
-    /// `to_writer` into it and take `.len()`. The bytes were never read before and still are not —
-    /// what is wanted is the length, and the encoding work is unavoidable because the length *is*
-    /// the encoded length. What is avoidable is allocating the string.
+    /// **A scratch buffer for measuring an event's serialised size.** `append` needs the
+    /// encoded length, and a `Vec<u8>` on the log keeps its capacity from event to event:
+    /// `to_writer` into it and take `.len()`, rather than building a `String` and dropping it.
     size_scratch: Vec<u8>,
 }
 
@@ -124,10 +111,8 @@ impl SessionLog {
         self.dropped
     }
 
-    /// `ts` of the newest retained event, or `0` when nothing has been appended.
-    ///
-    /// The log's own clock, not a wall clock in whoever asks — a session list read
-    /// from a recorded log must sort the same way it did live.
+    /// `ts` of the newest retained event, or `0` when nothing has been appended. The log's
+    /// own clock, not the caller's wall clock, so a recorded log sorts as it did live.
     pub fn last_ts(&self) -> u64 {
         self.ring.back().map(|r| r.env.ts).unwrap_or(0)
     }
@@ -141,13 +126,9 @@ impl SessionLog {
             ts: now_ms(),
             event,
         };
-        // Serialised size is what the *gap* bound is measured in, so measuring the
-        // retention bound the same way keeps one unit in the type.
-        //
-        // **Into the scratch buffer, not into a new `String`.** `to_string` built the whole JSON
-        // once per event and dropped it; `to_writer` into a reused buffer is the same encode and
-        // the same length with no allocation after the first few events have sized it. `clear()`
-        // keeps the capacity, which is what makes the steady state free.
+        // Serialised size is what the *gap* bound is measured in, so measure retention
+        // the same way. Into the scratch buffer, not a new `String`: `clear()` keeps the
+        // capacity, which is what makes the steady state free.
         self.size_scratch.clear();
         let bytes = serde_json::to_writer(&mut self.size_scratch, &env)
             .map(|()| self.size_scratch.len())
@@ -172,12 +153,9 @@ impl SessionLog {
         }
     }
 
-    /// Events with `seq > since`, and whether the whole gap could be served.
-    ///
-    /// Returns `None` when the gap cannot be honoured — either it runs off the back
-    /// of the scrollback, or it exceeds §13.2's bound. **Resync is a normal
-    /// outcome, never an error**, so the caller's job on `None` is to take a fresh
-    /// snapshot, not to report a failure.
+    /// Events with `seq > since`, and whether the whole gap could be served. `None` when
+    /// the gap runs off the scrollback or exceeds the bound: **resync is a normal
+    /// outcome**, so the caller takes a fresh snapshot rather than reporting a failure.
     pub fn since(&self, since: u64) -> Option<Vec<Envelope>> {
         if since > self.head_seq {
             // A head ahead of the log. Only reachable across a daemon restart that

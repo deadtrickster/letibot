@@ -1,15 +1,6 @@
-//! `FetchRow`: a window of one row's body, read without leaving the session.
-//!
-//! The operator's framing, which is what this exists for: a tool result is a **logical**
-//! string that wraps to thousands of **display** lines, of which a screen shows a few
-//! dozen. The head holds a window of the conversation — `ViewBounds` bounds the snapshot
-//! by count and by bytes — so an old row is not on it at all, and a row that is can be
-//! longer than anything the snapshot would carry.
-//!
-//! `Peek` is not this. It names a session and returns **all** of it, with no position; that
-//! is right for the picker's "what was that session about" and wrong for "the display line
-//! 3,000 of this 400 KB payload". What the two share is the property worth keeping: a read
-//! that does not move your seat.
+//! `FetchRow`: a window of one row's body, read without leaving the session. A head holds only a
+//! bounded window of the conversation, so an old row is not on it and a held row can be longer
+//! than the snapshot carries - `Peek` answers a whole session, never a position in one.
 
 use std::os::unix::net::UnixStream;
 
@@ -85,13 +76,8 @@ fn start() -> std::sync::Arc<Registry> {
     registry
 }
 
-/// Ask for a window and get it.
-///
-/// **Skips live events on the way**, which is what a head's pump does: the answer arrives on
-/// the same stream as the session's own traffic, so a frame that is not the answer is
-/// something else that happened, not a reply. The failing version of this read one frame and
-/// assumed it was the answer, which is why a test that published a row *after* attaching
-/// failed with `Event(TranscriptAppended …)`.
+/// Ask for a window and get it. Skips the session's own live events on the way, as a head's pump
+/// does: they share the stream with the answer, so one frame read is not the answer.
 fn fetch(
     w: &mut FrameWriter<UnixStream>,
     r: &mut FrameReader<UnixStream>,
@@ -118,8 +104,7 @@ fn fetch(
     }
 }
 
-/// **The whole point**: a window of a body, with the length so the head knows what is on
-/// either side of it.
+/// A window of a body comes back with the total length, so the head knows what is on either side.
 #[test]
 fn a_window_of_a_row_comes_back_with_the_total() {
     let registry = start();
@@ -142,8 +127,8 @@ fn a_window_of_a_row_comes_back_with_the_total() {
     assert_eq!(win.expect("a body"), &body[400..440]);
 }
 
-/// **The cap is the daemon's, not the head's request.** A head that asks for a megabyte
-/// gets a window, because one request must not be able to make the daemon serialise one.
+/// The cap is the daemon's, not the head's request: one ask must not make the daemon serialise a
+/// megabyte.
 #[test]
 fn a_head_cannot_ask_for_more_than_the_cap() {
     let registry = start();
@@ -157,8 +142,8 @@ fn a_head_cannot_ask_for_more_than_the_cap() {
     assert_eq!(total, body.len());
 }
 
-/// **Asking past the end is how a head finds the end.** It is clamped, not refused, and it
-/// comes back empty rather than as an error — with the total, which is the answer.
+/// Asking past the end is how a head finds the end: clamped, not refused, and empty rather than
+/// an error - the total is the answer.
 #[test]
 fn asking_past_the_end_is_clamped_and_says_so() {
     let registry = start();
@@ -171,13 +156,12 @@ fn asking_past_the_end_is_clamped_and_says_so() {
     assert_eq!(win.expect("a body"), "", "nothing after the end");
 }
 
-/// **A window starts on a character boundary.** A head cannot render half a glyph, and the
-/// daemon is the side that knows the encoding — so an offset landing inside a multi-byte
-/// character is rounded down, and the answer says where it really starts.
+/// A window starts on a character boundary: the daemon is the side that knows the encoding, so
+/// an offset landing inside a multi-byte character is rounded down and the answer says where.
 #[test]
 fn a_window_never_splits_a_character() {
     let registry = start();
-    // `日` is three bytes, so offset 1 and 2 are inside it.
+    // Each character here is three bytes, so offsets 1 and 2 land inside one.
     let body = "日本語のテキスト";
     a_row_with_a_body(&registry, "s-1", "i1", body);
     let (mut w, mut r) = attach(&registry);
@@ -194,26 +178,19 @@ fn a_window_never_splits_a_character() {
             body[got..].starts_with(&win),
             "at {at}: the window is not a slice of the body"
         );
-        // And it is valid UTF-8 by construction — a split character would not deserialise
-        // at all, so reaching here is half the proof; this is the other half.
+        // And it is valid UTF-8 by construction - a split character would not deserialise at
+        // all, so reaching here is half the proof; this is the other half.
         assert!(std::str::from_utf8(win.as_bytes()).is_ok());
     }
 }
 
-/// **The ordinal is the session's position, not the window's index.**
-///
-/// This is the whole reason the key is an ordinal. A head knows the rows it holds and
-/// `items_dropped` says how many came before them, so it can name *any* row by where it sits in
-/// the conversation — including ones it never received. The previous version addressed rows by
-/// `item_id`, which a head can only name if it was sent it, so the rows this exists for were
-/// exactly the ones it could not ask about.
-///
-/// Here the view has trimmed its first three rows; ordinal 3 must still be the fourth row of the
-/// session, and the three before it must answer `None` rather than sliding the numbering.
+/// The ordinal is the session's position, not the window's index: a head knows
+/// `items_dropped`, so it can name a row it never received. A trimmed ordinal answers `None`
+/// rather than sliding the numbering onto a held row.
 #[test]
 fn an_ordinal_names_window_and_trimmed_rows_alike() {
     // A registry whose view holds three rows, so four rows leave one trimmed. Set at
-    // construction because `ViewBounds` is the daemon's, decided once — mutating it per
+    // construction because `ViewBounds` is the daemon's, decided once - mutating it per
     // session afterwards would be a second place to configure the same thing.
     let registry = Registry::with_bounds(
         letibot_sessionlog::LogBounds::default(),
@@ -233,7 +210,7 @@ fn an_ordinal_names_window_and_trimmed_rows_alike() {
 
     let (mut w, mut r) = attach(&registry);
 
-    // Ordinal 1 is the SECOND row of the session — the oldest this view still holds.
+    // Ordinal 1 is the SECOND row of the session - the oldest this view still holds.
     let (win, _, _) = fetch(&mut w, &mut r, 1, 0, 40);
     assert_eq!(
         win.as_deref(),
@@ -244,9 +221,8 @@ fn an_ordinal_names_window_and_trimmed_rows_alike() {
     let (win, _, _) = fetch(&mut w, &mut r, 3, 0, 40);
     assert_eq!(win.as_deref(), Some("body 3"));
 
-    // And ordinal 0 — the row the window trimmed — is honestly `None`. The store read that
-    // would answer it is R19.2(b) in `letibot`'s TODO; what matters here is that it does not
-    // silently answer with the WRONG row, which is what a window-relative index would do.
+    // Ordinal 0 - the row the window trimmed - is honestly `None`. What matters is that it does
+    // not silently answer with the WRONG row, which is what a window-relative index would do.
     let (win, _, _) = fetch(&mut w, &mut r, 0, 0, 40);
     assert_eq!(
         win, None,
@@ -254,8 +230,8 @@ fn an_ordinal_names_window_and_trimmed_rows_alike() {
     );
 }
 
-/// **A row nobody has is not an empty row.** The two must not look alike, or a head
-/// reports "the output was empty" about output that was trimmed.
+/// A row nobody has is not an empty row: a head that could not tell them apart reports empty
+/// output about output that was trimmed.
 #[test]
 fn a_row_that_is_not_held_answers_none() {
     let registry = start();
@@ -273,8 +249,8 @@ fn a_row_that_is_not_held_answers_none() {
     assert_eq!(total, 0);
 }
 
-/// A session the daemon does not hold is refused **by name**, the same rule `Peek` follows:
-/// an empty answer and a missing session must not look alike.
+/// A session the daemon does not hold is refused by name, the same rule `Peek` follows: an empty
+/// answer and a missing session must not look alike.
 #[test]
 fn a_session_that_is_not_held_is_refused_by_name() {
     let registry = start();
@@ -296,8 +272,7 @@ fn a_session_that_is_not_held_is_refused_by_name() {
     }
 }
 
-/// **It is a read, not a move.** The same contract `Peek` keeps and the reason both sit in
-/// the server's ask arm: the seat, the acks and the live events are untouched, so a head
+/// It is a read, not a move: the seat, the acks and the live events are untouched, so a head
 /// reading a row is still in the session it was in.
 #[test]
 fn fetching_does_not_move_the_connection() {

@@ -1,52 +1,25 @@
 //! The daemon's half of the smart `!`: the prompt it builds and the reply it parses.
 //!
-//! The operator's ask, in their words: *"i want smart ! when a model suggest
-//! completions."* The head's history completion is the first answer — the commands this
-//! session has actually run, which are on the screen. When the history has no match for
-//! the prefix, the head asks the daemon, and the daemon builds a prompt from the
-//! conversation and asks the LOCAL model. This module is the two pure halves of that:
-//! the prompt (what is asked) and the parse (what is believed of the answer). The model
-//! call itself is the daemon's (`harnessd`), because this crate holds no HTTP client and
-//! no endpoint — the same reason the oracle's layer B lives there.
-//!
-//! # Why the prompt is built, not templated
-//!
-//! A template that says *"suggest a command for this prefix"* with nothing else in it
-//! would invent a command from the prefix alone — `! git` becomes `! git push` whether or
-//! not the session has a repository. The prompt carries the conversation instead: the
-//! last handful of rows condensed, the commands already run, the workspace path, and the
-//! prefix. The model then suggests what FITS this session, and the one rule it is told is
-//! that **a wrong suggestion is worse than none** — so it may answer with nothing, and an
-//! empty answer is a good answer, not a failure.
+//! The head answers from its own history first; when that has no match for the prefix,
+//! the daemon builds a prompt from the conversation and asks the LOCAL model. The model
+//! call is the daemon's, because this crate holds no HTTP client and no endpoint.
+//! The prompt carries the conversation rather than a template, because a template invents
+//! a command from the prefix alone. The one rule it states is that **a wrong suggestion is
+//! worse than none**, so an empty answer is a good answer.
 
 use letibot_transcript::{TranscriptItem, UserPart};
 
-/// How many of the session's own rows the prompt carries, newest last.
-///
-/// A handful, not a window: the prompt is a brief for a small local model with a small
-/// output cap, and the rows are context, not the conversation. Eight is enough to say
-/// what the session is about and small enough that the prompt stays a paragraph.
+/// How many of the session's own rows the prompt carries, newest last. A handful, not a
+/// window: the rows are context for a small local model, not the conversation.
 pub const RECENT_ROWS: usize = 8;
 
-/// How many characters of one condensed row the prompt keeps.
-///
-/// A row is context, and a `read` row can be 418 KB — carrying it whole would make the
-/// prompt the row and the row the prompt. Two hundred characters says what the row was
-/// about and nothing it would not say in a sentence.
+/// How many characters of one condensed row the prompt keeps. A row is context, and a
+/// `read` row can be 418 KB - carrying it whole would make the prompt the row.
 const ROW_CAP: usize = 200;
 
-/// **The prompt the daemon asks the local model.**
-///
-/// Built from the conversation, not from a template: the last handful of rows condensed
-/// (`recent`), the commands already run in this session (`commands`), the workspace path
-/// (`workspace`), and the typed prefix (`prefix`). It asks for up to five shell lines,
-/// one per line, no fences, no prose — and it says that **a wrong suggestion is worse
-/// than none**, which is the rule that makes an empty answer acceptable rather than a
-/// defect.
-///
-/// The prefix travels `!` first, the same spelling the history completion matches, so
-/// the model is asked to complete the line the operator is typing rather than to invent
-/// a command from a word.
+/// **The prompt the daemon asks the local model**: the rows condensed, the commands
+/// already run, the workspace and the prefix, asking for up to five `! ` lines and saying
+/// that a wrong suggestion is worse than none.
 pub fn suggestion_prompt(
     recent: &[String],
     commands: &[String],
@@ -128,16 +101,9 @@ pub fn parse_suggestions(reply: &str) -> Vec<String> {
     out
 }
 
-/// **The last handful of the session's rows, condensed to one line each.**
-///
-/// The prompt's context half. Each row is read the way a reader would read it — the
-/// operator's words, the model's prose, the tool that ran — and cut to [`ROW_CAP`]
-/// characters, so a row that is a megabyte of file contents becomes a sentence about
-/// what it was. Reasoning rows are skipped: a draft the model abandoned is not
-/// conversation, and replaying it into a prompt is how the model reads its own dead
-/// ends as history.
-///
-/// Returned oldest-first, so the prompt reads the conversation in the order it happened.
+/// **The last handful of the session's rows, condensed to one line each** and cut to
+/// [`ROW_CAP`], oldest first. Reasoning rows are skipped: a draft the model abandoned is
+/// not conversation.
 pub fn recent_rows(items: &[TranscriptItem], n: usize) -> Vec<String> {
     let tail: Vec<String> = items
         .iter()
@@ -195,16 +161,9 @@ fn cut(s: &str) -> String {
     format!("{kept}…")
 }
 
-/// **The commands this session has already run**, newest first, deduped.
-///
-/// The prompt's second context half, and the same walk the head's history completion
-/// makes over its own rows: the operator's own `!` rows verbatim, and the model's `bash`
-/// calls as `! ` plus the command they ran. Carrying them in the prompt is what tells the
-/// model what is already known — a command the session ran a moment ago is not a
-/// suggestion, it is a fact.
-///
-/// A `bash` call whose arguments do not parse, or that carries no `command`, is skipped:
-/// a command that cannot be re-run is not a command the session ran.
+/// **The commands this session has already run**, newest first, deduped: the operator's
+/// own `!` rows verbatim, and the model's `bash` calls as `! ` plus the command. A command
+/// that cannot be re-run is not a command the session ran, so it is skipped.
 pub fn commands_run(items: &[TranscriptItem]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for item in items.iter().rev() {
@@ -272,12 +231,9 @@ mod tests {
         }
     }
 
-    /// **The prompt carries the context and the prefix, and says the rule.**
-    ///
-    /// The whole of the feature's honesty is in this: the model is asked about THIS
-    /// session (the workspace, the rows, the commands already run) and THIS prefix, and
-    /// it is told that a wrong suggestion is worse than none. A prompt that dropped any
-    /// of those would be a template, and a template invents.
+    /// **The prompt carries the context and the prefix, and says the rule**: the model is
+    /// asked about THIS session and THIS prefix, and told that a wrong suggestion is worse
+    /// than none.
     #[test]
     fn the_prompt_carries_the_context_and_the_prefix() {
         let recent = vec!["fix the login bug".to_string(), "[tool bash]".to_string()];
@@ -304,10 +260,8 @@ mod tests {
         );
     }
 
-    /// **An empty context is still a prompt, and it says so rather than lying.**
-    ///
-    /// A fresh session has no rows and no commands, and the prompt must not carry an
-    /// empty section that reads as if the session had something and the model missed it.
+    /// **An empty context is still a prompt, and it says so rather than lying**: no section
+    /// that reads as if the session had something the model missed.
     #[test]
     fn an_empty_context_is_a_prompt_without_the_sections() {
         let p = suggestion_prompt(&[], &[], "/tmp/empty", "! ls");
@@ -323,11 +277,8 @@ mod tests {
         assert!(p.contains("! ls"), "the prefix: {p}");
     }
 
-    /// **The parse strips fences and prose, dedupes, and drops the empty.**
-    ///
-    /// A reply the model was told to keep to lines will mostly be lines, and the parse
-    /// must take the lines and refuse the rest: a fence is decoration, a prose line is
-    /// the model talking, a duplicate is said twice, and an empty line is nothing.
+    /// **The parse strips fences and prose, dedupes, and drops the empty**: a fence is
+    /// decoration, a prose line is the model talking, a duplicate is said twice.
     #[test]
     fn the_parse_strips_fences_and_prose() {
         let reply = "\
@@ -352,12 +303,8 @@ Here are some commands:
         );
     }
 
-    /// **A reply that is all prose is nothing, and nothing is the answer.**
-    ///
-    /// The model said something and suggested nothing. That is the "a wrong suggestion
-    /// is worse than none" rule working: the parse drops the prose and the daemon
-    /// answers with an empty list, which the head reads as *no suggestion* rather than
-    /// waiting on one that is not coming.
+    /// **A reply that is all prose is nothing, and nothing is the answer**: the head reads
+    /// an empty list as *no suggestion* rather than waiting on one that is not coming.
     #[test]
     fn a_prose_only_reply_is_nothing() {
         let lines = parse_suggestions("I'm not sure what you need here.\nLet me know more.");
@@ -385,15 +332,9 @@ Here are some commands:
         );
     }
 
-    /// **A line the prompt did not ask for is not a candidate.**
-    ///
-    /// The two that look most like candidates are the ones worth pinning, because both
-    /// are things a model told to answer with `! ` lines writes anyway: **a bare command
-    /// without the sigil** — which the parse drops rather than prefixing, because
-    /// `!`-first is the one recogniser for *this is a command* everywhere else in the
-    /// tree and a parser that guessed would be a second one — and **a bang with nothing
-    /// after it**, which is not a command here any more than it is at the send. The one
-    /// line that IS a candidate comes through, and a comment inside a fence does not.
+    /// **A line the prompt did not ask for is not a candidate.** A bare command without the
+    /// sigil is dropped rather than prefixed - `!`-first is the one recogniser for *this is
+    /// a command* - and a bang with nothing after it is not a command.
     #[test]
     fn a_line_the_prompt_did_not_ask_for_is_not_a_candidate() {
         let reply = "```bash\nls -la\ngit status\n# run the tests\n! \n!   \n! cargo test\n```";
@@ -404,10 +345,7 @@ Here are some commands:
         );
     }
 
-    /// **A `bash` call that cannot be re-run is not a command the session ran.**
-    ///
-    /// The prompt's second context half is what tells the model which commands are already
-    /// facts, so a line it cannot stand behind would be a fact nobody ran: unparseable
+    /// **A `bash` call that cannot be re-run is not a command the session ran**: unparseable
     /// arguments, no `command` at all, and a call that is not `bash` are all skipped.
     #[test]
     fn a_bash_call_that_cannot_be_re_run_is_not_a_command_the_session_ran() {

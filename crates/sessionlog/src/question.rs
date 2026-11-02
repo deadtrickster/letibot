@@ -1,80 +1,17 @@
 //! The answer vocabulary a head sends back when a **person** was asked (D10).
 //!
-//! `PROTOCOL_VERSION` 5 adds this. It is the payload of
-//! [`crate::protocol::ClientFrame::AnswerQuestion`].
-//!
-//! # Three things together, and none of them collapses into another
-//!
-//! The operator's requirement, verbatim:
-//!
-//! > *"we need user questions claude code style - model provided options with user
-//! > notes and then opencode style free user reply input, not claude code 'chat
-//! > later'"*
-//!
-//! So four fields, and the reason each is separate is the reason there are four:
-//!
-//! | field | what it is | why not folded in |
-//! |---|---|---|
-//! | `option` | an index into the options the model offered | the common case should cost one keystroke |
-//! | `note` | a qualification **on that choice** | folding it into free text loses *which option* it qualifies, which is the load-bearing half of *"option B, but only for the CUDA box"* |
-//! | `free` | a typed answer, on its own | a person who types a sentence has **answered**; Claude Code's *"chat later"* turns the question into a suspended turn instead, which is the behaviour this is named against |
-//! | `abstain` | a **deliberate no-answer** | it is not silence and it is not an empty answer, and neither of those may be spelled the way a decision is |
-//!
-//! At least one of `option`, `free` or `abstain` must be present, and `note` needs
-//! an `option` to qualify. [`QuestionAnswer::validate`] is the whole of that, and a
-//! failure is a **refusal, never a repair** — see [`AnswerDefect`].
-//!
-//! # `abstain`: the fourth shape, and why it is not one of the other three
-//!
-//! The operator: *"each choice can have my note, and i can abstain or type my
-//! answer"*. An abstention is a person **answering** — *"I am not answering this
-//! one"* — and it has to be tellable from the two things that look like it and are
-//! not:
-//!
-//! * **Silence** is no frame at all: the deadline passes, the tool reports
-//!   `not_run`, and the sentence says *nobody answered*. Nobody looked at the
-//!   question.
-//! * **An empty answer** is a frame that arrived carrying nothing — the same bytes
-//!   as `QuestionAnswer::default()`. It is refused as [`AnswerDefect::Empty`] and
-//!   the question stays open, because an empty answer is not a shrug the harness
-//!   may read.
-//! * **An abstention** is a frame that says so, and it is the only one of the three
-//!   a person meant.
-//!
-//! So it is its own field rather than an empty `free`, and it **stands alone**: an
-//! abstention carrying a choice, a note or words is refused as
-//! [`AnswerDefect::AbstainedAndAnswered`] rather than having one half win, because
-//! a harness that picks which half a person meant is the harness this module
-//! exists against.
-//!
-//! # This is deliberately NOT `OptionKind`
-//!
-//! [`crate::event::OptionKind`] is `AllowOnce | AllowAlways | RejectOnce |
-//! RejectAlways`: an **adjudication** vocabulary, answering *may this run*. A
-//! question answers *which way should I go*, and the consequences differ — an
-//! adjudication that goes wrong runs something, an answer that goes wrong is
-//! attributed to a person. Overloading one into the other would put a free-form
-//! sentence where a policy engine reads a grant, so they stay two types and
-//! [`crate::hub::Reply`] keeps them in two arms of one enum.
-//!
-//! # Why this shape exists twice
-//!
-//! `letibot_tools::builtins::intent::QuestionAnswer` is the same shape. That is the
-//! **established pattern in this tree, not a smell**: `letibot-tools` is an optional
-//! dependency here (`features = ["tools"]`) precisely so that a tool cannot reach
-//! the wire, and `event::DecisionOption` / `event::OptionKind` are already duplicates
-//! of `adjudicate::DecisionOption` / `adjudicate::OptionKind` for exactly this
-//! reason, with `lift_tools` as the mapping. The daemon depends on both crates and
-//! is where the two meet; neither crate learns about the other.
-//!
-//! If they ever disagree, the test at the bottom of this file is what says so.
+//! Four fields, and none collapses into another: `option` (an index into the
+//! options offered), `note` (a qualification on that choice, so it needs an
+//! `option`), `free` (a typed answer) and `abstain` (a deliberate no-answer, which
+//! stands alone). A bad answer is a refusal, never a repair, and the same shape
+//! exists in `letibot-tools` on purpose: that crate is an optional dependency
+//! here, so a tool cannot reach the wire.
 
 use serde::{Deserialize, Serialize};
 
-/// What a person said. **Not who** — see [`crate::hub::Reply`]: the answerer is what
+/// What a person said. **Not who** - see [`crate::hub::Reply`]: the answerer is what
 /// the daemon knows about the connection the answer arrived on, never a field the
-/// answer carries. An answer that could name its own answerer is an answer that
-/// could name somebody else.
+/// answer carries.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QuestionAnswer {
     /// Index into the options the question offered.
@@ -86,21 +23,9 @@ pub struct QuestionAnswer {
     /// A typed answer, and a first-class one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub free: Option<String>,
-    /// **A deliberate no-answer.** The person was asked and said, in as many
-    /// words, that they are not answering this one.
-    ///
-    /// It is an answer, and it is **not** permission to proceed: a model that gets
-    /// an abstention back must state the assumption it would have to make and stop,
-    /// or ask a question the person can answer. It is also not
-    /// [`Self::free`] with nothing in it — see this module's header for the three
-    /// things that look like an abstention and are not.
-    ///
-    /// `default` so an older head's frame parses — it never sets this — and
-    /// **elided when `false`**, like the three fields above it: an absent
-    /// `abstain` and a `false` one are the same claim (*this is not an
-    /// abstention*), so unlike `ClientFrame::Answer`'s added fields there is no
-    /// distinction here for `skip_serializing_if` to lose. A frame that carries no
-    /// abstention is byte-identical to what it was before this field existed.
+    /// **A deliberate no-answer**, and not permission to proceed: a model that gets one
+    /// must state the assumption it would make and stop. `default` so an older head's
+    /// frame parses, and elided when `false` like the three fields above it.
     #[serde(default, skip_serializing_if = "is_false")]
     pub abstain: bool,
 }
@@ -112,11 +37,9 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
-/// Why an answer was not accepted.
-///
-/// Every one of these means **nobody has answered the question**. None of them is a
-/// default, a declining, or something the harness may interpret: a malformed answer
-/// leaves the question open, and the head is told so it can ask the person again.
+/// Why an answer was not accepted. Every one of these means **nobody has answered**,
+/// and none is something the harness may interpret: a malformed answer leaves the
+/// question open, and the head is told so it can ask the person again.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AnswerDefect {
     /// No option, no note, no text.
@@ -195,10 +118,9 @@ impl QuestionAnswer {
     pub fn validate(&self, offered: usize) -> Result<(), AnswerDefect> {
         let has_free = self.free.as_deref().is_some_and(|f| !f.trim().is_empty());
         let has_note = self.note.as_deref().is_some_and(|n| !n.trim().is_empty());
-        // **An abstention is checked first, and it has to be alone.** A frame that
-        // says "I am not answering" and also carries a choice is a frame with two
-        // claims in it, and a validator that let either win would be the harness
-        // deciding what a person meant.
+        // **An abstention is checked first, and it has to be alone.** A frame that says
+        // "I am not answering" and also carries a choice has two claims in it, and a
+        // validator that let either win would be the harness deciding what a person meant.
         if self.abstain {
             return if self.option.is_some() || has_free || has_note {
                 Err(AnswerDefect::AbstainedAndAnswered)
@@ -320,12 +242,9 @@ mod tests {
         }
     }
 
-    /// **The three things that must not look alike**, in the bytes a head sends.
-    ///
-    /// * an abstention is `{"abstain":true}` — a frame, and a claim;
-    /// * an empty answer is `{}` — a frame, and nothing in it (refused);
-    /// * silence is no frame at all, which this type cannot spell and that is the
-    ///   point: there is nothing here that means "nobody answered".
+    /// **The three things that must not look alike**, in the bytes a head sends: an
+    /// abstention is `{"abstain":true}`, an empty answer is `{}` (refused), and silence
+    /// is no frame at all.
     #[test]
     fn an_abstention_is_its_own_bytes_and_not_an_empty_answer() {
         let abstain = serde_json::to_string(&QuestionAnswer::abstaining()).unwrap();

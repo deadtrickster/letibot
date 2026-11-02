@@ -1,27 +1,6 @@
-//! **The stale-prefix sentence is said at ATTACH, and that is the whole point of it.**
-//!
-//! The comparison is made by the daemon's harness when it opens a session — the only
-//! moment the two facts (the prefix a session was seated with, and the prefix this daemon
-//! would compose now) are in one place — and the SENTENCE belongs here, on the attach
-//! path, because of a property of the head: a warning a head finds in its snapshot is
-//! filed [`letibot_sessionlog::view::Placed`]`::Before` — listed by `/notes`, counted by
-//! `/status`, and **not drawn**. Every ordinary path opens the session before any head is
-//! on it (the daemon opens its first session at startup; a `ResumeSession` is answered on
-//! the worker before the head switches), so a warning published at open reaches a head
-//! that will never draw it.
-//!
-//! So the harness leaves the sentence in the registry (`Registry::set_stale_prefix`) and
-//! `server::seat_in` publishes it once the head is registered — the frame order on the
-//! socket is `Hello`, then this event, and the head draws it at the end of the
-//! conversation it is looking at.
-//!
-//! # Both halves, because a notice that fires on every attach is as useless as one that
-//! never fires
-//!
-//! The negative case is asserted with a **marker** rather than a timeout: a warning
-//! published after the attach is queued behind anything `seat_in` said, so a reader that
-//! reaches the marker without having seen a `prefix_stale` has been told nothing — and
-//! that is a fact, not a race against a clock.
+//! The stale-prefix sentence is said at ATTACH: a warning a head finds in its snapshot is
+//! `Placed::Before` - listed, counted, not drawn - and every ordinary path opens the session
+//! before any head is on it, so the registry holds the sentence and `seat_in` publishes it.
 
 use std::sync::Arc;
 
@@ -74,10 +53,9 @@ fn a_head_attaching_to_a_stale_session_is_told_while_it_watches() {
         "the handshake is the Hello, as it always was: {hello:?}"
     );
 
-    // **The very next frame.** `seat_in` publishes after `attach` registers this head and
-    // before the pump starts, so the sentence cannot arrive later, out of order, or as
-    // part of the snapshot — which is the difference between a head that draws it and a
-    // head that only counts it.
+    // The very next frame: `seat_in` publishes after `attach` registers this head and before the
+    // pump starts, so the sentence cannot arrive later, out of order, or as part of the snapshot -
+    // which is the difference between a head that draws it and one that only counts it.
     let frame: ServerFrame = reader.read().expect("the sentence");
     let ServerFrame::Event(env) = frame else {
         panic!("expected the warning as the next frame, got {frame:?}");
@@ -133,11 +111,9 @@ fn a_head_attaching_to_a_session_that_speaks_the_seated_prompt_is_told_nothing()
     let _ = std::fs::remove_file(&path);
 }
 
-/// **A session nobody has opened says nothing**, which is not the same as *unchanged*.
-///
-/// There is no harness, so nothing compared anything, and the registry has no sentence to
-/// hand over. The attach is still served — a head can attach to a session the daemon has
-/// not opened — and the silence here is the absence of a comparison rather than a verdict.
+/// A session nobody has opened says nothing, which is not the same as *unchanged*: there is no
+/// harness, so nothing compared anything, and the silence is the absence of a comparison rather
+/// than a verdict.
 #[test]
 fn a_session_no_harness_has_opened_says_nothing() {
     let (registry, hub, _server, path) = up("unopened");
@@ -164,14 +140,9 @@ fn a_session_no_harness_has_opened_says_nothing() {
     let _ = std::fs::remove_file(&path);
 }
 
-/// **A head that attached BEFORE the sentence was stored is told the moment it is.**
-///
-/// The operator, after a daemon restart: *"restarted pg-noop, didnt get offer to reseat,
-/// interesting"* — then *"ok reseat came … but later"*. The daemon registers the session and
-/// serves its socket before the harness opens, so a head reconnecting across the restart
-/// attaches while the mailbox is still empty; `seat_in` correctly said nothing, and the
-/// sentence the harness stored a moment later waited for the next attach. The mailbox now
-/// tells whoever is already watching.
+/// A head that attached BEFORE the sentence was stored is told the moment it is. The daemon
+/// serves the socket before the harness opens, so a head reconnecting across a restart attaches
+/// while the mailbox is empty - and the offer would otherwise wait for its next attach.
 #[test]
 fn a_head_already_watching_when_the_sentence_is_stored_is_told_then() {
     let (registry, hub, _server, path) = up("late");
@@ -226,13 +197,9 @@ fn a_head_already_watching_when_the_sentence_is_stored_is_told_then() {
     let _ = std::fs::remove_file(&path);
 }
 
-/// **A head is told when the stale prompt is gone** — `prefix_current`, once, on the transition.
-///
-/// The operator, asking for the reseat card: *"when on abstain keep reseat select open. this
-/// way i keep reseat in mind because it stares at me yet can continue at my risk"*. A card
-/// that stares until the prompt is current has to hear that it is: the re-seat (any fork onto
-/// the seated prompt) clears the sentence, and every head watching is told — so a reseat
-/// chosen on one head takes the card down on all of them.
+/// A head is told when the stale prompt is gone: the re-seat clears the sentence and every head
+/// watching hears `prefix_current` once, so a reseat chosen on one head takes the card down on
+/// all of them.
 #[test]
 fn a_head_watching_is_told_when_the_stale_prompt_is_cleared() {
     let (registry, hub, _server, path) = up("cleared");

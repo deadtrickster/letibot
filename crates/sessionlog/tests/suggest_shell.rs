@@ -1,27 +1,6 @@
-//! `SuggestShell` → `ShellSuggestions`: the smart `!`'s one round trip.
-//!
-//! The operator's ask, in their words: *"i want smart ! when a model suggest
-//! completions."* The history completion is the head's own and is the first answer; this
-//! frame is what the head sends when the history has no match for the prefix, and it is a
-//! frame rather than a head-side call because a head has no HTTP client and no
-//! transcript-wide context while the daemon has both.
-//!
-//! # What this file is for
-//!
-//! Three things about the pair cannot be seen from either half alone, and each has a test:
-//!
-//! 1. **The frames survive the wire.** `ClientFrame::SuggestShell` is a new client frame,
-//!    which is why the protocol is 29 — and a frame that only ever round-tripped through
-//!    `serde_json` in a unit test would not prove that a daemon's read loop and a head's
-//!    reader agree about it.
-//! 2. **The daemon answers, always.** An empty list and a missing frame are the same fact
-//!    to a head (*no suggestion*), so a daemon with no suggester installed answers with an
-//!    empty list rather than staying silent — a head that could not tell *the model had no
-//!    idea* from *the daemon never answered* would wait on a suggestion that is not coming.
-//! 3. **The suggester is handed the session's own context** — its hub and the workspace
-//!    from the wiring — and **nothing in the path is submitted**: no row is written, no seq
-//!    moves, and the queue is untouched. The answer is a list of candidate lines for the
-//!    composer; Enter is still the operator's.
+//! `SuggestShell` to `ShellSuggestions`: the smart `!`'s one round trip. A head has no HTTP client
+//! and no transcript-wide context while the daemon has both, so the ask is a frame - and the daemon
+//! always answers, because an empty list and a silent daemon are the same fact to a head.
 
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
@@ -32,12 +11,9 @@ use letibot_sessionlog::registry::{Registry, SessionWiring, ShellSuggester};
 use letibot_sessionlog::server::serve_conn;
 use letibot_sessionlog::wire::{FrameReader, FrameWriter};
 
-/// A suggester that records what it was asked and answers with canned lines.
-///
-/// It is a `ShellSuggester` and not the daemon's own `LocalSuggester` on purpose: this
-/// file is about the seam between the daemon and whoever proposes, so the model call —
-/// which is `harnessd`'s half and has its own tests over a canned socket — is replaced by
-/// the case we care about, which is *the daemon asked, and this is what came back*.
+/// A suggester that records what it was asked and answers with canned lines. A `ShellSuggester`
+/// and not the daemon's own, because this file is about the seam: the model call is `harnessd`'s
+/// half and has its own tests.
 struct Canned {
     lines: Vec<String>,
     asked: Mutex<Vec<(String, String, String)>>,
@@ -113,11 +89,8 @@ fn attach(registry: &Arc<Registry>) -> (FrameWriter<UnixStream>, FrameReader<Uni
     (w, r)
 }
 
-/// Ask, and get the answer.
-///
-/// **Skips live events on the way**, which is what a head's pump does: the answer arrives on
-/// the same stream as the session's own traffic, so a frame that is not the answer is
-/// something else that happened rather than a reply. The same shape `fetch_row.rs` uses.
+/// Ask, and get the answer, skipping the session's own live events on the way as a head's pump
+/// does: they share the stream with the answer, so one frame read is not the answer.
 fn ask_frame(
     w: &mut FrameWriter<UnixStream>,
     r: &mut FrameReader<UnixStream>,
@@ -144,13 +117,9 @@ fn ask(w: &mut FrameWriter<UnixStream>, r: &mut FrameReader<UnixStream>, id: &st
     let _ = ask_frame(w, r, id, prefix);
 }
 
-/// **The frames round-trip, and the daemon hands the suggester the session's own context.**
-///
-/// The one thing the head cannot do for itself: it has the prefix and the rows on its
-/// screen, but the daemon has the session and the workspace it runs in. Both arrive at the
-/// suggester, the prefix travels `!` first — the same spelling the history completion
-/// matches, so the two halves of the feature share one needle — and the answer comes back
-/// carrying the id and the prefix, so the head can key its cache without a request table.
+/// The frames round-trip, and the daemon hands the suggester the session's own context: the head
+/// has the prefix, the daemon has the session and its workspace. The answer carries the id and the
+/// prefix back, so the head can key its cache without a request table.
 #[test]
 fn the_daemon_asks_the_suggester_for_this_session_and_answers_the_head() {
     let suggester = Canned::new(&["! git status", "! git log"]);
@@ -188,14 +157,9 @@ fn the_daemon_asks_the_suggester_for_this_session_and_answers_the_head() {
     );
 }
 
-/// **A daemon with no suggester answers an empty list rather than nothing.**
-///
-/// *No local model* and *the model had nothing* are the same fact to the head, and the
-/// daemon says which one it is by always answering: a head that waited for a frame that is
-/// never coming would sit on a suggestion that is not coming either. This is also the
-/// direction the feature is safe in — a daemon with no local endpoint offers nothing rather
-/// than reaching for a metered provider, because a suggestion must not cost money per
-/// keystroke.
+/// A daemon with no suggester answers an empty list rather than nothing, because *no local model*
+/// and *the model had nothing* are the same fact to a head that waits. It also keeps a suggestion
+/// from costing money per keystroke on a box with no local endpoint.
 #[test]
 fn a_daemon_with_no_suggester_answers_an_empty_list() {
     let registry = start(None);
@@ -210,13 +174,9 @@ fn a_daemon_with_no_suggester_answers_an_empty_list() {
     }
 }
 
-/// **Nothing in the round trip is submitted.**
-///
-/// The answer is a list of candidate lines for the composer. It queues no command, appends
-/// no row, moves no seq and answers nothing else: a head that read it as a run would be a
-/// head that runs a model's guess on a keystroke, which is the one thing this feature must
-/// never do. The seq is the sharp end of it — a frame that moved the log would be a frame
-/// the other heads have to be told about.
+/// Nothing in the round trip is submitted: no command queued, no row appended, no seq moved. A
+/// head that read the answer as a run would run a model's guess on a keystroke, and a frame that
+/// moved the log would be one the other heads have to be told about.
 #[test]
 fn the_round_trip_writes_no_row_and_moves_no_seq() {
     let registry = start(Some(Canned::new(&["! git status"])));

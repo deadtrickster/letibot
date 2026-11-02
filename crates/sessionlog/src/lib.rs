@@ -55,10 +55,9 @@ pub mod metrics_tap;
 pub mod origin;
 // **The pane contract's document** (`docs/plugins-slice1.md`, C3): the shapes a `pane_<name>`
 pub mod pane;
-// **Where a daemon's tools run, written beside its socket** (`docs/remote-hosts.md`): one process
-// fact the protocol does not carry, kept next to the claim that already says *this folder's daemon
-// is me* — so a head about to reuse a daemon can tell whether it would run its caller's tools
-// where the caller asked.
+// **Where a daemon's tools run, written beside its socket** (`docs/remote-hosts.md`): the one
+// process fact the protocol does not carry, so a head about to reuse a daemon can tell where its
+// caller's tools would run.
 pub mod placement;
 pub mod protocol;
 pub mod question;
@@ -124,32 +123,19 @@ pub use lift::{LogSink, from_turn_event};
 #[cfg(feature = "tools")]
 pub use lift_tools::{ToolLogSink, from_tool_event};
 
-/// **How a merge-queue gatekeeper's session title begins** — the first words of its brief
-/// (`letibot_tools::gatekeeper::review_prompt`, asserted equal in `harnessd`), which a child's
-/// title is cut from. A head reads it to keep the reviewer out of the subagents it counts: the
-/// gatekeeper is the queue's, not a child the operator started. The role is the better mark and
-/// a live `Subagent` event carries it; a row rebuilt from the session list has only the title.
+/// **How a merge-queue gatekeeper's session title begins** — the first words of its brief, which a
+/// child's title is cut from. A head reads it to keep the reviewer out of the subagents it counts;
+/// a row rebuilt from the session list has only the title.
 pub const GATEKEEPER_TITLE_PREFIX: &str = "You are the gatekeeper.";
 
-/// **How the notes keeper's session title begins** — the first words of its brief
-/// (`letibot_tools::notes_keeper::TITLE_PREFIX`), on [`GATEKEEPER_TITLE_PREFIX`]'s rule and for the
-/// same reason.
-///
-/// Here now rather than in `letibot-tools` alone because the session list reads it: a keeper is a
-/// system agent, and the tree draws it under `<project>/system/keepers`. The mark and the reader
-/// have to be one string or a keeper is a row drawn as somebody's conversation — and the two
-/// constants cannot be one, because `letibot-tools` sits BELOW this crate, so the spelling is held
-/// together by a test in the one crate that can see both (`letibot-tui`,
-/// `the_keepers_brief_and_the_trees_mark_are_one_string`).
+/// **How the notes keeper's session title begins** — its brief's first words, on
+/// [`GATEKEEPER_TITLE_PREFIX`]'s rule. Here because the session list reads it, and the spelling is
+/// held together by a test in the one crate that sees both (`letibot-tui`).
 pub const NOTES_KEEPER_TITLE_PREFIX: &str = "You are the notes keeper.";
 
-/// **The seat a review is recorded under** — `Seat::Gatekeeper`'s store spelling, written on the
-/// reviewer's own row by `Harness::open` (`session.role`).
-///
-/// Here rather than in `harnessd` because a crate BELOW the daemon groups sessions too, and the
-/// mark that says *this row is a review* has to be one string: `harnessd`'s
-/// `Seat::Gatekeeper.as_str()` is this constant, `is_conversation` reads it to keep a renamed
-/// reviewer out of `--continue`, and `crate::origin` reads it to keep one out of `subagents`.
+/// **The seat a review is recorded under** — `Seat::Gatekeeper`'s store spelling. Here because a
+/// crate below the daemon groups sessions too, and the mark that says *this row is a review* has to
+/// be one string: `is_conversation` and `crate::origin` both read it.
 pub const GATEKEEPER_SEAT: &str = "gatekeeper";
 
 /// **How every daemon's review-queue session id begins** — one workspace's daemon per key
@@ -160,27 +146,9 @@ pub const GATEKEEPER_SESSION_PREFIX: &str = "s-gatekeeper";
 /// [`is_gatekeeper_session`] reads to tell a review-queue session from a reviewer child of one.
 const WORKSPACE_KEY_LEN: usize = 12;
 
-/// **The review-queue session id of the daemon serving `workspace`** — `s-gatekeeper-<key>`.
-///
-/// Session ids are `s-<now_ns>` — unique per creation and meaningless. This one is the opposite
-/// within a folder and never across them: a daemon that restarts comes back to the SAME id (so
-/// its board and its review rows survive the restart), and a second folder's daemon gets an id of
-/// its own. The last part is the whole of the defect this replaces: the id used to be the
-/// constant `s-gatekeeper` in every daemon, every daemon on the box shares one store, and two of
-/// them appending to one transcript is silent corruption — the store's append-only trigger knows a
-/// row must follow the one before it, and two writers do not agree about which row that is
-/// (MEASURED 2026-10-26: `s-gatekeeper#t0`, `seq must be the next one`).
-///
-/// **It is derived from the workspace KEY** — the twelve hex characters `scripts/letibot` names
-/// a folder's socket, its lock and its log with ([`workspace_key`]) — and not from the path
-/// itself, because the key is already the box's one name for a folder's daemon and a second
-/// spelling of *which folder* is exactly how two daemons come to disagree.
-///
-/// **It is spelled here, one crate below the daemon that owns the session**, because a session id
-/// is the wire's business and a HEAD has to be able to name it. The bridge is that head:
-/// `docs/claude-code-bridge.md`'s B6 watches the review queue from Claude Code, and it must say
-/// *which session* without linking `harnessd` — which is the daemon, its providers and its wasm
-/// JIT — to learn one string.
+/// **The review-queue session id of the daemon serving `workspace`** — `s-gatekeeper-<key>`. It
+/// used to be one constant in every daemon, and two of them appending to one transcript is silent
+/// corruption; it is derived from the workspace key and spelled here so a head can name it.
 pub fn gatekeeper_session(workspace: &std::path::Path) -> String {
     gatekeeper_session_for_key(&workspace_key(workspace))
 }
@@ -192,13 +160,9 @@ pub fn gatekeeper_session_for_key(key: &str) -> String {
     format!("{GATEKEEPER_SESSION_PREFIX}-{key}")
 }
 
-/// **The key a folder's daemon is named by**: the first twelve hex characters of the SHA-256 of
-/// its path, with nothing appended — `sha256sum | cut -c1-12`, which is what `scripts/letibot`
-/// computes and what the socket, the lock and the log are named with.
-///
-/// Canonicalised first, because the daemon is started by the shell (`cd … && pwd -P`, then the
-/// git toplevel) and a head may name the same folder by any path that reaches it; `/var/folders`
-/// and `/private/var/folders` are one directory and two strings, and two strings are two ids.
+/// **The key a folder's daemon is named by**: the first twelve hex characters of the SHA-256 of its
+/// canonical path, which is what `scripts/letibot` computes. Canonicalised first, because
+/// `/var/folders` and `/private/var/folders` are one directory and two strings.
 pub fn workspace_key(workspace: &std::path::Path) -> String {
     use sha2::Digest;
     let path = std::fs::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf());
@@ -208,18 +172,9 @@ pub fn workspace_key(workspace: &std::path::Path) -> String {
     digest.iter().take(6).map(|b| format!("{b:02x}")).collect()
 }
 
-/// **Whether `id` is any daemon's review-queue session.**
-///
-/// Two shapes, and only two: the per-daemon id ([`gatekeeper_session`]), and the constant
-/// `s-gatekeeper` that every daemon shared before it. The second is recognised because a store
-/// still holds one — the session and its transcripts are never rewritten or deleted
-/// (`harnessd`'s `sessions::gatekeeper` says so at length) — and a reader that draws the queue's
-/// board, or that names the session whose rows are a repo's queue, has to be able to see it for
-/// what it was.
-///
-/// **A reviewer child of a review-queue session is not one of these** — a reviewer is
-/// `s-gatekeeper-<key>-sub-<ns>`, whose suffix is longer than a key, and this reads the suffix
-/// exactly rather than by prefix for that reason.
+/// **Whether `id` is any daemon's review-queue session.** Two shapes: the per-daemon id, and the
+/// constant `s-gatekeeper` that a store still holds. A reviewer child's suffix is longer than a key,
+/// so this reads the suffix exactly rather than by prefix.
 pub fn is_gatekeeper_session(id: &str) -> bool {
     // The id every daemon shared before the ids were per-workspace is the PREFIX itself, and
     // this build never opens it: it is recognised so a store that holds one can still be read.

@@ -1,22 +1,16 @@
 //! Dump the notes a session's log holds, with the key `/notes dismiss` would store.
-//!
-//! Read-only, and one shot: attach as a `remote` head, take the snapshot, print every
-//! warning as `code | ts | fnv1a(detail) | the composed key`, and detach.
-//!
-//! This exists because the operator's screen and `head.toml` disagreed and there was no
-//! way to see the middle term. `/notes` shows a note's code and detail; `head.toml`
-//! shows a key; the `ts` that joins them is on neither. It is the one number that
-//! decides whether R10's key identifies a delivery or an incident, so it gets an
-//! instrument rather than an argument.
+//! Read-only and one shot: attach as a `remote` head, take the snapshot, and print every
+//! warning as `code | ts | fnv1a(detail) | the composed key` - the `ts` that joins a code to a
+//! retired key is on neither the screen nor `head.toml`, and it is what decides whether a key
+//! identifies a delivery or an incident.
 //!
 //!     cargo run -q --example dump_notes -- /run/user/1000/letibot/<hash>.sock
 
 use letibot_sessionlog::client::HeadClient;
 use letibot_sessionlog::protocol::{Caps, ServerFrame};
 
-/// The head's own hash, copied deliberately: a dump that computed a *different* hash
-/// from the one `note_key` uses would answer a question about this file rather than
-/// about the head. Same constants, same order, same `{:016x}`.
+/// The head's own hash, copied deliberately: a dump that computed a different hash from the
+/// one `note_key` uses would answer a question about this file rather than about the head.
 fn fnv1a(s: &str) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in s.as_bytes() {
@@ -99,8 +93,8 @@ fn main() {
         match hit {
             Some(i) => println!("  MATCH  → live note {}   {k}", i + 1),
             None => {
-                // The useful half: which note it *wanted* to be. Code + hash, ignoring
-                // the ts, is what says "same incident, different delivery".
+                // The useful half: which note it wanted to be. Code plus hash, ignoring the
+                // ts, is what says same incident, different delivery.
                 let f: Vec<&str> = k.split('|').collect();
                 let (code, hash) = (
                     f.get(1).copied().unwrap_or(""),

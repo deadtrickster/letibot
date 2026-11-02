@@ -1,22 +1,8 @@
-//! **Read a live session's user rows and say what shape their text is.**
-//!
-//! Written for the `queued ·` defect (2026-09-23): a head's echo of a prompt it sent
-//! is retired when a landing row's text matches it, and the question that decides
-//! whether the rule can ever fire is *what the landing row's text actually is* — one
-//! prompt, or several joined by newlines. This prints, per user row, the line count,
-//! the character count and the first line, so the shape is read rather than assumed.
+//! Read a live session's user rows and say what shape their text is: the line count, the
+//! character count and the first line of each, so the shape is read rather than assumed.
+//! Read-only - it attaches as a `remote` head called `dump-queued` and says nothing.
 //!
 //!     cargo run -q --example dump_queued -- <socket> <session>
-//!
-//! **It needs a daemon of this head's own protocol version**, because it attaches as a
-//! head — and on 2026-09-23 it could not, which is why the measurement that answered the
-//! question for the running session reads the STORE instead
-//! (`docs/evidence/queued-echoes-2026-09-23.py`): the running daemon spoke 23 and the tree
-//! 25, so nothing built from this tree could attach to it. Kept because it is the direct
-//! probe once both halves are the same build, and because the store-side script answers
-//! the same question with no daemon at all.
-//!
-//! Read-only: it attaches as a `remote` head called `dump-queued` and says nothing.
 
 use letibot_sessionlog::client::HeadClient;
 use letibot_sessionlog::protocol::{Caps, ServerFrame};

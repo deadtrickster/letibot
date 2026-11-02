@@ -1,34 +1,21 @@
-//! The W6↔W7 seam: `letibot_turn::TurnEvent` → §4.5's [`SessionEvent`].
+//! The engine-to-log seam: `letibot_turn::TurnEvent` lifted into [`SessionEvent`].
 //!
-//! `docs/workstreams.md` says of this pair: *"the engine emits events into a
-//! channel; the log consumes them. Fix §4.5's enum (already exact) and these two
-//! never meet until integration."* They met here, and this file is the whole of the
-//! meeting — 80 lines, one direction, behind a feature flag.
+//! Neither side reaches into the other. The engine does not know a log exists - it takes a
+//! `&mut dyn EventSink`, and [`LogSink`] is one - which is what lets the TUI depend on the log
+//! without linking `libllama`.
 //!
-//! **Neither side reaches into the other.** The engine does not know a log exists:
-//! it takes a `&mut dyn EventSink`, and [`LogSink`] is one. The log does not know
-//! a turn engine exists unless this feature is on, which is what lets the TUI
-//! depend on the log without linking `libllama`.
-//!
-//! # Two places the seam is lossy, and both are reported rather than papered over
-//!
-//! 1. **`TurnFinished` is `TurnMetrics` upstream and `{usage, timings}` here.**
-//!    §4.5 says `usage` and does not say what is in it. What survives is what a
-//!    head can show: prompt/cached/predicted, and three durations. What does *not*
-//!    survive is `prefix_check`, `id_slot`, `n_busy_slots`, `cost` and
-//!    `dialect_template_sha` — every one of which §18.2 says is needed to tell a
-//!    scheduling fact from a prefix divergence. A head cannot show them, so
-//!    `turn_metrics` must reach a head by some other route, or §4.5's `usage` must
-//!    grow.
-//! 2. **`TranscriptAppended` has no content**, and `EventSink` has no channel for
-//!    it. See [`crate::view::SessionView::record_item`].
+//! The seam is lossy in two places, both reported rather than papered over. `TurnFinished` carries
+//! `{usage, timings}` and not the rest of the engine's metrics (`prefix_check`, `id_slot`,
+//! `n_busy_slots`, `cost`, `dialect_template_sha`), which a head cannot show but which tells a
+//! scheduling fact from a prefix divergence. And `TranscriptAppended` has no content, with no
+//! `EventSink` channel for it: see [`crate::view::SessionView::record_item`].
 
 use letibot_turn::{DeltaTarget as TurnDelta, EventSink, TurnEvent};
 
 use crate::event::{DeltaTarget, FinishReason, PromptProgress, SessionEvent, Timings, Usage};
 use crate::hub::Hub;
 
-/// Lift one engine event into §4.5's enum.
+/// Lift one engine event into [`SessionEvent`].
 pub fn from_turn_event(e: TurnEvent) -> SessionEvent {
     match e {
         TurnEvent::TurnStarted {
@@ -54,11 +41,8 @@ pub fn from_turn_event(e: TurnEvent) -> SessionEvent {
         TurnEvent::TokensGenerated { turn_id, tokens } => {
             SessionEvent::TokensGenerated { turn_id, tokens }
         }
-        // **The compaction's own progress, never lifted as the session's.** This is the
-        // one arm here that exists to NOT forward an event as itself; see
-        // `TurnEvent::CompactionProgress`. Nothing about the wording would have shown
-        // the difference — the head drew it under the wrong label, as the session's
-        // context, because that is the only slot a `PromptProgress` has.
+        // The compaction's own progress, never lifted as the session's: the head drew a
+        // `PromptProgress` under the session's context label, because that is the only slot it has.
         TurnEvent::CompactionProgress {
             half,
             halves,
@@ -98,14 +82,12 @@ pub fn from_turn_event(e: TurnEvent) -> SessionEvent {
             call_id,
             name,
             args_digest,
-            // §4.1's cap, applied at the boundary it is about: below this line the
-            // arguments are one in-process string, above it they would be a copy
-            // per attached head.
+            // The display cap, applied at the boundary it is about: below this line the arguments
+            // are one in-process string, above it they would be a copy per attached head.
             target: crate::event::display_target(&arguments),
         },
-        // `tokens` is dropped: §4.5's `TranscriptAppended` is
-        // `{item_id, kind, ledger_head}`. The token count is a ledger fact and the
-        // ledger is where a head asks for it.
+        // `tokens` is dropped: `TranscriptAppended` is `{item_id, kind, ledger_head}`. The token
+        // count is a ledger fact and the ledger is where a head asks for it.
         TurnEvent::TranscriptAppended {
             item_id,
             kind,
@@ -127,8 +109,7 @@ pub fn from_turn_event(e: TurnEvent) -> SessionEvent {
                 prompt_tokens: metrics.prompt_tokens,
                 cached_tokens: metrics.cached_tokens,
                 predicted_tokens: metrics.predicted_tokens,
-                // The one line that was missing: the daemon had the number and
-                // dropped it here, so only the one-shot printer ever showed it.
+                // Carried so a turn's spend reaches the daemon and not only the one-shot printer.
                 cost_micros_usd: metrics.cost.micros_usd,
             },
             timings: Timings {
@@ -200,9 +181,9 @@ mod tests {
 
     #[test]
     fn every_engine_event_has_a_home_in_section_4_5() {
-        // `TurnEvent` is a strict subset of §4.5 by construction. The exhaustive
-        // match in `from_turn_event` is the enforcement; this test is the reminder
-        // that a new engine event must be given one.
+        // `TurnEvent` is a strict subset of what a head can be told by construction. The
+        // exhaustive match in `from_turn_event` is the enforcement; this test is the reminder that
+        // a new engine event must be given a home.
         let e = TurnEvent::Warning {
             code: "guard.empty",
             detail: "nothing came back".into(),
@@ -231,8 +212,8 @@ mod tests {
 
     #[test]
     fn a_recording_sink_and_a_log_sink_see_the_same_sequence() {
-        // The seam is a pure function, so a test that recorded engine output can be
-        // replayed into a log — which is what makes W8 a leaf.
+        // The seam is a pure function, so a test that recorded engine output can be replayed into
+        // a log - which is what makes the two crates land independently.
         let mut rec = RecordingSink::new();
         rec.emit(TurnEvent::TurnStarted {
             turn_id: "t1".into(),
