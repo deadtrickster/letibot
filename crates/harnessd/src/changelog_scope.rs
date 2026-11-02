@@ -7,7 +7,7 @@
 //! Three facts, and each is read from the one place that already knows it:
 //!
 //! * **the file** — the config dir's `host-changelog.jsonl`, beside `providers.toml` and
-//!   `prompts.toml`, by the same rule `Prompts::path` and `standing_notes::global_dir` use;
+//!   `prompts.toml`, by the same rule `Prompts::path` and `Config::global_notes` use;
 //! * **the host** — `letibot_room::host_name()`, `uname -n`'s answer, which is what a person
 //!   comparing two boxes would type. A change made on a declared machine names that machine in
 //!   the call; this is the default;

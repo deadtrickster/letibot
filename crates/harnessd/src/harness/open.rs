@@ -1675,7 +1675,10 @@ impl Harness {
         // seats with `write`/`edit` do.
         registry
             .register(Box::new(letibot_tools::builtins::notes::NotesTool::new(
-                std::sync::Arc::new(crate::notes_scope::ConfigNotes::new(cfg.workspace.clone())),
+                std::sync::Arc::new(crate::notes_scope::ConfigNotes::new(
+                    cfg.workspace.clone(),
+                    cfg.global_notes(),
+                )),
             )))
             .map_err(|e| HarnessError::Setup(format!("registering the notes tool: {e}")))?;
         registry
@@ -2765,8 +2768,8 @@ impl Harness {
         let declared = crate::standing_notes::preloaded(parts.skills.as_ref(), &cfg.skills);
         let standing = crate::standing_notes::section_with_skills(
             &cfg.workspace,
-            &crate::standing_notes::global_dir(),
-            &crate::leticode_config::BoxDirs::for_this_box(),
+            &cfg.global_notes(),
+            &cfg.box_dirs,
             parts.vocab.as_ref(),
             Some(parts.skills.as_ref()),
             declared.as_deref(),

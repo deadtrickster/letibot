@@ -278,10 +278,7 @@ impl Parts {
             }
         };
         let skills = std::sync::Arc::new(letibot_tools::builtins::skill::SkillRegistry::load_for(
-            &letibot_tools::builtins::skill::SkillDirs::for_this_box(
-                Some(&cfg.workspace),
-                crate::mergequeue::git::letibot_data_dir().as_deref(),
-            ),
+            &cfg.skill_dirs(),
         ));
         let lsp = std::sync::Arc::new(letibot_tools::builtins::lsp::LspConfig::default());
         let tasks = std::sync::Arc::new(crate::tasks::TaskJournal::new(
@@ -3554,10 +3551,11 @@ impl Harness {
     /// and a person opens this pane rarely.
     fn install_notes_source(&self) {
         let workspace = self.cfg.workspace.clone();
-        let global = crate::standing_notes::global_dir();
-        // **The box's instruction directories, resolved once**: the pane re-reads the
-        // corpus on every open and the answer cannot change while the daemon runs.
-        let box_dirs = crate::leticode_config::BoxDirs::for_this_box();
+        let global = self.cfg.global_notes();
+        // **The box's instruction directories, from the config and not from `$HOME`**: the pane
+        // re-reads the corpus on every open and the answer is the config's, so a fixture's pane
+        // names the files a fixture wrote.
+        let box_dirs = self.cfg.box_dirs.clone();
         // **The vocabulary the section itself is measured with**, and a field of its own
         // rather than the engine's — see `Harness::note_vocab`, which tracks the engine
         // wherever it moves so the pane cannot measure with the vocabulary the session

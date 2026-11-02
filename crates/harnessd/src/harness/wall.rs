@@ -917,8 +917,8 @@ impl Harness {
         let declared = crate::standing_notes::preloaded(self.skills.as_ref(), &self.cfg.skills);
         let notes = crate::standing_notes::section_with_skills(
             &self.cfg.workspace,
-            &crate::standing_notes::global_dir(),
-            &crate::leticode_config::BoxDirs::for_this_box(),
+            &self.cfg.global_notes(),
+            &self.cfg.box_dirs,
             self.engine.vocab(),
             Some(self.skills.as_ref()),
             declared.as_deref(),

@@ -2008,8 +2008,8 @@ impl Harness {
             if !self.compacting {
                 offers.compose(
                     &self.cfg.workspace,
-                    &crate::standing_notes::global_dir(),
-                    &crate::leticode_config::BoxDirs::for_this_box(),
+                    &self.cfg.global_notes(),
+                    &self.cfg.box_dirs,
                     &self.prefix.system,
                     &self.session.items,
                 );

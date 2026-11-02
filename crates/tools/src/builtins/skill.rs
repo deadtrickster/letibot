@@ -151,11 +151,14 @@ pub struct SkillDirs {
 impl SkillDirs {
     /// This box's: the project's two conventions, the operator's own, the shared install
     /// directory, and the data dir a model writes into.
+    ///
+    /// **The one reader of `$HOME` and `$XDG_CONFIG_HOME` here**, called once by the daemon's
+    /// startup. Everything after it takes the directories as data, so a fixture's skills do not
+    /// become a claim about whose home the suite runs in.
     pub fn for_this_box(workspace: Option<&Path>, data: Option<&Path>) -> SkillDirs {
         let mut dirs = SkillDirs::default();
         if let Some(ws) = workspace {
-            dirs.project.push(ws.join(".letibot/skills"));
-            dirs.project.push(ws.join(".claude/skills"));
+            dirs.project = project_roots(ws);
         }
         if let Ok(config) = std::env::var("XDG_CONFIG_HOME") {
             dirs.operator
@@ -173,6 +176,14 @@ impl SkillDirs {
         dirs
     }
 
+    /// **These roots with the project's half taken from `workspace`**: the box's half travels on
+    /// a session's config, and the project's is whichever tree that session opened in.
+    pub fn in_workspace(&self, workspace: &Path) -> SkillDirs {
+        let mut dirs = self.clone();
+        dirs.project = project_roots(workspace);
+        dirs
+    }
+
     /// Every directory with the source it gives its skills, in priority order.
     fn walk(&self) -> Vec<(&PathBuf, SkillSource)> {
         let mut out: Vec<(&PathBuf, SkillSource)> = Vec::new();
@@ -184,6 +195,14 @@ impl SkillDirs {
         out.extend(self.model.iter().map(|d| (d, SkillSource::Model)));
         out
     }
+}
+
+/// The two conventions a project's own skills are found under, in the order they are read.
+pub fn project_roots(workspace: &Path) -> Vec<PathBuf> {
+    vec![
+        workspace.join(".letibot/skills"),
+        workspace.join(".claude/skills"),
+    ]
 }
 
 /// **One line of the prompt's skills index** — a name, its one line, and where it was found.

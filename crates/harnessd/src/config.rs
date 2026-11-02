@@ -527,6 +527,15 @@ pub struct Config {
     /// at start: `[memory]`, whose project is the session's own workspace
     /// ([`crate::leticode_config::memory_policy`], TODO.md R76 item 7).
     pub read_project_config: bool,
+    /// **The box's own directories**: where its instruction file and its box-wide notes live.
+    ///
+    /// Read once from `$HOME` by [`Config::read_the_box`], and empty in a fixture, so a test's
+    /// prompt is a function of its own files and not of whose home the suite runs in.
+    pub box_dirs: crate::leticode_config::BoxDirs,
+    /// **The box's own skill roots** (the operator's, the shared install, the data dir a model
+    /// writes into), filled by [`Config::read_the_box`] and empty in a fixture. The project's two
+    /// conventions are the session's workspace instead: see [`Self::skill_dirs`].
+    pub box_skills: letibot_tools::builtins::skill::SkillDirs,
     /// **Where the model that answers came from.** The level, the file when a
     /// file is where it came from, and any fault found while working it out —
     /// because *"why is my session on deepseek"* was a whole evening, and an
@@ -2232,6 +2241,12 @@ impl Config {
             // `providers.toml`. Same byte-identical case at the other level.
             leticode_user: crate::leticode_config::LeticodeConfig::default(),
             read_project_config: true,
+            // **An empty box: no instruction file, no box-wide notes, no box skills.** A
+            // fixture that read this laptop's home would assert about the laptop. The daemon is
+            // the one caller that fills these (`for_the_daemon`), and a test that IS about the
+            // box passes its own.
+            box_dirs: crate::leticode_config::BoxDirs::default(),
+            box_skills: letibot_tools::builtins::skill::SkillDirs::default(),
             // Nothing has spoken for the model yet. `Builtin` is the honest
             // starting value and the honest final one for a daemon launched with
             // no flag and no file: the model is the one this daemon was started
@@ -2339,6 +2354,10 @@ impl Config {
     /// reviewer rather than the one that boots a VM nobody asked for.
     pub fn for_the_daemon(workspace: impl Into<PathBuf>) -> Config {
         let mut cfg = Config::for_this_box(workspace);
+        // **The box's directories, resolved HERE and once.** The harness, the notes reader and
+        // the skills index all take them off this config afterwards, so an in-process fixture
+        // cannot inherit the operator's `~/.claude` and a daemon reads it exactly as before.
+        cfg.read_the_box();
         // One read of the project's file for both answers: where its reviewers run and where its
         // gate runs are the same file, and two calls could disagree about which file that is.
         let queue = crate::mergequeue::settings::for_repository(&cfg.workspace).unwrap_or_default();
@@ -2365,6 +2384,34 @@ impl Config {
         // The coordinator's own daemon clears it — see `room::coordinator::configure`.
         cfg.restart_room = true;
         cfg
+    }
+
+    /// **Read this box's own directories, once**: its instruction file, its box-wide notes and
+    /// its skill roots. The one place `$HOME` is read for any of them, so everything below takes
+    /// them off a config and a caller that never calls this reads an empty box.
+    pub fn read_the_box(&mut self) {
+        self.box_dirs = crate::leticode_config::BoxDirs::for_this_box();
+        self.box_skills = letibot_tools::builtins::skill::SkillDirs::for_this_box(
+            None,
+            crate::mergequeue::git::letibot_data_dir().as_deref(),
+        );
+    }
+
+    /// **The box-wide standing notes**: the config dir's `notes/`, beside `providers.toml`, which
+    /// is the rule `Prompts::path` already uses. Empty when the config names no box, and the
+    /// readers treat that as no notes rather than as a relative path into the working directory.
+    pub fn global_notes(&self) -> PathBuf {
+        match self.box_dirs.config.as_os_str().is_empty() {
+            true => PathBuf::new(),
+            false => self.box_dirs.config.join("notes"),
+        }
+    }
+
+    /// **The directories this session's skills are read from**: the box's roots from the config,
+    /// and the project's two conventions off this session's own workspace, so a child opened in
+    /// another tree reads that tree's skills.
+    pub fn skill_dirs(&self) -> letibot_tools::builtins::skill::SkillDirs {
+        self.box_skills.in_workspace(&self.workspace)
     }
 
     /// **This session's logs directory**: `<logs_root>/<session id>/`, or — with no logs root, as

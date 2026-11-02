@@ -67,6 +67,23 @@ fn no_box(scratch: &std::path::Path) -> letibot_harnessd::leticode_config::BoxDi
 /// database out from under every later write (`sqlite: disk I/O error` on macOS, where a
 /// deleted directory cannot grow the WAL).
 fn opened(workspace: &std::path::Path, nonce: &str) -> (Harness, TempDir) {
+    opened_over(
+        workspace,
+        nonce,
+        letibot_harnessd::leticode_config::BoxDirs::default(),
+        letibot_tools::builtins::skill::SkillDirs::default(),
+    )
+}
+
+/// [`opened`] over a box the caller names: the instruction directories and the skill roots
+/// are the config's, so a fixture that is ABOUT them hands its own and one that is not gets
+/// nothing.
+fn opened_over(
+    workspace: &std::path::Path,
+    nonce: &str,
+    box_dirs: letibot_harnessd::leticode_config::BoxDirs,
+    box_skills: letibot_tools::builtins::skill::SkillDirs,
+) -> (Harness, TempDir) {
     let dir = TempDir::new("store");
     let mut cfg = Config::for_this_box(workspace);
     cfg.dialect = Dialect::Qwen;
@@ -74,6 +91,8 @@ fn opened(workspace: &std::path::Path, nonce: &str) -> (Harness, TempDir) {
     cfg.store = Some(dir.path().join("sessions.db"));
     cfg.session_id = format!("standing-{nonce}");
     cfg.vocab_gguf = support::vocab::gguf();
+    cfg.box_dirs = box_dirs;
+    cfg.box_skills = box_skills;
     let parts = Parts::load(&cfg).expect("the vocabulary must load");
     std::fs::write(workspace.join("AGENTS.md"), format!("note-{nonce}-one\n"))
         .expect("fixture AGENTS.md");
@@ -83,6 +102,63 @@ fn opened(workspace: &std::path::Path, nonce: &str) -> (Harness, TempDir) {
         Harness::open(&parts, cfg, hub).expect("the session must open"),
         dir,
     )
+}
+
+/// **The box a session reads is the one its config names, and an unconfigured one reads
+/// nothing of the machine it runs on.**
+///
+/// A fixture's prompt has to be a function of its own files: two sessions here, one instruction
+/// file and one skill between them, and the only difference is what the config says the box is.
+#[test]
+fn the_box_a_session_reads_is_the_one_its_config_names() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let ws = TempDir::new("ws-box");
+    let bx = TempDir::new("box");
+    let home = bx.path().join("home");
+    let skills = home.join(".claude/skills");
+    std::fs::create_dir_all(skills.join("box-skill")).expect("the box's skill dir");
+    std::fs::write(
+        home.join(".claude")
+            .join(letibot_harnessd::leticode_config::CANONICAL_INSTRUCTION_FILE),
+        "a rule only this box has: box-nonce-one\n",
+    )
+    .expect("the box's instruction file");
+    std::fs::write(
+        skills.join("box-skill/SKILL.md"),
+        "---\nname: box-skill\ndescription: a skill only this box has\n---\n\nthe body\n",
+    )
+    .expect("the box's skill");
+
+    let (mine, _store) = opened_over(
+        ws.path(),
+        "mine",
+        letibot_harnessd::leticode_config::BoxDirs {
+            config: bx.path().join("config"),
+            home,
+        },
+        letibot_tools::builtins::skill::SkillDirs {
+            installed: vec![skills],
+            ..Default::default()
+        },
+    );
+    let system = &mine.config().system;
+    assert!(
+        system.contains("box-nonce-one"),
+        "the instruction file the config points at is in message zero: {system}"
+    );
+    assert!(
+        system.contains("box-skill"),
+        "and the skill index is read from the config's roots: {system}"
+    );
+
+    let (nobody, _store) = opened(ws.path(), "nobody");
+    let system = &nobody.config().system;
+    assert!(
+        !system.contains("box-nonce-one") && !system.contains("box-skill"),
+        "a session whose config names no box reads none of one: {system}"
+    );
 }
 
 /// **An `AGENTS.md` edited between the compose and the rebuild shows up in the

@@ -225,16 +225,6 @@ const MAX_INDEX_HEADINGS: usize = 200;
 const BEGIN: &str = "[standing-notes-begin]";
 const END: &str = "[standing-notes-end]";
 
-/// The directory of box-wide standing notes: the config dir's `notes/`,
-/// beside `providers.toml` and `prompts.toml` — the same rule
-/// `Prompts::path` already uses for `prompts.toml`.
-pub fn global_dir() -> PathBuf {
-    letibot_provider::keys::config_file()
-        .parent()
-        .map(|p| p.join("notes"))
-        .unwrap_or_else(|| PathBuf::from("notes"))
-}
-
 /// Read every source that exists, in the order the section carries them.
 ///
 /// **The order is a rule, and this is where it lives.** A file spends the budget

@@ -93,6 +93,10 @@ struct Row {
 /// rather than returning, which is stated in the module docs above.
 pub fn run(args: &[String]) -> i32 {
     let mut cfg = Config::for_this_box(std::env::current_dir().expect("a working directory"));
+    // **A measurement of a live session on this box, so it reads this box**: the instruction
+    // file and the skills index are part of what a session costs, and leaving them out would
+    // measure a prompt nobody runs.
+    cfg.read_the_box();
     cfg.socket = std::env::temp_dir().join(format!("letibot-m1-{}.sock", std::process::id()));
     cfg.effort = Some("low".into());
     let mut turns = 30usize;
