@@ -243,6 +243,39 @@ mod tests {
         }
     }
 
+    /// T20.1: `ToolRuntime::transcript_item` already renders the `NO_RESULT` envelope into
+    /// `payload`, so a renderer that wrapped it again would hand the model two. Both dialects
+    /// emit `payload` verbatim, and the marker appears once in what they emit.
+    #[test]
+    fn a_tool_result_is_wrapped_exactly_once() {
+        let payload = "NO_RESULT\noutcome: abstained\nreason: nothing to read";
+        let item = TranscriptItem::ToolResult {
+            call_id: "c1".into(),
+            name: "read".into(),
+            outcome: letibot_transcript::ToolOutcome::Abstained {
+                reason: "nothing to read".into(),
+            },
+            payload: payload.into(),
+            edit: None,
+            origin: None,
+            media: None,
+        };
+        let prefix = StablePrefix {
+            system: "be terse".into(),
+            tools_json: vec![],
+        };
+        for d in [Dialect::Glm, Dialect::Qwen] {
+            let got = spans_to_string(&d.wiring(None).renderer.render(&prefix, &[item.clone()]));
+            assert_eq!(
+                got.matches("NO_RESULT").count(),
+                1,
+                "{}: the envelope is rendered twice, so the model reads two: {got}",
+                d.name()
+            );
+            assert!(got.contains(payload), "{}: {got}", d.name());
+        }
+    }
+
     #[test]
     fn a_system_update_is_renderable_on_both() {
         // On Qwen a `System` item past position 0 makes the shipped template raise.
