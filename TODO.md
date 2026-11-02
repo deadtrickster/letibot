@@ -43,6 +43,15 @@ go stale.*
 
 ---
 
+## R119 - Automation reacts to rate limits and model timeouts, and can move a running session to another model - **OPEN, filed 2026-11-03, the operator's ask**
+
+The operator: "mcp and basically all automation tools must be able to react to rate limits, model api timeouts and switch running session to a different model". On 2026-11-02 a peer orchestrator ran four sessions into GLM's 5-hour quota (HTTP 429, code 1113) and had no way to move them: `/models` sent through `leticode_send` reached the model as text, and a restart was the only route.
+
+- Events: a rate limit (with the provider's reset time when it gives one), a quota exhaustion, a model API timeout and repeated first-byte stalls are typed events on the wire and in `leticode_events`, and `leticode_status` carries the current model and the last such event.
+- Wait: `letibot-mcp wait --until attention` returns on them, so an orchestrator wakes when a session is stuck on its provider, not only on asks and failures.
+- Switch: an MCP verb (`leticode_model`) and a CLI flag move a running session to another model at the next turn boundary, using the daemon's existing turn-end model switch, and say which model answered the next turn. It must work for a session that joined a daemon another session started (R106).
+- Policy: an optional per-session fallback list in config (for example `fallback = ["deepseek", "glm-coding/glm-5.3"]`) lets the daemon switch on its own after a quota error or N timeouts, and announces the switch as an event.
+
 ## R118 - A GitHub reviewer seat: `letibot attach github <org|repo>` reviews every PR and answers as @letibot - **OPEN, filed 2026-11-03, the operator's ask**
 
 The operator wants letibot to work like CodeRabbit on their own repositories, starting with stroppy-io: "it just attaches to whatever pr is on the repo given to it and does reviews ... responding as @letibot".
