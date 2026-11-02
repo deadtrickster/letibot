@@ -1,8 +1,7 @@
-//! **Build `plugins/builtin/*` for `wasm32-unknown-unknown` and hand the crate a table of them.**
+//! Build `plugins/builtin/*` for `wasm32-unknown-unknown` and hand the crate a table of them.
 //!
-//! See `src/lib.rs` for why this is a build script at all. Everything here is about the two ways a
-//! build script that runs `cargo` goes wrong: inheriting the outer build's environment, and
-//! failing with something a person cannot act on.
+//! A build script that runs `cargo` goes wrong two ways: it inherits the outer build's
+//! environment, and it fails with something a person cannot act on. Both are guarded here.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -17,9 +16,8 @@ fn main() {
     let root = repo.join("plugins").join("builtin");
     let out = PathBuf::from(std::env::var("OUT_DIR").expect("cargo sets OUT_DIR"));
 
-    // **The target, before anything is built.** A box without it can build the host and not the
-    // guest, and the failure a nested cargo gives for that is a wall of errors about a missing
-    // `core` that names no command. One sentence here, and the build stops before it starts.
+    // Checked before anything is built: the failure a nested cargo gives for an absent target is
+    // a wall of errors about a missing `core` that names no command.
     if !wasm_target_installed() {
         eprintln!(
             "error: building letibot needs the `wasm32-unknown-unknown` target for its built-in \
@@ -29,9 +27,8 @@ fn main() {
     }
 
     let guests = guests(&root);
-    // **The whole built-in tree is a dependency**, not only each layer's own directory: a layer
-    // may share a crate with its neighbours (`plugins/builtin/abi`), and a build script that only
-    // watched `<layer>/src` would keep a stale module after a change to the shared half.
+    // The whole tree, not each layer's own directory: layers share a crate
+    // (`plugins/builtin/abi`), so watching only `<layer>/src` would keep a stale module.
     println!("cargo:rerun-if-changed={}", root.display());
     if guests.is_empty() {
         eprintln!(
@@ -45,9 +42,8 @@ fn main() {
     let mut entries = String::new();
     for (name, dir) in &guests {
         let wasm = build(name, dir, &out);
-        // The manifest is read through `include_str!` from the SOURCE tree rather than copied:
-        // it is what a reviewer reads, and a copy in `OUT_DIR` would be a second thing that can
-        // be stale.
+        // Read through `include_str!` from the source tree rather than copied, so there is no
+        // second copy in `OUT_DIR` that can be stale.
         let manifest = dir.join("plugin.toml");
         println!("cargo:rerun-if-changed={}", manifest.display());
         println!(
@@ -78,12 +74,10 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
 }
 
-/// **Is the guest target installed on this toolchain?**
+/// Whether the guest target is installed on this toolchain.
 ///
-/// Asked of `rustc` itself — `--print sysroot` and the standard library's own directory — rather
-/// than of `rustup`, because a box may have a toolchain that did not come from rustup and a build
-/// script must not require one. A `rustc` that cannot answer is treated as *not installed*: the
-/// build then stops with the sentence naming the command.
+/// Asked of `rustc`'s own sysroot rather than of `rustup`, because a toolchain need not come from
+/// rustup. A `rustc` that cannot answer counts as not installed, and the build stops there.
 fn wasm_target_installed() -> bool {
     let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string());
     let out = match Command::new(rustc).args(["--print", "sysroot"]).output() {
@@ -98,8 +92,8 @@ fn wasm_target_installed() -> bool {
         .is_dir()
 }
 
-/// The layer directories under `root`, by name, in the order `read_dir` gives them sorted: a
-/// table whose order moved between builds would be a stack whose precedence moved with it.
+/// The layer directories under `root`, sorted by name: a table whose order moved between builds
+/// would be a stack whose precedence moved with it.
 fn guests(root: &Path) -> Vec<(String, PathBuf)> {
     let Ok(entries) = std::fs::read_dir(root) else {
         return Vec::new();
@@ -118,11 +112,10 @@ fn guests(root: &Path) -> Vec<(String, PathBuf)> {
     found
 }
 
-/// **Build one guest and answer where the module is.**
+/// Build one guest and answer where the module is.
 ///
-/// The child's environment is stripped of the four things that would make it the host's build
-/// rather than the guest's — see the crate doc — and its target directory is the guest's own,
-/// under `OUT_DIR`, so no build of the host can be waiting on it.
+/// The host's build environment is stripped from the child, and its target directory is its own
+/// under `OUT_DIR`, so no host build can be waiting on that directory's lock.
 fn build(name: &str, dir: &Path, out: &Path) -> PathBuf {
     let target = out.join("target").join(name);
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
@@ -169,8 +162,8 @@ fn build(name: &str, dir: &Path, out: &Path) -> PathBuf {
         );
         std::process::exit(1);
     }
-    // **Copied out of the target directory** so the path in the table is one this crate owns: a
-    // `cargo clean -p` on the guest would otherwise move what the host's `include_bytes!` reads.
+    // Copied out of the target directory so the table's path is one this crate owns: a
+    // `cargo clean -p` on the guest would otherwise move what `include_bytes!` reads.
     let kept = out.join(name);
     std::fs::create_dir_all(&kept).expect("create the layer's directory in OUT_DIR");
     let kept = kept.join("plugin.wasm");
