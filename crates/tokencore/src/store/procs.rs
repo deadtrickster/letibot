@@ -1,60 +1,9 @@
-//! **A process in the world, and how to say it is still the same one** (schema 34).
+//! A process in the world, and how to say it is still the same one.
 //!
-//! # Why this is not the `job` table
-//!
-//! The `job` table answers a session's question — *what became of the handle I read a moment
-//! ago* — and it is written twice per job by two callers who each know half of it: the sink that
-//! sees a call backgrounded knows *how* it was backgrounded and not its command, and the watcher
-//! that sees it end knows the command and not the rest. That is the right shape for a pane.
-//!
-//! It cannot answer the supervisor's questions, which are about a PROCESS rather than about a
-//! session's history:
-//!
-//! * **where it runs** — `NULL` for this box, a `hosts.toml` name otherwise, because a check is
-//!   one round trip per HOST and never one per job;
-//! * **what makes a reused pid not this process** — [`ProcessRecord::identity`];
-//! * **what to signal to end it** — the process group, when the pid leads one;
-//! * **when it must be gone** — the deadline, as a wall clock so it outlives this process;
-//! * **how it was last looked at** — when, how long it took, and what that answered.
-//!
-//! And one more, which is the reason a table of its own was unavoidable rather than merely
-//! tidier: a record has to exist for a process **this daemon did not start**. A restarted daemon
-//! finds a job still running, or a host whose job directory says it is finished, and adopts it;
-//! the `job` row for such a job was written by a process that is gone. Adoption writes a
-//! `process` row with no spawn behind it, and nothing about that is second-class here.
-//!
-//! # The six states
-//!
-//! `starting | running | done | stopped | dead | lost` — the vocabulary a hand-rolled supervisor
-//! arrives at, and the reason it is six and not two is that *how a process ended* is the whole of
-//! what a reader needs:
-//!
-//! | state | is |
-//! |---|---|
-//! | [`ProcState::Starting`] | launched, not yet told apart from a launch that failed |
-//! | [`ProcState::Running`] | the last check found the SAME process |
-//! | [`ProcState::Done`] | it exited, and [`ProcessRecord::exit`] is its status |
-//! | [`ProcState::Stopped`] | something ended it on purpose — a deadline, a teardown, a kill |
-//! | [`ProcState::Dead`] | it is gone and **no exit was recorded**, which is not an exit of zero |
-//! | [`ProcState::Lost`] | the host could not be reached to say, so the job **may still run** |
-//!
-//! `dead` and `lost` are the pair that stops the two mistakes this file exists against: a job
-//! whose process vanished reading as a success (`dead`, not `done 0`), and a host that is merely
-//! unreachable being reported as a job that ended (`lost`, which the supervisor retries).
-//!
-//! # The identity, exactly
-//!
-//! A pid is a number the kernel reuses. So the record carries whatever the box can say about
-//! WHICH process had that pid:
-//!
-//! * **Linux**: `/proc/<pid>/stat`'s field 22, the start time in clock ticks since boot.
-//! * **macOS**: `ps -o lstart=` for the pid.
-//! * **Remote**: the job directory's `<id>.pid` **and** its `<id>.sh` command line — the same
-//!   question answered from files that survive the connection, which is what makes a job on
-//!   another machine findable after a restart at all.
-//!
-//! Nothing here compares a pid alone. `alive(pid)` is a fact about a number; `identity` is what
-//! makes it a fact about a job.
+//! The `job` table answers what became of a handle and is written twice per job by two
+//! callers who each know half. This is one record's answers: where it runs, what makes a
+//! reused pid not it, which group a teardown signals, when it must be gone, and how it was
+//! last looked at, including a process a restarted daemon ADOPTED rather than started.
 
 use rusqlite::{OptionalExtension, params};
 
@@ -309,16 +258,11 @@ fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ProcessRecord> {
 }
 
 impl Store {
-    /// **Write one process's whole record**, replacing that handle's last one.
-    ///
-    /// An upsert rather than an append, for `put_job`'s reason: a process has one state at a time,
-    /// and the check that says it ended is the same record as the spawn that said it started. The
-    /// append-only history of what a job did is the session's log, which is a different question.
+    /// Write one process's whole record, replacing that handle's last one. An upsert rather than
+    /// an append, for `put_job`'s reason: a process has one state at a time.
     pub fn put_process(&self, p: &ProcessRecord) -> Result<()> {
-        // **`?`, and not a swallowed `let _ =`.** A record that did not land is a process nobody
-        // will check, so the failure travels to the caller — which says it on the session's log
-        // (`JobRecorder::not_recorded`) rather than leaving a supervisor with nothing to look at
-        // and no reason why.
+        // `?`, and not a swallowed `let _ =`: a record that did not land is a process nobody will
+        // check, so the failure travels to the caller, which says it on the session.
         self.exec(
             "INSERT INTO process (session_id, handle, host, pid, pgid, identity, command, cwd,
                                   scope, started_ms, deadline_ms, state, exit, log_path, log_read,
@@ -356,12 +300,8 @@ impl Store {
         Ok(())
     }
 
-    /// **Every process still open, across every session and host** — the supervisor's first read
-    /// after a restart, and its work list on each tick.
-    ///
-    /// Ordered by host and then by session and handle, so one pass over it groups into one check
-    /// per host without the caller reordering anything, and two readings of one store are one
-    /// value.
+    /// Every process still open, across every session and host: the supervisor's first read after
+    /// a restart and its work list on each tick.
     pub fn open_processes(&self) -> Result<Vec<ProcessRecord>> {
         let conn = self.conn();
         let mut st = conn.prepare(&format!(
@@ -402,12 +342,8 @@ impl Store {
             .optional()?)
     }
 
-    /// **Write what one check answered** — the state, the exit when this check saw one, and the
-    /// clock that dates it. One statement, so a record cannot carry a fresh state beside a stale
-    /// check or the other way round.
-    ///
-    /// A handle with no row writes nothing: a process this store does not know is not one a check
-    /// can have an opinion about.
+    /// Write what one check answered: the state, the exit when this check saw one, and the clock
+    /// that dates it. One statement, so a record cannot carry a fresh state and a stale clock.
     pub fn check_process(&self, session_id: &str, handle: &str, c: &Check) -> Result<()> {
         self.exec(
             "UPDATE process SET state = ?3, exit = COALESCE(?4, exit), check_ms = ?5,

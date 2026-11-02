@@ -1,17 +1,11 @@
-//! **The operator's own run can be ANSWERED** — the two frames that write to a command's
+//! **The operator's own run can be ANSWERED** - the two frames that write to a command's
 //! stdin, and the verb that is the floor under the card.
 //!
-//! `crates/tools`'s `exec::ask` decides *when* a run looks like it is waiting (a reading of
-//! `/proc` and not of the words), `harnessd`'s `prompt` module holds the pipe and raises the
-//! card, and `harnessd`'s own `operator_shell.rs` drives the whole thing end to end against a
-//! real command. **What is pinned HERE is the wire half**: that a `PromptAnswer` and a
-//! `!send` reach the session's [`PromptDriver`] with the right fields, that neither goes
-//! through the command queue, that a late answer is said rather than refused, and — the one
-//! that is a rule rather than a mechanism — **that a secret cannot be routed through the
-//! prompt card**.
-//!
-//! The driver here is a recorder rather than a pipe, for the reason `term_pane.rs`'s is:
-//! this file is about what the server hands over and not about what a program does with it.
+//! What is pinned HERE is the wire half: that a `PromptAnswer` and a `!send` reach the
+//! session's [`PromptDriver`] with the right fields, that neither goes through the command
+//! queue, that a late answer is said rather than refused, and that a secret cannot be
+//! routed through the prompt card. The driver is a recorder rather than a pipe, because
+//! this file is about what the server hands over.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -87,10 +81,9 @@ fn warnings(hub: &Arc<letibot_sessionlog::hub::Hub>) -> Vec<(String, String)> {
         .collect()
 }
 
-/// **A card's answer reaches the command, addressed to the card.**
-///
-/// The `req_id` travels because it is what stops a stale card answering a later command —
-/// so the driver is handed it and not a job id, and the assertion is on that field.
+/// **A card's answer reaches the command, addressed to the card.** The `req_id` travels
+/// because it is what stops a stale card answering a later command, so the driver is
+/// handed it and not a job id.
 #[test]
 fn an_answer_to_a_card_reaches_the_runs_stdin_addressed_to_the_card() {
     let (r, handle, driver) = start("answer");
@@ -138,12 +131,9 @@ fn an_answer_to_a_card_reaches_the_runs_stdin_addressed_to_the_card() {
     handle.shutdown();
 }
 
-/// **The manual way in needs no card and no request id.**
-///
-/// `!send` is the floor under the heuristic: a person watching the stream can answer whether
-/// or not anything looked like a question, so the frame addresses *whatever this session's
-/// operator run is* — which the daemon knows and the head does not. The assertion is that the
-/// driver is handed `None`, which is exactly that meaning.
+/// **The manual way in needs no card and no request id.** `!send` is the floor under the
+/// heuristic: the frame addresses *whatever this session's operator run is*, which the
+/// daemon knows and the head does not - so the driver is handed `None`.
 #[test]
 fn the_manual_send_addresses_whatever_is_running() {
     let (r, handle, driver) = start("manual");
@@ -173,12 +163,8 @@ fn the_manual_send_addresses_whatever_is_running() {
     handle.shutdown();
 }
 
-/// **A card that is no longer open is SAID, not silently dropped.**
-///
-/// The `secret_late` shape one channel over: the person answered and the command did not get
-/// it, which is worse than a sentence they can correct. The driver refuses (the run ended,
-/// or another head answered first), and what lands is a `prompt_late` warning rather than a
-/// `Rejected` — a late answer is not a refused one.
+/// **A card that is no longer open is SAID, not silently dropped.** What lands is a
+/// `prompt_late` warning rather than a `Rejected`: a late answer is not a refused one.
 #[test]
 fn an_answer_with_nothing_waiting_is_a_warning_and_not_a_refusal() {
     let (r, handle, driver) = start("late");
@@ -218,10 +204,8 @@ fn an_answer_with_nothing_waiting_is_a_warning_and_not_a_refusal() {
     handle.shutdown();
 }
 
-/// **`!send` with nothing of yours running is a sentence, not silence.**
-///
-/// The `nothing_to_send_to` register: the act is well formed and the thing it names is not
-/// there, which is `job_output_refused`'s shape — so it is a `Refused` and not a red line.
+/// **`!send` with nothing of yours running is a sentence, not silence.** The act is well
+/// formed and the thing it names is not there, so it is a `Refused` and not a red line.
 #[test]
 fn a_send_with_nothing_running_says_so() {
     let (r, handle, driver) = start("nothing");
@@ -252,22 +236,9 @@ fn a_send_with_nothing_running_says_so() {
     handle.shutdown();
 }
 
-/// **A SECRET CANNOT BE ROUTED THROUGH THE PROMPT CARD.**
-///
-/// The requirement, as a test, and it is about two channels that must not become one. A
-/// password has its own path — `SUDO_ASKPASS`, a helper that attaches as an `askpass` head,
-/// `ClientFrame::Askpass`, and the one [`ServerFrame::Secret`] written back on *that*
-/// connection. The prompt card is the other one: its field is drawn in the open, and what a
-/// person types there is a line for a program's **stdin**.
-///
-/// So the claim is not "the code does not do this" — it is that the two ends cannot meet. A
-/// `PromptAnswer` carrying a password goes to the [`PromptDriver`] (the command's stdin) and
-/// **no `ServerFrame::Secret` is produced on any connection**, including the askpass one
-/// that is sitting there waiting for its own answer.
-///
-/// The second half is what makes it a measurement rather than a shape: the askpass
-/// connection is attached and *is* given a password when a head answers it the right way, so
-/// a green run cannot be a connection that was never listening.
+/// **A SECRET CANNOT BE ROUTED THROUGH THE PROMPT CARD.** A password has its own path
+/// (`SUDO_ASKPASS`, an `askpass` head, the one [`ServerFrame::Secret`] written back on that
+/// connection); the card's field is drawn in the open and its line is a program's stdin.
 #[test]
 fn a_secret_cannot_be_routed_through_the_prompt_card() {
     let (r, handle, driver) = start("nosecret");
@@ -317,11 +288,8 @@ fn a_secret_cannot_be_routed_through_the_prompt_card() {
          has its own path, and the prompt card is not it"
     );
     // The control: the helper's channel DOES carry a secret when a head answers an askpass
-    // the way that path is answered. Without this half, a green run could be a connection
-    // nobody ever writes to.
-    //
-    // `askpass` only writes the frame — the server's reader thread is the one that blocks
-    // waiting for the answer — so this does not need a thread of its own.
+    // the way that path is answered. `askpass` only writes the frame - the server's reader
+    // thread is the one that blocks - so this needs no thread of its own.
     helper
         .askpass("[sudo] password for dead: ", "sudo true")
         .expect("the helper asks");
@@ -342,11 +310,9 @@ fn a_secret_cannot_be_routed_through_the_prompt_card() {
             }
         }
     };
-    // **The answer comes from the HEAD and not from the helper.** The helper's own
-    // connection is the one blocked inside the `Askpass` arm — waiting for its answer — so
-    // it is the other end that sends the `Secret`, which is exactly the shape of the real
-    // path: `letibot-askpass` sits in `recv`, a head answers, and the daemon writes the
-    // password down the one connection that is waiting for it.
+    // **The answer comes from the HEAD and not from the helper**: the helper's own
+    // connection is the one blocked inside the `Askpass` arm, so the other end sends the
+    // `Secret`.
     client
         .secret(&req_id, Some("hunter2".into()))
         .expect("the head answers the askpass");
@@ -373,13 +339,9 @@ fn a_secret_cannot_be_routed_through_the_prompt_card() {
 // The verb
 // ---------------------------------------------------------------------------
 
-/// **`!send` is a whole word, and the parse is the one both halves share.**
-///
-/// The head recognises the verb at the composer and the daemon re-checks it at the socket —
-/// because a frame is a socket and not a keyboard — and the two cannot disagree, because
-/// there is one function. The contrast cases are here because a recogniser is only honest
-/// next to what it must NOT take: `!sender` and `!send-mail` are ordinary `!` lines and
-/// always were.
+/// **`!send` is a whole word, and the parse is the one both halves share.** The head
+/// recognises the verb at the composer and the daemon re-checks it at the socket, and the
+/// two cannot disagree because there is one function.
 #[test]
 fn the_verb_is_a_whole_word_and_the_bare_verb_is_an_enter() {
     assert_eq!(send_line("!send Y"), Some("Y"));

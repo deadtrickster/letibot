@@ -1,14 +1,6 @@
-//! `ReadJobOutput` is answered off the queue while the session's host holds the job.
-//!
-//! The operator, with a turn four minutes into `Responding` and two background jobs running:
-//! *"look at serendb window, try to get into a job - no output"*. The jobs list said one of
-//! them had written 1.8 KB; entering it drew `reading…` and nothing else. The list is answered
-//! on the connection thread off the registry (`ListJobs`); the window was submitted as a
-//! command, and the command queue's one reader is the worker — the thread running the turn.
-//! So the read waited for the turn to end.
-//!
-//! These tests hold the seam: no worker drains the queue here at all, which is exactly the
-//! state a busy worker is in, and the window still arrives.
+//! `ReadJobOutput` is answered off the queue while the session's host holds the job. The job
+//! list is answered on the connection thread, but a submitted command waits for the worker - the
+//! thread inside the turn - so a window read there waited for the turn to end.
 
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
@@ -75,9 +67,8 @@ fn running_window(job: &str) -> SessionEvent {
     }
 }
 
-/// **A running job's window arrives while nothing serves the queue.** The source is asked with
-/// the job and offset the head sent, the event lands on the session's stream, and nothing is
-/// queued behind the turn.
+/// A running job's window arrives while nothing serves the queue: the source is asked with the
+/// job and offset the head sent, and nothing is queued behind the turn.
 #[test]
 fn a_running_jobs_output_is_answered_without_the_worker() {
     let registry = start();
@@ -116,8 +107,8 @@ fn a_running_jobs_output_is_answered_without_the_worker() {
     );
 }
 
-/// **A job the host does not hold is still the worker's**: its answer is the store's record of
-/// how it ended. The source says `None` and the read is queued exactly as it always was.
+/// A job the host does not hold is still the worker's: its answer is the store's record of how it
+/// ended, so a `None` from the source queues the read as it always was.
 #[test]
 fn a_job_the_host_does_not_hold_is_queued_for_the_worker() {
     let registry = start();

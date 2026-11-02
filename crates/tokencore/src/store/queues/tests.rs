@@ -288,11 +288,9 @@ fn the_lease_is_held_by_one_daemon_and_taken_over_only_when_its_heartbeat_expire
     );
 }
 
-/// **A lease nobody will claim can still be given up, and only while it is still expired** — the
-/// supervisor's sweep (2026-10-26): the operator's store held `queue_lease` rows from daemons dead
-/// for weeks on repositories no running daemon serves, so `acquire`'s takeover — which needs a
-/// claimant — never reached them. Released with the history saying why, and a holder that beat in
-/// between is left alone, because the delete is guarded on the heartbeat the sweep judged.
+/// **A lease nobody will claim can still be given up, and only while it is still expired** - the
+/// supervisor's sweep. `acquire`'s takeover needs a claimant, and rows from daemons dead for weeks
+/// on repositories nobody serves had none. A holder that beat in between is left alone.
 #[test]
 fn a_stale_lease_is_released_with_its_history_and_never_after_a_heartbeat() {
     let d = TempDir::new("release-stale");
@@ -329,16 +327,9 @@ fn a_stale_lease_is_released_with_its_history_and_never_after_a_heartbeat() {
     assert!(last.why.contains("600 s old"), "{}", last.why);
 }
 
-/// **A daemon whose build the store has moved past never takes a lease** — the store's schema is
-/// read live, in the claim's own transaction, so a daemon running when a newer build migrated the
-/// file finds out at its next claim or heartbeat.
-///
-/// **What "moved past" means is the READER FLOOR, not the version** (2026-10-26). This test used to
-/// raise the version by one and expect the lease to go, which is exactly the refusal the floor
-/// exists to stop: a build one schema behind an ADDITIVE migration reads every table it serves the
-/// queue from, so it goes on serving. The two halves below are therefore the two facts — an
-/// additive version bump keeps the lease, a raised floor takes it away — and the second is the one
-/// a breaking migration produces, because `migrate` raises the floor to the arm that broke.
+/// **A daemon whose build the store has moved past never takes a lease** - the schema is read live, in
+/// the claim's own transaction. **What "moved past" means is the READER FLOOR, not the version**: an
+/// additive bump keeps the lease, a raised floor takes it away.
 #[test]
 fn a_store_the_queue_has_moved_past_grants_no_lease_and_stops_a_heartbeat() {
     let d = TempDir::new("schema");
@@ -464,10 +455,9 @@ CREATE TABLE merge_review (
     commands_json TEXT NOT NULL DEFAULT '[]');
 ";
 
-/// **Decision 13, as a migration** — every v23 row archived, nothing deleted; the waiting,
-/// taken and stale rows carried forward as reviews; the waiting row whose review said `reject`
-/// (`queue-spin`) not carried; and an OLD daemon's own write to `merge_queue` refused by the new
-/// table's shape.
+/// **Decision 13, as a migration** - every v23 row archived, nothing deleted; the waiting, taken and
+/// stale rows carried forward as reviews; the waiting row whose review said `reject` not carried;
+/// and an OLD daemon's own write to `merge_queue` refused by the new table's shape.
 #[test]
 fn a_v23_store_is_archived_whole_and_its_waiting_rows_go_to_review() {
     let d = TempDir::new("v23");

@@ -1,8 +1,6 @@
-//! **An operator's mark, end to end** (TODO R81): a head sends `ClientFrame::Feedback`, the
-//! connection thread places it on the turn and round the hub says is running — or on the turn
-//! a read-back row was written in — and it lands in a temp `metrics.db` with the head's press
-//! time. Nothing drains this hub's command queue: the worker is, in effect, pinned for the whole
-//! test, which is the case the frame exists for.
+//! An operator's mark reaches `metrics.db` on the turn and round the hub says is running, or on
+//! the turn a read-back row was written in. Nothing drains this hub's command queue: a worker
+//! pinned inside a turn is exactly the state the frame exists for.
 
 use std::time::Duration;
 

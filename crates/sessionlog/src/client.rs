@@ -1,12 +1,5 @@
-//! The head side of the protocol.
-//!
-//! Small on purpose. A head's obligations are exactly three, and each is one method
-//! here so that a second head (W8's remote, W12's flowy connector, the ACP adapter)
-//! cannot quietly skip one:
-//!
-//! 1. ATTACH with a `since_seq`, and accept a `Resync` as a normal answer.
-//! 2. **Ack after rendering**, with `seq` from the batch and both counts.
-//! 3. Send `expected_seq` and a `client_request_id` on every mutating command.
+//! The head side of the protocol: small on purpose, because a head's obligations are one
+//! method each here and the frames carry the rest.
 
 use std::io;
 use std::os::unix::net::UnixStream;
@@ -84,12 +77,9 @@ impl HeadClient {
             caps,
         })?;
         let hello: ServerFrame = reader.read().map_err(|e| match e {
-            // **A first frame this build cannot read is a skew, and it is named as
-            // one.** The alternative was `ClientError::Wire`, which prints
-            // `malformed frame (unknown variant \`peeked_v2\`): {"frame":…}` — a
-            // decoder's complaint about a line, with nothing in it about two builds.
-            // Same words the pump's path says, so a head that fails at the handshake
-            // and one that survives a skew later describe the same thing the same way.
+            // A first frame this build cannot read is a skew, and it is named as one: the
+            // `Wire` error prints a decoder's complaint about a line with nothing in it about
+            // two builds, and the pump says the same words, so both paths describe it alike.
             WireError::Malformed { line, detail } => {
                 ClientError::Protocol(Unreadable { line, detail }.said())
             }
@@ -116,18 +106,8 @@ impl HeadClient {
         }
     }
 
-    /// Connect and ATTACH **without waiting for the `Hello`**.
-    ///
-    /// [`Self::attach`] blocks on the answer, and that answer **carries the whole
-    /// snapshot** — so on a session of thousands of rows a head spends a real wait
-    /// with nothing on the screen and nothing to say, which is what the walking cat
-    /// exists for. This is the same handshake with the blocking part left to the
-    /// caller: it connects, sends `Attach`, and hands back the reader so the caller
-    /// can drive it (a thread, or its own loop).
-    ///
-    /// The `Hello` arrives on the returned reader like any other frame, so a caller
-    /// that wants the blocking form back writes `reader.read()` — which is all
-    /// [`Self::attach`] does after this.
+    /// Connect and ATTACH without waiting for the `Hello`. `attach` blocks on an answer that
+    /// carries the snapshot, and a caller that pumps its own socket must not block.
     pub fn start_attach(
         path: impl AsRef<Path>,
         session_id: &str,
@@ -160,25 +140,21 @@ impl HeadClient {
         ))
     }
 
-    /// Take the head id from a `Hello` this client has read off its own reader.
-    ///
-    /// The pair to [`Self::start_attach`]: that sends the `Attach` and returns, and
-    /// whichever loop reads the `Hello` has to say the name back or every later
-    /// `Ack` is unattributed.
+    /// Take the head id from a `Hello` this client has read off its own reader: the pair to
+    /// [`Self::start_attach`], and whichever loop reads that `Hello` must say the name back or
+    /// every later `Ack` is unattributed.
     pub fn seated_by(&mut self, hello: &ServerFrame) {
         if let ServerFrame::Hello { head_id, .. } = hello {
             self.head_id = head_id.clone();
         }
     }
 
-    /// Consume a `Hello` from a reader this client started, blocking for it — the
-    /// second half of [`Self::attach`], for a caller that has already read frames
-    /// off the reader and wants to stop doing so by hand.
+    /// This head's id - empty until a `Hello` has named it.
     pub fn head_id(&self) -> &str {
         &self.head_id
     }
 
-    /// Send the read mark. **Call this after the batch is on the screen.**
+    /// Send the read mark. Call this after the batch is on the screen.
     pub fn ack(&mut self, ack: Ack) -> Result<(), ClientError> {
         self.writer.write(&ClientFrame::Ack(ack))?;
         Ok(())
@@ -198,12 +174,8 @@ impl HeadClient {
         self.prompt_attached(expected_seq, text, Vec::new())
     }
 
-    /// **A prompt with files beside it** — `ClientFrame::Prompt.attachments`
-    /// (`PROTOCOL_VERSION` 50).
-    ///
-    /// A second door rather than a changed signature: every caller that has nothing to
-    /// attach is a head, a fixture or an example, and a `Vec::new()` at thirty call sites is
-    /// a line each of them can be wrong about. [`Self::prompt`] is this call with none.
+    /// A prompt with files beside it: the attachments half of `ClientFrame::Prompt`. A second
+    /// door rather than a changed signature, so no existing caller has to know.
     pub fn prompt_attached(
         &mut self,
         expected_seq: u64,
@@ -220,10 +192,8 @@ impl HeadClient {
         Ok(client_request_id)
     }
 
-    /// Take back every prompt this head queued that the running turn has not
-    /// consumed yet. The companion of [`Self::prompt`] for the recall-to-edit
-    /// flow: the head pulls the queued line into its composer and sends this,
-    /// so the edited resend replaces the original instead of stacking onto it.
+    /// Take back every prompt this head queued that the running turn has not consumed yet: the
+    /// companion of the prompt door, and the head's own act.
     pub fn withdraw_prompts(&mut self, expected_seq: u64) -> Result<String, ClientError> {
         let client_request_id = self.next_id();
         self.writer.write(&ClientFrame::WithdrawPrompts {
@@ -248,23 +218,14 @@ impl HeadClient {
         &self.identity
     }
 
-    /// **The socket this connection is on**, for a caller that has to ask the kernel a
-    /// question about the process at the other end of it.
-    ///
-    /// Added for R30: a head that has asked the daemon to stop reports *which* process it
-    /// was talking to, and `SO_PEERCRED` answers that for this very socket — where a pid
-    /// looked up in a file could belong to a daemon that has already gone. The libc call
-    /// lives in the caller (`letibot-tui`'s `peer_pid`) because this crate does not depend
-    /// on `libc` and, as `server.rs` says in its own comment, should not start to.
+    /// The socket this connection is on, for a caller that has to ask the kernel about the process
+    /// at the other end.
     pub fn socket(&mut self) -> &UnixStream {
         self.writer.get_mut()
     }
 
-    /// **Ask the daemon to stop**, not just this head.
-    ///
-    /// `who` is the identity this head attached under; it rides along because
-    /// the notice every other head gets names the asker, and a daemon that
-    /// said only "stopping" would leave a shared session guessing.
+    /// Ask the daemon to stop, not just this head. `who` rides along because the notice every
+    /// other head gets has to say on whose word it stopped.
     pub fn stop(&mut self, expected_seq: u64, who: &str) -> Result<String, ClientError> {
         let client_request_id = self.next_id();
         self.writer.write(&ClientFrame::Stop {
@@ -275,12 +236,8 @@ impl HeadClient {
         Ok(client_request_id)
     }
 
-    /// **Close this session here and let go of it** — the frame a migration sends before it
-    /// carries the rows to another store (`docs/remote-hosts.md` RH4). Answered with an
-    /// `Accepted` whose note is [`crate::protocol::NOTE_SESSION_CLOSED`], and then this
-    /// connection is detached: the session it was attached to is no longer held here.
-    ///
-    /// Not [`HeadClient::stop`]: that ends the daemon and every session in it.
+    /// Close this session here and let go of it: what a migration sends before it carries the rows
+    /// to another store.
     pub fn close_session(&mut self, expected_seq: u64, who: &str) -> Result<String, ClientError> {
         let client_request_id = self.next_id();
         self.writer.write(&ClientFrame::CloseSession {
@@ -301,7 +258,7 @@ impl HeadClient {
         Ok(client_request_id)
     }
 
-    /// Ask for this session's todo list — the todos pane's bootstrap read.
+    /// Ask for this session's todo list: the todos pane's bootstrap read.
     /// Answered off the queue, like a list.
     pub fn list_todos(&mut self) -> Result<String, ClientError> {
         let client_request_id = self.next_id();
@@ -309,23 +266,8 @@ impl HeadClient {
         Ok(client_request_id)
     }
 
-    /// **The operator's half of the todo board, replaced wholesale.**
-    ///
-    /// A head owns these rows — they are its own list — so it sends the WHOLE thing on every
-    /// change rather than a delta: a delta protocol for a list of tens of items would be a second
-    /// source of truth about them, which is the mistake this tree keeps deleting.
-    ///
-    /// **And the head is the only thing that can send it.** The daemon stores the rows, serves
-    /// them to every head and hands them to the model as part of one union — but it cannot invent
-    /// one, because the words are the operator's. Every row here carries
-    /// [`letibot_sessionlog::event::TodoBy::Operator`], which is what makes the daemon file it in
-    /// the operator's half instead of the model's.
-    ///
-    /// **`moved` is the other half of one act**: the state the operator asked for on rows that are
-    /// NOT theirs — a row the model wrote, set aside with `/todo postpone <its words>` — named by
-    /// content because the board has no other key. It rides this frame rather than a second one
-    /// because both are *the board as the operator wants it*, and two frames for one act is how a
-    /// head's copy and the store come to disagree.
+    /// The operator's half of the todo board, replaced wholesale: a delta for a list of tens of
+    /// items would be a second language to get wrong.
     pub fn set_operator_todos(
         &mut self,
         expected_seq: u64,
@@ -349,26 +291,21 @@ impl HeadClient {
         Ok(())
     }
 
-    /// **Ask for the standing notes, one row each.** The pane's bootstrap read, exactly as
-    /// [`Client::list_jobs`] is the jobs pane's: the corpus and the form each file has are the
-    /// daemon's, decided with the session's own token counter, and a head that drew its own
-    /// version would draw a second opinion about what the model was given.
-    ///
-    /// Asked on every pane-open rather than held: the notes are the operator's own files and
-    /// can be written between two opens, and this is a read a pane can afford.
+    /// Ask for the standing notes, one row each: the notes pane's bootstrap read. The corpus and
+    /// the form each file takes are the harness's answer.
     pub fn list_notes(&mut self) -> Result<(), ClientError> {
         self.writer.write(&ClientFrame::ListNotes)?;
         Ok(())
     }
 
-    /// **Ask what this session can be handed** — the `/skills` pane's bootstrap read.
+    /// Ask what this session can be handed: the `/skills` pane's bootstrap read.
     pub fn list_skills(&mut self) -> Result<(), ClientError> {
         self.writer.write(&ClientFrame::ListSkills)?;
         Ok(())
     }
 
-    /// **Hand this session one skill's body** — `/skills NAME`, and the pane's Enter. The daemon
-    /// writes the operator's message and runs the turn; `then` is the rest of the line.
+    /// Hand this session one skill's body: `/skills NAME`, and the pane's Enter. The daemon writes
+    /// the operator's message and runs the turn; `then` is the rest of the line.
     pub fn load_skill(
         &mut self,
         expected_seq: u64,
@@ -385,23 +322,16 @@ impl HeadClient {
         Ok(client_request_id)
     }
 
-    /// **Ask for the merge queue, whole.** The pane's bootstrap read, exactly as
-    /// [`Client::list_jobs`] is the jobs pane's: the queue is the daemon's and a head that drew
-    /// its own version would draw a stale one. From then on a `QueueMoved` event says when
-    /// to ask again.
+    /// Ask for the merge queue, whole: the pane's bootstrap read. The queue is the daemon's, so a
+    /// head that drew its own version would draw a stale one; from then on a `QueueMoved` event
+    /// says when to ask again.
     pub fn list_merge_queue(&mut self) -> Result<(), ClientError> {
         self.writer.write(&ClientFrame::ListMergeQueue)?;
         Ok(())
     }
 
-    /// **Ask the daemon to run a plugin pane's look now**, because a head just opened it. The
-    /// answer arrives as [`crate::SessionEvent::PluginPane`] on the log, like the job table's
-    /// rows arrive as a `Jobs` frame: the head draws what it is given and does not decide what a
-    /// dashboard says.
-    ///
-    /// `w` and `h` are the rectangle the head will draw the pane in (protocol 51). They are the
-    /// head's facts and nobody else's: the daemon has no screen, so a pane laid out for a guess
-    /// would wrap its labels for a terminal that does not exist. A resize is this call again.
+    /// Ask the daemon to run a plugin pane's look now, because a head just opened it: the answer
+    /// arrives as a `PluginPane` event rather than a reply.
     pub fn pane_open(&mut self, pane: &str, w: u32, h: u32) -> Result<(), ClientError> {
         self.writer.write(&ClientFrame::PaneOpen {
             pane: pane.to_string(),
@@ -411,9 +341,9 @@ impl HeadClient {
         Ok(())
     }
 
-    /// **Tell the daemon a plugin pane is off the screen**, so it stops refreshing it. The
-    /// opposite of [`Client::pane_open`], and quiet: nothing is published in answer, because the
-    /// head that closed the pane is the one that says so.
+    /// Tell the daemon a plugin pane is off the screen, so it stops refreshing it. The opposite of
+    /// `pane_open`, and quiet: nothing is published in answer, because the head that closed the pane
+    /// is the one that says so.
     pub fn pane_close(&mut self, pane: &str) -> Result<(), ClientError> {
         self.writer.write(&ClientFrame::PaneClose {
             pane: pane.to_string(),
@@ -421,9 +351,9 @@ impl HeadClient {
         Ok(())
     }
 
-    /// **One key of one stop back to the pane that drew it** — the `event` word its action
-    /// named, or `"look"`. Answered like an open: the new view is an event on the log. `say`
-    /// never travels here; see [`ClientFrame::PaneAction`].
+    /// One key of one stop back to the pane that drew it: the `event` word its action named, or
+    /// `"look"`. Answered like an open, with the new view as an event on the log. `say` never
+    /// travels here; see [`ClientFrame::PaneAction`].
     pub fn pane_action(&mut self, pane: &str, item: &str, action: &str) -> Result<(), ClientError> {
         self.writer.write(&ClientFrame::PaneAction {
             pane: pane.to_string(),
@@ -445,10 +375,9 @@ impl HeadClient {
         Ok(client_request_id)
     }
 
-    /// Ask the daemon to rebuild this conversation's prompt from the tools it seats
-    /// now, forking onto it. Queued like a compaction, because it is one.
-    /// `summarise` replaces the conversation with a summary. The default —
-    /// `false` — changes message zero and carries every item across.
+    /// Ask the daemon to rebuild this conversation's prompt from the tools it seats now, forking
+    /// onto it; queued like a compaction, because it is one. `summarise` replaces the conversation
+    /// with a summary, and `false` changes message zero and carries every item across.
     pub fn reseat(&mut self, expected_seq: u64, summarise: bool) -> Result<String, ClientError> {
         let client_request_id = self.next_id();
         self.writer.write(&ClientFrame::ReseatSession {
@@ -459,11 +388,8 @@ impl HeadClient {
         Ok(client_request_id)
     }
 
-    /// Move this session's project to a named point. The daemon persists it in the
-    /// mode store, so it applies without a daemon restart (D13).
-    /// `consented` says the operator answered the unconfined-`allow-all`
-    /// confirmation with yes. It is meaningless at every other point and is read
-    /// only where `Mode::ALLOW_ALL_HERE` is selected.
+    /// Move this session's project to a named point: the daemon persists it in the mode store, so
+    /// it applies without a restart.
     pub fn set_mode(
         &mut self,
         expected_seq: u64,
@@ -480,13 +406,8 @@ impl HeadClient {
         Ok(client_request_id)
     }
 
-    /// **Ask a PERSON to confirm the point that needs one** — `PROTOCOL_VERSION` 54, B8.
-    ///
-    /// Not [`HeadClient::set_mode`] with `consented: true`, which no head should ever send on
-    /// another one's behalf: this asks, the daemon puts the confirmation in front of the OTHER
-    /// heads attached to the session, and the point moves only when one of them answers. The
-    /// answers are [`ServerFrame::ModeSettled`] (correlated by this `client_request_id`) and the
-    /// request is refused by [`ServerFrame::Rejected`] when nobody is attached to ask.
+    /// Ask a PERSON to confirm the point that needs one. Not `set_mode` with `consented: true`:
+    /// a head that is a program cannot consent on a person's behalf.
     pub fn mode_confirm(&mut self, expected_seq: u64, name: &str) -> Result<String, ClientError> {
         let client_request_id = self.next_id();
         self.writer.write(&ClientFrame::ModeConfirm {
@@ -497,11 +418,8 @@ impl HeadClient {
         Ok(client_request_id)
     }
 
-    /// **A person's answer to somebody else's request for a confirmation** —
-    /// `PROTOCOL_VERSION` 54.
-    ///
-    /// `req_id` is the one [`ServerFrame::ModeConfirm`] carried, so one head's `yes` settles the
-    /// request it was shown and nothing else. A `no` applies nothing and the daemon says so.
+    /// A person's answer to somebody else's request for a confirmation. `req_id` is the one the
+    /// daemon sent, so an answer cannot land on the wrong card.
     pub fn mode_consent(
         &mut self,
         expected_seq: u64,
@@ -529,8 +447,8 @@ impl HeadClient {
         Ok(client_request_id)
     }
 
-    /// **An operator's mark** (`PROTOCOL_VERSION` 45): `polarity` is `good`, `bad` or `note`;
-    /// `at_ms` the press time on this head's clock; `item_id` a row read back, or `None` for now.
+    /// An operator's mark: `polarity` is `good`, `bad` or `note`, `at_ms` the press time on this
+    /// head's clock, `item_id` a row read back or `None` for now.
     pub fn feedback(
         &mut self,
         at_ms: u64,
@@ -547,12 +465,9 @@ impl HeadClient {
         Ok(())
     }
 
-    /// **Ask for the bytes that justified one decision** — R11's locator, leticl's ask.
-    ///
-    /// A locator and not a payload: the head names one decision and one half of its exchange
-    /// and the daemon answers with those bytes or with *not recorded*. Answered with
-    /// `ServerFrame::Diagnostic`, which a head reads from the same receive loop it reads
-    /// everything else on — this returns nothing, the answer is a frame.
+    /// Ask for the bytes that justified one decision: a locator, not a payload. Answered with
+    /// `ServerFrame::Diagnostic` on the same receive loop as everything else, because this returns
+    /// nothing and the answer is a frame.
     pub fn fetch_diagnostic(
         &mut self,
         request_id: &str,
@@ -565,20 +480,8 @@ impl HeadClient {
         Ok(())
     }
 
-    /// **Ask the daemon to admit an operator's own call** — R24 part two, decision 4, the
-    /// first of the two frames.
-    ///
-    /// The daemon answers [`crate::ServerFrame::Rejected`] when the name is not one of
-    /// [`crate::HEAD_RUN_TOOLS`], and otherwise queues the admission and publishes
-    /// [`crate::SessionEvent::OperatorCallAllowed`] once it is recorded. **A head must not run
-    /// the call until that event arrives**: an `Accepted` reply means *queued*, and the whole
-    /// point of the pair is that the admission is on the record before anything happens.
-    ///
-    /// `execute` says *who runs it* (R31). `true` is the daemon, which is what a head with no
-    /// HTTP client and no tool runtime needs; `false` is the head, which is what a head that
-    /// has one does. The admission is identical either way. See
-    /// [`ClientFrame::OperatorCall::execute`] for why both exist and why the daemon's is the
-    /// one that keeps the payload the same program's.
+    /// Ask the daemon to admit an operator's own call: the first of the two frames. A head must
+    /// not run the call before the admission, which is what puts it in the record.
     pub fn operator_call(
         &mut self,
         expected_seq: u64,
@@ -599,7 +502,7 @@ impl HeadClient {
         Ok(client_request_id)
     }
 
-    /// **Hand back what the call produced** — the second frame.
+    /// Hand back what the call produced: the second frame.
     pub fn operator_result(
         &mut self,
         call_id: &str,
@@ -614,15 +517,8 @@ impl HeadClient {
         Ok(())
     }
 
-    /// **The operator's own shell line** — a `!` command, for the daemon to run.
-    ///
-    /// `line` is the submitted line verbatim, `!` first; the daemon strips the bang and runs the
-    /// rest through the session's `bash` execution path, appends the operator's line and the
-    /// result as transcript rows, and never consults the gate. See
-    /// [`ClientFrame::OperatorShell`] for why this is a frame of its own rather than the door.
-    ///
-    /// Answered `Accepted` (queued — mid-turn it runs at the next round boundary) or `Rejected`
-    /// when the line is not a `!` line at all.
+    /// The operator's own shell line: a `!` command for the daemon to run. `line` is verbatim,
+    /// `!` first, because the daemon parses it as the operator typed it.
     pub fn operator_shell(&mut self, expected_seq: u64, line: &str) -> Result<String, ClientError> {
         let client_request_id = self.next_id();
         self.writer.write(&ClientFrame::OperatorShell {
@@ -633,18 +529,8 @@ impl HeadClient {
         Ok(client_request_id)
     }
 
-    /// **Open a pane and run a screen program in it** — `!term <command>`.
-    ///
-    /// `line` is the submitted line verbatim, verb included; the daemon strips `!term` and
-    /// hands the rest to `/bin/sh -c` on a pty the daemon owns. `cols` and `rows` are **the
-    /// conversation's rectangle** — the head is the half that knows it — and they reach the
-    /// pty as its `winsize` before the program's first byte.
-    ///
-    /// **Nothing is answered on this socket but the pane itself.** There is no
-    /// `Accepted`/`Rejected` for this frame: the daemon's first word is
-    /// [`crate::protocol::ServerFrame::TermOutput`] carrying what the program drew, and a
-    /// pane that never started is [`crate::protocol::ServerFrame::TermEnded`] with the
-    /// sentence saying why.
+    /// Open a pane and run a screen program in it: `!term <command>`. `cols` and `rows` are the
+    /// conversation's own rectangle, because the pane is drawn there.
     pub fn term_open(&mut self, line: &str, cols: usize, rows: usize) -> Result<(), ClientError> {
         self.writer.write(&ClientFrame::TermOpen {
             line: line.to_string(),
@@ -654,11 +540,8 @@ impl HeadClient {
         Ok(())
     }
 
-    /// **The operator's keys, verbatim**, to the pane's program.
-    ///
-    /// Bytes and not a keycode — see [`ClientFrame::TermInput`] for why the pane's keyboard
-    /// cannot be the head's own decoder. Nothing is returned: a keystroke has no answer, and
-    /// the pane's next `TermOutput` is the program's reply to whatever it did with it.
+    /// The operator's keys, verbatim, to the pane's program: bytes and not a keycode, because
+    /// the program is a terminal program.
     pub fn term_input(&mut self, pane: u32, bytes: &[u8]) -> Result<(), ClientError> {
         self.writer.write(&ClientFrame::TermInput {
             pane,
@@ -667,60 +550,30 @@ impl HeadClient {
         Ok(())
     }
 
-    /// **The pane's rectangle moved.** The head's fact: the daemon has no screen, so this is
-    /// the only way the program is told the size it is being drawn at.
+    /// The pane's rectangle moved. The head's fact: the daemon has no screen, so this is the only
+    /// way the program is told the size it is being drawn at.
     pub fn term_resize(&mut self, pane: u32, cols: usize, rows: usize) -> Result<(), ClientError> {
         self.writer
             .write(&ClientFrame::TermResize { pane, cols, rows })?;
         Ok(())
     }
 
-    /// **End the pane.** The operator's deliberate act, and the frame the daemon ends the
-    /// pane's scope on: it kills the program and everything it started, and the ending comes
-    /// back as [`crate::protocol::ServerFrame::TermEnded`]. Quiet when there is no pane.
-    ///
-    /// **Not the way out.** `ctrl-\` detaches and sends nothing at all — see
-    /// [`ClientFrame::TermClose`] — so this is only ever reached by the head's `!term close`,
-    /// and only after its own confirmation card has been answered with a yes. A caller that
-    /// sent this on a keystroke would be the defect the split exists to remove.
+    /// End the pane: the daemon kills the program and everything it started, and the ending comes
+    /// back as a `TermClosed` event.
     pub fn term_close(&mut self, pane: u32) -> Result<(), ClientError> {
         self.writer.write(&ClientFrame::TermClose { pane })?;
         Ok(())
     }
 
-    /// **Ask what this session's pane is running.** The answer is
-    /// [`crate::protocol::ServerFrame::TermStatus`], and it is not returned here because the
-    /// frame is read on the head's reader like every other: a head that held a reply table for
-    /// this would be a head with a second state machine for one fact.
-    ///
-    /// The read is what lets a head that is **not drawing** the pane say that something is
-    /// running in it — and it is a read rather than a notification because a detach is not an
-    /// event: see [`ClientFrame::TermStatus`] for the whole argument.
+    /// Ask what this session's pane is running; the answer is a `TermStatus` frame, read off the
+    /// pump like every other answer.
     pub fn term_status(&mut self) -> Result<(), ClientError> {
         self.writer.write(&ClientFrame::TermStatus)?;
         Ok(())
     }
 
-    /// **Ask the model to propose `!` completions for a prefix** — the smart half of the
-    /// `!` completion. The history is this head's own and is the first answer; this is
-    /// asked for only when the history has no match for the prefix.
-    ///
-    /// `prefix` is the composer's line as typed, `!` first. The daemon builds the prompt
-    /// from the session's own rows and asks the LOCAL model; the answer comes back as a
-    /// [`crate::protocol::ServerFrame::ShellSuggestions`] on this head's reader, carrying
-    /// the prefix back so the head can key its cache by it. **Nothing here submits**: the
-    /// lines are candidates for the composer, and Enter is still the operator's.
-    ///
-    /// **`client_request_id` is the caller's, and this is the one client method where
-    /// that is true.** Every other frame here mints its own id and returns it, because
-    /// the only thing that needs to recognise the answer is the writer. A suggestion is
-    /// not answered on the caller's behalf: the head has to match the answer to the
-    /// (prefix, transcript position) it asked about, and it can only do that if the id it
-    /// filed the ask under is the id that travels. Minting a second one here would leave
-    /// the head holding a key the daemon never echoes — the answer would arrive, be
-    /// looked up, miss, and be dropped, and the completion would hang on *asking the
-    /// model* for ever. The head's ids are `{head_id}-s{n}`, which cannot collide with
-    /// [`Self::next_id`]'s `{head_id}-{n}`.
+    /// Ask the model to propose `!` completions for a prefix: the smart half of completion, for
+    /// what the head's own history cannot answer.
     pub fn suggest_shell(
         &mut self,
         expected_seq: u64,
@@ -753,7 +606,7 @@ impl HeadClient {
     }
 
     /// A head's answer to a `SecretRequested`: the password, or `None` to refuse.
-    /// Not a command — no request id comes back, nothing is announced.
+    /// Not a command: no request id comes back, nothing is announced.
     pub fn secret(&mut self, req_id: &str, secret: Option<String>) -> Result<(), ClientError> {
         self.writer.write(&ClientFrame::Secret {
             req_id: req_id.to_string(),
@@ -762,16 +615,8 @@ impl HeadClient {
         Ok(())
     }
 
-    /// **A head's answer to a `PromptRequested`**: the line the person typed, for the
-    /// stdin of the operator's own running command.
-    ///
-    /// Not a command, for [`ClientFrame::PromptAnswer`]'s own reason and the sharpest
-    /// version of it: the session worker is **blocked inside the very command that is
-    /// asking**, so a line queued behind that turn would be drained by the thread waiting
-    /// for it. An empty `line` is a bare Enter and is a real answer.
-    ///
-    /// **Not a secret and not a path to one.** A password goes on
-    /// [`HeadClient::secret`], to the `askpass` connection that asked for it.
+    /// A head's answer to a `PromptRequested`: the line the person typed, for the stdin of the
+    /// operator's own running command.
     pub fn prompt_answer(&mut self, req_id: &str, line: &str) -> Result<(), ClientError> {
         self.writer.write(&ClientFrame::PromptAnswer {
             req_id: req_id.to_string(),
@@ -780,18 +625,8 @@ impl HeadClient {
         Ok(())
     }
 
-    /// **One line to this session's own running command, on demand** — the manual way in.
-    ///
-    /// No request id and no job id: it addresses *whatever operator command this session is
-    /// running right now*, which the daemon knows and the head does not. The verb is
-    /// [`letibot_sessionlog::send_line`], and the line arrives here with the verb stripped.
-    ///
-    /// This is the floor under the prompt card. The card is raised when the daemon can see
-    /// that the run is **blocked reading the terminal it holds** — and nothing has been typed
-    /// at it for a beat — and that reading has
-    /// misses it names — a program blocked on another fd, one that asks and keeps drawing, a
-    /// `/proc` a confined session's daemon may not read. None of those stops a person from
-    /// answering, and this is how they do it.
+    /// One line to this session's own running command, on demand: the manual way in. No request
+    /// id and no job handle: the session has one command.
     pub fn send_line(&mut self, line: &str) -> Result<(), ClientError> {
         self.writer.write(&ClientFrame::SendLine {
             line: line.to_string(),
@@ -809,17 +644,13 @@ impl HeadClient {
         Ok(())
     }
 
-    /// Grant or deny an open **permission**, by option id.
+    /// Grant or deny an open permission, by option id.
     pub fn answer(&mut self, req_id: &str, option_id: &str) -> Result<String, ClientError> {
         self.answer_with(req_id, option_id, None, None)
     }
 
-    /// The same, with the operator's own glob for an *always allow*.
-    ///
-    /// Separate rather than a fourth argument on `answer`, because every caller that
-    /// is not offering a pattern should keep saying so by not passing one — a
-    /// `None` threaded through a dozen call sites is a `Some` waiting to be typed by
-    /// mistake.
+    /// The same, with the operator's own glob for an always allow. Separate rather than a fourth
+    /// argument on the plain answer, so a caller that has no glob says so.
     pub fn answer_with(
         &mut self,
         req_id: &str,
@@ -838,13 +669,8 @@ impl HeadClient {
         Ok(client_request_id)
     }
 
-    /// Answer an open **question** with what the person actually did: chose an
-    /// option, chose one and qualified it, or typed a reply (`PROTOCOL_VERSION` 5).
-    ///
-    /// There is deliberately no `defer` here. A head that wants to come back to a
-    /// question simply does not call this, and the question stays open — a deferral
-    /// that travelled as an answer is how a turn continues on an assumption nobody
-    /// made.
+    /// Answer an open question with what the person actually did: an option, an option and a
+    /// note, a typed reply, or an abstention.
     pub fn answer_question(
         &mut self,
         req_id: &str,
@@ -859,9 +685,8 @@ impl HeadClient {
         Ok(client_request_id)
     }
 
-    /// **Answer the question a todo row waits on** (`PROTOCOL_VERSION` 47): the row's words,
-    /// the question being answered, and what the person did — see
-    /// [`ClientFrame::AnswerTodo`].
+    /// Answer the question a todo row waits on: the row's words, the question being answered, and
+    /// what the person did. See [`ClientFrame::AnswerTodo`].
     pub fn answer_todo(
         &mut self,
         content: &str,
@@ -878,16 +703,14 @@ impl HeadClient {
         Ok(client_request_id)
     }
 
-    /// Ask what sessions this daemon holds. Answered with `ServerFrame::Sessions`
-    /// on the same stream the events arrive on, so the caller reads it out of its
-    /// own pump rather than blocking here — a head that stopped to wait for a list
-    /// would stop rendering the turn it is watching.
+    /// Ask what sessions this daemon holds. Answered with a `Sessions` frame on the same stream
+    /// the events arrive on.
     pub fn list_sessions(&mut self) -> Result<(), ClientError> {
         self.writer.write(&ClientFrame::ListSessions)?;
         Ok(())
     }
 
-    /// `workspace` is the tree the new session is about — the head's own working
+    /// `workspace` is the tree the new session is about - the head's own working
     /// directory. Empty leaves it to the daemon, which is what a head that has no
     /// opinion sends.
     pub fn new_session(&mut self, title: &str, workspace: &str) -> Result<String, ClientError> {
@@ -900,10 +723,8 @@ impl HeadClient {
         Ok(client_request_id)
     }
 
-    /// Ask the daemon to bring a stored session in. Answered with `Sessions`
-    /// carrying it as `created`, exactly as `new_session` is — a head then switches
-    /// to it by the same code path, which is what keeps "make one" and "get the old
-    /// one back" from being two half-tested flows.
+    /// Ask the daemon to bring a stored session in. Answered with `Sessions` carrying it as
+    /// created, exactly as a new session is.
     pub fn resume_session(&mut self, session_id: &str) -> Result<String, ClientError> {
         let client_request_id = self.next_id();
         self.writer.write(&ClientFrame::ResumeSession {
@@ -924,14 +745,8 @@ impl HeadClient {
         Ok(client_request_id)
     }
 
-    /// Move this connection to another session.
-    ///
-    /// The answer is a second `Hello`, which the caller applies exactly the way it
-    /// applied the first — the head's late-join path *is* its switch path, which is
-    /// the reason the daemon answers with a `Hello` rather than a frame of its own.
-    ///
-    /// **`head_id` changes.** The head is a different head in the new session, and a
-    /// client that kept the old one would ack into a session it had left.
+    /// Move this connection to another session. The answer is a second `Hello`, applied exactly
+    /// as the first was.
     pub fn switch(&mut self, session_id: &str, since_seq: u64) -> Result<(), ClientError> {
         self.writer.write(&ClientFrame::Switch {
             session_id: session_id.to_string(),
@@ -940,15 +755,8 @@ impl HeadClient {
         Ok(())
     }
 
-    /// Read another session's scrollback — or, with [`PeekShape::Rows`], its **rows** —
-    /// without leaving this one. Answered with a `Peeked` frame on the pump, like every
-    /// other ask — a head that stopped to wait for it would stop rendering the turn it is
-    /// watching.
-    ///
-    /// **The shape is asked for and never assumed.** `Events` is what this has always
-    /// sent, and what a head that draws the ring itself keeps sending; `Rows` is for a pane
-    /// that wants to draw a session the way it draws any other, which is why it exists at
-    /// all — see [`PeekShape`].
+    /// Read another session's scrollback, or its rows, without leaving this one: answered with a
+    /// `Peeked` frame and nothing else moves.
     pub fn peek(&mut self, session_id: &str, shape: PeekShape) -> Result<(), ClientError> {
         self.writer.write(&ClientFrame::Peek {
             session_id: session_id.to_string(),
@@ -957,16 +765,8 @@ impl HeadClient {
         Ok(())
     }
 
-    /// Read a **window** of one row's body without leaving this session. Answered with a
-    /// `RowFetched` frame on the pump.
-    ///
-    /// `row` is the row's **position in the session** — `0` is its first row ever — which is
-    /// the only name for a row a head can always construct: it knows the rows it holds and
-    /// `items_dropped` says how many came before them. `at` is a byte offset into the body and
-    /// `len` how much to ask for; the daemon caps `len` and clamps `at` to a character
-    /// boundary, so the answer is authoritative about where the window starts. Nothing is
-    /// cached: the same window asked twice is read twice, and a row the daemon has since
-    /// trimmed answers `body: None`.
+    /// Read a window of one row's body without leaving this session: answered with a `RowFetched`
+    /// frame on the pump.
     pub fn fetch_row(
         &mut self,
         session_id: &str,
@@ -1002,10 +802,8 @@ impl HeadClient {
         Ok(())
     }
 
-    /// Take the head id from a `Hello` the caller pumped off the socket.
-    ///
-    /// Not folded into `switch`: the `Hello` arrives on the reader thread, and a
-    /// client that read it here would race its own pump for the same bytes.
+    /// Take the head id from a `Hello` the caller pumped off the socket. Not folded into `switch`,
+    /// because the caller is the one that read the frame.
     pub fn seated(&mut self, head_id: &str) {
         self.head_id = head_id.to_string();
     }
@@ -1015,41 +813,16 @@ impl HeadClient {
         Ok(())
     }
 
-    /// **Make the reader's `read` return at once.**
-    ///
-    /// A reader blocked in `read` on a socket is woken by data, by EOF, or by nothing at
-    /// all — and a daemon that is merely idle sends none of those. So a caller that has
-    /// to *wait* for its reader thread has to end the read itself, or a `join` on a live
-    /// connection is a hang rather than a wait. Measured: `Link::close` did exactly that,
-    /// and the end-to-end reconnect test deadlocked on it.
-    ///
-    /// `Shutdown::Both` rather than `Read`: this leaves the socket unusable on purpose —
-    /// the caller is done with it — and shutting both directions is what makes the
-    /// reader's clone report EOF.
+    /// Make the reader's `read` return at once: a reader blocked in `read` is woken by data, by
+    /// EOF or by nothing at all, so a shutdown needs this.
     pub fn shut_down(&mut self) -> Result<(), ClientError> {
         self.writer.get_mut().shutdown(std::net::Shutdown::Both)?;
         Ok(())
     }
 }
 
-/// What the pump hands a head: a frame, or a line this build could not read.
-///
-/// # Why an unreadable line is not the end of a connection
-///
-/// `ServerFrame` and `SessionEvent` are **internally tagged** — `{"frame": "event",
-/// …}`, `{"event": "delta", …}` — so a tag this build does not know fails the whole
-/// line. That is exactly what a daemon one version ahead looks like from here: the
-/// frames the two share parse, the first one they do not does not, and the fact that
-/// was learned is about two builds and not about the stream.
-///
-/// The pump used to discard the error and return, which killed the channel: the head
-/// drew one more frame and exited, and `the daemon closed the connection` is the
-/// closest it ever came to saying why. The daemon's own read loop had the same shape
-/// (`Err(e) => break Err(e)`, so a frame it could not read hung up in silence) and
-/// was fixed on 2026-09-20 by sending a `Bye` that names both protocol versions. This
-/// is the head's half of that, and it is a *different* answer on purpose: the daemon
-/// can only lose the connection, while a head reading a stream it mostly understands
-/// should keep the stream and say what it could not read.
+/// What the pump hands a head: a frame, or a line this build could not read. `ServerFrame` and
+/// `SessionEvent` share one stream, so a reader has to say which it got.
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)] // the frame is the protocol's whole vocabulary; boxing one variant taxes every receive
 pub enum Inbound {
@@ -1060,10 +833,8 @@ pub enum Inbound {
 }
 
 impl Inbound {
-    /// The frame, or a panic naming the line.
-    ///
-    /// For a caller that owns both ends of the socket — the tests — where an
-    /// unreadable line is a bug in the test rather than a skew to report.
+    /// The frame, or a panic naming the line: for a caller that owns both ends of the socket, an
+    /// unreadable line is a bug in the test.
     pub fn frame(self) -> ServerFrame {
         match self {
             Inbound::Frame(f) => f,
@@ -1072,29 +843,22 @@ impl Inbound {
     }
 }
 
-/// One line of the stream that did not parse, **with the line**.
-///
-/// The line is the whole reason this type exists. A decoder that reports "bad
-/// frame" without the frame turns a precise complaint into a shrug, and the first
-/// question anybody asks about a skew is *which frame*.
+/// One line of the stream that did not parse, with the line: the line is the whole reason this
+/// type exists, because a version skew is diagnosed from it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Unreadable {
     /// The line, as it came off the wire. Kept whole; truncated at the point of
     /// display, where the width is known.
     pub line: String,
-    /// serde's own complaint — `unknown variant \`job_output\`, expected one of …` —
+    /// serde's own complaint - `unknown variant \`job_output\`, expected one of ...` -
     /// which is what names the skew when the tag is one this build has never heard
     /// of.
     pub detail: String,
 }
 
 impl Unreadable {
-    /// **The sentence the operator reads.** What it was, why it is almost always a
-    /// daemon newer than this head, and that the head is still here.
-    ///
-    /// One function so a head cannot say this three ways — a head that exits, a head
-    /// that shrugs and a head that counts have to agree about what happened, and the
-    /// only way to guarantee that is one string.
+    /// The sentence the operator reads: what it was, why it is almost always a daemon newer than
+    /// this head, and what to do about it.
     pub fn said(&self) -> String {
         // Truncated here rather than kept short: the line is the evidence and the
         // first 200 columns of it are what identifies the frame.
@@ -1114,16 +878,8 @@ impl Unreadable {
         )
     }
 }
-/// Drive a reader on this thread, pushing everything it reads into `tx`.
-///
-/// Returns when the daemon closes or the channel's receiver is gone. Detach is
-/// **not** an error: a head that closed its own connection is the normal exit.
-///
-/// **A line this build cannot read is handed over, not swallowed, and is not the end
-/// of the connection.** See [`Inbound`]: the old `Err(_) => return` here killed the
-/// channel, so a head met a daemon it could not parse by drawing one more frame and
-/// exiting — `the daemon closed the connection` being the closest it ever came to
-/// saying why.
+/// Drive a reader on this thread, pushing everything it reads into `tx`. Returns when the daemon
+/// closes or the receiver is dropped.
 pub fn pump(mut reader: FrameReader<UnixStream>, tx: Sender<Inbound>) {
     loop {
         match reader.read::<ServerFrame>() {
@@ -1133,11 +889,9 @@ pub fn pump(mut reader: FrameReader<UnixStream>, tx: Sender<Inbound>) {
                     return;
                 }
             }
-            // **One unreadable line is a fact about two builds, not about the
-            // stream.** The next line is very likely one this head reads perfectly,
-            // so the connection stays up and the complaint travels to the head,
-            // which counts it. A `Malformed` costs the reader nothing: the line has
-            // already been consumed, and the frame after it is the next one read.
+            // One unreadable line is a fact about two builds, not about the stream: the next
+            // line is very likely one this head reads, and a `Malformed` costs the reader
+            // nothing because the line has already been consumed.
             Err(WireError::Malformed { line, detail }) => {
                 if tx
                     .send(Inbound::Unreadable(Unreadable { line, detail }))
@@ -1158,11 +912,8 @@ mod tests {
     use super::*;
     use std::io::Write;
 
-    /// **One line this build cannot read does not end the connection, and it keeps
-    /// the line.** A daemon one version ahead sends a tag this build has never heard
-    /// of; the frames the two share are fine, and the pump used to throw the error
-    /// away and return — which killed the channel and left the head exiting with
-    /// *"the daemon closed the connection"* about a daemon that was still talking.
+    /// One line this build cannot read does not end the connection, and it keeps the line: a
+    /// daemon one version ahead must not look like a dead socket.
     #[test]
     fn an_unreadable_line_is_handed_over_and_the_stream_carries_on() {
         let (server, client) = UnixStream::pair().unwrap();
@@ -1198,10 +949,9 @@ mod tests {
         );
     }
 
-    /// **The sentence names the skew.** What the operator reads has to say what
-    /// arrived, that it is almost always a newer daemon, and that the head is still
-    /// attached — a head that exits and a head that shrugs are the two failures this
-    /// middle path exists between.
+    /// The sentence names the skew: what arrived, that it is almost always a newer daemon, and
+    /// that the head is still attached - a head that exits and a head that shrugs are the two
+    /// failures this middle path exists between.
     #[test]
     fn the_complaint_names_the_frame_the_skew_and_the_version() {
         let u = Unreadable {

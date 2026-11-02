@@ -64,11 +64,9 @@ pub mod migrate;
 mod roles;
 mod stats;
 
-/// What this invocation is being asked to be.
-///
-/// **No catch-all variant**: an unknown name is an error rather than a guess, because
-/// the guess would be "be the daemon" or "be the head" for a typo, and both of those
-/// are long-running processes.
+/// What this invocation is being asked to be. **No catch-all variant**: an unknown name is an
+/// error rather than a guess, because the guess would be "be the daemon" for a typo, and that is
+/// a long-running process.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
     /// `sudo`'s helper: one question over the socket, answer on stdout.
@@ -104,11 +102,9 @@ pub enum Kind {
     Word,
 }
 
-/// **THE TABLE.** One entry per name: what it means, and how it is reached.
-///
-/// Exactly one [`Kind::Program`] entry per role — the name `install.sh` symlinks, and
-/// the name that appears in `--status` output and in the launcher's check that a pid
-/// is the daemon rather than something else. Both of those are asserted below.
+/// **THE TABLE.** One entry per name: what it means, and how it is reached. Exactly one
+/// [`Kind::Program`] entry per role - the name `install.sh` symlinks and the name messages
+/// print. Both of those are asserted below.
 pub const REGISTRY: &[(&str, Role, Kind)] = &[
     // The names as installed: what a symlink is called, and what `argv[0]` says.
     ("harnessd", Role::Daemon, Kind::Program),
@@ -117,10 +113,9 @@ pub const REGISTRY: &[(&str, Role, Kind)] = &[
     ("letibot-m1", Role::M1, Kind::Program),
     ("letibot-render", Role::Render, Kind::Program),
     ("letibot-render-qwen", Role::RenderQwen, Kind::Program),
-    // The words a person types. `tui` and `head` both map to the head on purpose: the
-    // crate is `crates/tui`, the protocol calls it a head, and a reader types whichever
-    // word they just read. That is ALSO why they are two entries in one table rather
-    // than an alternation in a match arm — a table is the thing that can be checked.
+    // The words a person types. `tui` and `head` both map to the head on purpose, because
+    // the crate is `crates/tui` and the protocol calls it a head - and they are two entries
+    // in one table rather than an alternation in a match arm, which is what can be checked.
     ("daemon", Role::Daemon, Kind::Word),
     ("tui", Role::Head, Kind::Word),
     ("head", Role::Head, Kind::Word),
@@ -221,11 +216,9 @@ const EVERY_ROLE_IS_REACHABLE: () = assert!(
 // --- the lookups -----------------------------------------------------------------
 
 impl Role {
-    /// The role a program NAME means, for the `argv[0]` path.
-    ///
-    /// Takes a file name, not a path: `Path::file_name` is the caller's job so this
-    /// stays a pure string match. Returns `None` for `letibot` itself — that is not a
-    /// role, it is the dispatcher — and for anything unrecognised.
+    /// The role a program NAME means, for the `argv[0]` path. Takes a file name, not a path, so
+    /// this stays a pure string match. `None` for `letibot` itself - that is the dispatcher -
+    /// and for anything unrecognised.
     pub fn from_argv0(name: &OsStr) -> Option<Role> {
         lookup(name.to_str()?, Kind::Program)
     }
@@ -307,10 +300,9 @@ fn main() -> ExitCode {
                     println!("letibot {}", env!("CARGO_PKG_VERSION"));
                     ExitCode::SUCCESS
                 } else if migrate::is_far_verb(word) {
-                    // **The far side of a move runs THIS binary's own sub-verbs** — a host's
-                    // `letibot --export-session …` is this same executable, built from the same
-                    // commit, so the verb is recognised here and the flag itself is the module's
-                    // first argument (it parses flags anywhere on its line).
+                    // **The far side of a move runs THIS binary's own sub-verbs**: a host's
+                    // `letibot --export-session …` is this same executable at the same commit, so
+                    // the verb is recognised here and passed on with its flags.
                     let mut line = vec![word.to_string()];
                     line.extend(tail());
                     migrate::run(&line)

@@ -1,48 +1,11 @@
-//! **A daemon with nothing to say must not burn a core** — the measurement, not the argument.
+//! **A daemon with nothing to say must not burn a core** - the measurement, not the argument.
 //!
-//! # The defect this exists for
-//!
-//! MEASURED 2026-10-26 on the operator's box: daemons whose sessions had been ended with the
-//! bridge's `leticode_stop` sat at a full core each, per stopped session, until they were
-//! killed. Seven of them, from another session's packages, with CPU time equal to their age —
-//! one at 200%, for the two sessions it held. Nothing they were asked to do took that time: the
-//! loop is `sessions::court_main`'s, one per session, and what span it was
-//! `Sessions::dispatch` handing the `Interrupt` back to "the thread that owns the session" —
-//! which, on that very thread, is itself. A command that goes back on the queue it was just
-//! taken from is taken again in the same breath, for ever.
-//!
-//! **And this file lives in the bridge crate** because the shape it reproduces is the bridge's
-//! own `leticode_stop`: it needs both halves — a bridge to stop a session with, and a daemon to
-//! measure — and the bridge is the crate that has both.
-//!
-//! # The measurement, and why it is the whole process
-//!
-//! The daemon here is in this process (`Daemon::serve`, as `end_to_end.rs` builds it), so the
-//! CPU the daemon burns is the CPU `getrusage(RUSAGE_SELF)` reports — the process's own
-//! `utime + stime`, which is the same number `/proc/<pid>/stat` carries and the same number
-//! nobody else's work can get into. `support/cpu.rs` holds it, and `idle_clock.rs` proves it
-//! against the `/proc` reading. This binary holds ONE test, because a second one running beside
-//! it would be burning the CPU this one is accounting for.
-//!
-//! # The window, which is the half that was wrong
-//!
-//! MEASURED 2026-11-01, from the merge gate's own report (3 of 227 targets red, this the first):
-//! the first window read **178 ms against a 300 ms budget** on the gate's box and **1.3 ms on a
-//! quiet one** — the same daemon, the same assertion. The number was not the daemon's: a
-//! daemon's opening is a FIXED ~260 ms of CPU (measured by sampling this process every 250 ms),
-//! and how long it takes to *spend* is the box's business — 0.6 s on a quiet box, 4.7 s under
-//! four hundred busy processes. The window opened half a second after the start, so it measured
-//! how much of the opening the box had got through.
-//!
-//! So every window here opens on a CONDITION — the process has gone quiet, read off its own
-//! accounting ([`cpu::wait_until_idle`]) — and not at a fixed moment after an act. The settle's
-//! line is a tenth of the window's own (1% of a core over a second, against 10% over three), so
-//! whatever it lets through cannot be what breaches the budget; see [`cpu::settle_budget`] for the
-//! two looser versions that were measured letting a stretched opening through.
-//!
-//! Every phase is a shape the field produced: a daemon nobody has attached to, a session stopped
-//! after a turn, two sessions with one of them stopped, a stop repeated, and a stop of a session
-//! that never ran a turn at all.
+//! MEASURED 2026-10-26: daemons whose sessions had been ended with `leticode_stop` sat at a full
+//! core each, per stopped session, because `Sessions::dispatch` handed the `Interrupt` back to
+//! "the thread that owns the session" - which, on that very thread, is itself.
+//! The daemon here is in this process, so the CPU it burns is `getrusage(RUSAGE_SELF)`'s own
+//! `utime + stime`. One test per binary, because a second would burn the CPU it accounts for,
+//! and every window opens on a CONDITION - the process has gone quiet - not on a clock.
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -66,21 +29,13 @@ const ANSWER: &str = "answer-marker: done";
 const PATIENCE: Duration = Duration::from_secs(60);
 
 /// **How long each phase is measured over.** Long enough that a full core shows up as seconds
-/// rather than as a rounding error.
-///
-/// **And it is not the whole of this file's wall clock, which is what the first version of this
-/// doc got wrong.** Six windows are 18 s of sleeping, and every one of them is opened by a settle
-/// ([`cpu::wait_until_idle`]) that itself costs at least [`cpu::SPAN`]: MEASURED 2026-11-01, the
-/// six settles here read 2.000 1.000 1.000 1.002 1.000 1.000 s — the first is the daemon's
-/// opening, the rest are a second each — so this binary ran in **29.63 s** on a 32-core box at
-/// load 28. The doc promised *under twenty seconds* because it counted the windows and not the
-/// settles; under the gate's own load the first settle alone was 7.08 s.
+/// rather than as a rounding error - and not the whole of this file's wall clock: six windows are
+/// 18 s of sleeping, and every one is opened by a settle that itself costs at least [`cpu::SPAN`].
 const WINDOW: Duration = Duration::from_secs(3);
 
-/// **What counts as idle.** A spinning session thread spends about WINDOW of CPU (a whole core);
-/// a daemon that is actually waiting spends a few milliseconds — its accept loop polls every
-/// 20 ms, which is 150 wake-ups over this window and no measurable share of a core. A tenth of
-/// the window is the line between *asleep* and *working*, and it is far from both.
+/// **What counts as idle.** A spinning session thread spends about WINDOW of CPU; a waiting
+/// daemon spends a few milliseconds, its accept loop polling every 20 ms. A tenth of the window
+/// is the line between *asleep* and *working*, and it is far from both.
 fn idle_budget() -> Duration {
     WINDOW / 10
 }
@@ -123,13 +78,8 @@ impl Drop for TempDir {
 // ---------------------------------------------------------------------------
 
 /// **How much CPU this process burns while nothing is asked of it**, once it has stopped being
-/// busy — [`WINDOW`] of wall clock, with the rate asserted against [`idle_budget`].
-///
-/// Two numbers and both are reported: how long the process took to go quiet (the box's business,
-/// and the reason this window is not opened at a fixed moment) and what it then spent (the
-/// daemon's). The settle's ceiling is [`cpu::CEILING`], and only a real hang or a real spin trips
-/// it — with its own words, because a process that never spends under 1% of a core over a second
-/// is not a process that is waiting.
+/// busy - [`WINDOW`] of wall clock, with the rate asserted against [`idle_budget`]. Two numbers
+/// are reported: how long it took to go quiet (the box's) and what it then spent (the daemon's).
 fn assert_idle(what: &str) -> Duration {
     let settled = cpu::wait_until_idle(what);
     let before = cpu::this_process();
@@ -272,11 +222,9 @@ impl World {
     fn start() -> World {
         let dir = TempDir::new("e2e");
         let root = dir.path();
-        // **Nothing of the operator's may reach this session**: a key in their
-        // `providers.toml` or in the environment would decide what answers, a mode row
-        // in their store would decide the approval point, and the models catalogue in
-        // their `~/.cache` would decide what a turn COSTS. All three are pointed at
-        // scratch.
+        // **Nothing of the operator's may reach this session**: a key in their `providers.toml`
+        // would decide what answers, a mode row in their store the approval point, and the
+        // models catalogue in their `~/.cache` what a turn COSTS. All three are pointed at scratch.
         std::fs::create_dir_all(root.join("config/letibot")).expect("config dir");
         // SAFETY: this test binary runs one test, and the variables are set before the
         // daemon, any thread that reads config, or the bridge exists.
@@ -352,11 +300,9 @@ impl World {
         // daemon by connecting, and a socket that appears a moment later would be a race
         // between the test's first `start` and its own fixture.
         let daemon = Daemon::serve(registry.clone(), &socket).expect("the socket binds");
-        // **Where this daemon's tools run, as harnessd writes it at its own start** — the
-        // fixture's job here because the fixture is the daemon: without the record, a
-        // `leticode_start` asking for this box refuses to join a daemon it cannot place
-        // (`daemon::ensure`), which is the behaviour that keeps a package from running
-        // somewhere nobody named.
+        // **Where this daemon's tools run, as harnessd writes it at its own start** - the
+        // fixture's job because the fixture is the daemon: without the record, a `leticode_start`
+        // asking for this box refuses to join a daemon it cannot place (`daemon::ensure`).
         letibot_sessionlog::placement::write(&socket, "host").expect("the placement record");
         let worker_registry = registry.clone();
         let worker = std::thread::spawn(move || {
@@ -445,16 +391,14 @@ impl Drop for World {
 // The run
 // ---------------------------------------------------------------------------
 
-/// **Four shapes the field produced, and the CPU each of them burns.**
-///
-/// One test rather than four, because the measurement is the whole process's and two of these
-/// running beside each other would be measuring one another.
+/// **Four shapes the field produced, and the CPU each of them burns.** One test rather than four,
+/// because the measurement is the whole process's and two of these running beside each other
+/// would be measuring one another.
 #[test]
 fn a_daemon_with_nothing_to_do_does_not_burn_a_core() {
     // **The daemon this test measures runs commands**, so a delegated cgroup v2 subtree (on macOS,
-    // its process groups) is the apparatus it needs: the session is seated `Leticode` + `bash`, and
-    // `Sessions::open_first` refuses on `HostBackend::executable` without one. Absent apparatus is
-    // not a failed assertion (AGENTS.md), so it is announced and skipped; the merge gate has it.
+    // its process groups) is the apparatus it needs. Absent apparatus is not a failed assertion
+    // (AGENTS.md), so it is announced and skipped; the merge gate has it.
     let Some(_) = letibot_tokencore::apparatus::present(
         "a process-lifetime tree (cgroup v2; process groups on macOS)",
         letibot_tools::host_tree().is_ok(),
@@ -478,15 +422,8 @@ fn a_daemon_with_nothing_to_do_does_not_burn_a_core() {
     let worktree = world.worktree.display().to_string();
 
     // --- 1. a daemon nobody has attached to --------------------------------
-    // **The first session, and the review queue's, are both courts already** — `open_first`
-    // eagerly, and `ensure_gatekeeper` on the daemon's first idle pass — so this phase would
-    // catch a spin that has nothing to do with a head at all.
-    //
-    // **And this is the phase that was red on the gate**, because a daemon's opening is a fixed
-    // ~260 ms of CPU and the window used to open half a second in: 178 ms of that work was still
-    // being spent on a loaded box, 1.3 ms of it on a quiet one. The window now opens when the
-    // process has gone quiet, and `quiet after` in the line below is how long the box took to get
-    // there — the box's number, printed beside the daemon's.
+    // **The first session, and the review queue's, are both courts already**, so this phase would
+    // catch a spin with no head in it. `quiet after` below is the box's number, not the daemon's.
     let cold = assert_idle("a fresh daemon with no head");
 
     // --- 2. a session stopped after a turn ---------------------------------
@@ -498,27 +435,23 @@ fn a_daemon_with_nothing_to_do_does_not_burn_a_core() {
     let stopped = assert_idle("a session stopped after a turn");
 
     // --- 3. two sessions, ONE of them stopped ------------------------------
-    // The 200% observation: a daemon holding two sessions spun on two cores. The second
-    // session is running while its head is attached, so what this window proves is that the
-    // stopped one costs nothing beside it — and then, below, that both of them stopped cost
-    // nothing either.
+    // The 200% observation: a daemon holding two sessions spun on two cores. The stopped one
+    // must cost nothing beside a running one, and then neither may cost anything.
     let second = world.a_session(&bridge, &worktree);
     let one_of_two = assert_idle("one of two sessions stopped, the other held by a head");
     bridge.stop(&second).expect("the second session stops too");
     let two_stopped = assert_idle("both sessions of the daemon stopped");
 
     // --- 4. the same stop again -------------------------------------------
-    // The bridge no longer holds the session, so this is the refusal — and a refused stop is
-    // a path the field took too (a package stopping its own session twice, or a script
-    // stopping one that had already gone).
+    // The bridge no longer holds the session, so this is the refusal - and a refused stop is a
+    // path the field took too (a package stopping its own session twice).
     let again = bridge.stop(&first);
     assert!(again.is_err(), "the bridge no longer holds it: {again:?}");
     let twice = assert_idle("a second stop of the same session");
 
     // --- 5. a stop of a session that never ran a turn ----------------------
     // **The review queue's session**: the daemon opens it on its first idle pass and it stays
-    // idle until a row arrives, which on this workspace is never. Stopping it is the shape a
-    // bridge watching `s-gatekeeper` produces.
+    // idle until a row arrives, which on this workspace is never.
     let held = bridge
         .attach(&worktree, "gatekeeper", false)
         .expect("the review queue's session is a session a head can drive");

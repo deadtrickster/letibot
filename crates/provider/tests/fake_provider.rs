@@ -19,10 +19,9 @@ fn fake(script: &'static str, status: u16) -> Fake {
     fake_answering(move |_| (status, script.to_string()))
 }
 
-/// **A fake that decides per REQUEST** — the body it was sent is the argument, and the
-/// answer is what the real provider would say to that body. `fake` is this with one answer
-/// for everything; the learn-on-refusal test needs the other shape, because the whole
-/// question is whether the second request is different from the first.
+/// A fake that decides per REQUEST: the body it was sent is the argument and the answer is what
+/// the real provider would say to it. The learn-on-refusal test needs this shape, because the
+/// whole question is whether the second request differs from the first.
 fn fake_answering(answer: impl Fn(&str) -> (u16, String) + Send + 'static) -> Fake {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!(
@@ -151,11 +150,9 @@ fn a_turn_streams_reasoning_text_and_a_tool_call_and_the_request_carries_the_key
     assert_eq!(v["tools"][0]["function"]["name"], "read");
 }
 
-/// **The tail reaches the wire as the last message, and an absent tail adds
-/// nothing.** `TurnRequest::tail` is where the standing-notes offer rides
-/// (`letibot_harnessd::notes_offer`); this is the same claim as `messages`' own
-/// unit test, made against a real socket and a real request body rather than
-/// against `convert`'s return value.
+/// The tail reaches the wire as the last message, and an absent tail adds nothing: the same
+/// claim `messages`' own unit test makes, against a real socket and a real request body rather
+/// than against `convert`'s return value.
 #[test]
 fn a_tail_is_the_last_message_on_the_wire() {
     let f = fake(SCRIPT, 200);
@@ -221,14 +218,8 @@ fn a_refusal_carries_the_providers_own_message() {
     }
 }
 
-/// **The provider's own code survives the projection to its message** — MEASURED 2026-10-31,
-/// and it cost a six-times retry.
-///
-/// A `429` whose JSON is `{"error":{"code":"insufficient_quota","message":"You exceeded
-/// your current quota…"}}` reached the retry policy as the message alone. `insufficient_quota`
-/// is one of the phrases that says *the account cannot pay* — the case the whole 429 exception
-/// exists for — and it was gone one layer above the classifier, so the round was taken six
-/// times on byte-identical bytes against an account that could not pay.
+/// The provider's own code survives the projection to its message: taking only the message threw
+/// away the one machine-readable word in a refusal, and a 429 naming an unpaid account became prose.
 #[test]
 fn a_refusal_keeps_the_code_that_says_what_it_is() {
     let f = fake(
@@ -262,12 +253,9 @@ fn a_refusal_keeps_the_code_that_says_what_it_is() {
     }
 }
 
-/// **A real picture, as the reference a row carries.**
-///
-/// These bytes matter: `messages::picture_fate` refuses to send a reference that is not a
-/// complete image, so a fixture that is a signature and nothing else never reaches the provider
-/// at all — which is exactly what the incident's 33-byte PNG header was. See
-/// `letibot_transcript::testing`.
+/// A real picture, as the reference a row carries. A fixture that is a signature and nothing else
+/// never reaches the provider at all, because `messages::picture_fate` refuses to send a
+/// reference that is not a complete image.
 fn picture_ref(w: u32, h: u32) -> String {
     letibot_transcript::testing::data_ref("image/png", &letibot_transcript::testing::png(w, h))
 }
@@ -276,21 +264,9 @@ fn picture_bytes(w: u32, h: u32) -> usize {
     letibot_transcript::testing::png(w, h).len()
 }
 
-/// **A model that refuses the picture is LEARNED, and the same request goes again
-/// without it** — the operator's rule: *"when a provider answers http 400 and the body
-/// says the content type is invalid … mark this model text-only for the rest of the
-/// session, say so once, and retry the same request once with placeholders."*
-///
-/// MEASURED 2026-10-25, `~/logs/harnessd-2000f08acfaa.log`: `glm-5.3` answered
-/// `http 400: messages.content.type is invalid, allowed values: ['text']` to the round,
-/// to the compaction that would have made room, and to every turn after — because the
-/// pictures were `read` charts in the HISTORY. The request that failed is the request
-/// this retries, so the compaction succeeds too; it goes through the same `complete`.
-///
-/// What this pins, in order: the FIRST request carried an `image_url` and the second did
-/// not, the retry happened exactly once, the model is recorded as text-only for the rest
-/// of the process, the operator was told exactly once — and a LATER request already goes
-/// out in the shape that works, so the daemon never earns that 400 again.
+/// A model that refuses the picture is LEARNED, and the same request goes again without it:
+/// mark the model text-only for the session, say so once, retry once with placeholders. The
+/// retry is the request that failed, so the compaction that would have made room succeeds too.
 #[test]
 fn a_refusal_of_the_picture_is_learned_and_the_request_retried_with_placeholders() {
     // The model name is this test's own: the mark is process-wide, and a name another
@@ -504,11 +480,8 @@ fn a_provider_that_refuses_the_bytes_is_learned_against_the_picture_and_the_requ
     );
 }
 
-/// **A 400 that carries a picture but is not about it is NOT retried and marks nothing.**
-///
-/// The guard that keeps this arm from swallowing an unrelated refusal: a context-length 400 on a
-/// request with a picture in it must surface as itself, or a session at its window would lose
-/// every picture it holds to a fault that was never theirs.
+/// A 400 that carries a picture but is not about it is NOT retried and marks nothing: the retry
+/// exists for one refusal, and a mark made here would withhold a good picture for ever.
 #[test]
 fn a_refusal_that_is_not_about_the_picture_is_answered_as_itself() {
     const MODEL: &str = "glm-5.3-context-probe";
@@ -552,11 +525,8 @@ fn a_refusal_that_is_not_about_the_picture_is_answered_as_itself() {
     );
 }
 
-/// **A retry that is ALSO refused records nothing and surfaces the provider's own words.**
-///
-/// The reason the marks are committed only on success: a second refusal may be about something
-/// else entirely, and a mark that outlived it would withhold the operator's pictures for ever for
-/// a fault that was never theirs. The words of the second refusal are what the operator sees.
+/// A retry that is ALSO refused records nothing and surfaces the provider's own words: the second
+/// refusal may be about something else, and the next turn tries the pictures again.
 #[test]
 fn a_retry_that_is_refused_too_records_nothing_and_says_what_the_provider_said() {
     const MODEL: &str = "glm-5.3-twice-probe";

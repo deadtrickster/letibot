@@ -1,21 +1,6 @@
-//! **The operator's own shell line** — the `!` frame, `ClientFrame::OperatorShell`.
-//!
-//! The door's own tests (`operator_call.rs`) stop at the queue, and for the same honest
-//! boundary: the frame's job is to reach the queue with the right fields, and the run is
-//! the worker's (`harnessd`'s own `operator_shell.rs` covers that half, including the two
-//! rows it appends and the gate it never consults).
-//!
-//! What is pinned HERE is everything the daemon decides before the queue:
-//!
-//! 1. **A `!` line reaches the queue as the operator's own shell line**, with the typed
-//!    line verbatim and the identity the row's `CallOrigin` will carry — and stale-tolerant,
-//!    because the operator who typed while the screen moved still meant it.
-//! 2. **A line that is not a `!` command is refused in a sentence**, and nothing is queued.
-//!    The daemon re-checks the bang even though the head refuses empties, because a frame
-//!    is a socket, not a keyboard — anything that can connect must not be able to file an
-//!    arbitrary sentence as the operator's shell line.
-//! 3. **A queued `!` line is taken by the round-boundary picker** (`try_head_run_command`),
-//!    which is what makes it run mid-turn rather than waiting a whole turn out.
+//! The operator's own shell line, `ClientFrame::OperatorShell`: what the daemon decides before the
+//! queue. A `!` line is queued with the identity its row's `CallOrigin` carries, anything else is
+//! refused in a sentence, and the round-boundary picker takes the line so it runs mid-turn.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -44,13 +29,8 @@ fn start(tag: &str) -> (Arc<Registry>, ServerHandle) {
     (r, h)
 }
 
-/// Wait for the next frame that is not a resync or a `CommandIssued` announcement.
-///
-/// Two frames come back per command and this reads one of them: `Accepted` is the
-/// server's own ack on this connection, and `CommandIssued` is the hub's announcement on
-/// the session log — the door's own test file records the same off-by-one, and what it
-/// says about it: a test that leaked the announcement would pass by accident until a
-/// second command made the accident stop.
+/// Wait for the next frame that is not a resync or a `CommandIssued` announcement: two come back
+/// per command - `Accepted` on this connection and `CommandIssued` on the session log.
 fn next_frame(rx: &std::sync::mpsc::Receiver<Inbound>, ms: u64) -> Option<ServerFrame> {
     let deadline = Instant::now() + Duration::from_millis(ms);
     while Instant::now() < deadline {
@@ -74,9 +54,8 @@ fn next_frame(rx: &std::sync::mpsc::Receiver<Inbound>, ms: u64) -> Option<Server
     None
 }
 
-/// **A `!` line reaches the queue as the operator's own shell line**, typed line verbatim,
-/// identity attached, and stale-tolerant — the note says *queued anyway* rather than
-/// refusing, for the prompt's own reason: the operator still meant it.
+/// A `!` line reaches the queue as the operator's own shell line, verbatim, with the identity
+/// attached - and stale-tolerant, because the operator who typed while the screen moved meant it.
 #[test]
 fn a_bang_line_reaches_the_queue_as_the_operators_own_shell_line() {
     let (r, handle) = start("queue");
@@ -109,16 +88,16 @@ fn a_bang_line_reaches_the_queue_as_the_operators_own_shell_line() {
         .expect("the worker's half is still in the queue");
     match cmd.kind {
         CommandKind::OperatorShell { line, who } => {
-            // **Verbatim, bang included** — the `User` row the daemon appends is the
-            // operator's own words, and `! ls .` is what they typed.
+            // Verbatim, bang included: the `User` row the daemon appends is the operator's own
+            // words, and `! ls .` is what they typed.
             assert_eq!(line, "! ls .");
             assert_eq!(who, "dead", "the row's `CallOrigin` names the actor");
         }
         other => panic!("the queue holds something else: {other:?}"),
     }
 
-    // **Stale-tolerant**, and said so. The seq has moved (the attach published), so a
-    // seq of 0 is now stale for a second line — and the frame is queued anyway.
+    // Stale-tolerant, and said so: the attach moved the seq, so 0 is now stale for a second
+    // line - and the frame is queued anyway.
     client
         .operator_shell(1, "!cargo test -p letibot-sessionlog")
         .expect("write the second frame");
@@ -143,11 +122,9 @@ fn a_bang_line_reaches_the_queue_as_the_operators_own_shell_line() {
     handle.shutdown();
 }
 
-/// **The negative half: nothing but the bang is refused by name, and nothing is queued.**
-///
-/// `!`, `!   ` (whitespace after the bang) and a line with no bang at all are all refused
-/// with a sentence that says what a `!` line is — the same rule the head applies locally,
-/// re-checked here because a frame does not have to come from a head that checks.
+/// Nothing but the bang is refused by name, and nothing is queued: `!`, `!   ` and a line with no
+/// bang all get a sentence saying what a `!` line is. The daemon re-checks because a frame is a
+/// socket, not a keyboard.
 #[test]
 fn a_line_without_a_command_after_the_bang_is_refused_and_nothing_is_queued() {
     let (r, handle) = start("refuse");
@@ -178,9 +155,8 @@ fn a_line_without_a_command_after_the_bang_is_refused_and_nothing_is_queued() {
     handle.shutdown();
 }
 
-/// **`!!` and `!x` are commands, not errors.** Pinned, because each has a second reading
-/// that must NOT be taken: `!!` is not "repeat the last command" (there is no history here
-/// to repeat from), and `!x` does not need a space to be a command.
+/// `!!` and `!x` are commands, not errors: `!!` is not "repeat the last command" (there is no
+/// history here), and `!x` needs no space to be a command.
 #[test]
 fn the_bang_rule_is_pinned_on_its_edges() {
     let (r, handle) = start("edges");
@@ -191,8 +167,8 @@ fn the_bang_rule_is_pinned_on_its_edges() {
     let (tx, rx) = std::sync::mpsc::channel();
     let _t = std::thread::spawn(move || pump(reader, tx));
 
-    // `!ls` — no space — carries the command `ls`; `!!` carries the command `!` (which
-    // the shell will answer for itself); neither is refused and neither is rewritten.
+    // `!ls` - no space - carries the command `ls`, and `!!` carries `!`, which the shell answers
+    // for itself: neither is refused and neither is rewritten.
     for (typed, command) in [("!ls .", "ls ."), ("!!", "!"), ("! echo '!!'", "echo '!!'")] {
         let _ = client.operator_shell(0, typed).expect("write");
         let _ = next_frame(&rx, 3000).expect("accepted");
@@ -214,13 +190,9 @@ fn the_bang_rule_is_pinned_on_its_edges() {
     handle.shutdown();
 }
 
-/// **A queued `!` line is taken by the round-boundary picker.**
-///
-/// The whole point of `try_head_run_command` is that a command whose row must land
-/// mid-turn cannot wait for the worker that is inside the turn. The door's
-/// `execute: true` calls ride it; an operator's `!` line does too, and this is the
-/// assertion that keeps it there — without it, a `!` typed during a long round would
-/// sit behind the turn while the operator watched a composer that said it was sent.
+/// A queued `!` line is taken by the round-boundary picker, which is what makes it run mid-turn
+/// rather than wait for the worker that is inside the turn - and the prompt behind it is left for
+/// the worker, so a mid-turn `!` cannot eat a prompt.
 #[test]
 fn the_round_boundary_picker_takes_a_queued_bang_line() {
     let hub = letibot_sessionlog::hub::Hub::new("a");
@@ -247,20 +219,16 @@ fn the_round_boundary_picker_takes_a_queued_bang_line() {
         .try_head_run_command()
         .expect("the picker must take the operator's shell line");
     assert!(matches!(taken.kind, CommandKind::OperatorShell { .. }));
-    // And the prompt is still there for the worker — the picker took one thing, not the
-    // queue, which is the property that keeps a mid-turn `!` from eating a prompt.
+    // And the prompt is still there for the worker: the picker took one thing, not the queue.
     assert!(matches!(
         hub.try_command().map(|c| c.kind),
         Some(CommandKind::Prompt { .. })
     ));
 }
 
-/// **A recalled `!` line is taken back, not just its echo.**
-///
-/// `↑` on an empty composer pulls every held line — prompts and bang lines alike — back
-/// into the composer and asks the daemon to drop them, so the daemon must drop the
-/// queued `OperatorShell` with the prompts: a shell command that runs after it was
-/// visibly taken back is work happening, not a message landing late.
+/// A recalled `!` line is taken back, not just its echo: the up arrow pulls every held line into
+/// the composer, so the daemon must drop the queued `OperatorShell` too - a shell command that
+/// runs after it was visibly taken back is work happening, not a message landing late.
 #[test]
 fn a_recall_takes_the_queued_bang_line_back_with_the_prompts() {
     let hub = letibot_sessionlog::hub::Hub::new("a");
@@ -288,8 +256,8 @@ fn a_recall_takes_the_queued_bang_line_back_with_the_prompts() {
         hub.try_withdraw_command(),
         "the withdraw was queued and must be taken"
     );
-    // The take-back removes itself along with the head's queued lines, so what is left
-    // is nothing — the bang line AND the prompt are gone, not just the echo of them.
+    // The take-back removes itself with the head's queued lines, so nothing of them remains:
+    // the bang line AND the prompt are gone, not just their echo.
     assert!(
         hub.try_command().is_none(),
         "nothing of the recalled head's queue remains, and the take-back does not linger"

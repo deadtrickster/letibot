@@ -1,37 +1,6 @@
-//! Reaching a session that is **not in the daemon yet**, over a real socket.
-//!
-//! `sessions.rs` covers a daemon that already holds every session a head can name.
-//! This covers the case that produced the report — *"no session management"* — where
-//! the conversation the operator wants was had by a daemon that has since exited, and
-//! the only trace of it is on disk.
-//!
-//! # Why a fake source rather than a `Store`
-//!
-//! `letibot-sessionlog` does not depend on `letibot-tokencore` and must not start:
-//! the log and the token ledger are two strands that meet in `harnessd`, and a
-//! dependency here would make every head binary link a SQLite. So [`SessionSource`]
-//! is a trait, and this file implements it over a `Vec` — which also makes the two
-//! failure modes that matter cheap to arrange: a source that has never heard of an
-//! id, and a registry with no source at all.
-//!
-//! # What is asserted, and why each one is here
-//!
-//! 1. **A stored session appears in the list, marked as not live.** A picker that
-//!    showed it identically to a live one would offer a one-keystroke switch for a
-//!    row that needs two frames, and the operator would find out by pressing enter.
-//! 2. **`ResumeSession` brings it in, and is idempotent.** "Resume the one I am
-//!    already in" is a thing `letibot --continue` asks for on the most ordinary run
-//!    there is, and a refusal there would send it down an error path.
-//! 3. **An id nobody has heard of is refused by name, and by a *different* name
-//!    than an id the daemon merely does not hold.** Those two send an operator to
-//!    two different places.
-//! 4. **A rename with nowhere to store it is refused rather than accepted.** A name
-//!    that lives only in a daemon's memory comes back as the old name after a
-//!    restart, with nothing having said so.
-//! 5. **A creation does not displace a command in arrival order.** The worker's
-//!    wake queue carries both, and §13.2's promise that two heads are served in the
-//!    order they pressed enter is not a promise about commands only when nobody is
-//!    making sessions.
+//! Reaching a session that is not in the daemon yet, over a real socket: a stored session is
+//! listed as not live, a resume is idempotent, an unknown id is refused differently from one
+//! merely not held, and a creation does not overtake a command submitted before it.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -64,7 +33,9 @@ fn wiring(workspace: &str) -> SessionWiring {
     }
 }
 
-/// What a store would answer, without one.
+/// What a store would answer, without one. [`SessionSource`] is a trait so this crate need not
+/// link a SQLite, and a `Vec` makes the two failures that matter cheap: an id nobody has heard
+/// of, and a registry with no source at all.
 struct Disk(Mutex<Vec<StoredBrief>>);
 
 impl SessionSource for Disk {
@@ -180,16 +151,16 @@ fn the_brief_carries_the_last_turns_context_from_the_store_row() {
     let (registry, _server) = start("context");
     let rows = registry.list();
 
-    // The stored-only arm: the row is the whole of what is known, and the context
-    // is on it. A head that attaches after a restart reads the number from here —
-    // the snapshot it is sent has no turn state to read it from.
+    // The stored-only arm: the row is the whole of what is known, and the context is on it. A
+    // head that attaches after a restart reads the number from here - the snapshot it is sent
+    // has no turn state to read it from.
     let old = rows.iter().find(|b| b.session_id == "s-old").unwrap();
     assert_eq!(old.context_tokens, Some(12_000));
     assert_eq!(old.context_cached, None);
 
-    // The live arm: the store's row is the source, so a live session's brief
-    // carries the same fact a head would get from the snapshot's turn state while
-    // the daemon holds it — and the one that survives the restart.
+    // The live arm: the store's row is the source, so a live session's brief carries the same
+    // fact a head would get from the snapshot's turn state while the daemon holds it - and the
+    // one that survives the restart.
     let live = rows.iter().find(|b| b.session_id == "live").unwrap();
     assert_eq!(live.context_tokens, Some(44_700));
     assert_eq!(live.context_cached, Some(40_000));
@@ -308,10 +279,8 @@ fn a_rename_is_durable_or_it_is_refused() {
 
 #[test]
 fn making_a_session_does_not_displace_a_command_that_was_submitted_first() {
-    // §13.2 promises two heads are served in the order they pressed enter. That is a
-    // promise about the worker's wake queue, and a creation that pushed onto the same
-    // queue made a later session's first command overtake an earlier prompt —
-    // measured, before the bell grew a second lane for opens.
+    // Two heads are served in the order they pressed enter, and a creation that pushed onto the
+    // same queue made a later session's first command overtake an earlier prompt.
     let registry = Registry::new();
     let a = registry
         .create("s-a", "", SessionWiring::default())
@@ -343,9 +312,9 @@ fn making_a_session_does_not_displace_a_command_that_was_submitted_first() {
         },
     );
 
-    // The open comes first — a session must be opened before anything runs in it,
-    // which is where a resume's chain check lives — and then the two prompts in the
-    // order they were submitted.
+    // The open comes first - a session must be opened before anything runs in it, which is
+    // where a resume's chain check lives - and then the two prompts in the order they were
+    // submitted.
     assert!(matches!(registry.next_work(), Some(Work::Open(id)) if id == "s-b"));
     match registry.next_work() {
         Some(Work::Command(id, cmd)) => {
@@ -375,14 +344,9 @@ fn making_a_session_does_not_displace_a_command_that_was_submitted_first() {
     }
 }
 
-/// **R6: an `oc-` id is created for import, not refused as unknown.**
-///
-/// `--session oc-<id>` names an opencode conversation that lives in *opencode's*
-/// database and nowhere in this daemon's store. Before R6 the `ResumeSession` for it was
-/// refused with `no such session in the store` — correct for a typo, wrong for an import.
-/// The two are told apart by the namespace mark: `oc-` means *bring opencode's
-/// conversation in*, and "this daemon does not hold it" is exactly the state an import
-/// starts from. The daemon's open then reads the database into the session it created.
+/// An `oc-` id is created for import, not refused as unknown: the mark means *bring opencode's
+/// conversation in*, and "this daemon does not hold it" is exactly the state an import starts
+/// from. An id with neither mark is still refused, so a typo stays distinguishable.
 #[test]
 fn an_oc_id_is_created_for_import_rather_than_refused_as_unknown() {
     let (registry, server) = start("oc");
@@ -407,10 +371,8 @@ fn an_oc_id_is_created_for_import_rather_than_refused_as_unknown() {
         "the session exists, so a head can attach and watch it fill"
     );
 
-    // **An id that is neither `oc-` nor in the store is still refused by name.** The
-    // `oc-` arm must not become "any unknown id creates a session", which would make a
-    // typo indistinguishable from an import — the exact confusion the two reject codes
-    // exist to keep apart.
+    // An id that is neither `oc-` nor in the store is still refused by name: the `oc-` arm must
+    // not become "any unknown id creates a session", which would make a typo an import.
     client.resume_session("s-typo").unwrap();
     let f = until(&rx, |f| matches!(f, ServerFrame::Rejected { .. }));
     let ServerFrame::Rejected { reason, .. } = f else {
@@ -424,7 +386,7 @@ fn an_oc_id_is_created_for_import_rather_than_refused_as_unknown() {
     let _ = pumping.join();
 }
 
-/// A store whose merge queue cannot be read — the case the pane used to draw as empty.
+/// A store whose merge queue cannot be read - the case a pane would otherwise draw as empty.
 struct BrokenQueue;
 
 impl SessionSource for BrokenQueue {
@@ -442,10 +404,8 @@ impl SessionSource for BrokenQueue {
     }
 }
 
-/// **An unreadable queue is said in the snapshot, not drawn as empty** — R67 item 15, R61
-/// defect 12. The source used to print the failure to the daemon's stderr and answer an empty
-/// list, which the pane cannot tell from a queue with nothing in it; the snapshot now carries the
-/// reason, and the frame is still sent so the pane answers while it is open.
+/// An unreadable queue is said in the snapshot, not drawn as empty: the reason travels with it,
+/// because a pane cannot tell an empty list from a failure it never heard about.
 #[test]
 fn a_queue_that_cannot_be_read_is_said_rather_than_drawn_empty() {
     let r = Registry::new();
@@ -464,11 +424,9 @@ fn a_queue_that_cannot_be_read_is_said_rather_than_drawn_empty() {
     assert!(bare.queues().unreadable.is_some());
 }
 
-/// **A resumed session arrives knowing who it is for** — the same rule the parent edge follows
-/// (R68.6): the row is the record, and the registry's entry is this daemon's memory of it. Without
-/// this a package's conversation would be drawn under `mine` for as long as the daemon that
-/// resumed it lived, and under `packages` after the next restart — one session telling a person
-/// two different things about where it belongs.
+/// A resumed session carries its origin from its row onto the registry's entry - the row is the
+/// record and the entry is this daemon's memory of it - or one session tells a person two
+/// different things about where it belongs, before and after a restart.
 #[test]
 fn a_resumed_session_carries_its_origin_from_its_row_onto_the_entry() {
     let r = Registry::new();
@@ -512,10 +470,8 @@ fn a_resumed_session_carries_its_origin_from_its_row_onto_the_entry() {
     let _ = pumping.join();
 }
 
-/// **A resumed subagent arrives knowing whose it is** (R68.6) — the parent rides in from the
-/// stored row onto the registry's own entry, which is where a worker now asks
-/// (`Registry::parent_of`) instead of re-reading every stored session on each open. Before, a
-/// resume created the entry with no parent and only `list()`'s merge with the store knew.
+/// A resumed subagent carries its parent from the stored row onto the registry's entry, which is
+/// where the worker asks - without it the child is seated as a root.
 #[test]
 fn a_resumed_subagent_carries_its_parent_on_the_entry() {
     let r = Registry::new();

@@ -1,16 +1,8 @@
-//! **What the queues have already said, kept across a restart** (schema 29, TODO R92.7).
+//! What the queues have already said, kept across a restart.
 //!
-//! The merge queue rings a project's root session once per red tip or parked row, and a session's
-//! model is told once per emergency. Both sets lived in the daemon's memory (`RepoQueue.rung`,
-//! `Harness.gate_told`), so every daemon restart re-gated the red tip, rang the same projects
-//! again and RESUMED dormant root sessions to re-tell them what they had already been told. Here
-//! the fact "this was said" is a row, keyed by what was said about (a row and its state, a sha and
-//! its state), so a restart finds it and says nothing.
-//!
-//! One table for every teller, keyed by a string the teller builds — the queue's worker prefixes
-//! its keys `rung:<repository>:`, a session prefixes its own `told:<session>:`. `count` and
-//! `at_ms` are the last telling's, which is what a backoff reads (a gate killed at its cap is
-//! retried less often each time, R92.25).
+//! The sets lived in the daemon's memory, so every restart re-gated the same red tip and resumed
+//! dormant sessions to re-tell them. Here "this was said" is a row keyed by what was said about,
+//! one table for every teller, carrying the count and the clock a backoff reads.
 
 use rusqlite::{OptionalExtension, params};
 

@@ -1,54 +1,22 @@
-//! **Who a session is for** — the operator's own conversation, or one of the kinds of session a
-//! harness makes for itself — and the one rule every list of sessions is grouped by.
+//! **Who a session is for** - the operator's own conversation, or one of the kinds of
+//! session a harness makes for itself - and the one rule every session list groups by.
 //!
-//! # The operator's report, which is the whole of this module's reason
-//!
-//! *"in session view the automatic sessions must be grouped somehow, so my vs auto. otherwise im
-//! lost in subagents."* A daemon on this box holds one conversation of theirs and thirty rows of
-//! work it did on that conversation's behalf — task children at three depths, the review queue's
-//! own session and its reviewers, whatever a package was told to start, the leftovers of
-//! `--prompt` runs — and a picker that draws them in one column ordered by *when something last
-//! happened in it* puts a reviewer above the thing the person is actually doing.
-//!
-//! # What the rule reads, and what it deliberately does not
-//!
-//! Two stored facts and one derivation, in this order:
-//!
-//! 1. **`session.origin`** ([`SessionOrigin`]) — written once, by the daemon, when the session is
-//!    made. It is the only thing that can say *a package started this* or *this is a one-shot's*.
-//! 2. **`parent_session_id`** — a `task` child is somebody's subagent, at any depth. This is the
-//!    mark the tree already uses and it needs no column.
-//! 3. **The review queue's id** ([`crate::is_gatekeeper_session`]) — a **fallback**, for the rows
-//!    written before `origin` existed. Preferring the field and falling back to the spelling is
-//!    the rule the brief asks for; the spelling is kept because the id is derived from the
-//!    workspace (`crate::gatekeeper_session`) and is stable for the life of a folder.
-//!
-//! What it does NOT read is the title, which is the operator's to change at any moment — a
-//! grouping rule that a `/rename` can move a session out of is a rule that fights its user.
-//!
-//! # The queue propagates up, and nothing else does
-//!
-//! A reviewer is a `task` child of the queue's session, so by the parent rule it would be a
-//! *subagent* — and *subagents* is where the operator's own children belong. So the root of the
-//! chain decides for the whole chain **when that root is the queue**: a review, and a review of a
-//! review, is the review queue's work and is drawn with it. Every other chain is decided by the
-//! row itself: a task child of the operator's conversation is a subagent, however deep.
+//! Three marks, in order: `session.origin` (written once, when the session is made),
+//! `parent_session_id` (a `task` child is somebody's subagent at any depth), and the
+//! review queue's id as a fallback for rows older than the column. The title is
+//! deliberately not read: a `/rename` must not move a session between groups. A queue
+//! root decides for its whole chain, so a reviewer is the queue's work, not a subagent.
 
 use crate::is_gatekeeper_session;
 
-/// **The identity the MCP bridge attaches under** — `letibot-mcp`, the only head on this box
-/// that is a program holding a session rather than a person's terminal.
-///
-/// Kept here rather than in the bridge because two crates have to agree about it: the bridge
-/// sends it on every `ATTACH`, and the daemon names it on the session's row so a picker can tell
-/// a package's conversation from the operator's (see [`SessionOrigin::of_opener`]). One string,
-/// one definition, and `letibot-bridge`'s own `IDENTITY` is this constant.
+/// **The identity the MCP bridge attaches under** - `letibot-mcp`, the only head on this
+/// box that is a program holding a session rather than a person's terminal. Here rather
+/// than in the bridge because two crates must agree on it.
 pub const MCP_IDENTITY: &str = "letibot-mcp";
 
-/// **How a session came to exist**, as the daemon wrote it down.
-///
-/// A closed vocabulary rather than a free string: a picker groups by it, and a value nobody
-/// knows would be a row that belongs to no group at all.
+/// **How a session came to exist**, as the daemon wrote it down. A closed vocabulary
+/// rather than a free string: a picker groups by it, and a value nobody knows would be a
+/// row in no group at all.
 #[derive(
     Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
 )]
@@ -59,10 +27,9 @@ pub enum SessionOrigin {
     /// existed that nothing else claims: before it, every row was one of these.
     #[default]
     Operator,
-    /// **A package started it** — a head that is not a terminal, today `letim`'s bridge
-    /// ([`MCP_IDENTITY`]). Still a conversation: the person attached to it afterwards is the
-    /// operator, and they may drive it for hours. It is grouped apart because *they* did not
-    /// open it, and six of them sit among the two they did.
+    /// **A package started it** - a head that is not a terminal, today `letim`'s bridge
+    /// ([`MCP_IDENTITY`]). Still a conversation, grouped apart because *they* did not open
+    /// it.
     Package,
     /// **The review queue's own session** — started by the daemon at startup
     /// (`harnessd`'s `sessions::gatekeeper`), one per workspace, whose board is the queue.
@@ -100,14 +67,9 @@ impl SessionOrigin {
         }
     }
 
-    /// **What a head that asked for a session is**, from the `ATTACH` it opened with.
-    ///
-    /// Keyed on the **identity** and not the kind, and the kind is not an oversight: the
-    /// protocol's kinds are `tui`, `remote`, `flowy`, `acp`, and `remote` is *every* head that is
-    /// not a terminal — the bridge's is `remote`, and so is the throwaway connection the head
-    /// opens to ask a daemon to stop (`stop-force`), which never makes a session. The identity
-    /// is the name a person recognises in the decision corpus, and it is what makes `letim`'s
-    /// sessions the only ones that land in the packages group.
+    /// **What a head that asked for a session is**, from the `ATTACH` it opened with. Keyed
+    /// on the identity and not the kind: `remote` is every non-terminal head, the bridge's
+    /// and the throwaway `stop-force` connection alike.
     pub fn of_opener(_kind: &str, identity: &str) -> Self {
         if identity == MCP_IDENTITY {
             SessionOrigin::Package
@@ -117,9 +79,8 @@ impl SessionOrigin {
     }
 }
 
-/// **The groups a session list is drawn in** — *mine* first, then one group per automatic kind.
-///
-/// The order is the point: the operator scrolls a list to find their own conversations, so those
+/// **The groups a session list is drawn in** - *mine* first, then one per automatic kind.
+/// The order is the point: the operator scrolls to find their own conversations, so those
 /// are above every fold and are never folded themselves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SessionGroup {
@@ -182,10 +143,8 @@ pub struct GroupRow<'a> {
     /// `Some` for a subagent: the session that spawned it.
     pub parent: Option<&'a str>,
     pub origin: SessionOrigin,
-    /// **The seat the row recorded**, when the reader has it — `gatekeeper` for a review. `None`
-    /// where the list a picker is drawn from does not carry one (`SessionBrief` has no role, which
-    /// is the same gap `App::fold_subagents` fills with the title), and then [`GATEKEEPER_SEAT`]'s
-    /// mark is simply unavailable and the title's is used instead.
+    /// **The seat the row recorded**, when the reader has it - `gatekeeper` for a review.
+    /// `None` where the list carries no role, and then the title's mark is used instead.
     pub role: Option<&'a str>,
     /// The session's title, for the brief cut that a reviewer's row is recognised by. Empty for an
     /// unnamed session.
@@ -196,19 +155,9 @@ pub struct GroupRow<'a> {
 /// always created after its parent, so a real chain is short; this is a store somebody edited.
 const MAX_DEPTH: usize = 64;
 
-/// **Which group `id` is drawn in**, from every row in the list.
-///
-/// `rows` is the whole list because one question cannot be answered from one row: *is this the
-/// review queue's work* is a question about its ROOT — and, for a reviewer whose row sits straight
-/// on the operator's own conversation (the layout before the queue had a session of its own, and
-/// still the shape a store written by an older daemon holds), a question about the row ITSELF.
-/// That second shape is why this reads the row's seat and title as well as its id: `s-gk-0` is not
-/// `s-gatekeeper-*`, and a rule that only walked the chain left ten reviewers in `subagents` and
-/// put them back in the list the operator was told they were gone from.
-///
-/// A row the list does not hold — a child whose parent is gone — is grouped by what its own row
-/// says, which is the honest answer: an orphan is not a reviewer any more than it is a
-/// conversation.
+/// **Which group `id` is drawn in**, from every row in the list: *is this the review
+/// queue's work* is a question about the ROOT of the chain, and for a reviewer parented
+/// straight on the operator's conversation, about the row itself.
 pub fn group_of(rows: &[GroupRow<'_>], id: &str) -> SessionGroup {
     // The chain, from this row to its root, looking for the queue on the way.
     let mut cur = id;
@@ -227,10 +176,9 @@ pub fn group_of(rows: &[GroupRow<'_>], id: &str) -> SessionGroup {
     let Some(row) = rows.iter().find(|r| r.id == id) else {
         return SessionGroup::Mine;
     };
-    // **The parent edge before the origin**, because it is the mark the tree already draws:
-    // a child a package spawned is still a subagent, and a reviewer whose row predates the
-    // column is still a subagent's parent's reader — the queue test above has already taken
-    // the reviewers, so what is left here is the operator's own children.
+    // **The parent edge before the origin**: a child a package spawned is still a
+    // subagent. The queue test above has already taken the reviewers, so what is left
+    // here is the operator's own children.
     if row.parent.is_some() {
         return SessionGroup::Subagents;
     }
@@ -242,18 +190,9 @@ pub fn group_of(rows: &[GroupRow<'_>], id: &str) -> SessionGroup {
     }
 }
 
-/// **Is this row the review queue's work?** — three marks, and a row needs one of them.
-///
-/// * **The recorded origin** (`SessionOrigin::Queue`) — the fact, for every row written since
-///   schema 33 and for the reviewer children a daemon marks.
-/// * **The id** ([`is_gatekeeper_session`]) — the queue's own session, recognised by the spelling
-///   that is derived from the workspace, which is the fallback for rows that predate the column.
-/// * **The seat or the title** — a REVIEWER whose row is parented on something other than the
-///   queue's session. Its seat is `gatekeeper` (`Seat::Gatekeeper`'s store spelling, and the
-///   mark `harnessd`'s `is_conversation` reads) and its title is cut from the review brief
-///   (`GATEKEEPER_TITLE_PREFIX`, the mark a head has when the list it holds carries no role).
-///   Either is enough: a row renamed by the operator keeps its seat, and one rebuilt for a head
-///   keeps its title.
+/// **Is this row the review queue's work?** - three marks, and a row needs one: the
+/// recorded origin, the id (the fallback for rows older than the column), and the seat or
+/// the title of a reviewer parented elsewhere.
 fn is_queue_work(row: &GroupRow<'_>) -> bool {
     row.origin == SessionOrigin::Queue
         || is_gatekeeper_session(row.id)
@@ -350,14 +289,9 @@ mod tests {
         assert_eq!(group_of(&rows, "s-a"), SessionGroup::Mine);
     }
 
-    /// **A reviewer parented straight on the operator's conversation** — the layout a daemon from
-    /// before the queue had a session of its own wrote, and the shape `continue_picks` builds. Its
-    /// id is `s-gk-0`, not `s-gatekeeper-*`, and its parent is `mine`, so the only marks that say
-    /// what it is are on its own row: the seat, and the brief its title was cut from.
-    ///
-    /// MEASURED 2026-10-26 on the Linux gate: with the chain test alone these landed in
-    /// `subagents`, and `--list-sessions` offered ten reviewers that the operator had been told
-    /// were gone from it.
+    /// **A reviewer parented straight on the operator's conversation** - the layout a daemon
+    /// from before the queue had a session of its own wrote. Its id is `s-gk-0` and its
+    /// parent is `mine`, so the only marks are on its own row: the seat and the title.
     #[test]
     fn a_reviewer_parented_on_a_conversation_is_the_queues_by_its_own_row() {
         let brief = format!(

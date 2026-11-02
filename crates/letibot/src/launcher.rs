@@ -48,17 +48,8 @@
 use std::path::{Path, PathBuf};
 
 /// The directory the runtime files live in: `$XDG_RUNTIME_DIR/letibot`, else
-/// `/run/user/<uid>/letibot` on Linux and `<per-user temp dir>/letibot` on macOS.
-///
-/// The shell spells the Linux fallback `$(id -u)`, which forks; this reads the uid. Both
-/// land on the same directory, and the `letibot` subdirectory is what keeps these
-/// files out of whatever else the runtime dir holds — the shell's own reason for it.
-///
-/// **macOS has no `/run/user`** and no `XDG_RUNTIME_DIR`. Its per-user temp dir
-/// (`confstr(_CS_DARWIN_USER_TEMP_DIR)`, the `$TMPDIR` a login shell gets) is the same
-/// kind of place — mode 0700, this user's alone — and it is asked of the system rather
-/// than read from `$TMPDIR`, so a daemon started without that variable lands in the same
-/// directory as the head looking for it. The shell asks `getconf DARWIN_USER_TEMP_DIR`.
+/// `/run/user/<uid>/letibot` on Linux and the per-user temp dir on macOS - asked of the
+/// system rather than `$TMPDIR`, so a daemon and the head looking for it land together.
 pub fn rundir() -> PathBuf {
     let base = match std::env::var_os("XDG_RUNTIME_DIR") {
         Some(d) if !d.is_empty() => PathBuf::from(d),
@@ -96,15 +87,8 @@ pub fn uid() -> u32 {
 }
 
 /// **The key a workspace hashes to: the first twelve hex characters of its SHA-256.**
-///
-/// This is the whole interoperability contract, and it is twelve characters because the
-/// shell took twelve — `sha256sum | cut -c1-12`. Changing the length would orphan every
-/// daemon running right now, since the socket a running daemon listens on was named with
-/// the old one.
-///
-/// The bytes hashed are the workspace path with NOTHING added: the shell's
-/// `printf '%s' "$WORKSPACE"` writes no trailing newline, and a newline here would give
-/// a different key for every folder.
+/// The bytes are the path with NOTHING appended - the shell writes `printf '%s'`, and a
+/// newline would give a different key for every folder. Twelve hex is the shell's cut.
 pub fn key(workspace: &Path) -> String {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
@@ -127,9 +111,8 @@ pub struct Where {
 }
 
 /// The socket and record for a workspace, under `rundir`.
-///
-/// Takes the rundir rather than reading it, so a test can pin both paths without
-/// touching the machine's real runtime directory — which is where live daemons are.
+/// Takes the rundir rather than reading it, so a test never addresses the machine's real
+/// runtime directory, which is where live daemons are.
 pub fn locate_in(rundir: &Path, workspace: &Path) -> Where {
     let key = key(workspace);
     Where {
@@ -146,14 +129,8 @@ pub fn locate(workspace: &Path) -> Where {
 }
 
 /// **What a record under the rundir is a record OF.**
-///
-/// The directory used to hold one kind — a folder's daemon — and three writers put three
-/// kinds in it now: a folder's daemon (`<key(workspace)>.json`, listening beside its
-/// record), the box's room (`room-<host key>.json`, `harnessd --room`, listening under the
-/// data directory), and a moved session's forward (`migrated-<session>.json`, from
-/// `crate::migrate`). **Only the first is a folder's daemon**, and only the first is named
-/// by a workspace's key — so anything that re-derives a record's socket from its workspace
-/// names a path nothing binds for the other two.
+/// Three writers share the directory; only a folder's daemon is named by a workspace's key,
+/// so re-deriving another kind's socket from its workspace names a path nothing binds.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Kind {
     /// A folder's daemon: the record is named by the workspace's key and its socket sits
@@ -169,21 +146,17 @@ pub enum Kind {
 }
 
 /// What the record beside a socket says a daemon is.
-///
-/// Every field is optional-shaped on purpose: the file is written by whichever launcher
-/// started the daemon, and a **stale or partially-written record must not stop a
-/// `--status`** — the honest answer to "what is this" is what the file says, and a file
-/// that says less is not an error.
+/// Every field is optional-shaped on purpose: a **stale or partially-written record must
+/// not stop a `--status`** - a file that says less is not an error.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Record {
     /// Which of the launcher's writers put this here — see [`Kind`].
     pub kind: Kind,
     pub workspace: String,
     pub socket: String,
-    /// The pid the launcher started. **Not trusted for liveness**: the pid LISTENING
-    /// on the socket is the daemon whatever this says, and this is the fallback for a
-    /// box without that answer — see the module docs on why the socket read is not here
-    /// yet.
+    /// The pid the launcher started. **Not trusted for liveness**: the pid LISTENING on
+    /// the socket is the daemon whatever this says, and this is the fallback for a box
+    /// that cannot answer.
     pub pid: Option<u32>,
     pub role: String,
     pub model: String,
@@ -223,12 +196,8 @@ pub fn read_record(path: &Path) -> Option<Record> {
 }
 
 /// **Which kind of record this is, from what the writers already put in it.**
-///
-/// There is no `kind` field to read, and deliberately not: the two marks below are the ones
-/// `scripts/letibot` writes and the ones it reads back (`--ls`, `--daemons`, and both stop
-/// paths branch on `role == room`), so deriving here keeps the port and the shell agreeing
-/// about the one word rather than adding a second spelling that can drift from it. A folder
-/// daemon's `role` is the SEAT it serves, and nothing serves `room`.
+/// There is no `kind` field, deliberately: these are the marks `scripts/letibot` writes and
+/// reads back, so deriving them here keeps the port and the shell agreeing on one spelling.
 fn kind_of(v: &serde_json::Value) -> Kind {
     if v.get("role").and_then(|x| x.as_str()) == Some("room") {
         return Kind::Room;
@@ -249,13 +218,8 @@ mod tests {
     use super::*;
 
     /// **The contract, against values the SHELL produced on this box.**
-    ///
-    /// `scripts/letibot` derives a daemon's socket as
-    /// `printf '%s' "$ws" | sha256sum | cut -c1-12`, and these four are real: each is the
-    /// filename of a record on disk whose `workspace` field names the path on the left.
-    /// If this test fails, the ported launcher and the shell disagree about which
-    /// daemon a folder has — which is the one way a port can be worse than the thing it
-    /// replaces.
+    /// Each is the filename of a real record whose `workspace` names the path on the left;
+    /// a failure here means the port and the shell disagree about which daemon a folder has.
     #[test]
     fn the_key_matches_what_the_shell_derives() {
         for (workspace, want) in [
@@ -353,27 +317,9 @@ mod tests {
 
 // --- is it listening, and which process is it ------------------------------------
 
-/// **Is this socket being listened on right now?**
-///
-/// The shell asks `ss -lxpH`, and its own comment on the helper that does it records a
-/// bug worth not repeating: `ss … | grep -q` is a trap under `pipefail`, because `grep
-/// -q` exits on the first match, `ss` gets SIGPIPE, and `pipefail` reports the writer's
-/// 141 even though the last command succeeded. Measured there as *"a live daemon
-/// labelled STALE"* about one run in ten. Reading a file cannot have that failure.
-///
-/// # Why `/proc` and not `ss`, and it is NOT speed
-///
-/// MEASURED on this box: an `ss -lxpH` fork costs **11.24 ms**, and the `/proc` read
-/// below costs **10.27 ms**. That is the same number for practical purposes, so this is
-/// not a performance change and should not be described as one. The reason is that **`ss`
-/// may not be installed** — the shell's `daemon_pid` documents that explicitly ("the
-/// record is a fallback for a box without `ss`") — and `/proc/net/unix` is always there
-/// on Linux. One fewer external command in the path that decides whether a daemon is up.
-///
-/// `/proc/net/unix` has no pid column: it carries the INODE, and the process holding that
-/// inode is found by scanning `/proc/<pid>/fd`. Measured against a live daemon: the path
-/// is field index 7, the inode index 6, and the scan returned exactly the pid the record
-/// named.
+/// **Is this socket being listened on right now?** Read from `/proc/net/unix` rather than
+/// `ss`, which **may not be installed**; `/proc` carries no pid column, so the inode's
+/// holder is found by scanning `/proc/<pid>/fd`. Not a speed change: they measure alike.
 #[cfg(not(target_os = "macos"))]
 pub fn is_listening(socket: &Path) -> bool {
     inode_of(socket).is_some()
@@ -388,14 +334,8 @@ pub fn is_listening(socket: &Path) -> bool {
 }
 
 /// **The pid that called `listen()` on this socket**, from `LOCAL_PEERPID` on a fresh
-/// connection — the daemon itself, never a child that merely inherited the descriptor,
-/// which is the ambiguity [`daemon_pid`]'s Linux half has to resolve by `argv[0]`.
-///
-/// **A connect needs the file, and a daemon can outlive it**: its own shutdown unlinks the
-/// socket while it goes on listening on the nameless inode (the bricked-session case
-/// `scripts/letibot`'s `live` is written about). So when there is nothing to connect to, the
-/// question goes to `lsof`, which still reports a listener by its bound path — what
-/// `/proc/net/unix` does on Linux, and what the shell's `socket_pids` asks.
+/// connection - never a child that merely inherited the descriptor. A daemon can outlive
+/// its socket file, so with nothing to connect to the question goes to `lsof`.
 #[cfg(target_os = "macos")]
 fn listener_pid(socket: &Path) -> Option<u32> {
     use std::os::unix::io::AsRawFd;
@@ -465,20 +405,9 @@ fn bsdinfo(pid: u32) -> Option<(u32, u32)> {
     (got == size).then_some((bi.pbi_ppid, bi.pbi_status))
 }
 
-/// **Is this process actually running?** — and a zombie is not.
-///
-/// `/proc/<pid>` exists for a ZOMBIE: a process that has died and whose parent has not
-/// reaped it keeps its directory (measured: state `Z` after SIGTERM, and the entry only
-/// disappears at `wait`). So `Path::is_dir("/proc/pid")` — which is what the shell's
-/// `[ -d "/proc/$p" ]` does — answers "still there" for a process that is already gone.
-///
-/// The shell gets away with it because it never starts harnessd as its own child: the
-/// daemon is `setsid`-ed, so its death is reaped by init and the entry goes. A library
-/// that is called from anywhere should not depend on that, so this reads the state field
-/// from `/proc/<pid>/stat` and treats `Z` (zombie) and `X` (dead) as not running.
-///
-/// Found by its own test: the first version used `is_dir` and reported a signalled child
-/// as `StillThere`, because the test had not reaped it yet.
+/// **Is this process actually running?** - and a zombie is not: `/proc/<pid>` exists for a
+/// process that has died and not been reaped, so the state field is read and `Z` and `X`
+/// count as gone. A library cannot rely on `setsid` making init reap the daemon.
 #[cfg(target_os = "macos")]
 pub fn is_running(pid: u32) -> bool {
     matches!(bsdinfo(pid), Some((_, status)) if status != libc::SZOMB)
@@ -528,18 +457,9 @@ fn inode_of(socket: &Path) -> Option<String> {
     None
 }
 
-/// **The pid LISTENING on this socket** — the daemon, whatever the record says.
-///
-/// The shell's comment is the specification: *"The pid LISTENING on our socket … the
-/// record is a fallback for a box without `ss`."* So the socket is asked first and the
-/// record second, and the record's answer is only believed when `/proc/<pid>` still
-/// exists.
-///
-/// **More than one process can hold the socket**, because a child inherits open
-/// descriptors — so among the holders this prefers one whose command line names
-/// `harnessd`. That is the same check the shell's `--stop --all` makes before it kills
-/// anything, and it is the difference between stopping the daemon and stopping whatever
-/// happened to inherit its socket.
+/// **The pid LISTENING on this socket** - the daemon, whatever the record says; the record
+/// is believed only while its process exists. A child can inherit the descriptor, so among
+/// the holders this prefers one whose `argv[0]` names `harnessd`.
 pub fn daemon_pid(where_: &Where) -> Option<u32> {
     #[cfg(target_os = "macos")]
     if let Some(pid) = listener_pid(&where_.socket) {
@@ -588,11 +508,8 @@ pub fn daemon_pid(where_: &Where) -> Option<u32> {
     None
 }
 
-/// Does `/proc/<pid>/cmdline` name `harnessd` as the program?
-///
-/// The shell does this with `tr '\0' '\n' < /proc/$pid/cmdline | head -1 | grep -q
-/// harnessd` — the first field is argv[0], and matching the basename avoids a path that
-/// merely contains the word.
+/// Does `/proc/<pid>/cmdline` name `harnessd` as the program? The first field is `argv[0]`,
+/// and matching the basename avoids a path that merely contains the word.
 pub fn is_harnessd(pid: u32) -> bool {
     let Some(raw) = argv_bytes(pid) else {
         return false;
@@ -634,12 +551,9 @@ fn argv_bytes(pid: u32) -> Option<Vec<u8>> {
     Some(after_path[start..].to_vec())
 }
 
-/// **A socket file that something is listening on** — the shell's `live`.
-///
-/// Two questions, and both are asked because they fail differently: the path must be a
-/// socket (`-S`), and something must be listening. A stale socket file outlives a crashed
-/// daemon, which is the shell's own reason for not trusting the file alone: *"is there a
-/// daemon there"* is a conversation, not a stat.
+/// **A socket file that something is listening on** - the shell's `live`. Both questions
+/// are asked because they fail differently: a stale socket file outlives a crashed daemon,
+/// so *"is there a daemon there"* is a conversation, not a stat.
 pub fn live(where_: &Where) -> bool {
     use std::os::unix::fs::FileTypeExt;
     match std::fs::metadata(&where_.socket) {
@@ -721,23 +635,8 @@ mod liveness_tests {
     }
 
     /// **The Rust agrees with the box's own socket table about a daemon that is listening.**
-    ///
-    /// This is the cross-check the whole port rests on and it cannot be a unit test: it compares
-    /// this module's answer against a tool that is NOT one of this module's own paths.
-    ///
-    /// **The daemon is one this test starts.** It used to walk the box's runtime directory and
-    /// compare whatever happened to be running there, so its result was a fact about the machine —
-    /// green on a box with a daemon, a skip on a runner, and a comparison against another session's
-    /// records elsewhere. A listener bound by this process, with the record the launcher would write
-    /// beside it, is the same question with nothing of the box in it.
-    ///
-    /// **Which tool depends on the platform.** `ss -lxpH` names the socket path and the pid holding
-    /// it, so on Linux the agreement is about the PID. macOS has no `ss` — and `lsof` cannot stand in
-    /// for it, because `is_listening`/`daemon_pid` there FALL BACK TO `lsof` when a connect fails, so
-    /// agreement with it would be the module agreeing with itself. `netstat
-    /// -anv -f unix` is the independent witness: the kernel's local-domain socket table,
-    /// with the `-v` columns that carry `process:pid`, so the same PID question is asked and
-    /// nothing is weakened.
+    /// The daemon is one this test starts, so nothing of the box is in the answer; the tool is
+    /// `ss` on Linux and `netstat -anv` on macOS, which does not fall back to `lsof` as we do.
     #[test]
     fn every_live_daemon_agrees_with_the_boxs_socket_table() {
         use letibot_tokencore::apparatus;
@@ -762,11 +661,8 @@ mod liveness_tests {
         )
         .expect("the record beside it");
 
-        // The tool each platform answers the question with. Linux's `ss` is what the shell
-        // uses; macOS's `netstat -anv` is the kernel's table (`tools/src/exec/host.rs` asks
-        // it the same way for a TCP port). Without the one this platform has there is
-        // nothing to compare against, so it is absent apparatus rather than a failure —
-        // `iproute2` on one, the base system on the other.
+        // The tool each platform answers with; without it there is nothing to compare
+        // against, so it is absent apparatus rather than a failure.
         #[cfg(target_os = "macos")]
         let (tool, listing) = (
             "netstat -anv -f unix",
@@ -822,11 +718,9 @@ mod liveness_tests {
         );
     }
 
-    /// The pid `ss -lxpH` names on the line carrying this socket — `users:(("harnessd",pid=123,fd=9))`.
-    ///
-    /// The substring match is the shell's and is kept: `ss` escapes a socket path, so the
-    /// line is found by the path it shares with the record rather than by a parse of the
-    /// whole line.
+    /// The pid `ss -lxpH` names on the line carrying this socket. The substring match is
+    /// kept: `ss` escapes a socket path, so the line is found by the path it shares with the
+    /// record rather than by a parse of the whole line.
     #[cfg(not(target_os = "macos"))]
     fn ss_listener_pid(listing: &str, socket: &str) -> Option<u32> {
         listing
@@ -838,17 +732,8 @@ mod liveness_tests {
     }
 
     /// The pid `netstat -anv -f unix` names on the row whose `Addr` column is this socket.
-    ///
-    /// Two facts about the table, both read off it rather than assumed. The path is the LAST
-    /// column, which is why the row is found from the end: netstat pads the `Address` column
-    /// with a leading space, so counting columns from the front is what breaks. The pid is in
-    /// the column the `-v` HEADER calls `process:pid` (MEASURED: index 12 today), so the
-    /// header is where its position is read from — a table that grows a column does not
-    /// silently move the answer.
-    ///
-    /// `test` as well as macOS in the `cfg`, so the parser is exercised on the box that
-    /// builds it: this module's macOS half is otherwise only ever compiled on a Mac, and a
-    /// parser that has never been run is the example-plugin rakes over again.
+    /// The path is the LAST column, so the row is found from the end, and the pid's column is
+    /// read off the `-v` header rather than assumed. `test` in the `cfg` so it is exercised.
     #[cfg(any(target_os = "macos", test))]
     fn netstat_listener_pid(listing: &str, socket: &Path) -> Option<u32> {
         let want = socket.to_string_lossy();
@@ -868,10 +753,8 @@ mod liveness_tests {
     }
 
     /// **The listing is a snapshot, so only the live direction is asserted.** A daemon that
-    /// dies between the `netstat` above and the connect below is legitimately absent from
-    /// the module's answer — it counts as stale — and asserting the other direction would
-    /// fail on a box that is merely busy. A daemon the module DID reach, on the other hand,
-    /// was listening when the table was read, so `netstat_listener_pid` must find it.
+    /// dies between the `netstat` and the connect counts as stale, so asserting the other
+    /// direction would fail on a busy box.
     #[test]
     fn the_macos_pid_is_read_from_the_columns_the_header_names() {
         let listing = "\
@@ -899,18 +782,9 @@ Address          Type   Recv-Q Send-Q            Inode             Conn         
 
 // --- the three read-only verbs ----------------------------------------------------
 
-/// **One line about this folder's daemon** — the shell's `daemon_line`, and the
-/// `answers`/`model` distinction in it is the whole point.
-///
-/// A daemon records two true things about itself: the local vocab it binds token ids
-/// against (`model`, e.g. `qwen-3.8-27b`) and what actually answers the turns (`answers`,
-/// e.g. `deepseek/deepseek-flash`). Announcing the first to a person whose turns go to the
-/// second is the operator's *"so - qwen again"* — a line that reads as a claim about the
-/// model and is a claim about the tokenizer.
-///
-/// So `answers` wins when the record has one, and a record written before the field
-/// existed is labelled **`vocab`** rather than `model`: that label is true, and it is not
-/// a claim about what is answering.
+/// **One line about this folder's daemon.** `answers` is what answers the turns and `model`
+/// is the local vocab it binds ids against, so announcing the second reads as a claim about
+/// the model; `answers` wins, and an older record is labelled **`vocab`**, which is true.
 pub fn daemon_line(workspace: &Path, rec: &Record, pid: Option<u32>) -> String {
     let mut out = format!("harnessd for {}", workspace.display());
     if let Some(p) = pid {
@@ -949,15 +823,9 @@ pub enum State {
     Stale,
 }
 
-/// One line per recorded daemon, for `letibot --daemons`.
-///
-/// The STALE case is reported rather than hidden, and the wording is the shell's:
-/// *"STALE (nothing listens on its socket)"*. A record whose socket is silent is how an
-/// operator finds a daemon that died without cleaning up, and it is also how the
-/// launcher knows to remove that record rather than trust its pid.
-///
-/// Takes the records as data so this is testable without a machine full of daemons: the
-/// caller reads the directory, this decides what each line says.
+/// One line per recorded daemon, for `letibot --daemons`. The STALE case is reported rather
+/// than hidden: a silent socket is how an operator finds a daemon that died uncleanly.
+/// Takes the records as data, so this is testable without a machine full of daemons.
 pub fn daemons_lines(entries: &[(Record, State)]) -> Vec<String> {
     if entries.is_empty() {
         return vec!["no daemons recorded".to_string()];
@@ -972,11 +840,8 @@ pub fn daemons_lines(entries: &[(Record, State)]) -> Vec<String> {
                 },
                 State::Stale => "STALE (nothing listens on its socket)".to_string(),
             };
-            // **The room is one of these daemons and none of these folders.** Its workspace is
-            // a directory of its own under the data directory — true, and not a folder anybody
-            // works in — so the line names it for what it is, as `scripts/letibot --daemons`
-            // does. A moved session's forward keeps its landed workspace: that IS a folder, and
-            // it is where the session now runs.
+            // **The room is one of these daemons and none of these folders**, so the line
+            // names it for what it is. A forward keeps its landed workspace: that IS a folder.
             let who = match rec.kind {
                 Kind::Room => "the box's room",
                 Kind::Daemon | Kind::Forward => rec.workspace.as_str(),
@@ -986,17 +851,9 @@ pub fn daemons_lines(entries: &[(Record, State)]) -> Vec<String> {
         .collect()
 }
 
-/// What a `--status` invocation has to say, as lines.
-///
-/// Three cases, and the middle one is the one worth having: **something answered the
-/// socket and refused.** That is a different fact from silence — a daemon speaking a
-/// different protocol version is alive and serving — and printing "no daemon" for it is
-/// how a live daemon gets a second one started on top of it. The shell's comment says
-/// exactly that.
-///
-/// The model server is reported as a SEPARATE fact from the daemon, because it is one:
-/// the daemon's turns can go to a provider while the local server is down, and vice
-/// versa. The caller probes it and passes the answer in, so this stays offline.
+/// What a `--status` invocation has to say, as lines. **Something that answered the socket
+/// and refused is not silence**: printing "no daemon" for it is how a live daemon gets a
+/// second one started on top of it. The local server is a separate fact, probed by the caller.
 pub fn status_lines(
     workspace: &Path,
     where_: &Where,
@@ -1221,23 +1078,13 @@ pub enum Stopped {
     NoSuchProcess,
 }
 
-/// How long to wait for a signalled daemon, in tenths of a second.
-///
-/// Ten times 500 ms, which is the shell's own loop — and its comment is the reason the
-/// wait exists at all: *"Measured 2026-09-16: a daemon wedged on a `llama-server` that
-/// had gone away swallowed SIGTERM, this printed 'stopped', deleted the record, and left
-/// an orphan holding the store and the GPU that `--daemons` could no longer see."*
-///
-/// **"stopped" is said after the process is gone, not after the signal is sent.** That
-/// is the whole of that incident, and it is why this returns [`Stopped::StillThere`]
-/// rather than a bare `Ok`.
+/// How long to wait for a signalled daemon, in tenths of a second. **"stopped" is said after
+/// the process is gone, not after the signal is sent** - a daemon wedged on a `llama-server`
+/// that had gone away swallowed SIGTERM, and the record was deleted over an orphan.
 pub const STOP_TENTHS: u32 = 10;
 
-/// Signal a daemon to stop and wait for it, bounded.
-///
-/// The grace is spent in 50 ms steps rather than one 500 ms sleep: the common case is a
-/// daemon that exits at once, and the shell's `sleep 0.5` made every stop take at least
-/// half a second. Same bound, faster finish.
+/// Signal a daemon to stop and wait for it, bounded. The grace is spent in 50 ms steps
+/// rather than one 500 ms sleep: a daemon that exits at once is the common case.
 pub fn stop(pid: u32) -> Stopped {
     if !is_running(pid) {
         return Stopped::NoSuchProcess;
@@ -1256,12 +1103,9 @@ pub fn stop(pid: u32) -> Stopped {
     Stopped::StillThere
 }
 
-/// SIGKILL, for `--stop --force` after [`stop`] has given up.
-///
-/// A daemon that ignores SIGTERM is stuck on something that is never coming back — the
-/// 2026-09-16 case was a `llama-server` that had gone away — and leaving it holding the
-/// store and the GPU is worse than killing it. The caller has already *said* it is
-/// forcing, which is the difference between a decision and a surprise.
+/// SIGKILL, for `--stop --force` after [`stop`] has given up. A daemon that ignores SIGTERM
+/// is stuck on something that is never coming back, and leaving it holding the store and the
+/// GPU is worse than killing it. The caller has already *said* it is forcing.
 pub fn force_kill(pid: u32) -> Stopped {
     if !is_running(pid) {
         return Stopped::NoSuchProcess;
@@ -1282,11 +1126,8 @@ pub fn force_kill(pid: u32) -> Stopped {
 mod stop_tests {
     use super::*;
 
-    /// **Tested against a child this test starts, never a live daemon.**
-    ///
-    /// The machine this was written on has seven running daemons, and a stop test that
-    /// reached one of them would kill the operator's session — so the only pid that is
-    /// ever signalled here is a `sleep` this test spawned and owns.
+    /// **Tested against a child this test starts, never a live daemon** - a stop test that
+    /// reached one would kill the operator's session.
     #[test]
     fn stop_reaches_a_process_and_waits_for_it_to_go() {
         let mut child = std::process::Command::new("sleep")
@@ -1310,11 +1151,8 @@ mod stop_tests {
         assert_eq!(force_kill(u32::MAX), Stopped::NoSuchProcess);
     }
 
-    /// **`force_kill` reaches a process that ignores SIGTERM.** The 2026-09-16 shape: a
-    /// daemon wedged on something that had gone away.
-    ///
-    /// The child traps SIGTERM and exits on nothing, so only SIGKILL ends it. Spawned by
-    /// this test, so still no live daemon involved.
+    /// **`force_kill` reaches a process that ignores SIGTERM.** The child traps it and exits
+    /// on nothing, so only SIGKILL ends it; spawned by this test, so still no live daemon.
     #[test]
     fn force_kill_ends_a_process_that_ignores_sigterm() {
         let mut child = std::process::Command::new("sh")
@@ -1339,18 +1177,9 @@ mod stop_tests {
 
 // --- the seat, as the launcher's own flags describe it ---------------------------
 
-/// **What the operator asked this session to be** — the launcher's flags, parsed.
-///
-/// A "seat" is the launcher's word for the role, the mode, the grants and the provider
-/// that a daemon is started with. **The seat is fixed when the daemon STARTS**, which is
-/// why this parses them apart from the verbs: `--status` does not need them, and
-/// `--attach` cannot change them — it can only warn that the flags it was given will not
-/// take effect against a daemon already running. That warning is its own piece; this is
-/// the parse.
-///
-/// The field set and every default come from `scripts/letibot`'s flag arms, and the
-/// messages are the shell's own wording — a person who knows this launcher should not be
-/// able to tell which one refused.
+/// **What the operator asked this session to be** - the launcher's flags, parsed. A "seat"
+/// is the role, mode, grants and provider, and **it is fixed when the daemon STARTS**, so an
+/// attach can only warn. The defaults and the wording are `scripts/letibot`'s own.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Seat {
     /// `--read-only` is role `orchestrator`; the default role is `coder`.
@@ -1384,14 +1213,14 @@ pub struct Seat {
     pub extra: Vec<String>,
 }
 
-/// The modes `--mode` accepts, as the shell lists them in its refusal. Named once so the
-/// message and the validation cannot disagree.
-/// The operator's home, as the shell uses it: `$HOME`, and `~` as a fallback rather than
-/// an empty string — a path beginning `"/models/…"` would be silently wrong.
+/// The operator's home, as the shell uses it: `$HOME`, and `~` as a fallback rather than an
+/// empty string - a path beginning `"/models/…"` would be silently wrong.
 pub fn home() -> String {
     std::env::var("HOME").unwrap_or_else(|_| "~".into())
 }
 
+/// The modes `--mode` accepts, as the shell lists them in its refusal. Named once so the
+/// message and the validation cannot disagree.
 pub const MODES: &[&str] = &[
     "read-only",
     "always-ask",
@@ -1401,15 +1230,9 @@ pub const MODES: &[&str] = &[
     "allow-all",
 ];
 
-/// Parse the launcher's seat flags from `args`, or refuse by name.
-///
-/// **A flag that needs a value and has none is a refusal, not a default.** The shell says
-/// `--mode NAME   (read-only, always-ask, …)` — the requirement and the accepted set in
-/// one line — and that shape is kept because it is what a person can act on.
-///
-/// Unknown arguments are NOT refused here: the launcher also takes a bare prompt and its
-/// verbs, and deciding which is which belongs to the caller. This consumes what it
-/// recognises and hands back the rest.
+/// Parse the launcher's seat flags from `args`, or refuse by name. **A flag that needs a
+/// value and has none is a refusal, not a default.** Unknown arguments are NOT refused: the
+/// launcher also takes verbs and a bare prompt, and deciding which is which is the caller's.
 pub fn parse_seat(args: &[String]) -> Result<(Seat, Vec<String>), String> {
     let mut seat = Seat {
         // The shell's defaults, read off its own initialisers.
@@ -1534,11 +1357,8 @@ pub fn parse_seat(args: &[String]) -> Result<(Seat, Vec<String>), String> {
                 seat.model = need("--model NAME")?;
                 i += 2;
             }
-            // **The three presets, and each names a dialect, a model AND a vocab.**
-            // MEASURED against the shell: my first version of these three arms was a
-            // guess, and all three were wrong — `--glm` sets the model and the vocab too,
-            // and the vocab cannot be derived from the dialect because it is the model's
-            // own GGUF. The paths are the shell's, `$HOME` and all.
+            // **The three presets, and each names a dialect, a model AND a vocab**: the vocab
+            // cannot be derived from the dialect, because it is the model's own GGUF.
             "--glm" => {
                 seat.dialect = "glm".into();
                 seat.model = "glm-5.3-flash".into();
@@ -1580,11 +1400,8 @@ mod seat_tests {
         items.iter().map(|s| s.to_string()).collect()
     }
 
-    /// **The shell's defaults**, read off its own initialisers: role `coder`, shell ON.
-    ///
-    /// The shell is on by default for every seat that can carry one, and the reason is
-    /// the operator's own: a coder that cannot run a test is not one. `--no-bash` is the
-    /// opt-out, so a parse that defaulted it off would take a working session away.
+    /// **The shell's defaults**, read off its own initialisers: role `coder`, shell ON. A
+    /// coder that cannot run a test is not one, and `--no-bash` is the opt-out.
     #[test]
     fn the_defaults_are_the_shells() {
         let (seat, rest) = parse_seat(&[]).expect("no flags is not an error");
@@ -1663,11 +1480,9 @@ mod seat_tests {
         );
     }
 
-    /// **The three presets, pinned to the shell's own values.**
-    ///
-    /// MEASURED, and it is why this test exists: my first three arms were guesses and all
-    /// three were wrong. `--glm` does not just mean "dialect glm" — it names a model and
-    /// the model's own vocab GGUF, and the vocab cannot be derived from the dialect.
+    /// **The three presets, pinned to the shell's own values.** `--glm` does not just mean
+    /// "dialect glm": it names a model and the model's own vocab GGUF, which no dialect can
+    /// derive.
     #[test]
     fn the_presets_carry_a_dialect_a_model_and_a_vocab() {
         let (glm, _) = parse_seat(&v(&["--glm"])).unwrap();
@@ -1729,14 +1544,8 @@ mod seat_tests {
 // --- targeting another folder's daemon --------------------------------------------
 
 /// Every `*.json` record under `rundir`, in the order the shell's glob yields them.
-///
-/// **This order is the contract `--ls` numbering rests on.** The shell writes
-/// `for r in "$RUNDIR"/*.json`, numbers what it finds 1, 2, 3…, and `--stop N` maps that
-/// number back by walking the SAME glob. A glob sorts; `read_dir` does not promise to, so
-/// the sort here is what makes `--ls`'s number mean the same thing to both readers.
-///
-/// Files only, matching the shell's `[ -f "$r" ] || continue` — a directory named
-/// `something.json` is not a record and must not shift every number after it.
+/// **This order is the contract `--ls` numbering rests on**: a glob sorts and `read_dir`
+/// does not promise to. Files only, so a directory named `something.json` shifts no number.
 pub fn records_in(rundir: &Path) -> Vec<PathBuf> {
     let Ok(rd) = std::fs::read_dir(rundir) else {
         return Vec::new();
@@ -1813,13 +1622,9 @@ pub fn retarget(rundir: &Path, here: &Path, want: &str) -> Result<Where, String>
                 ));
             }
             let mut where_ = locate_in(rundir, Path::new(&rec.workspace));
-            // **The record's own socket, when it names one.** For a folder's daemon this is
-            // the one `locate_in` just derived — they agree, because that is how the record
-            // was written. The box's room and a moved session's forward listen where their
-            // own record says (`room-<host key>.sock` under the data directory,
-            // `migrated-<session>.sock` under this one), and re-deriving from the workspace
-            // names a socket nothing binds. `scripts/letibot` reads this same field for this
-            // same reason, so the number reaches the room there as it does here.
+            // **The record's own socket, when it names one**: the room and a forward listen
+            // where their record says, and re-deriving from the workspace names a socket
+            // nothing binds. For a folder's daemon the two agree by construction.
             if !rec.socket.is_empty() {
                 where_.socket = PathBuf::from(&rec.socket);
             }
@@ -1834,30 +1639,12 @@ pub fn retarget(rundir: &Path, here: &Path, want: &str) -> Result<Where, String>
 }
 
 // --- the dispatch: what an invocation asks for ------------------------------------
-//
-// The shell decides this in THREE passes, and the split is not incidental — each pass
-// refuses something the next cannot see:
-//
-//   1. `--help` anywhere before the prompt is the flag list, and `exit 0`. It has to
-//      come first because it is the only answer that must work when every later check
-//      would refuse.
-//   2. An unknown `--flag` is refused BY NAME, before anything is looked up. **Measured
-//      2026-09-13, and this is why the pass exists**: `--help` used to match no flag, so
-//      it fell through to the one-shot path and ran `harnessd --prompt "--help"` — the
-//      banner printed, the vocabulary loaded (the multi-second hang), and GLM answered
-//      the prompt `--help`. A typo in a flag name bought you a model call.
-//   3. [`parse_seat`], which consumes the flags it knows and returns at the first thing
-//      that is not one. Its leftovers are the verb or the prompt.
-//
-// Folding these together would make the first two unreachable: `parse_seat` returns
-// unknowns rather than refusing them (deliberately — see its own test), so the "refuse by
-// name" behaviour only exists in the pass that runs before it.
+// Three passes, and the split is not incidental: `--help` first (it must answer when
+// nothing else can), then the unknown-flag refusal, then `parse_seat` and its leftovers.
 
-/// The flags that take a value, so the argument AFTER one is not a flag whatever it
-/// looks like. `--vm-arg --mem` hands `--mem` to firecode.
-///
-/// The shell keeps this list twice, in two adjacent loops, and it is the same list — so
-/// it is one `const` here rather than two chances to forget an entry.
+/// The flags that take a value, so the argument AFTER one is not a flag whatever it looks
+/// like: `--vm-arg --mem` hands `--mem` to firecode. One `const`, because the shell keeps
+/// this list twice and two lists are two chances to forget an entry.
 pub const VALUE_FLAGS: &[&str] = &[
     "--vm-arg",
     "--host",
@@ -1874,11 +1661,9 @@ pub const VALUE_FLAGS: &[&str] = &[
     "--oracle-budget-ms",
 ];
 
-/// Every flag the launcher accepts, verbatim from the shell's own list.
-///
-/// **The verbs are in here too** (`--stop`, `--attach`, `--sessions`…), because this list
-/// answers "is this an unknown flag", not "is this a flag the option loop consumes". A
-/// verb is a perfectly good argument that the option loop leaves behind for the dispatch.
+/// Every flag the launcher accepts, verbatim from the shell's own list. **The verbs are in
+/// here too**, because this answers "is this an unknown flag", not "does the option loop
+/// consume it" - a verb is left behind for the dispatch.
 pub const KNOWN_FLAGS: &[&str] = &[
     "--help",
     "-h",
@@ -1922,10 +1707,8 @@ pub const KNOWN_FLAGS: &[&str] = &[
     "--list-all",
 ];
 
-/// What an invocation of `letibot` asks the launcher to do.
-///
-/// One variant per arm of the shell's dispatch, so "is every verb represented" is a
-/// question the compiler answers rather than a reviewer counting `case` labels.
+/// What an invocation of `letibot` asks the launcher to do. One variant per arm of the
+/// shell's dispatch, so "is every verb represented" is a question the compiler answers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     /// `--help`: the flag list, exit 0.
@@ -1971,23 +1754,13 @@ pub fn takes_value(a: &str) -> bool {
     VALUE_FLAGS.contains(&a)
 }
 
-/// **Decide what an invocation asks for, refusing by name what cannot be answered.**
-///
-/// The three passes the shell runs, in its order, and the order is the contract:
-/// `--help` first (it must answer when nothing else can), then the unknown-flag refusal,
-/// then [`parse_seat`] and whatever it leaves behind.
-///
-/// Returns the [`Seat`] alongside the [`Action`], because the seat flags are consumed by
-/// the same pass that finds the verb — `letibot --bash --stop` is a stop, and the `--bash`
-/// has already been read into the seat that `--stop` will ignore.
+/// **Decide what an invocation asks for, refusing by name what cannot be answered.** The
+/// seat flags are consumed by the same pass that finds the verb, so the `Seat` comes back
+/// beside the `Action`: `letibot --bash --stop` is a stop that ignores the `--bash`.
 pub fn decide(args: &[String]) -> Result<(Seat, Action), String> {
-    // Pass 1: `--help` anywhere before the prompt.
-    //
-    // **No value-skipping here, and that is the shell's behaviour rather than an
-    // oversight**: `letibot --vm-arg --help` prints the flag list instead of passing
-    // `--help` to firecode, because this pass predates the value-flag list. Kept as it is
-    // so the ported launcher answers identically; changing it would be a behaviour change
-    // smuggled in as a cleanup.
+    // Pass 1: `--help` anywhere before the prompt. **No value-skipping here**, which is the
+    // shell's behaviour: `letibot --vm-arg --help` prints the flag list rather than passing
+    // `--help` to firecode. Changing that would be a behaviour change dressed as a cleanup.
     for a in args {
         match a.as_str() {
             "--help" | "-h" | "help" => return Ok((Seat::default(), Action::Help)),
@@ -1997,10 +1770,9 @@ pub fn decide(args: &[String]) -> Result<(Seat, Action), String> {
         }
     }
 
-    // Pass 2: an unknown flag is refused by name, before anything is looked up.
-    //
-    // `skip` is the shell's own: a value-taking flag consumes the argument after it, so a
-    // value that looks like a flag (`--vm-arg --mem`) is not refused as an unknown one.
+    // Pass 2: an unknown flag is refused by name, before anything is looked up. `skip` is
+    // the shell's own: a value-taking flag consumes the argument after it, so a value that
+    // looks like a flag (`--vm-arg --mem`) is not refused as an unknown one.
     let mut skip = false;
     for a in args {
         if skip {
@@ -2252,10 +2024,9 @@ mod dispatch_tests {
 mod target_tests {
     use super::*;
 
-    /// A rundir with `n` synthetic records, named so their sorted order is known.
-    ///
-    /// The names are the real shape (`<12 hex>.json`) and the workspaces are distinct, so
-    /// "which record did number N pick" is answerable from the answer alone.
+    /// A rundir with `n` synthetic records, named so their sorted order is known. The names
+    /// are the real shape (`<12 hex>.json`) and the workspaces are distinct, so "which record
+    /// did number N pick" is answerable from the answer alone.
     fn rundir_with(n: usize) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "letibot-retarget-{}-{:?}",
@@ -2400,13 +2171,8 @@ mod target_tests {
     }
 
     /// **A rundir holding every kind the launcher writes, and the number addresses each as
-    /// itself.**
-    ///
-    /// One run used to write one record kind; three writers put three in this directory now —
-    /// a folder's daemon, the box's room, and a moved session's forward. **Only a folder's
-    /// daemon is named by a workspace's key**, so a numbering that re-derived every socket
-    /// from the workspace would hand `--stop N` a path nothing listens on for the other two.
-    /// This is the fixture that says so without needing a box that happens to have a room.
+    /// itself.** **Only a folder's daemon is named by a workspace's key**, so a numbering
+    /// that re-derived every socket would hand `--stop N` a path nothing listens on.
     #[test]
     fn a_rundir_with_every_kind_numbers_each_as_itself() {
         let dir = rundir_with(0);
@@ -2567,14 +2333,9 @@ mod target_tests {
         );
     }
 
-    /// **A frozen copy of this box's records**, for a test that must not race the box.
-    ///
-    /// The runtime directory is shared: any launcher run on this machine writes a record into
-    /// it, and a test binary that reads it while another one starts a daemon sees a file appear
-    /// mid-scan — which shifts every number after it — or one half-written. Copying once keeps
-    /// the SHAPES this box really has and takes the clock out of it. A copy that does not parse
-    /// is re-read once (that is the half-written case); a record that is torn ON DISK stays torn
-    /// through both reads, so the assertion still fails on a real one.
+    /// **A frozen copy of this box's records**, for a test that must not race the box: the
+    /// runtime directory is shared, so a record landing mid-scan shifts every number after it.
+    /// A copy that does not parse is re-read once; a record torn ON DISK stays torn.
     fn frozen_copy(dir: &Path, records: &[PathBuf]) -> PathBuf {
         let to = std::env::temp_dir().join(format!(
             "letibot-records-{}-{:?}",
@@ -2603,21 +2364,9 @@ mod target_tests {
         to
     }
 
-    /// **Against the box's real records: the number must pick what `--ls` prints there.**
-    ///
-    /// Reads the live runtime directory and asserts the mapping is the sorted one, which is the
-    /// same order `scripts/letibot --ls` numbers — against a FROZEN copy of it, because the
-    /// directory is shared with every launcher run on this box and a record that lands mid-scan
-    /// shifts the numbers this test is checking. Skips on a box with none, and says so rather
-    /// than passing quietly.
-    ///
-    /// **The last assertion is the one the room broke, and it was the assertion that was wrong:**
-    /// *"every record's filename is the key of the workspace inside it"* is true of a folder's
-    /// daemon and false of the room (`room-<host key>.json`) and of a moved session's forward
-    /// (`migrated-<session>.json`) — two kinds that share this directory, the forward since
-    /// `migrate` landed and the room since the launcher started autostarting it. What the number
-    /// must guarantee is that it addresses the daemon THE RECORD NAMES, which is asserted of
-    /// every kind; the filename claim is asserted of the kind it is true of, and counted.
+    /// **Against the box's real records: the number must pick what `--ls` prints there**, from
+    /// a FROZEN copy because the directory is shared. The filename-is-the-key claim holds for a
+    /// folder's daemon only; what the number must reach is the daemon the record names.
     #[test]
     fn the_numbering_matches_the_glob_order_on_a_box_with_records() {
         let dir = rundir();
@@ -2664,17 +2413,14 @@ mod target_tests {
                 i + 1,
                 path.display()
             );
-            // And a FOLDER's daemon is named by the hash of that workspace — the module's
-            // contract with `scripts/letibot`, which writes `$RUNDIR/$KEY.json`. The room's
-            // record is named by the host key and a forward's by its session, so this holds of
-            // one kind and is asserted of that one.
+            // And a FOLDER's daemon is named by the hash of that workspace - the module's
+            // contract with `scripts/letibot`. A room's record is named by the host key and a
+            // forward's by its session, so this holds of one kind and is asserted of that one.
             if rec.kind == Kind::Daemon {
                 folders += 1;
-                // **A room coordinator's record is not a workspace's.** Its name is the
-                // host-derived room key (`room-lab2x1-home-…`), not `key(workspace)`, and its
-                // `role` says so. The test reads REAL records from the box, and a box with a
-                // running room has one of these — skipping them by role is a fact about what
-                // the record is, not a guess about what it might be.
+                // **A room coordinator's record is not a workspace's**: its name is the
+                // host-derived room key and its `role` says so, which is a fact about the
+                // record rather than a guess.
                 if rec.role == "room" {
                     rooms += 1;
                     continue;

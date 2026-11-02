@@ -1,29 +1,11 @@
 //! The seam between the turn engine and whatever turns items into spans.
 //!
-//! # Why the engine does not know about a renderer
+//! The engine depends on this trait and on [`RenderSpan`], never on a concrete renderer: when
+//! the template-driven one lands it implements the same three methods and nothing here changes.
 //!
-//! T1 settled that rendering is **template-driven**: run the model's own shipped
-//! jinja through minijinja (`experiments/minijinja-fidelity/RESULTS.md`, D11). That
-//! renderer does not exist yet, and building it is not this strand's work. The
-//! working renderer today is `GlmRenderer`, hand-written and verified byte-exact
-//! against the training runtime over 139 fixtures.
-//!
-//! So the engine depends on this trait and on [`RenderSpan`], never on a concrete
-//! renderer. When the template-driven one lands it implements the same three
-//! methods and the engine does not change. The trait is deliberately shaped so that
-//! it *can*:
-//!
-//! * `render` is the whole prompt — the template with `add_generation_prompt=false`;
-//! * `render_incremental` is what to append — the difference between two renders;
-//! * `generation_prompt` is the tail — the difference `add_generation_prompt` makes.
-//!
-//! # The one thing this trait must never gain
-//!
-//! A method returning `Vec<TokenId>`. `RenderSpan` is text-plus-control-token
-//! precisely so a renderer needs no vocab, no FFI and no GPU, and so that a user
-//! message containing the literal `<|assistant|>` is *structurally* incapable of
-//! becoming a turn boundary. Tokenization belongs to `letibot_tokencore`, on the
-//! far side of this seam.
+//! The one thing this trait must never gain is a method returning `Vec<TokenId>`: `RenderSpan`
+//! is text-plus-control-token so a renderer needs no vocab, and a user message containing the
+//! literal `<|assistant|>` is structurally incapable of becoming a boundary.
 
 use letibot_dialect::{DialectSpec, RenderSpan, StablePrefix};
 use letibot_transcript::TranscriptItem;
@@ -36,52 +18,30 @@ pub trait PromptRenderer: Send + Sync {
     /// The whole prompt for a transcript, with no generation prompt.
     fn render(&self, prefix: &StablePrefix, items: &[TranscriptItem]) -> Vec<RenderSpan>;
 
-    /// The spans to **append** for `new_items`, given the history already rendered.
-    ///
-    /// `history` is passed in full rather than as an offset because a renderer's
-    /// boundary state — is an assistant turn open, was `<think>` already emitted,
-    /// was the previous item a tool result — is not derivable from a `usize`. That
-    /// was CONTRACT-GAP-1 and it is settled the same way here.
+    /// The spans to append for `new_items`, given the history already rendered. `history` is
+    /// passed in full because a renderer's boundary state - is an assistant turn open, was
+    /// `<think>` emitted - is not derivable from a `usize`.
     fn render_incremental(
         &self,
         history: &[TranscriptItem],
         new_items: &[TranscriptItem],
     ) -> Vec<RenderSpan>;
 
-    /// What the model is handed to start speaking, e.g. `<|assistant|><think>`.
-    ///
-    /// **Not** part of a render: folding it in would break
-    /// `render_incremental ≡ render` for any conversation whose next item is a user
-    /// message. The engine submits it as an uncommitted tail and commits it as the
-    /// leading tokens of the first item the turn produces.
+    /// What the model is handed to start speaking, e.g. `<|assistant|><think>`. Not part of a
+    /// render: folding it in would break `render_incremental ≡ render` for a conversation whose
+    /// next item is a user message. The engine submits it as an uncommitted tail.
     fn generation_prompt(&self) -> Vec<RenderSpan>;
 
-    /// **The same, with the reasoning block already closed.**
-    ///
-    /// Every dialect here opens one: Qwen hands the model
-    /// `<|im_start|>assistant\n<think>\n` and GLM `<|assistant|><think>`, so a turn
-    /// cannot begin except by thinking. That is right for work and wrong for the
-    /// one turn that is not work.
-    ///
-    /// Measured 2026-09-18. A session sat at 260390 of a 262144 window, which
-    /// left the summary turn 1754 tokens. It spent them reasoning, was cut off
-    /// before writing a word of summary, and the salvage loop asked it to try
-    /// again — four times, thinking first each time, until the cap was spent:
-    /// `compaction FAILED: 4 consecutive length salvages`. The compaction that
-    /// exists to rescue a full window cannot be the thing that needs a roomy one.
-    ///
-    /// A summary is a record, not a decision, so closing the block costs nothing
-    /// it needed. The default is `generation_prompt`, so a dialect that has no
-    /// separate notion of reasoning is unaffected and correct by doing nothing.
+    /// The same, with the reasoning block already closed. Every dialect here opens one, which is
+    /// right for work and wrong for the one turn that is not work: a summary that spends the
+    /// window's last tokens thinking produces no record. The default is `generation_prompt`.
     fn generation_prompt_closing_reasoning(&self) -> Vec<RenderSpan> {
         self.generation_prompt()
     }
 }
 
-/// `GlmRenderer` behind the seam.
-///
-/// Off by default (`--features glm`) so that `cargo build -p letibot-turn` proves
-/// the engine has no path into a concrete dialect.
+/// `GlmRenderer` behind the seam. Off by default (`--features glm`) so that
+/// `cargo build -p letibot-turn` proves the engine has no path into a concrete dialect.
 #[cfg(feature = "glm")]
 pub mod glm {
     use super::*;

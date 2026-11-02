@@ -1,55 +1,11 @@
-//! **The wire: the frames a coordinator's socket would take and send.**
+//! The wire: the frames a coordinator's socket takes and sends. [`Room::answer`] is the dispatch with
+//! the socket taken out, so a protocol can be tested before anybody writes a listener.
 //!
-//! This is the *proposal*, made concrete enough to be compiled and round-tripped: the coordinator
-//! daemon (next slice) is a loop over [`Request`] and [`Response`] around a [`Room`], and
-//! [`Room::answer`] is that loop's dispatch with the socket taken out — so the protocol can be
-//! tested before anybody writes a listener, and a frame that cannot be answered here is a frame
-//! that cannot be answered there.
+//! One connection per top-level session, because a push has an address and a close is a fact: the
+//! coordinator calls [`Room::note_gone`] at once instead of waiting out the lease.
 //!
-//! # One connection per top-level session
-//!
-//! [`Request::Hello`] carries the [`Speaker`] — the session and the parent it speaks through, read
-//! by the daemon from `session.parent_session_id`. A subagent is refused **at the door**, and the
-//! connection is per session rather than per daemon for two reasons that are worth the sockets:
-//!
-//! * **A push has an address.** The bell ([`Response::Event`]) goes to the connections that own the
-//!   sessions it is about; a multiplexed connection would have to route by hand.
-//! * **The close is a fact.** A session whose daemon died, restarted or was stopped drops its
-//!   socket, and the coordinator calls [`Room::note_gone`] *at once* instead of waiting out the
-//!   lease. The socket is the liveness of the daemon; the beat is the liveness of the work — and
-//!   they are different facts, which is why both exist. A session that is merely parked (its turn
-//!   ended, its daemon fine) keeps its connection and loses its claim to the beat.
-//!
-//! # What is idempotent, and why it has to be
-//!
-//! A socket a session can reconnect to makes reconnection the normal case, not an error path — so
-//! every mutating frame carries a client-minted `id`, and:
-//!
-//! | frame | a repeat does |
-//! |---|---|
-//! | `post` | answers the item it made the first time; **no second item** |
-//! | `claim` (same tag) | answers the claim the same session already holds; `claim_ms` does not move |
-//! | `claim_item` | the same, for one item |
-//! | `beat` | stamps the same claim again — harmless by construction, and answered from the replay window anyway |
-//! | `waiting` | sets the same text; the `since_ms` moves only if the text is set again later |
-//! | `done`, `abandon` | answer the finished/abandoned item; the second is refused by name ([`Refused::NotHeld`]) if the replay window has forgotten the first, which is the honest answer |
-//! | `dispute` | an item has at most one open question, so asking twice is the same question |
-//!
-//! The replay window is [`crate::REPLAY_WINDOW`] replies per room. **A client that has been away
-//! for longer than that must re-read** ([`Request::Queue`], [`Request::Holding`],
-//! [`Request::Reminders`]) rather than replay: every reply carries the item as it stands, so a
-//! re-read is cheap and cannot be wrong, and a replay window is not a durable log.
-//!
-//! **A reply to a repeat carries no events.** The bell rang the first time; a client catching up on
-//! a reply is not a second thing happening.
-//!
-//! # Versioning
-//!
-//! [`ROOM_PROTOCOL_VERSION`] is the room's own number, not the session protocol's
-//! (`letibot_sessionlog::PROTOCOL_VERSION`): the coordinator is a different socket with a
-//! different lifetime, and pairing a head with a daemon must not be entangled with pairing a
-//! session with a room. A mismatch is [`Response::Bye`] with both numbers in the sentence — the
-//! same clean refusal the daemon's `Hello` makes.
+//! Every mutating frame carries a client-minted `id`, because reconnection is the normal case: a repeat
+//! is answered from the replay window and carries no events; a version mismatch is [`Response::Bye`].
 
 use serde::{Deserialize, Serialize};
 
@@ -58,103 +14,14 @@ use crate::room::{
     ABANDON_THRESHOLD, DEFAULT_BEAT_EVERY_MS, Decision, Holding, Question, Refused, Reminder, Room,
 };
 
-/// **The room's protocol version**, and the room's alone — see the module header.
-///
-/// # 2: the room says WHICH room it is
-///
-/// Version 1 had a `Hello` that named a session and a protocol number and nothing about the
-/// COORDINATOR, so a session that dialled the wrong socket was obeyed: its post landed in another
-/// box's queue and its claim locked a tag nobody there was waiting for. A room is per box and two
-/// boxes can both call themselves `localhost`, so the name is the only thing that tells them apart.
-///
-/// So: [`Request::Hello`] carries the room's name the client believes it reached, and
-/// [`Response::Welcome`] carries [`crate::Server::identity`] — *this is the room on this socket,
-/// started T ago* — as one field, so a client is told rather than left to infer. Both fields are
-/// added here, together, because a name without an identity is a name nobody can check.
-///
-/// # 3: the room says which tags have an AGENT
-///
-/// Version 2's `Room` read named every item and every question, and nothing about who owns a queue.
-/// A tag's agent is a session of the coordinator's own ([`crate::tag_session`]), and only the
-/// coordinator knows which ones it had to bring back — so the fact a person needs (*this tag has an
-/// agent, it has been re-seated twice, or it has none*) has to be on the wire or it cannot be
-/// drawn. [`Response::Room`] carries `agents`; a client that speaks 2 is refused by name rather
-/// than drawn without it, because a pane that silently omitted the column would say *no agent* for
-/// every tag on an older room.
-///
-/// # 4: a room is a PROJECT's, and the room says what it could NOT deliver
-///
-/// Two additions, written on two branches at once and landed as one number: each was `4` on its
-/// own branch, and this tree has one `4` — so a client either speaks both or is refused by name.
-///
-/// ## The project, and the three fields it came with
-///
-/// The operator, 2026-10-31: *"yeah i want a room … the herarchy was
-/// `<project>/<top-sessions>/<subagents>*|system/`"*. Until 4 there was one room per box and its
-/// name was the box's, so two projects on one machine shared one set of tags — project B's `ram`
-/// was refused `Busy` by project A's claim, and neither could see that it was the other's fault.
-/// So a room's name is now `<host key>/<project key>` ([`crate::room_name`]) and the coordinator
-/// holds one room per project.
-///
-/// Three fields came with it, and each is a fact only one end can state:
-///
-/// * [`Request::Members`] — **the tree**, from the daemon, which is the only thing that can see
-///   the sessions the room refuses at its door. A room's membership is the project's sessions and
-///   their subagents, not the connections.
-/// * [`Response::Room`]'s `members` — the same list back, for a pane.
-/// * [`crate::Question`]'s `project` — which room asked, stamped by the server, because two rooms
-///   number their questions from 1 and an arbiter that heard both would otherwise rule on the
-///   wrong one.
-///
-/// ## The gap the bell could not ring through
-///
-/// The room keeps no log ([`Request::Hello`]'s sibling rule, and the reason a replay window is not
-/// a history), so an event addressed to a session whose connection was down is gone. Nothing said
-/// so: a session that reconnected was handed a `Welcome` identical to a session that had never
-/// been away, which is a bell that is silent about the hours it was not ringing.
-///
-/// So [`Response::Welcome`] carries `missed` — how many events the router addressed to this session
-/// while it had no connection — and `missed_since_ms`, the first of them. **The count is the
-/// honest answer and a replay is not**: the room cannot say what the events were, and a client told
-/// *you missed four* re-reads the state (`queue`, `holding`, `questions`), which cannot be wrong.
-/// A client that speaks 3 is refused by name rather than left believing it heard everything.
-///
-/// **The count is the SERVER's, keyed by session, and the router is what increments it** — so an
-/// ordinary session counts the gap in the one room it is in, and the arbiter, which every room
-/// addresses, counts the gaps of all of them. It is taken (not read) when a `Hello` is answered, so
-/// a client is told about the gap that has just ended and never about the same one twice.
-///
-/// # 5: a claim says what it is DOING, and that is not what it is WAITING on
-///
-/// Until 5 a holder's only words on the wire were [`Request::Waiting`], and [`crate::Claim`]'s
-/// `waits_on` is the field a reminder reads to decide whether the holder still has to act. A claim
-/// that acknowledged itself through that verb — *seen #1; working on it*, so that a queue read could
-/// tell a claim from a session that took the row and died — therefore read as *nothing outside is
-/// moving this*, and every claim in every room went quiet: the reminder that exists to say *finish
-/// it or release it* never fired.
-///
-/// So the acknowledgement has its own frame and its own field: [`Request::Acknowledge`] writes
-/// [`crate::Claim::said`], and `waits_on` keeps its meaning. Two facts that a claim can carry, and
-/// they are opposite ones — *this is mine to do* and *this is not mine to move* — which is why one
-/// field could not hold both. A client that speaks 4 is refused by name rather than left with a
-/// claim whose acknowledgement is invisible.
-///
-/// # The number moves at RELEASE POINTS, not on every change
-///
-/// A frame added mid-series rides the next number with whatever else lands before it: the room has
-/// no users outside this tree, so a version is a line between this build and a released one, and
-/// paying for N-1 compatibility would be code spent on an audience that does not exist yet.
+/// The room's protocol version, and the room's alone - see the module header. The number moves at
+/// RELEASE POINTS: a frame added mid-series rides the next number with whatever else lands before it,
+/// because the room has no users outside this tree to be compatible with.
 pub const ROOM_PROTOCOL_VERSION: u16 = 5;
 
-/// **The sentence a protocol mismatch is refused with**, or `None` when the two agree.
-///
-/// One function because two doors refuse it — a [`crate::Server`]'s, which knows the version before
-/// it answers anything, and [`crate::Room::answer_traced`]'s, which a test drives directly — and two
-/// sentences about one skew would drift.
-///
-/// **It says which side is older.** A reader handed two numbers and told *upgrade one of them* has
-/// to work out which, and gets it wrong about half the time; a reader told *the client is the older
-/// of the two* knows which binary to restart.
+/// The sentence a protocol mismatch is refused with, or `None` when the two agree. One function because
+/// two doors refuse it - a [`crate::Server`]'s and [`crate::Room::answer_traced`]'s - and two sentences
+/// about one skew would drift. It says which side is older, because a reader has to work that out.
 pub fn protocol_refusal(theirs: u16) -> Option<String> {
     if theirs == ROOM_PROTOCOL_VERSION {
         return None;
@@ -171,21 +38,13 @@ pub fn protocol_refusal(theirs: u16) -> Option<String> {
     ))
 }
 
-/// **What a client sends.**
+/// What a client sends.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Request {
-    /// The first frame on every connection: who is speaking, in which protocol, and **which room
-    /// the client believes it reached**.
-    ///
-    /// `room` is `<host key>/<project key>` ([`crate::room_name`]) — **the box AND the project**,
-    /// since version 4. Both halves are needed: two boxes can serve one repository path (a clone, a
-    /// backup), and two projects can live on one box. The bare host key is the box's own room
-    /// ([`crate::DEFAULT_PROJECT`]), which is where a one-shot, a fixture and the arbiter live.
-    ///
-    /// **Empty is *I do not say*** — what a protocol-1 client sends, since the field did not exist.
-    /// An empty name is not checked, so an old client still reaches the room it dialled and is told
-    /// about the version instead; a client that names a room is held to it.
+    /// The first frame on every connection: who is speaking, in which protocol, and which room the client
+    /// believes it reached. `room` is `<host key>/<project key>`, because two boxes can serve one repository
+    /// path and two projects can live on one box; empty is *I do not say*.
     Hello {
         protocol: u16,
         speaker: Speaker,
@@ -200,68 +59,54 @@ pub enum Request {
     },
     /// Claim the head of a tag.
     Claim { id: String, tag: String },
-    /// Claim one item — the operator's manual control, or a client that means *that* row. It must
+    /// Claim one item - the operator's manual control, or a client that means *that* row. It must
     /// still be the head.
     ClaimItem { id: String, item: u64 },
     /// Say you are still working on it.
     Beat { id: String, item: u64 },
     /// Say what you are waiting on; empty text clears it.
     Waiting { id: String, item: u64, text: String },
-    /// **Say what you are DOING with it** — the acknowledgement, which is not a wait. Empty text
-    /// clears it. See [`ROOM_PROTOCOL_VERSION`]'s version-5 note.
+    /// Say what you are DOING with it - the acknowledgement, which is not a wait. Empty text clears
+    /// it. See [`crate::Claim::said`].
     Acknowledge { id: String, item: u64, text: String },
     /// The work is done.
     Done { id: String, item: u64 },
     /// Give it up on purpose.
     Abandon { id: String, item: u64, why: String },
-    /// *I am still on it* — ask the arbiter, rather than fight for the claim.
+    /// *I am still on it* - ask the arbiter, rather than fight for the claim.
     Dispute { id: String, item: u64, says: String },
     /// Answer a question the room asked.
     Rule {
         id: String,
         question: u64,
         decision: Decision,
-        /// **Which room the question is in**, for a client that hears more than one — the arbiter
-        /// does, and two rooms number their questions from 1. A client that names none means *the
-        /// room this connection is in*, which is every ordinary session's answer.
+        /// Which room the question is in, for a client that hears more than one: the arbiter does,
+        /// and two rooms number their questions from 1. Naming none means *the room this
+        /// connection is in*, which is every ordinary session's answer.
         #[serde(default)]
         project: Option<String>,
     },
-    /// **The project's tree, as the daemon holding it sees it** — who is in this room.
-    ///
-    /// The room cannot work this out: it holds no store and no registry, and a subagent never
-    /// opens a connection (the door refuses it), so the connections are not the membership either.
-    /// The daemon can — it has the registry and the store's rows — so it says, and a replacement
-    /// frame is the whole protocol: a tree is the answer to *who is here now*, and a merge would
-    /// keep a session that has been closed since.
-    ///
-    /// A frame with a reply rather than a push, because a client's reader thread is what would
-    /// have to demultiplex a push and this is small: one project's sessions.
+    /// The project's tree, as the daemon holding it sees it - who is in this room. The room cannot work
+    /// this out: it holds no store, and a subagent never opens a connection, so the connections are not the
+    /// membership either. A replacement and not a merge, because a merge would keep a session closed since.
     Members { rows: Vec<crate::tree::Member> },
-    /// **A tag's queue, in order** — the read that makes polling unnecessary for a client that
-    /// has just reconnected.
+    /// A tag's queue, in order - the read that makes polling unnecessary after a reconnect.
     Queue { tag: String },
     /// What a session holds and what it is waiting on. `session: None` means *me*.
     Holding { session: Option<String> },
     /// Every reminder the room owes.
     Reminders,
-    /// The open questions, oldest first — what the tie-breaker is asked.
+    /// The open questions, oldest first - what the tie-breaker is asked.
     Questions,
-    /// **The whole room in one read** — what a PANE is drawn from.
-    ///
-    /// [`Request::Queue`] answers one tag, and a pane that draws *the queues per tag* would have to
-    /// ask for a tag whose name it does not know: the tags are the room's, and nothing outside it
-    /// can enumerate them. So this is one frame with every item and every open question in it, plus
-    /// the facts a reader needs to interpret an empty list — see [`Response::Room`].
-    ///
-    /// **A read, and it adds no state.** The pane it serves is a view of the same in-memory room
-    /// the verbs above move; there is nothing here that is not already in it.
+    /// The whole room in one read - what a PANE is drawn from. [`Request::Queue`] answers one tag, and a
+    /// pane that draws the queues per tag would have to ask for a tag whose name it does not know. A read,
+    /// adding no state: the pane it serves is a view of the same in-memory room.
     Room,
 }
 
 impl Request {
-    /// **The correlation id**, when the frame has one. A `queue`/`holding`/`reminders` read has
-    /// none, and neither has `hello`: a read is not a verb and cannot be acted on twice.
+    /// The correlation id, when the frame has one. A read has none, and neither has `hello`: a read
+    /// is not a verb and cannot be acted on twice.
     pub fn request_id(&self) -> Option<&str> {
         match self {
             Request::Hello { .. }
@@ -285,36 +130,29 @@ impl Request {
     }
 }
 
-/// **What the server sends** — a reply, or a push the client did not ask for.
+/// What the server sends: a reply, or a push the client did not ask for.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Response {
     Welcome {
         protocol: u16,
-        /// The lease the room abandons a silent claim after — so a client can beat at a third of
-        /// it rather than guess.
+        /// The lease the room abandons a silent claim after, so a client can beat at a third of it
+        /// rather than guess.
         lease_ms: u64,
         beat_every_ms: u64,
         threshold: u32,
-        /// **`Server::identity()`, verbatim** — *the room on this socket, started T ago and holding
-        /// N item(s)* — so that the client is TOLD what it connected to instead of inferring it
-        /// from a socket path it chose itself.
-        ///
-        /// It is the sentence as of this moment. A reader that wants the age NOW asks
-        /// [`Request::Room`], whose own `identity` is the same function taken at the moment of the
-        /// read: an age read once at connect is a wrong age for ever after.
+        /// `Server::identity()`, verbatim, so the client is TOLD what it connected to. It is the sentence
+        /// as of this moment: a reader that wants the age now asks [`Request::Room`], whose own `identity`
+        /// is the same function taken at the read.
         #[serde(default)]
         identity: String,
-        /// **How many events this session was addressed by while it had no connection** — see the
-        /// version-4 note on [`ROOM_PROTOCOL_VERSION`]. `0` for a session that has never been away,
-        /// and for the first connection of one the room has not met.
-        ///
-        /// The router counts an event once per session it would have reached, so the number is
-        /// *how many bells rang where nobody was*, not how many events happened.
+        /// How many events this session was addressed by while it had no connection. The router counts an
+        /// event once per session it would have reached, so the number is *how many bells rang where
+        /// nobody was*, not how many events happened.
         #[serde(default)]
         missed: u64,
-        /// **When the first of them was routed** — so the sentence a client composes can say how
-        /// long the gap was. `0` when nothing was missed.
+        /// When the first of them was routed, so the sentence a client composes can say how long the
+        /// gap was. `0` when nothing was missed.
         #[serde(default)]
         missed_since_ms: u64,
     },
@@ -374,65 +212,55 @@ pub enum Response {
     Questions {
         rows: Vec<Question>,
     },
-    /// **The room, as a pane reads it** — the answer to [`Request::Room`].
-    ///
-    /// The first three fields are the SERVER's, not the room's: the state machine cannot say what a
-    /// process is, who arbitrates it or who is connected to it. [`crate::Room::answer_traced`]
-    /// answers the last two and leaves the first three empty; [`crate::Server`]'s own dispatch fills
-    /// them, in one place, so that a pane and a client cannot get two answers to *is the arbiter
-    /// up*.
+    /// The room, as a pane reads it - the answer to [`Request::Room`]. The first three fields are the
+    /// SERVER's, not the room's: the state machine cannot say what a process is, who arbitrates it or who
+    /// is connected to it, and [`crate::Server`]'s dispatch fills them in one place.
     Room {
-        /// `Server::identity()` — *started T ago and holding N item(s)*, and the sentence saying
-        /// that the room keeps no store. **This is the field that makes *restarted clean* and
-        /// *restarted empty* two readings**: an in-memory room is empty at every start, so only the
-        /// age tells a reader whether the queues in front of them are the ones that were posted or
-        /// the ones that are left after a restart.
+        /// `Server::identity()`: *started T ago and holding N item(s)*, and the sentence saying the
+        /// room keeps no store. This is the field that makes *restarted clean* and *restarted empty*
+        /// two readings, because an in-memory room is empty at every start.
         identity: String,
         /// The session that arbitrates this room, when one is named.
         arbiter: Option<String>,
-        /// **Every session connected to this room now**, sorted. The socket is the DAEMON's
-        /// liveness (`docs/room.md` § *The wire*), so this is who is up rather than who is beating
-        /// — and an `arbiter` absent from it is a room whose questions wait.
+        /// Every session connected to this room now, sorted. The socket is the DAEMON's liveness, so
+        /// this is who is up rather than who is beating - and an `arbiter` absent from it is a room
+        /// whose questions wait.
         connected: Vec<String>,
         /// Every item, oldest first, finished and dropped included: a pane shows the history, and a
         /// row that vanished would be a row a person cannot account for.
         items: Vec<Item>,
         /// The open questions, oldest first.
         questions: Vec<Question>,
-        /// **The tags that have an agent**, in tag order — who it is, how many times it had to be
-        /// re-seated, and when the one now seated began. A tag absent from this list has no agent,
+        /// The tags that have an agent, in tag order: who it is, how many times it had to be
+        /// reseated, and when the one now seated began. A tag absent from this list has no agent,
         /// which is a fact the pane says rather than a column it leaves blank.
         #[serde(default)]
         agents: Vec<crate::agent::TagAgent>,
-        /// **The project's tree** — every session in this room, in the order the tree draws them:
-        /// the project's own sessions and their subagents, then the `system` agents that serve
-        /// them. Filled by the room from the last [`Request::Members`] its daemon sent, which is
-        /// the only thing that can see a subagent (the door refuses one).
+        /// The project's tree: every session in this room, in the order the tree draws them - the project's
+        /// own sessions and their subagents, then the `system` agents that serve them. Filled from the last
+        /// [`Request::Members`] its daemon sent.
         #[serde(default)]
         members: Vec<crate::tree::Member>,
     },
-    /// **The room now holds this tree** — the answer to [`Request::Members`].
+    /// The room now holds this tree - the answer to [`Request::Members`].
     Members {
         count: u64,
     },
-    /// **The bell** — an unsolicited event. A client that only ever answers a prompt cannot be
-    /// woken by this; see `docs/room.md` § *The bell, and the client that cannot hear it*.
+    /// The bell - an unsolicited event. A client that only ever answers a prompt cannot be woken by
+    /// this.
     Event {
         event: crate::room::Event,
     },
-    /// The connection ends, with the reason in the sentence — a protocol mismatch, or the
+    /// The connection ends, with the reason in the sentence - a protocol mismatch, or the
     /// coordinator stopping.
     Bye {
         why: String,
     },
 }
 
-/// **One frame's whole answer** — the reply, and the events the verb produced.
-///
-/// The reply is what the asking connection reads; the events are what the SERVER rings other
-/// connections with. They are one value because they come out of one act: a `claim` that replied
-/// `Claimed` and forgot to ring the sessions queued behind it would be a room that only answers
-/// whoever asked.
+/// One frame's whole answer: the reply, and the events the verb produced. The reply is what the asking
+/// connection reads, the events are what the SERVER rings other connections with, and they are one value
+/// because they come out of one act.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Answer {
     pub response: Response,
@@ -440,7 +268,7 @@ pub struct Answer {
 }
 
 impl Answer {
-    /// A reply with nothing to ring about — a read, a `Hello`, a `Bye`.
+    /// A reply with nothing to ring about - a read, a `Hello`, a `Bye`.
     fn quiet(response: Response) -> Answer {
         Answer {
             response,
@@ -471,21 +299,14 @@ impl Answer {
 }
 
 impl Room {
-    /// **Answer one frame** — the coordinator's dispatch with the socket taken out.
-    ///
-    /// `who` is the connection's [`Speaker`] (from its `Hello`); `now` is the coordinator's clock.
-    /// A push ([`Response::Event`]) is *not* produced here: [`Room::sweep`], [`Room::note_gone`]
-    /// and every [`crate::Outcome`] carry the events, and the server decides which connections
-    /// they go to. That split is deliberate — routing a bell is a property of the connections, and
-    /// this crate has none.
-    ///
-    /// [`Room::answer_traced`] is the same dispatch with those events handed back, and it is what a
-    /// server calls: a reply without its events is a bell nobody rang.
+    /// Answer one frame - the coordinator's dispatch with the socket taken out. A push
+    /// ([`Response::Event`]) is not produced here: the sweep, the close and every [`crate::Outcome`] carry
+    /// the events, and the server decides which connections they go to.
     pub fn answer(&mut self, who: &Speaker, request: &Request, now: u64) -> Response {
         self.answer_traced(who, request, now).response
     }
 
-    /// **[`Room::answer`], with the events the frame produced.**
+    /// [`Room::answer`], with the events the frame produced.
     pub fn answer_traced(&mut self, who: &Speaker, request: &Request, now: u64) -> Answer {
         match request {
             Request::Hello {
@@ -507,14 +328,13 @@ impl Room {
                     lease_ms: self.lease_ms(),
                     beat_every_ms: DEFAULT_BEAT_EVERY_MS,
                     threshold: ABANDON_THRESHOLD,
-                    // **The identity is the SERVER's**, and this dispatch has none — the same
-                    // reason `Response::Room`'s three server fields are filled by
-                    // `Server::answer_frame`. A `Room` driven directly by a test gets the empty
-                    // string, and a client never does.
+                    // The identity is the SERVER's, and this dispatch has none - the same reason
+                    // `Response::Room`'s server fields are filled by `Server::answer_frame`. A
+                    // `Room` driven directly by a test gets the empty string; a client never does.
                     identity: String::new(),
-                    // **A `Room` has no connections, so it has never failed to deliver one.** The
-                    // count is the SERVER's for the same reason the identity is: it is a fact
-                    // about a socket, and this dispatch has no socket.
+                    // A `Room` has no connections, so it has never failed to deliver one. The count
+                    // is the SERVER's for the same reason the identity is: it is a fact about a
+                    // socket, and this dispatch has no socket.
                     missed: 0,
                     missed_since_ms: 0,
                 })
@@ -605,9 +425,9 @@ impl Room {
                 id,
                 question,
                 decision,
-                // **The room ignores it, and that is the point**: which room a question is in is
-                // the SERVER's fact (`Server::answer_frame` picks the room from it), and a room
-                // that could be asked about another room's question would be two rooms.
+                // The room ignores it, and that is the point: which room a question is in is the
+                // SERVER's fact, and a room that could be asked about another room's question would
+                // be two rooms.
                 project: _,
             } => match self.rule(*question, decision.clone(), &who.session, now) {
                 Ok(o) => Answer {
@@ -636,10 +456,9 @@ impl Room {
             Request::Reminders => Answer::quiet(Response::Reminders {
                 rows: self.reminders(now),
             }),
-            // **The tree, replaced.** No id and no event: a membership is a set, a repeat is the
-            // same set, and a bell for *somebody else joined the project* would be a turn for
-            // every session on every change — the cost rule `docs/room.md` § *Slice 5* already
-            // settled (a claim is a comparison; only a dispute is a judgement).
+            // The tree, replaced. No id and no event: a membership is a set, a repeat is the same
+            // set, and a bell for *somebody else joined the project* would be a turn for every
+            // session on every change.
             Request::Members { rows } => {
                 self.set_members(rows.clone());
                 Answer::quiet(Response::Members {
@@ -649,14 +468,9 @@ impl Room {
             Request::Questions => Answer::quiet(Response::Questions {
                 rows: self.open_questions().into_iter().cloned().collect(),
             }),
-            // **The pane's read, and the only frame with fields the room cannot fill.**
-            //
-            // What this coordinator IS, who arbitrates it and who is connected to it are facts
-            // about a process, and this type is a state machine: it has no clock, no socket and no
-            // idea that a server exists. So it answers the half it owns — every item and every open
-            // question — and leaves the three empty, and `Server::answer_frame` fills them at the
-            // one place a frame is answered on a connection. Two dispatches would be two answers to
-            // *is the arbiter up*, and a pane drawn from one of them would be wrong half the time.
+            // The pane's read, and the only frame with fields the room cannot fill: what this coordinator
+            // IS, who arbitrates it and who is connected to it are facts about a process, and this type has
+            // no clock and no socket. It answers the half it owns and `Server::answer_frame` fills the rest.
             Request::Room => Answer::quiet(Response::Room {
                 identity: String::new(),
                 arbiter: None,

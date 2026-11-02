@@ -1,43 +1,11 @@
 //! **Where a daemon's tools run, written down beside its socket.**
 //!
-//! `docs/remote-hosts.md` places a session's TOOLS on another machine — `--host lab2x1` — while
-//! its model, its store and its gate stay here. That is a fact of the **daemon**, one per process:
-//! every session it opens runs its `bash`, `read`, `write` and jobs in the same place. A head that
-//! attaches has no way to ask. The protocol carries the session's model, its endpoint and its
-//! dialect, all of them per session and all of them on the wire; the backend is not among them, and
-//! inventing a frame for one process-wide fact would be the wrong place to put it.
+//! `--host lab2x1` places a session's TOOLS on another machine while its model, store and gate stay
+//! here. That is a fact of the DAEMON, one per process, and the wire carries nothing about it, so the
+//! daemon writes it beside the claim that already says *this folder's daemon is me*.
 //!
-//! So the daemon writes it down: the spelling and the socket it belongs to, in a file named after
-//! that socket, beside the claim ([`crate::server`]'s `FolderClaim`) that already says *this folder
-//! has a daemon and it is me*. The bridge reads it to answer `leticode_status`'s placement, and —
-//! the reason this matters — to refuse a `leticode_start { host }` that would otherwise join a
-//! daemon running the caller's tools somewhere else.
-//!
-//! # Why the socket's identity is in the record
-//!
-//! **A record that outlived its daemon must never be read as the present one's.** A daemon killed
-//! with `SIGKILL` leaves its `.placement` behind, and the next daemon to take the folder — a local
-//! one, now — writes its own. But between that bind and that write there is a window, and a reader
-//! that took the stale line in it would answer *remote* about a daemon running the tools here: the
-//! caller's package would run locally while it believed it was placed, which is the defect the
-//! bridge refuses rather than risks. So a record names the `(dev, ino)` of the socket it belongs
-//! to (the same pair `ServerHandle` keeps to unlink *its own* file and no other), and a reader that
-//! finds a different inode at the socket than the record names answers *nothing known* — which
-//! every caller treats as a refusal rather than an answer.
-//!
-//! **The inode alone is not an identity: a rebind can take it back.** A filesystem is free to hand
-//! a freed inode to the next file at the same path, and on ext4 it does, so a daemon killed with
-//! `SIGKILL` followed by a rebind at the same name can leave the successor carrying the recorded
-//! `(dev, ino)` as surely as the socket the record was written beside. So the record also carries
-//! the socket's `ctime`, written by the kernel at the bind and beyond a rebind's reach to repeat,
-//! and a reader that finds either half different answers *nothing known*. A record from a build
-//! that wrote no stamp gets the same answer: it cannot prove which binding it names, and `None`
-//! fails closed.
-//!
-//! **Nothing removes the record on the way out.** The socket's absence is what says nobody is
-//! here, and it is the one fact every reader checks first (`connect`, not `stat` — see
-//! `crates/bridge/src/daemon.rs`'s `is_up`); a file that outlives its daemon can only be read by a
-//! caller that has just been answered by a listener, and then the identity check settles it.
+//! A record names the socket's `(dev, ino)` and its `ctime`, so a record that outlived its daemon is
+//! never read as the present one's: either half different answers `None` - nothing is known.
 
 use std::path::{Path, PathBuf};
 
@@ -46,15 +14,9 @@ pub fn path(socket: &Path) -> PathBuf {
     socket.with_extension("placement")
 }
 
-/// **Record where this daemon's tools run**, as the spelling `Placement::parse` reads back
-/// (`host`, `host:lab2x1`, `firecode`).
-///
-/// Called by the daemon once it holds the folder — after the bind, so only the daemon that is
-/// actually serving writes here, and a second start that was refused for a live daemon cannot
-/// overwrite the live one's answer.
-///
-/// Written to a sibling and renamed, so a reader never sees half a record; the sibling is named
-/// after the record so two daemons racing cannot share a temp file.
+/// **Record where this daemon's tools run**, as the spelling `Placement::parse` reads back. Called
+/// after the bind, so only the serving daemon writes here; written to a sibling and renamed so a
+/// reader never sees half a record.
 pub fn write(socket: &Path, spelling: &str) -> std::io::Result<()> {
     let ((dev, ino), (secs, nsec)) = socket_identity(socket)?;
     let target = path(socket);
@@ -70,11 +32,9 @@ pub fn write(socket: &Path, spelling: &str) -> std::io::Result<()> {
     std::fs::rename(&tmp, &target)
 }
 
-/// **Where the daemon holding this socket says its tools run**, or `None` when there is no record
-/// or the record is not this socket's.
-///
-/// `None` is *nothing is known*, never *local*: the caller that has to decide something from this
-/// (the bridge, before it reuses a daemon) must fail closed on it.
+/// **Where the daemon holding this socket says its tools run**, or `None` when there is no record or
+/// the record is not this socket's. `None` is *nothing is known*, never *local*: a caller that has to
+/// decide something from this must fail closed on it.
 pub fn read(socket: &Path) -> Option<String> {
     let text = std::fs::read_to_string(path(socket)).ok()?;
     let mut recorded: Option<(u64, u64)> = None;
@@ -118,10 +78,8 @@ pub fn read(socket: &Path) -> Option<String> {
 }
 
 /// The identity of a socket: `(dev, ino)` — the pair that says *this file, not another one at the
-/// same name* — and the `ctime` pair that says *this binding of it*.
-///
-/// A stat and not a connect: the caller has already established that something is listening, and
-/// what is being asked here is which file the listener is bound to.
+/// same name* — and the `ctime` pair that says *this binding of it*. A stat and not a connect: the
+/// caller has already established that something is listening.
 fn socket_identity(path: &Path) -> std::io::Result<((u64, u64), (i64, u64))> {
     use std::os::unix::fs::MetadataExt;
     let m = std::fs::metadata(path)?;
@@ -133,14 +91,8 @@ mod tests {
     use super::*;
 
     /// A socket path in a scratch directory, with a real socket file at it — the record is about a
-    /// socket's identity, so a test that wrote one beside a name that is not a socket would be
-    /// testing a file.
-    ///
-    /// The listener is kept alive by the caller: closing it unlinks nothing, but the inode is what
-    /// the assertions are about and a rebound socket is this module's whole other test.
-    ///
-    /// [`crate::testing::scratch_root`] and not `$TMPDIR`: a unix socket path is capped at
-    /// `SUN_LEN`, and a per-user temp directory is most of the budget before a name is added.
+    /// socket's identity, so a test beside a name that is not a socket would be testing a file. The
+    /// listener is kept alive by the caller, and the scratch root is short because `SUN_LEN` is.
     fn a_socket(tag: &str) -> (PathBuf, std::os::unix::net::UnixListener) {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -169,22 +121,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(socket.parent().expect("a parent"));
     }
 
-    /// **A record from a daemon that is gone is not this daemon's answer.** The socket at the path
-    /// is a new file — a new inode — and the record still names the old one, so the reader answers
-    /// nothing known rather than a stale placement.
-    ///
-    /// This is the shape the bridge refuses on: *there is a daemon here and I cannot say where it
-    /// runs the tools* is a refusal, while a stale *remote* read as the present truth is a package
-    /// running locally when its caller asked for a host.
-    ///
-    /// **The successor takes the name by a rename, not by a rebind at the path.** Unlinking and
-    /// rebinding asks the filesystem to hand out a fresh inode, and only tmpfs does: on ext4 the
-    /// freed inode comes straight back (measured 30 times out of 30), so a rebinding fixture passes
-    /// wherever `TMPDIR` is on tmpfs and fails wherever it is on a real disk — which is what a gate
-    /// that moves its scratch onto one exposes. Two files that exist at the same moment cannot share
-    /// an inode, so binding the successor beside the old socket and moving it onto the name makes
-    /// *a different file at the same path* the fixture's guarantee instead of the filesystem's
-    /// favour, and leaves the assertion about identity exactly as strong.
+    /// **A record from a daemon that is gone is not this daemon's answer**: the socket at the path is
+    /// a new file and the record still names the old one. The successor takes the name by a rename,
+    /// because a rebind at the path can be handed the same inode back on ext4.
     #[test]
     fn a_record_of_a_socket_that_is_gone_is_not_an_answer() {
         use std::os::unix::fs::FileTypeExt;
@@ -221,14 +160,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(socket.parent().expect("a parent"));
     }
 
-    /// **A rebind that takes the recorded inode back is still not this daemon's answer.** On ext4
-    /// the freed inode comes straight back to the next bind at the same path, so the successor can
-    /// carry the recorded `(dev, ino)` — the state a rebind leaves is *same file, later binding*,
-    /// and only the ctime tells the two apart.
-    ///
-    /// A `chmod` stages exactly that state without betting on the allocator: the inode stays and
-    /// the ctime moves, which is what a new bind's own ctime is. Adding a permission bit is the
-    /// one change that cannot disturb the listener.
+    /// **A rebind that takes the recorded inode back is still not this daemon's answer**: only the
+    /// ctime tells the two apart, and a `chmod` stages exactly that state without betting on the
+    /// allocator.
     #[test]
     fn a_rebind_that_takes_the_same_inode_back_is_not_an_answer() {
         use std::os::unix::fs::PermissionsExt;
@@ -255,10 +189,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(socket.parent().expect("a parent"));
     }
 
-    /// **A record from a build that wrote no stamp is not this socket's answer.** It names an
-    /// inode and cannot prove which binding, so a reader that accepted it would take the inode
-    /// back as the whole check — the hole the stamp exists to close, arriving through a record
-    /// that predates it.
+    /// **A record from a build that wrote no stamp is not this socket's answer**: it cannot prove
+    /// which binding it names, so a reader that accepted it would take the inode as the whole check.
     #[test]
     fn a_record_from_a_build_without_the_stamp_is_not_an_answer() {
         use std::os::unix::fs::MetadataExt;

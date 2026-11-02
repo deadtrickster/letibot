@@ -1,23 +1,6 @@
-//! **A daemon whose binary is older than the store it serves says so to EVERY head, on every
-//! attach.**
-//!
-//! The operator's ruling of 2026-10-26, after a schema bump 32 → 33 (one nullable column) refused
-//! every daemon built before it: *an older binary should keep working when the newer schema only
-//! ADDED things, and must say so in red on the head's usual status line*.
-//!
-//! Keeping working is `letibot_tokencore`'s `store::floor` — the store records the lowest schema a
-//! reader may know, and an additive migration leaves that floor where it was. **Saying so is this
-//! file**: the daemon settles the fact once (`Registry::set_store_older`, from
-//! `harnessd::store_floor`), and `server::seat_in` publishes it as `store_newer` after every
-//! attach, because the same reason `prefix_stale` is said there applies twice over — a warning a
-//! head finds in a snapshot is `Placed::Before` (counted, listed, **not drawn**), and this one is
-//! true for the whole life of the process, so a head that arrives tomorrow is owed it as much as
-//! the one that watched the daemon start.
-//!
-//! **The negative case is asserted with a marker rather than a timeout**, the way
-//! `stale_prefix.rs` does it: a warning published after the attach is queued behind anything
-//! `seat_in` said, so a reader that reaches the marker without having seen a `store_newer` has
-//! been told nothing — a fact, not a race against a clock.
+//! A daemon whose binary is older than the store it serves says so to every head, on every attach:
+//! the fact is about the process and does not expire until a restart, so a head that arrives
+//! tomorrow is owed it as much as the one that watched the daemon start.
 
 use std::sync::Arc;
 
@@ -54,8 +37,8 @@ fn up(tag: &str) -> (Arc<Registry>, Arc<Hub>, ServerHandle, std::path::PathBuf) 
     (registry, hub, server, path)
 }
 
-/// **The sentence, as the first frame after the `Hello`** — `seat_in` publishes after `attach`
-/// registers the head and before the pump starts, so it cannot arrive later or out of order.
+/// The sentence, as the first frame after the `Hello`: `seat_in` publishes after `attach` registers
+/// the head and before the pump starts, so it cannot arrive later or out of order.
 fn told(path: &std::path::Path) -> String {
     let (_client, hello, mut reader) =
         HeadClient::attach(path, "s", 0, "tui", "operator", Caps::default()).expect("attach");
@@ -74,11 +57,9 @@ fn told(path: &std::path::Path) -> String {
     detail
 }
 
-/// **Both heads are told, and the second one is told on its own attach.**
-///
-/// This is the claim that decides the shape of the whole feature: the fact is about the PROCESS,
-/// it does not expire until a restart, and a head that arrives an hour later was not there for a
-/// publish that happened once.
+/// Both heads are told, and the second on its own attach: the fact is about the process, it does
+/// not expire until a restart, and a head that arrives an hour later was not there for a publish
+/// that happened once.
 #[test]
 fn every_head_that_attaches_is_told_the_store_is_newer() {
     let (registry, _hub, _server, path) = up("told");
@@ -105,8 +86,8 @@ fn every_head_that_attaches_is_told_the_store_is_newer() {
     let _ = std::fs::remove_file(&path);
 }
 
-/// **A daemon that opened its own store says nothing**, which is every ordinary attach in this
-/// tree — and the first thing a head hears is its own marker.
+/// A daemon that opened its own store says nothing - every ordinary attach - and the first thing a
+/// head hears is its own marker.
 #[test]
 fn a_daemon_that_can_read_its_store_says_nothing_about_it() {
     let (registry, hub, _server, path) = up("silent");

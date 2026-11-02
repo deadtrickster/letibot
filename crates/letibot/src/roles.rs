@@ -1,50 +1,25 @@
 //! One function per role, and an honest answer for the ones that are not here yet.
 //!
-//! # The state of the merge, said plainly, because a stub that lies is worse
+//! This binary is the *dispatcher*: each role's body lives in its own crate's library and is
+//! called from here, so `letibot-askpass PROMPT` and `letibot askpass PROMPT` reach one
+//! implementation. `Askpass` came first because `sudo` reaches it by path.
 //!
-//! This binary is the *dispatcher*. `Askpass` is fully a role of it — that is the
-//! role `sudo` reaches by path, so it is the one that had to work first and the one
-//! that proves argv[0] dispatch against a real caller.
-//!
-//! The others still live where they have always lived, as their own binaries:
-//! `harnessd` (1626 lines), `letibot-tui` (846), `letibot-m1` (743),
-//! `letibot-render` (368) and `letibot-render-qwen` (309). Their logic is in the
-//! `main`-carrying FILE, not in the crate's library, so making this binary *be* them
-//! means moving each one's body into its crate's lib as a callable `pub fn` — a
-//! mechanical but real extraction per role.
-//!
-//! Until that is done each of those roles prints where it actually is and exits 2.
-//! **Deliberately not `exec` of the sibling binary**: that would leave the file count
-//! exactly where it is now while looking finished, which is the shape of change that
-//! never gets completed.
-//!
-//! # And `letibot` with no subcommand is the largest remaining piece
-//!
-//! That is the launcher role, and it is not a convenience wrapper: today it is
-//! `scripts/letibot`, 901 tracked lines of shell with 262 more lines of drift on the
-//! operator's machine that no repository has (`LETIBOT_HEAD`, the seats). It decides
-//! which daemon a folder belongs to, whether one is already up, what a seat's flags
-//! are, and it carries at least two incidents in its comments — a stop loop that had
-//! to stop printing "stopped" before the process was gone, and a warning for flags
-//! that a running daemon silently swallows. Porting it is not transcription; the
-//! reasons have to travel with it, into test names.
+//! The launcher is NOT a role yet - `scripts/letibot` is what ships as `letibot`, so a
+//! multicall launcher would have no caller. Its decisions are ported; the execution is not.
 
 use std::process::ExitCode;
 
 use crate::Role;
 
-/// Run one role with the arguments that followed it.
-///
-/// `args` never contains the role's own name: `letibot-askpass PROMPT` arrives as
-/// `["PROMPT"]` and `letibot askpass PROMPT` arrives the same way, so a role cannot
-/// tell — and must not need to — which of the two ways it was reached.
+/// Run one role with the arguments that followed it. `args` never contains the role's own name,
+/// so `letibot-askpass PROMPT` and `letibot askpass PROMPT` arrive identically and a role cannot
+/// tell - and must not need to - which way it was reached.
 pub fn run(role: Role, args: &[std::ffi::OsString]) -> ExitCode {
     match role {
         Role::Askpass => askpass(args),
-        // **Wired, and it is the last one.** `letibot_harnessd::cli::run` is that
-        // binary's body, and this arm mirrors ITS `main` exactly — including the
-        // `harnessd: {e}` prefix on an error, because that is the role's name and a
-        // person reading a failed start should see the same sentence they always did.
+        // **Wired, and it is the last one.** `letibot_harnessd::cli::run` is that binary's body,
+        // and this arm mirrors ITS `main` exactly, including the `harnessd: {e}` prefix a person
+        // reading a failed start has always seen.
         Role::Daemon => match letibot_harnessd::cli::run(&args_to_strings(args)) {
             Ok(code) => exit_code(code),
             Err(e) => {
@@ -52,84 +27,42 @@ pub fn run(role: Role, args: &[std::ffi::OsString]) -> ExitCode {
                 ExitCode::FAILURE
             }
         },
-        // Wired. `letibot_tui::head::run` is that binary's body; the flags parse
-        // exactly as they did, which matters more here than for any other role —
-        // `scripts/letibot` execs the head with `--socket S --identity U [--resume ID
-        // | --new-session TITLE]`, and leticl's Common Lisp head speaks that contract.
+        // Wired. `letibot_tui::head::run` is that binary's body, and the flags parse exactly as
+        // they did: `scripts/letibot` execs the head with `--socket S --identity U`, and
+        // leticl's Common Lisp head speaks that contract.
         Role::Head => exit_code(letibot_tui::head::run(&args_to_strings(args))),
         // Wired. `letibot_harnessd::m1::run` is that binary's body; a usage error
         // exits 2 from inside it rather than returning, which is named in the module
         // docs there and is why this arm cannot report a code for every path.
         Role::M1 => exit_code(letibot_harnessd::m1::run(&args_to_strings(args))),
-        // **Wired.** The renderer's body lives in its crate's library now
-        // (`letibot_dialect_glm::cli::run`), so this role and the `letibot-render`
-        // binary are ONE implementation rather than two copies. That matters
-        // unusually much here: the fidelity gate execs this by PATH and compares the
-        // BYTES it produces, so a second copy that drifted by one space would
-        // re-prefill every conversation and the gate would report a divergence that
-        // was really a fork.
-        //
-        // `args` passes through unchanged — the dispatcher does not inspect them —
-        // because the gate's invocation (`--dialect … --profile faithful FIXTURE…`)
-        // must arrive exactly as it does when the binary is called directly.
+        // **Wired.** The renderer's body lives in its crate's library, so this role and the
+        // `letibot-render` binary are ONE implementation: the fidelity gate execs it by PATH and
+        // compares the BYTES. `args` passes through unchanged, as the gate typed them.
         Role::Render => exit_code(letibot_dialect_glm::cli::run(&args_to_strings(args))),
-        // Wired, same as `Render` — the body moved into the crate's library so this
-        // role and the binary are one implementation. `args` passes through
-        // unchanged: the gate's invocation must arrive exactly as it does when the
-        // binary is called directly.
+        // Wired, same as `Render`: one implementation with the binary, and `args` passes through
+        // unchanged so the gate's invocation arrives as it does when the binary is called.
         Role::RenderQwen => exit_code(letibot_dialect_qwen::cli::run(&args_to_strings(args))),
     }
 }
 
-/// The argv a role receives, as `String`.
-///
-/// Lossy, and named so: these are paths and flags. A role that needed a non-UTF-8
-/// argument would have to say so, and none does — the renderer reads FIXTURE paths,
-/// the daemon reads flags. One function rather than a repeated `map`, so what happens
-/// to a non-UTF-8 byte is decided once.
+/// The argv a role receives, as `String`. Lossy, and named so: these are paths and flags, and a
+/// role that needed a non-UTF-8 argument would have to say so. One function rather than a
+/// repeated `map`, so what happens to a non-UTF-8 byte is decided once.
 fn args_to_strings(args: &[std::ffi::OsString]) -> Vec<String> {
     args.iter()
         .map(|a| a.to_string_lossy().into_owned())
         .collect()
 }
 
-/// An exit code as `ExitCode`, for a role whose own `run` returns one.
-///
-/// Clamped rather than cast: a role returning something outside 0..=255 would wrap to
-/// an unrelated code, and a wrong exit code is worse than a conservative one — see the
-/// askpass role, where `sudo` reads the code to decide whether a password was given.
+/// An exit code as `ExitCode`, for a role whose own `run` returns one. Clamped rather than cast:
+/// a code outside 0..=255 would wrap to an unrelated one, and `sudo` reads the askpass role's
+/// code to decide whether a password was given.
 fn exit_code(code: i32) -> ExitCode {
     ExitCode::from(u8::try_from(code.clamp(0, 255)).unwrap_or(1))
 }
 
-// **The LAUNCHER's execution is NOT ported, and the reason is not that it is hard.**
-//
-// `scripts/letibot` (1,181 lines) is what ships as `letibot`: `make-dist.sh` stages it
-// from `scripts/`, and it REFUSES to stage `target/release/letibot` under that name —
-// measured, and the comment there records what a source install did when the multicall
-// slipped through (`letibot --sessions` answered "no such role: --sessions"). So the
-// only launcher a user has is the shell script, and the multicall's launcher would have
-// no caller.
-//
-// What IS ported and tested is the part worth porting on its own: the decisions. Which
-// daemon a folder names (`key`, `locate`, `retarget`), whether one is up (`is_listening`,
-// `daemon_pid`, `live`), what the three read-only verbs say (`daemon_line`,
-// `daemons_lines`, `status_lines`), how to stop one (`stop`, `force_kill`), what an
-// invocation asks for (`decide`), and what a seat's flags are (`parse_seat`). Each
-// carries the incident that produced it into a test name, which is the whole argument
-// for the port.
-//
-// The remainder is the EXECUTION — resolve the workspace, spawn a daemon, wait for its
-// socket, write the record beside it, exec a head. Writing it now would be untestable
-// where it matters: bring-up spawns a process and waits on a socket, and this box runs
-// six live daemons whose records the same runtime directory holds. Verified only by
-// never being run is the exact shape this tree refuses elsewhere.
-//
-// **So the trigger is a decision, not a commit**: switch the archive's `letibot` to the
-// multicall. That is what gives the execution a user and a way to be verified (the
-// packaging gate that already refuses the binary here would become the thing that
-// ships it). Until then this says so, and points at the launcher that works.
-///
+// The launcher's EXECUTION is not ported: `scripts/letibot` is what ships as `letibot`, so a
+// multicall launcher would have no caller. Its decisions ARE ported and tested.
 /// `letibot` with nothing after it.
 pub fn launcher() -> ExitCode {
     eprintln!(
@@ -145,35 +78,9 @@ pub fn launcher() -> ExitCode {
     ExitCode::from(2)
 }
 
-// **`not_yet` was here, and it is deleted because nothing is unported.**
-//
-// It printed "`{role}` is not a role of this binary yet" for a role still living as its
-// own binary, and it existed from `c3a5d44` — the first slice, where `askpass` was the
-// only role — until every role was wired. A stub that no longer has a caller is a
-// sentence the tree would still be carrying if it were not removed, and a reader would
-// have no way to tell which roles it applied to.
-//
-// The LAUNCHER is the one thing still not a role, and it says so from `launcher()`
-// below with its own message; that is a different thing from a role, which is why it
-// does not use this.
-
-/// **The role `sudo` runs.** Attach to the session's daemon, ask the person, print the
-/// secret on stdout.
-///
-/// Ported verbatim from `crates/harnessd/src/bin/letibot-askpass.rs`, whose module
-/// docs carry the full account of the protocol and of the forty attempts on this box
-/// that died on a prompt with no terminal to read. Two things about the *shape* here
-/// are the reason this was the first role ported:
-///
-///   * it takes the prompt as `args[0]`, and `sudo` passes it as `argv[1]` — so
-///     `letibot askpass` could not have served `SUDO_ASKPASS`, which is the whole
-///     argument for argv[0] dispatch existing;
-///   * it is the smallest role and the only one a *machine* invokes, so it exercises
-///     the dispatch end to end without a daemon, a model or a session.
-///
-/// Exit codes are load-bearing: `sudo` reads stdout as the password and reports "no
-/// password was given" on a non-zero exit, so every refusal below is 1 and every
-/// refusal says why on stderr.
+/// **The role `sudo` runs.** Attach to the session's daemon, ask the person, print the secret on
+/// stdout. It takes the prompt as `args[0]` and `sudo` passes it as `argv[1]`, which is the whole
+/// argument for argv[0] dispatch. Exit codes are load-bearing: every refusal is 1 and says why.
 fn askpass(args: &[std::ffi::OsString]) -> ExitCode {
     askpass_in(
         args,
@@ -183,11 +90,9 @@ fn askpass(args: &[std::ffi::OsString]) -> ExitCode {
     )
 }
 
-/// [`askpass`] with the session it would ask in handed over rather than read from the
-/// environment — so its test says "outside a session" with two empty strings instead of
-/// unsetting `LETIBOT_SOCKET`/`LETIBOT_SESSION` under every other test in the binary
-/// (R67 item 17: the old test's "single-threaded" is not true of `cargo test`, and a `setenv`
-/// beside a C-side `getenv` that std's environment lock does not cover is undefined behaviour).
+/// [`askpass`] with the session handed over rather than read from the environment, so its test
+/// says "outside a session" with two empty strings: a `setenv` beside a C-side `getenv` is
+/// undefined behaviour, and `cargo test` is not single-threaded.
 fn askpass_in(args: &[std::ffi::OsString], socket: &str, session: &str, command: &str) -> ExitCode {
     use std::io::Write;
 
@@ -268,12 +173,9 @@ mod tests {
     use super::*;
     use crate::Role as R;
 
-    /// **The mapping is the interface, and this is the test that says so.**
-    ///
-    /// Each name is what `install.sh` symlinks and what something else invokes by
-    /// path. `letibot` itself must NOT map to a role: it is the dispatcher, and
-    /// treating it as the daemon because the string contains "letibot" is the kind of
-    /// guess that starts a second daemon.
+    /// **The mapping is the interface, and this is the test that says so.** Each name is what
+    /// `install.sh` symlinks and what something else invokes by path; `letibot` itself must NOT
+    /// map to a role, because treating it as the daemon starts a second daemon.
     #[test]
     fn every_installed_name_maps_to_its_role_and_the_dispatcher_does_not() {
         for (name, role) in [
@@ -324,13 +226,9 @@ mod tests {
         assert_eq!(Role::from_subcommand(""), None);
     }
 
-    /// **`sudo`'s calling convention, which is why argv[0] exists.**
-    ///
-    /// `SUDO_ASKPASS` is a path and sudo invokes it with the prompt as `argv[1]`, so
-    /// the role must take its prompt from the FIRST argument after the name and must
-    /// not try to read a subcommand out of it. Outside a session the honest answer is
-    /// a refusal, not a hang — this is the case that used to hang for the full
-    /// two-minute deadline when a prompt arrived with no session behind it.
+    /// **`sudo`'s calling convention, which is why argv[0] exists.** `SUDO_ASKPASS` is a path and
+    /// sudo passes the prompt as `argv[1]`, so the role takes it from the first argument and reads
+    /// no subcommand out of it. Outside a session the honest answer is a refusal, not a hang.
     #[test]
     fn askpass_outside_a_session_refuses_rather_than_waiting() {
         // Both empty, which is what an unset `LETIBOT_SOCKET`/`LETIBOT_SESSION` reads as:
@@ -348,11 +246,4 @@ mod tests {
             "no session means exit 1 so sudo reports that no password was given"
         );
     }
-
-    // **`the_unported_roles_refuse_loudly_and_say_where_they_live` was here, and it is
-    // gone because the list is empty.** Every role is wired, so the loop would run zero
-    // times and pass — which is the can-only-pass shape this repository keeps finding:
-    // a check that cannot fail is not a check. The assertion that still has teeth is
-    // `tests/dispatch.rs`'s, where the LAUNCHER produces the marker and the six roles
-    // must not.
 }

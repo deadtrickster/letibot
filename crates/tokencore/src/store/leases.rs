@@ -1,46 +1,9 @@
-//! **A block of a shared host's ports, held by one session** (schema 35).
+//! A block of a shared host's ports, held by one session.
 //!
-//! # Why this is a row and not a variable in a tool
-//!
-//! The operator's own words for what went wrong on the hosts agents share (`docs/remote-hosts.md`
-//! § *What an agent hand-rolled without builtins*, item 6): *ephemeral-port collisions, loopback
-//! exhaustion, "address already in use" ×18, "too many open files" ×34, a container left 19 h*.
-//! Every one of those is a resource that two sessions picked independently, and the fix the
-//! Stroppy session arrived at was exactly this — *"a block of ports outside the ephemeral range
-//! (checked against `ss -ltn`), all under a host lock"*.
-//!
-//! A lock in one process is a lock for half the callers. **One `sessions.db` is shared by every
-//! daemon on the box** (the measurement in [`super::floor`]'s header: ~11 daemons and dozens of
-//! connections on one file), so a lease has to live where all of them look, and the allocation has
-//! to happen inside `BEGIN IMMEDIATE` — that transaction *is* the per-host lock, and it is the only
-//! one that spans processes.
-//!
-//! # What a lease is, and what it is not
-//!
-//! It is **a range of ports on one host, held by one session, with a name prefix** that the
-//! session's containers and compose projects are named under. It is not a reservation of anything
-//! in the kernel: a kernel cannot be asked to keep a port free. So the record answers the two
-//! questions that can be answered —
-//!
-//! * **nobody else's lease overlaps this one**, which is what the lock gives; and
-//! * **nothing was listening there when it was taken** ([`Ask::busy`], a census the caller takes on
-//!   the host), which is what `ss -ltn` gives.
-//!
-//! A program that binds one of those ports without asking is not stopped by this table and cannot
-//! be. That is said here rather than discovered.
-//!
-//! # Why `released_ms` and not a deleted row
-//!
-//! A released lease is history: *this session held 61000–61015 on lab2x1 for four minutes* is what
-//! a person reads when asking why a port was busy. It is also the only record that a restart can
-//! use to tell *held by a session that is gone* from *never held*. So the row stays, and
-//! [`Lease::held`] is `released_ms IS NULL`.
-//!
-//! # And why it is not in `transfer::TABLES`
-//!
-//! The same reason `process` is not: a lease names ports on ONE host. Copied to a session's new
-//! home it would be a claim on a machine the copy cannot see — and worse than the process case,
-//! because the ports might be free there and the copy would report them taken by itself.
+//! Agents on the operator's hosts collided over ports because each picked its own, and a lock
+//! in one process is a lock for half the callers: two daemons on this box share this file. So
+//! the block is a record, taken inside `BEGIN IMMEDIATE` (that transaction is the per-host
+//! lock), and it outlives a restart because the row does.
 
 use std::collections::BTreeSet;
 
@@ -114,11 +77,8 @@ impl Lease {
         self.port_last.saturating_sub(self.port_first) + 1
     }
 
-    /// **The data a program needs to use its block**, as environment pairs — the shape a
-    /// [`crate::store`]-less tool and a `SpawnRequest` both take.
-    ///
-    /// Three names and no more: where the block starts, where it ends, and the prefix its containers
-    /// must be named under. A service that reads them is a service a teardown can find again.
+    /// The data a program needs to use its block, as environment pairs: the shape a tool with no
+    /// store and a `SpawnRequest` both take.
     pub fn env(&self) -> Vec<(String, String)> {
         vec![
             (
@@ -177,17 +137,8 @@ pub struct Ask<'a> {
     pub now_ms: i64,
 }
 
-/// **The block to take, or `None` when the host has nothing left outside its ephemeral range.**
-///
-/// Pure, and that is the point: the rule that two sessions never share a port is a few lines of
-/// arithmetic and is tested as arithmetic. [`Store::allocate_lease`] adds the lock.
-///
-/// The first fit is the first run of `ports` consecutive free ports **above `ephemeral.1`**, which
-/// is the whole of "outside the ephemeral range" — a port in the kernel's own range is one the
-/// kernel will hand to somebody else's outgoing connection the moment it feels like it. `busy` is a
-/// census taken on the host and `held` is what other sessions already have, and a run that touches
-/// either is skipped rather than trimmed: a block is contiguous, because a service that takes
-/// `ports` of them wants to know `first + n` is its own.
+/// The block to take, or `None` when the host has nothing left outside its ephemeral range. Pure,
+/// and that is the point: the rule that two sessions never share a port is testable here.
 pub fn pick(
     held: &[(u16, u16)],
     busy: &BTreeSet<u16>,
@@ -209,15 +160,11 @@ pub fn pick(
         }
         None
     };
-    // **Above the range first**, where nothing else on the box expects to find a listener.
-    // `+ 1` in `u32`, never saturating: a saturating add clamps a host whose range ends at 65535
-    // back INTO its own range and hands out the kernel's last ephemeral port — the one thing this
-    // function exists to prevent.
+    // Above the range first, where nothing else on the box expects to find a listener. `+ 1`
+    // in `u32` and never saturating, because a saturating add clamps a host whose range
     let above = (ephemeral.1 as u32 + 1).max(FIRST_PORT as u32);
-    // **Then below it**, from [`LOW_FIRST`] to the port before the range starts. A range that ends
-    // at 65535 leaves nothing above it — macOS's default (49152-65535) and some Linux tunings —
-    // and a lease engine that only looked above refused every request there. MEASURED 2026-10-27:
-    // every lease test failed in the Mac gate with *no free block … above 49152-65535*.
+    // Then below it, from `LOW_FIRST` to the port before the range starts: a range that ends at
+    // 65535 leaves nothing above it, which is macOS's default.
     fits(above, u16::MAX as u32).or_else(|| {
         let start = ephemeral.0 as u32;
         (start > LOW_FIRST as u32)
@@ -254,13 +201,8 @@ fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Lease> {
 }
 
 impl Store {
-    /// **Take a block on one host, or refuse by naming what is left.**
-    ///
-    /// `BEGIN IMMEDIATE` is the lock, and it is the only one that spans processes: two daemons on
-    /// this box share one `sessions.db`, so a mutex in a tool would serialise half the callers.
-    /// Everything between the `BEGIN` and the `COMMIT` is this host's, which is why the census is
-    /// taken *before* it — a probe over ssh inside the write lock would hold every other session's
-    /// lease for up to a round trip.
+    /// Take a block on one host, or refuse by naming what is left. `BEGIN IMMEDIATE` is the lock,
+    /// and the only one that spans processes: two daemons on this box share the file.
     pub fn allocate_lease(&self, ask: &Ask<'_>) -> Result<Lease> {
         self.write_tx(|tx| {
             let mut held: Vec<(u16, u16)> = Vec::new();

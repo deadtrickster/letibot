@@ -1,50 +1,8 @@
 //! The materialized view, and the snapshot cut from it.
 //!
-//! §13.2: *"`since_seq = 0` gets a snapshot — a materialized view of messages and
-//! parts as of seq S, maintained by the daemon — followed by events from S+1. A
-//! head that joins a 300-turn session never replays 300 turns of deltas."*
-//!
-//! Maintained incrementally, one `apply` per appended event, so `attach` is O(size
-//! of the answer) and not O(length of the log). That matters for the same reason
-//! §13.3 does: a cost that grows with the session is a cost that shows up only in
-//! the session you cared about.
-//!
-//! # The view **is** the stored projection
-//!
-//! The scrub is not a filter bolted onto the exit. It is applied here, at
-//! materialization, which is what makes it a projection:
-//!
-//! - `PromptProgress` never becomes history. It updates a `progress` field that is
-//!   *cleared* when the turn ends. A late head attaching mid-prefill is told where
-//!   the prefill is — current state, true right now — and a head attaching an hour
-//!   later is told nothing, because there is nothing true to tell.
-//! - `ToolProgress` does not touch the view at all. Partial tool output has no
-//!   durable form; a running tool renders as *running*, with no body.
-//! - `DecisionRequested` opens an entry; `DecisionAnswered` **removes** it and
-//!   records the outcome. So the snapshot cannot contain a settled decision as an
-//!   open prompt, because there is no code path that would put it there.
-//!
-//! That is the difference between "we remember to strip it on the way out" and
-//! "there is nowhere for it to be".
-//!
-//! # `TranscriptAppended` carries no content, and the snapshot was not enough
-//!
-//! §4.5's event is `{item_id, kind, ledger_head}`. A head cannot reconstruct a
-//! conversation from that, and the snapshot was what §13.2 promised it instead.
-//!
-//! That promise only covers a head that attaches *after* the row exists. A head
-//! already attached is told a row landed and is never sent its body, so its
-//! `item: None` is permanent — not a loading state, the final state. Measured on a
-//! live session: the operator's own prompt rendered as
-//! `[user … — content not loaded]` for the life of the head.
-//!
-//! So the body now travels on the log as
-//! [`crate::event::SessionEvent::TranscriptContent`], and this view folds it in the
-//! same place it folds everything else. [`SessionView::record_item`] survives as
-//! the in-process form of that fold; [`crate::hub::Hub::record_item`] is the one a
-//! daemon should call, because it publishes as well as folds. See the variant's
-//! own note for why the body belongs on `TranscriptAppended` itself and what has to
-//! change for it to get there.
+//! `since_seq = 0` gets a snapshot as of seq S and then the events after it, so a head that
+//! attaches late is given the state rather than a replay. The view holds what a head draws from
+//! and nothing the log already keeps: a row's body is here, a settled decision is not.
 
 use serde::{Deserialize, Serialize};
 
@@ -61,22 +19,17 @@ pub struct SnapshotItem {
     pub item_id: String,
     pub kind: String,
     pub ledger_head: String,
-    /// `Envelope::ts` of the `TranscriptAppended` that announced this row: when it
-    /// happened, on the log's own clock.
-    ///
-    /// A head renders it as the row's timestamp. **Zero means unknown** — a row
-    /// replayed from a log recorded before this field existed — and a head shows
-    /// nothing rather than 01:00:00, for the same reason a card from a snapshot
-    /// shows no duration: a measurement that was never taken must not be rendered
-    /// as one that was.
+    /// `Envelope::ts` of the `TranscriptAppended` that announced this row: when it happened, on
+    /// the log's own clock. Zero means unknown - a measurement that was never taken, which a
+    /// head must not render as 01:00:00.
     #[serde(default)]
     pub ts: u64,
     /// The content, when the daemon supplied it. `None` is honest: it means the
     /// event was seen and the item was not reconciled, which a head should render
     /// as a placeholder rather than as an empty message.
     pub item: Option<TranscriptItem>,
-    /// **The lines this reply cited**, as the daemon read them when it landed
-    /// ([`crate::SessionEvent::Citations`]) — empty for every row that cited nothing, and for a
+    /// The lines this reply cited, as the daemon read them when it landed
+    /// ([`crate::SessionEvent::Citations`]) - empty for every row that cited nothing, and for a
     /// snapshot from a daemon built before citations.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub citations: Vec<crate::event::Citation>,
@@ -88,57 +41,34 @@ pub struct OpenDecision {
     pub req_id: String,
     pub kind: String,
     pub call_id: Option<String>,
-    /// **A subagent's call, when this card is not this session's own.**
-    ///
-    /// `Some` for a card a child's gate posted here (the tree's root), because a
-    /// child has no head — see [`crate::event::SubagentAsk`] for the ruling, and for
-    /// why a card that arrived unlabelled would be answered for the wrong thing.
-    ///
-    /// Held on the view rather than re-derived, like every other field here: a head
-    /// that worked out which session a call belonged to from the ids would be
-    /// rendering a guess about attribution. `None` is *this session's own call*,
-    /// which is every card from a daemon older than the field.
+    /// A subagent's call, when this card is not this session's own. Held on the view rather than
+    /// re-derived, because the daemon is the one that knows which child made it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subagent: Option<crate::event::SubagentAsk>,
-    /// The tool's declared access — `read | write | exec | network` — so a head can
-    /// say WHY the card is asking when it is the declaration that asks. See
-    /// [`crate::event::SessionEvent::DecisionRequested`] for the argument; empty from a
-    /// daemon older than the field, and empty draws no clause.
+    /// The tool's declared access - `read | write | exec | network` - so a head can say WHY the
+    /// card is asking when it is the declaration that asks. Empty from a daemon older than the
+    /// field, and empty draws no clause.
     #[serde(default)]
     pub access: String,
     pub summary: String,
-    /// The one thing being decided about — the command, the path, the URL — so a
-    /// head can put it on its own line. See the event for why it is not left inside
-    /// `summary`.
+    /// The one thing being decided about - the command, the path, the URL - so a head can put it
+    /// on its own line. See the event for why it is not left inside `summary`.
     #[serde(default)]
     pub target: String,
-    /// **The paths this action would write** — R35, verbatim from the event that carried them.
-    ///
-    /// Held on the view rather than re-derived, for `advice`'s reason one field over: a head that
-    /// recomputed what the classifier found would be rendering a guess about a decision it did not
-    /// make, and the two would drift the first time the scanner improved.
-    ///
-    /// **Empty is not *writes nothing*** — see [`crate::event::WriteTarget`]. It is *no write the
-    /// scanner could place*, and a card that said more than that would be claiming a negative the
-    /// classifier cannot support.
+    /// The paths this action would write, verbatim from the event that carried them: held on the
+    /// view rather than re-derived, so a card cannot name a different file than the gate did.
     pub write_targets: Vec<crate::event::WriteTarget>,
     /// Layer A's reading, for the dim line under the question.
     #[serde(default)]
     pub detail: String,
     /// The allow/deny ladder, for a permission. Empty for a question.
     pub options: Vec<DecisionOption>,
-    /// **Why a rung a person would look for is not on the ladder**, in one line from the
-    /// gate. Empty when nothing was left off — see
-    /// [`crate::event::SessionEvent::DecisionRequested`].
-    ///
-    /// Held on the view rather than composed by a head for `detail`'s reason one field up:
-    /// which of the four refusals applied is the matcher's answer, and a head that
-    /// re-derived it would be guessing at a decision it did not make.
+    /// Why a rung a person would look for is not on the ladder, in one line from the gate. Empty
+    /// when nothing was left out.
     #[serde(default)]
     pub options_note: String,
-    /// The model's own plain-text choices, for a question (T25/D10). Empty for a
-    /// permission. See [`crate::event::SessionEvent::DecisionRequested`] for why the
-    /// two do not share a field.
+    /// The model's own plain-text choices, for a question. Empty for a permission. See
+    /// [`crate::event::SessionEvent::DecisionRequested`] for why the two do not share a field.
     #[serde(default)]
     pub choices: Vec<String>,
     /// Why the model is stuck, for a question.
@@ -160,52 +90,24 @@ pub struct OpenDecision {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SettledDecision {
     pub req_id: String,
-    /// **Which vocabulary settled it**: `permission`, `question`, or `""` for a log
-    /// recorded before the field existed.
-    ///
-    /// Carried off the open decision at settle time, for the same reason
-    /// [`Self::advice`] is: the answer event has only the `req_id`, and a head that
-    /// kept this off the answer could not tell a question from a permission once the
-    /// card was gone.
-    ///
-    /// **A head needs it because the two kinds do not render alike.**
-    /// [`DecisionOutcome`] is the permission vocabulary — `Selected { option_id }`
-    /// names a rung of a ladder, and a question has no ladder — so a question's ending
-    /// travels as `Cancelled` with the person's answer in the `basis`
-    /// (`crate::question` and `letibot-harnessd`'s `Answers::ask_question` say why).
-    /// Without this field a head would draw *"cancelled"* over an answer somebody gave.
-    ///
-    /// `default` and no `PROTOCOL_VERSION` bump: an added, defaulted field on an
-    /// existing struct, which an older head ignores and a newer one reads as *"a
-    /// decision whose kind this log does not say"* — the permission rendering, which is
-    /// what it drew for everything before questions could be posed at all.
+    /// Which vocabulary settled it: `permission`, `question`, or empty for a log recorded before
+    /// the field existed.
     #[serde(default)]
     pub kind: String,
-    /// The tool call this decision was about, when it was a permission. `None` for
-    /// a question, and for a log recorded before the field existed — in which case
-    /// a head renders the outcome as a standalone note rather than on the call's
-    /// card.
+    /// The tool call this decision was about, when it was a permission. `None` for a question,
+    /// and for a log recorded before the field existed - in which case a head renders the outcome
+    /// as a standalone note rather than on the call's card.
     #[serde(default)]
     pub call_id: Option<String>,
     pub summary: String,
     pub outcome: DecisionOutcome,
     pub by: Decider,
-    /// **Why the DECIDER decided.** For an operator answer this is
-    /// `dead chose \`allow_once\` at the head`; for a boundary refusal it is the
-    /// rule and its evidence. It is not the oracle's reasoning, even when an
-    /// oracle advised — see [`SettledDecision::advice`], which is.
+    /// Why the DECIDER decided. For an operator answer this is `dead chose \`allow_once\` at the
+    /// head`; for a boundary refusal it is the rule and its evidence. It is not the oracle's
+    /// reasoning, even when an oracle advised - see [`SettledDecision::advice`], which is.
     pub basis: String,
-    /// **What the guard model said, when one was consulted.**
-    ///
-    /// Carried off the open decision at settle time, because the answer event
-    /// has only the `req_id` and this is the one fact about a supervised
-    /// decision that exists nowhere else afterwards: the corpus keeps it, but a
-    /// head is not reading the corpus.
-    ///
-    /// It was dropped here until 2026-09-19, and the card then labelled `basis`
-    /// as `oracle:` — so a permission the operator answered themselves rendered
-    /// THEIR OWN words under the oracle's name. `None` is honest: no oracle was
-    /// consulted, or the log was recorded before the field existed.
+    /// What the guard model said, when one was consulted: carried off the open decision at settle
+    /// time, because the card must show it after the decision is no longer open.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub advice: Option<crate::event::ModelAdvice>,
     pub late: bool,
@@ -217,10 +119,9 @@ pub struct CallView {
     pub call_id: String,
     pub name: String,
     pub args_digest: String,
-    /// The display target from `ToolCallProposed` (§4.1). Empty when the call was
-    /// first seen as `ToolStarted`, or when it came from a log recorded before the
-    /// field existed — in which case a head renders the verb alone rather than
-    /// guessing.
+    /// The display target from `ToolCallProposed`. Empty when the call was first seen as
+    /// `ToolStarted`, or when it came from a log recorded before the field existed - in which
+    /// case a head renders the verb alone rather than guessing.
     #[serde(default)]
     pub target: String,
     pub state: CallState,
@@ -235,22 +136,20 @@ pub struct CallView {
 #[allow(clippy::large_enum_variant)] // Finished carries the outcome by value once per call; the others are unit
 pub enum CallState {
     Proposed,
-    /// Running, with **no partial output**. See the module note.
+    /// Running, with no partial output. See the module note.
     Running,
     Finished {
         outcome: ToolOutcome,
         payload_digest: String,
-        /// What the model received. Under §8.3's spill policy this is smaller than
-        /// `full_bytes`, and a head that shows only one of the two is showing the
-        /// wrong one half the time.
+        /// What the model received. Under the spill policy this is smaller than `full_bytes`, and
+        /// a head that shows only one of the two is showing the wrong one half the time.
         inline_bytes: u64,
         full_bytes: u64,
         /// The spill locator, when the output spilled: a head can offer the rest.
         spill: Option<String>,
-        /// Both sides of the file a file-editing call changed, bounded to the
-        /// region that differs — the raw material of the two-panel diff. A
-        /// snapshot recorded before the field existed has none, and
-        /// `#[serde(default)]` is what lets it still load.
+        /// Both sides of the file a file-editing call changed, bounded to the region that
+        /// differs - the raw material of the two-panel diff. `#[serde(default)]` is what lets a
+        /// snapshot recorded before the field still load.
         #[serde(default)]
         edit: Option<crate::event::ToolEdit>,
     },
@@ -270,9 +169,8 @@ pub enum TurnState {
         reason: String,
         partial_kept: bool,
     },
-    /// The turn failed. A *terminal* state, which is the whole point of it
-    /// existing: without one, `Running` was the last thing a head ever heard about
-    /// a turn that died (`crates/ui/DESIGN.md` §4.5).
+    /// The turn failed. A *terminal* state, which is the whole point of it existing: without
+    /// one, `Running` was the last thing a head ever heard about a turn that died.
     Failed {
         error: String,
         partial_kept: bool,
@@ -280,19 +178,16 @@ pub enum TurnState {
 }
 
 impl TurnState {
-    /// Whether the turn is still going. One function, because "is it running" is
-    /// asked in the head, in the registry's session list and in the snapshot, and
-    /// a new terminal state that one of the three forgets is a spinner nobody can
-    /// stop.
+    /// Whether the turn is still going. One function, because "is it running" is asked in the
+    /// head, in the registry's session list and in the snapshot, and a new terminal state that
+    /// one of the three forgets is a spinner nobody can stop.
     pub fn is_running(&self) -> bool {
         matches!(self, TurnState::Running)
     }
 }
 
-/// The turn a late head is joining, with its text **accumulated once**.
-///
-/// This is the half of §13.3 that lives on the wire: the head does not replay
-/// N deltas to learn the text, it is handed the text and then receives increments.
+/// The turn a late head is joining, with its text accumulated once: the head does not replay N
+/// deltas to arrive at the same paragraph.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TurnView {
     pub turn_id: String,
@@ -300,34 +195,20 @@ pub struct TurnView {
     pub ledger_head: String,
     pub text: String,
     pub reasoning: String,
-    /// The raw `<function=…>` markup of every tool call this turn has written so
-    /// far, concatenated.
-    ///
-    /// Accumulated for the same reason `text` is: a head that joins mid-call has
-    /// to be able to show the same thing as one that watched it. It is the
-    /// *unparsed* form and no default view renders it — `calls` is the settled
-    /// form — but the head keeps a chord that reveals it, and a snapshot that
-    /// dropped it would make that chord lie on a reattach.
+    /// The raw `<function=` markup of every tool call this turn has written so far, concatenated:
+    /// what a head renders before the call's card replaces it.
     #[serde(default)]
     pub raw_calls: String,
     pub calls: Vec<CallView>,
-    /// The transcript rows this turn appended, in order.
-    ///
-    /// A head shows a running turn from `text`/`reasoning` and a finished one from
-    /// the transcript, and it needs to know *which* rows are the finished form or
-    /// it renders the answer twice — once live, once as history. That pairing is
-    /// only visible to whoever folded both event streams, which is this view.
+    /// The transcript rows this turn appended, in order: a head shows a running turn from the
+    /// pane and a finished one from these rows.
     #[serde(default)]
     pub appended: Vec<String>,
-    /// Live prefill state. `None` once the turn has ended — a progress frame is
-    /// true only while it is happening.
+    /// Live prefill state. `None` once the turn has ended - a progress frame is true only while
+    /// it is happening.
     pub progress: Option<PromptProgress>,
-    /// The server's generation counter, as the last `TokensGenerated` reported it.
-    ///
-    /// Kept when the turn ends, unlike `progress`: a cumulative count stays true
-    /// afterwards, and its final value is the fact `TurnFinished`'s
-    /// `usage.predicted_tokens` states. `#[serde(default)]` for snapshots taken
-    /// before the field existed.
+    /// The server's generation counter, as the last `TokensGenerated` reported it: kept when the
+    /// turn ends so a late head knows the counter is not stuck.
     #[serde(default)]
     pub tokens: u64,
     pub state: TurnState,
@@ -345,11 +226,11 @@ pub struct HeadPresence {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Snapshot {
     pub session_id: String,
-    /// The snapshot is true as of this seq. The next event a head receives is
-    /// `seq + 1`, with no gap — see [`crate::hub::Hub::attach`].
+    /// The snapshot is true as of this seq. The next event a head receives is `seq + 1`, with no
+    /// gap - see [`crate::hub::Hub::attach`].
     pub seq: u64,
-    /// Events that fell off the back of the scrollback and this head will never
-    /// see. **Present and zero**, never omitted (§13.2b).
+    /// Events that fell off the back of the scrollback and this head will never see. Present and
+    /// zero, never omitted.
     pub dropped: u64,
     /// Transcript rows trimmed out of this snapshot. Present and zero, same rule.
     pub items_dropped: u64,
@@ -357,47 +238,26 @@ pub struct Snapshot {
     pub turn: Option<TurnView>,
     /// Only decisions genuinely still open. A settled one cannot appear here.
     pub open_decisions: Vec<OpenDecision>,
-    /// Recent outcomes, so a head can render "denied, by policy" rather than
-    /// silence where a prompt used to be.
+    /// Recent outcomes, so a head can render "denied, by policy" rather than silence where a
+    /// prompt was.
     pub settled_decisions: Vec<SettledDecision>,
     pub warnings: Vec<Warned>,
     pub heads: Vec<HeadPresence>,
-    /// **The session's children, as its own `Subagent` events reported them.**
-    ///
-    /// The parent's fact, held by the parent's view — see the `SessionEvent::Subagent` arm for the
-    /// measurement that put it here: a head that switches back sends `since_seq = 0`, so nothing is
-    /// replayed, and the session list's `running` cannot tell a child parked between turns from one
-    /// that has ended.
-    ///
-    /// `#[serde(default)]` so a snapshot from a daemon built before the field parses: an absent
-    /// list and an empty one are the same statement here — *this daemon did not tell me about any
-    /// children* — and a head then draws the list-derived rows it always did.
+    /// The session's children, as its own `Subagent` events reported them: the parent's fact, held
+    /// by the parent's view.
     #[serde(default)]
     pub subagents: Vec<SubagentView>,
-    /// **What this session is waiting on, as the daemon last published it** — the value a head that
-    /// attaches late needs before it can tell *done* from *between two rounds*.
-    ///
-    /// It is carried in the snapshot for the reason the turn in flight is: it is a fact about NOW,
-    /// and the head that attaches in the middle of a turn has seen no `ActivityChanged` and would
-    /// otherwise draw an idle session that is working. The event is ephemeral in a *replay*
-    /// (`crate::scrub`) because a replayed value is a value from before the gap; the hub republishes
-    /// the current one after a snapshot, a gap or a resync, so the field is filled and never stale.
-    ///
-    /// `#[serde(default)]` so a snapshot from a daemon built before the field parses: an absent
-    /// value reads as [`Activity::Quiet`], which is exactly what such a daemon's head drew before.
+    /// What this session is waiting on, as the daemon last published it: the value a head that
+    /// attaches late needs and cannot derive.
     #[serde(default)]
     pub activity: crate::activity::Activity,
 }
 
-/// **One child of this session, as the `Subagent` event last reported it.**
-///
-/// Every field is the event's own, verbatim, and the whole of the point is that a head rebuilding
-/// its tree after a switch gets the SAME words the head that watched the spawn had — `state`
-/// (`opening`/`running`/`done`/`failed`), the role, the full task, the model and the answer —
-/// instead of the one bit the session list can supply.
+/// One child of this session, as the `Subagent` event last reported it. Every field is the
+/// event's own, so a head draws what the daemon decided rather than a guess.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SubagentView {
-    /// The child's own session id — the key, and the same one the list's brief carries.
+    /// The child's own session id - the key, and the same one the list's brief carries.
     pub session_id: String,
     pub state: String,
     pub prompt: String,
@@ -408,7 +268,7 @@ pub struct SubagentView {
     pub model: String,
     #[serde(default)]
     pub answer: Option<String>,
-    /// The child's name, from the event's `slug` — empty from a daemon that predates it.
+    /// The child's name, from the event's `slug` - empty from a daemon that predates it.
     #[serde(default)]
     pub slug: String,
     /// `Envelope::ts` of the event that last said this.
@@ -426,17 +286,8 @@ pub struct Warned {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ViewBounds {
     pub items: usize,
-    /// How many bytes of row text the view will hold before it drops the oldest.
-    ///
-    /// **`items` alone bounds a count, and rows are not the same size.** The operator's
-    /// sessions reach 160 MB across thousands of turns, and one `read` row can be 418 KB
-    /// — so 2,000 rows of those is most of a gigabyte, cloned for every attaching head
-    /// and sent over the socket. Measured 2026-09-20: eight rows over 64 KB in one store,
-    /// the largest 418 KB.
-    ///
-    /// This is the first half of R19 in `letibot`'s TODO — the head renders only the tail
-    /// of a conversation (R19.1), and a window needs something bounded to be a window
-    /// over. A head is told what was dropped through `items_dropped` either way.
+    /// How many bytes of row text the view will hold before it drops the oldest: `items` alone
+    /// bounds a count, and one enormous row would still be unbounded.
     pub item_bytes: usize,
     pub settled_decisions: usize,
     pub warnings: usize,
@@ -446,19 +297,12 @@ impl Default for ViewBounds {
     fn default() -> Self {
         ViewBounds {
             items: 2_000,
-            // An order of magnitude above any session this box has today (the largest is
-            // ~24 MB in the store, of which the snapshot carries a fraction), and far
-            // below the 160 MB the operator reports elsewhere. Chosen so that a normal
-            // session is untouched and a pathological one is bounded.
+            // An order of magnitude above any session this box has today and far below what a
+            // pathological one reaches, so a normal session is untouched and a bad one is
+            // bounded.
             item_bytes: 8 * 1024 * 1024,
-            // A decision is a fact about the tool call it gated, and a head renders
-            // it on that call's card — including a card that has settled into the
-            // transcript, which is where most of the session's history lives. A
-            // head that reattaches two compactions in must still find the decision
-            // that gated a call three turns back, so the window has to span a long
-            // session's worth of gates, not just the last handful. Each entry is a
-            // few hundred bytes, so a thousand of them is a small fraction of the
-            // snapshot the `items` bound already carries.
+            // A decision is a fact about the tool call it gated, and a head renders it on that call's
+            // card, including a card the head never saw while the call was running.
             settled_decisions: 1_024,
             warnings: 128,
         }
@@ -477,7 +321,7 @@ pub struct SessionView {
     settled: Vec<SettledDecision>,
     warnings: Vec<Warned>,
     heads: Vec<HeadPresence>,
-    /// **This session's children, as the `Subagent` events reported them** — see the
+    /// This session's children, as the `Subagent` events reported them - see the
     /// `SessionEvent::Subagent` arm for why a snapshot carries them.
     subagents: Vec<SubagentView>,
     /// See [`Snapshot::activity`]. Folded rather than asked for: the daemon publishes the value when
@@ -485,9 +329,9 @@ pub struct SessionView {
     activity: crate::activity::Activity,
 }
 
-/// **How much one session's view holds**, by part — for the daemon's memory census. Counts,
-/// not bytes: which part grows is the question a census answers, and a count is exact where a
-/// byte estimate of a nested struct would be a guess.
+/// How much one session's view holds, by part - for the daemon's memory census. Counts, not
+/// bytes: which part grows is the question a census answers, and a count is exact where a byte
+/// estimate of a nested struct would be a guess.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ViewCensus {
     pub items: usize,
@@ -510,7 +354,7 @@ impl SessionView {
     }
 
     // (the free function `body_of` at the foot of this file is the definition both
-    // readers use — see its own doc)
+    // readers use - see its own doc)
     pub fn new(session_id: impl Into<String>, bounds: ViewBounds) -> Self {
         SessionView {
             session_id: session_id.into(),
@@ -527,11 +371,8 @@ impl SessionView {
         }
     }
 
-    /// Fold one appended event into the view.
-    ///
-    /// The exhaustive match is the scrub's other half: a new event variant cannot
-    /// be added without deciding, here, what it means for a head that was not
-    /// watching.
+    /// Fold one appended event into the view. The exhaustive match is the scrub's other half: a
+    /// new event variant must decide here what a snapshot carries.
     pub fn apply(&mut self, env: &Envelope) {
         match &env.event {
             SessionEvent::TurnStarted {
@@ -565,9 +406,9 @@ impl SessionView {
                 }
             }
             SessionEvent::TokensGenerated { turn_id, tokens } => {
-                // State, not history: the latest count wins. The counter is
-                // monotonic in the stream, and `max` keeps a reordered or
-                // duplicated frame from moving it backwards.
+                // State, not history: the latest count wins. The counter is monotonic in the
+                // stream, and `max` keeps a reordered or duplicated frame from moving it
+                // backwards.
                 if let Some(t) = self.turn.as_mut()
                     && &t.turn_id == turn_id
                 {
@@ -656,13 +497,8 @@ impl SessionView {
                 basis,
                 late,
             } => {
-                // The removal is the scrub. There is no path that leaves a settled
-                // decision in `open`, so no snapshot can carry one. Four things are
-                // read off the open decision **before** it is removed, because the
-                // answer event carries only the `req_id`: the summary, the call to
-                // put the outcome on, which VOCABULARY settled it, and the ORACLE'S
-                // ADVICE — which the answer event does not carry and which nothing
-                // downstream can recover.
+                // The removal is the scrub: no path leaves a settled decision open, so no snapshot can
+                // carry one.
                 let (summary, call_id, kind, advice) = self
                     .open
                     .iter()
@@ -711,9 +547,8 @@ impl SessionView {
                     });
                 }
             }
-            // Deliberately nothing. Partial tool output has no durable form; see
-            // the module note. This arm exists so that "we forgot" and "we decided"
-            // do not look the same.
+            // Deliberately nothing. Partial tool output has no durable form; see the module
+            // note. This arm exists so that "we forgot" and "we decided" do not look the same.
             SessionEvent::ToolProgress { .. } => {}
             SessionEvent::ToolFinished {
                 call_id,
@@ -768,11 +603,8 @@ impl SessionView {
                     };
                 }
             }
-            // §4.5. Not matched on `turn_id`: a turn can fail *before* it published
-            // a `TurnStarted` (a render or a tokenize error), and in that case the
-            // pane a head is looking at is the one that has to stop spinning. The
-            // id is still carried, because a head that has moved on must be able to
-            // tell that this failure is not about the turn it is watching.
+            // Not matched on `turn_id` alone: a turn can fail before it published a `TurnStarted` (a
+            // render or a tokenize can refuse first).
             SessionEvent::TurnFailed {
                 turn_id,
                 error,
@@ -802,23 +634,22 @@ impl SessionView {
                     item: None,
                 });
                 self.trim();
-                // Which rows this turn produced. A head cannot work this out from
-                // the snapshot — the rows and the turn are separate lists — and it
-                // is the fact that decides whether the live pane is still the only
-                // copy of the answer or has been superseded by the transcript.
+                // Which rows this turn produced. A head cannot work this out from the snapshot -
+                // the rows and the turn are separate lists - and it is the fact that decides
+                // whether the live pane is still the only copy of the answer.
                 if let Some(t) = self.turn.as_mut() {
                     t.appended.push(item_id.clone());
                 }
             }
-            // The body for a row the log already announced. Idempotent, and a no-op
-            // for an id the view has trimmed or never saw — the same contract
-            // `record_item` has, because this is that call, arriving over the wire.
+            // The body for a row the log already announced. Idempotent, and a no-op for an id the
+            // view has trimmed or never saw - the same contract `record_item` has, because this is
+            // that call, arriving over the wire.
             SessionEvent::TranscriptContent { item_id, item } => {
                 if let Some(row) = self.items.iter_mut().find(|r| &r.item_id == item_id) {
                     row.item = Some((**item).clone());
                 }
             }
-            // What the row's reply cited, beside its content — the same contract.
+            // What the row's reply cited, beside its content - the same contract.
             SessionEvent::Citations {
                 item_id,
                 citations,
@@ -827,31 +658,8 @@ impl SessionView {
                     row.citations = citations.clone();
                 }
             }
-            // **A fork replaces the rows of the transcript it replaced, and the daemon says
-            // which one that is.**
-            //
-            // This is the daemon's OWN record of the session, and it is the one a late head
-            // is handed: `Hub::snapshot` cuts `self.items`, so without this a head that
-            // attached after a fork would be given the conversation twice — the same defect
-            // the live head had, one attach later, and with no event to blame it on because
-            // the head never saw the fork.
-            //
-            // **Only the parent's rows go, and that is not a detail.** A row's id names the
-            // transcript it is numbered in (`{transcript_id}.{n}`, `engine.rs`), and this
-            // view can hold rows of more than one: a resume republishes the tail of the
-            // transcripts a compaction put behind the current one (`ancestor_tail`), on
-            // purpose, so that a head can scroll above the summary it resumed onto. Those
-            // rows are NOT what the fork replaced — the new transcript does not carry them —
-            // so dropping them would lose the history the resume went to the trouble of
-            // restoring, which is the *"conversation was gone — only a small recent portion
-            // was displayed"* defect this view's chain-walking exists to fix.
-            //
-            // **`items_dropped` is NOT touched, and that is the whole of the difference
-            // between a replacement and a window.** A row trimmed by `trim` is missing from
-            // this view and the head is told how many so it can go and ask for them; these
-            // rows are gone from the SESSION — the transcript they were numbered in is not
-            // this session's any more — and a head that counted them as missing would ask
-            // for rows that no longer exist anywhere.
+            // A fork replaces the rows of the transcript it replaced, and the daemon says which one
+            // that is, so the view drops exactly those.
             SessionEvent::TranscriptForked { parent_id, .. } => {
                 let gone = format!("{parent_id}.");
                 self.items.retain(|r| !r.item_id.starts_with(gone.as_str()));
@@ -880,76 +688,35 @@ impl SessionView {
                 let over = self.warnings.len().saturating_sub(self.bounds.warnings);
                 self.warnings.drain(..over);
             }
-            // A password request is live for two minutes and answered on the
-            // connection that asked; a head attaching later has nothing to do
-            // with it, and a settled one is history.
+            // A password request is live for two minutes and answered on the connection that
+            // asked; a head attaching later has nothing to do with it, and a settled one is
+            // history.
             SessionEvent::SecretRequested { .. }
             | SessionEvent::SecretSettled { .. }
-            // And the same for the operator's own run's card: it is live for as long as
-            // the run is blocked, the head that is watching the run has it, and a head
-            // that attached later has not seen the output the question is about. The
-            // settlement is a record and is not carried either — the run's own rows are.
+            // And the same for the operator's own run's card: it is live only while the run is
+            // blocked, and the head that attached later has not seen the output the question is
+            // about. The settlement is not carried either - the run's own rows are.
             | SessionEvent::PromptRequested { .. }
             | SessionEvent::PromptSettled { .. }
             | SessionEvent::ScreenRequested { .. } => {}
-            // §6's plan is a full document. It belongs in the log, where a head can
-            // ask for it by seq; carrying every one of them in every snapshot would
-            // make the snapshot grow with the session.
+            // The plan is a full document: it belongs in the log, where a head can ask for it by
+            // seq, and carrying every one of them in every snapshot would make the snapshot grow
+            // with the session.
             SessionEvent::Explain { .. } => {}
-            // Who did what is history, and a head that was there saw it. It is not
-            // state a late head needs restated: the *effect* is in the transcript
-            // rows and the turn, which the snapshot already carries.
+            // Who did what is history, and a head that was there saw it. The *effect* is in the
+            // transcript rows and the turn, which the snapshot already carries.
             SessionEvent::CommandIssued { .. } => {}
-            // The name is carried by `SessionBrief`, which travels in `Hello` and
-            // `Sessions` — so a head that attaches *after* a rename is told the
-            // current name by the attach itself and needs nothing restated here.
-            // Folding it into the snapshot as well would put the same fact in two
-            // places with two update paths, and the picker and the header would then
-            // be able to disagree about what the session is called.
+            // The name travels in `SessionBrief`, in `Hello` and `Sessions`, so a head that attaches
+            // after a rename is told by its own snapshot.
             SessionEvent::SessionRenamed { .. } => {}
-            // The todo list is not turn state and decides nothing: it reaches the
-            // head as the event itself, and the pane keeps the latest one it saw.
-            // Nothing for the view to fold.
+            // The todo list is not turn state and decides nothing: it reaches the head as the
+            // event itself, and the pane keeps the latest one it saw.
             SessionEvent::TodosUpdated { .. } => {}
-            // **Not folded into the snapshot, and the reason is bounded rather than
-            // absent.** A denial is durable on the log ([`crate::scrub`] keeps it),
-            // so a head that attaches later replays it in the place it happened,
-            // which is where §4b wants it — beside the tool call it refused, not in
-            // a summary pane. What that costs is the retention window: a denial
-            // older than [`LogBounds`] falls out of the log and this snapshot never
-            // held it. That is a real gap and it is written here rather than
-            // covered by a second copy in a second update path, which is how the
-            // picker and the header learned to disagree about a session's name.
+            // Not folded into the snapshot, and the reason is bounded rather than absent: a denial is
+            // durable on the log, so a late head reads it from the replay.
             SessionEvent::DenialRaised { .. } => {}
-            // **A subagent spawn/finish, FOLDED — and this arm used to say there was
-            // nothing to fold.** It read: *"A subagent's state is carried by the durable event
-            // itself; a late head rebuilds the tree from the replayed events and the session
-            // list, so there is nothing to fold into the turn view here."* **Both halves of
-            // that are false for a switch**, which is the path that matters:
-            //
-            // * a `Switch` sends `since_seq = 0` (`App::switch_to`: *"this head has no state
-            //   for the session it is going to"*), so the daemon answers with a snapshot and an
-            //   **empty backlog** — nothing is replayed, and the parent's `Subagent` events
-            //   never reach that head again;
-            // * and the session list is the other half only through `SessionStatus::running`,
-            //   which is *a turn is generating in that session at this instant*. A child parked
-            //   on its own background job, or between two rounds, is `false` while being
-            //   perfectly alive — so a tree rebuilt from the list alone read that `false` as
-            //   *finished*, and the operator watched the composer's `N subagents running`
-            //   segment **disappear and come back on its own** over a subagent that ran
-            //   throughout: *"so the counter is gone"*, then, minutes later, *"yep and now it
-            //   is back. wtf"*. What restored it was some later list reply happening to catch
-            //   the child generating, which is exactly what a flapping counter is made of.
-            //
-            // So the parent's view holds the children and every snapshot carries them — the
-            // events' own conclusion, folded once per event, instead of depending on which
-            // frames a head happened to receive. `Snapshot::subagents` is where a head reads
-            // them and `App::load` is what it does with them.
-            //
-            // **What this cannot fix, and it is filed rather than hidden.** The view is in
-            // memory, so a daemon that is REPLACED rebuilds its views from the store — and the
-            // store keeps transcript rows, not this event. A head that outlives its daemon is
-            // therefore back to the list alone.
+            // A subagent spawn or finish, FOLDED: rebuilding the tree from replayed events alone is
+            // false for a session whose children predate the log.
             SessionEvent::Subagent {
                 subagent_id,
                 state,
@@ -969,8 +736,8 @@ impl SessionView {
                     model: model.clone(),
                     answer: answer.clone(),
                     slug: slug.clone(),
-                    // When this happened, on the log's own clock — the head has its own
-                    // `now_ms` and this is not it, the same rule `SnapshotItem::ts` keeps.
+                    // When this happened, on the log's own clock - the head has its own `now_ms`
+                    // and this is not it, the same rule `SnapshotItem::ts` keeps.
                     ts: env.ts,
                 };
                 match self
@@ -982,56 +749,40 @@ impl SessionView {
                     None => self.subagents.push(row),
                 }
             }
-            // Same shape: a job's start is the `bash` call's own `Backgrounded`
-            // finish, which the call view already folds, and its end is carried by
-            // the durable `JobSettled` event. The jobs pane folds both itself.
+            // Same shape: a job's start is the `bash` call's own `Backgrounded` finish, which the
+            // call view already folds, and its end is carried by the durable `JobSettled` event.
+            // The jobs pane folds both itself.
             SessionEvent::JobSettled { .. } => {}
-            // **Not carried**, and the reason is a real gap rather than a shrug: a head
-            // that attaches after the admission does not learn that a call is pending, so
-            // it cannot draw the operator's card until the result row lands. The head that
-            // asked is the one running it and it has the event; a second head sees the row.
-            // Carrying it would mean a snapshot field for a window that closes, and the
-            // window is one call long.
+            // Not carried, and the reason is a real gap: a head that attaches after the admission
+            // does not learn of it from the snapshot.
             SessionEvent::OperatorCallAllowed { .. } => {}
-            // Nothing to fold: a job-output window is drawn by the pane that asked
-            // for it, and the view carries no window state. It is ephemeral besides
-            // (`scrub::is_interactive`), so a late head never replays one.
+            // Nothing to fold: a job-output window is drawn by the pane that asked for it, and
+            // the view carries no window state. Ephemeral besides, so a late head never replays
+            // one.
             SessionEvent::JobOutput { .. } => {}
-            // Nothing to fold: a fill's progress is drawn by the head from the event
-            // itself and the view carries no counter. Ephemeral besides, so a late head
-            // never replays a tick.
+            // Nothing to fold: a fill's progress is drawn by the head from the event itself and
+            // the view carries no counter. Ephemeral besides, so a late head never replays a tick.
             SessionEvent::Filling { .. } => {}
-            // **Live-only, exactly as `Filling` is, and for the same reason.** A
-            // snapshot is what is TRUE at a seq; a fold's progress is a line that walks,
-            // so a value stored here would be sent to a late head as a fact about now
-            // when it was a fact about four minutes ago. What a late head needs from a
-            // compaction it missed is the fork and the `compacted` warning, and the view
-            // already keeps both — see `is_interactive` in `scrub.rs`, which strips this
-            // from every stored projection for the same reason.
+            // Live-only, as `Filling` is: a snapshot is what is TRUE at a seq, and a fold's
+            // progress is a line that walks. What a late head needs from a compaction it missed is
+            // the fork and the `compacted` warning, which the view already keeps.
             SessionEvent::CompactionProgress { .. } => {}
-            // **Live-only**, for `CompactionProgress`'s reason: a count stored here would reach a
-            // late head as a fact about now. A head that attaches mid-turn draws nothing until the
-            // held set next changes.
+            // Live-only, for `CompactionProgress`'s reason: a count stored here would reach a late
+            // head as a fact about now. A head that attaches mid-turn draws nothing until the held
+            // set next changes.
             SessionEvent::HeldResults { .. } => {}
-            // **The one live value this view does keep**, and the exception is the point: what a
-            // session is waiting on is a fact about NOW that a head attaching mid-turn cannot
-            // derive from anything else it is handed — the round-level `TurnStarted` is the defect
-            // this whole event exists for. It is scrubbed from a REPLAY (a value from before a gap
-            // is a lie) and republished by the hub after every snapshot, gap and resync, so what a
-            // late head reads here is current.
+            // The one live value this view does keep, and the exception is the point: what a session
+            // is waiting on is a fact only the daemon computes.
             SessionEvent::ActivityChanged { activity } => self.activity = activity.clone(),
-            // **Nothing to fold, and the snapshot must not carry one.** A pane's view is what its
-            // last look answered: stored here it would be handed to a head that attaches hours
-            // later as a dashboard of that moment, drawn with no sign that it is old. A head asks
-            // again — `ClientFrame::PaneOpen` — when the operator opens the pane, and the event's
-            // job is only to reach the head that is watching.
+            // Nothing to fold, and the snapshot must not carry one: a pane's view is what its last
+            // look answered, and a stored one would be a stale drawing.
             SessionEvent::PluginPane { .. } => {}
             // Nothing to fold: which panes a session has is the head's copy of the events, and
             // this view is per-session state the daemon owns (an attach re-asks).
             SessionEvent::PluginPaneGone { .. } => {}
-            // **Not carried, and the reason is the snapshot's**: the queues are daemon-level,
-            // and the view is per-session. A head that wants them asks with `ListMergeQueue` and
-            // gets the whole snapshot as of now; a move only tells it to ask again.
+            // Not carried, and the reason is the snapshot's: the queues are daemon-level and the
+            // view is per-session. A head that wants them asks with `ListMergeQueue` and gets the
+            // whole snapshot as of now; a move only tells it to ask again.
             SessionEvent::QueueMoved { .. } => {}
         }
     }
@@ -1044,52 +795,27 @@ impl SessionView {
             .find(|c| c.call_id == call_id)
     }
 
-    /// **One row's body, whole, by the row's position in the session.**
-    ///
-    /// `row` is the session ordinal — `0` is the session's first row ever — not an index into
-    /// [`Self::items`]. That is the number a head can express: it knows the rows it holds and
-    /// `items_dropped` says how many came before them, so "the row above my oldest" is
-    /// `items_dropped - 1`.
-    ///
-    /// `None` when the ordinal is outside what this view holds: trimmed by [`ViewBounds`], or
-    /// past the end of the session. That distinction is the caller's to make — `FetchRow`
-    /// answers `body: None` for it, because an empty body and a body nobody has must not look
-    /// alike.
-    ///
-    /// The whole thing is returned rather than a window because the *windowing* belongs to
-    /// whoever answers the frame — that is where the cap and the character-boundary arithmetic
-    /// live, and a second implementation here would be a second answer to the same question.
+    /// One row's body, whole, by the row's position in the session. `row` is the session ordinal,
+    /// where 0 is the first row of the conversation.
     pub fn row_body_at(&self, row: usize) -> Option<String> {
         let idx = row.checked_sub(self.items_dropped as usize)?;
         let item = self.items.get(idx)?.item.as_ref()?;
         Some(body_of(item))
     }
 
-    /// Attach content to an already-appended transcript row.
-    ///
-    /// See the module note: §4.5's `TranscriptAppended` has no content field, so
-    /// this is the seam by which the daemon supplies it. Idempotent, and a no-op
-    /// for an id the view has trimmed or never saw.
+    /// Attach content to an already-appended transcript row: `TranscriptAppended` has no body, so
+    /// this is how a row becomes readable.
     pub fn record_item(&mut self, item_id: &str, item: TranscriptItem) {
         if let Some(row) = self.items.iter_mut().find(|r| r.item_id == item_id) {
             row.item = Some(item);
-            // **The body can blow the byte bound on its own.** Rows are announced before
-            // they are filled, so a row that arrives empty and lands 418 KB later is over
-            // the bound the moment it lands — and trimming only when a *new* row is
-            // announced would leave the snapshot oversized for as long as no new row came.
+            // The body can blow the byte bound on its own: rows are announced before they are filled,
+            // so a row that arrives whole is a row the bound has not seen.
             self.trim();
         }
     }
 
-    /// Drop the oldest rows until the view is inside both bounds, counting what went.
-    ///
-    /// A method rather than inline at the one place a row is pushed, because there are
-    /// two places it can go over: a row announced (a count) and a body landing (bytes).
-    ///
-    /// **The newest row is kept whatever size it is.** A view with nothing in it cannot
-    /// be scrolled or read, the row just added is the one the reader is watching, and a
-    /// bound that emptied the transcript to satisfy itself would be the bound breaking
-    /// the thing it exists to protect.
+    /// Drop the oldest rows until the view is inside both bounds, counting what went: a method
+    /// rather than inline, so the two bounds cannot be applied apart.
     fn trim(&mut self) {
         let over = self.items.len().saturating_sub(self.bounds.items);
         if over > 0 {
@@ -1127,15 +853,14 @@ impl SessionView {
         }
     }
 
-    /// The turn in view, if there is one. For a session list, which wants to know
-    /// whether this session is busy without cutting a whole snapshot to find out.
+    /// The turn in view, if there is one. For a session list, which wants to know whether this
+    /// session is busy without cutting a whole snapshot to find out.
     pub fn turn(&self) -> Option<&TurnView> {
         self.turn.as_ref()
     }
 
-    /// Transcript rows the view is holding. Bounded by [`ViewBounds::items`], so
-    /// this is not the length of the conversation — `items_dropped` is the other
-    /// half and is on the snapshot.
+    /// Transcript rows the view is holding. Bounded by [`ViewBounds::items`], so this is not the
+    /// length of the conversation - `items_dropped` is the other half and is on the snapshot.
     pub fn item_count(&self) -> usize {
         self.items.len()
     }
@@ -1145,25 +870,14 @@ impl SessionView {
     }
 }
 
-/// **A row's body, as text — the one definition, for every reader.**
-///
-/// Two callers and they must agree: [`SessionView::row_body_at`], which answers from the
-/// **bounded view** (2,000 rows, 8 MB of bodies), and the store-backed reader behind
-/// `ClientFrame::FetchRow` (R19.2b), which answers for an ordinal the view has trimmed.
-/// A second copy of this match is how the two would come to disagree about what a row's
-/// `body` is — the same shape as `display_target`, which is one function for the same
-/// reason.
-///
-/// The *windowing* is deliberately not here: the cap and the character-boundary
-/// arithmetic belong to whoever answers the frame, and a second implementation would be
-/// a second answer to the same question.
+/// A row's body, as text: the one definition, for every reader. Two callers and they must agree,
+/// because a head that fetched a row and one that replayed it draw the same card.
 pub fn body_of(item: &TranscriptItem) -> String {
     match item {
         TranscriptItem::ToolResult { payload, .. } => payload.clone(),
-        // The other variants' "body" is their text. A row a head can page is a tool
-        // result in practice, but the accessor is not the place to decide that: a
-        // head asking for a long answer's bytes gets them rather than a silence it
-        // would have to interpret.
+        // The other variants' "body" is their text. A row a head can page is a tool result in
+        // practice, but the accessor is not the place to decide that: a head asking for a long
+        // answer's bytes gets them rather than a silence it would have to interpret.
         TranscriptItem::Assistant { text, .. }
         | TranscriptItem::Reasoning { text, .. }
         | TranscriptItem::System { text, .. } => text.clone(),
@@ -1186,17 +900,13 @@ mod tests {
     use crate::log::{LogBounds, SessionLog};
     use crate::testing::*;
 
-    /// **The one definition of a row's `body`, per variant** (R19.2b).
-    ///
-    /// Two tiers answer `FetchRow` — the bounded view and, behind it, the store — and both
-    /// call this, because two copies of the match is how they would come to disagree about
-    /// what a row's body *is*. So the definition itself is pinned here rather than left to
-    /// be inferred from whichever tier a test happened to exercise.
+    /// The one definition of a row's `body`, per variant. Two tiers answer `FetchRow`: the
+    /// bounded view, and the store behind it.
     #[test]
     fn a_rows_body_is_its_own_kind_of_text() {
         use letibot_transcript::{ReasoningField, ToolOutcome, UserPart};
-        // A tool result's body is its payload — the case a head pages, since that is
-        // where a 418 KB log lives.
+        // A tool result's body is its payload - the case a head pages, since that is where a
+        // 418 KB log lives.
         assert_eq!(
             body_of(&TranscriptItem::ToolResult {
                 call_id: "c".into(),
@@ -1234,10 +944,9 @@ mod tests {
             };
             assert_eq!(body_of(&item), want);
         }
-        // A user row's body is its text parts joined — and the non-text parts contribute
-        // nothing (the `_ => None` arm), because an image or a file ref *names* a thing
-        // rather than being one. Asserted with two text parts, which is the shape this
-        // can construct without inventing the other variants' fields.
+        // A user row's body is its text parts joined - and the non-text parts contribute nothing,
+        // because an image or a file ref *names* a thing rather than being one. Asserted with two
+        // text parts, which is the shape this can construct without inventing other variants.
         assert_eq!(
             body_of(&TranscriptItem::User {
                 speaker: Default::default(),
@@ -1252,9 +961,9 @@ mod tests {
             }),
             "first\nsecond"
         );
-        // **A segment mark renders to nothing, so it has no body to page** — that is the
-        // `SegmentMark => String::new()` arm, and it is a *different* answer from "there is
-        // no such row", which is the wire's `body: Some("")` against `body: None`.
+        // A segment mark renders to nothing, so it has no body to page - that is the
+        // `SegmentMark => String::new()` arm, and it is a *different* answer from "there is no
+        // such row", which is the wire's `body: Some("")` against `body: None`.
     }
 
     fn fold(log: &SessionLog) -> SessionView {
@@ -1265,10 +974,9 @@ mod tests {
         v
     }
 
-    /// **The byte bound, because a count bound is not a size bound.**
-    ///
-    /// Rows are not the same size, so 2,000 of them can be a few megabytes or most of a
-    /// gigabyte — and the snapshot is cloned and sent for every attaching head.
+    /// The byte bound, because a count bound is not a size bound: rows are not the same size, so
+    /// 2,000 of them can be a few megabytes or most of a gigabyte, and the snapshot is cloned and
+    /// sent for every attaching head.
     #[test]
     fn a_view_drops_the_oldest_rows_to_stay_inside_its_byte_bound() {
         let bounds = ViewBounds {
@@ -1280,8 +988,8 @@ mod tests {
         // Twenty 1 KB rows: over the byte bound, well under the count bound.
         for i in 0..20 {
             let id = format!("i{i}");
-            // Announce, then fill — the real order, and it is what `trim` has to cope
-            // with: the count is checked at the announcement and the bytes at the fill.
+            // Announce, then fill - the real order, and it is what `trim` has to cope with: the
+            // count is checked at the announcement and the bytes at the fill.
             v.items.push(SnapshotItem {
                 citations: Vec::new(),
                 item_id: id.clone(),
@@ -1316,9 +1024,9 @@ mod tests {
         assert!(v.items_dropped > 0, "the dropped rows were not counted");
     }
 
-    /// A row bigger than the whole bound is **kept**, because a view with nothing in it
-    /// cannot be read or scrolled — and a bound that emptied the transcript would break
-    /// the thing it exists to protect.
+    /// A row bigger than the whole bound is kept, because a view with nothing in it cannot be read
+    /// or scrolled - and a bound that emptied the transcript would break the thing it exists to
+    /// protect.
     #[test]
     fn the_newest_row_is_kept_however_big_it_is() {
         let bounds = ViewBounds {
@@ -1355,10 +1063,8 @@ mod tests {
         assert!(v.items[0].item.is_some(), "and its body was kept");
     }
 
-    /// **A body landing can blow the bound on its own.** A row is announced before it is
-    /// filled, so a row that arrives empty and lands hundreds of kilobytes later is over
-    /// the bound the moment it lands — and trimming only when a new row is *announced*
-    /// would leave the snapshot oversized until the next one arrived.
+    /// A body landing can blow the bound on its own: a row is announced before it is filled, so it
+    /// arrives after the count has been checked.
     #[test]
     fn a_body_landing_trims_without_waiting_for_another_row() {
         let bounds = ViewBounds {
@@ -1446,19 +1152,8 @@ mod tests {
         assert_eq!(fold(&log).snapshot(4, 0).turn.unwrap().tokens, 25);
     }
 
-    /// **A switch back is handed the children the parent's own view folded.**
-    ///
-    /// This is the sessionlog half of the operator's flapping `N subagents running` segment, and
-    /// the arm that carried it was `SessionEvent::Subagent { .. } => {}` — with a comment saying a
-    /// late head rebuilds the tree from the replayed events and the session list. **Neither half
-    /// holds on a switch**: a `Switch` sends `since_seq = 0`, so the daemon answers with a snapshot
-    /// and an empty backlog and nothing is replayed; and the session list's `running` is *a turn is
-    /// generating in that session at this instant*, which is `false` for a child parked on its own
-    /// background job.
-    ///
-    /// So the assertion is that the snapshot CARRIES the event's own words — not just the id, and
-    /// not a bit the list could have supplied. `state`, `task`, `model` and `answer` are the ones a
-    /// list-derived row has to leave empty, and they are the ones a head rebuilds its pane from.
+    /// A switch back is handed the children the parent's own view folded: neither half of the old
+    /// reading holds, because the tree may have changed while the head was away.
     #[test]
     fn a_snapshot_carries_the_sessions_children_as_their_events_reported_them() {
         let mut log = SessionLog::new("s", LogBounds::default());
@@ -1483,8 +1178,8 @@ mod tests {
         assert_eq!(row.model, "local");
         assert_eq!(row.answer, None);
 
-        // **A finish REPLACES the row rather than adding a second one** — the same rule the
-        // head's own fold keeps, so a child that has ended is one row and not two.
+        // A finish REPLACES the row rather than adding a second one - the same rule the head's own
+        // fold keeps, so a child that has ended is one row and not two.
         log.append(SessionEvent::Subagent {
             subagent_id: "s-sub-1".into(),
             state: "done".into(),
@@ -1503,7 +1198,7 @@ mod tests {
             Some("the reader drops the last byte")
         );
 
-        // **And a second child is a second row**, so the field is a list and not a slot.
+        // And a second child is a second row, so the field is a list and not a slot.
         log.append(SessionEvent::Subagent {
             subagent_id: "s-sub-2".into(),
             state: "opening".into(),
@@ -1523,10 +1218,8 @@ mod tests {
         assert_eq!(ids, vec!["s-sub-1", "s-sub-2"]);
     }
 
-    /// **An older daemon's snapshot still parses.** The field is `#[serde(default)]`, so a head
-    /// built from this tree reads a daemon that never heard of it — and the absent list and an
-    /// empty one have to mean the same thing, because *this daemon told me about no children* is
-    /// the only honest reading of either.
+    /// An older daemon's snapshot still parses: the field is `#[serde(default)]`, so a head built
+    /// from this tree reads a daemon that never sent it.
     #[test]
     fn a_snapshot_without_the_children_field_still_parses() {
         let snap = fold(&{
@@ -1561,8 +1254,8 @@ mod tests {
         let snap = fold(&log).snapshot(4, 0);
         let call = &snap.turn.unwrap().calls[0];
         assert_eq!(call.state, CallState::Running);
-        // There is nowhere in `CallState::Running` to put the partial output. That
-        // is the design: it cannot leak because it has no home.
+        // There is nowhere in `CallState::Running` to put the partial output. That is the design:
+        // it cannot leak because it has no home.
         let json = serde_json::to_string(&snap.open_decisions).unwrap();
         assert!(!json.contains("400 lines"));
     }
@@ -1588,16 +1281,8 @@ mod tests {
         assert!(json.contains(r#""items_dropped":0"#), "{json}");
     }
 
-    /// **A fork replaces this view's rows, so a LATE head is not handed both conversations.**
-    ///
-    /// This view is the daemon's own record of the session, and `Hub::snapshot` cuts its rows
-    /// for every head that attaches. So the doubling the operator saw in a live head is here
-    /// too, one attach later: a head that arrives after a `/reseat` is handed the rows of the
-    /// transcript that went plus the rows of the one that arrived — with no event to blame it
-    /// on, because the head never saw the fork.
-    ///
-    /// The fixture is the shape `fork_to_summary` publishes, in its own order: the statement,
-    /// then every carried row under the new transcript's ids.
+    /// A fork replaces this view's rows, so a LATE head is not handed both conversations: this view
+    /// is the daemon's, and it drops what the fork replaced.
     #[test]
     fn a_fork_replaces_the_rows_this_view_holds() {
         let mut log = SessionLog::new("s", LogBounds::default());
@@ -1624,7 +1309,7 @@ mod tests {
         }
 
         let snap = fold(&log).snapshot(101, 0);
-        // **60, and not 100.** A fork replaces the conversation rather than adding to it.
+        // 60, and not 100. A fork replaces the conversation rather than adding to it.
         assert_eq!(
             snap.items.len(),
             60,
@@ -1639,23 +1324,17 @@ mod tests {
                 .take(3)
                 .collect::<Vec<_>>()
         );
-        // **And the rows are REPLACED, not missing.** `items_dropped` says a head is short of
-        // a window and can ask for what it lost; these rows are gone from the session, and a
-        // head told to count them would ask for rows that exist nowhere.
+        // And the rows are REPLACED, not missing. `items_dropped` says a head is short of a
+        // window and can ask for what it lost; these rows are gone from the session, and a head
+        // told to count them would ask for rows that exist nowhere.
         assert_eq!(
             snap.items_dropped, 0,
             "a replacement is not a window: nothing here fell out of one"
         );
     }
 
-    /// **A fork drops the replaced transcript's rows and NO OTHERS.**
-    ///
-    /// This view holds rows of more than one transcript on purpose: a resume republishes the
-    /// tail of the transcripts a compaction put behind the current one (`ancestor_tail`), so a
-    /// head can scroll above the summary it resumed onto. Those rows are not what a fork
-    /// replaces — the transcript that arrives does not carry them — and a rule that cleared
-    /// everything the view held would lose them, which is the operator's *"conversation was
-    /// gone — only a small recent portion was displayed"* arriving one verb later.
+    /// A fork drops the replaced transcript's rows and NO OTHERS: this view holds rows of more than
+    /// one transcript, and the ones the fork did not replace still stand.
     #[test]
     fn a_fork_leaves_the_rows_of_the_transcripts_it_did_not_replace() {
         let mut log = SessionLog::new("s", LogBounds::default());

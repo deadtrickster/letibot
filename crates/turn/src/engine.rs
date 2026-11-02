@@ -1,9 +1,5 @@
 //! The turn engine: render → tokenize → append → submit → stream → parse → append.
 //!
-//! §5.1 end to end, on §5.6's `/completion` fallback, which is what M1 runs on.
-//!
-//! # What a turn does to the token region
-//!
 //! ```text
 //!   region after turn N        [ prefix | item | item | … | item ]
 //!   submitted for turn N+1     [ prefix | item | item | … | item | <|assistant|><think> ]
@@ -11,26 +7,13 @@
 //!   region after turn N+1      [ prefix | item | … | item | <|assistant|><think>…generated… ]
 //! ```
 //!
-//! The generation prompt is submitted but **not** committed until the turn produces
+//! The generation prompt is submitted but not committed until the turn produces
 //! something, because it is not a transcript item: folding it into a render would
-//! break `render_incremental ≡ render` for any conversation whose next item is a
-//! user message. If the turn fails, the tail was never committed, the region is
-//! unchanged, and the next attempt re-sends exactly the same bytes. There is no
-//! rollback path because there is nothing to roll back.
+//! break `render_incremental ≡ render`. A failed turn leaves the region unchanged.
 //!
-//! # Generated tokens are committed as ids, never re-derived from text
-//!
-//! The ledger rows for a turn are cut out of the id array the server streamed. No
-//! detokenize/retokenize round trip happens anywhere on this path, which is what
-//! makes §18.1-I1 hold by construction rather than by assertion.
-//!
-//! # A failed turn cannot be recorded as a success
-//!
-//! `run_turn` returns `Result<TurnOk, TurnFailure>` and [`TurnOk`] has no
-//! constructor that accepts a verdict which `may_record_as_success()` rejects. The
-//! empty-content-plus-`length` case is therefore not *representable* as a completed
-//! turn — which is the actual lesson of the nine unnoticed rows, rather than
-//! "remember to check a flag".
+//! Ledger rows are cut from the id array the server streamed, never re-derived from
+//! text. `run_turn` returns `Result<TurnOk, TurnFailure>` and [`TurnOk`] has no
+//! constructor accepting a verdict `may_record_as_success()` rejects.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -96,14 +79,8 @@ pub enum TurnFailure {
         notices: Vec<String>,
         metrics: Box<TurnMetrics>,
     },
-    /// R7, found live 2026-09-10: the turn stopped with the reasoning block still
-    /// open and committed no assistant content — no visible text, no tool call.
-    /// GLM's end-of-turn token is the *name* of a thing an agent may be asked to
-    /// write, so the model can end its own turn mid-thought with a normal
-    /// `stop`, and the conflation is in the vocabulary, not fixable at the
-    /// sampler (`--logit-bias` measurably breaks the model's ordinary stop).
-    /// What is fixable is the reporting: this is never an empty success. The
-    /// loop's answer is steering, not a hard stop — see the harness arm.
+    /// The turn stopped with the reasoning block still open and committed no assistant
+    /// content. Never an empty success: the loop's answer is steering, not a hard stop.
     UnfinishedReasoning {
         turn_id: String,
         metrics: Box<TurnMetrics>,
@@ -176,8 +153,7 @@ impl From<EngineError> for TurnFailure {
 
 /// A turn that may be recorded.
 ///
-/// There is no public constructor. [`TurnOk::new`] is private and asserts the
-/// verdict, so the only way to obtain one is to have passed §5.7.
+/// No public constructor: [`TurnOk::new`] is private and asserts the verdict.
 #[derive(Debug, Clone)]
 pub struct TurnOk {
     pub turn_id: String,
@@ -190,13 +166,9 @@ pub struct TurnOk {
     pub truncated: bool,
     /// Steering messages injected at this turn's step boundary (§5.8).
     pub steering_applied: Vec<TranscriptItem>,
-    /// **Steering that was already waiting when this generation began**, appended
-    /// before the prompt was built rather than after the model answered.
+    /// Steering waiting when this generation began, appended before the prompt was built.
     ///
-    /// Kept apart from [`Self::steering_applied`] because the two groups straddle
-    /// the model's own rows in the transcript, and the caller reconciles ledger
-    /// ids positionally: before, then the model's items, then after. One vector
-    /// could not say which side a message landed on.
+    /// Kept apart from [`Self::steering_applied`]: the caller reconciles ids positionally.
     pub steering_before: Vec<TranscriptItem>,
 }
 
@@ -216,12 +188,9 @@ impl TurnOk {
              constructing it as a success is the defect this type exists to prevent."
         );
         TurnOk {
-            // Two different ways to be cut short and both must show. §5.7's
-            // `length` is one; an urgent steering message that stopped generation
-            // at the next token is the other, and its partial output *is* kept
-            // (§5.8, and §13.2's cache reason). A kept partial reported as a
-            // complete turn is the same defect as a swallowed `finish_reason`,
-            // arriving through the other door.
+            // Two ways to be cut short and both must show: §5.7's `length`, and an
+            // urgent steering message that stopped generation. A kept partial reported
+            // as a complete turn is the same defect as a swallowed `finish_reason`.
             truncated: interrupted || matches!(verdict, LengthVerdict::TruncatedText),
             turn_id,
             items,
@@ -235,17 +204,7 @@ impl TurnOk {
 
 /// Everything about the model that does not change between turns.
 ///
-/// **It owns its model facts, by `Arc`.** The fields used to be borrows
-/// (`vocab: &'a Vocab`, `renderer: &'a dyn PromptRenderer`), which tied every
-/// engine to the one `Parts` its daemon opened with — and made "this session now
-/// renders with another dialect and tokenizes with another vocabulary"
-/// inexpressible without a self-referential struct. The switch to a declared
-/// local model needs exactly that: the target's `/props` names a GGUF and a chat
-/// template, and the engine built from THOSE is what sends ids the target can
-/// read. An `Arc` clone of each fact costs one refcount bump per engine and keeps
-/// the sharing `Parts` already meant — several sessions, one vocabulary load.
-/// Nothing else changed: the constructor still resolves the dialect against the
-/// vocabulary it is handed and fails now if it does not fit.
+/// It owns its model facts by `Arc`, so a session can switch vocabulary and renderer.
 pub struct TurnEngine {
     vocab: Arc<Vocab>,
     control: ControlMap,
@@ -259,43 +218,26 @@ pub struct TurnEngine {
     pub model: String,
     pub sampling: Value,
     pub salvage: SalvageBudget,
-    /// **The server's own media marker**, from `/props` at startup, or `None` for an endpoint that
-    /// takes no images — a metered provider, or a local server without `mtmd`.
-    ///
-    /// `None` is a real answer and not a failure, and it is the honest one for most endpoints: a
-    /// prompt carrying an image is then sent **without** the image, and the payload's own sentence
-    /// says so (*"the image is attached to this result"*). That is a picture the model was told about
-    /// and not given, which is why `delivered` exists on the row to make the difference visible.
-    ///
-    /// Never a dialect's vision tokens: the server answers those with `Failed to tokenize prompt`
-    /// (measured — see `serving::served_media_marker`).
+    /// The server's own media marker, from `/props` at startup, or `None` for an endpoint
+    /// that takes no images. Never a dialect's vision tokens.
     pub media_marker: Option<String>,
     /// Where a refused frame and its neighbours are written (T23). On by default;
     /// see [`FrameCapture`] for why the default is on rather than off.
     pub frame_capture: FrameCapture,
-    /// **The whole turn's start in Unix ms, if the caller knows it.**
+    /// The whole turn's start in Unix ms, if the caller knows it.
     ///
-    /// See [`TurnEvent::TurnStarted::began_ms`]. The engine runs ONE round — `run_turn_steered`
-    /// is called inside the daemon's round loop — so the engine cannot know when the turn
-    /// began. Whoever runs the rounds stamps this, and `None` means nobody measured it, which
-    /// a head draws as *started before this head attached* rather than a duration nobody took.
+    /// The engine runs one round, so whoever runs the rounds stamps this.
     pub turn_began_ms: Option<u64>,
-    /// **Hand the next turn a lead with reasoning already closed.**
+    /// Hand the next turn a lead with reasoning already closed.
     ///
-    /// False for every turn but the summary. Not a config field and not a
-    /// constructor argument: it is a property of ONE turn, set around it by
-    /// [`crate::compaction::run_compaction`] and cleared however that turn ends.
-    /// A session-lifetime switch here would be a way to turn a model's reasoning
-    /// off by accident and never notice.
+    /// A property of ONE turn, set by the compaction and cleared however it ends.
     suppress_reasoning: bool,
 }
 
 impl TurnEngine {
     /// Run `f` with the next turn's lead closing the reasoning block.
     ///
-    /// Scoped rather than a pair of setters, so the flag cannot outlive the turn
-    /// it was set for — including when that turn fails, which for a summary is the
-    /// common case and exactly when a leaked flag would be hardest to see.
+    /// Scoped, so the flag cannot outlive the turn - including when that turn fails.
     pub fn without_reasoning<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
         let was = std::mem::replace(&mut self.suppress_reasoning, true);
         let out = f(self);
@@ -306,9 +248,7 @@ impl TurnEngine {
 
 /// Whether diagnostic-only verdicts are wanted this run: `LETIBOT_DEBUG=1`.
 ///
-/// An environment variable rather than a config field on purpose — this decides
-/// what is PRINTED, not what the harness does, and a session should not have to
-/// be restarted to see one more line. Read once.
+/// An env var, not a config field: it decides what is PRINTED, and is read once.
 fn debug_warnings() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| {
@@ -320,14 +260,9 @@ fn debug_warnings() -> bool {
 }
 
 impl TurnEngine {
-    /// Resolve the dialect against the vocabulary and fail **now** if it does not
-    /// fit. Every failure this can raise is one that is otherwise silent at
-    /// runtime.
+    /// Resolve the dialect against the vocabulary and fail **now** if it does not fit.
     ///
-    /// Seven arguments, and a builder would be worse: every one of them is a fact
-    /// the engine cannot invent, and a builder's `Option` per field is an
-    /// invitation to leave one out. The clippy lint is about ergonomics; the
-    /// alternative here trades an awkward call site for a silently mis-wired one.
+    /// Seven arguments and no builder: every one is a fact the engine cannot invent.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         vocab: Arc<Vocab>,
@@ -341,15 +276,9 @@ impl TurnEngine {
         let spec = renderer.spec().clone();
         let control = resolve(&vocab, &spec.control_tokens).map_err(EngineError::Control)?;
         let stop_ids = resolve_stops(&vocab, &spec.stop_tokens).map_err(EngineError::Control)?;
-        // A stop that the vocabulary marks end-of-generation is one the *server*
-        // stops on. Enforcing it here as well would close the socket one frame
-        // early and throw away the terminal frame — with it the `timings`, so a
-        // turn that reused its entire history would report `cache_n = 0` and every
-        // post-flight check would see a cold prefill that never happened.
-        //
-        // A stop that is **not** EOG is the case §7.1 warns about: the server has
-        // no reason to halt on it, so without this the turn runs to `n_ctx`. That
-        // is the half worth enforcing, and it is the half that is left.
+        // A stop the vocabulary marks end-of-generation is one the *server* stops on;
+        // enforcing it here too would close the socket a frame early and lose the
+        // terminal frame's `timings`. A non-EOG stop is the half worth enforcing.
         let client_stop_ids = stop_ids
             .iter()
             .copied()
@@ -377,11 +306,9 @@ impl TurnEngine {
         })
     }
 
-    /// The vocabulary this engine tokenizes with — a GGUF's, or the byte one.
+    /// The vocabulary this engine tokenizes with - a GGUF's, or the byte one.
     ///
-    /// Borrowed from the `Arc` the engine owns (the enabling refactor: the
-    /// vocabulary became replaceable at runtime, so it is shared rather than
-    /// borrowed for the engine's whole life).
+    /// Borrowed from the `Arc` the engine owns, so it can be replaced at runtime.
     pub fn vocab(&self) -> &Vocab {
         self.vocab.as_ref()
     }
@@ -403,24 +330,9 @@ impl TurnEngine {
         &self.client_stop_ids
     }
 
-    /// **The prompt as the text a server tokenizes itself**, with `marker` where each image sits.
+    /// The prompt as the text a server tokenizes itself, with `marker` where each image sits.
     ///
-    /// `None` when the prompt places no image at all, which is every turn but the few that read one.
-    ///
-    /// # Why this walks the ids rather than re-rendering
-    ///
-    /// The ledger's token region *is* the render, tokenized. Re-rendering would be a second walk of
-    /// the same fact — the shape of every defect this tree has had today — and the two could drift
-    /// the moment a renderer changed. So this reads the very ids about to be submitted and replaces
-    /// the three image tokens with the server's single marker, which cannot describe a different
-    /// prompt from the one the ids describe because it is built out of them.
-    ///
-    /// MEASURED, and the reason the string form is affordable at all (`docs/leticode.md`): a prompt
-    /// framed by control tokens tokenizes identically as text and as ids, so the server's
-    /// tokenization and the ledger's agree token for token.
-    ///
-    /// The return is the string and **how many markers it placed**, so a caller can hold that
-    /// against the attachments it has and refuse to send pictures it cannot place.
+    /// Walked out of the ids about to be submitted, never re-rendered, so the two agree.
     fn prompt_as_text(&self, tokens: &[TokenId], marker: &str) -> Option<(String, usize)> {
         let decoder = self.decoder();
         let mut out = String::new();
@@ -455,19 +367,9 @@ impl TurnEngine {
         VocabDecoder::new(&self.vocab, &self.control)
     }
 
-    /// The literal a control id spells, so a live stream can cut it out of the text
-    /// the server sends alongside it.
+    /// The literal a control id spells, so a live stream can cut it out of the text.
     ///
-    /// By id through the dialect's own table, never by scanning the text for
-    /// something that looks like a boundary — that is the rule [`ControlRole`] and
-    /// [`RenderSpan`] exist to enforce in both directions. A linear walk over ten
-    /// entries, reached only on a token that is already known to be a boundary.
-    ///
-    /// Note that a control token whose literal the server does **not** put in
-    /// `content` (a `CONTROL`-attribute token, as against Qwen's `USER_DEFINED`
-    /// `</think>`) simply is not found in the chunk, and the channel switch happens
-    /// with nothing to cut. Both cases are correct and neither needs to be
-    /// distinguished here.
+    /// By id through the dialect's own table, never by scanning the text for a boundary.
     fn control_literal(&self, id: TokenId) -> Option<&str> {
         self.spec
             .control_tokens
@@ -510,21 +412,7 @@ pub struct Session {
 impl Session {
     /// Seat a session over a ledger that was rebuilt from the store.
     ///
-    /// `pub(crate)` and not public: the only correct way in is
-    /// [`crate::resume::restore_parts`], which has verified the chain twice before
-    /// it gets here. A public constructor taking a ledger would let a caller seat a
-    /// session over a region nothing checked, which is the one thing the whole
-    /// resume path exists to make impossible.
-    ///
-    /// `witness` is `None` on purpose. A [`PrefixWitness`] records what the *server*
-    /// held after the last turn, and this process has not run one — the slot may
-    /// have been evicted, refilled by another session, or belong to a server that
-    /// has since restarted. So the first turn after a resume reports no `f_keep`
-    /// rather than a number computed against a cache nobody looked at. See
-    /// `crate::prefix`.
-    ///
-    /// `turn_seq` starts at the item count. See [`crate::resume`]'s header: it is a
-    /// watermark that keeps turn ids unique across a restart, not a count of turns.
+    /// `pub(crate)`: `restore_parts` is the only way in, and it verified the chain.
     pub(crate) fn from_restored(
         transcript_id: String,
         ledger: TokenLedger,
@@ -540,12 +428,9 @@ impl Session {
         }
     }
 
-    /// Append items rendered from the transcript — user turns, tool results,
-    /// system updates, steering messages.
+    /// Append items rendered from the transcript - user turns, tool results, steering.
     ///
-    /// One ledger row per item. Each item is rendered against the history as it
-    /// stood before it, which is what `render_incremental`'s contract requires and
-    /// what keeps the rows aligned with the items.
+    /// One ledger row per item, each rendered against the history as it stood before it.
     pub fn append_items(
         &mut self,
         engine: &TurnEngine,
@@ -555,11 +440,8 @@ impl Session {
         self.append_items_reporting(engine, new_items, sink, &mut |_, _| {})
     }
 
-    /// **[`Session::append_items`], saying how far it has got** — `progress(done, total)` after
-    /// each item. Rendering a long conversation onto a new prompt is the long half of a fork that
-    /// carries it (`/reseat`), and a bar fed only by the write that follows sat at zero for the
-    /// whole render: the operator, *"progress bars do not work — neither on reseat, nor on
-    /// compaction … always at zero"*. The caller decides how often to say so.
+    /// [`Session::append_items`], saying how far it has got - `progress(done, total)` after
+    /// each item, because a bar fed only by the write that follows sat at zero.
     pub fn append_items_reporting(
         &mut self,
         engine: &TurnEngine,
@@ -623,18 +505,9 @@ impl TurnEngine {
         self.run_turn_steered_with_tail(session, sink, steering, &[])
     }
 
-    /// **The same round, with items the request carries and the log does not.**
+    /// The same round, with items the request carries and the log does not.
     ///
-    /// `tail` is rendered after the ledger and committed nowhere: `session.items`
-    /// — and therefore the next round's cached prefix — is untouched. The one
-    /// caller is the standing-notes offer (`letibot_harnessd::notes_offer`), and
-    /// the reason it has to be a tail rather than a row is in that module's
-    /// header: *a row cannot be un-said; an assembly can be recomposed*.
-    ///
-    /// **Where it lands is the whole of the cost argument.** Appending after the
-    /// ledger re-prefills only what follows the change, so the offer costs the
-    /// tokens of one hint and not the 144.6 s `docs/compaction.md` §2 measures for
-    /// a prefix that moved.
+    /// `tail` is committed nowhere: a row cannot be un-said, an assembly can be recomposed.
     pub fn run_turn_steered_with_tail(
         &mut self,
         session: &mut Session,
@@ -642,10 +515,9 @@ impl TurnEngine {
         steering: &mut dyn SteeringSource,
         tail: &[TranscriptItem],
     ) -> Result<TurnOk, TurnFailure> {
-        // **The byte vocabulary's ids mean nothing to a llama-server.** They are this
-        // machine's record of a provider session (`Vocab::bytes`), and this path sends
-        // token ids as numbers — so a session on it is refused here, before anything is
-        // sent, whatever check above should already have stopped it.
+        // The byte vocabulary's ids mean nothing to a llama-server, and this path sends
+        // token ids as numbers - so a session on it is refused here, before anything is
+        // sent.
         if self.vocab.is_bytes() {
             return Err(TurnFailure::Engine(EngineError::Tokenize(
                 "this session has no model vocabulary (it was opened for a cloud provider, \
@@ -668,33 +540,13 @@ impl TurnEngine {
             began_ms: self.turn_began_ms,
         });
 
-        // Shared with the stream loop: a non-urgent message that arrives mid-turn
-        // is absorbed there and injected here. Two `Pending`s would mean the queue
-        // that saw the message is not the queue the step boundary drains, and the
-        // correction would be silently dropped — which is worse than not
-        // implementing steering at all.
+        // Shared with the stream loop: a non-urgent message that arrives mid-turn is
+        // absorbed there and injected here. Two `Pending`s would mean the correction is
+        // silently dropped.
         let mut pending = Pending::new();
-        // **Take the operator's words before spending a prompt, not after.**
-        //
-        // The poll used to live only inside the stream loop and at the step
-        // boundary under it, so the window where nobody listened was exactly "a
-        // tool is running" — and it cost a round on top. Typing during a
-        // three-minute `job_wait` left the message in the hub queue; the next
-        // round then built and sent its whole prompt without it, generated deaf,
-        // and only appended it afterwards. The operator, watching their line sit
-        // there through all of that: *"i backgrounded a job but my messsage still
-        // queued"*, and then the rule — *"basically it should be a little bit
-        // greedy with my messages"*.
-        //
-        // So: greedy. Anything waiting when a generation begins goes in FIRST, and
-        // the model reads it in this prompt rather than the next one. It also puts
-        // the row in its natural place — after the tool results of the round
-        // before, instead of wedged between an assistant's tool calls and their
-        // results, which is where the end-of-generation append leaves it.
-        // An urgent message is not queued by `absorb`; it is returned to be acted
-        // on, and there is no generation here to act on yet. Held, so the stream
-        // loop's first poll finds it — dropping it would turn an interrupt into
-        // silence.
+        // Take the operator's words before spending a prompt, not after: anything
+        // waiting when a generation begins goes in FIRST, so the model reads it in this
+        // prompt. An urgent message is held for the stream loop's first poll.
         if let Some(u) = pending.absorb(steering) {
             pending.hold_urgent(u);
         }
@@ -702,21 +554,18 @@ impl TurnEngine {
         if !steering_before.is_empty() {
             session.append_items(self, &steering_before, sink)?;
         }
-        // **Which lead this turn gets**, and the only turn that gets the other one
-        // is the summary. See `PromptRenderer::generation_prompt_closing_reasoning`:
-        // a summary turn runs when the window is nearly full, and a lead that opens
-        // `<think>` spends the little that is left before it writes a word.
+        // Which lead this turn gets; only the summary gets the other one. A summary runs
+        // when the window is nearly full, and a lead that opens `<think>` spends what is
+        // left before it writes a word.
         let lead = self.tokenize(&if self.suppress_reasoning {
             self.renderer.generation_prompt_closing_reasoning()
         } else {
             self.renderer.generation_prompt()
         })?;
         let mut prompt = session.ledger.tokens().to_vec();
-        // The round's tail, rendered through the same renderer the transcript uses
-        // and appended after everything the ledger holds. Each item is rendered
-        // against the history as it stood BEFORE it, which is
-        // `render_incremental`'s contract — the same call `Session::append_items`
-        // makes, minus the append.
+        // The round's tail, rendered by the same renderer the transcript uses and appended
+        // after everything the ledger holds. Each item is rendered against the history as it
+        // stood BEFORE it, which is `render_incremental`'s contract.
         for item in tail {
             let spans = self
                 .renderer
@@ -726,27 +575,20 @@ impl TurnEngine {
         prompt.extend_from_slice(&lead);
         let prompt_tokens = prompt.len() as u64;
 
-        // Which channel the model starts on. Read off the dialect's own generation
-        // prompt — the tokens we are about to submit — rather than assumed, and by
-        // the same function `items::produce` uses to decide the same thing about
-        // the same tokens. Seeding this from a *generated* `ThinkOpen` was one half
-        // of T12: the lead already opened the block, so the model reasons from
-        // token one while every head is told it is assistant text.
+        // Which channel the model starts on, read off the dialect's own generation prompt -
+        // the tokens about to be submitted - not assumed. Seeding it from a *generated*
+        // `ThinkOpen` told every head that reasoning was assistant text.
         let opens_in_reasoning = items::lead_opens_reasoning(&lead, &self.decoder());
-        // **And the same prompt as TEXT, when it carries a picture.** Built from the ids that are
-        // about to be submitted rather than from a second render, so the two cannot describe two
-        // different prompts — and the media is taken in item order, which is the order the markers
-        // appear, because the server substitutes the pictures at the markers in sequence.
+        // The same prompt as TEXT, when it carries a picture. Built from the ids about to be
+        // submitted, so the two cannot describe different prompts; media is taken in item
+        // order, which is the order the markers appear.
         let multimodal = self.media_marker.as_deref().and_then(|marker| {
             let (string, images) = self.prompt_as_text(&prompt, marker)?;
             let media = letibot_transcript::media::media_in_order(&session.items);
             if images != media.len() {
-                // **Fail safe, and loudly.** A mismatch means the renderer placed a different number
-                // of images than the transcript holds — the one failure that would substitute a
-                // picture into the wrong place, which is worse than substituting none. The ids path
-                // is taken instead: the model is told about an image and not given it, which the
-                // row's own sentence already says, and the `delivered` report is where a reader
-                // sees it. The line below is the only trace, and it is meant to be read.
+                // Fail safe, and loudly: a mismatch means the renderer placed a different
+                // number of images than the transcript holds, which would substitute a
+                // picture into the wrong place. The ids path is taken instead.
                 eprintln!(
                     "turn: {images} image marker(s) against {} attachment(s) — sending no images \
                      rather than the wrong ones",
@@ -754,11 +596,9 @@ impl TurnEngine {
                 );
                 return None;
             }
-            // **And the row is told the bytes went out.** One place knows this — here — because
-            // here is where the request is built. See `Media::delivered` for the argument; the short
-            // of it is that a picture the daemon dropped and one the model ignored read identically
-            // on a transcript that does not say which, and only one of those is the operator's to
-            // fix.
+            // And the row is told the bytes went out: a picture the daemon dropped and one
+            // the model ignored read identically on a transcript that does not say which,
+            // and only one of those is the operator's to fix.
             letibot_transcript::media::mark_delivered(&mut session.items);
             Some((string, media))
         });
@@ -859,10 +699,9 @@ impl TurnEngine {
                 call_id: call.id.clone(),
                 name: call.name.clone(),
                 args_digest: args_digest(&call.arguments),
-                // §4.1. The digest is a correlation key and is useless on a
-                // screen; these are what a person reads while the call runs. They
-                // go no further than the in-process sink — the lift cuts them to a
-                // bounded label before anything reaches a socket.
+                // §4.1. The digest is a correlation key, useless on a screen; these are what a
+                // person reads while the call runs. They go no further than the in-process
+                // sink, which cuts them to a bounded label.
                 arguments: call.arguments.clone(),
             });
         }
@@ -899,10 +738,9 @@ impl TurnEngine {
                 finish_reason: outcome.final_chunk.finish_reason,
                 metrics: Box::new(metrics.clone()),
             });
-            // §5.7 fails the turn and commits nothing; the operator's words are input,
-            // not output, and `absorb` already took them out of the source, so they go
-            // back rather than being appended. One call here covers every exit of the
-            // match below, including its nested salvage-exhausted returns.
+            // §5.7 fails the turn and commits nothing; the operator's words are input, not
+            // output, and `absorb` already took them out of the source, so they go back. One
+            // call here covers every exit of the match below.
             pending.give_back(steering);
             return Err(match verdict {
                 LengthVerdict::HardFail(reason) => {
@@ -956,17 +794,9 @@ impl TurnEngine {
             });
         }
 
-        // R7's turn-boundary check. The length gate above only speaks when
-        // `finish_reason == length`; on a normal `stop` the classifier has no
-        // opinion, and this is exactly the hole the live finding fell through:
-        // GLM ends its own turn mid-thought with a normal stop, the parse holds
-        // an unterminated reasoning block and nothing else, and the turn used to
-        // commit as an ordinary empty one. The §5.4 fallback item (an empty
-        // `Assistant` emitted so tokens tile) does not count as content — it
-        // exists for coverage, not for saying something. An aborted outcome is
-        // not this failure: §5.8's kept partial and the steering interrupt have
-        // their own reporting, and folding an interrupted mid-reasoning stream
-        // into `UnfinishedReasoning` would misname a turn we deliberately kept.
+        // R7's turn-boundary check. The length gate only speaks on `finish_reason == length`;
+        // on a normal `stop` nothing else looks, so an unterminated reasoning block used to
+        // commit as an ordinary empty turn. The §5.4 fallback item does not count as content.
         let has_content =
             !produced.visible_text.trim().is_empty() || !produced.tool_calls().is_empty();
         if outcome.aborted.is_none() && produced.ended_in_reasoning && !has_content {
@@ -1015,33 +845,14 @@ impl TurnEngine {
         }
         self.salvage.cleared();
 
-        // §5.8's escape hatch fired: generation stopped at the next token and the
-        // partial output was kept. Announced as an interruption, because a kept
-        // partial that reports as a complete turn is §5.7's failure with a
-        // different cause.
-        //
-        // T23 arrives through the same door and for the same reason. A frame that
-        // did not account for itself is still refused — the ids after it never
-        // reach the ledger — but the ids before it were each checked against the
-        // server's own counter and are exactly as trustworthy as they were a frame
-        // earlier. Failing the whole turn over the tail threw away an answer the
-        // operator was waiting on and left `nothing was recorded` behind; keeping
-        // the head and marking the seam is the same trade §5.8 already makes.
-        //
-        // **The refusal is one; the reason it is refused is two.** `stream::Mismatch` reads
-        // the direction of the disagreement, and the sentence below says which — the
-        // server's build when ids were withheld, the captured frames when more arrived than
-        // were counted. Leaving the sentence as three bare numbers was R12's defect in a
-        // second family: a reader learned that something disagreed and not what to do.
+        // §5.8's escape hatch fired: generation stopped at the next token and the partial
+        // output was kept, announced as an interruption. T23 arrives through the same door:
+        // the ids before the bad frame were checked, so the head is kept and the seam marked.
         let interrupt_reason = match &outcome.aborted {
             Some(AbortCause::Steering(_)) => Some("steering_urgent".to_string()),
-            // **Two faults, one prefix, and the reading is what the operator acts on.**
-            // `frame_mismatch` stays the prefix so a reader — and a grep of a log — sees
-            // one kind of event; the clause after it says which of the two, because the
-            // first thing to check differs: the server's build when ids were WITHHELD,
-            // the captured frames when more were sent than counted. See
-            // [`crate::stream::Mismatch`], which is where the line between them is drawn
-            // once.
+            // Two faults, one prefix: `frame_mismatch` stays the prefix so a grep sees one
+            // kind of event, and the clause after it says which of the two, because the first
+            // thing to check differs.
             Some(AbortCause::FrameMismatch {
                 n_decoded,
                 previous,
@@ -1077,48 +888,16 @@ impl TurnEngine {
             interrupt_reason.is_some() || matches!(verdict, LengthVerdict::TruncatedText),
         );
 
-        // Commit. The rows are cut out of the id array the server streamed; nothing
-        // is re-rendered and nothing is re-tokenized — with **one** exception,
-        // below, and it is the only place in this engine where the ledger
-        // deliberately stops being byte-identical to what the model produced.
+        // Commit. The rows are cut out of the id array the server streamed; nothing is
+        // re-rendered and nothing re-tokenized - with one exception, below, the only place
+        // where the ledger stops being byte-identical to what the model produced.
         let mut appended = Vec::new();
         for (n, produced_item) in produced.items.iter().enumerate() {
             let item_id = format!("{turn_id}.{n}");
 
-            // **An abandoned thought is committed as the sentence that replaces
-            // it, not as the thought.**
-            //
-            // The next turn's prompt is `session.ledger.tokens()` and nothing
-            // else — items are never re-rendered on the ordinary path. So a
-            // renderer that elides a stopped reasoning block does nothing for the
-            // very next turn, which was the defect in the first attempt at this:
-            // the row was marked correctly and the mark was never reached.
-            //
-            // Measured on the operator's own session, 2026-09-18: a model began
-            // counting parentheses by hand, produced 25464 tokens of `+ 0 + 0 +
-            // 0`, and was stopped. Every later turn replayed those tokens from
-            // the ledger — and the model, reading its own abandoned loop as
-            // history, went back to counting by hand. "it counts them again by
-            // hand lol".
-            //
-            // WHY THIS DOES NOT BREAK §18.1-I1. The generation-inclusive prefix
-            // invariant exists so that a CONTINUING generation is never
-            // re-tokenized: tokens the model produced and will keep building on
-            // must be replayed exactly, because detokenize/retokenize does not
-            // round-trip. An aborted draft is not continuing. It was stopped on
-            // purpose, by a person, and the next turn begins a new generation
-            // whose prefix this row is merely history. Handing it back verbatim
-            // is what made the model resume it.
-            //
-            // What is NOT lost: `item_json` keeps the whole text, so the store,
-            // a resume, `/gate` and any later reader still see every token the
-            // model produced. The split is the one the dialect re-render already
-            // relies on — the item is the record, the ledger is what gets
-            // replayed — and here they are deliberately different.
-            //
-            // The cost is a re-prefill of the tail from this row on. That is what
-            // was happening anyway, over 25464 tokens; it now happens over about
-            // forty.
+            // An abandoned thought is committed as the sentence that replaces it, not as
+            // the thought: the next turn's prompt is the ledger, and replaying an abandoned
+            // loop makes the model resume it. `item_json` keeps the whole text.
             let elided;
             let ids: &[TokenId] = if matches!(
                 &produced_item.item,
@@ -1184,12 +963,9 @@ impl TurnEngine {
             outcome.final_chunk.timings.cache_n,
         );
         if let Some((code, detail)) = check.warning() {
-            // A verdict the operator cannot act on goes to the debug channel, not
-            // to their screen — see `PrefixCheck::diagnostic_only`. The
-            // measurement still happens and the numbers are still carried; what
-            // changes is whether a line nobody can do anything about competes for
-            // attention with `prefix_divergence`, which is our defect, and
-            // `prefix_check_skipped`, which means nothing was checked.
+            // A verdict the operator cannot act on goes to the debug channel, not their
+            // screen. The measurement still happens; what changes is whether a line nobody
+            // can act on competes for attention with our own defects.
             if !check.diagnostic_only() || debug_warnings() {
                 sink.emit(TurnEvent::Warning { code, detail });
             }
@@ -1234,23 +1010,14 @@ impl TurnEngine {
             metrics: Box::new(metrics.clone()),
         });
 
-        // §5.8's step boundary: the generation is complete, so anything that
-        // arrived during it — whether the stream loop saw it or it landed after —
-        // goes in now, as a plain user append.
-        // **A HELD URGENT IS HELD, NOT DROPPED — the same two lines the greedy poll above uses.**
-        // `absorb` returns an urgent rather than queueing it, and this site ignored the return, so an
-        // interrupt that arrived when there was no generation to stop was DISCARDED here. `Pending`
-        // says what that costs: *"Dropping it would turn an interrupt into silence, which is the
-        // worst thing this type could do."* MEASURED as silence, on the operator's head: four presses
-        // of `esc esc`, four `interrupt_idle` warnings, and no interrupt ever reached the engine.
+        // §5.8's step boundary: the generation is complete, so anything that arrived
+        // during it goes in now as a plain user append. An urgent returned by `absorb`
+        // is held for the next poll, never dropped - dropping it is silence.
         if let Some(u) = pending.absorb(steering) {
             pending.hold_urgent(u);
         }
-        // **The drain is what makes handing back at the failure sites safe.**
-        // `take_items` empties `queued`, so the operator's words absorbed during the
-        // generation are no longer in `pending` here — they are in `steering_items`,
-        // about to be appended. A failure site that returns before this drain still
-        // holds them in `pending`, and is the one that gives them back.
+        // The drain is what makes handing back at the failure sites safe: `take_items`
+        // empties `queued`, so the operator's words are in `steering_items`, not `pending`.
         let steering_items = pending.take_items();
         if !steering_items.is_empty() {
             // The operator's words are already out of `pending` (in `steering_items`),
@@ -1261,12 +1028,9 @@ impl TurnEngine {
                 return Err(e.into());
             }
         }
-        // **And on success too (R91.14).** The `absorb` above may have taken an urgent
-        // and held it; `pending` is this round's and does not outlive the return, so an
-        // interrupt pressed between the last streamed piece and here was DROPPED — its
-        // children already stopped (the hub runs `stop_children_first` when it hands the
-        // interrupt over) while the parent carried on. Back to the source it goes, where
-        // the next round's greedy poll finds it and the stream stops at its first piece.
+        // On success too: the `absorb` above may have taken an urgent and held it, and
+        // `pending` does not outlive the return. Back to the source it goes, where the next
+        // round's greedy poll finds it.
         pending.give_back(steering);
 
         Ok(TurnOk::new(
@@ -1280,38 +1044,9 @@ impl TurnEngine {
         ))
     }
 
-    /// Submit and consume the stream. Returns the outcome and any guard trip.
-    ///
-    /// # The channel a `Delta` announces is decided by ids, before any text moves
-    ///
-    /// `opens_in_reasoning` is the state the **generation prompt** left the model
-    /// in ([`items::lead_opens_reasoning`]), not `false`: the lead this engine
-    /// submits ends inside `<think>` for every dialect that has one, so a turn is
-    /// reasoning from its first generated token.
-    ///
-    /// Within a chunk the ids are walked *first* and the text is cut against them,
-    /// so a boundary arriving mid-chunk switches the channel for the remainder of
-    /// that same chunk and the boundary's own literal is never streamed as content.
-    /// A head's deltas therefore split exactly where `items::produce` splits the
-    /// committed rows, which is §13.2b's requirement that the live view and the
-    /// stored view not disagree.
-    /// A turn over a **`messages` backend** — a cloud provider — instead of the
-    /// local `/completion`. D10's mode 3, on the seam it reserved.
-    ///
-    /// What is the same: the event stream a head draws (`TurnStarted`, `Delta`,
-    /// `ToolCallProposed`, `TranscriptAppended`, `TurnFinished`), the §5.7
-    /// length verdicts, the salvage budget, steering at the step boundary, the
-    /// `TurnOk` the harness loops on, and the token ledger as the **record** —
-    /// every produced item is appended through `append_items`, tokenised with
-    /// this session's vocabulary, so the store, the hash chain, resume and the
-    /// compaction arithmetic work unchanged. What is different, and said: the
-    /// prompt that reached the model was the transcript as messages, not those
-    /// tokens; `prefix_check` is `Skipped` with the backend's own reason; cost
-    /// is metered; cache figures are the provider's coarse ones.
-    ///
-    /// An urgent steering message closes the connection mid-stream and the
-    /// turn is `Guard`-shaped: nothing is committed, the next attempt re-sends
-    /// the same messages.
+    /// A turn over a `messages` backend - a cloud provider - instead of the local
+    /// `/completion`. The event stream, the verdicts, steering and the ledger are the
+    /// same; the prompt that reached the model was messages, and the cache is coarse.
     #[allow(clippy::too_many_arguments)] // a turn's own facts: session, sink, steering and backend are one argument each
     pub fn run_turn_messages(
         &mut self,
@@ -1364,15 +1099,9 @@ impl TurnEngine {
         });
 
         let mut pending = Pending::new();
-        // Greedy, the same way and for the same reason as the local path above:
-        // whatever was typed while the last tool ran is in THIS request, not the
-        // one after it. On a metered provider the argument is sharper still — a
-        // round generated without the operator's correction is a round they paid
-        // for twice.
-        // An urgent message is not queued by `absorb`; it is returned to be acted
-        // on, and there is no generation here to act on yet. Held, so the stream
-        // loop's first poll finds it — dropping it would turn an interrupt into
-        // silence.
+        // Greedy, for the same reason as the local path: whatever was typed while the last
+        // tool ran is in THIS request. An urgent `absorb` returns is held for the stream
+        // loop's first poll, never dropped.
         if let Some(u) = pending.absorb(steering) {
             pending.hold_urgent(u);
         }
@@ -1449,13 +1178,9 @@ impl TurnEngine {
                     },
                 });
             }
-            // **A refusal keeps its status.** Flattening every `BackendError`
-            // into `Malformed` threw away the one bit the retry needs: whether
-            // taking the round again could possibly help. A provider 400 —
-            // *"an assistant message with 'tool_calls' must be followed by tool
-            // messages"* — arrived looking like a malformed response and was
-            // retried six times, each attempt sending byte-identical bytes to be
-            // refused identically, with the waits doubling.
+            // A refusal keeps its status: flattening every `BackendError` into `Malformed`
+            // threw away the one bit the retry needs - whether taking the round again could
+            // help.
             Err(letibot_backend::BackendError::Refused { status, body }) => {
                 // §5.7 fails the turn and commits nothing; the operator's words are
                 // input, not output, and `absorb` already took them out of the source,
@@ -1463,25 +1188,9 @@ impl TurnEngine {
                 pending.give_back(steering);
                 return Err(TurnFailure::Http(HttpError::Status { code: status, body }));
             }
-            // **An unreachable provider is not a malformed answer, and telling a reader
-            // it is sends them to debug the wrong end.** `Malformed` means *2xx, but not
-            // the shape expected* — `HttpError`'s own docstring — and folding a
-            // connection that NEVER HAPPENED into it produced, for the operator on
-            // 2026-10-01:
-            //
-            //   malformed http response: provider unreachable: io: failed to lookup
-            //   address information: Temporary failure in name resolution
-            //
-            // while `127.0.0.1:8080` was answering `/health` with 200 and
-            // `letibot --status` reported it `ok`. Nothing was malformed and no server
-            // had spoken; a transient `EAI_AGAIN` from a resolver under memory pressure
-            // was announced as garbage from a healthy local host.
-            //
-            // `HttpError::Io` is the class that is true of it — the transport failed —
-            // and the retry policy (`letibot_http::retry`) takes the round again for it, which is
-            // right: a host that could not be resolved this second may resolve the next.
-            // The payload keeps the provider's own words, prefixed with our class name so
-            // nothing that was in the old string is lost.
+            // An unreachable provider is not a malformed answer, and telling a reader it is
+            // sends them to debug the wrong end. `HttpError::Io` is true of it - the transport
+            // failed - and the retry policy takes the round again for it.
             Err(letibot_backend::BackendError::Unreachable(m)) => {
                 // §5.7 fails the turn and commits nothing; the operator's words are
                 // input, not output, and `absorb` already took them out of the source,
@@ -1539,10 +1248,9 @@ impl TurnEngine {
                 finish_reason,
                 metrics: Box::new(metrics.clone()),
             });
-            // §5.7 fails the turn and commits nothing; the operator's words are input,
-            // not output, and `absorb` already took them out of the source, so they go
-            // back rather than being appended. One call here covers every exit of the
-            // match below, including its nested salvage-exhausted returns.
+            // §5.7 fails the turn and commits nothing; the operator's words are input, not
+            // output, and `absorb` already took them out of the source, so they go back. One
+            // call here covers every exit of the match below.
             pending.give_back(steering);
             return Err(match verdict {
                 LengthVerdict::HardFail(reason) => {
@@ -1629,20 +1337,14 @@ impl TurnEngine {
             metrics: Box::new(metrics.clone()),
         });
 
-        // **A HELD URGENT IS HELD, NOT DROPPED — the same two lines the greedy poll above uses.**
-        // `absorb` returns an urgent rather than queueing it, and this site ignored the return, so an
-        // interrupt that arrived when there was no generation to stop was DISCARDED here. `Pending`
-        // says what that costs: *"Dropping it would turn an interrupt into silence, which is the
-        // worst thing this type could do."* MEASURED as silence, on the operator's head: four presses
-        // of `esc esc`, four `interrupt_idle` warnings, and no interrupt ever reached the engine.
+        // A held urgent is held, not dropped: `absorb` returns it rather than queueing it,
+        // and this site ignored the return, so an interrupt with no generation to stop was
+        // discarded. Dropping it turns an interrupt into silence.
         if let Some(u) = pending.absorb(steering) {
             pending.hold_urgent(u);
         }
-        // **The drain is what makes handing back at the failure sites safe.**
-        // `take_items` empties `queued`, so the operator's words absorbed during the
-        // generation are no longer in `pending` here — they are in `steering_items`,
-        // about to be appended. A failure site that returns before this drain still
-        // holds them in `pending`, and is the one that gives them back.
+        // The drain is what makes handing back at the failure sites safe: `take_items`
+        // empties `queued`, so the operator's words are in `steering_items`, not `pending`.
         let steering_items = pending.take_items();
         if !steering_items.is_empty() {
             // The operator's words are already out of `pending` (in `steering_items`),
@@ -1653,12 +1355,9 @@ impl TurnEngine {
                 return Err(e.into());
             }
         }
-        // **And on success too (R91.14).** The `absorb` above may have taken an urgent
-        // and held it; `pending` is this round's and does not outlive the return, so an
-        // interrupt pressed between the last streamed piece and here was DROPPED — its
-        // children already stopped (the hub runs `stop_children_first` when it hands the
-        // interrupt over) while the parent carried on. Back to the source it goes, where
-        // the next round's greedy poll finds it and the stream stops at its first piece.
+        // On success too: the `absorb` above may have taken an urgent and held it, and
+        // `pending` does not outlive the return. Back to the source it goes, where the next
+        // round's greedy poll finds it.
         pending.give_back(steering);
         Ok(TurnOk::new(
             turn_id,
@@ -1800,12 +1499,9 @@ impl TurnEngine {
             let before = acc.n_decoded();
             let fresh = match acc.push(&chunk) {
                 Ok(ids) => ids.to_vec(),
-                // T23. The guard is unchanged: this frame's ids are still refused,
-                // and so is everything after it. What changed is that the ids
-                // already accounted for are no longer thrown away with it — the
-                // operator gets an interrupted turn holding a partial answer rather
-                // than a failed turn holding nothing. The raw frames go to disk
-                // because a one-line message has now cost two sessions.
+                // T23. The guard is unchanged: this frame's ids are still refused, and
+                // everything after it. What changed is that the ids already accounted for are
+                // kept, so the operator gets an interrupted turn with a partial answer.
                 Err(e @ StreamError::FrameMismatch { .. }) => {
                     capture.arm(e.to_string());
                     let StreamError::FrameMismatch {
@@ -1836,10 +1532,9 @@ impl TurnEngine {
                 }
             };
 
-            // The server's own counter, one event per frame that advanced it. The
-            // generation half of liveness: a head tells a hang from a model that is
-            // still emitting by whether this moves, which is exactly the case a
-            // long tool-call write is, where no visible text moves at all.
+            // The server's own counter, one event per frame that advanced it. A head tells a
+            // hang from a model still emitting by whether this moves - the case a long
+            // tool-call write is, where no visible text moves at all.
             if acc.n_decoded() > before {
                 sink.emit(TurnEvent::TokensGenerated {
                     turn_id: turn_id.to_string(),
@@ -1847,11 +1542,9 @@ impl TurnEngine {
                 });
             }
 
-            // The text this chunk carries, consumed left to right as its ids are
-            // walked. Never re-derived from the ids: the server buffers an
-            // incomplete UTF-8 character across frames, and detokenizing a chunk
-            // ourselves would undo that. What the ids decide is *where* it is cut
-            // and *which channel* each piece is announced on.
+            // The text this chunk carries, consumed left to right as its ids are walked.
+            // Never re-derived from the ids: the server buffers an incomplete UTF-8 character
+            // across frames, and the ids only decide where it is cut and which channel.
             let mut rest: &str = match &chunk {
                 Chunk::Token { text, .. } => text.as_str(),
                 _ => "",
@@ -1867,18 +1560,9 @@ impl TurnEngine {
                     && let Some(literal) = self.control_literal(id)
                     && let Some(at) = rest.find(literal)
                 {
-                    // Everything before the boundary belongs to the channel that
-                    // was open when it was generated; the boundary's own literal
-                    // belongs to neither. The parser drops it from the committed
-                    // row, so a head that renders it is showing markup the
-                    // transcript does not contain.
-                    //
-                    // The first occurrence, which is the right one whenever a
-                    // frame carries a single token — the normal case, and always
-                    // the case without a draft model. A multi-token frame in which
-                    // the *text* preceding the boundary also spells the boundary
-                    // out would cut early; the pieces stay on the same channel and
-                    // only the spelled-out copy is swallowed.
+                    // Everything before the boundary belongs to the channel that was open when
+                    // it was generated; the boundary's own literal belongs to neither, and the
+                    // parser drops it from the committed row. The first occurrence is cut.
                     emit_delta(sink, turn_id, channel(in_reasoning, in_call), &rest[..at]);
                     rest = &rest[at + literal.len()..];
                 }
@@ -1903,12 +1587,9 @@ impl TurnEngine {
                     break;
                 }
             }
-            // Flushed on the way out too, so that aborting mid-chunk cannot drop
-            // characters a head would otherwise have been shown — which would be
-            // this same defect with the sign flipped. What a head does with the
-            // tail of an aborted turn is settled by `TurnInterrupted{partial_kept}`
-            // and not by withholding deltas: a guard trip commits nothing and says
-            // so, while a steering interrupt keeps its partial.
+            // Flushed on the way out too, so aborting mid-chunk cannot drop characters a head
+            // would have been shown. What a head does with an aborted turn's tail is settled by
+            // `TurnInterrupted{partial_kept}`, not by withholding deltas.
             emit_delta(sink, turn_id, channel(in_reasoning, in_call), rest);
             if halt {
                 return Ok(Flow::Stop);
@@ -1991,11 +1672,9 @@ impl TurnEngine {
             draft_n: t.draft_n,
             draft_n_accepted: t.draft_n_accepted,
             id_slot: outcome.final_chunk.id_slot,
-            // §18.2: "a tok/s number without its concurrency is not a number." The
-            // engine does not read `/slots` on the turn path — a second request per
-            // turn against a box whose slots are the contended resource is the
-            // wrong trade — so this is absent rather than an invented 1, and a rate
-            // computed from these metrics must say so.
+            // §18.2: "a tok/s number without its concurrency is not a number." The engine does
+            // not read `/slots` on the turn path, so this is absent rather than an invented 1,
+            // and a rate computed from these metrics must say so.
             n_busy_slots: None,
             prefix_check,
             cost: cost_from(self.caps.meter, t, prompt_tokens, wall_ms),
@@ -2007,9 +1686,7 @@ impl TurnEngine {
 
 /// One `Delta`, on a channel that has already been decided.
 ///
-/// Free-standing and taking the channel as a value rather than reading it off the
-/// engine, because the whole of T12 was that this call used to happen *before* the
-/// value it needs had been computed.
+/// Free-standing, taking the channel as a value: this call used to run before it was computed.
 fn emit_delta(sink: &mut dyn EventSink, turn_id: &str, target: DeltaTarget, text: &str) {
     if text.is_empty() {
         return;
@@ -2023,12 +1700,7 @@ fn emit_delta(sink: &mut dyn EventSink, turn_id: &str, target: DeltaTarget, text
 
 /// Flush a T23 capture and say where it went.
 ///
-/// The path is announced on the event stream rather than only written, because a
-/// capture nobody is told about is a file in a temp directory nobody looks in —
-/// which is the position T23 has been in since it was first seen.
-///
-/// A capture that cannot be written is a warning and nothing more. Turning a
-/// diagnostic's failure into a turn's failure would be this defect a second time.
+/// A capture nobody is told about is a file nobody looks in; a failed write is a warning.
 fn report_capture(capture: &crate::capture::CaptureSession, sink: &mut dyn EventSink) {
     if !capture.is_armed() {
         return;
@@ -2056,9 +1728,7 @@ fn report_capture(capture: &crate::capture::CaptureSession, sink: &mut dyn Event
 
 /// The channel a delta belongs on, from the two boundary flags.
 ///
-/// A call inside reasoning is still a call: the markup is never prose, wherever it
-/// was written. `GuardSet` has an opinion about whether that should have happened
-/// at all, and that is a separate question from what it is.
+/// A call inside reasoning is still a call: the markup is never prose, wherever written.
 fn channel(in_reasoning: bool, in_call: bool) -> DeltaTarget {
     match (in_call, in_reasoning) {
         (true, _) => DeltaTarget::ToolCall,

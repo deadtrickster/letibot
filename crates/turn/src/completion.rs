@@ -1,63 +1,30 @@
 //! The `/completion` fallback request and the shapes that come back.
 //!
-//! §5.6's fallback path, and for M1 the *only* path: `POST /completion` with
-//! `prompt` as a **token array**, which today's unmodified server accepts
-//! (`json_is_array_of_numbers`, `server-common.cpp:989`). S0's control channel is
-//! deliberately off the critical path, so nothing here may depend on it.
+//! `POST /completion` with `prompt` as a token array: the harness renders and tokenizes and the
+//! server does not, which is the whole design. Every §5.6 field is set by the one constructor
+//! rather than defaulted, and there is no `n_predict` field at all - a cap is a truncation you
+//! chose.
 //!
-//! # The request fields, and why dropping any one of them breaks something
-//!
-//! | field | why |
-//! |---|---|
-//! | `prompt` as token ids | the whole design — we render and tokenize, the server does not |
-//! | `cache_prompt: true` | the whole design |
-//! | `return_progress: true` | `prompt_progress{total, cache, processed, time_ms}`, which drives the progress display and is what §8.5 says must count as liveness |
-//! | `timings_per_token: true` | live decode rate and draft acceptance, per chunk |
-//! | `return_tokens: true` | generated **token ids**, so "append tokens, not text" holds here too |
-//! | no `n_predict` | there is no output wall (§5.7); a cap is a truncation you chose |
-//!
-//! [`CompletionRequest`] has no `n_predict` field at all. That is not an oversight
-//! and it is not a default — a field with a default is a field somebody sets. §5.7
-//! exists because opencode capped at 32,000 tokens and then threw the resulting
-//! `finish_reason` away.
+//! `cache_prompt`, `return_progress`, `timings_per_token` and `return_tokens` are all required;
+//! dropping any one breaks the cache, the progress display or the token ids.
 
 use serde::Serialize;
 use serde_json::Value;
 
 use letibot_tokencore::TokenId;
 
-/// **The prompt, in one of the two shapes llama.cpp takes.**
-///
-/// # Why there are two, and why the second is not a second design
-///
-/// An image changes the shape of the request and nothing else about it. `/completion` honours
-/// `multimodal_data` **only** when `prompt` is a JSON object carrying a `prompt_string`
-/// (`server-common.cpp:1000-1030`) — there is no token-array-plus-images path, because the server
-/// has to tokenize the string itself in order to substitute the image's embeddings at the media
-/// marker. So a turn with a picture in it travels as text, and every other turn travels as ids.
-///
-/// **That costs nothing in cache, and it was measured rather than assumed.** MEASURED 2026-09-27 on
-/// the live server (`docs/leticode.md`): a prompt framed by `<|im_start|>`/`<|im_end|>` tokenizes
-/// identically as one string and item by item — 125 = 125, shared prefix 125 — because control
-/// tokens are atomic and BPE has no boundary to merge across. Bare unframed text is the one shape
-/// that diverges (110 vs 107, shared prefix 40) and no renderer here can produce it. The measurement
-/// also shows an image turn does not poison the cache for the turns that follow: token ids sent
-/// after an image turn cached 84 of 88, identical to its own warm control.
-///
-/// `#[serde(untagged)]` so `Ids` serialises as the bare array it always was — **byte-identical, and
-/// that is a requirement rather than a nicety**: the request body is the same bytes on every turn of
-/// a conversation, and a shape change would be a second thing to keep in step with the prefix.
+/// The prompt, in one of the two shapes llama.cpp takes: `Ids` is the bare array (byte-identical
+/// on the wire, which is a requirement), and `WithMedia` is used only because `/completion`
+/// honours `multimodal_data` only for a `prompt_string`, which the server tokenizes itself.
 #[derive(Debug, Clone, Serialize)]
 #[serde(untagged)]
 pub enum Prompt {
     /// Token ids. Not a string: the harness owns rendering and tokenization, and a
     /// string here would hand both back to a jinja renderer nobody controls.
     Ids(Vec<TokenId>),
-    /// **A prompt with a picture in it**, as the text a server tokenizes itself.
-    ///
-    /// `prompt_string` carries the server's own media marker (`/props` → `media_marker`, a
-    /// per-process random value) where each image sits; `multimodal_data` carries the matching
-    /// base64 payloads **without** their `data:` prefix, in the same order.
+    /// A prompt with a picture in it, as the text a server tokenizes itself. `prompt_string`
+    /// carries the server's own media marker where each image sits; `multimodal_data` carries
+    /// the matching base64 payloads without their `data:` prefix, in the same order.
     WithMedia {
         prompt_string: String,
         multimodal_data: Vec<String>,
@@ -78,22 +45,9 @@ pub struct CompletionRequest {
 }
 
 impl CompletionRequest {
-    /// The one constructor. Every §5.6 field is set here rather than defaulted, so
-    /// a caller cannot get a request with the progress display or the token ids
-    /// quietly switched off.
-    ///
-    /// # There is no `stop` field, on purpose
-    ///
-    /// `/completion` takes stop **strings** only — `server-schema.cpp:486` pushes
-    /// them into `antiprompt` — and matching a turn boundary against decoded text
-    /// is the failure §7.1 names: a boundary that is one vocab entry can be missed,
-    /// and a stop that is silently a multi-token *sequence* never fires at all, so
-    /// the turn runs to `n_ctx` with nothing in the log saying why.
-    ///
-    /// We already receive token **ids** as they are generated. So stops are
-    /// enforced here, by id, against the set the token core resolved at startup —
-    /// which also means a dialect's stop literal that is not one vocab entry fails
-    /// loudly when the process starts rather than never.
+    /// The one constructor: every §5.6 field is set here rather than defaulted. No `stop` field,
+    /// on purpose - `/completion` takes stop strings only, so stops are enforced by id against
+    /// the set resolved at startup, and a one-entry boundary is never missed as text would be.
     pub fn new(prompt: Vec<TokenId>, sampling: Value) -> Self {
         CompletionRequest {
             prompt: Prompt::Ids(prompt),
@@ -106,13 +60,9 @@ impl CompletionRequest {
         }
     }
 
-    /// **The same request, for a turn that carries a picture.**
-    ///
-    /// `marker` is the server's own, read from `/props` at startup — never a dialect's vision
-    /// tokens, which the server answers with `Failed to tokenize prompt` (measured). `media` are the
-    /// base64 payloads in the order their markers appear, which is what
-    /// [`letibot_transcript::media::media_in_order`] produces and what
-    /// `letibot_dialect::media_spans` counts a renderer's markers against.
+    /// The same request, for a turn that carries a picture. `marker` is the server's own, from
+    /// `/props`, never a dialect's vision tokens; `media` are the base64 payloads in the order
+    /// their markers appear.
     pub fn with_media(prompt_string: String, media: Vec<String>, sampling: Value) -> Self {
         CompletionRequest {
             prompt: Prompt::WithMedia {
@@ -145,11 +95,9 @@ pub struct PromptProgress {
 /// The `timings` object, per chunk under `timings_per_token`.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Timings {
-    /// Prompt tokens **reused from the cache**. This is the field the prefix
-    /// invariant is measured against, and it is not `tokens_cached`: that one is
-    /// `slot.prompt.n_tokens()` *after* generation (`server-context.cpp:4340`), so
-    /// it is the slot's occupancy, not the reuse. Reading it as the reuse figure
-    /// silently inflates `f_keep` by the whole generation.
+    /// Prompt tokens reused from the cache - the field the prefix invariant is measured
+    /// against, and not `tokens_cached`, which is the slot's occupancy after generation and
+    /// would inflate `f_keep` by the whole generation.
     pub cache_n: u64,
     pub prompt_n: u64,
     pub prompt_ms: f64,
@@ -175,11 +123,8 @@ impl Timings {
     }
 }
 
-/// Why generation stopped.
-///
-/// `Length` is a variant, never a flag on a success. §5.7 exists because a harness
-/// parsed this and returned: nine turns that had spent their whole budget thinking
-/// were recorded as completed.
+/// Why generation stopped. `Length` is a variant, never a flag on a success: nine turns that
+/// had spent their whole budget thinking were once recorded as completed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FinishReason {
     /// The model emitted an end-of-generation token.
@@ -218,11 +163,9 @@ impl FinishReason {
     }
 }
 
-/// One decoded SSE frame, classified.
-///
-/// The classification is the point. A naive reader sees "a chunk with a `tokens`
-/// array" three times before the first real token, and each of those carries a
-/// **fabricated token id 0** — see [`crate::stream`].
+/// One decoded SSE frame, classified. The classification is the point: a naive reader sees "a
+/// chunk with a `tokens` array" three times before the first real token, each carrying a
+/// fabricated token id 0 - see [`crate::stream`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum Chunk {
     /// Prompt processing progress. Carries no generated output, whatever its
@@ -247,11 +190,9 @@ pub enum Chunk {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct FinalChunk {
-    /// Which slot served the turn. Not decoration: on a five-slot box a turn that
-    /// lands on a different slot from the one that holds its history reports a
-    /// cache reuse of zero, and that is a scheduling fact rather than a prefix
-    /// divergence. Reading one as the other sends you looking for a bug in the
-    /// renderer.
+    /// Which slot served the turn. Not decoration: on a five-slot box a turn that lands on a
+    /// different slot from the one holding its history reports a cache reuse of zero, which is
+    /// a scheduling fact rather than a prefix divergence.
     pub id_slot: i64,
     pub finish_reason: FinishReason,
     pub stopping_word: String,
@@ -269,21 +210,9 @@ pub struct FinalChunk {
     pub text: String,
 }
 
-/// Turn one SSE `data:` payload into a [`Chunk`].
-///
-/// # The classification rule, and why it is not "does it have `prompt_progress`"
-///
-/// llama.cpp builds a progress frame with `send_partial_response(slot, {}, true)`
-/// (`server-context.cpp:5955`), passing a **default-constructed**
-/// `completion_token_output`. `res->tokens = { tkn.tok }` then puts token id 0 into
-/// the frame. So `return_progress: true` — which §5.6 requires — makes every
-/// prefill emit spurious ids, and a reader that trusts `tokens` prepends garbage to
-/// the ledger.
-///
-/// `prompt_progress` happens to be present on those frames today, but the fact we
-/// actually depend on is *"this frame carries no generated token"*, and the server
-/// states that directly: `tokens_predicted` is 0 on a progress frame and on the
-/// `is_begin` frame, and strictly increasing on a real one. Classify on that.
+/// Turn one SSE `data:` payload into a [`Chunk`]. Not "does it have `prompt_progress`": a
+/// progress frame is built from a default-constructed token output and carries a fabricated id
+/// 0. Classify on `tokens_predicted` - 0 there, strictly increasing on a real frame.
 pub fn classify(payload: &str) -> Result<Chunk, String> {
     let v: Value = serde_json::from_str(payload).map_err(|e| format!("{e}: {payload}"))?;
     if let Some(err) = v.get("error") {

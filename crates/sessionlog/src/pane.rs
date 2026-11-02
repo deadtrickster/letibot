@@ -1,28 +1,11 @@
 //! **The pane contract's document** (`docs/plugins-slice1.md`, C3): what a `pane_<name>` hook
-//! answers, in serenedash's dashboard language — an overview of panels, every panel a summary
-//! with a full view behind its own key, every row through one grid, every bar with its
-//! denominator, findings collected in one list, and a legend that documents every label.
+//! answers — an overview of panels, every panel a summary with a full view behind its own key,
+//! every row through one grid, findings collected in one list, a legend for every label.
 //!
-//! # Why the types are here and not in a plugin or in the head
-//!
-//! The daemon validates a plugin's answer into these (`View::validate`) and the head draws
-//! them; a second copy of the vocabulary on either side is a copy that drifts. So it lives in
-//! the crate both halves already depend on for the wire, and the wire carries the document as
-//! it arrived ([`crate::SessionEvent::PluginPane`]) — the head parses it, which is what lets a
-//! view this host cannot read be a pane with a sentence on it rather than a frame that failed.
-//!
-//! # The two rules a reader will want
-//!
-//! * **Unknown fields are ignored**, by every type here: the contract's fields are a
-//!   vocabulary the host draws, and a plugin that carries one this head does not know yet is
-//!   still a plugin with a working pane.
-//! * **An unknown BLOCK kind is kept, not dropped** ([`Block::Unknown`]) — it names itself, so
-//!   a `progress` block in a contract-2 plugin draws as one muted line saying so instead of
-//!   silently vanishing from the pane.
-//!
-//! Nothing here draws and nothing here reads a file: these are the shapes, and the parts of
-//! the contract that are the HOST's (the keys it owns, the shortest look interval) are stated
-//! as rules [`View::validate`] enforces.
+//! The types live here because the daemon validates a plugin's answer into them (`View::validate`)
+//! and the head draws them; a second copy on either side is a copy that drifts. Unknown fields are
+//! ignored, and an unknown BLOCK kind is kept and names itself ([`Block::Unknown`]) rather than
+//! vanishing from the pane. Nothing here draws and nothing here reads a file.
 
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Serialize};
@@ -34,10 +17,9 @@ use std::collections::{BTreeMap, BTreeSet};
 // so a reader of the pane contract has one import for its whole vocabulary.
 pub use letibot_plugin::pane::{Act, Cell, Fold, Role};
 
-/// **The keys the host owns on every pane, whatever a plugin says** — C3's list: `q` closes,
-/// `j`/`k` move, `f` is findings, `l` is the legend. A view that binds one of them is refused
-/// (see [`View::validate`]) because the pane's keys are the host's and are templated, not
-/// chosen: a plugin that could take `q` would own a key the operator expects to leave with.
+/// **The keys the host owns on every pane, whatever a plugin says** — C3's list. A view that
+/// binds one is refused (see [`View::validate`]): a plugin that could take `q` would own a key
+/// the operator expects to leave with.
 pub const HOST_KEYS: [char; 5] = ['q', 'j', 'k', 'f', 'l'];
 
 /// **The shortest the host will re-run a look for** — `every_s` is 0 (never) or at least this
@@ -344,12 +326,9 @@ pub struct Row {
     pub detail: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub actions: Vec<Action>,
-    /// **What Enter does on this row**, performed by the host — `switch`, `fold`, `event`
-    /// (`plugin_sdk::pane::Act`). Absent is a row Enter does not act on, and a row with no act
-    /// says nothing about Enter in the hint bar.
-    ///
-    /// An act is declared in the layer's `plugin.toml` (`actions = ["switch"]`), so a view that
-    /// reaches a verb nobody reviewed is refused by [`View::validate_for`].
+    /// **What Enter does on this row**, performed by the host — `switch`, `fold`, `event`. An act
+    /// is declared in the layer's `plugin.toml`, so a view that reaches a verb nobody reviewed is
+    /// refused by [`View::validate_for`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enter: Option<Act>,
     /// A tree's nesting. Empty for a table.
@@ -416,10 +395,9 @@ impl Severity {
     }
 }
 
-/// **What a key of a stop does.** Four, and no more: `look` and `event` are calls back into
-/// the plugin, `say` hands the operator's line to the session's model, and `verb` asks the HOST to
-/// perform one of its own verbs on the entry the row names — nothing else a pane may do to a
-/// session, which is what keeps a pane's actions inside the plugin's capabilities.
+/// **What a key of a stop does.** Four, and no more: `look` and `event` call back into the
+/// plugin, `say` hands the operator's line to the model, and `verb` asks the HOST to perform one
+/// of its own verbs — which is what keeps a pane's actions inside the plugin's capabilities.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActionKind {
     /// A line to the session's model, as if the operator had typed it.
@@ -428,13 +406,9 @@ pub enum ActionKind {
     Look,
     /// Call the pane again with `{"item": <the stop's id>, "action": <this word>}`.
     Event(String),
-    /// **One of the host's own verbs, on the entry this row names** — `{"verb":"claim",
-    /// "id":"i12"}`. The same word [`crate::pane::Act::Verb`] carries on Enter, on a letter
-    /// instead, so a row can offer more than one of the person's verbs.
-    ///
-    /// **The manifest gates it exactly as it gates `enter`** (`View::validate_for`), so a layer
-    /// cannot reach a verb a reviewer did not read. It travels as a `PaneAction` like an `event`
-    /// word does, because the host that performs it is the host that drew the row.
+    /// **One of the host's own verbs, on the entry this row names** — the same word
+    /// [`crate::pane::Act::Verb`] carries on Enter, on a letter instead. The manifest gates it
+    /// exactly as it gates `enter` ([`View::validate_for`]).
     Verb(String),
 }
 
@@ -452,14 +426,9 @@ pub struct Action {
     pub look: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event: Option<String>,
-    /// **The host's verb, on the entry the row names** — `{"key":"x","label":"mark abandoned",
-    /// "verb":"abandon"}`. The letter a row binds for a verb that is not the row's `enter`, which
-    /// is what lets one row offer two of the person's verbs (`release` and `abandon` are two
-    /// intentions on one held item).
-    ///
-    /// **Gated by the manifest like `enter` is**: `View::validate_for` refuses a view whose action
-    /// reaches a verb the layer did not declare, so the words a layer can reach are the words a
-    /// reviewer read.
+    /// **The host's verb, on the entry the row names** — the letter a row binds for a verb that is
+    /// not the row's `enter`, so one row can offer two of the person's verbs. Gated by the manifest
+    /// like `enter` is: [`View::validate_for`] refuses a verb the layer did not declare.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verb: Option<String>,
 }
@@ -526,30 +495,9 @@ pub enum LookSpec {
 }
 
 impl View {
-    /// **Refuse a view the host's keys cannot drive.**
-    ///
-    /// The pane's keys are the host's, templated: `q`, `j`, `k`, `f` and `l` mean what they
-    /// mean in every other pane, and a click on a panel needs the panel's key to be a key that
-    /// can be pressed. So the rules are:
-    ///
-    /// * a panel's key is one lowercase letter, is not a host key, and is not another panel's —
-    ///   **for a panel that has a view to open.** A panel whose `view` is absent draws its
-    ///   `summary` and has nothing to toggle, so it needs no key and C3 gives it none: the
-    ///   example plugin's first frame is one panel saying what it is reading, and a key on it
-    ///   would be a key that teaches people not to press keys;
-    /// * an action's key is one lowercase letter, is not a host key, is not a panel's key, and
-    ///   is not another action's key **on the same stop** (the same letter on two different
-    ///   stops is fine — one stop is selected at a time);
-    /// * an action does exactly one thing;
-    /// * `every_s` is 0 or at least [`MIN_EVERY_S`];
-    /// * a finding can be named (an id, or its `what`).
-    ///
-    /// The daemon refuses a plugin's answer with this before publishing it; a head runs it too,
-    /// because a head that draws a pane whose `q` closes it and whose plugin also wanted `q` is
-    /// a head whose `q` does something nobody chose.
-    ///
-    /// The acts are [`View::validate_for`]'s — a different question, because it needs the layer's
-    /// manifest.
+    /// **Refuse a view the host's keys cannot drive.** The pane's keys are the host's and are
+    /// templated, so a panel's key, an action's key, an action that does two things, an `every_s`
+    /// under [`MIN_EVERY_S`] and a finding nobody can name are all refused here.
     pub fn validate_for(&self, declared: &[String]) -> Result<(), String> {
         self.validate()?;
         for p in &self.panels {
@@ -557,10 +505,7 @@ impl View {
                 let Block::Tree(t) = block else { continue };
                 for (_, row) in rows_deep(&t.rows) {
                     // **The row's `enter`, and then its letters.** Both reach the host's own verbs
-                    // and both are gated here, because a letter is not a lesser door: a row whose
-                    // `enter` is `claim` and whose `x` is `abandon` sends two verbs, and a view
-                    // that declared one of them and reached the other is exactly the view this
-                    // check exists to refuse.
+                    // and both are gated here: a letter is not a lesser door.
                     let mut asked: Vec<&str> = row
                         .enter
                         .as_ref()
@@ -651,10 +596,8 @@ impl View {
         Ok(())
     }
 
-    /// **Every set of actions one stop carries**, with the stop named the way a refusal has to
-    /// say it — the panel and the block, or the finding. This is the walk [`View::validate`]
-    /// reads; the head's own list of stops is the same walk under a wider definition (a stop
-    /// also has to be reachable, which is what an `id` is for).
+    /// **Every set of actions one stop carries**, with the stop named the way a refusal has to say
+    /// it — the panel and the block, or the finding. This is the walk [`View::validate`] reads.
     pub fn action_sets(&self) -> Vec<(String, &[Action])> {
         let mut out = Vec::new();
         for (pi, p) in self.panels.iter().enumerate() {
@@ -952,10 +895,7 @@ mod tests {
     }
 
     /// **The manifest gates both doors to the host's verbs** — the row's `enter` and its letters.
-    ///
-    /// `Act::Verb` made a row able to name the entry a verb is about; a row with two verbs on it
-    /// (`release` on Enter, `abandon` on `x`) needs the same gate on the letter, or a layer could
-    /// reach a verb no reviewer read by writing it one key further along.
+    /// A layer could otherwise reach a verb no reviewer read by writing it one key further along.
     #[test]
     fn validate_for_gates_the_rows_enter_and_its_letters_alike() {
         let row = |enter: Value, actions: Value| -> View {

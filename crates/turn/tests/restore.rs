@@ -64,15 +64,9 @@ use letibot_tokencore::store::live_view::LiveView;
 use letibot_turn::resume::RestoreError;
 use letibot_turn::{Session, resume};
 
-/// **The operator's store, read in place through a read-only view — never copied.**
-///
-/// This used to `std::fs::copy` the whole file, `-wal` and `-shm` beside it, into the temp
-/// dir, once per test. MEASURED 2026-10-14: a 5.2 GB store with a 346 MB WAL, three tests
-/// running in parallel, so ~16.7 GB in a `/tmp` that is a tmpfs; a failed or killed run left
-/// its copy behind (two 9.3 GB leftovers found that day); and a file copy of a database a
-/// daemon is checkpointing is not a snapshot of it. No test here ever wrote to its copy, and
-/// each reads one transcript at a time, so [`LiveView`] attaches the file `mode=ro` and
-/// copies one transcript into memory per load, in one read transaction. See its module doc.
+/// The operator's store, read in place through a read-only view, never copied: a copy of a
+/// database a daemon is checkpointing is not a snapshot of it, and a 5 GB store copied once per
+/// test filled a tmpfs. `LiveView` attaches `mode=ro` and copies one transcript per load.
 fn real_store() -> Option<LiveView> {
     // **Opt in, and asked for separately from the apparatus** — see the module doc. A run that
     // insists on its apparatus is insisting about the CODE's prerequisites; it cannot insist
@@ -99,11 +93,9 @@ fn real_store() -> Option<LiveView> {
     Some(LiveView::open(&src).unwrap_or_else(|e| panic!("opening {}: {e}", src.display())))
 }
 
-/// **Is the process `pid` still there?** — `kill(pid, 0)`, which every POSIX system answers.
-///
-/// This was `/proc/<pid>`, and `/proc` does not exist on macOS: the sweep below therefore did
-/// NOTHING there, so a Mac kept every copy for ever while a Linux box cleaned up. A liveness
-/// probe that is a fact on one platform and an absence on another is the shape that hides.
+/// Is the process `pid` still there? `kill(pid, 0)`, which every POSIX system answers - a
+/// `/proc` probe is a fact on Linux and an absence on macOS, so the sweep below did nothing
+/// there.
 fn process_alive(pid: u32) -> bool {
     let Ok(pid) = libc::pid_t::try_from(pid) else {
         return false;
@@ -117,14 +109,9 @@ fn process_alive(pid: u32) -> bool {
     std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
-/// **The copies older builds of this file left behind**, removed once their owner is gone.
-///
-/// Builds before the [`LiveView`] wrote `letibot-restore-<pid>-<nanos>-<n>/sessions.db`, a
-/// full copy of the store, and lost it whenever the test panicked past its guard or was
-/// killed. Those builds still exist in other checkouts, so this sweeps their leftovers: only
-/// that exact name shape, and only when no process `<pid>` exists — a live pid, even a reused
-/// one, keeps its directory. Liveness is [`process_alive`]'s `kill(pid, 0)`, so this sweeps on
-/// macOS as well as Linux instead of doing nothing on the platform this box runs.
+/// The copies older builds of this file left behind, removed once their owner is gone. Only
+/// that exact name shape, and only when no process `<pid>` exists, so a live pid keeps its
+/// directory.
 fn sweep_stale_copies() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
@@ -254,13 +241,9 @@ fn restores_faithfully(loaded: &LoadedTranscript) -> Session {
 #[test]
 fn every_session_in_the_real_store_restores_with_its_chain_intact() {
     let Some(view) = real_store() else {
-        // **Not a failed assertion** — and the comment it replaces is kept in substance,
-        // because it is right about FIXTURES: a synthetic store holds tokens this harness
-        // produced, not tokens a model did, so it cannot stand in. That argues against
-        // fabricating one, not against skipping: on the box that has a real store, and a
-        // run that asked for it, this runs in full. [`real_store`] has already said why it
-        // did not — and it never panics, so the queue's `LETIBOT_REQUIRE_APPARATUS` cannot
-        // make this test's absence a failure.
+        // Not a failed assertion: a synthetic store holds tokens this harness produced, not
+        // tokens a model did, so it cannot stand in. `real_store` has already said why it did
+        // not, and it never panics, so an absent store cannot become a failure.
         return;
     };
 
@@ -328,11 +311,9 @@ fn rows_and_items_that_do_not_pair_are_refused_rather_than_zipped() {
     };
     let loaded = a_transcript_with_rows(&view);
 
-    // `persist` indexes `session.items[i]` with the *ledger row's* index and
-    // `append_items` mints `"{transcript}.{items.len()}"`. Both are wrong the moment
-    // the two vectors are different lengths, and both are silently wrong: the first
-    // writes the wrong item next to a row, the second re-uses an item id. So a
-    // restore that could not pair them must not hand back a session at all.
+    // `persist` indexes `session.items[i]` with the ledger row's index and `append_items` mints
+    // `"{transcript}.{items.len()}"`. Both are silently wrong the moment the two vectors differ,
+    // so a restore that cannot pair them must not hand back a session at all.
     let mut short = loaded.clone();
     short.items.pop();
     // Rebuild only the *item* side of the pairing gap: the ledger rows still all

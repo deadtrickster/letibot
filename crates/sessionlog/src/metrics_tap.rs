@@ -1,28 +1,21 @@
-//! **The hub tap** — what a session's event stream says about itself, as metrics rows, and the
-//! one place that knows which turn a mark lands on.
+//! The hub tap: what a session's event stream says about itself, as metrics rows, and the one place
+//! that knows which turn a mark lands on.
 //!
-//! `docs/metrics.md` §2.7 and §4: one line in the hub's fan-out (`Inner::append_and_fan`, under
-//! the lock every publish already takes) hands each event to [`Tap::observe`]. Two jobs:
+//! One line in the hub's fan-out hands each event to [`Tap::observe`], which does two jobs. It keeps
+//! the session's "now" - the turn running, its round, what it is doing, and which turn each
+//! transcript row belongs to - so the connection thread can place an operator's mark
+//! ([`crate::protocol::ClientFrame::Feedback`]) without asking the worker, which may be pinned for
+//! tens of seconds. And it emits the rows the hub already carries: warnings by code, operator
+//! commands, subagent state, job settlements, decisions answered, queue moves, heads attaching. The
+//! high-rate events (`Delta`, `TokensGenerated`, `PromptProgress`, `JobOutput`) only move the "now".
 //!
-//! 1. **Keep the session's "now"** — the turn running (or the last one), its round, what it is
-//!    doing, and which turn each transcript row belongs to. The connection thread reads this to
-//!    place an operator's mark ([`crate::protocol::ClientFrame::Feedback`]) without asking the
-//!    worker, which may be pinned for tens of seconds (c12d044).
-//! 2. **Emit the rows the hub already carries** — warnings by code, operator commands, subagent
-//!    state changes, job settlements, decisions answered, queue moves, heads attaching. Nothing
-//!    at those sites changes; the hub saw them all already. The high-rate events (`Delta`,
-//!    `TokensGenerated`, `PromptProgress`, `JobOutput`) only move the "now" or are skipped.
+//! A turn, for metrics, is a prompt - every round the harness runs for one door - and its id is the
+//! engine id of its FIRST round. Every round of one prompt carries the same `began_ms`, so a
+//! `TurnStarted` with the `began_ms` in hand is its next round and any other begins a new turn; the
+//! harness keys its own rows by the same rule, so a mark and the turn it marks join on `turn_id`.
 //!
-//! **A turn, for metrics, is a prompt** — every round the harness runs for one door — and its
-//! id is the engine id of its FIRST round. The engine mints an id per round, and every round of
-//! one prompt carries the same `began_ms` (`Harness::begin_turn_clock`), so a `TurnStarted`
-//! with the `began_ms` of the turn in hand is its next round, and any other begins a new turn.
-//! The harness keys its own rows (`turn.start`, `round`, `tool.call`, `turn.end`) by the same
-//! rule, so a mark and the turn it marks join on `turn_id`.
-//!
-//! The mapping is a match and a small struct per event — it runs on the publishing thread, which
-//! is cheaper than the clone the design first proposed shipping to the writer — and it costs
-//! nothing at all when metrics are off: [`letibot_metrics::enabled`] is the first branch.
+//! The mapping runs on the publishing thread and costs nothing when metrics are off:
+//! [`letibot_metrics::enabled`] is the first branch.
 
 use std::collections::VecDeque;
 
@@ -30,11 +23,11 @@ use letibot_metrics::{Event, kind};
 
 use crate::event::{DecisionOutcome, SessionEvent};
 
-/// How many rows' turns are remembered for a mark on a past row. A head scrolled back further
-/// than this marks a row with no turn — the row id is still kept on the mark.
+/// How many rows' turns are remembered for a mark on a past row. A head scrolled back further than
+/// this marks a row with no turn - the row id is still kept on the mark.
 const ITEMS: usize = 4096;
 
-/// **The session's "now"**, as a mark sees it.
+/// The session's "now", as a mark sees it.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Now {
     /// The turn running, or the last one; empty before the first.
@@ -207,10 +200,9 @@ impl Tap {
     }
 }
 
-/// **An operator's mark, recorded** — the [`crate::protocol::ClientFrame::Feedback`] arm's whole
-/// body, on the connection thread: place it (the row's turn, or the turn now), emit it, and say
-/// so on the session's log so every head draws the confirmation. Nothing here waits for the
-/// worker. Returns the sentence it published.
+/// An operator's mark, recorded: place it (the row's turn, or the turn now), emit it, and say so on
+/// the session's log so every head draws the confirmation. Nothing here waits for the worker.
+/// Returns the sentence it published.
 pub fn mark(
     hub: &crate::hub::Hub,
     head: &str,
@@ -278,7 +270,7 @@ pub fn mark(
     said
 }
 
-/// The routine warning a mark is confirmed with — the heads draw it, and the tap skips it.
+/// The routine warning a mark is confirmed with: the heads draw it, and the tap skips it.
 pub const FEEDBACK_CODE: &str = "feedback";
 
 fn class_word(code: &str) -> &'static str {
@@ -311,8 +303,8 @@ mod tests {
         }
     }
 
-    /// **One prompt's rounds are one turn**, keyed by the first round's id; a new prompt is a
-    /// new turn; and each row remembers the turn and round it was written in.
+    /// One prompt's rounds are one turn, keyed by the first round's id; a new prompt is a new turn;
+    /// and each row remembers the turn and round it was written in.
     #[test]
     fn rounds_of_one_prompt_are_one_turn_and_rows_remember_theirs() {
         let mut t = Tap::default();

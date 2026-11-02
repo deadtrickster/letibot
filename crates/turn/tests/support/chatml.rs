@@ -240,12 +240,9 @@ fn envelope(outcome: &ToolOutcome, payload: &str) -> String {
         ToolOutcome::Denied { req_id } => format!("NO_RESULT\noutcome: denied\nrequest: {req_id}"),
         ToolOutcome::Timeout => "NO_RESULT\noutcome: timeout".into(),
         ToolOutcome::NotRun { why } => format!("NO_RESULT\noutcome: not_run\nreason: {why}"),
-        // **Not `NO_RESULT`.** The other five non-`Ok` classes all say the same
-        // thing at bottom — there is nothing here to build on — and this one says
-        // the opposite: the work is still happening and the handle reaches it. A
-        // shared envelope would put "still running" in the same visual class as
-        // "abandoned", which is exactly the reading `ToolOutcome::Timeout` already
-        // means and this variant exists not to be.
+        // Not `NO_RESULT`: the other five non-`Ok` classes all say there is nothing here to
+        // build on, and this one says the work is still happening and the handle reaches it. A
+        // shared envelope would put "still running" in the same class as "abandoned".
         ToolOutcome::Backgrounded {
             handle,
             ran_for_ms,

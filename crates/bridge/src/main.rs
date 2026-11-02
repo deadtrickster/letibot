@@ -102,11 +102,9 @@ fn serve() -> i32 {
     }
 }
 
-/// `wait <worktree> <session> --until attention [--timeout DUR]`.
-///
-/// `--until attention` is the only value this build understands, and it is required rather
-/// than defaulted: a future `--until` that means something else must not be read as this
-/// one by a caller that typed nothing.
+/// `wait <worktree> <session> --until attention [--timeout DUR]`. `--until attention` is the
+/// only value this build understands, and it is required rather than defaulted: a future
+/// `--until` that means something else must not be read as this one by a caller who typed nothing.
 fn parse_wait(args: &[String]) -> Result<(String, String, Instant), String> {
     let mut worktree: Option<String> = None;
     let mut session: Option<String> = None;

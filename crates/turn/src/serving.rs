@@ -30,10 +30,8 @@
 use crate::http::{self, Endpoint};
 use letibot_transcript::text::clip_bytes;
 
-/// The model alias the server reports, or why the question could not be answered.
-///
-/// `/props` is a llama.cpp server endpoint and the alias is what `--alias` set,
-/// falling back to the GGUF's own name.
+/// The model alias the server reports, or why the question could not be answered. `/props` is a
+/// llama.cpp endpoint and the alias is what `--alias` set, falling back to the GGUF's own name.
 pub fn served_model(endpoint: &Endpoint) -> Result<String, String> {
     let body = http::get(endpoint, "/props")
         .map_err(|e| format!("{e}"))?
@@ -52,64 +50,23 @@ pub fn served_model(endpoint: &Endpoint) -> Result<String, String> {
     ))
 }
 
-/// **Is a model server answering at this endpoint?** — the one question a test asks before it
-/// spends a turn.
-///
-/// MEASURED, and this is why the function exists: on a machine with no `llama-server`,
-/// `cargo test --workspace` spent **373.55 s** failing four tests in one file, and `cargo test`
-/// **aborts the remaining targets** after the first failing binary — so most of the suite never ran
-/// at all. A CI job built on that is red for a reason nobody can read, six minutes at a time.
-///
-/// So a live test asks this first and SKIPS with a sentence rather than failing with a stack trace.
-/// `SKIPPED … THIS IS NOT A PASS` is the phrasing `live_qwen.rs` already uses for the wrong-model
-/// case, and the rule behind it is the house's: a skip must never be mistakable for a green.
-///
-/// One `GET /props`, which is the cheapest thing an endpoint can answer and needs no tokenizer, no
-/// model and no turn. The connect timeout bounds it (10 s), so a blackholed address costs seconds
-/// rather than the read timeout's three minutes.
+/// Is a model server answering at this endpoint? - the one question a test asks before it
+/// spends a turn, so a live test SKIPS with a sentence rather than failing with a stack trace
+/// and aborting every target after it. `SKIPPED ... THIS IS NOT A PASS` is the phrasing.
 pub fn reachable(endpoint: &Endpoint) -> bool {
     http::get(endpoint, "/props").is_ok()
 }
 
-/// **Did somebody SAY where the model is?** — `LETIBOT_COMPLETION_URL` is set.
-///
-/// The distinction this exists for is between two states that look identical at the
-/// socket, because nothing answers in either:
-///
-///   * **configured and refusing** — somebody promised a server at this address. The
-///     run was told where the model is and it is not there. That is a FAILURE.
-///   * **never meant to have one** — the address is the default, nobody said
-///     anything, and this is a runner, a fresh clone or a laptop. That is absent
-///     apparatus, and it skips.
-///
-/// Without this, an endpoint somebody configured is silently skipped over, and the
-/// skip becomes the place a real failure hides — which is the objection that keeps
-/// this tree's live tests honest. `LETIBOT_REQUIRE_MODEL` remains as the belt: it
-/// refuses the skip even for an unconfigured endpoint.
+/// Did somebody SAY where the model is? The distinction is between two states that look
+/// identical at the socket: configured and refusing, which is a failure, and never meant to
+/// have one, which is absent apparatus and skips.
 pub fn endpoint_is_configured() -> bool {
     std::env::var_os("LETIBOT_COMPLETION_URL").is_some()
 }
 
-/// **Should this live test skip?** — the one question a live test asks before it spends a turn.
-///
-/// `true` means nothing answered at `endpoint` and the caller should return early. The line is
-/// printed HERE rather than at each call site so the wording cannot drift, and `THIS IS NOT A
-/// PASS` is deliberate: a skip that reads like a green is how a suite stops testing without
-/// anybody noticing.
-///
-/// # `LETIBOT_REQUIRE_MODEL` turns the skip into a failure
-///
-/// A skip that cannot be refused is a suite that quietly stops testing: with the variable unset,
-/// a machine with no server runs zero live tests and reports success. So this is how a run that
-/// means it says so — a nightly with a server, or an operator checking the live tests still pass.
-/// Set it to anything but `0` or empty and a missing server panics, naming the endpoint.
-///
-/// # Why the skip exists
-///
-/// MEASURED with the endpoint pointed at a dead port: four tests in `loop_closes.rs` spent
-/// **373.55 s** failing, and `cargo test` **aborts the remaining targets** after the first failing
-/// binary — so most of the suite never ran at all. A CI job built on that is red for a reason
-/// nobody can read, six minutes at a time. With this guard the same four finish in **0.00 s**.
+/// Should this live test skip? `true` means nothing answered and the caller returns early; the
+/// line is printed here so the wording cannot drift. `LETIBOT_REQUIRE_MODEL` refuses the skip,
+/// because a skip that cannot be refused is a suite that quietly stops testing.
 pub fn skip_live_test(endpoint: &Endpoint, what: &str) -> bool {
     if reachable(endpoint) {
         return false;
@@ -121,16 +78,11 @@ pub fn skip_live_test(endpoint: &Endpoint, what: &str) -> bool {
 }
 
 /// [`skip_live_test`]'s decision once nothing has answered, with the two environment readings
-/// handed in rather than read. **A parameter so its test sets no variable**: a `set_var` in one
-/// test is seen by every other test in the binary running at that moment, and a `setenv` beside
-/// a C-side `getenv` that std's environment lock does not cover (glibc's own, in DNS lookups or
-/// time zones) is undefined behaviour — R67 item 17.
+/// handed in rather than read: a `set_var` in one test is seen by every other test in the binary,
+/// and a `setenv` beside a C-side `getenv` is undefined behaviour.
 fn skip_unreachable(endpoint: &Endpoint, what: &str, configured: bool, required: bool) -> bool {
-    // **A configured endpoint that refuses is a failure, not a skip.**
-    //
-    // MEASURED, and it is why this is here rather than assumed: nothing answers,
-    // either way, so the socket cannot tell the two apart. What can is whether
-    // `LETIBOT_COMPLETION_URL` was SET — a promise about where the model is.
+    // A configured endpoint that refuses is a failure, not a skip: nothing answers either way,
+    // so the socket cannot tell the two apart, and what can is whether the variable was SET.
     if configured {
         panic!(
             "LETIBOT_COMPLETION_URL points at {}, and nothing answers there, so {} \
@@ -160,18 +112,9 @@ fn skip_unreachable(endpoint: &Endpoint, what: &str, configured: bool, required:
     true
 }
 
-/// The server's context window, from `/props`, or `None` when it does not say.
-///
-/// **The wall, read rather than assumed.** `docs/compaction.md` §1 settled that
-/// compaction is driven by `n_ctx` and by memory pressure, and by nothing else:
-/// quality does not degrade with depth (160 samples, 1.000 at 60k against 0.829
-/// at zero). So the trigger is this number, and a harness that guessed it would
-/// either compact a conversation that had room or discover the wall by hitting
-/// it — which is what happened on 2026-09-15, as a 500 with nothing recorded.
-///
-/// `None` is a real answer and not a failure: a metered provider has no `/props`
-/// and its window is the operator's to state. The caller decides what to do with
-/// not knowing; it must not invent a number.
+/// The server's context window, from `/props`, or `None` when it does not say. The wall is read
+/// rather than assumed, and `None` is a real answer: a metered provider has no `/props` and its
+/// window is the operator's to state, so a caller must not invent a number.
 pub fn served_ctx(endpoint: &Endpoint) -> Option<u64> {
     let body = http::get(endpoint, "/props").ok()?.read_to_string().ok()?;
     // `n_ctx` sits inside `default_generation_settings`, and it is a number rather
@@ -183,44 +126,23 @@ pub fn served_ctx(endpoint: &Endpoint) -> Option<u64> {
     digits.parse().ok().filter(|n| *n > 0)
 }
 
-/// **The token a multimodal prompt must place where its image goes**, from `/props`.
-///
-/// # Why this is fetched and not known
-///
-/// llama.cpp's `mtmd` splits a prompt on a **media marker** and substitutes the image's embeddings
-/// at each occurrence. MEASURED on this box, 2026-09-27, and the measurement is the whole reason this
-/// function exists: the marker is **randomised per server instance** —
+/// The token a multimodal prompt must place where its image goes, from `/props`:
 ///
 /// ```text
 /// /props → media_marker: "<__media_d2QxA7RJNGYqiEAoAPVLPCHm6CPADiRe__>"
 /// ```
-//
-/// — unless `LLAMA_MEDIA_MARKER` is set, and it is **not** any of the model's own tokens. Passing
-/// the qwen template's `<|vision_start|><|image_pad|><|vision_end|>` — which is what the Jinja
-/// template emits, and what this tree's dialect renderers already write — is answered
-/// `HTTP 400 · Failed to tokenize prompt`. So the marker is a fact about the running server, exactly
-/// like `n_ctx` and `total_slots`, and a head that hardcoded one would work against one process and
-/// fail against the next.
 ///
-/// `None` when the endpoint does not say: every metered provider, and any local server old enough
-/// not to have `mtmd`. `None` means **no images on this endpoint**, which the caller discloses
-/// rather than guessing at a marker.
+/// It is randomised per server instance and is not any of the model's own tokens, so a hardcoded
+/// one works against one process and fails against the next. `None` means no images on this
+/// endpoint, which the caller discloses rather than guessing at a marker.
 pub fn served_media_marker(endpoint: &Endpoint) -> Option<String> {
     let body = http::get(endpoint, "/props").ok()?.read_to_string().ok()?;
     field(&body, "\"media_marker\"").filter(|m| !m.is_empty())
 }
 
-/// **How many sequences this server decodes at once**, from `/props`.
-///
-/// llama.cpp's slots are its batching unit: N slots means N sequences are
-/// decoded in the same batch, each with its own KV cache, so N concurrent
-/// requests are cheaper together than one after another. A caller that
-/// serialises to "protect the cache" has the relationship backwards — the caches
-/// are per slot and do not evict one another.
-///
-/// `None` when the endpoint does not say, which is every metered provider and
-/// any server too old to report it. The caller picks its own bound then, rather
-/// than assuming a number off a server that never claimed one.
+/// How many sequences this server decodes at once, from `/props`. Slots are its batching unit and
+/// each has its own cache, so N concurrent requests are cheaper together than serialised - a
+/// caller "protecting the cache" has the relationship backwards.
 pub fn served_slots(endpoint: &Endpoint) -> Option<usize> {
     let body = http::get(endpoint, "/props").ok()?.read_to_string().ok()?;
     let at = body.find("\"total_slots\"")?;
@@ -230,12 +152,9 @@ pub fn served_slots(endpoint: &Endpoint) -> Option<usize> {
     digits.parse().ok().filter(|n| *n > 0)
 }
 
-/// Refuse, loudly and by name, unless the server is serving `want`.
-///
-/// `want` is matched as a **substring** of the reported path, because the alias is
-/// `qwen-3.8-flash-next` and the path is
-/// `…/Qwen3.8-Flash-Next-UD-Q6_K_XL-00001-of-00006.gguf`; comparing them exactly
-/// would fail on every correct setup.
+/// Refuse, loudly and by name, unless the server is serving `want`. `want` is matched as a
+/// substring of the reported path, because the alias is `qwen-3.8-flash-next` and the path is
+/// the GGUF's file name.
 pub fn expect(endpoint: &Endpoint, want: &str) {
     let served = match served_model(endpoint) {
         Ok(s) => s,
@@ -279,43 +198,24 @@ pub fn matches(served: &str, want: &str) -> bool {
     norm(served).contains(&norm(want))
 }
 
-/// **What one `/props` answer says about the model a server is serving** — the
-/// three facts a session switch needs, from ONE probe.
-///
-/// A switch used to ask twice (the weights via [`served_model`], the window via
-/// [`served_ctx`]); deriving the DIALECT as well would have made it three, and
-/// each probe is a full connect-read round trip against a server that may not be
-/// there. One GET, one struct: `model_path` names the GGUF (the vocabulary's one
-/// source), `chat_template` is the Jinja the server says it renders with (the
-/// dialect's one source), `media_marker` is the per-process image placeholder.
-///
-/// Every field is `Option`: a server can answer `/props` and still omit a field
-/// (an OpenAI-compatible proxy, an older llama.cpp without `chat_template`), and
-/// **each absence is its own fact** — the caller refuses by naming the missing
-/// thing rather than falling back to a default that would be a guess.
+/// What one `/props` answer says about the model a server is serving: the GGUF path, the chat
+/// template it renders with, and the media marker, from ONE probe. Every field is `Option`, and
+/// each absence is its own fact - the caller refuses naming the missing thing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServedProps {
     /// The GGUF the server loaded, as it reports it — `…/GLM-5.3-Flash-UD-Q4_K_XL-00001-of-00006.gguf`.
     pub model_path: Option<String>,
-    /// The chat template the server reports, verbatim.
-    ///
-    /// **Measured against this fleet's own unit, 2026-10-07:** `/props` carries
-    /// the GGUF's `tokenizer.chat_template` with the final newline stripped —
-    /// 10647 bytes where the file (and the dialect crates' embedded copy) has
-    /// 10648, identical through every other byte. A comparison against a shipped
-    /// template therefore trims trailing whitespace on both sides; anything else
-    /// is a different template and must not be called a match.
+    /// The chat template the server reports, verbatim, with the final newline stripped: a
+    /// comparison against a shipped template therefore trims trailing whitespace on both sides,
+    /// and anything else is a different template.
     pub chat_template: Option<String>,
     /// The per-process media marker, when the server has `mtmd`.
     pub media_marker: Option<String>,
 }
 
-/// Ask one endpoint's `/props` for [`ServedProps`], or name why it could not.
-///
-/// The error is a sentence with the address in it — "nothing answers at
-/// HOST:PORT" names the unit to look at, which is what an operator with three
-/// mutually-exclusive units needs. The connect timeout is the client's 10 s, so
-/// a dead port costs seconds rather than the read timeout's three minutes.
+/// Ask one endpoint's `/props` for [`ServedProps`], or name why it could not. The error carries
+/// the address, which is what an operator with three units needs; the connect timeout keeps a
+/// dead port to seconds rather than three minutes.
 pub fn served_props(endpoint: &Endpoint) -> Result<ServedProps, String> {
     let body = http::get(endpoint, "/props")
         .map_err(|e| format!("{} did not answer /props ({e})", endpoint.authority()))?
@@ -328,29 +228,17 @@ pub fn served_props(endpoint: &Endpoint) -> Result<ServedProps, String> {
         })?;
     Ok(ServedProps {
         model_path: field(&body, "\"model_path\"").or_else(|| field(&body, "\"model\"")),
-        // **Through a JSON string reader, not [`field`].** The served template is a
-        // Jinja document — MEASURED on this fleet's `glm.service`, 10648 bytes with
-        // ten `"` and 257 newlines in the file — and a JSON encoder escapes every
-        // one of them (`\"`, `\n`). `field` reads to the next `"` byte, so on this
-        // very field it would return the first 705 bytes of the template and call
-        // it the whole thing: the comparison would then fail against EVERY dialect
-        // and the refusal would blame a template that was never served. A value
-        // that is not a string (a newer server's template VARIANTS array) is an
-        // ABSENT template rather than a parse error — the caller refuses by naming
-        // what is missing, which is the honest sentence for a shape it cannot read.
+        // Through a JSON string reader, not `field`: a Jinja template is full of `"` and
+        // newlines, which a JSON encoder escapes, and `field` reads to the next `"` byte. A
+        // value that is not a string is an absent template rather than a parse error.
         chat_template: json_string(&body, "\"chat_template\""),
         media_marker: field(&body, "\"media_marker\""),
     })
 }
 
-/// **Does this served chat template match this dialect's shipped one?**
-///
-/// The comparison is on the bytes, with trailing whitespace trimmed on both
-/// sides — the one divergence measured between a live `/props` answer and the
-/// GGUF's own `tokenizer.chat_template` (see [`ServedProps::chat_template`] for
-/// the numbers). Anything beyond that trim is a different template: a server
-/// running a modified or overridden Jinja must not be called a match, because
-/// the renderer this tree would drive it with writes the SHIPPED bytes.
+/// Does this served chat template match this dialect's shipped one? On the bytes, with trailing
+/// whitespace trimmed on both sides - the one divergence measured between `/props` and the
+/// GGUF. Anything beyond that trim is a different template, not a match.
 pub fn template_matches(spec: &letibot_dialect::DialectSpec, served: &str) -> bool {
     spec.template.trim_end() == served.trim_end()
 }
@@ -365,16 +253,9 @@ fn field(body: &str, key: &str) -> Option<String> {
     (!v.is_empty()).then(|| v.to_string())
 }
 
-/// **One JSON string value, read as its encoder wrote it** — escapes decoded, not
-/// skipped — or `None` when the key is absent or its value is not a string.
-///
-/// This is [`field`] for values that may CONTAIN quotes and newlines, which in this
-/// module is exactly one: `chat_template` (see [`served_props`] for why `field`'s
-/// scan-to-the-next-quote cannot serve there). The escape set is RFC 8259's — the
-/// two-character escapes plus `\uXXXX`, surrogate pairs folded to one scalar —
-/// because that is what a JSON encoder is free to emit and a reader that decodes
-/// only the two-character half would return a template that differs from the
-/// served one in exactly the bytes a Jinja document is full of.
+/// One JSON string value, read as its encoder wrote it - escapes decoded - or `None` when the
+/// key is absent or its value is not a string. This is [`field`] for values that may CONTAIN
+/// quotes, and the escape set is RFC 8259's, surrogate pairs folded.
 fn json_string(body: &str, key: &str) -> Option<String> {
     let at = body.find(key)? + key.len();
     let rest = body.get(at..)?;
@@ -408,12 +289,9 @@ fn json_string(body: &str, key: &str) -> Option<String> {
                         let hex = rest.get(..4)?;
                         let mut n = u32::from_str_radix(hex, 16).ok()?;
                         rest = &rest[4..];
-                        // A high surrogate is only half a scalar; the next `\uXXXX`
-                        // must be its low half or the pair is malformed. Replaced
-                        // rather than failed — the served value is still a string —
-                        // but a template with a broken pair is not one this tree
-                        // drives anyway, so the byte difference is the mismatch it
-                        // should be.
+                        // A high surrogate is only half a scalar: the next `\uXXXX` must be its
+                        // low half or the pair is malformed, and a broken pair is replaced rather
+                        // than failed, so the byte difference is the mismatch it should be.
                         if (0xD800..0xDC00).contains(&n)
                             && let Some(tail) = rest.strip_prefix("\\u")
                             && let Ok(low) = u32::from_str_radix(tail.get(..4)?, 16)
@@ -447,14 +325,9 @@ mod tests {
         assert!(matches("glm-5.3-flash", "glm-5.3-flash"));
     }
 
-    /// **The media marker is read out of a `/props` body, and its absence is an answer.**
-    ///
-    /// The value is the server's own and it is randomised per process — MEASURED 2026-09-27:
-    /// `<__media_d2QxA7RJNGYqiEAoAPVLPCHm6CPADiRe__>`. A test cannot pin the live string, so it
-    /// pins the two things that decide behaviour: a server that states one is read correctly (the
-    /// brackets and underscores survive, and the key is not confused with a longer one), and a
-    /// server that states none is `None` rather than an empty marker that would silently place
-    /// nothing where the picture should be.
+    /// The media marker is read out of a `/props` body, and its absence is an answer: a server
+    /// that states one is read correctly, and one that states none is `None` rather than an
+    /// empty marker that would place nothing where the picture should be.
     #[test]
     fn the_media_marker_is_read_out_of_a_props_body_or_absent() {
         let live = r#"{"modalities":{"vision":true},"media_marker":"<__media_d2QxA7RJNGYqiEAoAPVLPCHm6CPADiRe__>","n_ctx":262144}"#;
@@ -487,16 +360,9 @@ mod tests {
         );
     }
 
-    /// **A served chat template survives the JSON it arrives in, quotes and all.**
-    ///
-    /// The first cut read `chat_template` with [`field`], which scans to the next
-    /// `"` byte — and a Jinja template is FULL of them once a JSON encoder has
-    /// escaped it. This is the regression that would have shipped inside the
-    /// preserved probe: every dialect comparison would have failed against a
-    /// template that was never served, and the refusal would have blamed the
-    /// server for the reader's truncation. MEASURED on the bytes this pins: the
-    /// served glm template is 10648 bytes with its first `"` at offset 705, so
-    /// `field` would have returned 705 bytes and called it the document.
+    /// A served chat template survives the JSON it arrives in, quotes and all. Reading it with
+    /// [`field`] would return the 705 bytes before the first escaped quote and call it the
+    /// document, so every dialect comparison would fail against a template never served.
     #[test]
     fn a_served_chat_template_survives_the_json_it_arrives_in() {
         // A Jinja fragment with every byte class the reader must survive: escaped
@@ -526,13 +392,9 @@ mod tests {
         );
     }
 
-    /// **A `chat_template` that is not a string is an absent one, not a parse error.**
-    ///
-    /// A newer llama.cpp can answer the template VARIANTS as an array; a reader
-    /// that crashed there would turn a server that answered into one that
-    /// "did not answer", and a reader that guessed would compare a fragment.
-    /// Absent is the honest reading: the caller refuses naming the missing
-    /// template and the block key that asserts a dialect by hand.
+    /// A `chat_template` that is not a string is an absent one, not a parse error: a newer
+    /// llama.cpp can answer the variants as an array, and absent is the honest reading, so the
+    /// caller refuses naming the missing template.
     #[test]
     fn a_chat_template_that_is_not_a_string_is_absent() {
         assert_eq!(
@@ -576,13 +438,9 @@ mod ctx_tests {
 mod skip_tests {
     use super::*;
 
-    /// **The distinction, tested directly**, because neither state can be arranged
-    /// on a box that HAS a server: it is set up with an endpoint on a port nothing
-    /// listens on, and the difference is made by the configuration alone — handed to
-    /// [`skip_unreachable`] as a value, where this test once set and unset
-    /// `LETIBOT_COMPLETION_URL` under every other test in the binary (R67 item 17). That
-    /// also took the run's own `LETIBOT_REQUIRE_MODEL` into the unconfigured case, which a
-    /// run that set it turned into a panic; `required: false` is now what this case says.
+    /// The distinction, tested directly, because neither state can be arranged on a box that HAS
+    /// a server: the difference is made by the configuration alone, handed to
+    /// [`skip_unreachable`] as a value rather than set in the environment.
     #[test]
     fn a_configured_endpoint_that_refuses_is_a_failure_and_an_unconfigured_one_skips() {
         // Port 9 (discard) is the traditional nothing-listens-here.

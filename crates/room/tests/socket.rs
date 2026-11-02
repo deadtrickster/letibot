@@ -1,6 +1,6 @@
-//! **The socket, end to end** — a real `Server`, real `Client`s over a real unix socket, and the
-//! four things the room's slice 2 is for: a frame answered, a bell rung at the connections it is
-//! about, a close that gives a claim back at once, and a beat run on a session's behalf.
+//! The socket, end to end: a real `Server`, real `Client`s over a real unix socket, and the four things
+//! the room is for - a frame answered, a bell rung at the connections it is about, a close that gives a
+//! claim back at once, and a beat run on a session's behalf.
 //!
 //! `Room::answer` already lets the FRAMES be tested with no socket (`tests/wire.rs`), and that is
 //! still the cheap place to test a verb. What is only testable here is the transport's own three
@@ -42,8 +42,8 @@ impl Drop for Scratch {
     }
 }
 
-/// **A client whose bells are collected**, so a test can assert what it was told rather than
-/// sleeping and hoping.
+/// A client whose bells are collected, so a test can assert what it was told rather than sleeping and
+/// hoping.
 fn client(server: &Server, session: &str) -> (Client, Receiver<Event>) {
     let (tx, rx) = mpsc::channel();
     let wake = Arc::new(move |e: &Event| {
@@ -75,10 +75,9 @@ fn post(c: &Client, id: &str, tag: &str, body: &str) -> u64 {
 
 fn wait_for(rx: &Receiver<Event>, what: &str, within: Duration) -> Event {
     let deadline = Instant::now() + within;
-    // **Not a `loop`**: every arm of the match below returns or panics, so a wrapping loop would be
-    // dead — and `clippy::never_loop` is denied by default, which is how this was found: the gate's
-    // `cargo clippy --all-targets` compiles THIS test target, and `cargo test -p letibot-room`, which
-    // is what verified the branch, does not lint it.
+    // Not a `loop`: every arm of the match below returns or panics, so a wrapping loop would be dead,
+    // and `clippy::never_loop` is denied - the gate lints this test target, `cargo test -p letibot-room`
+    // does not.
     let left = deadline.saturating_duration_since(Instant::now());
     if left.is_zero() {
         panic!("nothing arrived about {what}");
@@ -90,8 +89,8 @@ fn wait_for(rx: &Receiver<Event>, what: &str, within: Duration) -> Event {
     }
 }
 
-/// Wait until `f` says so, polling — for a fact that arrives on a thread (a connection served, a
-/// close noticed) rather than as a frame.
+/// Wait until `f` says so, polling - for a fact that arrives on a thread (a connection served, a close
+/// noticed) rather than as a frame.
 fn until(what: &str, mut f: impl FnMut() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
@@ -109,8 +108,8 @@ fn a_client_that_named_another_room_is_refused_with_both_names() {
     let server = Server::serve(&scratch.socket(), Room::new()).expect("a room to talk to");
     server.with_name("lab2x1");
     let wake = Arc::new(|_: &Event| {});
-    // **The sentence reaches the CALLER**, not only the frame: a client that dialled the wrong
-    // coordinator must be able to say which two machines it confused.
+    // The sentence reaches the CALLER, not only the frame: a client that dialled the wrong coordinator
+    // must be able to say which two machines it confused.
     let refused = Client::connect_named(
         server.path(),
         Speaker::top_level("s-a"),
@@ -125,9 +124,8 @@ fn a_client_that_named_another_room_is_refused_with_both_names() {
         "and the one asked for: {said}"
     );
 
-    // **And the room's own name is let in** — the same client, naming the right room, connects.
-    // (`Client::connect` sends `host_name()`, which is what a server's default name IS; every other
-    // test in this file leans on that.)
+    // And the room's own name is let in - the same client, naming the right room, connects. (`connect`
+    // sends `host_name()`, which is what a server's default name IS; every other test here leans on that.)
     let good = Client::connect_named(server.path(), Speaker::top_level("s-a"), "lab2x1", wake)
         .expect("the right room is reached");
     assert!(
@@ -149,8 +147,8 @@ fn a_frame_is_answered_over_the_socket_and_a_subagent_is_refused_at_the_door() {
     let item = post(&a, "p1", "ram", "8 GB");
     assert_eq!(item, 1);
 
-    // **The door.** A subagent is refused where it says who it is, not at the first verb — and the
-    // refusal is the room's own sentence, not the transport's.
+    // The door: a subagent is refused where it says who it is, not at the first verb - and the refusal
+    // is the room's own sentence, not the transport's.
     let (tx, _rx) = mpsc::channel();
     let refused = Client::connect(
         server.path(),
@@ -220,8 +218,7 @@ fn an_acknowledgement_is_not_a_wait_and_the_socket_keeps_them_apart() {
         Response::Claimed { .. }
     ));
 
-    // **What the holder is DOING** — the acknowledgement the daemon's claim writes, on its own
-    // frame.
+    // What the holder is DOING: the acknowledgement the daemon's claim writes, on its own frame.
     assert!(matches!(
         call(
             &a,
@@ -249,7 +246,7 @@ fn an_acknowledgement_is_not_a_wait_and_the_socket_keeps_them_apart() {
         held[0]
     );
 
-    // **And what it is WAITING on** goes in the other field, leaving the acknowledgement alone.
+    // And what it is WAITING on goes in the other field, leaving the acknowledgement alone.
     assert!(matches!(
         call(
             &a,
@@ -318,7 +315,7 @@ fn a_bell_goes_to_the_connections_the_event_is_about_and_not_to_a_reader() {
         "{claimed_by_b:?}"
     );
 
-    // **One read is not membership.** A session that only asked the queue heard none of this.
+    // One read is not membership: a session that only asked the queue heard none of this.
     let _ = call(&watcher, Request::Queue { tag: "ram".into() });
     assert!(
         ew.recv_timeout(Duration::from_millis(200)).is_err(),
@@ -345,8 +342,8 @@ fn a_closed_connection_gives_its_claim_back_at_once_and_says_so() {
 
     // Drop `s-a`'s connection the way a dying daemon does: the socket closes.
     drop(a);
-    // `s-b` hears the abandonment with the close's own reason — not a stale beat ninety seconds
-    // later, and not silence.
+    // `s-b` hears the abandonment with the close's own reason, not a stale beat ninety seconds later and
+    // not silence.
     let mut heard = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
@@ -375,7 +372,7 @@ fn a_closed_connection_gives_its_claim_back_at_once_and_says_so() {
         other => panic!("{other:?}"),
     }
 
-    // And the item is claimable again immediately — the queue moved on.
+    // And the item is claimable again immediately: the queue moved on.
     match call(
         &b,
         Request::Claim {
@@ -448,7 +445,7 @@ fn the_daemon_beats_for_a_session_while_its_turn_runs() {
         },
     );
 
-    // The turn runs — and the daemon, not the model, says so.
+    // The turn runs - and the daemon, not the model, says so.
     let beat = a.start_beating();
     std::thread::sleep(Duration::from_millis(900));
     let held = call(&a, Request::Holding { session: None });
@@ -460,7 +457,7 @@ fn the_daemon_beats_for_a_session_while_its_turn_runs() {
         other => panic!("{other:?}"),
     }
 
-    // The turn ends. Nothing beats, and the lease takes it back — the fact the lease measures.
+    // The turn ends. Nothing beats, and the lease takes it back - the fact the lease measures.
     beat.stop();
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut lost = false;
@@ -562,8 +559,8 @@ fn a_reconnect_is_a_new_life_and_the_repeat_post_is_still_one_item() {
     let server = Server::serve(&scratch.socket(), Room::new()).expect("a socket");
     let (a, _ea) = client(&server, "s-a");
     let first = post(&a, "p1", "ram", "8 GB");
-    // A second client for the same session — a daemon that restarted its link. The frame carries
-    // the same id, so the room answers from its replay window: one item, not two.
+    // A second client for the same session: a daemon that restarted its link. The frame carries the same
+    // id, so the room answers from its replay window - one item, not two.
     let (again, _eb) = client(&server, "s-a");
     let second = post(&again, "p1", "ram", "8 GB");
     assert_eq!(first, second);
@@ -580,8 +577,8 @@ fn the_lease_refuses_a_second_coordinator_and_the_socket_is_not_bound() {
     let first = CoordinatorLease::owned_by(&path, "box/first/1");
     assert_eq!(first.acquire(1_000), Ok(Acquired::Fresh));
 
-    // The second one is refused by the LEASE, before any socket exists — which is the order the
-    // daemon must do it in, or a second room would be bound and served for a moment.
+    // The second one is refused by the LEASE, before any socket exists - which is the order the daemon
+    // must do it in, or a second room would be bound and served for a moment.
     let second = CoordinatorLease::owned_by(&path, "box/second/2");
     let held = second
         .acquire(1_001)

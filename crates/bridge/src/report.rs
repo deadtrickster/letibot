@@ -1,30 +1,11 @@
 //! **The brief's closing report, parsed into fields.**
 //!
-//! `docs/claude-code-bridge.md`: *"the report as data … asked for in a fixed markdown
-//! shape, and `leticode_status` parses it into fields when the last assistant message has
-//! it, so the review starts from data."* A reviewer that reads four headings out of a
-//! ten-thousand-line transcript by hand is doing the parsing this module exists to do
-//! once.
-//!
-//! # What makes a message a report
-//!
-//! Headings, and their wording is the brief's rather than this file's — `## What I built`,
-//! `## Test results`, `## What I could not do`, `## Contracts`. Two recognised sections is
-//! the threshold: one heading is something a long answer may have for its own reasons
-//! (*"## Test results"* is a heading an ordinary reply about a test run can carry), while
-//! two of the brief's four is a shape nobody writes by accident.
-//!
-//! # Why the sections are matched by keyword and not by position
-//!
-//! The briefs are written by a person, and the operator's own reports in this tree move
-//! between *"## What I built"* and *"## What was built"*, *"## Test results"* and *"## What
-//! I tested"*, *"## Contracts"* and *"## Contract changes"*. A positional parser would
-//! return the contract section as the tests the first time a brief added a heading, and a
-//! wrong field that looks populated is worse than a missing one.
-//!
-//! **The one order that matters is `could not` before `test`**: *"## What I could not
-//! test"* is the failure section, and a `contains("test")` tried first files it as results
-//! — a report that says it tested nothing would read as a report of tests.
+//! `docs/claude-code-bridge.md` asks for the report in a fixed markdown shape, and
+//! `leticode_status` parses it so the review starts from data. Two recognised sections is the
+//! threshold: one heading is something a long answer may carry for its own reasons.
+//! Sections are matched by KEYWORD, not position, because briefs move between "## What I built"
+//! and "## What was built" - and `could not` must be tried before `test`, or "## What I could
+//! not test" files as results.
 
 use serde_json::{Value, json};
 
@@ -106,10 +87,8 @@ fn section_of(heading: &str) -> Option<Section> {
     }
 }
 
-/// **Parse the brief's report out of a message**, or `None` when the message is not one.
-///
-/// Every heading is a section boundary, whatever its level: a report written with `###`
-/// under a `##` title is the same report, and a parser that only believed in `##` would
+/// **Parse the brief's report out of a message**, or `None` when the message is not one. Every
+/// heading is a section boundary, whatever its level: a parser that only believed in `##` would
 /// silently fold three sections into the fourth.
 pub fn parse(message: &str) -> Option<Report> {
     let mut found: Vec<(Section, String)> = Vec::new();
@@ -163,10 +142,9 @@ pub fn parse(message: &str) -> Option<Report> {
             },
         }
     }
-    // **The shas come from the commits section when there is one**, and from the report
-    // as a whole when there is not: the briefs ask for commits as a heading, and a model
-    // that instead wrote *"commit `4621097e`"* inside its build section has still told a
-    // reviewer the one thing that field is for.
+    // **The shas come from the commits section when there is one**, and from the report as a
+    // whole when there is not: a model that instead wrote *"commit `4621097e`"* inside its build
+    // section has still told a reviewer the one thing that field is for.
     let scan = match &named {
         Some(body) => body.clone(),
         None => [
@@ -187,8 +165,8 @@ fn lines_joined(lines: &[&str]) -> String {
     lines.join("\n").trim().to_string()
 }
 
-/// Two sections of the same class — a report that wrote *"## Test results"* twice — are
-/// one field with both bodies, in the order they were written.
+/// Two sections of the same class - a report that wrote *"## Test results"* twice - are one
+/// field with both bodies, in the order they were written.
 fn join_into(field: &mut String, body: String) {
     if body.is_empty() {
         return;
@@ -199,13 +177,9 @@ fn join_into(field: &mut String, body: String) {
     field.push_str(&body);
 }
 
-/// **The commit shas a report names**, in order, without duplicates.
-///
-/// A token has to be a whole word of 7 to 40 hexadecimal characters with **at least one
-/// digit in it**. The digit is what keeps English out: `deadbeef`, `facade`, `acceded`
-/// are hex-only words, and a `cafe`-shaped word inside a sentence is prose rather than a
-/// commit. It costs the one-in-a-million sha that is all letters, which is the right way
-/// round — a field that sometimes names a word is worse than one that occasionally misses.
+/// **The commit shas a report names**, in order, without duplicates. A token has to be a whole
+/// word of 7 to 40 hex characters with **at least one digit in it**, which is what keeps English
+/// out: `deadbeef`, `facade`, `acceded` are hex-only words, and a `cafe`-shaped word is prose.
 fn short_shas(text: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for token in text.split(|c: char| !c.is_ascii_alphanumeric()) {

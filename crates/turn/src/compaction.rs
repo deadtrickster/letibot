@@ -1,82 +1,17 @@
-//! Compaction as one more turn, not a special shape (C1).
-//!
-//! The operator's direction, 2026-09-13: *"compaction is a normal message that
-//! says give summary so kv cache is reused … for now we dont have anything so
-//! simple cache is ok."*
-//!
-//! The measured stakes are opencode's `1ee74df`/`4efae6c`, on this box: flatten
-//! compaction of a 144,436-token conversation ran with `n_prompt_tokens_cache =
-//! 0` and spent about 13 minutes prefilling at 182 t/s before the first summary
-//! token, because a flattened conversation shares no prefix with anything — not
-//! the system prompt, not the tool definitions, not the message framing. The
-//! cached strategy re-sends the request that just ran and appends the
-//! instruction as one more message, so the prefix is byte-identical to what the
-//! previous turn already prefilled and only the suffix is new.
-//!
-//! **This engine gets the strategy by construction.** A turn's prompt is the
-//! ledger's whole token region, and the prefix invariant ([`crate::prefix`])
-//! proves each turn's prompt extends the previous turn's prompt-plus-generation
-//! on the wire. So appending the instruction as a [`TranscriptItem`] and running
-//! a normal turn *is* the cached strategy: the model is asked for the summary
-//! over a prefix the server is already holding. The turn's own check measures
-//! the reuse, and [`CompactionOutcome`] carries the numbers so a caller can
-//! disclose them rather than assume them.
-//!
-//! What this module deliberately does **not** do:
-//!
-//! * **Build the new base.** Replacing the resident history with the summary —
-//!   a new `StablePrefix`, a fresh ledger, and the one cold prefill that
-//!   `docs/compaction.md` §3 correctly says is unavoidable — is the caller's
-//!   act, because it reaches the store, the resume chain and the session
-//!   registry, and this module has none of them. The outcome carries what that
-//!   act needs.
-//! * **Choose the trigger.** `/compact` from a head, or the wall — later, and
-//!   auto-at-the-wall wants `docs/compaction.md` §1's policy rather than a
-//!   constant.
-//! * **The structural map.** §4's zoomable map is the refinement this simple
-//!   version steps aside for; the instruction below already asks for the shape
-//!   a map would keep — events, decisions, outcomes — so the summary this
-//!   version produces is the material that map would be built from.
+//! Compaction is one more turn, not a special shape: a turn's prompt is the
+//! ledger's whole token region, so appending the instruction as a
+//! [`TranscriptItem`] and running a normal turn asks for the summary over a prefix
+//! the server is already holding. [`CompactionOutcome`] carries the measured reuse
+//! so a caller discloses it rather than assuming it.
 
-//! # The cache and the log are two different things
+//! The log - the ledger and its items - is the record of what was said, and it is
+//! the truth. The KV cache is an optimisation a server process holds: per-slot,
+//! evictable, gone on a restart. Designing the log around the cache makes a scratch
+//! session look impossible; dismissing the cache because the log is fine is correct
+//! and unusable.
 //!
-//! The operator, after watching a batched rewrite get reverted: *"kv cache is a
-//! one thing and conversation log is another"*.
-//!
-//! This is the distinction the whole evening turned on and I kept collapsing.
-//! The LOG -- the ledger and its items -- is the record of what was said, and it
-//! is the truth. The KV CACHE is an optimisation held by a server process:
-//! per-slot, evictable, gone on a restart, and shared with whatever else is
-//! running. Treating them as one fact produces two opposite mistakes, and both
-//! were made here in one night.
-//!
-//! Designing the log AROUND the cache is the first: the ordinary compaction
-//! appends one message so the server's copy stays valid, which is right, but it
-//! is a performance property and not a correctness one, and reading it as a
-//! constraint is what made a scratch session look impossible.
-//!
-//! Dismissing the cache because the log is fine is the second: a scratch session
-//! is perfectly correct and cost a cold quarter-million-token prefill, ten
-//! minutes before a summary began. Correct and unusable.
-//!
-//! # The strategy that is right depends on the backend
-//!
-//! The operator again, having got there faster than this crate did: *"if my
-//! prefill was fast enough we would be sending first half and then
-//! firsthalf_summary+second half. but this mangles kv cache. we can have it for
-//! cloud models"*.
-//!
-//! That is a third strategy and it is the cleanest of the three. Summarise the
-//! first half; then make the next prompt `first_half_summary ++ second_half`.
-//! Nothing overlaps, nothing is summarised twice, and the order is the order it
-//! happened in. What it costs is the cache: that prompt is a prefix of nothing
-//! the server holds, so it prefills cold from token zero.
-//!
-//! Which is disqualifying HERE and not in general, and the reason is worth
-//! stating precisely rather than as "cloud has no cache" -- it does. DeepSeek
-//! prices cached input at a TENTH of uncached, automatically and by prefix; the
-//! operator's own `providers.toml` carries the two rates. So a cold prompt costs
-//! something on both sides. What differs is the CURRENCY.
+//! A cold prompt costs something on both sides - DeepSeek prices cached input at a
+//! tenth of uncached, by prefix - and what differs is the currency:
 //!
 //! ```text
 //! local llama.cpp   a miss costs TIME    200-375 tok/s -> ~10 minutes
@@ -85,41 +20,19 @@
 //!                                    $0.067 against $0.0067
 //! ```
 //!
-//! Ten minutes before a word is generated disqualifies a strategy. Six cents
-//! does not. And a cloud provider takes MESSAGES rather than tokens
-//! (`letibot_provider::messages::convert`), so none of the prefix machinery --
-//! the stable prefix, the dialect render, the token replay -- applies to it at
-//! all. There, the clean strategy is simply the right one.
+//! Ten minutes before a word is generated disqualifies a strategy; six cents does
+//! not. A cloud provider takes MESSAGES rather than tokens
+//! (`letibot_provider::messages::convert`), so none of the prefix machinery applies
+//! to it at all.
 //!
-//! So the branch is on the BACKEND, not on the conversation:
+//! So the strategy branches on the BACKEND: a local server keeps the expensive half
+//! a true prefix of what it already holds (`summarise_overrun`), a cloud provider
+//! folds and continues with no overlap and no seam (`plan_fold` +
+//! `summarise_first_half`). `plan_overrun` chooses, `Harness::compact_inner` carries
+//! out the answer.
 //!
-//!   * local server  -> the two-half plan below, which keeps the expensive half
-//!     a true prefix of what the server already holds;
-//!   * cloud provider -> summarise, fold, continue; no overlap, no seam, no
-//!     duplicated region.
-//!
-//! **Both are implemented and both are wired.** `plan_overrun` decides WHICH, and
-//! `Harness::compact_inner` carries out the answer: the fold is `plan_fold` +
-//! `summarise_first_half` with the second half kept verbatim, and the two-half plan
-//! is `summarise_overrun`. This paragraph used to end *"Only the first is
-//! implemented"*, which stopped being true when the second arrived, and the stale
-//! sentence cost a reader an afternoon: it is why the overrun path was described as
-//! never having run, when in fact it ran and failed (see below). **A note that says
-//! a thing is missing is a claim with a lifetime**, and this one outlived its
-//! truth by as long as nobody read the code beside it.
-//!
-//! What made the mistake easy: the two entry points look asymmetric from here.
-//! `summarise_overrun` is `pub` in this crate and `summarise_first_half` is too, so
-//! both are "the module's", while the decision between them lives in `harnessd` —
-//! one crate away from this prose. Grepping this file alone therefore shows a
-//! planner and no chooser.
-//!
-//! Held apart, the overrun plan below reads as two separate judgements rather
-//! than one muddle. Summarising the old half is a prompt that is a true PREFIX of
-//! the live token stream, so the cache serves it -- a cache judgement. Summarising
-//! both halves rather than keeping one verbatim is what makes the new base small
-//! enough to buy real runway -- a log judgement. And the overlap costs cache
-//! reuse on the tail, which is free precisely because the tail was never cached.
+//! Building the new base is deliberately not here: it reaches the store, the resume
+//! chain and the session registry, and this module has none of them.
 
 use letibot_dialect::StablePrefix;
 use letibot_transcript::{SystemOrigin, TranscriptItem, UserPart};
@@ -128,47 +41,8 @@ use crate::engine::{Session, TurnEngine, TurnFailure, TurnOk};
 use crate::events::{EventSink, NullSink, TurnEvent};
 use crate::length::EmptyReason;
 
-/// What is appended as the compaction turn's instruction — **on both the local and
-/// the remote path**, because it is the record's contract and not the model's.
-///
-/// # The template, and why it is fixed sections rather than an ask for a record
-///
-/// Ruled by the operator, 2026-09-23 (`head-parity-2026-09-21.md` R27): *"I think
-/// we can reuse the summary template, and indeed send some recent turns
-/// verbatim."* The template is opencode's `SUMMARY_TEMPLATE`
-/// (`packages/core/src/session/compaction.ts:17`), which is the only part of
-/// their compaction this crate takes wholesale.
-///
-/// A free-prose ask produced records of wildly different shapes, which is the
-/// defect the sections exist for: **a section is a question, and an absent
-/// section is a question nobody was asked.** "Nothing is blocked" and "nobody
-/// said" are different facts, and only a kept-and-marked section can carry the
-/// second. That is why *keep every section, even when empty* is a rule and not a
-/// preference.
-///
-/// **This replaces the prose ask of 2026-09-22**, which said *"every decision
-/// taken and the reason for it; every file created or changed …"* and left the
-/// shape to the model. The content it asked for survives inside the sections —
-/// decisions and why are *Important Details*, commands run and their outcomes are
-/// *Work State*, and the files are *Relevant Files*.
-///
-/// # The one thing here that is not the template, and the wording it is in
-///
-/// *"anything you do not carry into it is lost"* — the loss stated to the model
-/// rather than left implicit. A summariser that is not told the prior record is
-/// discarded will reasonably assume it survives, and on a second compaction the
-/// prior record sits in the conversation like any other item.
-///
-/// Worded as a **contract about the record**, not as a claim about the tail: on
-/// the remote path the newest exchanges are also carried verbatim and on the
-/// local path they are not, so an instruction that named the tail would either
-/// invite the model to skip the recent past (losing it outright locally) or be
-/// false locally. The reader is told the shape by the fork's own note, which is
-/// written per path; the model is told its contract, which is the same on both.
-///
-/// *Do not call tools* stays, and is load-bearing: the harness refuses a fork
-/// whose summary turn proposed a call, and the refusal is a real one rather than
-/// a trap — a summary turn that starts working is not a summary.
+/// The compaction turn's instruction, on both the local and the remote path, because it is the
+/// record's own words and a provider must be asked the same thing a local model is.
 pub const SUMMARY_INSTRUCTION: &str = "\
 The conversation above is what this record stands in for: it is what a reader will \
 have instead of it, and anything you do not carry into it is lost. Write the record \
@@ -199,12 +73,8 @@ what you saw is the only thing that can be carried. Do not call tools. Do not wr
 about this record or about the conversation being shortened. Answer with the record \
 and nothing else.";
 
-/// The sections [`SUMMARY_INSTRUCTION`] promises, in order.
-///
-/// **A contract with the next reader**, so it is a list a test can hold the
-/// instruction to rather than prose in a doc comment: a template that loses a
-/// section stops asking the question that section stands for, and nothing else
-/// in the system would notice.
+/// The sections [`SUMMARY_INSTRUCTION`] promises, in order, as a list a test can
+/// hold that text to.
 pub const SUMMARY_SECTIONS: [&str; 8] = [
     "## Objective",
     "## Important Details",
@@ -216,43 +86,13 @@ pub const SUMMARY_SECTIONS: [&str; 8] = [
     "## Relevant Files",
 ];
 
-/// What is appended when the summary turn stops inside its own reasoning block
-/// and says nothing (R7).
-///
-/// The same steering the tool loop gives (`harnessd`'s `run_rounds`), with the ask
-/// carried the way the `EmptyLength` arm carries it: a compaction turn that
-/// reasons past its budget is exactly the turn that must hear *put the answer
-/// first*, because the summary is the only thing this turn is for. Exported so a
-/// test can assert the notice itself, not just that something was appended.
-///
-/// **Worded as the operator worded it**, because theirs is the only version with
-/// evidence behind it. Measured in the transcript, 2026-09-18: three machine
-/// notices in a row -- "continue or say why not", then "put the answer before
-/// the reasoning if you are close to the limit", then the first again --
-/// produced three more empty turns. The operator then typed "you keep
-/// overthinking cut it short and do things", and the next reasoning block opened
-/// "The operator is frustrated. Let me cut it short and just do the thing",
-/// followed by the work, in 34 tokens of thinking instead of thousands.
-///
-/// What was wrong with the old ones: "continue or say why not" is an OPEN
-/// QUESTION, and a model that has just overthought accepts the invitation to
-/// deliberate; "if you are close to the limit" is a CONDITION it must evaluate,
-/// which is more thinking, and it is already true. Neither said the thing that
-/// worked. Imperative, short, no question, no condition.
-///
-/// **R93.D2: and it says what happened, not an accusation.** *"You keep overthinking"* accused
-/// on the first occurrence, *"thought until it ran out"* was false (this arm is the turn ending
-/// INSIDE its reasoning, not running out), and *"before any reasoning"* is impossible for a model
-/// whose thinking always comes first. Still imperative, short, and no question.
+/// What is appended when the summary turn stops inside its own reasoning and says nothing: the
+/// record has to say why there is no summary rather than leave a gap.
 pub const UNFINISHED_REASONING_NOTICE: &str = "\
 Your reply ended inside reasoning with no output. Write the summary now.";
 
-/// What is appended when the summary turn hits the output limit with nothing
-/// usable in it (§5.7's hard fail, given the loop's salvage).
-///
-/// Worded from the harness's `EmptyLength` arm with one word changed: the answer
-/// this turn owes is the summary.
-/// R93.D1: no enum name (`reasoning_only`) and no *"reason after"*.
+/// What is appended when the summary turn spends its whole output on reasoning and
+/// nothing was kept: the answer this turn owes is the summary.
 fn empty_length_notice(_reason: EmptyReason) -> String {
     "Your reply was all reasoning and nothing was kept. Write the summary now.".to_string()
 }
@@ -268,47 +108,29 @@ pub struct CompactionOutcome {
     /// calling tools; surfaced rather than swallowed, and a caller that is about
     /// to trust the summary should refuse on a non-zero count.
     pub tool_calls: usize,
-    /// **The model ran out of room before it finished the summary.**
-    ///
-    /// The engine already stamps this on the assistant item from the finish
-    /// reason, and this function used to discard it with a `..` — so a summary
-    /// cut off mid-word was committed as the new base looking whole, and the
-    /// only way to find out was to read it. Measured 2026-09-18: a summary of a
-    /// 260390-token conversation ended at "`super::quarantine(call_id,
-    /// &page.final_url, &page" and became the entire record of everything before
-    /// it.
-    ///
-    /// Surfaced, not refused, and the distinction is the operator's: a session at
-    /// the wall has nowhere else to go, so an incomplete record that SAYS it is
-    /// incomplete beats both a silent one and a refusal to compact at all. The
-    /// caller writes that sentence into the base.
+    /// The model ran out of room before it finished the summary. Surfaced rather than refused: a
+    /// session that cannot summarise must still be told why.
     pub truncated: bool,
-    /// `cached_tokens` from the turn's metrics: how much of the prefix the
-    /// server says it reused. This is the point of the whole design, and it is
-    /// disclosed rather than assumed — on the hybrid/recurrent model this box
-    /// serves, the checkpoint policy can make it fall short of `reusable`
-    /// without anything being wrong (see [`crate::prefix`]).
+    /// `cached_tokens` from the turn's metrics: how much of the prefix the server says it reused.
+    /// Disclosed rather than acted on, because it is the server's claim.
     pub cached_tokens: u64,
     /// What the prefix invariant permitted the server to reuse: the previous
-    /// turn's prompt plus its committed generation. The gap between this and
-    /// `cached_tokens` is the server's, not ours — the prompts are proven
-    /// identical over the span.
+    /// turn's prompt plus its committed generation. The gap to `cached_tokens` is
+    /// the server's, not ours - the prompts are proven identical over the span.
     pub reusable: u64,
     /// Tokens the summary turn generated — reasoning included. The summary's own
     /// size in the new base is at most the visible part of this.
     pub generated_tokens: u64,
 }
 
-/// **Who answers a summary turn.**
+/// Who answers a summary turn.
 ///
-/// Compaction called [`TurnEngine::run_turn`] unconditionally, and that is the
-/// LOCAL endpoint — the engine holds one `endpoint` and one `model` and knows
-/// nothing about a provider, which only ever arrives as an argument to
-/// [`TurnEngine::run_turn_messages`]. So a conversation running on a metered
-/// provider had its summaries sent to the daemon's own model, with the whole
-/// history in front of them.
-///
-/// Measured on the operator's box, 2026-09-20, in one log four lines apart:
+/// The engine holds one `endpoint` and one `model` and knows nothing about a
+/// provider, which only arrives as an argument to
+/// [`TurnEngine::run_turn_messages`] - so an unconditional `run_turn` sent a
+/// metered session's summary, whole history in front of it, to the daemon's own
+/// local model, which is why compaction could not rescue a session that had
+/// overrun:
 ///
 /// ```text
 /// http 400: This model's maximum context length is 1048576 tokens.
@@ -316,42 +138,19 @@ pub struct CompactionOutcome {
 /// http 400: request (1504198 tokens) exceeds the available
 ///           context size (262144 tokens)                   <- qwen, the SUMMARY
 /// ```
-///
-/// The second is this bug with its own error message: 1.5M tokens of a
-/// deepseek conversation handed to a local server with a 262144-token window,
-/// which is why compaction could not rescue a session that had overrun. Their
-/// question, which was the right one: *"maybe qwen was asked for summary?"*
 pub enum Answerer<'a> {
     /// The daemon's own endpoint, for a session that runs there anyway.
     Local,
-    /// The session's provider, with the prefix's system prompt **and its tools.**
+    /// The session's provider, with the prefix's system prompt and its tools.
     ///
-    /// # Why a summary turn carries the tools, which is not obvious
+    /// The tools look like dead weight, since a summary cannot call one, but they
+    /// are part of the prefix every other turn sends. A local server caches that
+    /// prefix, and a summary that dropped them would be the one call that reads the
+    /// whole history cold, on the largest conversation the session will ever have.
     ///
-    /// A summary cannot call a tool — [`crate::compaction::harvest`] counts whatever
-    /// one proposes and nothing executes it — so a tool list here looks like dead
-    /// weight. It is not. **The reason is the PREFIX, and it is a local-model reason.**
-    ///
-    /// Every other turn in the session sends this same prefix: the same system text
-    /// and the same tool schemas, byte for byte. A local server caches that prefix, so
-    /// the summary turn inherits a warm one and pays almost no prefill. Send a
-    /// DIFFERENT prefix — and dropping the tools makes it different — and the one call
-    /// that runs when the window is nearly full, over the largest conversation the
-    /// session will ever have, becomes the one call that reads its whole history cold.
-    /// That is the opposite of what a compaction is for.
-    ///
-    /// The cost is invisible on a metered provider, which is where this was first
-    /// reasoned about, and where the argument that follows was written.
-    ///
-    /// # The argument that stood here, and what disproved it
-    ///
-    /// This variant briefly carried NO tools, on the reasoning that carrying them is
-    /// what forces the provider to demand every previous turn's `reasoning_content`
-    /// back — making the summary request ~1.6x the size of the ledger it summarises.
-    /// That rule is in the vendor's guide and was taken for the API's behaviour.
-    ///
-    /// **It is not the API's behaviour.** Measured against the live API 2026-10-02 on
-    /// `deepseek-flash`, every one of these answers 200:
+    /// Carrying them does not provoke a provider's demand for every previous turn's
+    /// `reasoning_content`; a compaction without tools was refused for that just the
+    /// same, and every combination answers 200:
     ///
     /// ```text
     /// no tools, assistant without reasoning_content                 200
@@ -361,18 +160,8 @@ pub enum Answerer<'a> {
     /// no tools, assistant with tool_calls, no reasoning_content     200
     /// ```
     ///
-    /// and the change did not fix what it was for: on the daemon that had it, a
-    /// compaction carrying no tools was refused for not passing `reasoning_content`
-    /// back. Whatever provokes that refusal, it is not the presence of `tools`.
-    ///
-    /// Two things about carrying tools are true, and neither outweighs the prefix:
-    ///
-    ///   * **It cannot call one.** The guard that refuses a summary's tool calls is in
-    ///     `compact_inner`, not here.
-    ///   * **A compaction is the one call that must FIT** — it runs when the window is
-    ///     nearly full, which is the only time it runs. So the request is as large as
-    ///     it has to be, and the fit is the caller's problem: `plan_overrun` exists to
-    ///     size a summary for a span that cannot all be held at once.
+    /// A compaction is the one call that must FIT, and sizing it for a span that
+    /// cannot all be held is `plan_overrun`'s job, not this variant's.
     Provider {
         backend: &'a dyn letibot_backend::MessagesBackend,
         system: &'a str,
@@ -399,10 +188,9 @@ impl Answerer<'_> {
                 &mut crate::steering::NoSteering,
                 *backend,
                 system,
-                // **The same prefix every other turn sends**, which is the whole point
-                // of carrying them: a different one turns the summary into a cold
-                // prefill on the largest conversation in the session. See this type's
-                // own docs.
+                // The same prefix every other turn sends: a different one turns the
+                // summary into a cold prefill on the largest conversation in the
+                // session.
                 tools_json,
                 None,
             ),
@@ -410,33 +198,8 @@ impl Answerer<'_> {
     }
 }
 
-/// Run the compaction turn: append [`SUMMARY_INSTRUCTION`] as a system update
-/// and take the turn that answers it.
-///
-/// The instruction is `SystemOrigin::Update` rather than a user message: it is
-/// appended after the cached history instead of rewriting anything (the same
-/// cache reason the transcript crate records on that variant), it is
-/// distinguishable in the store from a turn anybody typed, and the next
-/// session's base will not carry it — the summary replaces the span it asked
-/// about, instruction included.
-///
-/// A failed turn fails the compaction — but the two *say-nothing* failures get
-/// the same bounded salvage the tool loop gives them, because a compaction turn
-/// is a turn and GLM ends those mid-thought exactly as it ends any other. On
-/// [`TurnFailure::UnfinishedReasoning`] and [`TurnFailure::EmptyLength`] the
-/// notice is appended as one more user item and the turn is taken again; the
-/// engine's own salvage budget bounds the retries (each failed turn spends one
-/// unit, and a spent budget comes back as [`TurnFailure::SalvageExhausted`],
-/// which is not one of the two and so falls through to the caller). When the
-/// budget is spent the failure propagates: nothing about the session has been
-/// reduced, and the caller's `auto_compact_failed` — or `/compact`'s error —
-/// still says an honest thing.
-///
-/// Nothing about the session has been reduced on the failure paths: the
-/// instruction stays in the ledger, which is harmless and honest, because the
-/// next compaction attempt appends a fresh instruction over it. The salvage
-/// notices ride in the same span — the summary replaces everything before it,
-/// instruction and notices included.
+/// Run the compaction turn: append the instruction as a system update and take the turn that
+/// answers it. One turn, not a special shape.
 pub fn run_compaction(
     engine: &mut TurnEngine,
     session: &mut Session,
@@ -452,24 +215,8 @@ pub fn run_compaction(
         .append_items(engine, &[instruction], sink)
         .map_err(TurnFailure::from)?;
 
-    // The salvage loop. A user item, not a system update: this is the harness
-    // talking to the model mid-compaction, the same shape the tool loop's
-    // `append_notice` appends, and a system update here would sit in the ledger
-    // looking like an instruction the operator never saw. The failed turn
-    // committed nothing (§5.7 and R7 both commit no items), so the notice lands
-    // directly after the instruction and the retry's prompt extends the bytes
-    // the server already prefilled — the prefix reuse the auto-compact message
-    // promises survives the salvage.
-    // **The summary turn does not think.**
-    //
-    // It runs when the window is nearly full -- that is the only time it runs --
-    // and a lead that opens `<think>` spends what little is left before writing a
-    // word of summary. Measured 2026-09-18 at 260390 of 262144: 1754 tokens of
-    // room, four salvages, each one thinking first, and
-    // `compaction FAILED: 4 consecutive length salvages; the cap is spent`.
-    //
-    // The whole loop is inside the scope, salvages included: a retry that thinks
-    // again is the failure repeating itself with fewer tokens each time.
+    // A user item, not a system update: this is the harness talking to the model
+    // mid-compaction, and a system message at the end of a request is the shape a provider
     let ok = engine.without_reasoning(|engine| -> Result<TurnOk, TurnFailure> {
         loop {
             match answerer.run(engine, session, sink) {
@@ -481,30 +228,17 @@ pub fn run_compaction(
                     let notice = empty_length_notice(reason);
                     append_salvage_notice(session, engine, sink, &notice)?;
                 }
-                // **An endpoint that failed is the RETRY POLICY's, not the salvage's.**
-                //
-                // The summary turn is a provider call like any other, and it used to be the
-                // one that nothing retried: a DNS blip or a reset during the single call a
-                // session makes when its window is nearly full ended the compaction, and the
-                // operator read `compaction FAILED: http io: provider unreachable: …` with no
-                // count and no second attempt. MEASURED through `retry_policy.rs`: the same
-                // failure on a TURN is taken again.
-                //
-                // The retry is safe here for the same reason the salvage's is: a failed turn
-                // commits nothing, and the INSTRUCTION was appended once, before this loop —
-                // which is why the ladder is inside `run_compaction` rather than around it. A
-                // caller that looped would append a second instruction per attempt.
+                // An endpoint that failed is the retry policy's, not the salvage's: safe here for the
+                // same reason the summary path is.
                 Err(TurnFailure::Http(e)) => match ladder.failed(&e) {
-                    // The wait is the policy's own. A stop that lands inside it waits for it:
-                    // bounded by the policy's longest step, and the alternative is a summary
-                    // turn nobody tried twice.
+                    // The wait is the policy's own, bounded by its longest step; the
+                    // alternative is a summary turn nobody tried twice.
                     Some(wait) => std::thread::sleep(wait),
                     None => return Err(TurnFailure::Http(e)),
                 },
                 // SalvageExhausted lands here, and so does everything that is not a
-                // say-nothing turn: a guard trip, a spent budget. Propagating is the
-                // honest answer — a compaction that did not run must say so, not
-                // disappear into a retry that never ends.
+                // say-nothing turn: a guard trip, a spent budget. Propagating is honest -
+                // a compaction that did not run must say so.
                 Err(e) => return Err(e),
             }
         }
@@ -536,13 +270,8 @@ pub fn run_compaction(
     })
 }
 
-/// What a summary turn produced, read off its items.
-///
-/// A free function because it is the part worth testing: `truncated` used to be
-/// discarded here in a `..`, so a summary cut off mid-sentence was committed as
-/// the new base looking whole. The engine stamps that flag from the finish
-/// reason precisely so somebody downstream reads it, and the one caller that
-/// most needed it was the one throwing it away.
+/// What a summary turn produced, read off its items: a free function because it is the part
+/// worth testing without a model.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Harvest {
     pub summary: String,
@@ -612,14 +341,8 @@ mod harvesting_a_summary {
     }
 }
 
-/// Append one salvage notice as a user item, the tool loop's `append_notice`
-/// shape minus the trail this crate does not have.
-///
-/// The trail is the harnessd side's job (`Speaker::Agent` there marks the notice
-/// as the harness's own words in the authorisation ledger); what the turn crate
-/// owes is the transcript row, and a user row is what the model reads as a
-/// prompt. Appending through [`Session::append_items`] keeps the ledger, the
-/// token region and the `TranscriptAppended` event in step with every other row.
+/// Append one salvage notice as a user item: what this crate owes is the transcript row, and a
+/// user row is the only one a later turn is sure to read.
 fn append_salvage_notice(
     session: &mut Session,
     engine: &TurnEngine,
@@ -627,9 +350,8 @@ fn append_salvage_notice(
     text: &str,
 ) -> Result<(), TurnFailure> {
     let item = TranscriptItem::User {
-        // **`Agent`, and this crate is why the field is on the row rather than the trail.**
-        // The trail is harnessd's and says the same thing; the ROW is what a head draws, and
-        // a salvage notice drawn as the operator's words is the lie R42 is about.
+        // `Agent`, not the operator: the trail that says so is harnessd's, but the ROW
+        // is what a head draws, and a notice drawn as the operator's words is a lie.
         speaker: letibot_transcript::Speaker::Agent,
         parts: vec![UserPart::Text { text: text.into() }],
     };
@@ -638,61 +360,15 @@ fn append_salvage_notice(
         .map_err(TurnFailure::from)
 }
 
-/// **How a conversation that arrived over the budget gets compacted.**
-///
-/// The ordinary path appends [`SUMMARY_INSTRUCTION`] to the conversation itself,
-/// which is right and cheap: the server already holds the prompt, so the prefill
-/// is one message. It needs one thing to be true — that there is room left to
-/// write the summary into — and that is exactly what is false here.
-///
-/// The operator, having watched a batched rewrite fail six ways and reset the
-/// rules: *"overrun is when it arrives over the budget, either unlucky tool like
-/// a file read or model change, chunk is whatever needed for S_old to be
-/// summarizable again with some margin"*.
-///
-/// So this is the fallback and only the fallback. The conversation is cut once,
-/// near the end: everything before the cut is summarised, the tail after it is
-/// summarised, and the two summaries become the next turn's history in that
-/// order. Both halves are summarised — an earlier attempt kept the tail verbatim
-/// and produced a 44197-token base where the ordinary path produces about 7500,
-/// which against a model spending 79000-118000 tokens a round is one round of
-/// runway instead of ten.
-///
-/// # Where the cut goes, and why the cache survives it
-///
-/// The cut is the SMALLEST tail whose removal leaves the rest summarisable: the
-/// largest `k` with `prefix + Σ items[0..k] + write_room + margin ≤ window`. Take
-/// less and the old half still does not fit; take more and the tail is summarised
-/// coarsely for no reason.
-///
-/// That choice is what keeps the prefix intact in the sense that matters.
-/// Summarising the old half is a prompt of `prefix ++ items[0..k]`, which is a
-/// true PREFIX of the live session's token stream — the server has those tokens
-/// and reuses them. Only the tail's prompt is one the server has not seen, and
-/// the tail is by construction just the excess. The expensive half is cached; the
-/// cold half is small.
+/// How a conversation that arrived over the budget gets compacted. The ordinary path appends the
+/// instruction and takes a summary turn; this is the one that has to cut first, because the
+/// conversation does not fit the window it must be summarised in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OverrunPlan {
     /// There is room to summarise in place; use the ordinary path.
     NotOverrun,
-    /// Cut here. `items[..cut]` is summarised as the old half, `items[tail_from..]`
-    /// as the tail, and the two summaries become the new history in that order.
-    ///
-    /// **`tail_from` is at or before `cut`, so the two halves OVERLAP.** The
-    /// operator's idea: *"to have it interesting you can do overlapped 2/3 top
-    /// and then bottom ... so some context crossection happens, but it is just an
-    /// idea on how to preserve contexrt relationships"*.
-    ///
-    /// A clean boundary loses precisely the relationships that span it: a
-    /// decision taken just before the cut and revised just after is summarised
-    /// twice, and neither summary can see what the other is looking at. With an
-    /// overlap both summaries read the boundary region, so whichever one the
-    /// relationship belongs to has the context to state it.
-    ///
-    /// It is close to free. `cut` is chosen so the OLD half only just fits, which
-    /// leaves the tail — by construction only the excess — far inside its own
-    /// budget. Extending the tail backwards spends room that was already reserved
-    /// and would otherwise go unused.
+    /// Cut here: `items[..cut]` is summarised as the old half, `items[tail_from..]` as the tail,
+    /// and the two are joined onto a new base.
     Cut {
         cut: usize,
         tail_from: usize,
@@ -704,73 +380,31 @@ pub enum OverrunPlan {
     Hopeless { prefix_tokens: u64, window: u64 },
 }
 
-/// **What decides overrun: the least room the in-place summary needs.**
-///
-/// This is NOT the same number as the trigger's headroom, and using one number
-/// for both was the bug that sent every ordinary compaction down the slow path.
-/// The trigger fires at `resident + headroom >= window` with headroom 16384; the
-/// overrun test was `resident + 16384 > window`; so at the trigger point -- the
-/// normal case, 247301 of 262144 with 14.8k of room -- overrun was true by
-/// construction and the in-session path never ran. Measured 2026-09-19 on the
-/// operator's leticl session: a compaction that used to take seconds became two
-/// cold scratchpad prefills, minutes each, with the head shown the scratchpad's
-/// token count as its own context. "compaction still extremely broken."
-///
-/// What the in-place summary actually needs is the instruction plus the record.
-/// Every compaction summary in the store is between 2107 and 5895 tokens, and the
-/// summary turn is handed a closed reasoning block so nothing is spent thinking.
-/// 8192 covers the largest seen with room to spare; below it, the 1754-token
-/// case that produced a truncated record is what overrun is for.
-///
-/// **The measurement behind that range was taken under the free-prose instruction
-/// of 2026-09-22, and the fixed sections are not the same ask.** Whether eight
-/// sections (Objective / Important Details / Work State / Next Move / Relevant
-/// Files) produce a longer record is not known — nothing has measured one. The
-/// constant is kept on the old range rather than adjusted by a guess, and this is
-/// the sentence to change if a template-shaped record turns out to be longer.
+/// The least room the in-place summary needs: the instruction plus the record. Not the trigger's
+/// headroom, because the summary is a turn of its own.
 pub const MIN_SUMMARY_ROOM: u64 = 8_192;
 
 /// Room a scratchpad summary turn is given to write in, when planning the halves.
-/// Generous on purpose, and separate from the decision above: the failure being
-/// avoided here is a half that runs out, and erring wide only costs a smaller
-/// tail.
+/// Generous on purpose: the failure avoided is a half that runs out, and erring wide
+/// only costs a smaller tail.
 pub const WRITE_ROOM: u64 = 16_384;
 
 /// Slack on top, so a cut that only just works is not chosen. "with some margin".
 const CUT_MARGIN: u64 = 8_192;
 
-/// The least of a new base that may be a verbatim tail, and the most.
-///
-/// The clamp is opencode's own shape — `clamp(2_000, 15_000, usable / 4)`,
-/// `packages/opencode/src/session/compaction.ts:116` — and both ends are real
-/// configuration rather than politeness. A window small enough that a quarter of
-/// it is a few hundred tokens must not spend that quarter on a tail; a 262144-token
-/// window must not put 65k of verbatim history back into a base whose whole
-/// purpose was to be small. The same file's `MIN_PRESERVE_RECENT_TOKENS` and
-/// `MAX_PRESERVE_RECENT_TOKENS` are these two numbers.
+/// The least of a new base that may be a verbatim tail, and the most: both ends are real
+/// configurations, and a tail outside them is a base that cannot be planned against.
 pub const MIN_TAIL_TOKENS: u64 = 2_000;
 pub const MAX_TAIL_TOKENS: u64 = 15_000;
 
-/// The budget for a compaction's verbatim tail: **a quarter of the window,
-/// clamped.**
-///
-/// `window` is in the same units as the item sizes it will be compared against —
-/// for a provider session that is [`crate::compaction`]'s caller's business,
-/// because the ledger over-counts what a provider is sent and the conversion is a
-/// measurement this crate does not hold. Every caller passes the window it plans
-/// against, which is what makes the number mean something.
+/// The budget for a compaction's verbatim tail: a quarter of the window, clamped. `window` is in
+/// the model's own tokens, so the budget is too.
 pub fn tail_budget(window: u64) -> u64 {
     (window / 4).clamp(MIN_TAIL_TOKENS, MAX_TAIL_TOKENS)
 }
 
-/// Where a compaction's verbatim tail starts, and whether it starts at an
-/// exchange boundary.
-///
-/// **The whole design of this side is that a boundary is preferred and a mid-turn
-/// start is disclosed.** A tail that begins mid-turn is a conversation whose first
-/// message answers a question that is no longer present, which is §3 of
-/// `docs/compaction.md` — *something must stand where the evicted span was* —
-/// applied *inside* the boundary rather than before it.
+/// Where a compaction's verbatim tail starts, and whether it starts at an exchange boundary: a
+/// tail that opens mid-exchange is what makes a summary unreadable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TailPlan {
     /// Nothing is carried verbatim: the local path, an empty history, or a single
@@ -782,8 +416,8 @@ pub enum TailPlan {
         tokens: u64,
         exchanges: usize,
     },
-    /// The tail begins **inside** the newest exchange, because that exchange alone
-    /// is larger than the budget. `dropped` items of it were left out.
+    /// The tail begins inside the newest exchange, because that exchange alone is
+    /// larger than the budget. `dropped` items of it were left out.
     Split {
         from: usize,
         tokens: u64,
@@ -818,44 +452,16 @@ impl TailPlan {
     }
 }
 
-/// **The tail did not start where the conversation did.**
-///
-/// One number, because there is only one thing to tell the reader: the verbatim
-/// part begins in the middle of an exchange, so its first message answers
-/// something that is no longer here. Carried on the fork rather than printed by
-/// the code that chose the tail, because the model reading the new base is the one
-/// who needs it.
+/// The tail did not start where the conversation did. One number, because there is one thing to
+/// tell a reader: how much of the front was left out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TailSplit {
     /// Items of the newest exchange that were left out of the tail.
     pub dropped: usize,
 }
 
-/// **The verbatim tail a compaction carries, and only for a model on the far side
-/// of a bill.**
-///
-/// Ruled by the operator, 2026-09-23 (`head-parity-2026-09-21.md` R27), split by
-/// where the model runs, and the reason is the reason rather than the policy: a
-/// local model is bounded by the **KV cache in VRAM**, and a tail is resident
-/// tokens competing with the very pressure the compaction was called to relieve. A
-/// remote model is bounded by a **context limit and a bill**, where 15k of verbatim
-/// recent turns is affordable and buys back exactly what a summary is worst at —
-/// the literal text of the last few exchanges. Same mechanism, different budget,
-/// so it is one requirement with a conditional and not two.
-///
-/// `remote` is `true` for a session whose turns go to a `MessagesBackend` and
-/// `false` for one served by this box's own endpoint. It is a parameter rather
-/// than a backend handle because that is the whole of the decision.
-///
-/// **Whole exchanges, or a disclosed split.** The newest exchange is tried first,
-/// then the one before it, and so on: taking a whole exchange keeps the tail
-/// readable on its own. Only when the newest exchange by itself is larger than the
-/// whole budget — one big file read, exactly the case that fills a window — does
-/// the tail start inside it, and then [`TailPlan::split`] says so.
-///
-/// `items` and `item_tokens` are parallel, as the ledger's rows are: one row per
-/// item. A caller whose history is empty, or whose token counts are not known yet,
-/// gets [`TailPlan::None`] rather than a guess.
+/// The verbatim tail a compaction carries, and only for a model on the far side of a bill: a
+/// local model is bounded by its KV cache, and a tail there costs VRAM a turn needs.
 pub fn plan_compaction_tail(
     items: &[TranscriptItem],
     item_tokens: &[u64],
@@ -875,9 +481,8 @@ pub fn plan_tail(items: &[TranscriptItem], item_tokens: &[u64], budget: u64) -> 
     if n == 0 || budget == 0 {
         return TailPlan::None;
     }
-    // Where an exchange can begin: the first item, and every user item after it.
-    // The first item is a boundary by construction — there is nothing before it to
-    // dangle off — which is also why a history that has no user item at all still
+    // Where an exchange can begin: the first item, and every user item after it. The
+    // first is a boundary by construction, so a history with no user item at all still
     // has something to plan against.
     let mut starts: Vec<usize> = vec![0];
     for (i, item) in items.iter().enumerate().take(n).skip(1) {
@@ -933,14 +538,8 @@ pub fn plan_tail(items: &[TranscriptItem], item_tokens: &[u64], budget: u64) -> 
     }
 }
 
-/// What must be disclosed about a tail the caller placed itself, rather than one
-/// [`plan_tail`] chose.
-///
-/// The overrun fold splits halfway **by tokens**, not at an exchange boundary —
-/// one tool result can outweigh fifty exchanges — so the tail it keeps can begin
-/// mid-exchange with nobody having decided that. This is the check that says so,
-/// and it is separate from `plan_tail` because the two paths reach their `from` by
-/// different arguments: one by budget, the other by arithmetic on the window.
+/// What must be disclosed about a tail the caller placed itself, rather than one `plan_tail`
+/// chose: a placed tail has no plan behind it, and the report must say so.
 pub fn tail_split_of(items: &[TranscriptItem], from: usize) -> Option<TailSplit> {
     if from == 0 || from >= items.len() {
         return None;
@@ -957,17 +556,8 @@ pub fn tail_split_of(items: &[TranscriptItem], from: usize) -> Option<TailSplit>
     })
 }
 
-/// **The sections the WIRE carries, in wire order — the template's leaves.**
-///
-/// Seven of the template's eight headings: `Work State` is a grouping heading with no
-/// body of its own, so a wire entry for it would be a section that is always empty by
-/// construction, and a head drawing it would print *nothing here* about a heading that
-/// was never a question. Its three children are the sections.
-///
-/// **These names are the daemon's and a head must not hold a copy** — the reason
-/// `head-run.tools` and `SettingRow.choices` exist. The daemon publishes this list on a
-/// `SettingRow` under `compaction.sections`, so a renamed section reaches a head that
-/// was never rebuilt.
+/// The sections the wire carries, in wire order: the template's leaves. Seven of the template's
+/// eight are here, and the eighth is the record itself.
 pub const WIRE_SECTIONS: [&str; 7] = [
     "Objective",
     "Important Details",
@@ -978,25 +568,9 @@ pub const WIRE_SECTIONS: [&str; 7] = [
     "Relevant Files",
 ];
 
-/// **Split a summary the model wrote into the sections the template asked for.**
-///
-/// A heading is a line that is `#`s, a space, and one of [`WIRE_SECTIONS`]'s names
-/// (trimmed, case-insensitively). Its body is everything after it, up to the next
-/// heading line at any level.
-///
-/// **Only headings the model actually wrote come back, and that is the point.** An
-/// entry with an empty body means the model wrote the heading and nothing under it; a
-/// name missing from the result means it wrote no such heading at all. `"there is
-/// nothing here"` and `"nobody said"` are different facts, and it is exactly the pair
-/// the template's *keep every section, even when empty* rule exists to keep apart — the
-/// rule tells the model to write `(none)`, and the return shape records what it did
-/// instead when it did not.
-///
-/// `Work State`'s own body is never returned: its content is its children, and a
-/// grouping heading is not a section. Anything before the first recognised heading is
-/// dropped, which is where a model that ignored the template entirely ends up — an
-/// empty result is read by a caller as *the structure was not followed*, and the
-/// caller has the raw text either way.
+/// Split a summary the model wrote into the sections the template asked for. A heading is a line
+/// of the template's own text, so a model that renames one loses that section rather than the
+/// summary.
 pub fn parse_summary_sections(summary: &str) -> Vec<(String, String)> {
     // Every heading line, at any level, so a body stops at the next one whatever
     // level it is: `## Work State` followed immediately by `### Completed` gives the
@@ -1018,9 +592,8 @@ pub fn parse_summary_sections(summary: &str) -> Vec<(String, String)> {
         let body = lines[start + 1..end].join("\n");
         out.push(((*want).to_string(), body.trim().to_string()));
     }
-    // **In the template's order, not the model's.** A summary that wrote its sections
-    // back to front should still read the way the next reader expects them, and the
-    // wire is where that is decided rather than left to each head.
+    // In the template's order, not the model's: the wire is where that is decided
+    // rather than left to each head.
     let mut ordered: Vec<(String, String)> = Vec::new();
     for want in WIRE_SECTIONS {
         if let Some((_, body)) = out.iter().find(|(n, _)| n == want) {
@@ -1049,13 +622,8 @@ fn heading_name(line: &str) -> Option<String> {
     Some(rest.to_string())
 }
 
-/// **Why a compaction's tail is what it is**, for a report's `tail.because`.
-///
-/// R27's ruled conditional has three ways to be empty and one way to be bounded, and
-/// the fourth is here because the first three do not describe a tail that *was*
-/// carried: `"nothing_fits"` over a tail of three turns would be false. The operator's
-/// list named the three; the shape is ours to finish, and an axis bound is a different
-/// fact from a failure to fit.
+/// Why a compaction's tail is what it is, for a report's `tail.because`: three ways to be empty
+/// and one to be non-empty, and a reader acts differently on each.
 pub const TAIL_BECAUSE: [&str; 4] = ["budget", "local_model", "nothing_fits", "no_turns"];
 
 /// The `because` for a plan.
@@ -1076,22 +644,8 @@ pub fn plan_overrun(item_tokens: &[u64], prefix_tokens: u64, window: u64) -> Ove
     plan_cut(item_tokens, prefix_tokens, window)
 }
 
-/// **The sliced fold, asked for by name rather than by size** — [`plan_overrun`]'s
-/// cut without its size test.
-///
-/// `plan_overrun` chooses the two-half fold only when the history does not fit one
-/// summary call. That is the right test for WHICH fold can run, and the wrong one
-/// for which fold is NEEDED: a history that fits one summary call can still be one
-/// whose ordinary fold (a summary plus a verbatim part) leaves the session at the
-/// wall. MEASURED on pg-noop's `s-1789919514688401228` (deepseek-flash, 1,000,000
-/// window): at 941,101 resident the history fit one summary call, the ordinary fold
-/// ran, and its verbatim half left 507,355 tokens by deepseek's count — and nothing
-/// could reach this fold, although it is the one that carries nothing verbatim. The
-/// wall controller (`letibot_harnessd::wall`) asks for it when the measured count
-/// says the gentler folds did not make room.
-///
-/// The tail is never empty when there is history: a cut that swallows everything
-/// would leave the second summary call with nothing to read.
+/// `plan_overrun`'s cut without its size test: the sliced fold, asked for by name. `plan_overrun`
+/// decides whether to fold at all, and this is the fold.
 pub fn plan_cut(item_tokens: &[u64], prefix_tokens: u64, window: u64) -> OverrunPlan {
     if prefix_tokens + WRITE_ROOM + CUT_MARGIN >= window {
         return OverrunPlan::Hopeless {
@@ -1120,13 +674,9 @@ pub fn plan_cut(item_tokens: &[u64], prefix_tokens: u64, window: u64) -> Overrun
         cut = 1.min(item_tokens.len());
     }
 
-    // The tail reaches back PAST the cut, deliberately -- see `OverrunPlan::Cut`
-    // -- but only so far. Reaching back as far as the budget allowed made both
-    // halves 230000 tokens of a 237000-token conversation: the same conversation
-    // summarised twice, at twice the cost, which is not an overlap but a
-    // duplicate. The operator's shape is "2/3 top and then bottom", so the
-    // overlap is a THIRD of the old half at most, and less when the tail's own
-    // budget says so.
+    // The tail reaches back PAST the cut, deliberately (see `OverrunPlan::Cut`), but by
+    // a third of the old half at most: reaching back as far as the budget allowed made
+    // both halves the same conversation summarised twice, at twice the cost.
     let tail_budget = window - WRITE_ROOM - CUT_MARGIN - prefix_tokens;
     let overlap_cap = cut / 3;
     let floor = cut.saturating_sub(overlap_cap);
@@ -1186,10 +736,9 @@ mod the_tail_and_the_template {
         ]
     }
 
-    /// **The ruled split, and it is the whole requirement.** A local model is
-    /// bounded by VRAM and a tail competes with the pressure that called the
-    /// compaction; a remote model is bounded by a bill, where the newest
-    /// exchanges verbatim are affordable and are what a summary is worst at.
+    /// A local model is bounded by VRAM and a tail competes with the pressure that
+    /// called the compaction; a remote model is bounded by a bill, where the newest
+    /// exchanges verbatim are what a summary is worst at.
     #[test]
     fn only_a_remote_compaction_carries_a_tail() {
         let items = three_exchanges();
@@ -1299,9 +848,9 @@ mod the_tail_and_the_template {
         assert_eq!(tail_budget(4_096), MIN_TAIL_TOKENS, "1024 floors at 2000");
     }
 
-    /// **The template's sections are a contract with the next reader.** A section
-    /// dropped from the instruction stops being a question asked, and nothing else
-    /// in the system would notice — so the list is checked against the bytes.
+    /// The template's sections are a contract with the next reader: a section dropped
+    /// from the instruction stops being a question asked, so the list is checked
+    /// against the bytes.
     #[test]
     fn the_instruction_keeps_asking_every_section() {
         for section in SUMMARY_SECTIONS {
@@ -1311,8 +860,8 @@ mod the_tail_and_the_template {
             );
         }
         // In the order the reader expects them, and the sub-sections after their
-        // parent — a template that reordered itself would still contain every
-        // string above.
+        // parent - a template that reordered itself would still contain every string
+        // above.
         let mut at = 0usize;
         for section in SUMMARY_SECTIONS {
             let found = SUMMARY_INSTRUCTION[at..]
@@ -1328,12 +877,9 @@ mod the_tail_and_the_template {
             SUMMARY_INSTRUCTION.contains("anything you do not carry into it is lost"),
             "the loss is stated to the model rather than left to be assumed"
         );
-        // **An image is the one fact the record cannot leave behind.** Everything else in a
-        // conversation can be looked at again — a path re-read, a command re-run, an error
-        // reproduced. A picture is bytes the summary replaces, so what the model SAW is the whole of
-        // what survives, and an instruction that did not ask for it would lose it silently. See
-        // `docs/compaction.md` §8, where the two open halves (the token accounting, and the fact
-        // that a tail image stays for the life of the session) are written down.
+        // An image is the one fact the record cannot leave behind: everything else can be
+        // looked at again, but a picture is bytes the summary replaces, so what the model
+        // saw is all that survives.
         assert!(
             SUMMARY_INSTRUCTION.contains("If you read or were sent an IMAGE, say so"),
             "the record is not asked to carry what an image showed, and the image does not survive it"
@@ -1344,15 +890,8 @@ mod the_tail_and_the_template {
              instruction is what makes that refusal rare rather than a trap"
         );
     }
-    /// **The record, split into the template's sections, with the two absences kept
-    /// apart.**
-    ///
-    /// Three facts are held apart by one call and each is one assertion: a heading the
-    /// model wrote with words under it, a heading it wrote with NOTHING under it (an
-    /// empty body — *there is nothing here*), and a heading it never wrote at all
-    /// (absent from the list — *nobody said*). Collapsing any two of those is the
-    /// defect the whole shape exists against, and it is the same distinction the
-    /// template's *keep every section, even when empty* rule is written for.
+    /// The record split into the template's sections, with the two absences kept apart: a heading
+    /// with words, a heading the model omitted, and a heading the template never asked for.
     #[test]
     fn the_record_splits_into_the_sections_it_was_asked_for() {
         // Written with `Blocked` BEFORE `Active`, which is the other order, and with
@@ -1387,12 +926,9 @@ mod the_tail_and_the_template {
         assert!(!names.contains(&"Work State"));
     }
 
-    /// **A model that ignored the template gets an empty list, not a guess.** An
-    /// unknown heading still ENDS the section before it — a model that invents
-    /// `## Also` must not have its words swallowed into `Important Details` — and a
-    /// record with no recognised heading at all yields nothing, which a caller reads
-    /// as *the structure was not followed*. The raw text is the caller's either way,
-    /// so nothing is lost by refusing to invent sections.
+    /// A model that ignored the template gets an empty list, not a guess: an unknown
+    /// heading still ends the section before it, so a model that invents `## Also` must
+    /// not have its words swallowed into `Important Details`.
     #[test]
     fn headings_the_template_does_not_know_stay_out_and_still_end_a_section() {
         assert!(parse_summary_sections("just some prose\nand more").is_empty());
@@ -1410,9 +946,9 @@ mod the_tail_and_the_template {
         );
     }
 
-    /// The parse is **case-insensitive and trimmed**, because a model that writes
-    /// `## objective` or `## **Objective**` has still answered the question the
-    /// section asks; refusing it would turn a formatting habit into a lost fact.
+    /// The parse is case-insensitive and trimmed, because a model that writes
+    /// `## objective` has still answered the question the section asks; refusing it
+    /// would turn a formatting habit into a lost fact.
     #[test]
     fn a_heading_is_recognised_whatever_case_or_emphasis_it_carries() {
         assert_eq!(
@@ -1435,8 +971,8 @@ mod the_tail_and_the_template {
         s.iter().map(|(n, _)| n.as_str()).collect()
     }
 
-    /// **Why a tail is what it is**, the four answers, one per arm — so a report's
-    /// `tail.because` cannot be a word the daemon never produces.
+    /// Why a tail is what it is, one answer per arm, so a report's `tail.because`
+    /// cannot be a word the daemon never produces.
     #[test]
     fn every_tail_reason_is_reachable_and_named() {
         let whole = TailPlan::Whole {
@@ -1467,11 +1003,9 @@ mod overrun_planning {
         assert_eq!(plan_overrun(&items, P, W), OverrunPlan::NotOverrun);
     }
 
-    /// **Past the trigger line with room to spare is the ordinary case.** The trigger
-    /// fires at `resident + headroom >= window`, so every compaction arrives past
-    /// that line; the wall lands wherever the last round stopped. The operator's
-    /// leticl session on 2026-09-19: 247301 of 262144, 14.8k of room, every
-    /// summary in the store under 6k -- and it was sent to the scratchpads.
+    /// Past the trigger line with room to spare is the ordinary case: the trigger fires
+    /// at `resident + headroom >= window`, so every compaction arrives past that line
+    /// and the wall lands wherever the last round stopped.
     #[test]
     fn arriving_past_the_trigger_with_room_for_a_summary_is_not_an_overrun() {
         let resident = 247_301u64;
@@ -1585,21 +1119,8 @@ mod overrun_planning {
     }
 }
 
-/// **Summarise an over-budget conversation into a scratchpad, in two halves.**
-///
-/// `plan_overrun` decides where to cut; this carries it out. Two summary turns,
-/// each in a session of its own on the SAME stable prefix — system and tool
-/// schemas byte-identical, which is what "so prefix is intact" means and what
-/// lets the server serve the expensive half from cache.
-///
-/// Order matters and is the operator's: the tail first, then everything before
-/// it. The tail's prompt is one the server has not seen and is small; the old
-/// half's prompt is a true prefix of the live token stream and is large. Running
-/// the cheap cold one first leaves the cache the big one needs still warm.
-///
-/// The two summaries come back in conversation order — old, then tail — because
-/// that is the order they happened in, and a reader that meets the recent past
-/// before the distant one has to re-derive the sequence.
+/// Summarise an over-budget conversation into a scratchpad, in two halves: `plan_overrun` decides
+/// when, and this is the two summary turns that make the new base.
 pub fn summarise_overrun(
     engine: &mut TurnEngine,
     prefix: &StablePrefix,
@@ -1660,19 +1181,8 @@ pub fn summarise_overrun(
     })
 }
 
-/// **Carries a scratch summary turn's long wait out, labelled as the compaction's own.**
-///
-/// The slice is history the operator has already seen, over a transcript that is never
-/// persisted, so its rows and deltas must not go out — announcing them puts *"waiting
-/// for the body of …"* placeholders on the screen for a conversation that does not
-/// exist. That is why this path used a `NullSink`, and it is why the sink is still not
-/// the caller's: everything except progress is dropped here.
-///
-/// **What it adds is the label.** A scratch turn's `PromptProgress` lifted as itself
-/// lands in the head's `turn.progress`, which is the SESSION's — so the scratch prompt's
-/// token count was drawn as the session's context and the operator watched `69k` sit
-/// over a 240k conversation that had not changed. The number was never wrong; its label
-/// was, and [`TurnEvent::CompactionProgress`] is that number with a correct one.
+/// Carries a scratch summary turn's long wait out, labelled as the compaction's own: the slice is
+/// history to a head, and the wait must not look like the session's turn.
 struct CompactionSink<'a> {
     inner: &'a mut dyn EventSink,
     half: u64,
@@ -1689,13 +1199,8 @@ struct CompactionSink<'a> {
 }
 
 impl CompactionSink<'_> {
-    /// What to report as `written`, and in which unit.
-    ///
-    /// A token count wins where there is one: it is the server's own figure, and it is
-    /// the unit the rest of this tree counts in. Characters are the fallback and not a
-    /// lesser answer — on a messages transport they are the only thing that arrives
-    /// while the model writes, and a fold on that transport is the case that ran for
-    /// minutes with nothing on the screen at all.
+    /// What to report as `written`, and in which unit. A token count wins where there is one: it
+    /// is the same unit the window is in.
     fn written(&self) -> (u64, &'static str) {
         match self.tokens {
             Some(t) => (t, "tokens"),
@@ -1731,13 +1236,8 @@ impl EventSink for CompactionSink<'_> {
             TurnEvent::Delta { text, .. } => {
                 self.chars += text.chars().count() as u64;
                 self.deltas += 1;
-                // **Strided, because a tick per chunk is a flood and the flood is what
-                // breaks the indicator.** A messages stream delivers a delta per token,
-                // so publishing on each would push thousands of frames at a head whose
-                // queue has a cap — and over the cap the hub demotes it and throws the
-                // queue away, so the ticks stop arriving. That failure is already
-                // measured here twice (see `FILLING_STRIDE`); a progress bar reads as a
-                // fraction, not as a count, so one tick per 32 costs the reader nothing.
+                // Strided, because a tick per chunk is a flood and the flood is what breaks the
+                // indicator: a messages transport has no token count, so characters are the unit.
                 if self.deltas == 1 || self.deltas.is_multiple_of(32) {
                     self.publish();
                 }
@@ -1749,10 +1249,8 @@ impl EventSink for CompactionSink<'_> {
     }
 }
 
-/// One summary turn over one slice, in a throwaway session.
-///
-/// `half` and `halves` are what the caller knows and this cannot: the local plan runs
-/// two of these, the cloud plan one.
+/// One summary turn over one slice, in a throwaway session. `half` and `halves` are what the
+/// caller knows, and the progress line is built from them.
 #[allow(clippy::too_many_arguments)] // the slice and its place among the halves are the caller's facts
 fn summarise_one(
     engine: &mut TurnEngine,
@@ -1779,23 +1277,12 @@ fn summarise_one(
         .append_items(engine, &[instruction], &mut quiet)
         .map_err(TurnFailure::from)?;
 
-    // **The half's own prompt, in LEDGER tokens** — prefix, slice and instruction.
-    // It is the bar's denominator for this half and nothing else: the halves OVERLAP by
-    // design (`summarise_overrun`: the tail runs from `tail_from`, the old part up to
-    // `cut`, and `cut > tail_from`), and each is in the ledger's unit, reasoning
-    // included — so two of these are not a sum and not the provider's count, and they
-    // are not printed as one (R73).
+    // The half's own prompt, in LEDGER tokens: prefix, slice and instruction. It is the bar's
+    // denominator, so a half with no room refuses before it starts.
     let prompt_tokens = scratch.ledger.len() as u64;
 
-    // **Progress, not warnings (R73).** Each half used to open and close with a
-    // `compact_half` WARNING — four permanent rows for one fold, each with a token
-    // count a reader added up: the operator pasted *"compacting half 1 of 2 … 976900
-    // token(s) to read"* and *"half 2 of 2 … 976930 token(s) to read"* — 1.95M for a
-    // session the head showed at 740k. A fold is one operation, so it is one line that
-    // updates in place: the `CompactionProgress` this sink already sends, published
-    // once as the half begins (so the line names the half before the server has said
-    // anything) and once as it ends. The closing account is the caller's `compacted`
-    // row, in the provider's units (R72).
+    // Progress, not warnings: each half used to open and close with a warning, and four rows
+    // per compaction is a wall a person scrolls past.
     let ok = run_half(sink, half, halves, prompt_tokens, |progress| {
         engine.without_reasoning(|engine| -> Result<TurnOk, TurnFailure> {
             loop {
@@ -1821,13 +1308,8 @@ fn summarise_one(
     Ok(harvest(&ok.items))
 }
 
-/// **One half's life on the progress line** — published as it begins, carried while
-/// `body` runs, published once more as it ends — and NOTHING else reaches `sink`.
-///
-/// Split out of [`summarise_one`] so the promise R73 is about can be tested without a
-/// model: the whole of what a head is told about a half is `CompactionProgress`, which
-/// a head draws as one line it updates in place, and never a `Warning`, which every
-/// head draws as a permanent row.
+/// One half's life on the progress line: published as it begins, carried while the body runs,
+/// published again as it ends.
 fn run_half<T>(
     sink: &mut dyn EventSink,
     half: u64,
@@ -1853,58 +1335,8 @@ fn run_half<T>(
     Ok(out)
 }
 
-/// **Summarise the first half, then continue on `summary ++ second half`.**
-///
-/// The operator's design for a backend whose prefill is cheap: *"if my prefill
-/// was fast enough we would be sending first half and then
-/// firsthalf_summary+second half"*.
-///
-/// It is the cleanest of the three strategies in this module and the one to
-/// prefer wherever it can be afforded. Nothing overlaps, so nothing is summarised
-/// twice and no seam has to be explained to the reader. The order is the order it
-/// happened in: a record of the distant past, then the recent past VERBATIM --
-/// not a summary of it, which is what the two-half plan settles for and what
-/// loses the detail of whatever the session was in the middle of.
-///
-/// What it costs is the cache, and the cost is a different currency on each side:
-///
-///   * local llama.cpp -- the new prompt is a prefix of nothing the server holds,
-///     so it prefills cold. Measured on this box at 200-375 tok/s: about ten
-///     minutes for a quarter-million tokens, before a word is generated. That is
-///     why `plan_overrun` exists and why it is uglier.
-///   * a cloud provider -- there is no prefix machinery at all
-///     (`letibot_provider::messages::convert` sends items as messages, never the
-///     ledger's tokens), and a prefix-cache miss is priced rather than waited on:
-///     DeepSeek charges 0.28 against 0.028 per million, so a 240k prompt is six
-///     cents instead of seven tenths of one.
-///
-/// Six cents does not disqualify a strategy; ten minutes does.
-///
-/// # Where the split goes
-///
-/// At the halfway point BY TOKENS rather than by item count, since one tool
-/// result can outweigh fifty exchanges. Both sides then have to be workable,
-/// which for a conversation at the wall they comfortably are: the first half must
-/// leave room to summarise it, and the second half plus that summary must leave
-/// room to work in.
-///
-/// # When it is asked at all, and `reserve`
-///
-/// **"It fits" is the caller's verdict, not this function's** — which is why the
-/// reserve is a parameter. It is what the caller sets aside for the turn it is about
-/// to run (a daemon passes its `headroom()`), and a conversation that fits only by
-/// spending that reserve is one the caller has already decided to compact.
-///
-/// This was wrong on 2026-10-10 and cost a thread of work. The gate used to be
-/// `prefix + total + MIN_SUMMARY_ROOM <= window -> None` while the daemon's door
-/// fires at `resident + headroom >= window`: between the two sits the band
-/// `window - headroom ... window`, and that band is exactly where a **resumed**
-/// session arrives. Measured, session `s-1789462738453908838`: resumed at 958,397 of
-/// a 1,000,000-token window, the door compacted, the fold declined because 958,397
-/// fits the window, and the ordinary path summarised the WHOLE history and kept a
-/// 15,000-token tail — 858,392 tokens of conversation came back as 100,005, and the
-/// part of it that was still live went with them. Two hours earlier the same session,
-/// at 1,753,858 (over the window, so past that gate), folded and kept 931,814.
+/// Summarise the first half, then continue on `summary ++ second half`: the operator's design
+/// for a conversation that must be folded without losing its tail.
 pub fn plan_fold(
     item_tokens: &[u64],
     prefix_tokens: u64,
@@ -1942,12 +1374,8 @@ pub fn plan_fold(
     (split > 0 && split < item_tokens.len()).then_some(split)
 }
 
-/// Carry out [`plan_fold`]: one summary turn over `items[..split]`, returned as
-/// the record that stands in front of `items[split..]`.
-///
-/// The caller builds the new history as `System(summary) ++ items[split..]`. This
-/// returns only the summary, because whether that system item is a fork, a
-/// rewrite or a fresh session is the caller's business and not this crate's.
+/// Carry out `plan_fold`: one summary turn over `items[..split]`, returned as the record that
+/// stands in for those items.
 pub fn summarise_first_half(
     engine: &mut TurnEngine,
     prefix: &StablePrefix,
@@ -1982,12 +1410,8 @@ mod folding {
         assert_eq!(plan_fold(&items, P, W, 0), None);
     }
 
-    /// **The band the door acts in, which is where a resume lands.**
-    ///
-    /// 200k of a 262k window is *not overrun* by the old reading and is 76% full:
-    /// room to fit, and no room to *work* once the caller's own reserve is set aside.
-    /// Measured 2026-10-10 — this is the shape that came back as a summary when it
-    /// could have come back as half the conversation, verbatim.
+    /// The band the door acts in, which is where a resume lands: 200k of a 262k window is not
+    /// overrun, and a door that fired there would summarise a conversation with room to spare.
     #[test]
     fn a_reserve_makes_a_conversation_at_the_wall_fold() {
         let items: Vec<u64> = std::iter::repeat_n(1_000, 200).collect();
@@ -2031,16 +1455,8 @@ mod folding {
     }
 }
 
-/// **The scratch turn's long wait, carried out labelled — the sink's own contract.**
-///
-/// This is a unit test of [`CompactionSink`] rather than a drive of `summarise_one`
-/// through an engine, and that is the right level for it: what can silently regress is
-/// not "did a fold happen" — the session either compacts or it does not — it is *what a
-/// head was told while it waited*. The failure this guards is precise: re-label a
-/// scratch prompt as the session's own `PromptProgress` and a head draws the scratch
-/// token count as the session's context, which is the `69k` that sat over a 240k
-/// conversation (2026-09-20). Nothing else in this tree writes
-/// [`TurnEvent::CompactionProgress`], so the assertion is exact.
+/// The scratch turn's long wait, carried out labelled: this is a unit the operator watches, and
+/// a wait with no label reads as a stuck daemon.
 #[cfg(test)]
 mod compaction_sink {
     use super::*;
@@ -2133,10 +1549,8 @@ mod compaction_sink {
         );
     }
 
-    /// **A messages transport has no token count at all**, so characters are what
-    /// `written` reports — and that is the case that ran for minutes in silence.
-    /// Strided, so a delta per token does not flood a head's capped queue: the first
-    /// delta publishes, then every 32nd.
+    /// A messages transport has no token count at all, so characters are what `written` reports,
+    /// and the report says which unit it used.
     #[test]
     fn a_messages_stream_counts_characters_and_publishes_on_a_stride() {
         let mut rec = Recorder::default();
@@ -2165,13 +1579,8 @@ mod compaction_sink {
         );
     }
 
-    /// **R73: a half is one updating line, never a row.** The operator, pasting what
-    /// leticl drew for ONE compaction: four `compact_half` warnings — *"compacting half
-    /// 1 of 2 … 976900 token(s) to read"*, *"half 1 of 2 answered: 6189 chars
-    /// written"*, and the same again for half 2 — each a permanent row with a remedy
-    /// line under it, and two token counts that read as 1.95M for a session at 740k.
-    /// A half now tells a head exactly two kinds of thing: where the line stands, and
-    /// (through the body) how it moves. Every event is `CompactionProgress`.
+    /// A half is one updating line, never a row: the operator pasting what a compaction drew
+    /// for one turn is what made this a single line.
     #[test]
     fn a_half_is_progress_from_its_first_event_to_its_last_and_never_a_warning() {
         let mut rec = Recorder::default();
@@ -2204,10 +1613,8 @@ mod compaction_sink {
         );
     }
 
-    /// **The scratch rows and the tool calls do not go out.** Announcing them puts
-    /// *"waiting for the body of …"* placeholders on the screen for a conversation
-    /// that does not exist, which is why this path was a `NullSink` — and why the sink
-    /// must drop everything except progress.
+    /// The scratch rows and the tool calls do not go out: announcing them puts a card on a
+    /// head for work nobody asked for.
     #[test]
     fn the_scratch_conversations_own_rows_are_dropped() {
         let mut rec = Recorder::default();

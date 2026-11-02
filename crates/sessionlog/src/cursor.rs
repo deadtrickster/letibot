@@ -1,38 +1,17 @@
 //! The read mark, shaped so the reusable bug cannot be written.
 //!
-//! §13.2b, on `inbox.go:421-428`:
-//!
-//! > **The mark advances over everything READ, not everything delivered** — called
-//! > the single most reusable bug in that repo, and it is one we would otherwise
-//! > hit exactly: *a filtering consumer that advances only over what it kept
-//! > rereads its own output forever.*
-//!
-//! Two words in that sentence do a lot of work, so to be exact about which of the
-//! three quantities is the right one:
-//!
-//! | quantity | what it is | correct mark? |
-//! |---|---|---|
-//! | delivered | pushed into the head's queue | **no** — not yet consumed; a crash loses them |
-//! | read | pulled out of the queue and examined | **yes** |
-//! | kept | survived the head's filter | **no** — this is the bug |
-//!
-//! So the mark is "read": everything the head has looked at, whether or not it
-//! displayed it. [`Batch`] is the only thing that produces one, and it exposes
-//! [`Batch::last_seq`] — the last seq *in the batch* — and no accessor at all for
-//! "the last seq I kept". A head cannot write the bug because there is nothing to
-//! write it with.
-//!
-//! And the second half of the same rule: the ack is sent **after** the head has
-//! written the batch out, not on receipt (`inbox.go:489-493`). A crash then costs a
-//! duplicate, never a silence. [`Batch::ack_after_render`] is named for it.
+//! **The mark advances over everything READ, not everything delivered or kept** - a
+//! filtering consumer that advances only over what it kept rereads its own output
+//! forever. [`Batch`] is the only thing that produces a mark, it exposes
+//! [`Batch::last_seq`] and no accessor for "the last seq I kept", so a head cannot
+//! write the bug. And the ack goes out **after** the batch is rendered, not on
+//! receipt, so a crash costs a duplicate rather than a silence.
 
 use crate::event::Envelope;
 use crate::protocol::Ack;
 
-/// A run of events handed to a head in one go.
-///
-/// Consuming the batch is what makes it "read". The head then filters, renders what
-/// it kept, and only then acks.
+/// A run of events handed to a head in one go. Consuming the batch is what makes it
+/// "read": the head filters, renders what it kept, and only then acks.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Batch {
     events: Vec<Envelope>,
@@ -62,12 +41,8 @@ impl Batch {
         self.events.last().map(|e| e.seq)
     }
 
-    /// Build the ack. Call this **after** the rendered events are on the screen or
-    /// on the wire, never before.
-    ///
-    /// `rendered + filtered` must equal the batch length: a head that loses track of
-    /// an event has a broken filter, and this is where it becomes visible instead of
-    /// looking like a quiet session.
+    /// Build the ack, **after** the rendered events are on the screen or on the wire.
+    /// `rendered + filtered` must equal the batch length, or a filter lost an event.
     pub fn ack_after_render(&self, rendered: u64, filtered: u64) -> Option<Ack> {
         let seq = self.last_seq()?;
         debug_assert_eq!(
@@ -178,11 +153,9 @@ mod tests {
 
     #[test]
     fn there_is_no_way_to_ack_the_last_kept_seq() {
-        // Enforced by absence: this test is the reminder. `Batch` exposes
-        // `last_seq` only, and `ack_after_render` derives `seq` from it rather than
-        // taking one.
-        // The needle is assembled at runtime so that this assertion does not match
-        // itself — a source-scanning test that finds its own text always passes.
+        // Enforced by absence: this test is the reminder. The needle is assembled at
+        // runtime so the assertion does not match itself - a source-scanning test that
+        // finds its own text always passes.
         let needle = format!("fn last{}kept_seq", "_");
         assert!(!include_str!("cursor.rs").contains(&needle));
     }

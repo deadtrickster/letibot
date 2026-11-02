@@ -1,43 +1,11 @@
-//! **A read-only window onto a store somebody else is writing**, for the tests that
-//! measure the operator's real `sessions.db` without copying it.
+//! A read-only window onto a store somebody else is writing, for the tests that measure the
+//! operator's real `sessions.db` without copying it.
 //!
-//! # Why this exists
-//!
-//! `crates/turn/tests/restore.rs` and `crates/harnessd/tests/reprefill_feasibility.rs`
-//! used to `std::fs::copy` the whole store, `-wal` and `-shm` beside it, into the temp
-//! dir, once per test. MEASURED 2026-10-14: the store was 5.2 GB with a 346 MB WAL, the
-//! three restore tests ran in parallel, so one `cargo test` put **~16.7 GB** into a
-//! `/tmp` that is a tmpfs — RAM — and a test that failed or was killed left its copy
-//! behind (two 9.3 GB leftovers were found that day). The copy was also not a snapshot:
-//! copying the `.db` and then the `-wal` of a file a running daemon is writing races its
-//! checkpoints, so the pair could disagree about which pages are current.
-//!
-//! None of those tests ever wrote to their copy. What each needs is ONE transcript at a
-//! time: its `transcript` row, its `stable_prefix`, its items. So the view is an
-//! in-memory [`Store`] with the real file `ATTACH`ed read-only (`mode=ro`), and
-//! [`LiveView::load`] copies exactly one transcript into memory inside one transaction —
-//! one read snapshot of the live file, consistent by SQLite's own WAL rules — loads it
-//! through the ordinary [`Store::load_transcript`], and rolls the copy back. Peak memory
-//! is the largest transcript (tens of MB), the temp dir is never touched, and there is
-//! nothing to leave behind.
-//!
-//! # What it never does to the live file
-//!
-//! It opens it with `mode=ro`, so SQLite refuses every write through this connection —
-//! including the migration [`Store::open`] would run, which is why the live file is
-//! never handed to `Store::open` (see `reprefill_feasibility.rs`'s module doc for the
-//! day that cost two subagent spawns). A read-only connection never checkpoints. The
-//! read transaction is held only for one transcript's copy, so it pins the WAL for
-//! milliseconds, not for the length of a test.
-//!
-//! # Why the append-only triggers are dropped in the copy
-//!
-//! The in-memory store is built by [`Store::open_in_memory`], so it carries the
-//! `transcript_item` triggers that refuse an out-of-order or mis-sized row. Those guard
-//! the WRITER. A copy is not a writer: it has to hold the stored bytes as they are, so
-//! that the test reading them is the one that decides whether they are right. A copy
-//! that re-validated on the way in would turn a bad row into a failed `INSERT` instead
-//! of the named refusal the restore tests exist to see.
+//! An in-memory [`Store`] with the real file `ATTACH`ed `mode=ro`: [`LiveView::load`] copies one
+//! transcript in inside one transaction, loads it through [`Store::load_transcript`], and rolls
+//! the copy back. SQLite refuses every write through that connection, so it never checkpoints.
+//! The copy drops the append-only triggers on purpose: a copy is not a writer, and a test must see
+//! the stored bytes as they are.
 
 use std::path::Path;
 
@@ -90,10 +58,9 @@ impl LiveView {
                 [],
                 |r| r.get(0),
             )?;
-            // **The same rule `Store::open` applies**, floor and all: a live view is a reader, and
-            // a store a newer build migrated additively is one this build can still read. A view
-            // is read-only, so it can neither record a floor nor repair a missing one — a file
-            // from before floors is refused here exactly as it is refused at an open.
+            // The same rule `Store::open` applies, floor and all: a view is a reader, so a store a
+            // newer build migrated additively is one this build can still read. Read-only, it can
+            // neither record a floor nor repair a missing one.
             let floor = super::floor::read_floor(&conn, LIVE)?;
             if found > SCHEMA_VERSION && !floor.is_some_and(|f| f <= SCHEMA_VERSION) {
                 return Err(StoreError::SchemaTooNew {
@@ -106,12 +73,9 @@ impl LiveView {
         Ok(LiveView { store })
     }
 
-    /// The connection, with the live file attached as `live` — for the queries a test
-    /// asks of the live file directly (`SELECT … FROM live.transcript …`).
-    ///
-    /// The process's store lock, held — see [`Store::connection`]. **Do not call a method of
-    /// this view while holding it**: the in-memory store is the same one connection, so the
-    /// second method would wait on the lock it already has.
+    /// The connection, with the live file attached as `live`. Holding it holds the process's store
+    /// lock - do not call another method of this view while holding it: the in-memory store is the
+    /// same one connection, so the second call would wait on the lock it already has.
     pub fn connection(&self) -> super::Conn<'_> {
         self.store.connection()
     }
@@ -127,12 +91,8 @@ impl LiveView {
     }
 
     /// One transcript, read from the live file in one snapshot and loaded through
-    /// [`Store::load_transcript`]. The in-memory copy is rolled back before this returns.
-    ///
-    /// **The load runs on the connection this view already holds**, not through a second call
-    /// into the store: there is one connection per store in the process (see [`Store::open`]),
-    /// so asking the store for the transcript while the copy is open would wait on this very
-    /// lock.
+    /// [`Store::load_transcript`]. The load runs on the connection this view already holds - a
+    /// second call into the store would wait on the very lock the copy is open under.
     pub fn load(&self, transcript_id: &str) -> Result<LoadedTranscript> {
         let conn = self.connection();
         // DEFERRED: the first read of `live` below takes the read snapshot, and every

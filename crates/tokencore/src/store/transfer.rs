@@ -1,50 +1,10 @@
-//! **One session, out of one store and into another** — the transfer half of
-//! `docs/remote-hosts.md` RH4, where a session's whole daemon moves to a remote host and
-//! back.
+//! One session, out of one store and into another: the transfer half of a session whose daemon
+//! moves to a remote host and back.
 //!
-//! # What moves, and what does not
-//!
-//! A row belongs to a session when the session id is its key. Those tables are listed in
-//! [`TABLES`], and the list is the whole of the rule: `session`, its transcripts and their
-//! items, the todo list, the job history and the job contexts, the monitors it declared,
-//! the mode it was put at, the decisions the gate took in it and the citations its replies
-//! landed. **`subagent_run` is deliberately NOT here** even though it names the session:
-//! its rows are keyed by the CHILD's id, and a child is a session of its own — carrying
-//! the parent's rows across would tell the destination daemon to resume a child whose
-//! transcript did not travel, and it would abandon it. A child moves by being migrated by
-//! id, like anything else. The queue tables, `project_mode` and `daemon_life` are keyed by
-//! a repository, a root or a process, none of which is a session.
-//!
-//! # Why the rows are moved as ROWS
-//!
-//! A hand-written struct per table would be a second copy of the schema, and this store's
-//! schema has forty-column tables that grow by a column every few weeks — a copy of it
-//! that has to be kept in step is a copy that will not be. A row travels as
-//! `(column names, values)` read off the statement itself, so a column added tomorrow
-//! travels tomorrow. The price is that a destination whose schema does NOT know a column
-//! is refused by name rather than silently dropping it, which is the right way round: a
-//! migrated session missing a column is a session that behaves differently from the one
-//! that was left behind.
-//!
-//! # Two verifications, and why both
-//!
-//! [`Store::import_session`] runs [`TokenLedger::verify_chain`] twice: once over the rows
-//! **in the file**, before anything is written, and once over the rows **in the
-//! destination store**, inside the transaction that writes them. The first refuses a
-//! truncated or edited token blob without touching the destination — [`SessionTransfer::digest`]
-//! covers the parts the chain cannot see, such as an item's JSON. The second is the same
-//! check a resume makes (`letibot_turn::resume`), and it is the one that answers the
-//! question the migration is actually asking: *will the daemon on the other side be able
-//! to open this conversation?*
-//!
-//! # The marker
-//!
-//! A session has one live copy. The copy left behind carries `session.lives_on` — the
-//! name of the endpoint that holds it now, `local` or a host from `hosts.toml` — and
-//! `session.moved_ms`, so `--sessions`, `--continue` and a head can say where it is
-//! instead of offering a stale local copy. The live copy's marker is NULL. The column is
-//! set by [`Store::set_lives_on`] and is the ONE thing a migration changes about a row it
-//! did not create.
+//! The file describes itself (its columns come from the statement that wrote them) and carries a
+//! digest over everything the token chain cannot see, so an item's JSON or a todo list cannot be
+//! edited unnoticed. An import refuses by name before it writes, and a file whose digest or
+//! chain does not check out changes nothing.
 
 use rusqlite::OptionalExtension;
 use rusqlite::types::{Value as SqlValue, ValueRef};
@@ -55,23 +15,12 @@ use super::{Result, Store, StoreError, blob_to_tokens};
 use crate::ledger::{LedgerRow, TokenLedger};
 use crate::vocab::TokenId;
 
-/// What this module writes into [`SessionTransfer::format`], and what it refuses to read.
-///
-/// A number rather than an assumption, for the reason every version in this store is one:
-/// a file written by a later build may carry a table this one would silently drop, and a
-/// migration that quietly lost a transcript is worse than one that refused.
+/// What this module writes into [`SessionTransfer::format`], and what it refuses to read. A
+/// number rather than an assumption, for the reason every version in this store is one.
 pub const TRANSFER_FORMAT: u32 = 1;
 
-/// **The tables a session's own rows are in**, and the query that finds them.
-///
-/// `(table, where, order)` — the third entry is what makes a transcript's items insert in
-/// `seq` order, which the store's own insert trigger requires ([`super::SCHEMA_SQL`]'s
-/// `transcript_item_append_only_insert`): rows out of order are refused, so the order here
-/// is not a nicety.
-///
-/// The list is ordered as the inserts must be, because foreign keys are on: a prefix
-/// before the transcript that names it, a transcript before its items, the session before
-/// everything keyed by it.
+/// The tables a session's own rows are in, and the query that finds them: `(table, where,
+/// order)`, and the third entry is what makes a transcript's items insert in `seq` order.
 const TABLES: &[(&str, &str, &str)] = &[
     (
         "stable_prefix",
@@ -102,10 +51,8 @@ const TABLES: &[(&str, &str, &str)] = &[
     ("citation", "session_id = ?1", "ORDER BY text_hash"),
 ];
 
-/// One table's rows, as the store holds them.
-///
-/// `columns` comes from the statement, not from a constant: the file a store writes
-/// describes itself, and a reader that meets a column it does not know says so.
+/// One table's rows, as the store holds them. `columns` comes from the statement, not from a
+/// constant: the file describes itself, and a reader that meets a column it does not know.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TableExport {
     pub table: String,
@@ -132,11 +79,8 @@ pub struct SessionTransfer {
     /// that has only the file should not have to parse a table to find it.
     pub session_id: String,
     pub tables: Vec<TableExport>,
-    /// SHA-256 over this struct with the field absent, hex. The chain covers the tokens;
-    /// this covers everything the chain cannot see — an item's JSON, a todo list, a mode.
-    /// It is an INTEGRITY check and not a signature: it says the file is the file that was
-    /// written, and nothing about who wrote it. The transport is ssh to the operator's own
-    /// machine, and the file never leaves the two stores.
+    /// SHA-256 over this struct with the field absent, hex. The chain covers the tokens; this
+    /// covers what the chain cannot see — an item's JSON, a todo list, a mode.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub digest: Option<String>,
 }
@@ -154,11 +98,8 @@ pub struct ImportReport {
     pub monitors: usize,
     pub decisions: usize,
     pub citations: usize,
-    /// **This store already held the session** and the file CAME IT HOME — the rows before the
-    /// file's were already here, and what this import did was carry the rest. A round trip is
-    /// two of those, because a move back to a laptop lands in the store the session was last
-    /// in: the copy left behind is the prefix of the file, and nothing appended to it while it
-    /// was marked.
+    /// This store already held the session and the file came home: the rows before the file's
+    /// were here, and the import carried the rest.
     pub caught_up: bool,
 }
 
@@ -202,12 +143,8 @@ impl SessionTransfer {
         Ok((t, row))
     }
 
-    /// **The digest this file SHOULD carry**, recomputed from its contents.
-    ///
-    /// Serialised with the digest absent, from the deserialised struct — so the bytes
-    /// hashed are this build's canonical spelling of the file and not the bytes that
-    /// arrived. A file whose field order or whitespace differs still verifies, which is
-    /// what makes the check about the CONTENTS; a file whose contents differ does not.
+    /// The digest this file SHOULD carry, recomputed from its contents: serialised with the
+    /// digest absent, so the bytes hashed are this build's canonical form.
     fn recomputed_digest(&self) -> Result<String> {
         let mut bare = self.clone();
         bare.digest = None;
@@ -264,13 +201,8 @@ impl Store {
         Ok(transfer)
     }
 
-    /// **Read one session in**, or change nothing at all.
-    ///
-    /// Refuses by name, before writing: a file this build does not understand, a file whose
-    /// contents are not the ones it was written with, a token chain that does not rebuild,
-    /// and a session id the destination already holds. Every one of those is a migration
-    /// that would otherwise leave two half-copies of one conversation and no way to tell
-    /// which is which.
+    /// Read one session in, or change nothing at all. It refuses by name, before writing: a file
+    /// this build does not understand, or one whose contents are not what it was written as.
     pub fn import_session(
         &self,
         transfer: &SessionTransfer,
@@ -310,12 +242,8 @@ impl Store {
             )));
         }
         if let Some(existing) = self.session(id)? {
-            // **Two copies are only allowed to be two copies when one of them is marked.**
-            // The copy here is the one a PREVIOUS move left behind: its rows are a prefix of the
-            // file's (nothing could append to it — the marker refuses to open it), so the file
-            // catches it up. A copy here that is NOT marked is the state a migration exists to
-            // prevent — two live transcripts of one conversation, each going on being appended
-            // to — and no reading of the file can tell which of them a person means.
+            // Two copies are only allowed when one of them is marked. The copy here is the one a
+            // PREVIOUS move left behind, and its rows are a prefix of the file's.
             if existing.lives_on.is_none() {
                 return Err(StoreError::Refused(format!(
                     "{id} is already in this store, and it is not marked as living anywhere \
@@ -353,10 +281,8 @@ impl Store {
                 }
                 let insert = format!(
                     "{} INTO {} ({}) VALUES ({})",
-                    // **A prefix is content-addressed, so the identical row may already be
-                    // here** — a second session on the same prompt inherits one, and a
-                    // migration must not fail because the destination already has it.
-                    // Everything else is the session's own row or nothing.
+                    // A prefix is content-addressed, so the identical row may already be here: a
+                    // second session on the same prompt inherits one, and the import must not fail.
                     if table.table == "stable_prefix" {
                         "INSERT OR IGNORE"
                     } else {
@@ -397,12 +323,8 @@ impl Store {
             .and_then(|(on, at)| on.map(|on| (on, at))))
     }
 
-    /// **Mark a session as living somewhere else**, or clear the mark when it comes home.
-    ///
-    /// `None` clears it — the copy in front of you is the live one. The mark is the only
-    /// thing a migration writes into the source store, and it writes nothing else: the
-    /// rows stay, because a migration that deleted them would have no way back when the
-    /// far side turned out to be a host that could not build.
+    /// Mark a session as living somewhere else, or clear the mark when it comes home. `None`
+    /// clears it, because the copy in front of you is the live one.
     pub fn set_lives_on(&self, session_id: &str, on: Option<&str>) -> Result<()> {
         let n = self.exec(
             "UPDATE session SET lives_on = ?2, moved_ms = ?3 WHERE id = ?1",
@@ -430,18 +352,8 @@ impl Store {
     }
 }
 
-/// **The workspace is the destination's, and the marker is the destination's** — then the chain
-/// is rebuilt again over what this store now holds, and the report is counted.
-///
-/// The two destination facts cannot come from the file: it was written before anybody knew where
-/// the copy would land. A session that arrived carrying the source's workspace would open onto a
-/// folder that is not here, and one carrying the source's marker would say it lives somewhere
-/// other than where it now does.
-///
-/// **The second chain check is inside the transaction**, so a store that cannot rebuild the
-/// conversation rolls back to the state it was in rather than keeping rows nothing can open. It
-/// is the same check a resume makes, and it is the one that answers the question the migration
-/// is actually asking: *will the daemon here be able to open this?*
+/// The workspace is the destination's and the marker is the destination's; then the chain is
+/// rebuilt over what this store now holds, and the report is counted.
 fn settle(
     tx: &rusqlite::Transaction<'_>,
     transfer: &SessionTransfer,
@@ -477,14 +389,8 @@ fn settle(
     })
 }
 
-/// **A copy this store already has, brought up to what the file says.**
-///
-/// The case a round trip lands in: the rows left behind here are the PREFIX of the file's, because
-/// the marker refused to open them and nothing appended to them. So the missing rows are appended
-/// (the store's own trigger would refuse anything else), the metadata tables are replaced, and the
-/// overlap is CHECKED rather than assumed: the last row of the copy here must be the same row, by
-/// its chain link, as the file's row at that index. If it is not, the two copies diverged — which
-/// means something appended here while the marker said not to — and that is refused by name.
+/// A copy this store already has, brought up to what the file says: the case a round trip lands
+/// in, since the rows left behind here are the prefix of the file's.
 fn catch_up(
     tx: &rusqlite::Transaction<'_>,
     transfer: &SessionTransfer,
@@ -530,10 +436,8 @@ fn catch_up(
         insert_rows(tx, table, "INSERT OR IGNORE")?;
     }
     if let Some(items) = transfer.table("transcript_item") {
-        // **A copy with rows the file does not have is a divergence, not a superset.** The whole
-        // claim this function rests on is that nothing appended here while the copy was marked;
-        // a row here that the live copy never saw says that claim is false, and appending the
-        // file's rows on top of it would build one conversation out of two.
+        // A copy with rows the file does not have is a divergence, not a superset. The whole claim
+        // rests on nothing having been appended while the copy was marked.
         for (tid, _) in transcripts_of(tx, id)? {
             let have: i64 = tx.query_row(
                 "SELECT COUNT(*) FROM transcript_item WHERE transcript_id = ?1",
@@ -735,10 +639,8 @@ struct ReadBack {
 }
 
 impl ReadBack {
-    /// [`TokenLedger::restore`] and then [`TokenLedger::verify_chain`] — the two passes
-    /// `letibot_turn::resume` runs, for the reason its header gives: the first checks the
-    /// rows against the blobs it was handed, the second checks the region the session will
-    /// actually submit.
+    /// [`TokenLedger::restore`] and then [`TokenLedger::verify_chain`]: the two passes a resume
+    /// runs, the first checking the rows against the tokens and the second the chain.
     fn verify(&self, why: &str) -> Result<()> {
         if self.rows.is_empty() {
             // A transcript with no rows has no chain to break. Its prefix still has to be
@@ -827,11 +729,8 @@ fn read_transcript(
     })
 }
 
-/// **The chain of every transcript in the file, rebuilt from the file alone.**
-///
-/// This is the check that runs before a single row is written, and it is the same one a
-/// resume makes — so a file that arrives intact but describes a conversation no daemon
-/// could open is refused at the door rather than stored.
+/// The chain of every transcript in the file, rebuilt from the file alone: the check that runs
+/// before a single row is written, and the same one a resume makes.
 fn verify_chains(transfer: &SessionTransfer) -> Result<()> {
     let Some(prefixes) = transfer.table("stable_prefix") else {
         return Ok(());
@@ -1022,10 +921,8 @@ mod tests {
         }
     }
 
-    /// **A session with something in every table a transfer carries.** Three rows of
-    /// history, a todo list, a job, a monitor, a mode, one decision and one citation — so
-    /// a table the export forgot is a table the round trip below fails on rather than one
-    /// nobody looked at.
+    /// A session with something in every table a transfer carries: three rows of history, a todo
+    /// list, a job, a monitor, a mode, one decision and one citation.
     fn seeded(s: &Store) -> String {
         let p = prefix();
         let prefix_id = s.put_stable_prefix(&p).unwrap();
@@ -1128,10 +1025,8 @@ mod tests {
         }
     }
 
-    /// **The round trip.** Everything the export carries arrives, and the arrival rebuilds
-    /// the same conversation: the same items, the same chain head, the same todo list, job,
-    /// monitor and mode. The two tables whose absence would be silent — the items and the
-    /// prefix — are the ones the chain check would have refused first.
+    /// The round trip. Everything the export carries arrives, and the arrival rebuilds the same
+    /// conversation: the same items, chain head, todo list, job, monitor and decision.
     #[test]
     fn a_session_round_trips_through_a_file_and_the_chain_verifies() {
         let from = Store::open_in_memory().unwrap();
@@ -1178,10 +1073,8 @@ mod tests {
         );
     }
 
-    /// **A file that was edited is refused, and nothing is written.** Both halves matter:
-    /// the digest catches a changed `item_json`, which the chain cannot see, and the chain
-    /// catches a changed token blob, which the digest would catch too but whose refusal
-    /// names the row.
+    /// A file that was edited is refused, and nothing is written. Both halves matter: the digest
+    /// catches a changed item JSON and the chain catches a changed token.
     #[test]
     fn a_tampered_file_is_refused_and_the_destination_is_unchanged() {
         let from = Store::open_in_memory().unwrap();
@@ -1262,12 +1155,8 @@ mod tests {
         assert!(why.contains("already in this store"), "{why}");
     }
 
-    /// **The round trip: a copy that was left behind is brought up to what the live one says.**
-    ///
-    /// A move back lands in the store the session was last in, so the second import finds a
-    /// copy already there. The rows that copy holds are the PREFIX of the file's — the marker
-    /// refused to open it, so nothing appended — and what the import does is append the rest.
-    /// The overlap is checked by its chain link, and the marker is cleared.
+    /// A copy that was left behind is brought up to what the live one says: a move back lands in
+    /// the store the session was last in, so the second import finds a prefix of its own rows.
     #[test]
     fn a_marked_copy_is_caught_up_rather_than_refused() {
         let here = Store::open_in_memory().unwrap();

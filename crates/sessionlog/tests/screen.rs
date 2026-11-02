@@ -1,14 +1,6 @@
-//! **What the operator is looking at, fetched from the head that drew it.**
-//!
-//! The daemon holds the log and the view and never a rendered cell. Width,
-//! scroll position, theme and which folds are open live in the head, so a
-//! daemon-side re-render would be a plausible picture of a different screen —
-//! and the whole reason this exists is that a reconstruction is not what the
-//! person is looking at.
-//!
-//! So the request goes out as an event and comes back as a frame, and this
-//! covers that round trip over a real socket, plus the two ways it does not
-//! answer: nobody attached, and attached but not drawing.
+//! What the operator is looking at, fetched from the head that drew it: width, scroll position,
+//! theme and folds live in the head, so a daemon-side re-render would be a plausible picture of a
+//! different screen. Covers the round trip and its two silences - nobody attached, nobody drawing.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -24,9 +16,8 @@ fn socket_path(tag: &str) -> std::path::PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    // **Short**, because macOS caps a socket path at 104 bytes and its temp dir alone is
-    // about 50; the nanosecond clock in decimal and a long tag overflowed it (`path must be
-    // shorter than SUN_LEN`). The tag is for a human reading `ls`, so ten characters do.
+    // Short: macOS caps a socket path at 104 bytes and its temp dir is about 50 of them, so the
+    // tag is cut to ten characters for a human reading `ls`.
     letibot_sessionlog::testing::scratch_root().join(format!(
         "lb-scr-{:.10}-{}-{:x}.sock",
         tag,
@@ -112,9 +103,9 @@ fn nobody_attached_is_not_an_empty_screen() {
     let (reg, _server) = start("nobody");
     let hub = reg.get("a").unwrap();
 
-    // The event is still published — the hub does not know who is listening, and
-    // pretending to know is how a head that attaches a millisecond later gets
-    // skipped. What it does not do is answer.
+    // The event is still published - the hub does not know who is listening, and pretending to
+    // know is how a head that attaches a millisecond later gets skipped. What it does not do is
+    // answer.
     let (req, answer) = hub.request_screen();
     let verdict = answer.recv_timeout(Duration::from_millis(300));
     assert!(
@@ -122,8 +113,8 @@ fn nobody_attached_is_not_an_empty_screen() {
         "a screen came back with no head to draw it: {verdict:?}"
     );
 
-    // And a head that wakes up late finds nothing waiting, rather than parking a
-    // row for a caller that has already given up.
+    // And a head that wakes up late finds nothing waiting, rather than parking a row for a caller
+    // that has already given up.
     hub.abandon_screen(&req);
     assert!(
         !hub.give_screen(&req, 80, 1, vec!["too late".into()]),
@@ -134,9 +125,9 @@ fn nobody_attached_is_not_an_empty_screen() {
 #[test]
 fn a_head_that_never_draws_times_out_and_the_next_request_still_works() {
     let (reg, server) = start("wedged");
-    // Attached, pumping, never answering — a wedged head, which is the case the
-    // deadline exists for. Without the pump the socket would back up and the
-    // test would be about flow control instead.
+    // Attached, pumping, never answering - a wedged head, which is the case the deadline exists
+    // for. Without the pump the socket would back up and the test would be about flow control
+    // instead.
     let (_client, _hello, reader) =
         HeadClient::attach(server.path(), "a", 0, "tui", "dead", Caps::default()).unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
@@ -149,8 +140,8 @@ fn a_head_that_never_draws_times_out_and_the_next_request_still_works() {
     assert!(answer.recv_timeout(Duration::from_millis(300)).is_err());
     hub.abandon_screen(&first);
 
-    // The second request gets its own id. A hub that reused one would hand the
-    // first request's late answer to the second caller.
+    // The second request gets its own id. A hub that reused one would hand the first request's
+    // late answer to the second caller.
     let (second, _) = hub.request_screen();
     assert_ne!(first, second);
     drop(drain);

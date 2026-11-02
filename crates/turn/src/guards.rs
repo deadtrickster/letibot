@@ -1,18 +1,12 @@
 //! §8.5's first guard, over token ids as they arrive.
 //!
-//! > GLM's historical failure mode emits endless `@@@@…` at ~3 t/s and *poisons the
-//! > slot* until restart. A rolling n-gram check over the last K generated tokens,
-//! > aborting the turn and raising `Warning{code: repetition_collapse}`, is a few
-//! > lines and turns a silent garbage answer into a named event.
+//! GLM's failure mode emits endless `@@@@…` at ~3 t/s and poisons the slot until a
+//! restart, so a rolling n-gram check turns a silent garbage answer into a named event.
+//! The dialect declares what to watch for; the engine owns what to do, so this is a pure
+//! state machine over ids with no model, no server and no dialect knowledge.
 //!
-//! The dialect declares *what* to watch for ([`Guard`], data); the engine owns
-//! *what to do*. So this module is a pure state machine over ids with no model, no
-//! server and no dialect knowledge — which is why it is exhaustively testable.
-//!
-//! [`Guard::ReasoningStall`] is watched here too, and it is worth being precise
-//! about what it is not: it is **not a cap on thinking**. Long thinking is fine.
-//! The signal is reasoning that has run past a bound *without producing a content
-//! or tool-call span* — non-termination, not length.
+//! `ReasoningStall` is not a cap on thinking: reasoning past a bound with no content span
+//! is non-termination, not length.
 
 use letibot_dialect::{ControlRole, Guard};
 use letibot_tokencore::TokenId;
@@ -50,13 +44,9 @@ impl GuardSet {
             .unwrap_or(0);
         GuardSet {
             guards: guards.to_vec(),
-            // **The bound is known here and the buffer used to ignore it.** `max_window` is the
-            // growth this window is allowed to reach — the widest repetition guard, `window *
-            // times` — and `recent` is pushed to once per token. `Vec::new()` therefore
-            // reallocated its way up through every doubling to that bound, from the first token of
-            // every turn. Reserving it once costs the same memory the window would reach anyway,
-            // and nothing at all when no repetition guard is configured (`max_window` is 0 and
-            // `with_capacity(0)` does not allocate).
+            // The bound is known here, so reserve it once rather than reallocating up to it
+            // through every doubling from the first token of every turn. `max_window` is 0
+            // with no repetition guard, and `with_capacity(0)` does not allocate.
             recent: Vec::with_capacity(max_window),
             run_token: None,
             run_len: 0,

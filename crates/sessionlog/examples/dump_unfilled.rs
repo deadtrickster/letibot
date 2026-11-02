@@ -1,18 +1,9 @@
-//! **Name the rows a snapshot announced and did not fill** — the `2 row(s)` sentence.
-//!
-//! Read-only, one shot: attach as a `remote` head, take the snapshot, and print every row
-//! whose `item` is `None` with its **id, kind, ledger head and ts**. The head's own line
-//! prints a count and no ids, which is the least useful form of the fact; this prints the
-//! fact.
+//! Name the rows a snapshot announced and did not fill: every row whose `item` is `None`,
+//! with its id, kind, ledger head and ts. The head's own line prints a count and no ids, which
+//! is the least useful form of the fact, and a FRESH attach also says whether the daemon is
+//! still announcing them or the rows belong to a head's live session.
 //!
 //!     cargo run -q --example dump_unfilled -- /run/user/1000/letibot/<hash>.sock <session>
-//!
-//! Two things it answers that the head's sentence cannot:
-//!
-//! * **WHICH rows**, by id, so a claim can be checked rather than counted.
-//! * **Whether the daemon is still announcing them.** This is a FRESH attach, so a body-less
-//!   row in its snapshot is the daemon's view as of now; a complete snapshot means the
-//!   unfilled rows belong to a head's live session and not to the log.
 
 use letibot_sessionlog::client::HeadClient;
 use letibot_sessionlog::protocol::{Caps, ServerFrame};

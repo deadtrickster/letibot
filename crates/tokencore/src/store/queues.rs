@@ -1,55 +1,17 @@
-//! **The review queue and the merge queue — two queues, one store, per repository (R61).**
+//! The review queue and the merge queue: two queues, one store, per repository.
 //!
-//! The operator: *"review is review and merge is merge. separate steps. separate queues."* and
-//! *"the merge/review queue is a center-piece and it was never reliable so far."* This module is
-//! the durable half of both, written against the review of 2026-10-11 (TODO.md R61), whose five
-//! requirements are the reason for every shape here:
-//!
-//! 1. **One owner per queue, with a live heartbeat** — [`QueueLease`], one row per repository,
-//!    claimed by compare-and-swap ([`Store::acquire_queue_lease`]) and renewed by a heartbeat that
-//!    names its owner ([`Store::heartbeat_queue_lease`]). A daemon whose binary does not know the
-//!    store's schema never takes one: the claim reads `schema_version` LIVE, in the same
-//!    transaction, so a daemon that was running before a newer build migrated the file finds out
-//!    at its next claim rather than serving a table it no longer understands.
-//! 2. **Every state change is a conditional move, with history.** No whole-row upserts:
-//!    [`Store::move_review`] and [`Store::move_merge`] are `UPDATE … WHERE id = ? AND state = ?
-//!    [AND owner = ?]`, and a move that matched a row appends one [`QueueTransition`] (from, to,
-//!    at, by, why) in the same transaction. The transition table is append-only by trigger, the
-//!    way `transcript_item` is, so *time in state* and *why stuck* are read and never guessed.
-//! 3. **The verdict is bound to a commit.** A review row records the head it put in front of the
-//!    reviewer (`head_sha`) and the head the verdict judged (`reviewed_sha`); the hand-off writes
-//!    `approved_sha` onto the merge row in the same transaction as the verdict
-//!    ([`Store::approve_review`]), and the merge queue lands only that head.
-//! 4. **Every outcome is its own word** — `timed_out`, `blocked` (infrastructure) and `failed`
-//!    (the branch is bad) are three states, not one with three sentences.
-//! 5. **Red target is first-class** — [`TargetHealth`], one row per (repository, target branch),
-//!    and a review row of kind [`ReviewKind::Target`] for the red tip.
-//!
-//! # Why the old tables are RENAMED and not reused (schema 24)
-//!
-//! The v23 `merge_queue`/`merge_review` pair is archived as `merge_queue_v23`/`merge_review_v23`
-//! — every row kept, nothing deleted (the operator's decision 13: *"archive, don't delete"*) — and
-//! the new `merge_queue` deliberately shares no column list with the old one: it has a
-//! `repository NOT NULL` with no default and no `needs_json`. That is the second wall against old
-//! binaries, and the one that matters for a daemon ALREADY RUNNING when this build migrates the
-//! file: such a daemon never re-reads `schema_version` (the open-time check stops only a binary
-//! that opens the file afresh), so its `INSERT INTO merge_queue (…, needs_json, …)` and its
-//! `SELECT … needs_json …` now fail with `no such column` — it can neither take an entry nor
-//! write one, which is the whole of what it must not do. Measured on 2026-10-11: nine daemons on
-//! one `sessions.db`, all on deleted binaries of different builds.
+//! Review is review and merge is merge, so a row can be judged without being landed and a
+//! landing can be taken without a verdict of its own. Every state move is a row in
+//! `queue_transition`, so the history is append-only and the queue's own workers are the only
+//! writers, behind a lease that one daemon per repository holds.
 
 use rusqlite::types::Value;
 use rusqlite::{OptionalExtension, params};
 
 use super::{MergeGateStep, MergePriority, Result, SCHEMA_VERSION, Store, StoreError};
 
-/// **The two queues' tables, the transition history, the lease and the target's health** — the
-/// DDL both a fresh store ([`super::SCHEMA_SQL`] runs it) and the v24 migration run.
-///
-/// Every table is `IF NOT EXISTS` and every index is named for the NEW tables
-/// (`*_repo_state`), because the archived v23 table keeps its own index names
-/// (`merge_queue_state_idx`) through the rename, and a new index under an old name would be
-/// silently skipped by `IF NOT EXISTS`.
+/// The two queues' tables, the transition history, the lease and the target's health: the DDL
+/// both a fresh store and the v24 migration run.
 pub const QUEUES_SQL: &str = r#"
 -- **The review queue (R61, schema 24).** One row per branch put up for review, per repository.
 -- `kind` is `branch` (a branch somebody wants landed) or `target` (the target branch's own RED
@@ -884,11 +846,8 @@ impl Store {
         )
     }
 
-    /// **The verdict that approves, and the hand-off, in ONE transaction** (decision 6): the
-    /// review row moves to `approved` with `reviewed_sha`, and the merge row is born carrying
-    /// that sha as `approved_sha`. Either both happen or neither does — a verdict with no merge
-    /// row is an approval nobody acts on, and a merge row with no verdict is a landing nobody
-    /// approved.
+    /// The verdict that approves and the hand-off, in ONE transaction: the review row moves to
+    /// `approved` with its sha, and the merge row is born from it.
     pub fn approve_review(&self, id: &str, a: &Approval, now_ms: u64) -> Result<bool> {
         self.write_tx(|tx| {
             let Some(row) = tx
@@ -1150,13 +1109,8 @@ impl Store {
 
     // ===== The lease =====
 
-    /// **Claim, or renew, the lease on `repository`'s queues** — by compare-and-swap.
-    ///
-    /// In ONE immediate transaction: the file's schema is read and compared to this build's
-    /// (**what a reader this store has moved past is the FLOOR's to say**, requirement 1's *"a
-    /// daemon whose build does not match the store serves no queue"* — see `store::floor`); then
-    /// the row is taken only if nobody holds it, the claimant already does, or the holder's
-    /// heartbeat is older than `ttl_ms`. A live holder is never displaced.
+    /// Claim, or renew, the lease on `repository`'s queues, by compare-and-swap, in one immediate
+    /// transaction: the file's schema is read and compared to this build's before the claim.
     pub fn acquire_queue_lease(
         &self,
         repository: &str,
@@ -1166,13 +1120,9 @@ impl Store {
     ) -> Result<LeaseOutcome> {
         self.write_tx(|tx| {
             let stored: i64 = tx.query_row("SELECT version FROM schema_version", [], |r| r.get(0))?;
-            // **What the mismatch means is the FLOOR's to say, not the version's** — the version is
+            // What a mismatch means is the FLOOR's to say and not the version's: the version is
             // re-read live, in this transaction, so a daemon already running when a newer build
-            // migrates the file finds out at its next claim (requirement 1). A schema ABOVE this
-            // build's that only added things is a store this daemon still reads: refusing it here
-            // would be the 2026-10-26 refusal a layer down, where the daemon keeps its session and
-            // loses its queue. A schema whose floor moved past this build — or one old enough that
-            // nobody said — still claims nothing.
+            // migrated the file learns it here rather than by failing a write.
             if !super::floor::readable_here(tx, stored)? {
                 return Ok(LeaseOutcome::WrongSchema {
                     store: stored,
@@ -1250,11 +1200,8 @@ impl Store {
         })
     }
 
-    /// **Say this owner is alive.** `Ok(false)` is *the lease is not yours any more* — the
-    /// caller stops serving at once. The schema is re-read too, so a store migrated under a
-    /// running daemon stops it at its next heartbeat — and, like the claim above, what stops it
-    /// is the FLOOR rather than the version: an additive migration by a newer build is a store
-    /// this daemon goes on serving, which is the whole point of the floor.
+    /// Say this owner is alive. `Ok(false)` is *the lease is not yours any more* and the caller
+    /// stops serving at once; the schema is re-read too, for the same reason the claim does.
     pub fn heartbeat_queue_lease(
         &self,
         repository: &str,
@@ -1296,13 +1243,8 @@ impl Store {
         })
     }
 
-    /// **Give up a lease whose holder is gone** — the supervisor's sweep (2026-10-26), not the
-    /// holder's own [`Store::release_queue_lease`]: the row goes and the history says why, so a
-    /// repository is not drawn as *served by* a pid that has been dead for weeks.
-    ///
-    /// Guarded on the heartbeat the caller judged (`heartbeat_ms < expired_before_ms`), so a
-    /// holder that beat in between keeps its lease — the same compare-and-swap every other move
-    /// in this file is, and the reason a sweep cannot take a live daemon's queue by being slow.
+    /// Give up a lease whose holder is gone: the supervisor's sweep, not the holder's own release.
+    /// The row goes and the history keeps what it did.
     pub fn release_stale_lease(
         &self,
         repository: &str,
@@ -1345,11 +1287,8 @@ impl Store {
         Ok(rows)
     }
 
-    /// **Recovery, and only the recovery a lease entitles** (requirement 1): rows of
-    /// `repository` that an owner OTHER than `me` held mid-work — a `gating` merge row, a
-    /// `reviewing` review row. Called right after `me` took the lease, so every such owner's
-    /// lease is expired or released by construction; rows of other repositories are never read.
-    /// Returns how many rows moved.
+    /// Recovery, and only the recovery a lease entitles: rows of `repository` that an owner other
+    /// than me held mid-work, put back in line.
     pub fn recover_queue(&self, repository: &str, me: &str, now_ms: u64) -> Result<usize> {
         let mut moved = 0;
         for m in self.merge_rows(Some(repository))? {
@@ -1571,25 +1510,8 @@ impl Store {
         })
     }
 
-    /// **The v24 migration's queue half** — archive the v23 tables by renaming them, create the
-    /// new ones, and carry forward the rows decision 13 says go on.
-    ///
-    /// Decision 13, as a rule rather than a list of names (the store cannot ask git anything):
-    ///
-    /// * **Every v23 row is kept**, in `merge_queue_v23`/`merge_review_v23`, untouched.
-    /// * `landed`, `failed`, `conflict` and `vetoed` rows stay archived and nothing else — the 9
-    ///   landed are archived, and the 10 failed are archived (verified 2026-10-11: none of them
-    ///   holds work missing anywhere).
-    /// * **A `waiting`, `taken` or `stale` row is carried forward** as a review row in
-    ///   `waiting` — `a-pass-reads-one-row` re-enqueued; `group-the-queue-messages` (stale)
-    ///   carried forward, and the review queue's first pass checks whether its branch is already
-    ///   on the target and withdraws it if so (the *"checked and re-enqueued if unmerged"*).
-    /// * **Except a waiting row whose review said `reject`** — `queue-spin`, dropped: its work
-    ///   reached main by hand. It stays in the archive.
-    ///
-    /// A carried row's `repository`, `target` and `head_sha` are `''`: they are git facts, and a
-    /// daemon resolves them (`mergequeue::review::resolve_carried`) before anything serves the
-    /// row.
+    /// The v24 migration's queue half: archive the v23 tables by renaming them, create the new
+    /// ones, and carry forward the rows the operator's decision says go on.
     pub(super) fn migrate_queues_to_v24(&self) -> Result<()> {
         let exists = |name: &str| -> Result<bool> {
             Ok(self

@@ -1,52 +1,18 @@
-//! §18.1-I1 — the generation-inclusive prefix invariant, checked after every turn.
+//! The generation-inclusive prefix invariant, checked after every turn: request N's prompt
+//! plus what the model generated in turn N must be a prefix of request N+1's prompt.
 //!
-//! > Request N's prompt **plus what the model generated in turn N** must be a
-//! > prefix of request N+1's prompt.
-//!
-//! # Two forms, and which one is the assertion
-//!
-//! §18.1 offers both and calls the second one the cheap production check:
-//!
-//! * **Exact.** Hash turn N's submitted prompt together with the generated tokens
-//!   the harness committed, and re-hash the same span of turn N+1's prompt. This is
-//!   the invariant itself, measured on the bytes that went on the wire.
-//! * **Observable.** `cached_tokens(N+1) ≥ prompt_tokens(N) + generated_tokens(N)`,
-//!   from the server's own `usage`.
-//!
-//! **On this box the observable form cannot pass, and that is a property of the
-//! server rather than of the harness.** `qwen-3.8-flash-next` is a hybrid/recurrent
-//! model, so llama.cpp cannot roll its memory back to an arbitrary position: it
-//! writes context checkpoints and, on a continuation, snaps `n_past` back to one
-//! (`server-context.cpp:5910`, `n_past = std::min(size_up_to_pos(pos_next),
-//! it->n_tokens)`; the checkpoint policy at `:6001` is entered exactly when
-//! `seq_rm_type == RS` or SWA is in play). Measured over two turns whose prompts
-//! were *proven* identical on their shared span: reuse of **48** against a shared
-//! prefix of 52, and in a second run 38 against 44. The missing tokens were never
-//! ours to lose.
-//!
-//! So the exact form is the assertion, and the observable number is reported beside
-//! it as a **measurement of the server**, with a `Warning` carrying the shortfall.
-//! Failing a turn on it would be failing a turn for the model's architecture.
-//!
-//! # Skipping is loud, and it is not a pass
-//!
-//! The exact form is a property of submitting token ids we rendered ourselves. It
-//! does not survive a `messages` API, and a suite that silently degrades to "the
-//! provider's cache seemed fine" while claiming the same green tick is the failure
-//! this project exists to remove. So the gate is
-//! [`BackendCaps::may_assert_structural_prefix`] and the message is
-//! [`BackendCaps::skip_reason`] — a `Skipped` result carries that sentence
-//! verbatim, [`PrefixCheck::held`] answers `false` for it, and the engine raises it
-//! as a `Warning`.
+//! The exact form - hash the submitted prompt with the committed generated tokens, and re-hash
+//! the same span next turn - is the assertion. The observable form cannot pass on this box: a
+//! hybrid/recurrent model cannot roll its memory back, so llama.cpp resumes from a context
+//! checkpoint and reuses fewer tokens than the span it holds - a measurement of the server,
+//! reported beside the assertion rather than failing the turn. Skipping is loud, not a pass.
 
 use letibot_backend::BackendCaps;
 use letibot_tokencore::{TokenId, hash_tokens};
 
-/// What turn N leaves behind so turn N+1 can check it.
-///
-/// The span it commits to is turn N's **submitted prompt plus the generated tokens
-/// that were committed** — which is exactly the "generation-inclusive" part of I1,
-/// and is why one hash settles both halves.
+/// What turn N leaves behind so turn N+1 can check it: turn N's submitted prompt plus the
+/// generated tokens that were committed, which is the generation-inclusive part of the
+/// invariant and why one hash settles both halves.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrefixWitness {
     /// `prompt_tokens(N) + committed_generated(N)`.
@@ -54,13 +20,9 @@ pub struct PrefixWitness {
     /// `H(prompt_N ‖ committed_generated_N)`.
     pub covered_hash: [u8; 32],
     pub prompt_tokens: u64,
-    /// Generated tokens the harness **committed**.
-    ///
-    /// Not the server's `predicted`: a trailing stop token is a boundary the
-    /// renderer owns and is stripped before commit (see `crate::items`), so it is
-    /// not in the next prompt. §18.1 words the invariant with `predicted_tokens(N)`,
-    /// which over-counts for any harness that owns its boundaries — the shortfall
-    /// would then be one per turn, forever, and mean nothing.
+    /// Generated tokens the harness committed, not the server's `predicted`: a trailing stop
+    /// token is a boundary the renderer owns and is stripped before commit, so counting it
+    /// would show a shortfall of one per turn, forever.
     pub committed_generated: u64,
 }
 
@@ -106,32 +68,16 @@ pub enum PrefixCheck {
 }
 
 impl PrefixCheck {
-    /// Whether the invariant was actually observed to hold.
-    ///
-    /// `Skipped` and `FirstTurn` answer **false**, and that is the point: a caller
-    /// that treats "not checked" as "checked and fine" has to write the word
-    /// `Skipped` to do it.
+    /// Whether the invariant was actually observed to hold. `Skipped` and `FirstTurn` answer
+    /// false, and that is the point: a caller treating "not checked" as "checked and fine" has
+    /// to write the word `Skipped` to do it.
     pub fn held(&self) -> bool {
         matches!(self, PrefixCheck::Held { .. })
     }
 
-    /// **Is this verdict the operator's business, or only a diagnostic?**
-    ///
-    /// Three of the four are: a divergence is our defect, a skip means the check
-    /// did not run (and silence there would read as a pass), and both change what
-    /// somebody would do. `cache_reuse_shortfall` changes nothing — the invariant
-    /// HELD, the prompts are proven identical, and the server simply resumed from
-    /// a context checkpoint slightly behind the boundary. It is bounded by the
-    /// checkpoint spacing, it does not accumulate, and there is no action.
-    ///
-    /// The operator's rule, 2026-09-15: *"if problem wasnt us and restorable, why
-    /// it shown to me at all and not behind --debug in some log file?"* He is
-    /// right, and the cost is not the line — it is that a warning nobody can act
-    /// on teaches them to skim the ones they can. That is the same way three red
-    /// tests became furniture in this session until he asked about them.
-    ///
-    /// So it still MEASURES, and the number still travels; it is only routed to
-    /// the debug channel unless asked for.
+    /// Is this verdict the operator's business, or only a diagnostic? A divergence is our
+    /// defect and a skip means the check did not run, so both change what somebody would do;
+    /// a shortfall changes nothing, and a warning nobody can act on teaches them to skim.
     pub fn diagnostic_only(&self) -> bool {
         matches!(self, PrefixCheck::Held { .. })
     }
@@ -162,10 +108,8 @@ impl PrefixCheck {
     }
 }
 
-/// Run the post-flight check.
-///
-/// `prompt` is what **this** turn submitted; `cached` is `timings.cache_n` from its
-/// final frame.
+/// Run the post-flight check. `prompt` is what this turn submitted; `cached` is
+/// `timings.cache_n` from its final frame.
 pub fn check(
     caps: &BackendCaps,
     previous: Option<&PrefixWitness>,

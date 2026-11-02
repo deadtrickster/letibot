@@ -1,61 +1,11 @@
-//! **What a session is waiting on** — the daemon's own answer to *will this act again by itself?*
+//! **What a session is waiting on** - the daemon's own answer to *will this act
+//! again by itself?*
 //!
-//! # The question, and why a reader outside the daemon could not answer it
-//!
-//! The engine publishes `TurnStarted` and `TurnFinished` **once per ROUND**
-//! ([`crate::hub::Hub::turn_in_flight`] says so at length, and the `TurnEnded` row in
-//! `TODO.md` is the defect). So a reader watching the event stream cannot tell
-//!
-//! * *the model's turn is over and nobody owes it anything* — done, waiting for a person — from
-//! * *the turn is between rounds, or a call is running, or a job the work waits on will settle*
-//!   — the session will act again on its own, and a caller that reports *done* here hands back a
-//!   package with hours of work left in it.
-//!
-//! `crates/bridge` had to guess that difference from outside, and every guess was a timer: a
-//! ten-second settle window, a `wake_due` flag, an edge from the todo board. Each fixed one false
-//! wake and left the next. The operator, on the third: *"it is easy to see if any jobs are
-//! running, etc etc, why timeouts?"* — and they are right. **The daemon is the only process that
-//! knows**: it holds the turn, the calls it proposed, the watchers on its jobs and children, the
-//! monitors it armed, and the queue of settlements it has not delivered yet.
-//!
-//! So this is the published answer: [`Activity`], computed by `letibot_harnessd` (the module is
-//! `activity` there too, and it is where the facts are gathered) and published as
-//! [`crate::SessionEvent::ActivityChanged`] **only when the value changes** — never per round, never
-//! per token. A late head finds the current value in [`crate::view::Snapshot::activity`], the way it
-//! finds the turn in flight.
-//!
-//! # What counts as *acting again on its own*, and what does not
-//!
-//! The list is [`Waiting`]'s own, and the line it draws is *does the session move without a person
-//! touching it?*
-//!
-//! | waiting on | the session acts again without outside input | why |
-//! |---|---|---|
-//! | [`Waiting::Turn`] | **yes** | **a PROMPT is in flight** — from the daemon taking it to its loop returning. NOT one round: the engine publishes `TurnStarted`/`TurnFinished` once per round, so a `Turn` read off that pair drops to quiet at every round boundary of one prompt, which is the false *done* this whole mechanism exists to remove |
-//! | [`Waiting::Calls`] | **yes** | the finer detail inside it: the round's generation ended and the calls it proposed are running; the next round reads their results |
-//! | [`Waiting::Delivery`] | **yes** | a settlement, a monitor firing, or a queued prompt is owed to the model: it will be said, and the turn it starts is the session's own |
-//! | [`Waiting::Job`] | **yes**, when its settlement is one the model will be told | see below |
-//! | [`Waiting::Monitor`] | **yes** | a monitor is armed, and a firing is `Delivery::Immediate` (`crate::delivery`'s table) — it always wakes the model |
-//! | [`Waiting::Child`] | **yes**, on the same rule as a job | a child is a background job (`jobwatch`'s own words) |
-//! | [`Waiting::Ask`] | **no** | the session is stopped on a card. This is the ONE that waits for a person |
-//!
-//! **A running job or child is counted, because its settlement reaches the model.** The daemon
-//! queues every settlement, rings the session's bell, and the turn that says it is the session
-//! acting again on its own, so a session holding one is not *done*, whatever its plan says. The
-//! former rule asked only about the jobs the plan named, and `wait` exited on sessions a
-//! settlement was about to wake: the false *done* that costs an orchestrator a run.
-//!
-//! **The one exception is the job the model PARKED** (`bash {background: true, wake: "later"}`),
-//! which is what a dev server left running is: the model said it does not need waking for it, so a
-//! caller told to wait for it would wait out its whole deadline for a settlement that comes when
-//! the session ends. Its result is still delivered; it just does not hold anybody's wait.
-//!
-//! # Why a value and not a question
-//!
-//! A verb (`ClientFrame::…Activity`) would have to be asked, and a caller that asks has to decide
-//! *how often* — which is a timer with extra steps, and the caller's timer is the thing being
-//! deleted. A value that is published when it changes lets `wait` block on a condvar and wake on
-//! the change, which is what the bridge does with it.
+//! The engine publishes `TurnStarted`/`TurnFinished` once per ROUND, so a reader
+//! outside the daemon cannot tell *done* from *between rounds*, and every guess was
+//! a timer. This is the published answer: [`Activity`], computed by
+//! `letibot_harnessd` and published as [`crate::SessionEvent::ActivityChanged`]
+//! only when the value changes.
 
 use serde::{Deserialize, Serialize};
 
@@ -64,11 +14,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(tag = "on", content = "id", rename_all = "snake_case")]
 pub enum Waiting {
-    /// **A prompt is in flight** — the whole turn, however many rounds it takes, from the daemon
-    /// taking the prompt to its loop returning (a final answer, an interrupt, a failure, or a stop
-    /// on a card, which is [`Waiting::Ask`] instead). Read from the daemon's own per-prompt span
-    /// and never from the round-level `TurnStarted`/`TurnFinished`, which is the pair this exists
-    /// to stop readers timing.
+    /// **A prompt is in flight** - the whole turn, however many rounds it takes, from
+    /// the daemon taking it to its loop returning. Read from the daemon's per-prompt
+    /// span, never from the round-level `TurnStarted`/`TurnFinished` pair.
     Turn,
     /// The round's generation ended and the calls it proposed are running; the next round reads
     /// their results. The finer detail inside [`Waiting::Turn`] — a head draws it, and nothing about
@@ -145,11 +93,9 @@ impl Waiting {
     }
 }
 
-/// **What a session is waiting on, as the daemon computed it** — [`Activity::Quiet`] or the list.
-///
-/// `Quiet` is *nothing is running and nothing is owed*: the session is where a person left it. It
-/// is deliberately not called *idle* — [`crate::hub::SessionStatus::running`] already uses that
-/// sense and is false for most of a turn's wall clock.
+/// **What a session is waiting on, as the daemon computed it** - [`Activity::Quiet`] or
+/// the list. `Quiet` is *nothing running and nothing owed*, not *idle*, which
+/// [`crate::hub::SessionStatus::running`] already means.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Activity {
@@ -212,10 +158,8 @@ impl Activity {
         format!("waiting on: {}", labels.join(" · "))
     }
 
-    /// The words a head shows on the status row's right, or empty.
-    ///
-    /// The same as [`Activity::line`] without the `waiting on:` prefix for the callers that already
-    /// say it — `leticode_status`' own key is `waiting_on`, so it hands back the bare list.
+    /// The words a head shows on the status row's right, or empty: [`Activity::line`]
+    /// without the `waiting on:` prefix, for callers that already say it.
     pub fn waiting_labels(&self) -> Vec<String> {
         self.waiting_on().iter().map(Waiting::label).collect()
     }

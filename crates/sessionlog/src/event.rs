@@ -1,4 +1,5 @@
-//! §4.5's event enum, verbatim, plus the envelope that carries it.
+//! The session event enum every head and every log row reads, plus the envelope that
+//! addresses one event to one session.
 //!
 //! ```text
 //! TurnStarted{turn_id, model, ledger_head}
@@ -18,35 +19,14 @@
 //! Explain{turn_id, plan}
 //! ```
 //!
-//! Three notes on where this is *not* a transcription, and why.
-//!
-//! 1. **`ToolStarted` / `ToolProgress` are given by name only** in §4.5 (the `…`
-//!    covers their fields). Their shapes were this crate's invention and W9 was
-//!    the strand that would find out whether they were right. It has, by building
-//!    the runtime that emits them, and the answer was: two of the three were
-//!    short. `ToolStarted` gained `turn_id` and `access`; `ToolFinished` gained
-//!    `turn_id`, the `inline`/`full` byte split, the spill locator and the repair
-//!    count; `ToolProgress`'s free-text `note` was right as it stood. See
-//!    `letibot_tools::events` for the argument in full.
-//! 2. **`Explain{plan}` is a `serde_json::Value`.** W14 owes `ExplainPlan` as a
-//!    type (§6.2 gives a rendered example and no field list). Typing it here would
-//!    be inventing W14's contract from a screenshot.
-//! 3. **`usage` carries `cached_tokens`.** §4.5 says "usage" without a field list;
-//!    a head that cannot show cache reuse cannot show the one number this whole
-//!    harness exists to move.
-//!
-//! **`Delta` carries only the increment.** Enforced the same way `letibot-turn`
-//! enforces it: the variant has a `text` and there is nowhere to put a `full`.
+//! A new VARIANT, or a new word in a closed enum, moves `PROTOCOL_VERSION`: serde has no
+//! catch-all, so an older peer cannot decode the frame and the two sides refuse the mismatch by
+//! name at attach. An added, defaulted FIELD does not move it.
 
 use serde::{Deserialize, Serialize};
 
-/// Which channel a delta belongs to.
-///
-/// `ToolCall` is the third, and it is the reason `PROTOCOL_VERSION` is 3. It
-/// carries the raw `<function=…>` markup the model writes inside a `<tool_call>`
-/// block, which used to travel as `Text` because there was nowhere else to put it
-/// — the T13.5 gap, which a head could only work around by guessing. See
-/// `letibot_turn::DeltaTarget` for why guessing is not available.
+/// Which channel a delta belongs to. `ToolCall` carries the model's raw `<function=` markup from
+/// inside a tool call, so a head draws it as code rather than as prose.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DeltaTarget {
@@ -55,7 +35,7 @@ pub enum DeltaTarget {
     ToolCall,
 }
 
-/// §5.6's prefill progress, as it reaches a head.
+/// Prefill progress for one prompt, as it reaches a head: cached, processed, and how long it took.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct PromptProgress {
     pub total: u64,
@@ -64,16 +44,8 @@ pub struct PromptProgress {
     pub time_ms: u64,
 }
 
-/// Both sides of a file-editing call, bounded to what differs, as a
-/// [`SessionEvent::ToolFinished`] carries it.
-///
-/// The log's own name for the excerpt, which now lives in
-/// [`letibot_transcript::ToolEditExcerpt`] — the one crate this crate and the
-/// runtime can both see. It used to be defined here and lifted field by field
-/// from `letibot_tools` in `lift_tools.rs`; two copies of a nine-field struct
-/// with a lift between them is how copies drift, and the transcript row now
-/// carries the excerpt too, so a third copy was about to exist. The wire shape
-/// is unchanged: same fields, same names.
+/// Both sides of a file-editing call, bounded to what differs, as a `ToolFinished` carries it:
+/// the edit a person wants to read is the diff, not two whole files.
 pub use letibot_transcript::ToolEditExcerpt as ToolEdit;
 
 /// A todo's state, on the wire. The same five words the store spells.
@@ -83,64 +55,29 @@ pub enum TodoStatus {
     Pending,
     InProgress,
     Completed,
-    /// **The operator set the row aside** — see
-    /// `letibot_tokencore::store::TodoStatus::Postponed` for the whole of what the state means: the
-    /// row persists, the model still sees it, and the idle check stops asking about it. A copy of
-    /// that type and not a re-export, for the reason [`TodoBy`] gives, so the word is spelled on
-    /// both sides and a variant added to one fails to compile on the other.
-    ///
-    /// **Added at `PROTOCOL_VERSION` 36**, and it is the bump case this file's own history
-    /// section names: no frame is added, and the number still moves, because a head built before
-    /// it cannot decode the word — and the failure is the whole frame, not the row.
+    /// The operator set the row aside: it persists and the model still sees it, but the idle
+    /// check stops asking. A copy rather than a re-export for [`TodoBy`]'s reason, and the word
+    /// moves `PROTOCOL_VERSION` because a head built before it cannot decode it.
     Postponed,
-    /// **The operator STRUCK THE ROW OFF, and the row stays** — see
-    /// `letibot_tokencore::store::TodoStatus::Cancelled`: `/todo rm N` writes this instead of
-    /// removing the row, because *"only i should be able to delete todo items. as a rule everything
-    /// that ever created stays in history"*.
-    ///
-    /// **Added at `PROTOCOL_VERSION` 41**, on `Postponed`'s own argument one word over: no frame is
-    /// added, and the number still moves, because `serde` has no catch-all on this enum and the
-    /// word travels inside `TodosUpdated`/`ServerFrame::Todos`, which carry the whole list — a
-    /// version-40 head cannot DECODE `"cancelled"`, and the failure takes every row beside it down
-    /// with it, mid-session.
+    /// The operator struck the row off, and the row stays: `/todo rm N` writes this rather than
+    /// deleting, because everything that was ever created stays in history.
     Cancelled,
 }
 
-/// **Who wrote a todo**, on the wire — the whole of the difference between the operator's items and
-/// the model's, which share one list, one format and one tool. The operator's ruling: *"the existing
-/// getter should return mine and yours, and the rest is also the same. the only difference is who
-/// created and that is it."* A third author arrived with parents writing their children's boards:
-/// *"yes - i want parent agents to be able to create todos for subagents. throught tree author -
-/// (Parent <session-id-of-parent>)"*.
-///
-/// A copy of `letibot_tokencore::store::TodoBy` rather than a re-export, for the reason
-/// `TodoStatus` above is already a copy: this crate is the WIRE, and a wire type that aliases a
-/// storage type changes when the storage does. The two are converted at the one seam that owns the
-/// board.
-///
-/// **`Parent` carries the author string, so `by` is a bare string on the wire** — `"model"`,
-/// `"operator"`, `"queue"`, `"Parent s-…"` — spelled by custom impls on both copies, and **adding
-/// the variant moved `PROTOCOL_VERSION` to 37** for the reason `TodoStatus::Postponed`'s own doc
-/// gives: no frame is added, and the number still moves, because a head built before it cannot
-/// decode the word — and the failure is the whole `TodosUpdated`/`Todos` frame, not the row.
-/// **`Queue` is the same case again and moved it to 42.**
+/// Who wrote a todo, on the wire: the whole of the difference between the operator's items and
+/// the model's, which share one list.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum TodoBy {
     #[default]
     Model,
     Operator,
-    /// **A parent session wrote it on a child's board.** The string is the author exactly as the
-    /// operator specified — `Parent <full parent session id>` — so a child reading its own board
-    /// can tell what it decided from what it was told, and by whom.
+    /// A parent session wrote it on a child's board. The string is the author verbatim -
+    /// `Parent <full parent session id>` - so a child can tell what it decided from what it was
+    /// told, and by whom.
     Parent(String),
-    /// **The merge queue wrote it on the gatekeeper session's board** — the fourth author, and the
-    /// one that is not a session. The daemon's queue fills the board from the store every pass and
-    /// replaces this half, so a row leaves when its entry's verdict arrives; the STATE of an entry
-    /// is `ReviewRow::state`/`ReviewRow::verdict` in the store and never this row.
-    ///
-    /// See `letibot_tokencore::store::TodoBy::Queue` for the whole of the argument. On the wire it
-    /// is the one word `queue`, and a head that predates it cannot decode it — which is why the
-    /// number moved rather than the frame growing a field.
+    /// The merge queue wrote it on the gatekeeper's board - the one author that is not a session.
+    /// The daemon refills this half from the store every pass and replaces it, so a row leaves when
+    /// its entry's verdict arrives; an entry's STATE lives on the store's row, never here.
     Queue,
 }
 
@@ -156,7 +93,7 @@ impl Serialize for TodoBy {
         match self {
             TodoBy::Model => s.serialize_str("model"),
             TodoBy::Operator => s.serialize_str("operator"),
-            // The variant CARRIES the author string, so the wire form is the string itself.
+            // The variant carries the author string, so the wire form is the string itself.
             TodoBy::Parent(author) => s.serialize_str(author),
             TodoBy::Queue => s.serialize_str("queue"),
         }
@@ -170,8 +107,8 @@ impl<'de> Deserialize<'de> for TodoBy {
             "model" => Ok(TodoBy::Model),
             "operator" => Ok(TodoBy::Operator),
             "queue" => Ok(TodoBy::Queue),
-            // `Parent …` is the one open spelling; anything else is a word this reader does not
-            // know, refused by name rather than read as the model's the way a catch-all would.
+            // `Parent ...` is the one open spelling; any other word is refused by name rather
+            // than read as the model's, which is what a catch-all would do.
             other if other.starts_with("Parent ") => Ok(TodoBy::Parent(other.to_string())),
             other => Err(serde::de::Error::custom(format!(
                 "`{other}` is not a todo author: model, operator, queue, or `Parent <session-id>`"
@@ -180,29 +117,21 @@ impl<'de> Deserialize<'de> for TodoBy {
     }
 }
 
-/// **A path a gated action opens for writing** — R35's field, and the shape the other head's
-/// renderer was written against before there was ever a value for it.
+/// A path a gated action opens for writing.
 ///
 /// ```text
 /// write_targets: [{"path": "src/syntax.rs", "unresolved": false},
 ///                 {"path": "Path.home() / name", "unresolved": true}]
 /// ```
 ///
-/// **`unresolved` is not `path: ""`, and the difference is the requirement's own sentence.** A write
-/// whose target could not be read — `open(sys.argv[1], 'w')`, a path built at run time — is *"the one
-/// the operator most needs to see"*: it is the fact a person cannot get any other way, and a head
-/// that folded it into *no write* would be throwing it away. So it is a flag on an entry rather than
-/// an absent entry, and the renderer draws it in the attention register because a sentence that looks
-/// like a path is a sentence that gets skimmed past.
-///
-/// **An EMPTY list is not a claim that the call writes nothing** — it is the honest reading of *no
-/// write the scanner could place*, which is why a script it could not read yields an entry here
-/// rather than silence.
+/// `unresolved` is a path the parser could not place, so a grant made over it covers a shape and
+/// not a file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WriteTarget {
     /// The path, or the text that names a path the classifier could not place.
     pub path: String,
-    /// **Could the classifier place it?** `true` draws in the attention register.
+    /// Could the classifier place it? `true` draws in the attention register, because a sentence
+    /// that looks like a path is a sentence that gets skimmed past.
     #[serde(default)]
     pub unresolved: bool,
 }
@@ -212,64 +141,32 @@ pub struct WriteTarget {
 pub struct TodoEntry {
     pub content: String,
     pub status: TodoStatus,
-    /// **Who wrote the row** — the whole of the difference between the operator's items and the
-    /// model's, which share this list, this format and this tool. See `TodoItem::by`.
+    /// Who wrote the row - the whole of the difference between the operator's items and the
+    /// model's, which share this list, this format and this tool.
     #[serde(default)]
     pub by: TodoBy,
-    /// **What the row waits on**, when it waits for something rather than simply being undone —
-    /// see `TodoItem::when` for the shape, for why a condition nobody can evaluate must never
-    /// read as *met*, and for why it is EVALUATED rather than observed (so a restart of either
-    /// side does not lose the firing).
-    ///
-    /// `serde(default)`, so a daemon older than this field and every row already written read
-    /// back as *unconditional*, which is what they were.
+    /// What the row waits on, when it waits rather than simply being undone - see
+    /// `TodoItem::when` for the shape and for why a condition nobody can evaluate must never read
+    /// as *met*. `serde(default)`, so a row written before the field reads back as unconditional.
     #[serde(default)]
     pub when: Option<TodoCondition>,
-    /// **The rows and children this one waits for** — see `TodoItem::needs` for what an edge
-    /// means, for why an unresolvable one is never *met*, and for why a child is named by its
-    /// session id rather than by its words.
-    ///
-    /// **An ADDED, DEFAULTED FIELD on an existing struct, so no `PROTOCOL_VERSION` bump** —
-    /// this file's own history section names the case: a head built before it ignores the key
-    /// and draws exactly the row it drew before, and a head built after it reading an older
-    /// daemon sees `[]` and draws that same row, because a row with no edges is what it was
-    /// given. Nothing here is a word an older peer cannot DECODE, which is the one thing the
-    /// bumps in this file are for.
-    ///
-    /// **It is here because the pane has to be able to CARRY an edge, not only draw one.**
-    /// `SetOperatorTodos` replaces the operator's whole half of the board, and until this field
-    /// existed every edge on an operator's row was dropped at that door — the daemon's own
-    /// comment on that conversion said so (*"the wire carries no edges yet"*). Now the head
-    /// echoes back exactly what it was given, so the round trip is lossless.
+    /// The rows and children this one waits for: see `TodoItem::needs` for what an edge means,
+    /// and why an unresolvable one must never read as met.
     #[serde(default)]
     pub needs: Vec<TodoNeed>,
 }
 
-/// **How long a row's TITLE may be, and what a title IS** — the wire's copy of
-/// `letibot_tokencore::store::TODO_TITLE_MAX` and `todo_title`, for the reason [`TodoStatus`] and
-/// [`TodoBy`] are copies rather than re-exports: **this crate is the WIRE**, the head's whole todo
-/// vocabulary is this module's, and the head does not link the store (`letibot-tokencore` is a
-/// DEV-dependency of the head — the apparatus machinery and nothing else — so a head that wanted
-/// the store's copy would link rusqlite into the TUI binary for one constant).
-///
-/// **A copy that cannot drift is a copy with a test, and there is one**: this crate's own tests
-/// see the store, so `the_wires_title_rule_is_the_stores` pins the number, the separator and the
-/// split against it. That is the half of the `TodoBy`/`TodoStatus` precedent a constant cannot get
-/// from the compiler — a new enum variant is a compile error at the conversions, while a number is
-/// only ever two numbers — so it is checked where the types are checked by `match`.
-///
-/// The rule's own reasoning — the operator's 160-cell terminal, the pane's 156-column row, the 21
-/// columns of furniture a row spends before its own words, and why the DETAIL after the separator
-/// is not capped — is written out once, at `TodoItem`, in the store.
+/// How long a row's TITLE may be, and what a title is: the wire's copy of the store's bound,
+/// because a head and the daemon must cut at the same place.
 pub const TODO_TITLE_MAX: usize = 135;
 
-/// **The separator between a row's title and its detail** — `title — detail`, the spelling the
-/// head's own card and template seed already write. See [`TODO_TITLE_MAX`] for why this crate has
+/// The separator between a row's title and its detail - an em dash between the two, which is what
+/// the head's card and template seed already write. See [`TODO_TITLE_MAX`] for why this crate has
 /// its own copy of the store's constant.
 pub const TODO_DETAIL_SEP: &str = " — ";
 
-/// **A row's TITLE**: the words before [`TODO_DETAIL_SEP`], or the whole row when it has none —
-/// the string [`TODO_TITLE_MAX`] bounds. The store's `todo_title`, copied for [`TODO_TITLE_MAX`]'s
+/// A row's TITLE: the words before [`TODO_DETAIL_SEP`], or the whole row when it has none - the
+/// string [`TODO_TITLE_MAX`] bounds. The store's `todo_title`, copied for [`TODO_TITLE_MAX`]'s
 /// reason.
 pub fn todo_title(content: &str) -> &str {
     content
@@ -279,18 +176,8 @@ pub fn todo_title(content: &str) -> &str {
         .trim()
 }
 
-/// One row's state, named by its words — what an operator's `/todo postpone|resume` carries
-/// when the row it names is not one of theirs.
-///
-/// **Why it is not a `TodoEntry`.** A `TodoEntry` says who WROTE a row (`by`), what it waits on
-/// (`when`) and what it waits for (`needs`) — none of which this carries, and all of which would be
-/// a lie if it did: the operator moving a row's state changes none of them, and the author is the
-/// one thing about the row that must not be restated by a head. So it is two fields, and the wire
-/// says exactly what the act is.
-///
-/// **The words are the key**, which is the board's own identity rule: `TodoEntry` has no id (the
-/// operator ruled out a bump for one), `TodoBoard::set_operator_states` resolves the operator's
-/// rows by their exact trimmed text, and a plan's edges are a row's words for the same reason.
+/// One row's state, named by its words: what an operator's `/todo postpone|resume` carries when
+/// the row it names is not on their board.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TodoState {
     /// The row's own words, exactly as the board shows them.
@@ -298,87 +185,55 @@ pub struct TodoState {
     pub status: TodoStatus,
 }
 
-/// **What a row waits on**, as the WIRE spells it — **a copy of
-/// `letibot_tokencore::store::TodoNeed`**, not a re-export, for the reason [`TodoCondition`]
-/// below is already a copy of the store's: this crate is the wire, and a wire type that aliases
-/// a store type makes one crate's rename a protocol change. The conversion lives where the wire
-/// meets the store (harnessd's `todo_entry` and the `SetOperatorTodos` path), and it is a
-/// `match`, so a variant added on one side fails to compile on the other rather than arriving as
-/// a need nobody can evaluate.
-///
-/// **The tag is the contract**, exactly as it is for [`TodoCondition`]: `kind` and the snake_case
-/// names are what an older head reads past and what a newer one reads by, so a new variant is
-/// additive.
+/// What a row waits on, as the WIRE spells it: a copy of the store's `TodoNeed`, not a re-export,
+/// for `TodoCondition`'s reason.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TodoNeed {
     /// Another row on this board, by its exact `content`.
     Row { content: String },
-    /// **A CHILD session, by its session id** — the handle `task` handed back.
+    /// A child session, by its session id - the handle `task` handed back.
     Child { id: String },
-    /// **A background JOB, by its handle** — the one `bash background: true` and `job_list` print.
+    /// A background job, by its handle - the one `bash background: true` and `job_list` print.
     /// [`TodoNeed::Child`]'s sibling one layer down: an EDGE, where a `when` of the same handle is
-    /// the operator's clock. See `TodoNeed::Job` in the store for the whole of the distinction.
+    /// the operator's clock.
     Job { handle: String },
-    /// **A MONITOR, by the name it was armed under** — see `TodoNeed::Monitor` in the store.
+    /// A monitor, by the name it was armed under.
     Monitor { name: String },
-    /// **A ROOM ITEM the holder has on its board** — see `TodoNeed::Room` in the store for the whole
-    /// of why the quiet/loud fact is the ROW's rather than a caller's. The number is the room's
-    /// item id, the one `room`'s `done`/`beat`/`abandon` take; `working` is whether the room is
-    /// carrying what the holder said it waits for.
+    /// A room item the holder has on its board. The number is the room's item id - the one `room`'s
+    /// `done`/`beat`/`abandon` take - and `working` is whether the room is carrying what the holder
+    /// said it waits for.
     Room { item: u64, working: bool },
-    /// **The OPERATOR, asked a question with these choices** — the row waits until a person
-    /// answers. See `TodoNeed::Operator` in the store; a head draws it as `waits on you` and
-    /// opens the question card from it.
+    /// The operator, asked a question with these choices: the row waits until a person answers. A
+    /// head draws it as `waits on you` and opens the question card from it.
     Operator {
         question: String,
         options: Vec<String>,
     },
-    /// **An operator edge the operator has answered** — met, and kept as the reply. See
-    /// `TodoNeed::Answered` in the store for why it is an edge and not words on the row.
+    /// An operator edge the operator has answered - met, and kept as the reply so the row still
+    /// records what it waited for.
     Answered { question: String, reply: String },
-    /// A kind this build does not know. See `TodoNeed::Unknown` in the store for why an unknown
-    /// edge is kept rather than refused: a plan is what would be lost.
+    /// A kind this build does not know. Kept rather than refused, because a plan is what would be
+    /// lost.
     #[serde(other)]
     Unknown,
 }
 
-/// **What a row waits on**, as the WIRE spells it — **a copy of
-/// `letibot_tokencore::store::TodoCondition`**, not a re-export, for the reason [`TodoBy`]
-/// above is already a copy: this crate is the wire, and a wire type that aliases a store type
-/// makes one crate's rename a protocol change. The conversion lives where the wire meets the
-/// store (harnessd's `todo_entry` and the head's `SetOperatorTodos` path), and it is a `match`,
-/// so a variant added on one side fails to compile on the other rather than arriving as a
-/// condition nobody can evaluate.
-///
-/// **The tag is the contract.** `kind` and the snake_case names are what an older head reads
-/// past and what a newer one reads by, so a new variant is additive: a reader that does not
-/// know it can say so instead of taking it for *met*.
+/// What a condition is, as the WIRE spells it: a copy of the store's `TodoCondition`, not a
+/// re-export, for `TodoBy`'s reason.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TodoCondition {
-    /// **Due when this job is no longer running** — the handle `bash background: true` and
-    /// `task` hand back, and the one `job_list` prints.
+    /// Due when this job is no longer running - the handle `bash background: true` and `task` hand
+    /// back, and the one `job_list` prints.
     Job { handle: String },
 }
 
-/// **The review queue and the merge queue, as a head reads them** (R61) — one snapshot of both,
-/// with who serves each repository and how recently it said so, the target branches' health, and
-/// the last moves. The operator: *"review is review and merge is merge. separate steps. separate
-/// queues."*
-///
-/// **States travel as WORDS, not as enums**, and that is a decision about the wire rather than
-/// about taste: the v23 queue grew a state (`vetoed`) and every older head lost the WHOLE frame it
-/// arrived in, because a closed enum cannot decode a word it does not know. A head draws the word
-/// it is given; the closed sets live with the store (`letibot_tokencore::store::queues`), which is
-/// the one place a state is decided.
-///
-/// **A snapshot that could not be read says so** (`unreadable`) and is never an empty queue —
-/// R61 defect 12: `sessions.rs` returned an empty list when the read failed, and the pane drew it
-/// as *nothing queued*.
+/// The review queue and the merge queue as a head reads them: one snapshot of both, with who
+/// serves each repository and how fresh that owner's beat is.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QueueSnapshot {
-    /// When the daemon read it, Unix ms — the clock every age in the pane is measured against.
+    /// When the daemon read it, Unix ms - the clock every age in the pane is measured against.
     pub at_ms: u64,
     #[serde(default)]
     pub reviews: Vec<QueueReview>,
@@ -387,59 +242,53 @@ pub struct QueueSnapshot {
     /// Who holds each repository's lease, and the heartbeat's time.
     #[serde(default)]
     pub leases: Vec<QueueLeaseView>,
-    /// The target branches' health — a `red` one is the emergency the pane leads with.
+    /// The target branches' health - a `red` one is the emergency the pane leads with.
     #[serde(default)]
     pub targets: Vec<TargetHealthView>,
-    /// **The repositories that are no queue target at all** — their target's `AGENTS.md` declares
-    /// no `Merge gate`, so the queue was never theirs and nothing about them is counted or
-    /// alarmed on (2026-10-26). The pane draws them in one muted line and nothing more. An added,
-    /// defaulted field on an existing struct: no `PROTOCOL_VERSION` bump.
+    /// The repositories that are no queue target at all: their target declares no merge gate, so
+    /// the queue was never theirs and nothing about them is counted or alarmed on. The pane draws
+    /// them in one muted line and nothing more.
     #[serde(default)]
     pub not_queued: Vec<String>,
     /// The last moves across both queues, oldest first.
     #[serde(default)]
     pub recent: Vec<QueueMove>,
-    /// How many rows of the pre-split (v23) queue are archived.
+    /// How many rows of the queue that predates the review/merge split are archived.
     #[serde(default)]
     pub archived: usize,
-    /// **Why the snapshot is incomplete**, when it is: the store could not be read. `None` is a
-    /// whole read.
+    /// Why the snapshot is incomplete, when it is: the store could not be read. `None` is a whole
+    /// read.
     #[serde(default)]
     pub unreadable: Option<String>,
-    /// **Which repository the ASKING session is a session of** — filled per connection by the
-    /// server, so a head scopes its pane and its edge to its own project (R92 item 5) without
-    /// re-deriving the daemon's repository identity (the canonical main checkout of the
-    /// workspace's `git-common-dir`). `None` from a daemon too old to say; `Some` with no
-    /// `repository` is a session whose workspace is in no repository. An added, defaulted field
-    /// on an existing struct: no `PROTOCOL_VERSION` bump.
+    /// Which repository the ASKING session is a session of, filled per connection by the server,
+    /// so a head scopes its pane to the repository it is actually in.
     #[serde(default)]
     pub here: Option<QueueHere>,
 }
 
-/// **The asking session's place in the queues** — see [`QueueSnapshot::here`].
+/// The asking session's place in the queues - see [`QueueSnapshot::here`].
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QueueHere {
     /// The session's workspace, as the store has it.
     pub workspace: String,
-    /// The queues' key for the repository that workspace is a session of — `None` when it is a
+    /// The queues' key for the repository that workspace is a session of - `None` when it is a
     /// session of no repository.
     #[serde(default)]
     pub repository: Option<String>,
-    /// **Every repository the workspace is a session of** — one, or each of a folder that is one
-    /// project of several (children sharing an `origin` owner). Defaulted, so an older daemon's
-    /// snapshot reads as empty and the head falls back to `repository`; `repository` is still set
-    /// when there is exactly one, so an older head reads this one.
+    /// Every repository the workspace is a session of - one, or each project of a folder that is
+    /// several. Defaulted, so an older daemon's snapshot reads as empty and the head falls back to
+    /// `repository`, which is still set when there is exactly one so an older head reads this one.
     #[serde(default)]
     pub repositories: Vec<String>,
 }
 
-/// **One review row on the wire** — see `letibot_tokencore::store::ReviewRow`.
+/// One review row on the wire - see `letibot_tokencore::store::ReviewRow`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QueueReview {
     pub id: String,
     pub repository: String,
     pub target: String,
-    /// `branch`, or `target` — the target's own red tip.
+    /// `branch`, or `target` - the target's own red tip.
     pub kind: String,
     pub session_id: String,
     pub branch: String,
@@ -477,7 +326,7 @@ pub struct QueueReview {
     pub brief: String,
 }
 
-/// **One merge row on the wire** — see `letibot_tokencore::store::MergeRow`.
+/// One merge row on the wire - see `letibot_tokencore::store::MergeRow`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QueueMerge {
     pub id: String,
@@ -504,17 +353,16 @@ pub struct QueueMerge {
     pub gate_steps: Vec<MergeGateStep>,
     #[serde(default)]
     pub fixes: Option<String>,
-    /// **The step its gate is running RIGHT NOW** — `Some` only while the row is `gating`, and the
-    /// one thing that answers *is it stuck?*: which step of how many, since when, and the end of
-    /// what it has written so far. An added, defaulted field on an existing struct: no
-    /// `PROTOCOL_VERSION` bump.
+    /// The step its gate is running RIGHT NOW - `Some` only while the row is `gating`, and the one
+    /// thing that answers *is it stuck?*: which step of how many, since when, and the end of what it
+    /// has written so far.
     #[serde(default)]
     pub running_gate: Option<QueueRunningGate>,
     pub created_ms: u64,
     pub state_ms: u64,
 }
 
-/// **Who serves a repository's queues** — and the heartbeat a person reads liveness from.
+/// Who serves a repository's queues - and the heartbeat a person reads liveness from.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QueueLeaseView {
     pub repository: String,
@@ -526,7 +374,7 @@ pub struct QueueLeaseView {
     pub acquired_ms: u64,
 }
 
-/// **A target branch's health** — `gating`, `green`, `red`, `timed_out` or `blocked`.
+/// A target branch's health - `gating`, `green`, `red`, `timed_out` or `blocked`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TargetHealthView {
     pub repository: String,
@@ -537,41 +385,37 @@ pub struct TargetHealthView {
     pub evidence: String,
     #[serde(default)]
     pub gate_steps: Vec<MergeGateStep>,
-    /// The step the target's own gate is running, while it is `gating` — see
+    /// The step the target's own gate is running, while it is `gating` - see
     /// [`QueueMerge::running_gate`].
     #[serde(default)]
     pub running_gate: Option<QueueRunningGate>,
 }
 
-/// **The step a gate is running now** — what a `gating` row's detail reads to answer *is it stuck?*
-/// without opening the gate's log file.
-///
-/// The gate streams a step into a log on the daemon's box ([`QueueRunningGate::tail`] is the end of
-/// it, bounded), so the same value is available whether the step runs here or on a declared host —
-/// a host gate writes what it polls back into the same local file.
+/// The step a gate is running now: what a `gating` row's detail reads to answer *is it stuck?*
+/// without opening the gate.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QueueRunningGate {
     /// The step's command, as the project declared it.
     pub command: String,
-    /// **Which step, 1-based** — the `2` of `2 of 4`.
+    /// Which step, 1-based - the `2` of `2 of 4`.
     #[serde(default)]
     pub step: usize,
     /// How many steps the gate has.
     #[serde(default)]
     pub of: usize,
-    /// When the step started, Unix ms — the clock the pane's `running 6m` is measured from.
+    /// When the step started, Unix ms - the clock the pane's `running 6m` is measured from.
     #[serde(default)]
     pub started_ms: u64,
-    /// **The end of the step's output so far**: at most 40 lines of the last 4 KiB it has written.
+    /// The end of the step's output so far: at most 40 lines of the last 4 KiB it has written.
     #[serde(default)]
     pub tail: String,
-    /// **Every byte the step has written** — a number that only grows while it works, so a reader
-    /// can tell *the tail has not moved* from *the step is quiet between two lines*.
+    /// Every byte the step has written - a number that only grows while it works, so a reader can
+    /// tell *the tail has not moved* from *the step is quiet between two lines*.
     #[serde(default)]
     pub log_bytes: u64,
 }
 
-/// **One move of one row** — the transition history (R61 requirement 2).
+/// One move of one row - the transition history.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QueueMove {
     /// `review`, `merge`, `target` or `lease`.
@@ -586,7 +430,7 @@ pub struct QueueMove {
     pub why: String,
 }
 
-/// **One step of a gate, on the wire** — a copy of `letibot_tokencore::store::MergeGateStep`.
+/// One step of a gate, on the wire - a copy of `letibot_tokencore::store::MergeGateStep`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MergeGateStep {
     pub command: String,
@@ -599,9 +443,9 @@ pub struct MergeGateStep {
     pub elapsed_ms: u64,
 }
 
-/// **What became of one gate step** — a copy of `letibot_tokencore::store::MergeGateOutcome`.
-/// `timed_out` and `killed` are R61's: a step past the gate's deadline, and a step killed because
-/// the daemon stopped or lost its lease.
+/// What became of one gate step - a copy of the store's `MergeGateOutcome`. `timed_out` is a step
+/// past the gate's deadline and `killed` is one cut off because the daemon stopped or lost its
+/// lease.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MergeGateOutcome {
@@ -613,12 +457,8 @@ pub enum MergeGateOutcome {
     Killed,
 }
 
-/// Why generation stopped.
-///
-/// Shaped to match `letibot_turn::FinishReason` exactly, `Other` and its string
-/// included. The engine's own note is the reason: *"a `finish_reason` nobody
-/// recognises is exactly the thing that must not be silently normalised"* — and
-/// normalising it on the way to a head is the same defect, one hop later.
+/// Why generation stopped. Shaped to match `letibot_turn::FinishReason` exactly, `Other` and its
+/// string included, so a head never has to guess at a reason this build does not know.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FinishReason {
@@ -641,45 +481,22 @@ impl FinishReason {
     }
 }
 
-/// §4.5's `usage`.
-///
-/// `cached_tokens` is prompt tokens **reused**, not slot occupancy — the
-/// distinction `turn_metrics` paid for (`timings.cache_n`, not `tokens_cached`).
+/// What one turn cost in tokens. `cached_tokens` is prompt tokens reused, not slot occupancy,
+/// which is a different number the KV cache would report.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct Usage {
     pub prompt_tokens: u64,
     pub cached_tokens: u64,
     pub predicted_tokens: u64,
-    /// **What this turn cost, in micro-USD.** `None` on the local server, which
-    /// is free, and on a metered model nothing prices — unpriced and free are
-    /// different and only one of them is a number.
-    ///
-    /// The daemon computed this all along and kept it: `micros_usd` was read in
-    /// exactly one place, the one-shot `--prompt` printer in `harnessd.rs`, so a
-    /// session driven from a head never saw it. The operator, on a conversation
-    /// answered by deepseek: *"still no money"* — correctly, because the meter
-    /// existed only for a surface they were not using.
-    ///
-    /// `#[serde(default)]` so an older daemon's frame still reads: absent is
-    /// `None`, which renders as nothing rather than as zero.
+    /// What this turn cost, in micro-USD. `None` on the local server, which is free, and on a
+    /// metered model nothing prices, because unpriced is not free.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost_micros_usd: Option<u64>,
 }
 
 impl Usage {
-    /// **`f_sim`** — the fraction of *this* prompt that did not have to be
-    /// prefilled. Deliberately **not** called `f_keep`.
-    ///
-    /// `usage` carries this turn's three numbers and nothing about the previous
-    /// turn, so `f_keep` — `cached(N+1) / (prompt(N) + committed_generated(N))`,
-    /// D11's settled C4 — is **not computable from this struct at all**. Naming
-    /// this one `f_keep` is exactly the confusion T22 records: a head would then
-    /// display a number that falls whenever the conversation grows and call it the
-    /// cache metric with the 0.99 bar on it. `letibot_turn::TurnMetrics` has both,
-    /// because it has the witness this struct does not.
-    ///
-    /// `None` for an empty prompt, for the same reason `TurnMetrics::f_sim` is:
-    /// neither 0.0 nor 1.0 is true and both get averaged into a session figure.
+    /// The fraction of THIS prompt that did not have to be prefilled. Deliberately not called
+    /// `f_keep`: the prefix cache's hit rate and the slot's occupancy are different facts.
     pub fn f_sim(&self) -> Option<f64> {
         if self.prompt_tokens == 0 {
             None
@@ -689,7 +506,7 @@ impl Usage {
     }
 }
 
-/// §4.5's `timings`.
+/// One turn's timings: prefill, generation, and wall clock.
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 pub struct Timings {
     pub prompt_ms: f64,
@@ -697,54 +514,27 @@ pub struct Timings {
     pub wall_ms: u64,
 }
 
-/// ACP's vocabulary, as §13.4 requires: the adapter is then a mapping and not a
-/// translation. `PermissionOption{option_id, label, kind}` with
-/// `PermissionOptionKind in AllowOnce | AllowAlways | RejectOnce | RejectAlways`.
-/// The model's verdict on a permission, carried to the person answering it.
-///
-/// The wire twin of `letibot_tools::adjudicate::ModelAdvice`. Separate because this
-/// crate is the protocol and must not depend on the tool crate — the same split
-/// `DecisionOption` and `OptionKind` already have.
+/// The model's verdict on a permission, carried to the person answering it: the wire twin of
+/// the tools crate's adjudication vocabulary.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelAdvice {
-    /// **Whether an oracle was actually consulted** (R11).
-    ///
-    /// No `PROTOCOL_VERSION` bump: an added, defaulted field on an existing variant.
-    /// An older head ignores it and renders exactly what it rendered before.
-    ///
-    /// `false` covers every case where the model adjudicator produced a verdict
-    /// *without asking a model*: an unresolved action, an always-ask entry, a blocked
-    /// one, an uncollected trail, an intent outside the oracle's earned scope. Those
-    /// are layer A's answers arriving through layer B's door, and they are not
-    /// verdicts — so `would: "unavailable"` with `consulted: false` is *nobody spoke*,
-    /// which a head must not render as *a model said unavailable*.
-    ///
-    /// **Load-bearing for the corpus, which is why it is on the wire at all.**
-    /// `letibot_tools`' own twin carries it and warned that without it a row whose
-    /// "verdict" was `always-ask short-circuit` would be labelled as the operator
-    /// agreeing or disagreeing with an opinion nothing held — manufactured signal, and
-    /// the worst kind, because it looks like data. The wire copy had nowhere to put it,
-    /// so a head could only guess from the prose. Defaulted, because a daemon from
-    /// before this field sent none and `false` is the honest reading of silence.
+    /// Whether an oracle was actually consulted. `false` covers every verdict layer A produced
+    /// without asking a model, which must not be counted as a model's answer.
     #[serde(default)]
     pub consulted: bool,
-    /// `admit`, `refuse`, `ask` or `unavailable` — what the model's answer would
-    /// have done on its own.
+    /// `admit`, `refuse`, `ask` or `unavailable` - what the model's answer would have done on its
+    /// own.
     pub would: String,
     /// Which oracle, in its own words.
     pub by: String,
     /// Why, in one or two sentences. Shown to the person; never parsed.
     pub basis: String,
-    /// Which of the operator's own utterances it relied on. **Empty is loud**: an
-    /// authorisation that cites nothing is one the oracle could not ground, and a
-    /// head should render the emptiness rather than the absence of a list.
+    /// Which of the operator's own utterances it relied on. Empty is loud: an authorisation that
+    /// cites nothing is one the oracle could not ground, and a head should render the emptiness
+    /// rather than the absence of a list.
     #[serde(default)]
     pub cites: Vec<String>,
-    /// **Whether the answer was a NON-answer, and which kind** (R12) — leticl's ask, and it
-    /// closes a five-facts-one-line defect rather than adding a field for its own sake.
-    ///
-    /// Without it, `consulted: true` + `would: "ask"` + `cites: []` is what **five** distinct
-    /// facts arrive as, and leticl measured that against three real frames on a scratch head:
+    /// Whether the answer was a NON-answer, and which kind.
     ///
     /// ```text
     ///     the model answered UNSURE                     UnsureKind::CouldNotDecide
@@ -754,25 +544,12 @@ pub struct ModelAdvice {
     ///     the model found nothing that authorises it    OracleAnswer::NotAuthorised
     /// ```
     ///
-    /// The last is a real ANSWER — the oracle looked and said no — and the four above are
-    /// four different ways of not answering. A head that renders all five as "the guard
-    /// asks" is rendering one line for facts whose remedies differ: raise the ceiling, read
-    /// the bytes, re-ask, or accept the refusal.
-    ///
-    /// **The token, not the prose.** `basis` carries a sentence for each of the five and both
-    /// trees' own docs forbid parsing it (*re-parsing prose to recover a label is how a corpus
-    /// rots*). This is `UnsureKind::as_str()` — the same string the corpus column
-    /// `oracle_reading` already stores, so one vocabulary has two destinations rather than two
-    /// vocabularies that drift.
-    ///
-    /// **`None` with `would: "ask"` is the fifth fact**: a consulted oracle that answered, and
-    /// answered *no*. `None` with `would: "unavailable"` is nobody spoke. `#[serde(default)]`
-    /// and no version bump — an older head ignores it and renders what it rendered before, and
-    /// a daemon from before the field sends none, which reads as `None`.
+    /// Their remedies differ, and a token rather than prose because parsing `basis` back into a
+    /// label is how a corpus rots. Defaulted, so no version bump.
     #[serde(default)]
     pub unsure: Option<String>,
-    /// How long it took, in milliseconds. A verdict that spent its whole budget is
-    /// a different fact from one that came back in 40 ms.
+    /// How long it took, in milliseconds. A verdict that spent its whole budget is a different fact
+    /// from one that came back in 40 ms.
     pub latency_ms: u64,
 }
 
@@ -787,21 +564,16 @@ pub struct DecisionOption {
 #[serde(rename_all = "snake_case")]
 pub enum OptionKind {
     AllowOnce,
-    /// This class, for the rest of **this session** (`PROTOCOL_VERSION` 7).
-    ///
-    /// The widest an *answer* goes. Anything standing beyond one session is a
-    /// **mode**, not a grant: the operator moves this project to a named point and
-    /// the disclosure says which one. A grant table keyed by tool and class is a
-    /// thing nobody audits; a per-project point is one value a person can hold in
-    /// their head.
+    /// This class, for the rest of this session: the widest an answer goes, because anything
+    /// standing beyond one session is a mode and not a grant.
     AllowSession,
     AllowAlways,
     RejectOnce,
     RejectAlways,
 }
 
-/// What happens when nobody answers. Ours, not ACP's — ACP has no timeout at the
-/// protocol layer at all (§13.4).
+/// What happens when nobody answers. Ours, not ACP's - ACP has no timeout at the protocol layer at
+/// all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OnTimeout {
@@ -822,134 +594,27 @@ pub enum DecisionOutcome {
 /// Who settled it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Decider {
-    /// `human`, `policy`, `boundary`, `model`, `timeout` — §11's three adjudicators
-    /// plus the two that are not adjudicators.
+    /// `human`, `policy`, `boundary`, `model`, `timeout` - the three adjudicators plus the two that
+    /// are not adjudicators.
     pub kind: String,
     /// The identity, where there is one. A head id, a policy rule name, "".
     pub identity: String,
 }
 
-/// **How many bytes of a tool call's arguments may travel to a head — a wire-safety
-/// limit, not a display decision (R25).**
-///
-/// `crates/ui/DESIGN.md` §4.1 asked for *"a short, tool-supplied, already-truncated display
-/// string … capped at something like 120 bytes"*, and 120 is what this was. **That number was
-/// a viewport guess made in a layer that cannot see a viewport**, and the cost is exactly what
-/// the operator measured on 2026-09-22: a 227-column pane showing a headline cut at 121
-/// characters, so **~100 columns went unused on every tool row** — *"some commands head lines
-/// like 'Ran blabla' truncate too early, they dont use the whole conversation history viewport,
-/// unlike say thinking."* Thinking rows carry no such cap, which is why they look right beside
-/// it. The cap is **here**, where `TurnEvent` becomes `SessionEvent`, because here is where the
-/// fan-out starts: below this line an argument is one in-process string, above it it is a copy
-/// per attached head.
-///
-/// **Why the number moved and the *unit* did not.** §3.3 ruled *bytes in a daemon, columns in
-/// a head, move neither*, which is right about the unit and was wrong about the number, and
-/// its own text named this cost: moving it means the daemon sends the field untrimmed and each
-/// head cuts it, "a protocol decision rather than a rounding one". The argument that settles
-/// it is not aesthetics: **more than one head may be attached to one session, at different
-/// widths, at the same time — so any single number this layer picks is wrong for all but one
-/// of them.** The only layer that knows a viewport is the one that owns it.
-///
-/// **What it is sized against.** A viewport, with headroom: the widest terminal this box has
-/// attached is 227 columns; an 8K display at a small monospace font is ~960. 2048 covers the
-/// latter with 2× to spare, so **no plausible head is starved**, and it stays a bound — an
-/// untrimmed command line can be arbitrarily long, and a field that fans out per head per live
-/// call has to have one. Both ends are still bounded; only the layer that does the display
-/// cut has changed.
-///
-/// **The elision is still disclosed, and still where it happens.** [`truncate_target`] keeps
-/// appending `…` for the wire cut, and the head keeps appending its own when it cuts to its own
-/// width (`rano::width::text::truncate`, which has done exactly that all along). Two cuts,
-/// two marks, each at the layer that made it.
-///
-/// **A stored corpus row is unaffected, and that is worth stating rather than assuming.**
-/// There is no `target` column: `display_target` is derived at lift time from
-/// `arguments_json`, which the store holds **whole**. So raising this number changes what a
-/// *future* session sends and therefore what a future row's head shows; it cannot make a
-/// replay richer than the session it replays, because the replay derives the same field from
-/// the same stored bytes under the same rule. The corpus is measured across time and this is
-/// the half of it that does not move.
+/// How many bytes of a tool call's arguments may travel to a head: a wire-safety limit, not a
+/// display decision, so a huge argument cannot stall a head's socket.
 pub const TARGET_MAX_BYTES: usize = 2048;
 
-/// The keys that name a call's subject, in preference order.
-///
-/// Key names, not tools: the rule below stays derived, and a tool whose
-/// subject has another name keeps the written order.
+/// The keys that name a call's subject, in preference order. Key names and not tools, so the
+/// rule stays derived from the arguments rather than a table of tools.
 const SUBJECT_KEYS: [&str; 3] = ["path", "file_path", "file"];
 
-/// The keys that carry a file's new **body**, which never belong in a label beside a named file.
-///
-/// The operator, on a write row titled `Wrote "Mechanism confirmed — thank you, this one was
-/// worth checking, and it is now pinned by tests: …` with the file name pushed off the end:
-/// *"i already see what was written from the diff. we dont need the line in quotes - just put
-/// the file name here please"*. A body under the cap never tripped the budget, so the prepend
-/// below did not fire and the content led; the head then shortened the row from the end, which
-/// is where the path was. Key names again, not tools — and only dropped when a subject key is
-/// present, so a call with nothing else to name still says something.
+/// The keys that carry a file's new body, which never belong in a label beside a named file: a
+/// body under the cap is still a body.
 const BODY_KEYS: [&str; 3] = ["content", "old_string", "new_string"];
 
-/// The display target for a tool call: the one argument a person reads.
-///
-/// # Why it is derived and not tool-supplied
-///
-/// §4.1 proposes a *tool-supplied* string, on the argument that the tool knows
-/// which of its arguments a person reads. It does — and `ToolCallProposed` is
-/// emitted from the parsed call, before anything has been dispatched to a
-/// registry, so a tool-supplied string would have to arrive on a later event, and
-/// having it on the *first* one is the whole point.
-///
-/// The rule used instead has no per-tool table in it: **the scalar argument
-/// values, in the order the model wrote them**, which `preserve_order` keeps. That
-/// order is not arbitrary — a schema puts the subject first, and every tool in this
-/// tree does (`read{path}`, `grep{pattern, path}`, `list{path}`). So
-/// `{"pattern":"home.*button","path":"src"}` reads `home.*button src`, which is
-/// what a person scans for; a tool the rule reads badly gets a slightly wrong
-/// *label*, never a wrong fact.
-///
-/// **Except when the written order hides the subject altogether.** A model
-/// composing an edit writes the content before the file it is going into, and the
-/// budget then breaks before `path` lands — the operator's card read
-/// `Edited "        let view = sidediff::edit_view…` and could not answer *which
-/// file*. So a subject key ([`SUBJECT_KEYS`]) the loop never reached is prepended, and a
-/// body ([`BODY_KEYS`]) beside a named file is not in the label at all:
-/// the file leads, alone. An order that already shows every
-/// argument — grep's pattern, then its path — does not move.
-///
-/// Nested values are **elided, not flattened**: `{…}` and `[…]` say there is more
-/// without pretending a JSON dump is a label.
-///
-/// # Where that rule was drawn narrower, and why (R15)
-///
-/// **A nested value is elided only when the map has no scalar to show at all.** An
-/// edit's `edits` array was landing in front of the filename —
-/// `▸ Edited […] letibot/crates/harnessd/src/answers.rs · ok · 3ms · 10 lines` — so the
-/// most valuable position on the row was occupied by a placeholder whose "more" is the
-/// **diff sitting directly underneath it**. The operator's ruling: *"`[…]` should be
-/// gone for Edit"*, not moved.
-///
-/// The line is drawn on the *arguments* and not on the tool name, because the whole rule
-/// above is derived — a per-tool table is what this function exists to avoid. The general
-/// point survives intact: `[…]` is still what a map of nothing but nested values says,
-/// which is the case where a label would otherwise be empty. **No seated tool in this
-/// tree has that shape today** — every one carries a scalar `path`, `pattern` or `cmd` —
-/// so that arm is reachable by a tool added later, and a card with no label at all falls
-/// back to the call id rather than to a blank (`subject` in the head's `targets`).
-///
-/// **What was deliberately not changed:** the `SUBJECT_KEYS` prepend below. It answers the
-/// other failure — the budget breaking *before* `path`, leaving a card that says nothing
-/// about which file — and reordering it was proposed and rejected in favour of removal:
-/// on an edit nothing else belongs first, so the row should not need a rule to put the
-/// file there.
-///
-/// # It is public because a head needs it twice
-///
-/// Once on the wire, for a call that is *running*. And once locally, for a settled
-/// `TranscriptItem::Assistant { tool_calls }` whose proposal this head never saw —
-/// a head that attached after the turn, or one that switched into the session.
-/// Without a shared function that second case is either a second implementation of
-/// this rule in the head (two spellings of one display, drifting) or a tool list
-/// that says `Read (call_0)` for every row older than the attach.
+/// The display target for a tool call: the one argument a person reads. Derived and not
+/// tool-supplied, because a tool that named its own label could hide what it acted on.
 pub fn display_target(arguments: &str) -> String {
     let Ok(v) = serde_json::from_str::<serde_json::Value>(arguments) else {
         // Not JSON at all. The model wrote it, so it is still the most
@@ -960,9 +625,8 @@ pub fn display_target(arguments: &str) -> String {
         return truncate_target(&scalar(&v).unwrap_or_default());
     };
     let mut parts: Vec<String> = Vec::new();
-    // The placeholders of the nested values the walk passed, kept apart so that they can
-    // be dropped if any scalar turned up (R15). In written order, so the fallback below
-    // reads like the arguments the model wrote.
+    // The placeholders of the nested values the walk passed, kept apart so they can be dropped if
+    // any scalar turns up. In written order, so the fallback reads like the model's arguments.
     let mut elided: Vec<&'static str> = Vec::new();
     let mut subject_seen = false;
     let names_a_file = SUBJECT_KEYS.iter().any(|k| map.contains_key(*k));
@@ -1014,28 +678,16 @@ fn scalar(v: &serde_json::Value) -> Option<String> {
     }
 }
 
-/// Cut to [`TARGET_MAX_BYTES`] on a character boundary, and say that it was cut.
-///
-/// **What a display target is, and why it is guarded here.** It is composed from the
-/// model's own arguments — a path, a command line, a pattern — so it is content this
-/// daemon did **not** write, and it ends up on a head's row. A display target that carried
-/// a live escape would put an instruction to the operator's terminal on a card that names
-/// a tool call (§3.1).
-///
-/// **And it must go as a whole sequence.** This mapped every control character to a space,
-/// which for the `ESC` of an escape is the worst of both: the introducer became a space and
-/// the `[31m` stayed, so a row read ` [31m` — five columns of visible garbage where the
-/// terminal measured none, which also breaks the width this function is truncating
-/// against. The sequence parser is `letibot_transcript::sanitize`'s, shared with
-/// `letibot-ui` rather than copied: this crate cannot see that one and must not start.
+/// Cut to the cap on a character boundary, and say that it was cut: a head shows the marker, so
+/// a person knows the label is short of the argument.
 fn truncate_target(s: &str) -> String {
     let s = letibot_transcript::sanitize::without_control(s);
     if s.len() <= TARGET_MAX_BYTES {
         return s;
     }
-    // The ellipsis counts. `…` is three bytes, and a cap that forgets that is a cap
-    // the output is allowed to exceed — which is exactly the class of off-by-a-few
-    // that puts a status line one column past the terminal and scrolls the frame.
+    // The ellipsis counts. `...` is three bytes here, and a cap that forgets that is a cap the
+    // output is allowed to exceed - the class of off-by-a-few that puts a status line one column
+    // past the terminal and scrolls the frame.
     const ELLIPSIS: &str = "…";
     format!(
         "{}{ELLIPSIS}",
@@ -1043,96 +695,49 @@ fn truncate_target(s: &str) -> String {
     )
 }
 
-/// **One section of a compaction's record, as the daemon read it back.**
-///
-/// `name` is one of the template's headings (`letibot_turn::SUMMARY_SECTIONS`), spelled by
-/// the daemon and not by the head (see [`COMPACTION_SECTIONS_KEY`]).
-///
-/// **Present with an empty body and absent are two different facts**, and the whole
-/// reason the sections are a list rather than one string: an empty body is the model
-/// saying *there is nothing here*, and a name missing from [`CompactionReport::sections`]
-/// is the model having written no such heading at all — *nobody said*. Collapsing them
-/// is how *nothing is blocked* becomes indistinguishable from *nobody asked*.
+/// One section of a compaction's record, as the daemon read it back. `name` is one of the
+/// template's headings, spelled as the model wrote it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompactionSection {
     pub name: String,
-    /// The text between this heading and the next, trimmed. Empty when the model
-    /// wrote the heading and nothing under it.
+    /// The text between this heading and the next, trimmed. Empty when the model wrote the heading
+    /// and nothing under it.
     pub body: String,
 }
 
-/// One exchange carried through a compaction verbatim rather than summarised.
-///
-/// `role` is `operator` or `agent`, the vocabulary [`Speaker`] already uses — a head
-/// that draws it has a word for each.
+/// One exchange carried through a compaction verbatim rather than summarised. `role` is the
+/// vocabulary of the template, not of a provider.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompactionTurn {
     pub role: String,
     pub text: String,
 }
 
-/// **What was kept verbatim, and why not more** — R27's ruled tail.
-///
-/// Present on every compaction, including a local one, where it is an object with
-/// zero turns. That is deliberate and it is the requirement: *the local artefact is
-/// the remote one with an empty tail*, so a session compacted locally and resumed
-/// against a remote model (or the reverse) does not meet a record its reader cannot
-/// read. One shape, one reader.
+/// What was kept verbatim, and why not more: present on every compaction, including a local one,
+/// where it holds zero.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompactionTail {
     pub turns: Vec<CompactionTurn>,
-    /// **How many items were carried.** Items, not turns: the tail is made of
-    /// transcript items, and a turn is however many of them happened between two
-    /// operator messages. `turns.len()` is the count of turns and is a different
-    /// number on purpose.
+    /// How many items were carried. Items, not turns: the tail is made of transcript items, and a
+    /// turn is however many of them happened between two operator messages. `turns.len()` is the
+    /// count of turns and is a different number on purpose.
     pub carried: u64,
-    /// **Why this much and no more**, one of `"local_model"` (the ruled split: a local
-    /// model is bounded by the KV cache in VRAM, where a tail competes with the
-    /// pressure the compaction was called to relieve), `"nothing_fits"` (one item was
-    /// larger than the whole tail budget), or `"no_turns"` (there was nothing to
-    /// carry).
-    ///
-    /// **A string rather than an enum, and an unknown value is printed raw.** A head
-    /// that met an unrecognised reason would otherwise have to choose between dropping
-    /// the fact and inventing one, and R27's whole point is that a head does not hold
-    /// the daemon's vocabulary — the same argument as `head-run.tools`.
+    /// Why this much and no more: a local model is bounded by the KV cache in VRAM, where a tail
+    /// competes with the space a turn needs to answer.
     pub because: String,
-    /// **Items of the newest exchange left out of the front of the tail**, when the tail
-    /// could not start at an exchange boundary — one big file read is larger than the
-    /// whole budget, so the tail begins inside the exchange still in progress. Non-zero
-    /// means its first turn answers something that is no longer here, which the reader
-    /// has to be told.
+    /// Items of the newest exchange left out of the front of the tail, when the tail could not
+    /// start at an exchange boundary.
     #[serde(default)]
     pub dropped: u64,
 }
 
 impl CompactionTail {
-    /// **WHY this compaction's tail is what it is, in one sentence** — or `None` when
-    /// there is nothing to explain.
-    ///
-    /// The operator, after an automatic compaction of leticl's wrote no tail at all:
-    /// *"the head should be able to say which treatment a compaction got. A reader who cannot
-    /// tell whether the tail was omitted by policy or by accident is in the position R41's job
-    /// pane was in: an absence with two causes and one appearance."*
-    ///
-    /// **Zero has three causes and they were one appearance.** `local_model` is R27's ruling
-    /// working; `nothing_fits` is the budget losing to a single item; `no_turns` is an empty
-    /// history. Nothing on any screen or in any row distinguished them, and this is the one
-    /// place both readers meet: `harnessd` writes it into the transcript's own note (which is
-    /// durable) and into the `compacted` sentence a head draws (which is not), so the two
-    /// cannot come to say different things about one compaction.
-    ///
-    /// **`budget` is silent on purpose.** The tail exists, the count beside it says how much,
-    /// and a sentence explaining that what fitted was what fitted is the furniture this file
-    /// keeps deleting.
-    ///
-    /// **An unknown value is printed raw**, per this struct's own rule: a head does not hold
-    /// the daemon's vocabulary, and dropping the fact or inventing one are the two things it
-    /// must not do.
+    /// Why this compaction's tail is what it is, in one sentence, or `None` when there is nothing
+    /// to explain: a tail that lost nothing needs no account.
     pub fn why_line(&self) -> Option<String> {
         match self.because.as_str() {
-            // R27's ruled split, and the reason has to be in the sentence: a reader who does
-            // not know the rule reads this as the head having lost their history.
+            // The ruled split, and the reason has to be in the sentence: a reader who does not know
+            // the rule reads this as the head having lost their history.
             "local_model" => Some(
                 "No verbatim tail: this conversation's turns go to the LOCAL model, and R27's \
                  split gives the tail to a remote one only — a local model is bounded by the \
@@ -1158,103 +763,57 @@ impl CompactionTail {
     }
 }
 
-/// **A compaction's account of itself, beside its sentence rather than inside it.**
-///
-/// R27. The `Warning` that already announces a compaction carries a `detail` written for
-/// a person; a head that wants to draw a *row* — the section list, the numbers, the
-/// verbatim tail — otherwise has to parse English, which is the same defect R24's frame 2
-/// had one layer down: a prose description of a shape is not the shape.
-///
-/// **Inline on the warning, not an R11-style locator.** leticl's reason, and it is the
-/// right one: two events can drift about which compaction they describe, and a locator
-/// would have to be reachable from the snapshot too or a head attaching after a
-/// compaction draws a row it can never fill. Nothing here is large — a record is a few
-/// thousand tokens and this is a fraction of it, published once per compaction rather
-/// than once per turn.
+/// A compaction's account of itself, beside its sentence rather than inside it: the `Warning`
+/// that announces a compaction stays one line, and this carries the numbers.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompactionReport {
-    /// **Which kind of compaction this was**, in the vocabulary the warning code already
-    /// uses: `"compacted"`, `"reseated"`, `"overrun"`. Carried here as well as in
-    /// `Warning::code` so a head holding only the report can still name it.
+    /// Which kind of compaction this was, in the vocabulary the warning code already uses:
+    /// `compacted`, `reseated`, `overrun`. Carried here as well as in `Warning::code` so a head
+    /// holding only the report can still name it.
     pub kind: String,
-    /// The conversation's size before, in LEDGER tokens — the daemon's own count, the
-    /// same number the detail sentence was rendered from.
+    /// The conversation's size before, in LEDGER tokens - the daemon's own count, the same number
+    /// the detail sentence was rendered from.
     pub tokens_before: u64,
     /// And after: the new base, which is the prefix plus the record plus any tail.
     pub tokens_after: u64,
     /// The transcript the fork opened, e.g. `s-123#t2`.
     pub transcript: String,
-    /// `tokens_before` plus the prompt, as the daemon measured it when it decided — the
-    /// number that was compared against `window`.
+    /// `tokens_before` plus the prompt, as the daemon measured it when it decided - the number that
+    /// was compared against `window`.
     pub resident: u64,
     /// The window it was compared against.
     pub window: u64,
-    /// The reserve that comparison subtracted, so a head can reproduce the decision
-    /// rather than only read its outcome.
+    /// The reserve that comparison subtracted, so a head can reproduce the decision rather than only
+    /// read its outcome.
     pub headroom: u64,
-    /// **The record ran out of room before it finished.** A bool on the structure and not
-    /// a phrase parsed out of a body, because a templated record is exactly where
-    /// *truncated* stops being readable out of any one section: the cut falls wherever the
-    /// model ran out, which with eight sections can be inside `Relevant Files`.
+    /// The record ran out of room before it finished. A bool on the structure and not a phrase parsed
+    /// out of a body, because a templated record is exactly where *truncated* stops being readable
+    /// out of any one section: the cut falls wherever the model ran out.
     pub cut_off: bool,
-    /// **Which wording of the instruction produced this record**, the way a corpus row
-    /// carries `brief_sha`. Bump it when `letibot_turn::SUMMARY_INSTRUCTION` changes what it
-    /// asks for: records produced under different templates are two datasets, and a
-    /// head that saw the tag move knows the sections may differ.
+    /// Which wording of the instruction produced this record, the way a corpus row carries a brief
+    /// hash. Bump it when `letibot_turn::SUMMARY_INSTRUCTION` changes what it asks for: records under
+    /// different templates are two datasets.
     pub template: String,
-    /// The headings the daemon found, in `letibot_turn::SUMMARY_SECTIONS`'s order and spelling. A heading it did not find is absent — see [`CompactionSection`].
+    /// The headings the daemon found, in `letibot_turn::SUMMARY_SECTIONS`'s order and spelling. A
+    /// heading it did not find is absent - see [`CompactionSection`].
     pub sections: Vec<CompactionSection>,
     pub tail: CompactionTail,
 }
 
-/// **The template tag a `CompactionReport::template` carries.**
-///
-/// A date, like `BRIEF_FORMAT`, and bumped by hand when `letibot_turn::SUMMARY_INSTRUCTION`
-/// changes what it asks for — the same rule for the same reason, one layer over.
+/// The template tag a compaction report carries: a date, bumped by hand when the summary
+/// instruction changes, so a report can be read against the template that produced it.
 pub const COMPACTION_TEMPLATE: &str = "compaction/2026-09-23";
 
-/// **The sections a compaction's record has, from the daemon that asks for them.**
-///
-/// A `SettingRow` key on the existing `ServerFrame::Settings`, exactly as
-/// [`crate::protocol::HEAD_RUN_TOOLS_KEY`] is, and for the reason R24 decided that one:
-/// **a head that held its own copy of a list would drift.** This key's `value` is
-/// comma-joined with no spaces, and an absent row means a daemon older than this one —
-/// which a head reads as *no structure to draw*, so the sentence in `detail` is all there
-/// is and the head draws exactly what it drew before.
+/// The sections a compaction's record has, from the daemon that asks for them: a settings row
+/// on the existing key, so a head can draw what it did not witness.
 pub const COMPACTION_SECTIONS_KEY: &str = "compaction.sections";
 
-/// **The fill a session created from the store announces, and the one its restore
-/// completes** — `SessionEvent::Filling`'s `what` for both halves, spelled once.
-///
-/// Two layers say it and they must agree, or the bar one of them starts is never ended by
-/// the other: the daemon's socket says it the moment a `ResumeSession` registers a hub
-/// (the store's row count is known there, and the wait is otherwise invisible), and
-/// `Harness::open` says it while it walks the restored rows and once more at the end
-/// (`republish_after`). MEASURED 2026-10-26: a head attached to a session whose restore
-/// was still queued behind another session's turn was handed an empty snapshot and drew
-/// *"this session has said nothing yet"* about a conversation of 166 rows — the sentence
-/// a head draws from THIS name is the one that says otherwise.
+/// The fill a session created from the store announces, and the one its restore completes:
+/// `Filling` is ephemeral, so a head that arrives late is told the state separately.
 pub const RESTORING_ROWS: &str = "restoring the stored conversation";
 
-/// **A subagent's call, named, on a card its own session cannot draw.**
-///
-/// The operator, on who a subagent's ask belongs to: *"who asks subagents
-/// permissions? i think they should surface to the parent head all the way to the
-/// root obviously"*. A child has no head attached and cannot be driven, so its
-/// gate's card is posted to the session that does have one — the tree's root — and
-/// this is the fact that says so on the card.
-///
-/// **A card that arrived at the root unlabelled would be answered for the wrong
-/// thing**: a head draws `? \`write\` wants write access to \`src/main.rs\`` with the
-/// options it always draws, and an operator with no way to tell whether that is the
-/// session in front of them or the child it spawned is approving on the wrong
-/// question.
-///
-/// The fields are exactly what the operator has to tell two children apart: the
-/// **handle** (which is the child's session id — what `task_result` collects by and
-/// what a head attaches to), the **first line of its task**, and the **root session
-/// the card belongs to**, carried so a refusal can name where it went rather than
-/// say "somewhere".
+/// A subagent's call, named, on a card its own session cannot draw: a child has no head
+/// attached, so the card is raised where a person can see it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubagentAsk {
     /// The child's handle, which is its session id.
@@ -1266,39 +825,27 @@ pub struct SubagentAsk {
     pub root: String,
 }
 
-/// **Which of the two facts a prompt card is raised on** — the reading, or the absence of
-/// one. The card's raise reason is not "the run is asking" but **"a run of the operator's
-/// own is in flight"** (the operator, 2026-10-09: *"sudo can get input from here so can
-/// others"*), so the card has to say which of the two it knows, and this is that word.
-///
-/// The distinction is the one `letibot_tools::exec::ask::Waiting` keeps between `Yes` and
-/// `Unreadable`, carried one layer up: [`PromptReading::Blocked`] is *the daemon read the
-/// process and found it blocked on the input this daemon holds*, and
-/// [`PromptReading::Unreadable`] is *the daemon could not look at the run at all* — the
-/// `sudo` case, where a card that claimed a reading would be a guess. A head that draws one
-/// card for both would draw a card that claims the program asked; the whole point of the
-/// field is that it never has to.
+/// Which of the two facts a prompt card is raised on: the reading, or the absence of one.
+/// `Blocked` is a program waiting; the absence is a program that may be waiting.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PromptReading {
-    /// The signal was read: a process of the run is blocked reading the input this daemon
-    /// holds. The card may say the command is asking, and the request's `question` is the
-    /// program's own last line, to show.
+    /// The signal was read: a process of the run is blocked reading the input this daemon holds. The
+    /// card may say the command is asking, and the request's `question` is the program's own last
+    /// line, to show.
     #[default]
     Blocked,
-    /// **The signal could not be read** — a process of the run belongs to another uid, or a
-    /// `/proc` this daemon may not open. The card may NOT say the command is asking: its
-    /// text is the honest sentence (*this daemon could not look at the run, so it cannot say
-    /// whether it is asking; a line you send goes into it either way*), and `question` is
-    /// `None` because there is no reading to quote from.
+    /// The signal could not be read - a process of the run belongs to another uid, or a `/proc` this
+    /// daemon may not open. The card may NOT say the command is asking: its text is the honest
+    /// sentence, and `question` is `None` because there is no reading to quote from.
     Unreadable,
 }
 
-/// **One cited range** — what [`SessionEvent::Citations`] carries for each empty fence labelled
+/// One cited range - what [`SessionEvent::Citations`] carries for each empty fence labelled
 /// `path:start-end` (or `path:line`) in a reply, in the order they appear.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Citation {
-    /// The fence's label as the model wrote it — what a head matches the fence by.
+    /// The fence's label as the model wrote it - what a head matches the fence by.
     pub label: String,
     /// The path as cited, relative to the session's workspace or absolute.
     pub path: String,
@@ -1307,8 +854,8 @@ pub struct Citation {
     pub end: u32,
     /// The lines themselves, `start..=end` (fewer when the file is shorter; see `error`).
     pub lines: Vec<String>,
-    /// Why the lines are not there, or not all there: the file could not be read, the range
-    /// starts past its end. `None` when every cited line was read.
+    /// Why the lines are not there, or not all there: the file could not be read, the range starts
+    /// past its end. `None` when every cited line was read.
     #[serde(default)]
     pub error: Option<String>,
 }
@@ -1321,33 +868,20 @@ pub enum SessionEvent {
         turn_id: String,
         model: String,
         ledger_head: String,
-        /// **The WHOLE turn's start, Unix ms, or `None` when nobody measured it.**
-        ///
-        /// A `TurnStarted` is emitted once per ROUND — the engine's `run_turn_steered` is called
-        /// inside the daemon's round loop — so a head that times from the event it receives
-        /// restarts its clock at every round. The operator, watching the composer: *"it should be
-        /// still responding even while you do tools calls and such, and not reset, currently it
-        /// resets."*
-        ///
-        /// A turn is one prompt however many rounds it takes, so the start belongs to the prompt
-        /// and the emitter stamps it here. `None` is a real answer (a snapshot turn, a test) and
-        /// the head draws it as *started before this head attached* rather than inventing one.
+        /// The WHOLE turn's start, Unix ms, or `None` when nobody measured it. A `TurnStarted`
+        /// is emitted once per round, so the first of a turn is the turn's own start.
         began_ms: Option<u64>,
     },
-    /// Nothing surveyed reads this one, and §8.5 requires it to count as liveness.
-    /// It is also the archetype of an *interactive* frame: see [`crate::scrub`].
+    /// Prefill progress. Nothing downstream reads the numbers, but it counts as liveness - and it is
+    /// the archetype of an *interactive* frame, which a late head is never replayed: see
+    /// [`crate::scrub`].
     PromptProgress {
         turn_id: String,
         #[serde(flatten)]
         progress: PromptProgress,
     },
-    /// The server's own generation counter, one per frame that advanced it.
-    ///
-    /// The generation half of liveness, paired with [`Self::PromptProgress`]: a
-    /// head tells a hang from a model that is still emitting by whether this
-    /// moves, which is exactly the case a long tool-call write is, where no
-    /// visible text moves at all. Its durable residue is `TurnFinished`'s
-    /// `usage.predicted_tokens`, so it is interactive — see [`crate::scrub`].
+    /// The server's own generation counter, one per frame that advanced it: the generation half
+    /// of liveness, paired with the sequence a head has already read.
     TokensGenerated { turn_id: String, tokens: u64 },
     Delta {
         turn_id: String,
@@ -1359,173 +893,60 @@ pub enum SessionEvent {
         call_id: String,
         name: String,
         args_digest: String,
-        /// The one argument a person reads: a path, a pattern, a command line.
-        ///
-        /// `crates/ui/DESIGN.md` §4.1, fixed. Before this field a head watching a
-        /// call could render `Running bash` and never `Running cargo test
-        /// --workspace`, because the arguments reached it only with the transcript
-        /// — after the call had finished.
-        ///
-        /// `#[serde(default)]` so a log recorded before the field existed still
-        /// replays; an old row then renders the verb with no target, which is what
-        /// it always did.
+        /// The one argument a person reads: a path, a pattern, a command line. Without it a head
+        /// watching a call could only show the tool's name.
         #[serde(default)]
         target: String,
     },
     DecisionRequested {
         req_id: String,
-        /// **Another session's call, when this card is not this session's own.**
-        ///
-        /// `Some` for exactly one case: a subagent's gate reached an `ask`, and the
-        /// card was posted to the tree's ROOT, because a child has no head of its
-        /// own (R58 — the one session in a subagent tree that is in `Sessions::open`
-        /// and therefore the only one a head can be attached to). See [`SubagentAsk`].
-        ///
-        /// `None` is *this session's own call*, which is every card before this
-        /// existed — so an older head, which ignores the field, draws exactly what it
-        /// drew before and answers the same one question. No `PROTOCOL_VERSION` bump:
-        /// the precedent [`ModelAdvice::consulted`] and `write_targets` set, and the
-        /// bumps in this file are for new frames and new variants, which an old peer
-        /// cannot parse at all.
+        /// Another session's call, when this card is not this session's own. `Some` for exactly
+        /// one case: a subagent's call, shown on its parent's card.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         subagent: Option<SubagentAsk>,
-        /// `permission` or `question`. §11.6: *"a permission and a question are one
-        /// mechanism, differing in `kind`"* — and the two payload fields below are
-        /// that difference made concrete rather than left to a head to infer.
+        /// `permission` or `question`: a permission and a question are one mechanism, differing in
+        /// `kind`, and the two payload fields below are that difference made concrete rather than
+        /// left to a head to infer.
         kind: String,
         call_id: Option<String>,
-        /// **The tool's declared access** — `read | write | exec | network`, from the
-        /// tool's schema. Empty from a daemon older than this field.
-        ///
-        /// **Added because the card printed two statements that looked like a
-        /// contradiction and nothing joined them** (§11.7). The *headline* is what the
-        /// tool **declares** — `wants exec access` — and [`Self::detail`] is layer A's
-        /// reading of the **action** — `auto — a read inside the boundary` — so *"the
-        /// classifier decided this needed no asking"* read as being argued with by the
-        /// card going up anyway. The sentence that joins them is the head's (A's
-        /// wording); the fact it needs is this one, which the request has carried as
-        /// `ActionClass::access` all along and simply never put on the wire.
-        ///
-        /// **No `PROTOCOL_VERSION` bump**: an added, defaulted field on an existing
-        /// variant, the precedent `ModelAdvice::consulted` set. An older head ignores
-        /// it and renders exactly what it rendered before, and empty says *nobody told
-        /// me* rather than *read*, which is the difference between a card that draws no
-        /// clause and a card that draws the wrong one.
+        /// The tool's declared access, from its schema: read, write, exec or network. Empty from a
+        /// daemon older than the field.
         #[serde(default)]
         access: String,
         summary: String,
-        /// **The one thing being decided about**, on its own: the command a `bash`
-        /// call would run, the path a write would take, the URL a fetch would reach.
-        ///
-        /// Separate from `summary` because a head has to be able to put it where the
-        /// eye lands. It used to be interpolated into the sentence and the sentence
-        /// was then joined to layer A's reading, so the line an operator decided
-        /// from read *"`bash` wants exec access to `<no target argument>` — ask —
-        /// intents [read_file write_file execute_code] over [host_other]"* — a
-        /// taxonomy wrapped around a blank where the command should have been.
-        ///
-        /// `#[serde(default)]` for logs recorded before this existed; empty means
-        /// the call named nothing, which is a fact about `web_search` and a bug
-        /// about `bash`.
+        /// The one thing being decided about, on its own: the command a `bash` call would run, the
+        /// path a write would take.
         #[serde(default)]
         target: String,
-        /// **What this action would WRITE, by path** — R35, and the field that was computed,
-        /// renderable on the other head, and reaching nobody.
-        ///
-        /// The classifier has found these since the day it was written: `write_targets` resolves an
-        /// assigned name, `open(p, 'w')`, a mode spelling, and a method whose receiver is the path —
-        /// built from the operator's own card (*"`p = Path(\"src/syntax.rs\")` …
-        /// `open(p,'w').write(s)`"*). What was missing is that the names stopped inside the
-        /// classifier: a `bash` call running a script that rewrites a file drew a card that did not
-        /// say which file, and the operator's report is exactly that — *"it cant catch those pesky
-        /// python edits"*. It can. Nothing showed them.
-        ///
-        /// **Empty means no write was FOUND**, which is not *this writes nothing* — see
-        /// [`WriteTarget`]. A card that said *writes nothing* on an empty list would be claiming a
-        /// negative the scanner cannot support, which is R35's own subject one layer over.
-        ///
-        /// **Display-only, and it does NOT gate.** A detected write already inserts
-        /// `Intent::WriteFile` and already resolves regions — that is the gate's decision and it is
-        /// unchanged by this field existing. So an operator seeing more does not mean anything being
-        /// admitted more, and that is deliberate rather than incidental: changing a TIER on a
-        /// scanner's inference is a separate ruling with its own measurement.
-        ///
-        /// `#[serde(default)]` so a log recorded before it replays: an old row has no targets, and a
-        /// head drawing none is what every head drew before this.
+        /// What this action would WRITE, by path. The classifier finds these from the call itself,
+        /// so a grant can name a file rather than a shape.
         #[serde(default)]
         write_targets: Vec<WriteTarget>,
-        /// Layer A's deterministic reading — verdict, intents, regions, tier.
-        ///
-        /// Evidence, not the question. It belongs under the question in the dim
-        /// register rather than appended to it: an operator reads this line SECOND,
-        /// if at all, and it was pushing the command off the first one.
+        /// Layer A's deterministic reading: verdict, intents, regions, tier. Evidence, not the
+        /// question: it belongs under the card rather than on it.
         #[serde(default)]
         detail: String,
-        /// **The adjudication ladder**, for a permission: allow once, allow for the
-        /// session, allow for the project, deny. Empty for a question, which does not
-        /// have a ladder — it has choices.
+        /// The adjudication ladder, for a permission: allow once, allow for the session, allow for
+        /// the project, deny. Empty for a question, which has no ladder - it has choices.
         options: Vec<DecisionOption>,
-        /// **Why a rung a person would look for is not on the ladder**, in one line, or
-        /// empty when the ladder is complete.
-        ///
-        /// The gate refuses to show a button whose effect it would then decline to
-        /// honour, and the order the two facts have to arrive in is: the rung is gone,
-        /// and here is why. A rung that vanished in silence is a person wondering
-        /// whether they misremembered — MEASURED 2026-10-26, fifteen of one session's
-        /// twenty-two asks offered *"Allow … for the rest of the session"* over a
-        /// command nobody could read, and no card said the grant would never be
-        /// honoured.
-        ///
-        /// `#[serde(default)]` so a log recorded before this replays: an old row has no
-        /// note, and empty draws no clause — which is also what a complete ladder says.
+        /// Why a rung a person would look for is not on the ladder, in one line, or empty when the
+        /// ladder is complete: an option that is missing without a reason reads as a bug.
         #[serde(default)]
         options_note: String,
-        /// **The model's own options**, for a question (T25/D10). Plain text in the
-        /// person's vocabulary, not a policy vocabulary.
-        ///
-        /// This exists because it had nowhere to sit. `options` carries
-        /// [`OptionKind`], which answers *may this run*; a question answers *which way
-        /// should I go*, and squeezing "rebuild first" into an `AllowOnce` would put a
-        /// free-form sentence where a policy engine reads a grant. Two fields, one
-        /// event, and `kind` says which is populated.
-        ///
-        /// The index into this list is what
-        /// [`crate::question::QuestionAnswer::option`] names, so a head must not
-        /// reorder it.
-        ///
-        /// `#[serde(default)]` so a log recorded before `PROTOCOL_VERSION` 7 replays:
-        /// an old row has no choices and was a permission, which is what an empty list
-        /// says.
+        /// The model's own options, for a question: plain text in the person's vocabulary, not a
+        /// policy vocabulary.
         #[serde(default)]
         choices: Vec<String>,
-        /// Why the model is stuck, in one line, for a question. Shown to the person
-        /// and never used to derive an answer.
-        ///
-        /// Carried verbatim rather than folded into `summary`, because a head that had
-        /// to split one string back into a question and its reason would be
-        /// reconstructing what it was sent — the same defect
-        /// [`crate::hub::Hub`]'s `shown` field exists to avoid one layer down.
+        /// Why the model is stuck, in one line, for a question: shown to the person and never used
+        /// to derive an answer.
         #[serde(default)]
         because: String,
-        /// **What the model already said about this**, at `/mode supervised`.
-        ///
-        /// The payload of *"ask model and ask me if i agree or not"*: a head renders
-        /// it above the options so the person is agreeing or disagreeing rather than
-        /// deciding cold. Empty at every other point — at `automode` the model is the
-        /// decider and there is nobody to advise, at `always-ask` no model was asked.
-        ///
-        /// Advice and never an answer. A head must not preselect an option from it,
-        /// and must not shorten the deadline because it arrived: the whole value of
-        /// the point is a judgement the person actually made.
-        ///
-        /// No `PROTOCOL_VERSION` bump. It is an added, defaulted field on an existing
-        /// event — serde ignores it on an older head, which then renders exactly what
-        /// it rendered before and answers exactly as well. The bumps in this file are
-        /// for new frames and new variants, which an old peer cannot parse at all.
+        /// What the model already said about this, at `/mode supervised`: a head renders it above
+        /// the options so the person sees it before choosing.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         advice: Option<ModelAdvice>,
-        /// Unix millis. `None` means §11.5's "wait forever", which is a policy a
-        /// human head may choose and an automated one may not.
+        /// Unix millis. `None` means *wait forever*, which is a policy a human head may choose and an
+        /// automated one may not.
         deadline: Option<u64>,
         on_timeout: OnTimeout,
     },
@@ -1534,16 +955,13 @@ pub enum SessionEvent {
         outcome: DecisionOutcome,
         by: Decider,
         basis: String,
-        /// The answer arrived after the deadline had already settled it. Recorded
-        /// rather than dropped: "an answer that arrived too late" and "no answer"
-        /// are different facts.
+        /// The answer arrived after the deadline had already settled it. Recorded rather than
+        /// dropped: "an answer that arrived too late" and "no answer" are different facts.
         late: bool,
     },
-    /// **Shape revised by W9**, which is what T13.4 said would settle it: `turn_id`
-    /// because every other turn-scoped event carries one and a head cannot
-    /// attribute a call without it once §8.4's subagents run concurrently, and
-    /// `access` because §8.1 clause 4 declares it in the schema and it is the fact
-    /// that explains why a call did or did not stop for a decision.
+    /// A tool call starting. `turn_id` because every other turn-scoped event carries one and a head
+    /// cannot attribute a call without it once subagents run concurrently; `access` because the
+    /// schema declares it and it explains why a call did or did not stop for a decision.
     ToolStarted {
         turn_id: String,
         call_id: String,
@@ -1551,46 +969,34 @@ pub enum SessionEvent {
         /// `read | write | exec | network`, from the tool's schema.
         access: String,
     },
-    /// Interactive. Partial tool output, which a late head must never be replayed —
-    /// see [`crate::scrub`].
-    ///
-    /// `note` survived contact with W9 unchanged: `grep` and `glob` do not know a
-    /// total until they have finished walking, so a `done/total` pair would be a
-    /// denominator invented for the display.
+    /// Partial tool output, which a late head must never be replayed: see [`crate::scrub`].
+    /// `note` is free text the tool wrote.
     ToolProgress {
         turn_id: String,
         call_id: String,
         note: String,
     },
-    /// **Shape revised by W9.** `bytes` alone could not answer the question a
-    /// spilling runtime raises — how much the model got versus how much there was —
-    /// and the locator has to reach a head or "there is more" is a dead end.
+    /// A tool call ending. `bytes` alone cannot answer the question a spilling runtime raises - how
+    /// much the model got versus how much there was - and the locator has to reach a head or "there
+    /// is more" is a dead end.
     ToolFinished {
         turn_id: String,
         call_id: String,
         outcome: letibot_transcript::ToolOutcome,
-        /// A digest, for the same reason `ToolCallProposed` carries one: the payload
-        /// is in the transcript, and an event fans out to every head.
+        /// A digest, for the same reason `ToolCallProposed` carries one: the payload is in the
+        /// transcript, and an event fans out to every head.
         payload_digest: String,
         /// What the model received.
         inline_bytes: u64,
-        /// What the tool produced. Larger than `inline_bytes` exactly when the
-        /// output spilled (§8.3).
+        /// What the tool produced. Larger than `inline_bytes` exactly when the output spilled.
         full_bytes: u64,
         /// The spill locator, when there is one: a head can offer the rest.
         spill: Option<String>,
-        /// How many of §8.1 clause 2's repairs the call needed. A head that cannot
-        /// see this cannot see a model steadily emitting malformed calls.
+        /// How many repairs the call needed. A head that cannot see this cannot see a model steadily
+        /// emitting malformed calls.
         repairs: u32,
-        /// Both sides of the file a file-editing call changed, bounded to the
-        /// region that differs. The one payload an event carries, because it
-        /// is the one payload the transcript does not have: the model-facing
-        /// result numbers only the after lines, and once the write has landed
-        /// the before side exists nowhere else. `#[serde(default)]` so a log
-        /// recorded before the field existed replays with `None`, and a head
-        /// without the two-panel view renders exactly what it always did. No
-        /// `PROTOCOL_VERSION` bump: an added, defaulted field on an existing
-        /// event is the version-4 argument, not the version-10 one.
+        /// Both sides of the file a file-editing call changed, bounded to the region that differs:
+        /// the one payload an event can carry a diff in.
         #[serde(default)]
         edit: Option<ToolEdit>,
     },
@@ -1605,31 +1011,16 @@ pub enum SessionEvent {
         reason: String,
         partial_kept: bool,
     },
-    /// **The turn ended in a failure.** `crates/ui/DESIGN.md` §4.5, paid.
-    ///
-    /// Before this existed a turn that failed published a `Warning` and *no*
-    /// terminal event, so a head's `TurnState` stayed `Running` for the rest of the
-    /// session. Observed live: `! turn_failed — a frame advanced tokens_predicted
-    /// 142 -> 144 but carried 1 id(s)`, after which the head sat at `Responding`
-    /// forever. The head covered for it with *"nothing received for 17.0s"*, and a
-    /// head saying that cannot tell a failed turn from a slow one — only the party
-    /// that saw the error can, which is the party that publishes this.
-    ///
-    /// It is a **separate variant** rather than a `TurnInterrupted` with a reason
-    /// or a `TurnFinished { finish_reason: Other }`, because both of those are
-    /// endings a turn is allowed to have: an interrupt is something a person did,
-    /// and a finish is a turn that produced an answer. A failure is neither, and
-    /// folding it into either is the same move as recording a `length` as a
-    /// completed turn.
+    /// The turn ended in a failure. Without it a failed turn published a warning and no terminal
+    /// event, so a head drew a turn that never ended.
     TurnFailed {
         turn_id: String,
-        /// What went wrong, in the words the daemon has. Never abbreviated: this is
-        /// the only place the reason exists once the process moves on.
+        /// What went wrong, in the words the daemon has. Never abbreviated: this is the only place
+        /// the reason exists once the process moves on.
         error: String,
-        /// Whether anything the model wrote before the failure was committed. False
-        /// for every §5.7 failure — the engine commits nothing — and the field is
-        /// present so a future failure that *does* keep a partial cannot arrive
-        /// looking like one that does not.
+        /// Whether anything the model wrote before the failure was committed. False for every engine
+        /// failure - it commits nothing - and the field is present so a future failure that does keep
+        /// a partial cannot arrive looking like one that does not.
         partial_kept: bool,
     },
     TranscriptAppended {
@@ -1637,123 +1028,26 @@ pub enum SessionEvent {
         kind: String,
         ledger_head: String,
     },
-    /// **The second addition to §4.5, and it is T13.1 being paid rather than
-    /// deferred.**
-    ///
-    /// §4.5's `TranscriptAppended` announces a row and carries no body, and until
-    /// now the body reached a head *only* through the snapshot
-    /// ([`crate::view::SessionView::record_item`]). That works for a head that
-    /// attaches after the row exists and fails permanently for one that was already
-    /// attached: it is told a row landed, no later frame ever carries the content,
-    /// and its placeholder is not a loading state — it is the final state. Measured
-    /// on a live session: the operator's own prompt renders as
-    /// `[user … — content not loaded]` forever.
-    ///
-    /// T13.1 also argues the log should be a **sufficient record of a session**, and
-    /// it is not one today: `letibot-tui --replay recorded.jsonl` shows a placeholder
-    /// for every row, because the only copy of the content was in a snapshot that
-    /// was never written down. Assistant text is *nearly* recoverable from `Delta`,
-    /// but the item boundaries are not, and a `ToolResult` payload is not on the
-    /// wire at all — `ToolFinished` carries a digest by design.
-    ///
-    /// So the content goes in the log. **The right shape is a body on
-    /// `TranscriptAppended` itself** — one row, one event, and no
-    /// announced-but-empty state for anyone to render. That shape needs
-    /// `letibot_turn::TurnEvent::TranscriptAppended` to carry the item too, because
-    /// the engine is what emits the announcement and the daemon does not hold the
-    /// item until the engine's call returns. Until that seam is widened, this
-    /// variant carries the body a moment later, on the same log, and a head handles
-    /// it with the same code it will use afterwards: fill the row this names.
-    /// Deleting this variant is then the whole of the migration.
-    ///
-    /// Boxed for the reason `Hello.snapshot` is: a `TranscriptItem` is two orders
-    /// of magnitude larger than a `Delta`, and an unboxed one would make every
-    /// event on the hot path pay for it.
+    /// A row's body, published after its announcement: `TranscriptAppended` announces a row and
+    /// carries no body, so this is what a head draws from.
     TranscriptContent {
         item_id: String,
         item: Box<letibot_transcript::TranscriptItem>,
     },
-    /// **The lines a reply cited, as the file had them when the reply landed.**
-    ///
-    /// A model citing code writes an empty fence labelled `path:start-end` and the daemon fills
-    /// it — the operator: *"model wants to cite me a file with line range … and it is manually
-    /// extracting the code and line numbers lost"*. The reply's own text is never rewritten (the
-    /// prompt cache is keyed on it); the snapshot travels here, after the row's content, and a
-    /// head puts it into the fence it names. Durable: the row it fills is.
+    /// The lines a reply cited, as the file had them when the reply landed. A model citing code
+    /// writes an empty fence labelled `path:start-end`, and this is the text that goes in it.
     Citations {
         item_id: String,
         citations: Vec<Citation>,
     },
-    /// **The transcript this session speaks is not the one the rows you hold belong to.**
-    ///
-    /// A fork — a `/reseat`, a `/compact`, a re-seat onto a rebuilt prompt — opens a NEW
-    /// transcript and carries the conversation into it, so every carried row is published
-    /// under the new transcript's ids (`{transcript_id}.{n}`, `engine.rs`).
-    /// [`SessionEvent::TranscriptAppended`] alone cannot say that: a row arriving under an id
-    /// no reader has seen is indistinguishable from one arriving under an id it has, and
-    /// **nothing in the events themselves clears the rows already held** — so every reader
-    /// folded both conversations into one list.
-    ///
-    /// MEASURED, in the head's own fixtures: a 40-row conversation plus a 60-row carry leaves
-    /// `items.len() == 100`, the reader still anchored on a row of the transcript that went,
-    /// and the banner reading `144 line(s) below`. The operator, scrolled up and reading, typed
-    /// `/reseat` and was left with *"thousands of lines 'below'"* — the anchor half of that is
-    /// `agent/carry-reanchors-the-view`'s, and this is the other half.
-    ///
-    /// # Why the daemon states it, and not the reader
-    ///
-    /// The daemon is the one that forked: `fork_to_summary` is the single place that opens the
-    /// new transcript and swaps the session for it. A reader can only *infer* it — from an id
-    /// whose ordinal restarts at zero, which is the engine's minting rule read backwards, and
-    /// which would then be a second copy of a rule that has one owner. `Filling`'s ruling is the
-    /// precedent, one carry earlier: *"only the daemon knows which operation is running, because
-    /// it is the one running it"* — and the fix there was the same: **let the layer that owns
-    /// the fact state it.**
-    ///
-    /// # What a reader of this event does
-    ///
-    /// Drops the rows it holds **that are numbered in `parent_id`** — the transcript that went —
-    /// and only those. Two readers, one rule: the daemon's own [`crate::view::SessionView`],
-    /// which would otherwise hand a late-attaching head *both* conversations (the same defect one
-    /// attach later), and a head.
-    ///
-    /// **The rows of any other transcript stay, and that is not a detail.** A reader can hold
-    /// rows of more than one transcript on purpose: a resume republishes the tail of the
-    /// transcripts a compaction put behind the current one, so that a reader can scroll above the
-    /// summary they resumed onto. A fork replaces the transcript the session is speaking and
-    /// nothing else, so the event names it and a reader drops exactly that — a rule that dropped
-    /// everything would take the restored history with it.
-    ///
-    /// **And the rows are REPLACED, not trimmed.** They are not missing from a window, so a
-    /// reader must not count them as `items_dropped` and go looking for them: the transcript they
-    /// belong to is gone from the session, not from this reader's view of it.
-    ///
-    /// # Where it is published, and why the order is free
-    ///
-    /// After the fork's rows, because it names the transcript it replaces rather than a count —
-    /// so a reader drops exactly those rows whenever it hears the statement, whether it arrives
-    /// before them or after. That leaves the order to be chosen for what it costs: a statement
-    /// published first would strand a head that reconnected into the one-seq window between the
-    /// two (it would replay the rows and not the boundary), and would leave every reader emptied
-    /// by a fork whose `append_items` then failed, while the session still speaks the transcript
-    /// it was told it had left.
-    ///
-    /// # Why this moves the number
-    ///
-    /// A new VARIANT, so `PROTOCOL_VERSION` moves: `serde` has no catch-all on this enum,
-    /// deliberately, so a head built before it cannot decode the frame at all — and the two sides
-    /// refuse the mismatch by name at ATTACH rather than a head meeting one mid-session. An
-    /// added, defaulted *field* would have been the zero-bump route and it is the wrong one here:
-    /// an older head ignores an unknown field and renders exactly what it rendered before, which
-    /// for this fact is **the conversation drawn twice** — the defect itself, kept in silence,
-    /// which is precisely what the no-catch-all rule exists to refuse.
+    /// The transcript this session speaks is not the one the rows a reader holds belong to. A fork
+    /// replaces the conversation, so a head must drop what it drew and start from the new base.
     TranscriptForked {
-        /// The transcript that replaced it — the one every row that follows is numbered in.
+        /// The transcript that replaced it - the one every row that follows is numbered in.
         transcript_id: String,
-        /// The transcript it replaced: the one the rows a reader is holding belong to. Carried
-        /// for the log, which is the durable record of where a session's conversation went —
-        /// `ForkReport::parent_id` keeps it for the same reason — rather than for a reader that
-        /// acts on it.
+        /// The transcript it replaced: the one the rows a reader is holding belong to. Carried for
+        /// the log, which is the durable record of where a session's conversation went, rather than
+        /// for a reader that acts on it.
         parent_id: String,
     },
     HeadAttached {
@@ -1766,32 +1060,19 @@ pub enum SessionEvent {
         kind: String,
         identity: String,
     },
-    /// §18's post-flight assertions land here, and so do §8.5's guards.
-    ///
-    /// **`compaction` is the structure behind the sentence** (R27). The sentence stays and
-    /// is unchanged — it is the fallback every unreadable path lands on — and this is what
-    /// a head draws a row from instead of parsing English out of `detail`.
-    ///
-    /// **No `PROTOCOL_VERSION` bump**: an added, defaulted field on an existing variant,
-    /// the precedent `ModelAdvice::consulted` and `DecisionRequested::access` set. An older
-    /// head ignores an unknown field and renders exactly what it rendered before; a newer
-    /// head reading an older daemon sees `None` and falls back to the sentence. Both
-    /// directions are safe, which is the test for whether a bump is owed.
+    /// A post-flight assertion or guard that failed, in words a person reads. `compaction` is the
+    /// structure behind it when the warning was a compaction's.
     Warning {
         code: String,
         detail: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         compaction: Option<Box<CompactionReport>>,
     },
-    /// **A tool asked what the operator is looking at.** Every attached head that
-    /// can render should answer with [`crate::protocol::ClientFrame::Screen`];
-    /// the first answer wins and the rest are ignored. Carries nothing but the
-    /// id — the request is "draw yourself", and the head decides its own size.
+    /// A tool asked what the operator is looking at. Every attached head that can render answers
+    /// with the pane it is showing.
     ScreenRequested { req_id: String },
-    /// `sudo` inside a session's command wants a password. The head shows the
-    /// command and sudo's prompt, takes the password in a masked field, and
-    /// answers with [`crate::protocol::ClientFrame::Secret`]. The event carries
-    /// no secret and is safe to persist; the answer is never an event.
+    /// `sudo` inside a session's command wants a password: the head shows the command and sudo's
+    /// prompt, takes the password and answers down the same connection.
     SecretRequested {
         req_id: String,
         prompt: String,
@@ -1799,119 +1080,47 @@ pub enum SessionEvent {
         /// Unix millis; after it the helper gives up and `sudo` fails.
         deadline: u64,
     },
-    /// **A run of the operator's own is waiting for an answer.**
-    ///
-    /// The operator's `!` line is the one run whose input this daemon holds
-    /// (`letibot_tools::exec::Stdin`) — its own terminal, and a pipe only on a box where no pty
-    /// opens — so *"the program is waiting for a line"* is a fact
-    /// about the process and not a guess about its words — `letibot_tools::exec::ask` reads
-    /// `/proc/<pid>/fd/0` against the device this daemon holds and
-    /// `/proc/<pid>/task/*/wchan` plus `/proc/<tid>/syscall` for a read on it, and **that** is
-    /// what raises this. The operator's own correction is why it
-    /// is not a text match: *"i think `Continue?` is an overfit"* — question wording is
-    /// per-program, per-locale and per-version, and a matcher for it fails silently on the
-    /// next program.
-    ///
-    /// A head draws a card with `question` shown and the line it takes sent back as
-    /// [`crate::protocol::ClientFrame::PromptAnswer`]. **Not a secret and never one**: the
-    /// field is drawn in the open, and a password has its own path (`SUDO_ASKPASS`, an
-    /// `askpass` head, `SecretRequested`) whose rules this must not be able to borrow.
-    ///
-    /// **The card is a convenience and not the way in.** The same line can be sent at any
-    /// moment with `!send` ([`crate::protocol::ClientFrame::SendLine`]), which needs no
-    /// signal at all — because the detection above has misses it names (a program blocked on
-    /// another fd, one that asks and keeps drawing, a `/proc` a confined session's daemon may
-    /// not read), and a person watching the stream can always answer.
-    ///
-    /// **Ephemeral**, like `SecretRequested` and for its reason: the request names a live
-    /// run, and a head that attached after the run began has not seen the output the question
-    /// is about. Its settlement ([`SessionEvent::PromptSettled`]) is the record and stays.
+    /// A run of the operator's own is waiting for an answer. The `!` line is the one run whose
+    /// input the daemon cannot supply, so a person is asked and the answer goes to the program.
     PromptRequested {
         /// The handle [`crate::protocol::ClientFrame::PromptAnswer`] comes back under.
         req_id: String,
-        /// The job's handle, as `job_list` spells it. For the record and for a head that
-        /// wants to name it; the answer does not travel by it, so a stale card cannot
-        /// address a later command.
+        /// The job's handle, as `job_list` spells it. For the record and for a head that wants to name
+        /// it; the answer does not travel by it, so a stale card cannot address a later command.
         job: String,
-        /// The operator's own command, verbatim, as they typed it after the `!`.
-        ///
-        /// **The command and not a program name**, deliberately: the daemon cannot know
-        /// which process in a pipeline asked (`sudo apt install mc` is three programs and
-        /// the question is the third one's), so it names the one thing that is certain —
-        /// what the person typed.
+        /// The operator's own command, verbatim, as they typed it after the `!`. The command and
+        /// not a program name, because that is what the card must show.
         command: String,
-        /// **The last line the program wrote, for the card to SHOW.** `None` when it has
-        /// written nothing at all, which is a real case (`! cat`, blocked before its first
-        /// byte). Nothing anywhere decides anything by this string.
-        ///
-        /// `None` also when `reading` is [`PromptReading::Unreadable`]: there the daemon has
-        /// no reading of the process to quote from, and the card's own words are the honest
-        /// sentence instead.
+        /// The last line the program wrote, for the card to SHOW. `None` when it has written
+        /// nothing at all, which is a reason to ask rather than a reason to wait.
         question: Option<String>,
-        /// **Which of the two facts the card is raised on** — the reading, or the absence of
-        /// one. See [`PromptReading`]: the card's text says which it is, and a head that
-        /// draws one card for both would be claiming a reading it was never given.
-        ///
-        /// **No `PROTOCOL_VERSION` bump**: an added, defaulted field on an existing variant,
-        /// the precedent `Warning::compaction` states — *an older head ignores an unknown
-        /// field and renders exactly what it rendered before; a newer head reading an older
-        /// daemon sees the default and falls back*. The default is [`PromptReading::Blocked`],
-        /// which is the only kind of card a daemon older than this field ever raised, so both
-        /// directions are safe — which is this file's own test for whether a bump is owed.
-        ///
-        /// What a head built before the field does with an `Unreadable` card: it ignores
-        /// `reading`, draws its asking card with no question line, and the warning notice —
-        /// which still names `!send` — lands beside it. An overclaiming headline on an old
-        /// head is the skew an added field buys; a wrong card on every head was the
-        /// alternative.
+        /// Which of the two facts the card is raised on: the reading, or the absence of one. See
+        /// [`PromptReading`].
         #[serde(default)]
         reading: PromptReading,
     },
-    /// Whether a line was sent to the waiting run, and by whom — the record, without the
-    /// line.
-    ///
-    /// **The line itself is not here**, for the same reason a password is not: it is a
-    /// `ClientFrame` that reaches a program's stdin and nothing else — not the log, not the
-    /// view, not a `CommandIssued`. What a corpus may need to know is *that* a person
-    /// answered and who, which is this.
-    ///
-    /// `sent: false` is the run ending with the card still up, or the send failing — the
-    /// two are told apart by `by`, which is a person's identity in the first case and a
-    /// sentence in the second.
+    /// Whether a line was sent to the waiting run, and by whom: the record, without the line.
+    /// The line itself is never recorded, because a password is a line.
     PromptSettled {
         req_id: String,
         sent: bool,
         by: String,
     },
-    /// Whether a password was given for `req_id`, and by which head — the
-    /// record, without the secret.
+    /// Whether a password was given for `req_id`, and by which head - the record, without the secret.
     SecretSettled {
         req_id: String,
         given: bool,
         by: String,
     },
-    /// §6. `plan` is untyped until W14 says what `ExplainPlan` is.
+    /// The turn's plan. `plan` is untyped until `ExplainPlan` has a field list; typing it here would
+    /// invent that contract.
     Explain {
         turn_id: String,
         plan: serde_json::Value,
     },
 
-    /// **The one addition to §4.5, and it is required by §13.2.**
-    ///
-    /// > "a second head's prompt is **queued as a follow-up user item** rather than
-    /// > rejected … and the queuing is **announced as an event so both heads see it
-    /// > and who did it**. Interrupt/abort is idempotent, any attached head may
-    /// > issue it, and it is **announced with the issuer's identity**."
-    ///
-    /// Nothing in §4.5 can carry that. `TranscriptAppended` has no issuer;
-    /// `HeadAttached` has an identity but no command; `Warning` is for §18's
-    /// assertions and using it here would make a normal multi-head action look like
-    /// a defect. Two heads sharing a session and being unable to see which of them
-    /// interrupted the turn is precisely the failure §13.2 is written against, so
-    /// the honest fix is a variant rather than an abuse of one.
-    ///
-    /// Written up in the W7 report as a proposed amendment to §4.5, not as a silent
-    /// widening.
+    /// A head's command on the session, announced so both heads see it and who issued it.
+    /// Nothing else in this enum is a person's act on the session itself.
     CommandIssued {
         head_id: String,
         identity: String,
@@ -1922,73 +1131,26 @@ pub enum SessionEvent {
         note: String,
     },
 
-    /// **The second addition required by §13.2, for the same reason as the first.**
-    ///
-    /// A session's title reaches a head in `SessionBrief`, which travels only in
-    /// `Hello` and in `Sessions` — both of which a head receives when it *asks*. So a
-    /// title set during a session (by `/rename`, or by the daemon naming an unnamed
-    /// session from its first message) was invisible until the operator opened the
-    /// picker, and the header went on showing the raw id over a session that had a
-    /// name. Two heads sharing a session saw two different names for it, which is the
-    /// same failure `CommandIssued` exists to prevent one variant along.
-    ///
-    /// It carries no `session_id`: an event is already addressed to one, by the
-    /// envelope it travels in and by the log it is appended to.
+    /// The session's title changed. A title reaches a head in `SessionBrief`, which travels only
+    /// in the snapshot, so this is how a live head learns of a rename.
     SessionRenamed {
         /// Empty means the name was cleared, and a head goes back to showing the id.
         /// Not `Option`: "renamed to nothing" and "no rename" must not be one shape.
         title: String,
     },
 
-    /// **The session's todo list, as the model last wrote it.** `PROTOCOL_VERSION` 9.
-    ///
-    /// The whole list every time, not a delta — a delta the model got wrong is a
-    /// delta nobody can audit, and a head that missed one event would render a
-    /// list that never happened. A head keeps the latest one; the todos pane
-    /// renders it next to the repo's own `TODO.md`, and the two are different
-    /// lists — an agent's plan and the operator's queue — which is why this is an
-    /// event rather than the head polling the store.
-    ///
-    /// Defined here rather than borrowed from the store crate: a head parses this
-    /// without a database, and the protocol does not grow a storage dependency to
-    /// save one `struct`.
+    /// The session's todo list, as the model last wrote it: the whole list every time and not a
+    /// delta, because a delta the model got wrong would leave a board nobody can repair.
     TodosUpdated {
-        /// The list, in the order the model wrote it. Empty clears the pane's
-        /// first section; that is a real state, not a missing one.
+        /// The list, in the order the model wrote it. Empty clears the pane's first section; that is a
+        /// real state, not a missing one.
         todos: Vec<TodoEntry>,
     },
 
-    /// **A refusal, delivered the moment it is decided.** `PROTOCOL_VERSION` 6.
-    ///
-    /// `docs/boundary-and-adjudication.md` §4b is the requirement, and it names the
-    /// chain rather than the complaint: the classifier denies, the operator is not
-    /// told, the model sees an unexplained failure and infers *the approach was
-    /// wrong* rather than *the action was forbidden*, so it tries a variant — the
-    /// routing-around every rule in this repo forbids, **induced by the design** —
-    /// and the task dies with the operator seeing only a dead task.
-    ///
-    /// Three parties and three visibilities, and conflating any two is a defect. The
-    /// model already had its half (`ToolOutcome::NotRun`, and the prose
-    /// `letibot_tools::refusal_text` builds); the durable log already had its half
-    /// (§11.5's rows). **The operator had nothing**, and this variant is that.
-    ///
-    /// # Why not a `Warning`
-    ///
-    /// A `Warning` is for §18's post-flight assertions. A denial is not a defect —
-    /// it is a decision taken on the operator's behalf, and they alone can lift it.
-    /// Rendering the two the same way is how a decision becomes noise. Same
-    /// argument as [`SessionEvent::CommandIssued`], one variant along.
-    ///
-    /// # Why the fields are flat scalars
-    ///
-    /// `letibot-tools` is an **optional** dependency of this crate — the log, the
-    /// protocol and the scrub must build with no path into a filesystem a tool can
-    /// read — so `letibot_tools::DenialNotice` cannot appear here. The fields are
-    /// its fields, and the two that are facts rather than prose (`repeat_count`,
-    /// `breaker_open`) travel as facts, so a head can collapse repeats without
-    /// parsing a sentence.
+    /// A refusal, delivered the moment it is decided. The classifier denies, the operator is
+    /// never asked, and the model is told before it tries a variant.
     DenialRaised {
-        /// The adjudication request id. What an operator grants **by name**.
+        /// The adjudication request id. What an operator grants by name.
         request_id: String,
         turn_id: String,
         call_id: String,
@@ -1997,149 +1159,71 @@ pub enum SessionEvent {
         summary: String,
         /// Layer A's deterministic one-line reading of the call.
         baseline: String,
-        /// Who decided: `boundary:host`, `model:…`, `breaker`, or `none`.
+        /// Who decided: `boundary:host`, `model:...`, `breaker`, or `none`.
         by: String,
         basis: String,
         /// `blocked`, `always_ask`, `adjudicable`, `auto`.
         tier: String,
-        /// **`denied` (somebody decided) or `not_run` (nobody did).** Never
-        /// collapsed: `not_run` is not a denial, and it is not permission either.
+        /// `denied` (somebody decided) or `not_run` (nobody did). Never collapsed: `not_run` is not a
+        /// denial, and it is not permission either.
         outcome: String,
-        /// How many consecutive refusals this task direction has had, this one
-        /// counted. A head seeing more than one is looking at the operator's own
-        /// complaint — *"a second attempt currently looks like a fresh request"* —
-        /// and has what it needs to collapse them.
+        /// How many consecutive refusals this task direction has had, this one counted. A head seeing
+        /// more than one has what it needs to collapse them into one row.
         repeat_count: u32,
-        /// The consecutive-denial circuit breaker is open for this direction: no
-        /// adjudicator will be consulted again in this session, and only the
-        /// operator can lift it.
+        /// The consecutive-denial circuit breaker is open for this direction: no adjudicator will be
+        /// consulted again in this session, and only the operator can lift it.
         breaker_open: bool,
-        /// **What the operator can do about it right now.** A refusal whose grant
-        /// path arrives after the task has died is a refusal that can only be
-        /// routed around, with an extra step.
+        /// What the operator can do about it right now. A refusal whose grant path arrives after the
+        /// task has died is a refusal that can only be routed around, with an extra step.
         grant: String,
     },
-    /// A subagent this session spawned changed state. Carried on the **parent**'s
-    /// hub, so a head attached to the parent sees the subagent spawn and finish
-    /// without subscribing to the subagent's own hub.
-    ///
-    /// `state` is `opening`, `running`, `done` or `failed`.
+    /// A subagent this session spawned changed state. Carried on the PARENT's hub, so a head
+    /// attached to the parent sees its children without attaching to them.
     Subagent {
-        /// The subagent's own session id. Named `subagent_id` rather than
-        /// `session_id` because [`Envelope`] already carries the *parent*'s
-        /// `session_id`, and a flattened duplicate field would fail to parse.
+        /// The subagent's own session id. Named `subagent_id` rather than `session_id` because
+        /// [`Envelope`] already carries the parent's `session_id`, and a flattened duplicate field
+        /// would fail to parse.
         subagent_id: String,
         state: String,
-        /// **The subtask's first line on the opening states, and the child's answer's
-        /// first line on the finish** — a field with two meanings, kept exactly as it
-        /// was so a head older than `task` below is unchanged.
-        ///
-        /// **A new head must not read the ROW from this.** Its meaning depends on
-        /// `state`, and on the finish it is no longer what the child was asked. Read
-        /// [`SessionEvent::Subagent::task`] for the row and
-        /// [`SessionEvent::Subagent::answer`] for the subtitle. The operator, reading
-        /// this pane: *"the first prompt is truncated too early"*, and the measured
-        /// case was a row of 122 characters which were the ANSWER, with the task — two
-        /// lines, ~250 characters — nowhere on the wire at all.
+        /// The subtask's first line on the opening states, and the child's answer's first line on
+        /// the finish: one field, because a card draws one line.
         prompt: String,
         role: String,
-        /// **The subtask this child was asked to do, in full, and the same string on
-        /// every state.**
-        ///
-        /// Carried whole — never truncated by the daemon — because it is the only copy
-        /// a head gets and the head truncates for a row as it does for everything else
-        /// it draws. `#[serde(default)]` so a daemon built before this field answers
-        /// with an empty string and a head falls back to `prompt`, which is the
-        /// pre-field behaviour rather than a blank row.
+        /// The subtask this child was asked to do, in full, and the same string on every state.
+        /// Carried whole and never truncated, because it is what the child was told.
         #[serde(default)]
         task: String,
-        /// **The model this child runs on, as `PROVIDER/MODEL` or `local`** — the operator's
-        /// ask, 2026-10-05: *"I want to be able to have subagents using different models.
-        /// say you deepseek should be able to run local model"*, and the other direction
-        /// too: *"local qwen in main session should be able to run cloud glm"*.
-        ///
-        /// Empty when the child inherited its parent's model, which is the default and the
-        /// behaviour every earlier build had — so the pane draws no model clause on such a
-        /// row, and a reader sees exactly what they saw before. `#[serde(default)]` for the
-        /// same reason this event's `task` has it: a daemon older than this field answers
-        /// with an empty string and the row simply says nothing about a model.
+        /// The model this child runs on, as `PROVIDER/MODEL` or `local`. Empty when the child
+        /// inherited its parent's.
         #[serde(default)]
         model: String,
-        /// **The child's answer's first line, on the finishing state and nowhere else.**
-        ///
-        /// `None` while the child is opening, running, or has failed. The same string
-        /// `prompt` carries on the finish, given its own name so a reader does not have
-        /// to know the state to interpret it.
+        /// The child's answer's first line, on the finishing state and nowhere else: `None` while
+        /// the child is still opening or working.
         #[serde(default)]
         answer: Option<String>,
-        /// **The child's name — its slug** (`fix-login`), the same on every state: the slug
-        /// `task_start` cut its worktree's branch `agent/<slug>` from, or the one `task` derived
-        /// from its prompt. A head draws the child by it where it drew the session id.
-        ///
-        /// Empty from a daemon older than this field, and the head then draws the id as before
-        /// — `#[serde(default)]` for `task`'s reason, so no protocol bump.
+        /// The child's name - its slug - the same on every state: the one `task_start` cut its
+        /// worktree's branch `agent/<slug>` from, or the one `task` derived from its prompt. A head
+        /// draws the child by it where it drew the session id. Empty from an older daemon.
         #[serde(default)]
         slug: String,
     },
 
-    /// A background job this session started has stopped running.
-    /// `PROTOCOL_VERSION` 15.
-    ///
-    /// The **start** of a background job needs no event of its own: a backgrounded
-    /// `bash` call finishes as `ToolOutcome::Backgrounded`, whose `handle` *is* the
-    /// job id, and a head folding tool events already knows the job exists. What
-    /// nothing carried was the **end**. A session-scoped job outlives the turn that
-    /// started it — usually by design; that is what background is for — so its
-    /// settlement happens when no turn is running, and the only events a hub
-    /// publishes between turns are the ones the daemon publishes itself. Without
-    /// this variant every head's picture of a background job was frozen at
-    /// "running" forever: a panel built from the tool events alone would still show
-    /// a build as running an hour after it exited, which is the exact lie
-    /// `scrub::is_interactive` keeps off the wire — a progress frame from four
-    /// minutes ago is a lie about now.
-    ///
-    /// # Why the daemon publishes it, and not the runtime
-    ///
-    /// The runtime reaps a job when somebody asks — `job_wait`, or turn-end scope
-    /// reaping — and nobody asks between turns. The daemon runs a watcher per
-    /// session that notices the transition and publishes here. The event is the
-    /// record; the watcher is only how it comes to be published the moment it
-    /// becomes true.
-    ///
-    /// # Why the fields are flat scalars
-    ///
-    /// Same reason as [`SessionEvent::DenialRaised`]: `letibot-tools` is an
-    /// **optional** dependency of this crate, so `JobState` cannot appear here even
-    /// by reference. `state` is the word a job listing shows — `exited 0`,
-    /// `signalled 15`, `killed by job_kill` — deliberately not "ok"/"error": what
-    /// happened to the *process* is the fact, and success is a property of the
-    /// command's own exit code. `produced` is the bytes the job wrote, the same
-    /// number a `job_output` denominator counts; `elapsed_ms` is wall time from
-    /// spawn to settlement.
-    /// **The daemon has admitted an operator's own call, and the head may run it now.**
-    /// — R24 part two, decision 4.
-    ///
-    /// The answer to [`crate::protocol::ClientFrame::OperatorCall`], and it is on the log
-    /// rather than a reply to the frame because the admission is written by the worker: the
-    /// server thread's `Accepted` says *queued*, and what the head needs to know before it
-    /// runs anything is *recorded*. Putting it here also means both heads see it, which is
-    /// what the operator's act deserves — it happened in the session, not on one socket.
-    ///
-    /// `who` is the identity the admission is recorded under (`human:<who>` in `verdict_by`,
-    /// and the `who` in the row's `CallOrigin`), so a head draws the card and a corpus query
-    /// names the actor from one string.
+    /// The daemon has admitted an operator's own call, and the head may run it now: the answer to
+    /// the door's admission, carrying the call id the result must quote.
     OperatorCallAllowed {
-        /// The head's own handle for the call — the key its
+        /// The head's own handle for the call - the key its
         /// [`crate::protocol::ClientFrame::OperatorResult`] comes back under.
         call_id: String,
-        /// One of [`crate::protocol::HEAD_RUN_TOOLS`]. Carried so every head can draw the
-        /// call without asking the one that made it.
+        /// One of [`crate::protocol::HEAD_RUN_TOOLS`]. Carried so every head can draw the call without
+        /// asking the one that made it.
         name: String,
         /// Who is running it.
         who: String,
         /// The arguments, verbatim, so a second head draws the same call.
         arguments: String,
     },
+    /// A background job this session started has stopped running. The start needs no event: a
+    /// backgrounded `bash` call is the job starting, and its finishing is the news.
     JobSettled {
         /// The job's handle, as the backgrounded result already printed it.
         job: String,
@@ -2150,10 +1234,9 @@ pub enum SessionEvent {
         /// Wall time from spawn to settlement.
         elapsed_ms: u64,
     },
-    /// **A row of the review queue or the merge queue moved** (R61) — the queue, the row, the
-    /// state it moved to and why. The pane re-reads the snapshot on it; the log keeps the
-    /// sentence. Broadcast to every session's log, because the queues are daemon-level and a pane
-    /// may be open on any session.
+    /// A row of the review queue or the merge queue moved: the queue, the row, the state it moved to
+    /// and why. The pane re-reads the snapshot on it; the log keeps the sentence. Broadcast to every
+    /// session's log, because the queues are daemon-level and a pane may be open on any session.
     QueueMoved {
         /// `review`, `merge` or `target`.
         queue: String,
@@ -2161,100 +1244,39 @@ pub enum SessionEvent {
         to: String,
         why: String,
     },
-    /// **A window of one background job's output, for a pane that draws it.**
-    ///
-    /// The jobs pane drew `N out` for every row and had no way to show the bytes it counted. Enter
-    /// sent `/job ID`, whose reply is a `Warning` on the session log — so the pane closed and the
-    /// operator read a build log scrolling past in the chat. The operator, 2026-09-20: *"when i
-    /// press enter on jobs pane im not shown the job output im brought back to the main
-    /// conversation with /job <id> posted - this is not what i want"*.
-    ///
-    /// # Why this is an event and not a request-answered frame
-    ///
-    /// `Peek`, `Settings` and `Jobs` are answered on the asking connection because what they read
-    /// is reachable from the **server** — the hub's view, a registry mailbox. Job output is not:
-    /// it lives in the exec host, which is the daemon worker's, so the server would have to
-    /// register a reply channel, queue a command and block its own read loop on the answer,
-    /// stalling that connection's live events for the duration.
-    ///
-    /// It is also **the same thing a slash reply already is**, so publishing it keeps one rule
-    /// rather than two: a verb reads, and what it found lands on the log where every head sees it.
-    /// What this variant adds over the `Warning` prose is the **offsets beside the text** — a pane
-    /// can draw its own header and its own paging instead of parsing a footer sentence.
-    ///
-    /// Additive, like [`Self::TranscriptContent`], so no protocol version moves.
+    /// A window of one background job's output, for a pane that draws it. An event rather than a
+    /// reply, because the pane asks again and again as the job runs.
     JobOutput {
         /// The job's handle, as the pane lists it.
         job: String,
-        /// The offset this window actually starts at — the request is clamped, not refused.
+        /// The offset this window actually starts at - the request is clamped, not refused.
         from: u64,
         /// One past the window's last byte.
         to: u64,
         /// Everything the job has written, all streams together.
         produced: u64,
-        /// Bytes that fell off the ring before this window: a head must be able to say
-        /// "there was more and it is gone" rather than showing a window whose start looks
-        /// like the job's start.
+        /// Bytes that fell off the ring before this window: a head must be able to say "there was more
+        /// and it is gone" rather than showing a window whose start looks like the job's start.
         dropped: u64,
-        /// The job's own word — `exited 0`, `running`, `killed by …`.
+        /// The job's own word - `exited 0`, `running`, `killed by ...`.
         state: String,
-        /// **Whether anything was ever executed for this job.**
-        ///
-        /// `false` on every ending of a process that ran — including one that ran and
-        /// wrote nothing, which is the ordinary empty case. `true` for the one state
-        /// where the wrapper could not join the process's cgroup and **nothing started**
-        /// (`JobState::NotScoped` in the tool crate's exec layer — this crate is the
-        /// protocol and must not depend on that one, so the name is prose).
-        ///
-        /// **No `PROTOCOL_VERSION` bump**: an added, defaulted field on an existing
-        /// variant, exactly like [`ModelAdvice::consulted`]. An older head ignores it and
-        /// renders what it rendered before, and `false` is the honest reading of silence —
-        /// a daemon from before this field had only one answer for an empty window.
-        ///
-        /// It is on the wire because *"the window is empty"* is two different facts and
-        /// the head had one sentence for both: `it wrote nothing at all.` under a header
-        /// reading `not run (could not join its scope)` — the operator's own R17 rule
-        /// inverted, *a row with no output must not look like a row whose output is
-        /// empty*. The words each head writes for it are A's ruling (§11.6); this is the
-        /// fact that rules out choosing them by `lines.is_empty()` alone.
+        /// Whether anything was ever executed for this job. `false` on every ending of a process
+        /// that ran, including one killed before it wrote anything.
         #[serde(default)]
         never_ran: bool,
-        /// The window, split into lines by the daemon so two heads cannot disagree about
-        /// where a line ends.
+        /// The window, split into lines by the daemon so two heads cannot disagree about where a line
+        /// ends.
         lines: Vec<String>,
-        /// Where to ask next when there is more that is still readable, and `None` when the
-        /// end is here. The daemon decides rather than the head computing `to`, because only
-        /// the daemon knows how much of the ring survives.
+        /// Where to ask next when there is more that is still readable, and `None` when the end is
+        /// here. The daemon decides rather than the head computing `to`, because only the daemon knows
+        /// how much of the ring survives.
         next: Option<u64>,
     },
-    /// **A named operation the daemon is filling rows for**, with its own counter.
-    ///
-    /// R6, generalized. Four things look identical from a head — an opencode import, a
-    /// reseat, a compaction, and an ordinary turn — because all four announce rows before
-    /// their bodies (that is `TranscriptAppended`/`TranscriptContent`, §4.5). **Only the
-    /// daemon knows which operation is running**, because it is the one running it; a head
-    /// that tried to tell them apart could only infer a cause from the symptom *"rows have
-    /// no bodies yet"*, and that inference is the defect it was written to avoid: the head
-    /// drew *"carrying the conversation onto the new prompt"* over every ordinary reply,
-    /// announcing a carry that was not happening.
-    ///
-    /// So the daemon names the operation (`what`), names the unit it counts (`unit`), and
-    /// reports how far it has got (`done` of `total`). The head draws exactly that — it no
-    /// longer derives a progress bar from body-less rows at all. This is the same rule the
-    /// day's diagnosis produced three times over: **an indicator must be the fact, not a
-    /// rendering of the fact** — the monitor firing, R2's queued prompt, and now this. In
-    /// each case the fix was identical: *let the layer that owns the fact state it.*
-    ///
-    /// `unit` is a string rather than an enum because the units honestly differ and are the
-    /// daemon's to name: `parts` for an import (opencode parts read), `rows` for a carry
-    /// (transcript rows announced). A head renders `{done} of {total} {unit}`.
-    ///
-    /// **Ephemeral**, like [`SessionEvent::JobOutput`]: a progress frame from four minutes
-    /// ago is a lie about now. The operation's durable residue is the rows themselves and
-    /// the note that says it finished; this is the line that walks while it fills.
+    /// A named operation the daemon is filling rows for, with its own counter. Four things look
+    /// identical from a head, and this is what tells them apart.
     Filling {
-        /// The operation, in the daemon's own words — `importing an opencode
-        /// conversation`, `carrying the conversation onto the new prompt`.
+        /// The operation, in the daemon's own words - `importing an opencode conversation`,
+        /// `carrying the conversation onto the new prompt`.
         what: String,
         /// What `done` and `total` count: `parts`, `rows`.
         unit: String,
@@ -2263,139 +1285,64 @@ pub enum SessionEvent {
         /// How much there is, known before the first row where it can be.
         total: u64,
     },
-    /// **A fold's long wait, named as the compaction's own** — see
-    /// [`letibot_turn::events::TurnEvent::CompactionProgress`] for the event this is
-    /// the wire form of, and `summarise_one` for the sink that produces it.
-    ///
-    /// The overrun compaction summarises a SCRATCH transcript, and forwarding its raw
-    /// `PromptProgress` put the scratch prompt's token count in the head's
-    /// `turn.progress` — the SESSION's turn — so the operator watched `69k` sit over a
-    /// 240k conversation that had not changed (2026-09-20). The number was never wrong;
-    /// its label was. This is that number under its own name, which is why a head that
-    /// draws these fields cannot confuse them with session context however similar the
-    /// figures are.
-    ///
-    /// **A new variant is a `PROTOCOL_VERSION` bump**, unlike the defaulted field on
-    /// [`SessionEvent::Warning`] above: an older head has no arm for this and would
-    /// fail to decode the frame, so the attach-time refusal is what tells it why rather
-    /// than a head that dies mid-stream. The two are different classes of change and the
-    /// version note says which this is.
-    ///
-    /// **Ephemeral, like [`SessionEvent::Filling`]**: a progress frame from four minutes
-    /// ago is a lie about now. What survives the compaction is the fork, the `compacted`
-    /// warning and its [`CompactionReport`].
+    /// A fold's long wait, named as the compaction's own: the overrun compaction summarises a
+    /// scratch transcript, so a head that drew it as the session's would draw the wrong one.
     CompactionProgress {
-        /// Which half is running, 1-based, in the order they RUN — the recent tail
-        /// first on the local plan, since its cold prompt is the cheap one to warm the
-        /// server's cache with.
+        /// Which half is running, 1-based, in the order they RUN - the recent tail first on the local
+        /// plan, since its cold prompt is the cheap one to warm the server's cache with.
         half: u64,
         /// How many halves: 1 for the cloud fold, 2 for the local two-half plan.
         halves: u64,
         /// The half's own prompt, in the box's ledger tokens.
         prompt_tokens: u64,
-        /// How much of it the server has read. `0` on a messages transport, which
-        /// reports no prefill — a real answer, not a missing one.
+        /// How much of it the server has read. `0` on a messages transport, which reports no prefill -
+        /// a real answer, not a missing one.
         processed: u64,
         /// What the half has produced so far.
         written: u64,
-        /// What `written` counts: `tokens` where the transport reports the server's own
-        /// count, `chars` where it reports only text. Named, because the two transports
-        /// do not count the same thing and one name for both would be a lie about one.
+        /// What `written` counts: `tokens` where the transport reports the server's own count, `chars`
+        /// where it reports only text. Named, because one name for both would be a lie about one.
         unit: String,
     },
-    /// **What this session is holding back from its model right now** (R79): the results nothing
-    /// in the plan waits on, held so a RUNNING turn is not interrupted, counted by kind.
-    ///
-    /// The operator, 2026-10-11: *"what would be useful is a counter of how much and what kind is
-    /// held - somewhere close to Responding ...."*. Published by the daemon every time the held
-    /// set changes — a result held at a round boundary, the set taken at a turn's start, flushed
-    /// when a turn ends, released by the starvation cap — so a head draws the counts it was last
-    /// given and draws nothing once they are all zero. Holding exists only while a turn runs (the
-    /// operator: *"once turn ends no reason to hold"*), so outside a turn this is zero.
-    ///
-    /// **A new variant is a `PROTOCOL_VERSION` bump** (46): an older head has no arm for it and
-    /// would fail to decode the frame mid-stream.
-    ///
-    /// **Ephemeral, like [`SessionEvent::Filling`]**: a count from four minutes ago is a lie about
-    /// now, and what the held results come to is the notice that delivers them.
+    /// What this session is holding back from its model right now: the results nothing in the
+    /// plan waits on, held so a turn that does not need them is not spent.
     HeldResults {
         /// Background jobs (`bash` background, a promoted call) held.
         jobs: u64,
         /// Subagents (`task`) whose ending is held.
         subagents: u64,
-        /// How many of those, of either kind, FAILED — a non-zero exit, a signal, a child that
-        /// answered `failed`.
+        /// How many of those, of either kind, FAILED - a non-zero exit, a signal, a child that answered
+        /// `failed`.
         failed: u64,
     },
-    /// **A plugin pane's view** (C3 of `docs/plugins-slice1.md`): the document a
-    /// `pane_<name>` hook answered, published so every head draws the same dashboard.
-    ///
-    /// **The body is the plugin's JSON, not a parsed [`crate::pane::View`].** Parsing is the
-    /// head's, and it is deliberately the head's: a view written for a newer contract than
-    /// this one should draw what this head understands — an unknown block kind is one muted
-    /// line, an unknown field is ignored — rather than failing at the wire and taking the
-    /// connection down in the middle of a turn. The daemon validates a plugin's answer before
-    /// it publishes one, so what arrives here is already a document (see `View::validate`);
-    /// the head parses it again only because it is the half that knows what it can draw.
-    ///
-    /// **Live-only, like [`SessionEvent::Filling`]**: a pane's view is what its last look
-    /// answered, and one stored in a snapshot would come back to a head attaching hours later
-    /// as a dashboard of a moment that has passed. A head that attaches asks again — with
-    /// [`crate::ClientFrame::PaneOpen`] — the moment the operator opens the pane.
+    /// A plugin pane's view: the document a `pane_<name>` hook answered, published so every head
+    /// draws the same dashboard.
     PluginPane {
-        /// **Which pane**, as `<layer name>/<hook name>`: `plan-dashboard/dashboard`. The
-        /// layer's name is the manifest's, so two layers cannot collide, and the hook's keeps
-        /// one layer's two panes apart.
+        /// Which pane, as `<layer name>/<hook name>`: `plan-dashboard/dashboard`. The layer's name is
+        /// the manifest's, so two layers cannot collide, and the hook's keeps one layer's two panes
+        /// apart.
         pane: String,
         /// The C3 `View`, as the plugin wrote it.
         view: serde_json::Value,
     },
-    /// **That pane is gone** — its layer was disabled, removed or hot-reloaded into a failure,
-    /// or the session it was scoped to was left.
-    ///
-    /// A pane is not a `Warning`: nothing went wrong, and the screen is the record. A head
-    /// drops the view and closes the pane if it is the one on screen, which is what makes a
-    /// `PluginPane` the whole of a pane's life rather than its first frame.
+    /// That pane is gone: its layer was disabled, removed or hot-reloaded into a failure, or the
+    /// session it was scoped to has closed.
     PluginPaneGone {
         /// See [`SessionEvent::PluginPane::pane`].
         pane: String,
     },
-    /// **What this session is waiting on, as the daemon computed it** — `PROTOCOL_VERSION` 52.
-    ///
-    /// The daemon's own answer to *will this act again by itself*, published **only when the value
-    /// changes**: never per round, never per token. [`crate::activity`] is the whole argument for
-    /// why the daemon had to be the one to answer it — before this, `crates/bridge` guessed from
-    /// outside with a settle window, a `wake_due` flag and an edge off the todo board, and every
-    /// guess fixed one false wake and left the next (*"it is easy to see if any jobs are running,
-    /// etc etc, why timeouts?"*).
-    ///
-    /// **A new variant is a bump** (52, by the rule 46 and 49 state): an older head has no arm for
-    /// it and would fail to decode the frame mid-session — the version-4 argument, in the
-    /// direction the events take it.
-    ///
-    /// **Ephemeral, and said again to a head that attaches** ([`crate::scrub`] drops it from a
-    /// replay, and the hub republishes the current value after a snapshot, a gap or a resync, the
-    /// way it does the held counts): a value from four minutes ago is a lie about now, and a
-    /// reconnecting head that kept it would draw a session stopped on a job that ended. What makes
-    /// that safe is that there is always a current value to say — it travels from the daemon's own
-    /// state and not from a threshold somebody crossed.
+    /// What this session is waiting on, as the daemon computed it: the daemon's own answer to
+    /// whether this session will act again without being asked.
     ActivityChanged {
-        /// Quiet, or the list of what it waits on — [`crate::activity::Activity`] carries the
-        /// definition of which entries mean *this session moves on its own* and which one means
-        /// *a person must*.
+        /// Quiet, or the list of what it waits on - [`crate::activity::Activity`] carries the definition
+        /// of which entries mean *this session moves on its own* and which one means *a person must*.
         activity: crate::activity::Activity,
     },
 }
 
 impl SessionEvent {
-    /// **Could publishing this have moved what the session is waiting on?** — the set
-    /// [`Hub::publish`] re-derives [`crate::activity::Activity`] after.
-    ///
-    /// It is a whitelist and not *everything but the deltas*, because a re-derivation asks the
-    /// daemon's own state and costs a walk of its watchers: the events below are the ones whose fold
-    /// changes that state — a turn, a call, a card, a settlement, a child, a held count — and the
-    /// rest (tokens, text, rows, warnings, heads) cannot move it at all. `ActivityChanged` is
-    /// deliberately NOT here, and that is the recursion guard: it is the answer.
+    /// Could publishing this have moved what the session is waiting on? The set `Hub::publish`
+    /// re-derives on, so an event that cannot move it costs nothing.
     pub fn touches_activity(&self) -> bool {
         matches!(
             self,
@@ -2410,17 +1357,13 @@ impl SessionEvent {
                 | SessionEvent::JobSettled { .. }
                 | SessionEvent::Subagent { .. }
                 | SessionEvent::HeldResults { .. }
-                // **The board, because it is what says a job is awaited.** A job counts once a row
-                // `needs` it, and the model usually backgrounds the job FIRST and writes the row
-                // after: without this the session read quiet from the job's start until something
-                // else moved, and the bridge's `wait` answered `the turn ended` while package R1 sat
-                // waiting on `j10949` with a row that said so (2026-10-26).
+                // The board, because it is what says a job is awaited. A job counts once a row `needs`
+                // it, and the model usually backgrounds the job FIRST and writes the row after: without
+                // this the session read quiet from the job's start until something else moved.
                 | SessionEvent::TodosUpdated { .. }
-                // **A warning, because it is a verb's answer.** A command the worker took off the
-                // queue is `Delivery` until something says otherwise, and every command that runs no
-                // turn at all — a `/mode`, a refusal, an interrupt that found nothing to stop — ends
-                // by saying why on the log. One of these is cheap and closes the last window in
-                // which a session that owes nothing would still read as owing a turn.
+                // A warning, because it is a verb's answer: a command the worker took off the queue is
+                // `Delivery` until something says otherwise, and every command that runs no turn ends by
+                // saying why on the log.
                 | SessionEvent::Warning { .. }
         )
     }
@@ -2473,10 +1416,8 @@ impl SessionEvent {
     }
 }
 
-/// An event with its `(session_id, seq, ts)`.
-///
-/// `seq` is monotonic and gap-free **per session**, and it is the only thing a
-/// head's read mark or a command's `expected_seq` ever refers to.
+/// An event with its `(session_id, seq, ts)`. `seq` is monotonic and gap-free per session, and
+/// it is the only thing a reattaching head can resume from.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Envelope {
     pub session_id: String,
@@ -2487,15 +1428,15 @@ pub struct Envelope {
     pub event: SessionEvent,
 }
 
-/// Unix millis now, from the tree's one clock: re-exported because this path is what the head and
-/// the daemon already call. Fails backwards to 0 rather than panicking: a clock before the
-/// epoch is a broken clock, not a reason to lose a session.
+/// Unix millis now, from the tree's one clock: re-exported because this path is what the head and the
+/// daemon already call. Fails backwards to 0 rather than panicking: a clock before the epoch is a
+/// broken clock, not a reason to lose a session.
 pub use letibot_metrics::now_ms;
 
 #[cfg(test)]
 mod tests {
-    /// **A board change recomputes the activity**: a job counts once a row needs it, and the
-    /// row is usually written after the job starts.
+    /// A board change recomputes the activity: a job counts once a row needs it, and the row is
+    /// usually written after the job starts.
     #[test]
     fn a_todo_board_change_touches_the_activity() {
         assert!(SessionEvent::TodosUpdated { todos: Vec::new() }.touches_activity());
@@ -2503,19 +1444,8 @@ mod tests {
 
     use super::*;
 
-    /// **The wire's title rule is the STORE's title rule** — the test that makes a copy safe.
-    ///
-    /// [`TODO_TITLE_MAX`] and [`todo_title`] are this crate's copies of
-    /// `letibot_tokencore::store`'s, for the reason [`TodoStatus`] and [`TodoBy`] are copies: this is
-    /// the wire, the head's todo vocabulary is this module's, and the head does not link the store.
-    /// The enum copies get their drift check from the compiler — a new variant is a compile error at
-    /// the conversions — and a number gets none, so it is checked here, in the one crate whose dev
-    /// dependencies see both sides.
-    ///
-    /// MEASURED as the failure it prevents: the operator's rows are written by the HEAD (which
-    /// reads these) and the model's by the tool (which reads the store's), and a cap that disagreed
-    /// by one would be two rules wearing one name — the model refused at 135 and the operator at
-    /// 136, or the other way round, with nothing in the tree saying which was right.
+    /// The wire's title rule is the STORE's title rule: the test that makes a copy safe. The enum
+    /// copies get their bound from the store's own.
     #[test]
     fn the_wires_title_rule_is_the_stores() {
         use letibot_tokencore::store;
@@ -2566,14 +1496,8 @@ mod tests {
         }
     }
 
-    /// **The `reading` a prompt card is raised on is safe in both directions**, which is the
-    /// test for whether a `PROTOCOL_VERSION` bump is owed — and here it is not (the
-    /// `Warning::compaction` precedent: *an older head ignores an unknown field and renders
-    /// exactly what it rendered before; a newer head reading an older daemon sees the default
-    /// and falls back*).
-    ///
-    /// The default is `Blocked` because a daemon older than the field only ever raised cards
-    /// on a reading — so an absent `reading` is not a missing fact but the one fact there was.
+    /// The `reading` a prompt card is raised on is safe in both directions, which is the test for
+    /// whether a protocol bump is needed at all.
     #[test]
     fn a_prompt_request_without_a_reading_reads_as_blocked_and_one_with_it_round_trips() {
         // An older daemon's frame: no `reading` at all.
@@ -2636,9 +1560,8 @@ mod tests {
         let back: SessionEvent = serde_json::from_str(&s).unwrap();
         assert_eq!(e, back);
 
-        // A log recorded before the field existed has no `edit` key. It must
-        // parse, and read as None — the head then renders exactly what it
-        // always rendered, which is the whole compatibility argument.
+        // A log recorded before the field existed has no `edit` key. It must parse, and read as
+        // None - the head then renders exactly what it always rendered.
         let old = r#"{"event":"tool_finished","turn_id":"t1","call_id":"c1",
             "outcome":{"outcome":"ok"},"payload_digest":"fnv1a:1",
             "inline_bytes":12,"full_bytes":12,"repairs":0}"#;
@@ -2649,11 +1572,8 @@ mod tests {
         ));
     }
 
-    /// The flatten that puts an event inside an [`Envelope`] is where a field-name
-    /// collision shows up, not in the event alone: an event that names a field the
-    /// envelope already has (`session_id`) serialises to a duplicate key and a head
-    /// fails to parse it. `Subagent` was exactly that, and this is the test that
-    /// would have caught it — every variant, wrapped, must survive the wire.
+    /// The flatten that puts an event inside an [`Envelope`] is where a field-name collision shows
+    /// up, and not in the event itself.
     #[test]
     fn every_variant_round_trips_inside_an_envelope() {
         for (i, e) in crate::testing::one_of_each().into_iter().enumerate() {
@@ -2689,18 +1609,8 @@ mod tests {
         );
     }
 
-    /// **R15: an edit's row is the file, and the `edits` array says nothing.**
-    ///
-    /// The operator's screen carried
-    /// `▸ Edited […] letibot/crates/harnessd/src/answers.rs · ok · 3ms · 10 lines`, and the
-    /// ruling was *"`[…]` should be gone for Edit"* — **not moved**. The placeholder sat in
-    /// the most valuable position on the row while the "more" it pointed at was the diff
-    /// directly underneath it.
-    ///
-    /// The line, and it is on the *arguments* rather than on the tool: **a nested value is
-    /// elided only when the map has no scalar at all.** The elision rule therefore keeps
-    /// every case where it earns its keep — a label that would otherwise be *empty* — and
-    /// stops spending a token on a row that already names something.
+    /// An edit's row is the file, and the `edits` array says nothing: the placeholder sat in the most
+    /// valuable position a head has.
     #[test]
     fn a_nested_argument_is_elided_only_when_nothing_else_can_be_shown() {
         // The batch edit, in the order the model writes it (`edits` first). The row is the
@@ -2709,8 +1619,7 @@ mod tests {
             display_target(r#"{"edits":[{"old":"x"}],"path":"letibot/src/answers.rs"}"#),
             "letibot/src/answers.rs"
         );
-        // The other order. The previous cut of this test asserted `"a.rs […]"` — and that
-        // string was the defect, not the expectation.
+        // The other order: the placeholder must not appear before the file either.
         assert_eq!(
             display_target(r#"{"path":"a.rs","edits":[{"old":"x"}]}"#),
             "a.rs"
@@ -2721,10 +1630,9 @@ mod tests {
             "\"cargo test\""
         );
 
-        // **And the rule keeps its other half.** A map with nothing scalar in it still
-        // says there is more rather than rendering an empty label; in this tree that is
-        // reachable only by a tool added later, because every seated one carries a scalar
-        // `path`, `pattern` or `cmd`.
+        // And the rule keeps its other half. A map with nothing scalar in it still says there is more
+        // rather than rendering an empty label; in this tree that is reachable only by a tool added
+        // later, because every seated one carries a scalar `path`, `pattern` or `cmd`.
         assert_eq!(display_target(r#"{"rows":[1,2,3]}"#), "[…]");
         assert_eq!(display_target(r#"{"nested":{"a":1}}"#), "{…}");
         assert_eq!(display_target(r#"{"rows":[1],"opts":{"a":1}}"#), "[…] {…}");
@@ -2735,16 +1643,8 @@ mod tests {
 
     #[test]
     fn the_subject_the_written_order_left_past_the_budget_comes_back_in_front() {
-        // **The card the operator photographed.** A model composing an edit
-        // writes the content before the file it is going into, and the budget
-        // broke before `path` landed — the card opened with eighty bytes of
-        // old_string and could not answer *which file*. The subject the order
-        // left out is prepended; the content head follows it.
-        //
-        // **The content is sized off the cap, not off a literal (R25).** This used 200-byte
-        // strings, which broke a 120-byte budget and stopped breaking anything the moment the
-        // wire limit moved — a test whose premise is a number the code no longer has. The rule
-        // it tests is unchanged; what it takes to reach it is now a genuinely long argument.
+        // A model composing an edit writes the content before the file it is going into, and the
+        // budget breaks before `path` does: the label has to survive that order.
         let args = format!(
             r#"{{"old_string":"{}","new_string":"{}","path":"crates/tui/src/app.rs"}}"#,
             "x".repeat(TARGET_MAX_BYTES + 100),
@@ -2752,7 +1652,7 @@ mod tests {
         );
         let t = display_target(&args);
         assert!(t.starts_with("crates/tui/src/app.rs"), "{t}");
-        // **And the body is not in the label at all** — under the cap or over it.
+        // And the body is not in the label at all - under the cap or over it.
         assert_eq!(t, "crates/tui/src/app.rs");
         assert_eq!(
             display_target(
@@ -2767,8 +1667,7 @@ mod tests {
         );
         // With no file named, a body is still the only thing to show, and is shown.
         assert_eq!(display_target(r#"{"content":"hello"}"#), "hello");
-        // An order that already shows every argument — grep's pattern, then
-        // its path — does not move.
+        // An order that already shows every argument - grep's pattern, then its path - does not move.
         assert_eq!(
             display_target(r#"{"pattern":"home.*button","path":"src"}"#),
             "home.*button src"
@@ -2777,22 +1676,16 @@ mod tests {
 
     #[test]
     fn a_target_never_exceeds_the_cap_and_says_when_it_was_cut() {
-        // **Sized off the constant, not off 400** (R25). The old literal was written when the
-        // cap was 120 and quietly stopped testing anything the moment the cap moved past it —
-        // a test whose premise is a number the code no longer has is a green test about
-        // nothing.
+        // Sized off the constant, not off a literal: a test whose premise is a number the code no
+        // longer has is a green test about nothing.
         let long = "x".repeat(TARGET_MAX_BYTES + 100);
         let t = display_target(&format!(r#"{{"path":"{long}"}}"#));
         assert!(t.len() <= TARGET_MAX_BYTES, "{} bytes", t.len());
         assert!(t.ends_with('…'), "{t}");
     }
 
-    /// **A realistic long command reaches a head whole, and it is the head that cuts it** (R25).
-    ///
-    /// The operator's measurement was a 227-column pane showing a headline cut at 121
-    /// characters, so ~100 columns went unused on every tool row. The wire limit is not a
-    /// viewport, so a command of a few hundred characters must arrive intact and be cut — with
-    /// its own `…` — by the layer that knows the width.
+    /// A realistic long command reaches a head whole, and it is the head that cuts it: the wire
+    /// limit is not a view limit.
     #[test]
     fn a_command_of_a_few_hundred_characters_survives_the_wire_whole() {
         let cmd = format!(
@@ -2808,32 +1701,31 @@ mod tests {
             r#"{{"command":{}}}"#,
             serde_json::to_string(&cmd).unwrap()
         ));
-        // A string with whitespace is quoted, so `grep "two words" src` cannot be misread as
-        // three arguments — that is `scalar`'s rule and the quoted form is the right one.
+        // A string with whitespace is quoted, so `grep "two words" src` cannot be misread as three
+        // arguments - that is `scalar`'s rule and the quoted form is the right one.
         assert_eq!(
             t,
             format!("{cmd:?}"),
             "the wire cut a command it had no reason to touch"
         );
         assert!(!t.ends_with('…'), "and it did not claim to: {t}");
-        // The whole tail survives, which is the operator's complaint in one assertion: the
-        // end of a long command is what a 120-byte cut used to take.
+        // The whole tail survives, which is the complaint in one assertion: the end of a long command
+        // is what a short cut takes.
         assert!(t.contains("--selftest"), "{t}");
     }
 
     #[test]
     fn a_target_never_carries_a_control_character_into_a_one_line_header() {
-        // A newline here would put a row on the screen the head did not count,
-        // which scrolls the frame it has just painted — the same fault
-        // `rano::width::text::break_cells` had, one layer up.
+        // A newline here would put a row on the screen the head did not count, which scrolls the
+        // frame it has just painted.
         let t = display_target("{\"cmd\":\"a\\nb\"}");
         assert!(!t.contains('\n'), "{t:?}");
     }
 
     #[test]
     fn arguments_that_are_not_json_still_produce_something_readable() {
-        // The model wrote them; refusing to show them would hide the evidence of
-        // exactly the malformed call this case is.
+        // The model wrote them; refusing to show them would hide the evidence of exactly the
+        // malformed call this case is.
         assert_eq!(display_target("  path=src/main.rs  "), "path=src/main.rs");
     }
 

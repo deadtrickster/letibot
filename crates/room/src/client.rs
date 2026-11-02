@@ -1,35 +1,10 @@
-//! **The session's end of the socket** — one connection per top-level session, a round trip per
-//! verb, the bell delivered to a callback, and a beat the daemon can run on the session's behalf.
+//! The session's end of the socket: one connection per top-level session, a round trip per verb, the
+//! bell delivered to a callback, and a beat the daemon can run on the session's behalf.
 //!
-//! This is the half a daemon that is NOT the coordinator needs: a project's sessions talk to the
-//! box's room over this, and the room has no idea whether the other end is a tool call, a wake or a
-//! beat.
-//!
-//! # One connection, and why it must stay open
-//!
-//! The room's own rule (`crate::wire`'s header, and `docs/room.md` § *The wire*) is that **the
-//! socket is the DAEMON's liveness and the beat is the WORK's**. A connection per call would make
-//! every call a close, and every close a [`Room::note_gone`](crate::Room::note_gone) — so a session
-//! that posted, claimed and read in three calls would lose its claim between the second and the
-//! third. So [`Client`] holds one connection for the session's life, and reconnects only when that
-//! connection has actually failed. **A reconnect is a new life**: the old socket's close already
-//! gave the claims back, and the honest reading of the next claim is a fresh one.
-//!
-//! # The bell
-//!
-//! Frames the client did not ask for are [`Response::Event`], and they go to the callback the
-//! client was built with. That callback is the whole of the wake: a client that dropped them would
-//! be a mailbox, and firecode's fourth rule (*a bell is something that can inject a turn*) is the
-//! criterion this exists to satisfy.
-//!
-//! # The beat on the session's behalf
-//!
-//! [`Client::start_beating`] is the difference between a design that works and one that blames the
-//! model: a session that must remember to call `beat` will forget — it is thinking about its work —
-//! and the ninety-second lease will take its item while it works. So the daemon beats while the
-//! session's TURN is running, and stops when the turn ends, which is exactly the fact the lease is
-//! measuring. Each tick re-reads what the session holds rather than remembering a list, so an item
-//! claimed in the middle of a turn is beaten on the next tick.
+//! The socket is the daemon's liveness and the beat is the work's, so the connection stays open for the
+//! session's life: a connection per call would make every close a `note_gone`, and a session that
+//! posted, claimed and read in three calls would lose its claim in between. The beat lives here
+//! because a session that must remember to call `beat` will forget while it works.
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -46,8 +21,8 @@ use crate::wire::{ROOM_PROTOCOL_VERSION, Request, Response};
 /// coordinator is a local process whose longest act is a `Mutex` on an in-memory map.
 pub const REPLY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// **The client could not talk to the room.** Always a sentence, because the tool that shows it to
-/// a model has nowhere else to put the reason.
+/// The client could not talk to the room. Always a sentence, because the tool that shows it to a model
+/// has nowhere else to put the reason.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientError(pub String);
 
@@ -59,23 +34,19 @@ impl std::fmt::Display for ClientError {
 
 impl std::error::Error for ClientError {}
 
-/// What the room said when the connection opened — the numbers a client must not guess, and
-/// **what the room said it is**.
+/// What the room said when the connection opened - the numbers a client must not guess, and what the
+/// room said it is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Welcome {
     pub lease_ms: u64,
     pub beat_every_ms: u64,
     pub threshold: u32,
-    /// **`Server::identity()`, verbatim** — the room's own sentence about itself (*started T ago and
-    /// holding N item(s)*), kept so a caller can print what it connected to. It is the sentence as
-    /// of the connect: a reader that wants the age now asks [`Request::Room`], which carries the
-    /// same sentence taken at the moment of the read.
+    /// `Server::identity()`, verbatim, so a caller can print what it connected to. A reader that wants
+    /// the age now asks [`Request::Room`], which carries the same sentence taken at the read.
     pub identity: String,
-    /// **How many events the room addressed to this session while it had no connection**, and when
-    /// the first of them was routed — `0`/`0` for a session that has never been away.
-    ///
-    /// The room keeps no log, so this is a COUNT and not a replay: a client told *you missed four*
-    /// re-reads the state, which cannot be wrong. See `wire`'s version-4 note.
+    /// How many events the room addressed to this session while it had no connection, and when the
+    /// first of them was routed. The room keeps no log, so this is a COUNT and not a replay: a client
+    /// told *you missed four* re-reads the state, which cannot be wrong.
     pub missed: u64,
     pub missed_since_ms: u64,
 }
@@ -93,7 +64,7 @@ impl Default for Welcome {
     }
 }
 
-/// **What a client does when the room rings it** — the wake, as a callback.
+/// What a client does when the room rings it - the wake, as a callback.
 pub type Wake = Arc<dyn Fn(&Event) + Send + Sync>;
 
 struct Live {
@@ -103,9 +74,8 @@ struct Live {
 struct Shared {
     path: PathBuf,
     speaker: Speaker,
-    /// **The room this client believes it is reaching** — the box's name, or whatever
-    /// [`Client::connect_named`] was given. It rides on every `Hello`, including a reconnect's: a
-    /// session that was moved to another box must not keep talking to the one it was opened on.
+    /// The room this client believes it is reaching. It rides on every `Hello`, including a
+    /// reconnect's: a session moved to another box must not keep talking to the one it opened on.
     room: String,
     wake: Wake,
     live: Mutex<Option<Live>>,
@@ -118,12 +88,9 @@ struct Shared {
     why: Mutex<Option<String>>,
 }
 
-/// **A dropped client closes its socket**, which is the whole of *the close is a fact*.
-///
-/// It is not enough to drop the writer: the reader thread holds a second descriptor on the same
-/// socket, so the peer would see nothing and a session whose daemon went away would keep its
-/// claim for the lease's ninety seconds. `shutdown` acts on the socket rather than the descriptor,
-/// so the blocked `read` returns and the coordinator's `note_gone` runs at once.
+/// A dropped client closes its socket, which is the whole of *the close is a fact*: dropping the writer
+/// is not enough, because the reader thread holds a second descriptor and the claim would survive the
+/// lease. `shutdown` acts on the socket, so the blocked `read` returns and `note_gone` runs at once.
 impl Drop for Shared {
     fn drop(&mut self) {
         if let Ok(live) = self.live.get_mut()
@@ -134,7 +101,7 @@ impl Drop for Shared {
     }
 }
 
-/// **A session's connection to the room.**
+/// A session's connection to the room.
 #[derive(Clone)]
 pub struct Client {
     inner: Arc<Shared>,
@@ -150,16 +117,8 @@ impl std::fmt::Debug for Client {
 }
 
 impl Client {
-    /// **Connect and say `hello`.** A room that is not there is the error, with the path in it.
-    ///
-    /// `wake` is called for every event the room sends about this session, from the reader thread.
-    /// It must not block: it is the thread that keeps the connection alive.
-    ///
-    /// **The room it names is the box's own** — the bare host key, which is
-    /// [`crate::DEFAULT_PROJECT`]'s room ([`crate::room_name`]). A session that belongs to a project
-    /// names that project's room instead ([`Client::connect_named`] with
-    /// `crate::room_name(&crate::host_key(), &project)`), and the daemon that opened it is the one
-    /// that knows which.
+    /// Connect and say `hello`; a room that is not there is the error, with the path in it. `wake` runs
+    /// on the reader thread, so it must not block - it is what keeps the connection alive.
     pub fn connect(
         path: impl Into<PathBuf>,
         speaker: Speaker,
@@ -168,10 +127,8 @@ impl Client {
         Self::connect_named(path, speaker, crate::lease::host_key(), wake)
     }
 
-    /// **Connect to a room by NAME**, saying which one it means. A room is one box's and one
-    /// project's (`<host key>/<project key>`), and the server refuses a `Hello` that names another
-    /// one with both names in the sentence — so a test (or a client moved between boxes) can say the
-    /// wrong name on purpose and be told.
+    /// Connect to a room by NAME. The server refuses a `Hello` that names another room with both names
+    /// in the sentence, so a test (or a client moved between boxes) can say the wrong one and be told.
     pub fn connect_named(
         path: impl Into<PathBuf>,
         speaker: Speaker,
@@ -207,24 +164,20 @@ impl Client {
         self.inner.welcome.lock().expect("the welcome lock").clone()
     }
 
-    /// **Is the connection up right now?** A `false` here is not an error — the next call reconnects.
+    /// Is the connection up right now? A `false` here is not an error - the next call reconnects.
     pub fn connected(&self) -> bool {
         self.inner.live.lock().expect("the live lock").is_some()
     }
 
-    /// A `Client` over a shared state the reader thread has already upgraded — the reader keeps a
+    /// A `Client` over a shared state the reader thread has already upgraded - the reader keeps a
     /// [`std::sync::Weak`], so it is never the owner that keeps a dropped connection open.
     fn from_shared(inner: Arc<Shared>) -> Client {
         Client { inner }
     }
 
-    /// **What the last connection missed, and forget it** — `(count, first_ms)` from the `Welcome`,
-    /// zeroed as it is read.
-    ///
-    /// The room keeps no log, so a count is the whole of what it can say (`wire`'s version-4
-    /// note). **Taking rather than reading** is what makes one gap one sentence: the count arrives
-    /// with the `Hello` that ends the gap, and a caller that reported the same number on every poll
-    /// would tell the model the room had gone quiet again every second.
+    /// What the last connection missed, and forget it: `(count, first_ms)` from the `Welcome`. Taking
+    /// rather than reading makes one gap one sentence - a caller reporting the same number on every poll
+    /// would say the room had gone quiet again every second.
     pub fn take_missed(&self) -> (u64, u64) {
         let mut w = self.inner.welcome.lock().expect("the welcome lock");
         let out = (w.missed, w.missed_since_ms);
@@ -233,11 +186,8 @@ impl Client {
         out
     }
 
-    /// **One verb, one reply.**
-    ///
-    /// A connection that has failed is re-opened and the frame is sent again — which is safe
-    /// precisely because the wire is idempotent: every mutating frame carries the caller's id, and
-    /// the room answers a repeat from its replay window instead of acting twice.
+    /// One verb, one reply. A failed connection is re-opened and the frame sent again, which is safe
+    /// because the wire is idempotent: a repeat is answered from the replay window, not acted twice.
     pub fn request(&self, request: &Request) -> Result<Response, ClientError> {
         let _one_at_a_time = self.inner.call.lock().expect("the call lock");
         if !self.connected() {
@@ -266,9 +216,8 @@ impl Client {
         }
     }
 
-    /// **Start beating for this session until the returned [`Beat`] is dropped.** The turn's
-    /// beginning and end are the caller's — [`crate::client::Client::start_beating`] knows nothing
-    /// about turns, only about *while this is held, say I am working*.
+    /// Start beating for this session until the returned [`Beat`] is dropped. It knows nothing about
+    /// turns, only about *while this is held, say I am working*.
     pub fn start_beating(&self) -> Beat {
         let stop = Arc::new((Mutex::new(false), Condvar::new()));
         let me = self.clone();
@@ -277,9 +226,8 @@ impl Client {
             .name(format!("room-beat-{}", self.inner.speaker.session))
             .spawn(move || {
                 let welcome = me.welcome();
-                // **A third of the lease, or the room's own number, whichever is sooner.** A
-                // client that beats every five seconds against a five-second lease is a client
-                // that loses its item between two ticks.
+                // A third of the lease, or the room's own number, whichever is sooner: a client that
+                // beats every five seconds against a five-second lease loses its item between ticks.
                 let every = welcome.beat_every_ms.min(welcome.lease_ms / 3).max(250);
                 loop {
                     // Sleep first: a turn that begins by claiming an item must not beat before it
@@ -293,8 +241,8 @@ impl Client {
                         break;
                     }
                     drop(guard);
-                    // **Read, then beat.** An item claimed during the turn is on this list; a
-                    // remembered list would miss it and the lease would take it back.
+                    // Read, then beat. An item claimed during the turn is on this list; a remembered
+                    // list would miss it and the lease would take it back.
                     let Ok(Response::Holding { rows, .. }) =
                         me.request(&Request::Holding { session: None })
                     else {
@@ -312,8 +260,6 @@ impl Client {
         Beat { stop, handle }
     }
 
-    // ===== The connection =====
-
     fn open(&self) -> Result<(), ClientError> {
         let stream = UnixStream::connect(&self.inner.path).map_err(|e| {
             ClientError(format!(
@@ -325,11 +271,9 @@ impl Client {
         let mut reader =
             BufReader::new(stream.try_clone().map_err(|e| ClientError(e.to_string()))?);
         let mut writer = stream;
-        // **A handshake that cannot hang its caller.** `Client::connect` runs inside
-        // `Harness::open`, so a coordinator that is up but wedged would otherwise block every
-        // session open on this box for ever. Two seconds is generous for a local process whose
-        // longest act is a mutex over an in-memory map; past it the session gets its sentence and
-        // opens without a room.
+        // A handshake that cannot hang its caller: `connect` runs inside `Harness::open`, so a
+        // coordinator that is up but wedged would block every session open on this box for ever.
+        // Past two seconds the session gets its sentence and opens without a room.
         let _ = writer.set_read_timeout(Some(std::time::Duration::from_secs(2)));
         let _ = writer.set_write_timeout(Some(std::time::Duration::from_secs(2)));
         let hello = Request::Hello {
@@ -382,48 +326,31 @@ impl Client {
                 )));
             }
         }
-        // **The timeout was the HANDSHAKE's, and it goes back now.** Socket options belong to the
-        // socket, not to one descriptor, so leaving it on would have the reader thread wake every
-        // two seconds with `WouldBlock` and read that as a closed connection — a client that
-        // disconnects itself twice a minute.
+        // The timeout was the HANDSHAKE's and it goes back now: socket options belong to the socket,
+        // so leaving it on would make the reader wake with `WouldBlock` every two seconds and read
+        // that as a closed connection - a client that disconnects itself twice a minute.
         let _ = writer.set_read_timeout(None);
         let _ = writer.set_write_timeout(None);
         let weak = Arc::downgrade(&self.inner);
         let reader_thread = std::thread::Builder::new()
             .name(format!("room-read-{}", self.inner.speaker.session))
             .spawn(move || {
-                // **A `Weak`, so the reader is not what keeps the client alive.** The thread that
-                // blocks on this socket must not be the last owner of it, or a dropped client
-                // would hold its own connection open and the coordinator would never see the
-                // close — which is the one fact the whole liveness design rests on.
-                //
-                // **And the read comes BEFORE the upgrade, which is not a style choice.**
-                // MEASURED 2026-10-29: `weak.upgrade()` was the loop's first statement and its
-                // `Client` lived across `read_frame`, so the thread blocked on the socket was an
-                // OWNER of it. `drop(client)` then could not run `Shared::drop`, the `shutdown`
-                // that is supposed to wake this read never happened, and the coordinator's
-                // `note_gone` never ran — the claim waited out the ninety-second lease instead of
-                // being given back at once, and `tests/socket.rs`'s
-                // `a_closed_connection_gives_its_claim_back_at_once_and_says_so` failed about
-                // half the time (5.1 s, its own deadline) while passing the other half, depending
-                // on whether the drop landed in the few instructions between one frame and the
-                // next. Reading first leaves the blocked thread holding nothing but the socket.
+                // A `Weak`, and the READ comes before the upgrade: a strong reference held across
+                // `read_frame` makes the blocked thread an owner, so `drop(client)` cannot run
+                // `Shared::drop` and the claim waits out the lease instead of being given back.
                 loop {
                     let frame = match read_frame(&mut reader) {
                         Ok(frame) => frame,
                         Err(e) => {
-                            // A read that timed out is not a connection that closed — the socket
-                            // has no read timeout after the handshake, so this is belt and braces
-                            // against one set by something else. Nothing was read, so nothing is
-                            // dispatched and the loop re-reads.
+                            // A read that timed out is not a connection that closed: the socket has no
+                            // read timeout after the handshake, so this is belt and braces.
                             if matches!(
                                 e.kind(),
                                 std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
                             ) {
-                                // Nothing was read, so nothing is dispatched — but a client that
-                                // is GONE is still a reason to stop: without this the loop would
-                                // re-read for ever on a socket somebody else put a timeout on,
-                                // holding no owner and doing no work.
+                                // Nothing was read, so nothing is dispatched - but a client that is
+                                // GONE is still a reason to stop, or this re-reads for ever on a
+                                // socket somebody else put a timeout on.
                                 if weak.strong_count() == 0 {
                                     break;
                                 }
@@ -435,9 +362,9 @@ impl Client {
                             break;
                         }
                     };
-                    // **Now the strong reference**, for as long as dispatching one frame takes.
-                    // Gone means the client was dropped while this thread was blocked, which is
-                    // the case the whole design is for: nothing is left to tell.
+                    // Now the strong reference, for as long as dispatching one frame takes. Gone means
+                    // the client was dropped while this thread was blocked, which is the case the
+                    // whole design is for: nothing is left to tell.
                     let Some(me) = weak.upgrade().map(Client::from_shared) else {
                         break;
                     };
@@ -484,14 +411,14 @@ impl Client {
         }
     }
 
-    /// Why the last connection ended, when one has — the sentence a caller adds to a refusal.
+    /// Why the last connection ended, when one has - the sentence a caller adds to a refusal.
     pub fn last_failure(&self) -> Option<String> {
         self.inner.why.lock().expect("the why lock").clone()
     }
 }
 
-/// **The beat, for as long as it is held.** Dropping it stops the beating at once: the turn that
-/// started it has ended, and the lease should start counting from the last beat.
+/// The beat, for as long as it is held. Dropping it stops the beating at once: the turn that started
+/// it has ended, and the lease should start counting from the last beat.
 #[derive(Debug)]
 pub struct Beat {
     stop: Arc<(Mutex<bool>, Condvar)>,
@@ -510,9 +437,8 @@ impl Drop for Beat {
         let (lock, cv) = &*self.stop;
         *lock.lock().expect("the beat flag") = true;
         cv.notify_all();
-        // **Not joined on purpose.** The thread's next act after waking is to look at the flag and
-        // leave; joining it would make a turn's end wait for a socket round trip that the caller
-        // has already decided not to care about.
+        // Not joined on purpose: the thread's next act after waking is to look at the flag and leave,
+        // and joining would make a turn's end wait for a socket round trip nobody cares about.
         self.handle.take();
     }
 }

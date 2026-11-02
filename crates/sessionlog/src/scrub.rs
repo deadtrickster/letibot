@@ -1,35 +1,11 @@
 //! The scrub, as a **projection** rather than an afterthought.
 //!
-//! §13.2b: *"Live and stored are different artifacts of the same stream, and
-//! anything interactive must be stripped from the stored copy … otherwise they are
-//! answered or acted on twice."*
+//! §13.2b: anything interactive must be stripped from the stored copy, or it is answered or
+//! acted on twice. An event is interactive if replaying it could cause an action that has
+//! already happened or show a state that is no longer true: [`is_interactive`] is that
+//! predicate and the only place the rule lives, and the match is exhaustive.
 //!
-//! The generalisation this crate commits to is one predicate:
-//!
-//! > An event is **interactive** if replaying it to a reader could cause an action
-//! > that has already happened, or display a state that is no longer true.
-//!
-//! [`is_interactive`] is that predicate and it is the *only* place the rule lives.
-//! Everything downstream — the late-join snapshot, the resume gap, a stored
-//! session file — is `filter(!interactive)` composed with a fold. A new event
-//! variant therefore has exactly one place to be classified, and forgetting is a
-//! compile error because the match is exhaustive.
-//!
-//! There are two shapes of interactivity and they are stripped differently:
-//!
-//! - **Ephemeral state.** `PromptProgress`, `ToolProgress`. Their durable residue
-//!   is the event that ends them (`TurnFinished`, `ToolFinished`). Dropped
-//!   outright.
-//! - **Open questions.** `DecisionRequested`. Its durable residue is the
-//!   `DecisionAnswered` that settled it — so a settled request is dropped and the
-//!   answer is kept, which is §13.2b's *"settled decisions render as their outcome,
-//!   not as an open prompt"*. An **unsettled** request is not interactive-in-the-bad-
-//!   sense: it is still owed an answer, and a reattaching head is exactly who owes
-//!   it.
-//!
-//! And in every case the count of what was stripped travels with the result
-//! ([`ScrubReport`]), because *"busy, and none of it was for me"* is a different
-//! fact from *"quiet"*.
+//! What was stripped travels with the result ([`ScrubReport`]): busy is not quiet.
 
 use std::collections::{HashMap, HashSet};
 
@@ -46,13 +22,9 @@ pub enum Projection {
     Stored,
 }
 
-/// Is replaying this event capable of causing a second action, or of showing a
-/// state that has since moved?
-///
-/// `DecisionRequested` answers "yes" here and is then *rescued* by
-/// [`StoredProjection`] when it is still unsettled, because the predicate cannot
-/// see the future and settledness is a property of the rest of the stream. Keeping
-/// the two apart is deliberate: the predicate stays a property of one event.
+/// Is replaying this event capable of causing a second action, or of showing a state that has
+/// since moved? `DecisionRequested` answers yes and is then *rescued* by [`StoredProjection`] when
+/// it is still unsettled: settledness is a property of the rest of the stream, not of one event.
 pub fn is_interactive(event: &SessionEvent) -> bool {
     match event {
         // Ephemeral: a progress frame from four minutes ago is a lie about now.
@@ -69,48 +41,32 @@ pub fn is_interactive(event: &SessionEvent) -> bool {
         // its deadline; replayed, it would show a masked field for a sudo that
         // has long since failed. Its settlement is a record and stays.
         SessionEvent::SecretRequested { .. } => true,
-        // **A card for the operator's own run, and the same rule as the password's.**
-        //
-        // It names a live `req_id` in the daemon's own table for a run that is blocked
-        // right now, and a head that attached *after* the run began has not seen the
-        // output the question is about — so replaying it would put a field on a screen
-        // over a command whose bytes that head never drew. The request is raised on the
-        // live fan-out, where the heads that are watching the run are, and the way in for
-        // every other head is `!send`, which needs no request at all. Its settlement
-        // ([`SessionEvent::PromptSettled`]) is a record and stays.
+        // **A card for the operator's own run, and the same rule as the password's.** It names a
+        // live `req_id` for a run that is blocked right now, so it is raised on the live fan-out;
+        // every other head's way in is `!send`. Its settlement is a record and stays.
         SessionEvent::PromptRequested { .. } => true,
         // Replayed, this would ask a head to draw itself for a tool call that
         // finished long ago.
         SessionEvent::ScreenRequested { .. } => true,
-        // Ephemeral, and the same as a progress frame: a job-output window is what
-        // the job had written when the head asked, and a window from four minutes
-        // ago is a lie about now. The job's durable residue is `JobSettled`; this
-        // is the pane answering a keypress, not a fact that stays true.
+        // Ephemeral, like a progress frame: a job-output window is what the job had written when
+        // the head asked. The job's durable residue is `JobSettled`.
         SessionEvent::JobOutput { .. } => true,
-        // Ephemeral: a fill's *progress* is a line that walks while it fills, and a
-        // tick from four minutes ago is a lie about now. The operation's durable residue
-        // is the rows it appended and the note that says it finished; scrubbing this
-        // and keeping those is exactly right.
+        // Ephemeral: a fill's *progress* walks while it fills. The durable residue is the rows it
+        // appended and the note that says it finished.
         SessionEvent::Filling { .. } => true,
-        // Ephemeral, for `Filling`'s reason exactly: a compaction's progress is a line
-        // that walks while a fold runs, and a tick from four minutes ago is a lie about
-        // now. What survives the compaction is the fork and the `compacted` warning —
-        // scrubbing this and keeping those is the same split `Filling` makes.
+        // Ephemeral for `Filling`'s reason: what survives a compaction is the fork and the
+        // `compacted` warning.
         SessionEvent::CompactionProgress { .. } => true,
         // Ephemeral, for `Filling`'s reason: a held count is true NOW, and the delivery that ends
         // the hold is a durable row of its own.
         SessionEvent::HeldResults { .. } => true,
         // **Ephemeral, and what replaces it is the hub's own republish**: what a session is
-        // waiting on is true NOW, and a value replayed from before a gap describes a session that
-        // may since have gone quiet or stopped on a card. The hub says the current one to every
-        // head that attaches, reconnects or resyncs (`Inner::activity_now`), exactly as it does the
-        // held counts — so the *snapshot* carries the value and the replay never does.
+        // waiting on is true NOW, and the hub says the current one to every head that attaches or
+        // resyncs (`Inner::activity_now`), exactly as it does the held counts.
         SessionEvent::ActivityChanged { .. } => true,
         // **Ephemeral, and it is the same reason one turn on**: a pane's view is the answer to a
-        // look, and a look from four minutes ago describes four minutes ago. Replaying it would
-        // hand a head that attached later a dashboard with no sign of its age, and the screen a
-        // store-backed reader wants is the conversation, not a stale copy of a screen somebody
-        // had open. A head asks again when the operator opens the pane.
+        // look, and a look from four minutes ago describes four minutes ago. A head asks again
+        // when the operator opens the pane.
         SessionEvent::PluginPane { .. } => true,
         // The same, and doubly: a gone-pane replayed to a head that never saw the pane is a
         // subtraction from nothing. The durable fact this leaves behind is that the layer's
@@ -135,11 +91,9 @@ pub fn is_interactive(event: &SessionEvent) -> bool {
         | SessionEvent::TranscriptContent { .. }
         // Durable for the same reason: it fills a row, and the row is.
         | SessionEvent::Citations { .. }
-        // **Durable, and it has to be.** A head that reconnects replays the gap it missed
-        // rather than taking a snapshot (`Hub::attach`, `since_seq != 0`), and a fork it
-        // does not see replayed is a fork it folds as a pile of appends — the conversation
-        // drawn twice, which is the defect this event exists to end. Scrubbing it would
-        // leave the replay with the rows and without the boundary between them.
+        // **Durable, and it has to be.** A reconnecting head replays the gap it missed rather
+        // than taking a snapshot, and a fork it does not see replayed is the conversation drawn
+        // twice — the defect this event exists to end.
         | SessionEvent::TranscriptForked { .. }
         | SessionEvent::HeadAttached { .. }
         | SessionEvent::HeadDetached { .. }
@@ -156,22 +110,16 @@ pub fn is_interactive(event: &SessionEvent) -> bool {
         // Durable: the list is what it is as of this seq, and a head replaying
         // the backlog keeps the last one it saw.
         | SessionEvent::TodosUpdated { .. }
-        // **Durable, and deliberately so.** A denial is a decision taken on the
-        // operator's behalf which they alone can lift, and the grant path it
-        // carries is still live for a late head. Scrubbing it would put back
-        // exactly the hole `docs/boundary-and-adjudication.md` §4b was written
-        // against — an operator who joins after the refusal seeing only a task
-        // that stopped. It is not a `DecisionRequested`: nothing is waiting on an
-        // answer, so there is no settled-question hazard to scrub for.
+        // **Durable, and deliberately so.** A denial is a decision taken on the operator's behalf
+        // that only they can lift, and the grant path is still live for a late head. It is not a
+        // `DecisionRequested`: nothing is waiting on an answer.
         | SessionEvent::DenialRaised { .. } => false,
         // Durable: "this session spawned a subagent and it is running/done/failed"
         // stays true, and a head replaying the backlog keeps the latest state for
         // each subagent, which is exactly what a tree is drawn from.
         | SessionEvent::Subagent { .. }
-        // Durable, and the *point* of it: a background job settles between turns,
-        // when nobody else is publishing, and the settlement is a fact about the
-        // process that does not stop being true. Scrubbing it would put every
-        // head's picture of the job back at "running" forever.
+        // Durable: a background job settles between turns, when nobody else is publishing, and
+        // scrubbing it would put every head's picture of the job back at "running" forever.
         | SessionEvent::JobSettled { .. } => false,
         // Durable: the admission is recorded whether or not the head that asked is still
         // watching. A replay that dropped it would show a `ToolResult` row with an `origin`
@@ -218,13 +166,9 @@ impl ScrubReport {
     }
 }
 
-/// The stored projection of a window of the stream.
-///
-/// Two passes, because settledness is lookahead: pass one learns which `req_id`s
-/// were answered *anywhere in the window or before it*, pass two filters. The
-/// "or before it" is why [`StoredProjection::of`] takes the settled set from the
-/// whole log rather than from the window — a decision answered before a resuming
-/// head's `since_seq` must still not be re-asked.
+/// The stored projection of a window of the stream. Two passes, because settledness is lookahead:
+/// the settled set comes from the whole log, so a decision answered before a resuming head's
+/// `since_seq` is still not re-asked.
 #[derive(Debug, Clone, Default)]
 pub struct StoredProjection {
     settled: HashSet<String>,
@@ -278,23 +222,17 @@ impl StoredProjection {
                 self.report.settled_decisions += 1;
                 None
             }
-            // A job-output window is what the job had written when the head asked.
-            // Replayed it shows a state that has moved — the job has written more,
-            // or ended — so it is dropped exactly as a progress frame is, and the
-            // pane that wants it asks again.
+            // A job-output window is what the job had written when the head asked; replayed it
+            // shows a state that has moved, so the pane that wants it asks again.
             SessionEvent::JobOutput { .. } => {
                 self.report.job_output += 1;
                 None
             }
             // The held counts are true NOW, and the hub says the current ones to every head that
-            // attaches, reconnects or resyncs (`Inner::held_now`, R91.12) — a replayed one is a
-            // count from before the gap, and it reached this arm unhandled (a debug-build panic
-            // on every reconnect after a hold). Not counted: the report's fields are on the wire.
+            // attaches or resyncs (`Inner::held_now`). Not counted: the report's fields are on the wire.
             SessionEvent::HeldResults { .. } => None,
             // The activity is true NOW, and the hub says the current one to every head that
-            // attaches, reconnects or resyncs (`Inner::activity_now`) — a replayed one is the value
-            // from before the gap, and a head that kept it would draw a session stopped on a job
-            // that ended. Dropped for `HeldResults`' reason and by the same mechanism.
+            // attaches or resyncs (`Inner::activity_now`). Dropped for `HeldResults`' reason.
             SessionEvent::ActivityChanged { .. } => None,
             // An unsettled request survives the scrub. It is still owed an answer
             // and the reattaching head is who owes it.
@@ -380,10 +318,8 @@ mod tests {
 
     #[test]
     fn a_job_settlement_survives_the_scrub_because_it_is_the_only_record_of_it() {
-        // A background job settles between turns, when nothing else is publishing.
-        // The settlement is a fact about a process that already happened; scrubbing
-        // it would put every head's picture of the job back at "running" forever,
-        // which is the lie about now this module exists to keep off the wire.
+        // A background job settles between turns, when nothing else is publishing: scrubbing it
+        // would put every head's picture of the job back at "running" forever.
         let mut log = SessionLog::new("s", LogBounds::default());
         log.append(SessionEvent::JobSettled {
             job: "j3".into(),
@@ -404,10 +340,8 @@ mod tests {
 
     #[test]
     fn a_job_output_window_is_stripped_from_the_replay_and_the_count_travels() {
-        // A window is what the job had written when the head asked, so replaying it
-        // to a late head states a now that has moved — and there is nothing for
-        // that head to have asked for. Dropped, like a progress frame, and counted
-        // so "busy" and "quiet" stay distinguishable.
+        // A window is what the job had written when the head asked, so a replay states a now that
+        // has moved. Dropped and counted, so "busy" and "quiet" stay distinguishable.
         let mut log = SessionLog::new("s", LogBounds::default());
         log.append(SessionEvent::JobOutput {
             job: "j4".into(),
@@ -431,11 +365,8 @@ mod tests {
 
     #[test]
     fn settledness_is_learned_from_the_whole_log_not_only_from_the_window() {
-        // The answer is at seq 4; a head resuming from seq 4 gets a window that
-        // starts after it. Without the whole-log pre-pass the request at seq 2 is
-        // not in the window either, so this test only bites once a request is
-        // re-emitted — which is exactly what a RESYNC snapshot does. Assert on the
-        // set directly.
+        // The answer is at seq 4; a head resuming from seq 4 gets a window that starts after it,
+        // so the whole-log pre-pass is what knows the request at seq 2 settled.
         let log = log_with_a_settled_decision();
         let p = StoredProjection::of(log.retained());
         assert!(p.is_settled("r1"));

@@ -1,14 +1,8 @@
-//! Where a key comes from, and where it does not.
-//!
-//! Order: `--api-key` (a flag, for a one-off), the provider's environment
-//! variable, `~/.config/letibot/providers.toml`, then **opencode's own store**
-//! (`~/.local/share/opencode/auth.json`, `type: api` entries) — the usual path
-//! on a box where the operator already logged a provider in through opencode,
-//! the way flowy's seat is read from where `flowy mint` left it. OAuth entries
-//! there are not keys and are not used. The file also carries the price table.
-//! There is no fallback to another provider's key, and a missing key is a
-//! refusal that names the variable, the file and the opencode store, because
-//! "unauthorized" from the provider three seconds later names none of them.
+//! Where a key comes from: `--api-key`, the provider's environment variable,
+//! `~/.config/letibot/providers.toml`, then opencode's own store (its `type: api`
+//! entries only, never OAuth). There is no fallback to another provider's key, and a
+//! missing key is a refusal that names all three places, because "unauthorized" from the
+//! provider three seconds later names none of them. The file also carries the price table.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -59,15 +53,10 @@ impl std::fmt::Display for KeyError {
 
 impl std::error::Error for KeyError {}
 
-/// **The guard model's address, from the operator's config.**
-///
-/// > *"i dont want to put host and port bro, it is gatekeeper config and should be
-/// > picked up from config"*
-///
-/// Right: an endpoint is a property of the box, not of a session, and a flag that
-/// has to be remembered per invocation is a flag that gets left off. It lives beside
-/// the provider keys because that is already where "where things are and how to
-/// reach them" is written down, and a second config file is a second thing to find.
+/// The guard model's address, from the operator's config: an endpoint is a property of
+/// the box, not of a session, and a flag to remember per invocation is a flag left off.
+/// It lives beside the provider keys because that is already where the box's addresses
+/// are written down, and a second config file is a second thing to find.
 ///
 /// ```toml
 /// [gatekeeper]
@@ -76,44 +65,35 @@ impl std::error::Error for KeyError {}
 /// budget_ms = 400         # optional
 /// ```
 ///
-/// Absent is not an error: a box with no guard runs exactly as it did, and
-/// `/supervise` refuses by naming this section rather than reporting a false success.
+/// Absent is not an error: a box with no guard runs as it did, and `/supervise` refuses
+/// by naming this section rather than reporting a false success.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Gatekeeper {
     pub endpoint: Option<String>,
     pub model: Option<String>,
     pub budget_ms: Option<u64>,
-    /// **What the operator trusts their guard to answer about**, as intent names:
-    /// `intents = "inspect read_file write_file execute_code destroy unknown"`.
-    ///
-    /// Empty means the built-in floor. See `OracleScope::declared` for why a
-    /// declaration is not a calibration and is labelled as one or the other.
+    /// What the operator trusts their guard to answer about, as intent names. Empty means
+    /// the built-in floor, and a declaration is not a calibration.
     pub intents: Vec<String>,
     /// How far an effect may land and still be the guard's to answer about:
     /// `in_run`, `host_project` (the default), `host_other`, `external`.
     pub max_scope: Option<String>,
-    /// **Tools the guard may answer about whatever rung they land on**, by name:
-    /// `tools = "web_search, web_fetch"`.
-    ///
-    /// The scope is a ladder, so raising `max_scope` to reach one off-box tool
-    /// reaches all of them — `github`, `mcp` and the flowy verbs included, and
-    /// `flowy say` posts into a room the fleet reads. This names doors instead of
-    /// moving the ceiling. Empty by default.
+    /// Tools the guard may answer about whatever rung they land on, by name. Raising
+    /// `max_scope` to reach one off-box tool reaches all of them, this names doors instead.
     pub tools: Vec<String>,
 }
 
-/// **`[memory]`** — the cap a tool call runs under when the model names none, and the most it
-/// may ask for without the operator (TODO.md R65). Raw strings: what they mean (`64M`, `0.5`)
-/// is the tool crate's to parse, and the daemon refuses a malformed one by name.
+/// `[memory]`: the cap a tool call runs under when the model names none, and the most it may
+/// ask for without the operator. Raw strings, because what `64M` or `0.5` means is the tool
+/// crate's to parse, and a malformed one is refused by name.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MemorySection {
     pub default: Option<String>,
     pub ceiling: Option<String>,
     /// `memory.high` for the daemon's own process — a size, a fraction of the box, or `max`.
     pub daemon_high: Option<String>,
-    /// The cap each merge-gate step runs under, in a cgroup of its own beside the daemon's
-    /// (TODO.md R76 item 6) — a size, a fraction of what is free when the gate starts, or
-    /// `uncapped`.
+    /// The cap each merge-gate step runs under, in a cgroup of its own beside the daemon's:
+    /// a size, a fraction of what is free when the gate starts, or `uncapped`.
     pub gate: Option<String>,
 }
 
@@ -134,11 +114,9 @@ pub fn memory(file: Option<&Path>) -> MemorySection {
     }
 }
 
-/// **`[metrics]`** — the event table's switch, its retention, the kinds that keep a snippet, and
-/// the two caps on the file (TODO.md R81, `docs/metrics.md` §2.7 and §2.9). Raw strings, like
-/// `[memory]`'s: what they mean is `letibot_metrics::store::Settings::from_raw`'s to decide, and a
-/// missing key is its default (on, 90 days, the context claim's sentence kept, 20 identical events
-/// per second per key, 2048 MiB).
+/// `[metrics]`: the event table's switch, its retention, the kinds that keep a snippet, and
+/// the two caps on the file. Raw strings like `[memory]`'s, and a missing key is the
+/// default rather than a reason not to start.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MetricsSection {
     pub enabled: Option<String>,
@@ -304,9 +282,8 @@ fn opencode_key(provider: &str) -> Option<String> {
         "deepseek" => &["deepseek"],
         "grok" => &["xai", "grok"],
         "glm" => &["zhipuai", "zai", "glm", "bigmodel"],
-        // **The coding plans are provider ids of their own in `auth.json`**, which is where
-        // this file's keys are read from: this box's key is filed as `zai-coding-plan`, and a
-        // lookup that only knew the family name would miss the key that is actually there.
+        // The coding plans are provider ids of their own in `auth.json`, where this file's
+        // keys are read from: a lookup that only knew the family name would miss the key.
         "glm-coding" => &["zai-coding-plan", "zai", "zhipuai-coding-plan", "zhipuai"],
         "glm-coding-cn" => &["zhipuai-coding-plan", "zhipuai", "zai-coding-plan", "zai"],
         _ => &[],
@@ -332,15 +309,9 @@ pub struct DefaultChoice {
     pub model: Option<String>,
 }
 
-/// **The file is there and the parser could not read it.**
-///
-/// A fault, not an absence. `default_choice` still means *no standing choice*
-/// — the daemon falls back to the local server exactly as it did — but the
-/// fault is carried out with the file and the parser's own message, because
-/// that is the thing the operator has to fix. A daemon that comes up local
-/// while the file says deepseek is a fault the operator cannot find from the
-/// outside, and `resolve` a few lines up already names this same fault for the
-/// keys; the two readers of one file must not disagree about it.
+/// The file is there and the parser could not read it: a fault rather than an absence, said
+/// with the file and the parser's own message, because a daemon that comes up local while
+/// the file says otherwise is a fault the operator cannot find from outside.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Unreadable {
     pub file: PathBuf,
@@ -355,18 +326,9 @@ impl std::fmt::Display for Unreadable {
 
 impl std::error::Error for Unreadable {}
 
-/// The operator's standing choice, from `[default]` in the file: which
-/// provider and model answer when a daemon is started without `--provider`.
-///
-/// `Ok(None)` is the local server, and it is the honest answer for three
-/// different situations — no file, no `[default]` section, and a section that
-/// says `provider = "local"` or nothing at all — all of which mean *the
-/// operator wrote no standing choice*. `Err` is the fourth: the file is there
-/// and the parser could not read it, which is a fault rather than an absence.
-/// The behaviour is the same either way — no standing choice, the daemon falls
-/// back to the local server — but the fault is said rather than swallowed,
-/// because a reader that cannot tell "you wrote nothing" from "I could not
-/// read what you wrote" is a daemon that comes up local without a word.
+/// The operator's standing choice, from `[default]`: which provider and model answer when a
+/// daemon starts without `--provider`. `Ok(None)` is no file, no section or no provider, and `Err`
+/// is the fault: the file exists and could not be read.
 pub fn default_choice(file: Option<&Path>) -> Result<Option<DefaultChoice>, Unreadable> {
     let file = file.map(Path::to_path_buf).unwrap_or_else(config_file);
     let parsed = if file.is_file() {
@@ -396,42 +358,18 @@ pub fn default_choice(file: Option<&Path>) -> Result<Option<DefaultChoice>, Unre
     }))
 }
 
-/// **What answers when the model this session is on is OUT** — `[fallback]` in the
-/// same file, in the order it is written.
+/// What answers when the model this session is on is out: `[fallback]` in the same file, in
+/// the order written. A list rather than a chain in code, because what this box may reach is
+/// a fact about the box. Absent or empty is the old behaviour, the turn fails, because a
+/// daemon that moved a conversation on its own initiative is a surprise nobody looks for.
 ///
 /// ```toml
 /// [fallback]
 /// models = ["deepseek/deepseek-flash", "dense78"]
 /// ```
 ///
-/// # The key this needed, and did not have
-///
-/// MEASURED 2026-10-12 on the operator's GLM coding plan: the weekly limit ran out
-/// mid-turn, the endpoint answered `http 429: Weekly/Monthly Limit Exhausted` to
-/// every attempt, the ladder took the round again six times over 63 s, and the turn
-/// was then recorded as FAILED. Their ruling on it — *"it is a standard thing to do
-/// - limits, 5xx, etc. we must be able to change models like for the main session"*
-///   — is the behaviour this key exists for, and there was nowhere to write it: the
-///   file has a key per provider, a `[default]`, prices and per-model profiles, and
-///   **nothing that says what to do when the model you are on cannot answer**.
-///
-/// # Why a list, and why not in code
-///
-/// The alternative is a chain of provider names compiled into the retry loop, and
-/// that is the drift this tree deletes: which models this box may reach is a fact
-/// about the box (which keys are here, which LAN servers are up), not about the
-/// build. Names are the ones `/models` accepts, tried in order, and a name that
-/// cannot be built is SAID and skipped — see `Harness::fall_back_from`.
-///
-/// **Absent or empty is the old behaviour**: the turn fails, as it always did. This
-/// is opt-in, because a daemon that moved a conversation to another model on its own
-/// initiative without being told to is a surprise in the one direction nobody would
-/// look for.
-///
-/// `Ok(vec![])` covers three situations that all mean *the operator asked for no
-/// fallback* — no file, no `[fallback]` section, an empty list — and `Err` is the
-/// fourth, the same one [`default_choice`] names: the file is there and the parser
-/// could not read it, which is a fault rather than an absence.
+/// `Ok(vec![])` is no file, no section, an empty list. `Err` is the same fault
+/// [`default_choice`] names.
 pub fn fallback_models(file: Option<&Path>) -> Result<Vec<String>, Unreadable> {
     let file = file.map(Path::to_path_buf).unwrap_or_else(config_file);
     let parsed = if file.is_file() {
@@ -455,11 +393,8 @@ pub fn fallback_models(file: Option<&Path>) -> Result<Vec<String>, Unreadable> {
     })
 }
 
-/// `models = ["a/b", "c"]` as [`parse_file`] hands it over: one string, brackets and
-/// all, because the parser is deliberately three lines of grammar and not a TOML
-/// crate. So the list is split here, and a value that is not a list is a sentence
-/// rather than an empty list — a fallback nobody can reach, silently, is the defect
-/// this whole reader is written against.
+/// `models = ["a/b", "c"]` as the parser hands it over: one string, brackets and all, because the
+/// parser is three lines of grammar. A value that is not a list is a sentence rather than silence.
 fn parse_model_list(raw: &str) -> Result<Vec<String>, String> {
     let trimmed = raw.trim();
     let Some(inner) = trimmed.strip_prefix('[').and_then(|s| s.strip_suffix(']')) else {
@@ -579,7 +514,8 @@ fn emit_section(
     out.push('\n');
 }
 
-/// The file's shape, and all of it:
+/// The file's shape: sections, `key = "string"` and `key = number` lines, and comments.
+/// Parsed by hand, because a TOML crate for eight lines of grammar is the wrong trade.
 ///
 /// ```toml
 /// [deepseek]
@@ -591,9 +527,6 @@ fn emit_section(
 /// cached = 0.07
 /// output = 1.10
 /// ```
-///
-/// Parsed by hand: sections, `key = "string"` and `key = number` lines,
-/// comments. A TOML crate for eight lines of grammar would be the wrong trade.
 #[derive(Debug, Default)]
 struct ProvidersFile {
     sections: BTreeMap<String, BTreeMap<String, String>>,
@@ -646,98 +579,40 @@ fn parse_file(path: &Path) -> Result<ProvidersFile, String> {
     Ok(out)
 }
 
-// ---------------------------------------------------------------------------
-// PER-MODEL PROFILES
-// ---------------------------------------------------------------------------
-
-/// **What `[model.<family>]` and `[model."<alias>"]` carry** — the two-level
-/// profile `providers.toml` has documented since 2026-09-19 and nothing read.
-///
-/// The file described the design in full, down to the precedence rule and a
-/// worked example, and no code in the tree parsed either block: `cfg.sampling`
-/// was assigned nowhere and held `Config::default`'s greedy literal for the life
-/// of every daemon. So the comment was a specification wearing the grammar of a
-/// feature, which is the worse of the two failures — an absent feature is
-/// discovered the first time somebody wants it, and a documented absent feature
-/// is discovered after they have already trusted it.
-///
-/// # Why two levels
-///
-/// `effort` is a template concept: it is rendered into the prefix, so it belongs
-/// to the DIALECT. Sampling is a property of the weights, and Flash-Next and the
-/// 27B dense are different weights behind one byte-identical template, so it
-/// belongs to the ALIAS. One file, two keys, and the file says which is which.
+/// What `[model.<family>]` and `[model."<alias>"]` carry: a two-level profile. `effort` is
+/// rendered into the prefix, so it belongs to the DIALECT; sampling is a property of the weights,
+/// so it belongs to the ALIAS. One file, two keys, and the file says which is which.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ModelProfile {
-    /// The dialect's reasoning effort, from the family block. `None` leaves the
-    /// built-in alone.
+    /// The dialect's reasoning effort, from the family block. `None` leaves the built-in alone.
     pub effort: Option<String>,
-    /// The sampling to send, already merged. **Empty means the file said nothing**,
-    /// which is a different fact from the file saying `temperature = 0.0`, and the
-    /// caller must not collapse them: one defers to the built-in and the other is
-    /// an instruction.
+    /// The sampling to send, already merged. Empty means the file said nothing, which is not
+    /// the same as the file saying `temperature = 0.0`: one defers to the built-in and the
+    /// other is an instruction.
     pub sampling: serde_json::Map<String, serde_json::Value>,
-    /// **Keys in a `[model.*]` block that are not sampling and not `effort`.**
-    ///
-    /// Carried rather than dropped so a typo is loud. A silently ignored
-    /// `temperatuer = 0.7` is this whole class of bug again, one line lower down:
-    /// the operator writes a number, the file accepts it, nothing reads it, and
-    /// the only evidence is that the model behaves as it did before.
+    /// Keys in a `[model.*]` block that are neither sampling nor `effort`, carried rather
+    /// than dropped so a typo is loud: a silently ignored `temperatuer = 0.7` is a number the
+    /// operator wrote, the file accepted and nothing read.
     pub unknown: Vec<String>,
-    /// **The address, for a model this fleet hosts itself.**
-    ///
-    /// The operator: *"the idea is that i just add urls like this - for models
-    /// hosted by my fleet. they are `local` of course."* And they are: no key, no
-    /// metering, an OpenAI-compatible or llama.cpp server on the LAN. A block that
-    /// carries one is a model `/models` can offer; a block without one is a
-    /// sampling profile for a model reached some other way, and both shapes live in
-    /// the same section because the curl that describes a fleet model carries its
-    /// address, its alias and its sampling together.
+    /// The address, for a model this fleet hosts itself: no key, no metering, an OpenAI-compatible
+    /// server on the LAN. A block without one is a sampling profile for a model reached otherwise.
     pub url: Option<String>,
-    /// **The alias the server answers to**, when the block is named for the BOX
-    /// rather than for the weights.
-    ///
-    /// `[model."dense78"]` with `model = "qwen-3.8-27b"` is the shape that matters
-    /// here, because `qwen-3.8-27b` is served twice on this fleet — at
-    /// `127.0.0.1:8080` and at `192.168.1.78:8082` — and is also the gatekeeper's
-    /// model. Keying a remote entry on the bare alias would re-sample the local one
-    /// and the guard along with it. Absent, the block name IS the alias, which is
-    /// what a profile for a single served model wants.
+    /// The alias the server answers to, when the block is named for the box rather than for the
+    /// weights: one alias can be served twice on a fleet and be the gatekeeper's model too.
     pub model: Option<String>,
-    /// **The context window, when the server will not say.**
-    ///
-    /// A switch reads `n_ctx` off the target's `/props`, which is the only place that
-    /// number is true -- but a proxy, or an OpenAI-compatible server that is not
-    /// llama.cpp, answers nothing, and the alternative is planning against no wall at
-    /// all. So this is here for the operator to state what they know.
-    ///
-    /// Stated, never inferred from the model's name: one model served twice is served
-    /// at two sizes. Measured on this fleet the day it was written -- the same 27B
-    /// GGUF at `n_ctx` 262144 on `127.0.0.1:8080` and 57344 on `192.168.1.78:8082`.
+    /// The context window, when the server will not say: a switch reads `n_ctx` off the target's
+    /// `/props`, and a proxy answers nothing, which would leave the plan against no wall. Stated,
+    /// never inferred from the name, because one model can be served twice at two sizes.
     pub window: Option<u64>,
-    /// **The dialect, when the operator asserts it by hand** — `dialect = "glm"` or
-    /// `"qwen"`, the same kind of decision on the record `same_vocab` is.
-    ///
-    /// A switch derives the dialect from the chat template the target's `/props`
-    /// reports, which is the one source that cannot drift from what the server
-    /// actually renders. This key is the escape for the cases where that source is
-    /// not available honestly: a server too old to report a template, or one whose
-    /// template matches nothing this tree drives. It is read here and interpreted
-    /// by `harnessd::dialect::Dialect::parse`, which owns the names; an unknown
-    /// value is refused at the switch rather than silently ignored, because a
-    /// dialect nobody applied is the silent-corruption shape again.
+    /// The dialect, when the operator asserts it by hand. A switch derives it from the target's
+    /// chat template, which cannot drift from what the server renders; this is the escape for a
+    /// server too old to report one, and an unknown value is refused at the switch.
     pub dialect: Option<String>,
 }
 
-/// Every key a `[model.*]` block may set beside `effort`, and how to read it.
-///
-/// llama.cpp's own names (`top_k`, `min_p`, `thinking_budget_tokens`) are here
-/// beside the OpenAI ones, because a LOCAL server takes them and this file is
-/// where a local server's sampling is configured. What a METERED provider will
-/// accept is a narrower list and is filtered on the way out by
-/// `harnessd::provider_sampling`, which is the right place for it: the profile
-/// records what the operator asked for, and each transport drops what it cannot
-/// carry.
+/// Every key a `[model.*]` block may set beside `effort`, and how to read it. llama.cpp's names
+/// sit beside the OpenAI ones because a local server takes them and this is where its sampling is
+/// configured; a metered provider is filtered on the way out, so the profile records what was asked.
 const SAMPLING_KEYS: &[(&str, Num)] = &[
     ("temperature", Num::Float),
     ("top_p", Num::Float),
@@ -757,18 +632,9 @@ enum Num {
     Int,
 }
 
-/// Read the profile for one served model.
-///
-/// `family` is the dialect's own word for itself (`qwen`, `glm`); `alias` is the
-/// served model (`qwen-3.8-27b`). The family block is read first and the alias
-/// block overrides it **key by key**, which is what the file promises and is not
-/// the same as the alias block replacing it.
-///
-/// A missing file, a missing block and an unparsable number are all
-/// non-fatal here: this is configuration for how to sample, and refusing to start
-/// a daemon over it would be worse than starting at the built-in and saying so.
-/// An unparsable value lands in `unknown` with its key, so it is still said out
-/// loud.
+/// Read the profile for one served model: `family` is the dialect's own word for itself, `alias`
+/// the served model. The family block is read first and the alias overrides it key by key, which
+/// is not the same as replacing it. An unparsable value is carried in `unknown`, not refused.
 pub fn model_profile(family: &str, alias: &str, file: Option<&Path>) -> ModelProfile {
     let path = file.map(|p| p.to_path_buf()).unwrap_or_else(config_file);
     let Ok(parsed) = parse_file(&path) else {
@@ -789,10 +655,9 @@ pub fn model_profile(family: &str, alias: &str, file: Option<&Path>) -> ModelPro
                     out.effort = Some(v.clone());
                     continue;
                 }
-                // `endpoint` is the daemon's own word for the same thing and
-                // `[gatekeeper]` already spells it that way, so both are taken
-                // rather than making the operator remember which section wanted
-                // which noun.
+                // `endpoint` is the daemon's word for the same thing and `[gatekeeper]`
+                // already spells it that way, so both are taken rather than making the
+                // operator remember which section wanted which noun.
                 "url" | "endpoint" => {
                     out.url = Some(v.clone());
                     continue;
@@ -810,11 +675,9 @@ pub fn model_profile(family: &str, alias: &str, file: Option<&Path>) -> ModelPro
                     }
                     continue;
                 }
-                // Read, not filed under `unknown`: this crate cannot say whether the
-                // value names a dialect it knows, but dropping the VALUE would leave
-                // only the bare word `dialect` in `unknown`, and the switch could
-                // never honour an assertion it cannot read. An unparseable value is
-                // refused where it is used, which is where the allowed names live.
+                // Read, not filed under `unknown`: dropping the value would leave only the bare
+                // word, and the switch could never honour an assertion it cannot read. An unknown
+                // name is refused where it is used, which is where the allowed names live.
                 "dialect" => {
                     out.dialect = Some(v.clone());
                     continue;
@@ -835,12 +698,9 @@ pub fn model_profile(family: &str, alias: &str, file: Option<&Path>) -> ModelPro
     out
 }
 
-/// The `[model.X]` section, whatever the brackets did to the quotes.
-///
-/// `parse_file` trims one layer of quotes off the whole bracket content, so
-/// `[model."qwen-3.8-27b"]` arrives as the section `model."qwen-3.8-27b` — the
-/// same asymmetry `prices."…"` already lives with a few lines up, handled the
-/// same way rather than differently.
+/// The `[model.X]` section, whatever the brackets did to the quotes: [`parse_file`] trims one
+/// layer off the whole bracket content, so `[model."qwen-3.8-27b"]` arrives as
+/// `model."qwen-3.8-27b`, the same asymmetry `prices."…"` already lives with.
 fn model_section<'a>(parsed: &'a ProvidersFile, key: &str) -> Option<&'a BTreeMap<String, String>> {
     parsed.sections.iter().find_map(|(sec, kv)| {
         let rest = sec.strip_prefix("model.")?;
@@ -860,30 +720,24 @@ fn number(v: &str, kind: Num) -> Option<serde_json::Value> {
     }
 }
 
-/// **One model this fleet hosts**, as `/models` offers it.
-///
-/// Declared, never discovered: nothing scans the LAN. The operator writes the
-/// block and the listing shows what they wrote, which is the only version of this
-/// that can be trusted — a probe that finds a server says nothing about whether
-/// its weights are the ones the name claims.
+/// One model this fleet hosts, as `/models` offers it. Declared, never discovered: nothing scans
+/// the LAN, because a probe that finds a server says nothing about whether its weights are the
+/// ones the name claims.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LocalModel {
     /// The name `/models NAME` takes: the block's own, after the quotes.
     pub name: String,
     /// Where it answers.
     pub url: String,
-    /// The alias to send as `model`, which is the block name unless it said
-    /// otherwise.
+    /// The alias to send as `model`: the block name unless it said otherwise.
     pub model: String,
     /// Its sampling and effort, already merged with the family block.
     pub profile: ModelProfile,
 }
 
-/// Every `[model.*]` block that carries an address, in file order.
-///
-/// A block with no address is a sampling profile and is deliberately absent here:
-/// it is not something a person can switch TO, and listing it as though it were
-/// would be offering a choice that does nothing.
+/// Every `[model.*]` block that carries an address, in file order. A block with no address
+/// is a sampling profile and is absent here: it is not something a person can switch to, and
+/// offering it would be a choice that does nothing.
 pub fn local_models(file: Option<&Path>) -> Vec<LocalModel> {
     let path = file.map(|p| p.to_path_buf()).unwrap_or_else(config_file);
     let Ok(parsed) = parse_file(&path) else {
@@ -898,13 +752,9 @@ pub fn local_models(file: Option<&Path>) -> Vec<LocalModel> {
         let Some(url) = kv.get("url").or_else(|| kv.get("endpoint")) else {
             continue;
         };
-        // **No family block here, and `effort` is not a fleet entry's to carry.**
-        //
-        // This cannot know the dialect -- it is reading a file, not talking to a
-        // daemon -- and that costs nothing, because `effort` is rendered into the
-        // PREFIX. Switching where turns go mid-session does not rebuild the prefix,
-        // so an effort on a fleet entry would be a value that never took effect. The
-        // family block is read where it can act: at daemon start, by `cli`.
+        // No family block here, and `effort` is not a fleet entry's to carry: this reads a file,
+        // not a daemon, so it cannot know the dialect, and `effort` is rendered into the PREFIX,
+        // which a switch does not rebuild. The family block is read at daemon start, where it acts.
         let profile = model_profile("", &name, Some(&path));
         let model = profile.model.clone().unwrap_or_else(|| name.clone());
         out.push(LocalModel {
@@ -921,8 +771,8 @@ pub fn local_models(file: Option<&Path>) -> Vec<LocalModel> {
 mod tests {
     use super::*;
 
-    /// **The precedence the file promises**: the family block is the floor, the
-    /// alias block overrides it KEY BY KEY, and the alias does not replace it.
+    /// The precedence the file promises: the family block is the floor, the alias block
+    /// overrides it key by key, and the alias does not replace it.
     #[test]
     fn the_alias_block_overrides_the_family_block_key_by_key() {
         let f = tmp_providers(
@@ -950,10 +800,9 @@ mod tests {
         assert!(p.unknown.is_empty(), "{:?}", p.unknown);
     }
 
-    /// **An empty profile and a profile saying `temperature = 0.0` are different
-    /// facts.** One defers to the built-in and the other is an instruction, and a
-    /// caller that cannot tell them apart cannot implement "flag beats file beats
-    /// built-in" at all.
+    /// An empty profile and a profile saying `temperature = 0.0` are different facts: one
+    /// defers to the built-in and the other is an instruction, and a caller that cannot tell
+    /// them apart cannot implement flag beats file beats built-in.
     #[test]
     fn no_block_is_empty_rather_than_a_zero() {
         let f = tmp_providers("no_block_is_empty", "[deepseek]\nkey = \"sk-x\"\n");
@@ -970,9 +819,8 @@ mod tests {
         assert!(!q.sampling.is_empty(), "a zero is something the file said");
     }
 
-    /// **A typo is loud.** The whole defect this reader closes is a number the file
-    /// accepted and nothing read, so the reader must not reproduce it one line down
-    /// for a misspelling.
+    /// A typo is loud. The defect this reader closes is a number the file accepted and
+    /// nothing read, and it must not reproduce that one line down for a misspelling.
     #[test]
     fn a_key_that_is_not_sampling_is_carried_rather_than_dropped() {
         let f = tmp_providers(
@@ -995,8 +843,8 @@ mod tests {
         );
     }
 
-    /// **A fleet model is a block with an address**, and a block without one is a
-    /// sampling profile rather than somewhere a person can switch to.
+    /// A fleet model is a block with an address, and a block without one is a sampling
+    /// profile rather than somewhere a person can switch to.
     #[test]
     fn only_a_block_with_an_address_is_offered_as_a_fleet_model() {
         let f = tmp_providers(
@@ -1021,13 +869,9 @@ mod tests {
         );
     }
 
-    /// **`dialect = ` is read with its VALUE, not filed as a bare unknown key.**
-    ///
-    /// The first cut of the switch's escape hatch put `dialect` in the same bucket
-    /// as a typo: `model_profile` pushed only the KEY name into `unknown`, so the
-    /// value an operator wrote was dropped on the floor and the assertion could
-    /// never be honoured. This is the regression that would have shipped silently —
-    /// the file accepts the line, nothing reads it, the switch keeps refusing.
+    /// `dialect = ` is read with its value, not filed as a bare unknown key: an operator's
+    /// assertion pushed into `unknown` as a key name alone is dropped on the floor, and the
+    /// switch keeps refusing while the file looks accepted.
     #[test]
     fn a_fleet_block_may_assert_its_dialect_and_the_value_survives() {
         let f = tmp_providers(
@@ -1048,9 +892,8 @@ mod tests {
         );
     }
 
-    /// The block name is the alias when the block did not say otherwise, because
-    /// that is what a profile for one served model wants and it should not have to
-    /// repeat its own name.
+    /// The block name is the alias when the block did not say otherwise, so a profile for one
+    /// served model need not repeat its own name.
     #[test]
     fn a_fleet_block_named_for_the_weights_needs_no_model_line() {
         let f = tmp_providers(
@@ -1063,7 +906,7 @@ mod tests {
     }
 
     /// `[metrics]` is read as raw strings beside the provider sections, and a file without it
-    /// is the defaults — never a refusal. The two caps are read the same way.
+    /// is the defaults rather than a refusal. The two caps are read the same way.
     #[test]
     fn the_metrics_section_is_read_raw_and_absent_is_default() {
         let f = tmp_providers(
@@ -1116,14 +959,9 @@ mod tests {
         assert!(e.contains("$XAI_API_KEY") && e.contains("[grok]"), "{e}");
     }
 
-    /// **A file the parser could not read is a fault, not an absence.**
-    ///
-    /// The measured defect: the operator's file said deepseek, the reader could
-    /// not read it, and every daemon since came up local without a word. The
-    /// reader that decides a daemon's provider must tell "you wrote nothing"
-    /// from "I could not read what you wrote", and the fault must carry the
-    /// path and the parser's own message, because that is the thing the
-    /// operator has to fix.
+    /// A file the parser could not read is a fault, not an absence: a daemon that comes up
+    /// local while the file says otherwise is one the operator cannot diagnose from outside,
+    /// so the fault carries the path and the parser's own message.
     #[test]
     fn a_malformed_file_is_a_fault_with_the_path_and_the_parser_message() {
         let f = tmp_providers(
@@ -1142,10 +980,8 @@ mod tests {
         assert!(matches!(k, KeyError::Unreadable { .. }), "{k:?}");
     }
 
-    /// **The three silent situations stay silent.** A regression here would put
-    /// a complaint on every start of every daemon on this box: most boxes have
-    /// no file at all, and a file without `[default]` is the normal state of a
-    /// box that runs on its local server.
+    /// The three silent situations stay silent: a complaint here would land on every start of
+    /// every daemon on the box, and most boxes have no file at all.
     #[test]
     fn no_file_and_no_default_section_are_a_silent_no_standing_choice() {
         let missing = std::env::temp_dir().join(format!(
@@ -1173,17 +1009,16 @@ mod tests {
         );
     }
 
-    /// **`provider = "local"` is a real choice, not a fault.** The operator said
-    /// "new sessions use this daemon's own model", and the reader must not
-    /// report a complaint for a sentence the operator meant.
+    /// `provider = "local"` is a real choice, not a fault: the reader must not complain
+    /// about a sentence the operator meant.
     #[test]
     fn provider_local_is_a_silent_no_standing_choice() {
         let f = tmp_providers("local_is_a_choice", "[default]\nprovider = \"local\"\n");
         assert_eq!(default_choice(Some(&f)), Ok(None));
     }
 
-    /// **The well-formed file still gives the choice** — the change is about
-    /// saying the fault, not about doing something different.
+    /// A well-formed file still gives the choice: the reader's job is saying a fault, not
+    /// behaving differently.
     #[test]
     fn a_well_formed_default_is_the_choice() {
         let f = tmp_providers(
@@ -1199,9 +1034,8 @@ mod tests {
         );
     }
 
-    /// **The fallback list, in the order the operator wrote it.** Order is the whole
-    /// of the policy this key carries — first name first — so the reader must not
-    /// sort, dedupe or otherwise have an opinion about it.
+    /// The fallback list, in the order the operator wrote it: order IS the policy, so the
+    /// reader must not sort, dedupe or otherwise have an opinion.
     #[test]
     fn the_fallback_list_is_read_in_the_order_it_was_written() {
         let f = tmp_providers(
@@ -1222,9 +1056,8 @@ mod tests {
         assert_eq!(fallback_models(Some(&g)), Ok(vec!["glm/glm-4.6".into()]));
     }
 
-    /// **No file, no section, no list: no fallback, and no complaint.** These are the
-    /// states of every box that has not asked for one, which is every box today — a
-    /// fault printed here would be a fault printed on every daemon on this box.
+    /// No file, no section, no list: no fallback and no complaint, because that is the state
+    /// of every box that has not asked for one.
     #[test]
     fn an_absent_fallback_is_empty_and_silent() {
         let missing = std::env::temp_dir().join(format!(
@@ -1241,9 +1074,8 @@ mod tests {
         assert_eq!(fallback_models(Some(&g)), Ok(Vec::new()), "an empty list");
     }
 
-    /// **A fallback nobody can reach, said.** A value that is not a list is the one
-    /// shape that would otherwise read as *you asked for no fallback* — the same
-    /// silent-knob defect `[model]`'s unknown keys are loud about, one section down.
+    /// A fallback nobody can reach, said: a value that is not a list would otherwise read as
+    /// *you asked for no fallback*, the silent knob `[model]`'s unknown keys are loud about.
     #[test]
     fn a_fallback_that_is_not_a_list_is_a_fault_rather_than_an_empty_list() {
         let f = tmp_providers(

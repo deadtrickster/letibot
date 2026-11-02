@@ -1,24 +1,12 @@
 //! A one-shot HTTP server that replays a fixed list of SSE frames.
 //!
-//! # Why the engine needs one
+//! Three of the engine's decisions cannot be provoked against the real server: `length` needs an
+//! `n_predict` cap §5.7 removed, repetition collapse needs a model that is collapsing, and a
+//! prefix violation needs the harness to be broken. Every one is a decision about bytes the
+//! engine received, so replaying the bytes is the same test with the model replaced by the case.
 //!
-//! Three of the engine's decisions cannot be provoked against the real server
-//! without doing something the design forbids or the operator forbids:
-//!
-//! * **`finish_reason: length`** needs an `n_predict` cap — §5.7 deliberately
-//!   removed that field from the request — or a 1.3 M-token prompt.
-//! * **Repetition collapse** needs a model that is actually collapsing.
-//! * **A prefix violation** needs the harness to be broken.
-//!
-//! Every one of those is a decision the engine makes about bytes it received, so
-//! replaying the bytes is not a weaker test than a live one; it is the same test
-//! with the model replaced by the case we care about. The live file covers what
-//! only a real server can answer: that the frames look like this at all, that the
-//! ids round-trip through a real vocabulary, and what the cache actually does.
-//!
-//! The frames are written in the server's own wire shape, including the empty
-//! `tokens` array on the terminal frame and the fabricated id 0 on a progress
-//! frame, because those are the two behaviours the accumulator exists to survive.
+//! The frames are in the server's own wire shape, including the empty `tokens` array on the
+//! terminal frame and the fabricated id 0 on a progress frame.
 
 // A fixture, not a library: nineteen test binaries include this file by path and each uses the
 // part of it that binary's subject needs, so the rest is dead in that compilation and alive in
@@ -37,25 +25,9 @@ pub enum Frame {
     Progress { total: u64, processed: u64 },
     /// One generated token.
     Token { id: u32, text: &'static str },
-    /// A token the server **counted but sent no frame for**.
-    ///
-    /// T23's defect, in the server's own terms: unpatched `process_token`
-    /// (`server-context.cpp:4067`) skips `send_partial_response` when the generated text
-    /// ends mid-UTF-8-character, and `slot.stats.n_gen` has already been incremented. So the
-    /// counter advances by one with nothing on the wire, and the *next* frame appears to
-    /// advance by two while carrying one id.
-    ///
-    /// **Upstream's defect, fixed on a branch.** `d10f94713` (*"server : emit the frame for a
-    /// token that ends in a partial UTF-8 character"*, branch `glm-all` in
-    /// `~/Projects/llama.cpp`) makes `send_partial_response` run unconditionally, so this
-    /// frame shape cannot arise on a patched server. It is kept here because the patch is a
-    /// rebase onto upstream master rather than a merge into it: a server built from upstream
-    /// is unpatched, which is every server but this box's. See `turn/src/stream.rs`'s module
-    /// header — the guard is the detector for exactly that, and it is not dead code.
-    ///
-    /// Measured against the live server on 2026-09-10: `" 😂"` is `[26525, 224]`,
-    /// `26525` spells a space plus the first three bytes of the emoji, and only
-    /// `224` was ever sent.
+    /// A token the server counted but sent no frame for: unpatched llama.cpp skips the frame
+    /// when the generated text ends mid-character, so the counter advances by one with nothing
+    /// on the wire. Kept because a server built from upstream is unpatched.
     Suppressed,
     /// The terminal frame. `tokens` is empty, as it is in stream mode.
     Final {
@@ -95,14 +67,9 @@ pub struct Canned {
     handle: Option<JoinHandle<()>>,
 }
 
-/// **What the server answers ONE request with** — the SSE frames of a turn, or
-/// an HTTP error status carrying a body verbatim.
-///
-/// The status half exists for the refusals a provider answers an over-long
-/// prompt with: they are bytes on the wire, so replaying them is the same test
-/// with the model replaced by the case we care about (this file's own argument,
-/// one door along). The body is kept exactly as measured — a matcher under test
-/// is only as narrow as its fixtures are real.
+/// What the server answers ONE request with: the SSE frames of a turn, or an HTTP error status
+/// carrying a body verbatim. The status half exists for the refusals a provider answers an
+/// over-long prompt with, and the body is kept exactly as measured.
 pub enum Reply {
     Frames(Vec<Frame>),
     Status { code: u16, body: String },
@@ -173,10 +140,9 @@ fn answer(mut stream: TcpStream, reply: &Reply) -> std::io::Result<()> {
     let mut body = vec![0u8; content_length];
     reader.read_exact(&mut body)?;
 
-    // **A refusal is a whole response, not a frame list**: a status line, the
-    // body with a length, and nothing after it. Content-length framing (not
-    // chunked) because there is exactly one body and the client reads to the
-    // length and closes.
+    // A refusal is a whole response, not a frame list: a status line, the body with a length,
+    // and nothing after it. Content-length framing, because there is exactly one body and the
+    // client reads to the length and closes.
     let Reply::Status {
         code,
         body: payload,
@@ -214,10 +180,8 @@ fn answer_frames(mut stream: TcpStream, reply: &Reply) -> std::io::Result<()> {
     stream.flush()
 }
 
-/// **The chunked SSE body a frame list becomes** — one implementation of the wire shape
-/// and of the decoded-token counter, so a caller that has to write its own response (a
-/// stub that holds a request open, one that reads the request before answering) does not
-/// fork them. `answer_frames` is the ordinary caller and is these bytes plus the head.
+/// The chunked SSE body a frame list becomes - one implementation of the wire shape and of the
+/// decoded-token counter, so a caller writing its own response does not fork them.
 pub fn sse_body(frames: &[Frame]) -> Vec<u8> {
     let mut out = Vec::new();
     let mut decoded = 0u64;

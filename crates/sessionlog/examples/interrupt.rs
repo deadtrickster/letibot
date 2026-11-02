@@ -1,29 +1,8 @@
-//! **Stop one session's turn, by name** — the interrupt the head's `Esc-Esc` sends, aimed at a
-//! session you are not sitting in.
-//!
-//! WHY THIS EXISTS. `job_kill` on a subagent handle does not stop it, and that is a MEASUREMENT
-//! rather than a reading (2026-10-05): the tool reported *"interrupted the turn"*, the daemon
-//! answered `Rejected { reason: "not attached", expected_seq: 0, actual_seq: 60236 }`, and the
-//! session went on running and writing rows — 102 to 108 while the kill was in flight. The cause
-//! is `Hub::submit`'s own rule, which is right: it refuses a head that is not seated in the
-//! session the command is for, and the parent's seat is seated in the PARENT.
-//!
-//! The TUI already knows the answer; `head.rs`'s `interrupt_all` says it in as many words:
-//!
-//! > One seat, moved across the sessions that need the interrupt: `Switch` exists so a
-//! > connection can change sessions, and an interrupt is scoped to the seat's session, so the
-//! > moving is how one client covers many.
-//!
-//! This is that for ONE named session — which is what the parent needs, because the daemon-wide
-//! form would take its own turn with it.
+//! Stop one session's turn by name - the interrupt the head's `Esc-Esc` sends, aimed at a
+//! session you are not sitting in. `job_kill` cannot do it: `Hub::submit` refuses a head that is
+//! not seated in the session the command is for, so this moves its own seat first.
 //!
 //!     cargo run -q --example interrupt -p letibot-sessionlog -- <socket> <session> [reason]
-//!
-//! `expected_seq = 0` is *"no expectation"* at the hub — never stale — which is what a client
-//! that is not following the stream gets to say, and the same value `interrupt_all` passes.
-//!
-//! Detaching is not an abort: a head going away is ordinary (`serve_conn` says so), so this
-//! leaves the session stopped rather than closed.
 
 use letibot_sessionlog::client::HeadClient;
 use letibot_sessionlog::protocol::{Caps, ServerFrame};
@@ -56,13 +35,9 @@ fn main() {
         }
     };
     client.seated_by(&hello);
-    // **The seat has to BE in the session it interrupts, and `Switch` MINTS A NEW HEAD ID.**
-    // Attaching is not enough — that is the whole reason the parent's `job_kill` was refused —
-    // and neither is switching, because the daemon answers a `Switch` with a *second* `Hello`
-    // (see `app.rs`: *"`Switch` is answered with a second `Hello`"*) and `Hub::submit` attributes
-    // a command to the head id it was last given. An interrupt sent under the FIRST `Hello`'s id
-    // is therefore refused with `not attached` — MEASURED, and it is the same refusal from this
-    // side of the wire.
+    // The seat has to BE in the session it interrupts, and `Switch` mints a NEW HEAD ID:
+    // `Hub::submit` attributes a command to the id it was last given, so an interrupt sent
+    // under the first `Hello`'s id is refused with `not attached`.
     if let Err(e) = client.switch(&session, 0) {
         eprintln!("could not switch the seat to {session}: {e}");
         std::process::exit(1);

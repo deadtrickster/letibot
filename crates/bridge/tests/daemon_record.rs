@@ -1,23 +1,11 @@
 //! **R102: a daemon the BRIDGE started is one `letibot --daemons` can see.**
 //!
-//! MEASURED 2026-10-27 on the operator's Mac: about forty `harnessd` processes were running —
-//! every one of them started by a `letibot-mcp` bridge — and `letibot --daemons` answered *no
-//! daemons recorded*. The launcher writes `<rundir>/<key>.json` beside the socket when it starts
-//! a daemon (`record_write`), and four of its verbs read it: `--daemons` and `--ls` glob it,
-//! `--stop N` and `--stop --all` resolve a handle through the same glob, and the attach banner
-//! prints the model out of it. The bridge wrote none.
-//!
-//! **Why the record and not a listing that reads sockets.** The socket is
-//! `<sha256(workspace)[..12]>.sock`, so a socket with no record names a hash and nothing else —
-//! not the folder, not the role, not what answers its turns. Forty lines of hex is not a listing
-//! an operator can act on, and `--stop N` needs the pid and the folder anyway.
-//!
-//! # What this drives
-//!
-//! The bridge's real start path (`daemon::ensure`), against a fake `harnessd` that binds the
-//! `--socket` it is handed and then sleeps — no model, no store, no daemon of the operator's. And
-//! then the operator's own launcher, `scripts/letibot --daemons`, whose reader is the thing that
-//! was blind. One test, because `$HOME`, `$XDG_RUNTIME_DIR` and `$LETIBOT_BIN` are process-wide.
+//! MEASURED 2026-10-27: about forty `harnessd` processes were running, every one started by a
+//! `letibot-mcp` bridge, and `letibot --daemons` answered *no daemons recorded* - the launcher
+//! writes `<rundir>/<key>.json` beside the socket and four of its verbs read it; the bridge wrote
+//! none. Why the record and not a listing of sockets: the socket names a hash and nothing else.
+//! What this drives: the bridge's real start path (`daemon::ensure`) against a fake `harnessd`,
+//! and then `scripts/letibot --daemons`. One test, because the environment is process-wide.
 
 use std::path::{Path, PathBuf};
 
@@ -38,13 +26,9 @@ fn scratch(tag: &str) -> PathBuf {
     dir
 }
 
-/// **A `harnessd` that binds the socket it is given and then sleeps** — the whole of what
-/// `daemon::ensure` asks of a daemon (*is anything accepting?*), and nothing else.
-///
-/// `python3`, because binding a unix socket is three lines of it and this test must not need the
-/// real daemon: a real one wants a GGUF, a store and a model. The first branch is the probe
-/// [`letibot_tools::testing::write_stub`] runs — it execs the file with NO arguments to prove it
-/// is not held open for writing by a fork, so a no-argument run must be harmless and quick.
+/// **A `harnessd` that binds the socket it is given and then sleeps** - the whole of what
+/// `daemon::ensure` asks of a daemon (*is anything accepting?*). `python3`, because a real daemon
+/// wants a GGUF, a store and a model; the first branch is the probe `write_stub` runs.
 fn fake_daemon(path: &Path) {
     letibot_tools::testing::write_stub(
         path,

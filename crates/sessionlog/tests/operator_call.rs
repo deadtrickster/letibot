@@ -1,19 +1,6 @@
-//! **The operator's own call door** — R24 part two, decisions 3 and 4.
-//!
-//! Two properties, and the first is the one the requirement names as *the* test:
-//!
-//! 1. **A head asking for `bash` through this door is refused BY THE DAEMON, in a sentence.**
-//!    A head that can be talked into sending a name is not a hole while the daemon holds the
-//!    list; a daemon that trusted the name it was sent is. So the refusal is asserted on the
-//!    wire — a `Rejected` carrying why, not a dropped frame, because a head that cannot say
-//!    why is a head that retries.
-//! 2. **The two frames are a pair and the second is what writes the row.** The admission is
-//!    recorded first (so `asked: true` is true), and a result for a call nobody admitted is
-//!    refused rather than appended — a row with no admission behind it is a row nothing can
-//!    be checked against.
-//!
-//! The failure case the pair exists for — a head that dies between the two frames — is
-//! asserted in `hub`'s own tests, where the pending set and `detach` live.
+//! The operator's own call door: a head asking for a name the daemon does not hold is refused in
+//! a sentence, because a head that cannot say why retries. The admission and its result are a
+//! pair, so a result for a call nobody admitted is refused rather than appended.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -29,9 +16,8 @@ fn socket_path(tag: &str) -> std::path::PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    // **Short**, because macOS caps a socket path at 104 bytes and its temp dir alone is
-    // about 50; the nanosecond clock in decimal and a long tag overflowed it (`path must be
-    // shorter than SUN_LEN`). The tag is for a human reading `ls`, so ten characters do.
+    // Short: macOS caps a socket path at 104 bytes and its temp dir is about 50 of them, so the
+    // tag is cut to ten characters for a human reading `ls`.
     letibot_sessionlog::testing::scratch_root().join(format!(
         "lb-oprun-{:.10}-{}-{:x}.sock",
         tag,
@@ -64,9 +50,8 @@ fn next_frame(rx: &std::sync::mpsc::Receiver<Inbound>, ms: u64) -> Option<Server
     None
 }
 
-/// **The negative test.** `bash` and `write` are refused by name, with a reason, and the
-/// refusal names the list so the reader learns what the door is for rather than only that
-/// they were wrong.
+/// `bash` and `write` are refused by name and with a reason that names the list, so the reader
+/// learns what the door is for rather than only that they were wrong.
 #[test]
 fn a_head_asking_for_bash_through_the_operator_door_is_refused_by_the_daemon() {
     let (_r, handle) = start("refuse-bash");
@@ -102,15 +87,9 @@ fn a_head_asking_for_bash_through_the_operator_door_is_refused_by_the_daemon() {
     }
 }
 
-/// **The positive half: an allowed name is queued as the operator's own call, with the
-/// identity the gate will record.**
-///
-/// **The admission itself is the worker's to write, so this test stops at the queue** — and
-/// that is the honest boundary rather than a gap: the frame's job is to reach the queue with
-/// the right fields, and the admission event's job belongs to the worker that drains it
-/// (`harnessd`'s own tests). A test here that waited for `OperatorCallAllowed` would be
-/// waiting for a worker this registry does not have, which is what the first draft of this
-/// file did and what its failure message said.
+/// An allowed name is queued as the operator's own call, with the identity the gate records.
+/// The admission itself is the worker's to write, so this stops at the queue: waiting for
+/// `OperatorCallAllowed` here would wait for a worker this registry does not have.
 #[test]
 fn an_allowed_name_reaches_the_queue_as_the_operators_own_call() {
     let (r, handle) = start("allow");
@@ -133,19 +112,9 @@ fn an_allowed_name_reaches_the_queue_as_the_operators_own_call() {
             )
             .expect("write");
 
-        // **Two frames come back per call and this read one of them.**
-        //
-        // `Accepted` is the server's own ack on this connection and `CommandIssued` is the
-        // hub's announcement on the session log. The first draft of this loop read *one*
-        // frame per iteration, which left it a frame behind from the second call onward —
-        // and it passed anyway, because with two names the leaked frame happened to be the
-        // one the next `try_command` was about. Adding a third name to `HEAD_RUN_TOOLS`
-        // (R31) turned the off-by-one into a failure, which is the useful direction: a test
-        // that is right by accident fails when the accident stops.
-        //
-        // So: drain what arrives for this call, assert none of it is a refusal, and then
-        // assert the command is on the queue. Order is not asserted, because the two frames
-        // travel on two channels and their order is not a property of anything.
+        // Two frames come back per call - `Accepted` on this connection and `CommandIssued` on the
+        // session log - so both are drained here. Order is not asserted: they travel on two
+        // channels, and reading one frame per call left this a frame behind from the second call.
         let mut seen: Vec<ServerFrame> = Vec::new();
         let deadline = Instant::now() + Duration::from_secs(3);
         while seen.len() < 2 && Instant::now() < deadline {
@@ -162,8 +131,8 @@ fn an_allowed_name_reaches_the_queue_as_the_operators_own_call() {
             );
         }
 
-        // And it arrived as the operator's own call, carrying WHO — the identity the corpus
-        // records in `human:<who>` and the row carries in its `CallOrigin`.
+        // And it arrived as the operator's own call, carrying WHO: the identity the corpus records
+        // in `human:<who>` and the row carries in its `CallOrigin`.
         let cmd = hub.try_command().expect("the command is on the queue");
         match cmd.kind {
             letibot_sessionlog::hub::CommandKind::OperatorCall {
@@ -182,12 +151,9 @@ fn an_allowed_name_reaches_the_queue_as_the_operators_own_call() {
     let _ = head;
 }
 
-/// **The pending set does not leak, and `detach` is where it is cleared.**
-///
-/// The failure this covers is the pair's own: a head admitted for a call and gone before
-/// reporting it. `Hub::note_operator_call` / `Hub::detach` are asserted directly here because
-/// they are the mechanism, and the sentence they publish is what stops the corpus holding an
-/// `admit` that nobody can account for.
+/// The pending set does not leak, and `detach` is where it is cleared: a head admitted for a call
+/// and gone before reporting it leaves a sentence, so the corpus never holds an `admit` that
+/// nobody can account for.
 #[test]
 fn a_head_that_goes_away_between_the_frames_leaves_a_sentence_not_a_silent_admission() {
     use letibot_sessionlog::hub::Hub;
@@ -222,12 +188,8 @@ fn a_head_that_goes_away_between_the_frames_leaves_a_sentence_not_a_silent_admis
     );
 }
 
-/// **R11's locator, end to end: a head asks by `(kind, id)` and gets bytes or *not recorded*.**
-///
-/// Three facts and they must be three: bytes that exist, a field that was recorded and is
-/// empty, and a field nobody kept. The store holds `NULL` on every row written before R11 kept
-/// the exchange, so *"nobody kept this"* and *"here it is, and it is empty"* are both real and
-/// a head that could not tell them apart would draw one sentence over the other.
+/// A head asks by `(kind, id)` and gets bytes, a recorded-but-empty field, or *not recorded*:
+/// three facts that must stay three, or a head draws one sentence over the other.
 #[test]
 fn the_diagnostic_locator_answers_bytes_empty_and_not_recorded_as_three_things() {
     use letibot_sessionlog::protocol::DiagnosticKind;
@@ -269,7 +231,7 @@ fn the_diagnostic_locator_answers_bytes_empty_and_not_recorded_as_three_things()
         other => panic!("no bytes came back: {other:?}"),
     }
 
-    // 2. Recorded, and zero bytes — `Some("")` and NOT `None`.
+    // 2. Recorded, and zero bytes: `Some("")` and NOT `None`.
     ask(&mut client, "empty", DiagnosticKind::Brief);
     match next_frame(&rx, 3000) {
         Some(ServerFrame::Diagnostic { body, total, .. }) => {
@@ -283,7 +245,7 @@ fn the_diagnostic_locator_answers_bytes_empty_and_not_recorded_as_three_things()
         other => panic!("{other:?}"),
     }
 
-    // 3. Not recorded — `None`, which is a different fact from 2.
+    // 3. Not recorded: `None`, which is a different fact from 2.
     ask(&mut client, "nobody-kept-this", DiagnosticKind::Reply);
     match next_frame(&rx, 3000) {
         Some(ServerFrame::Diagnostic { body, total, .. }) => {
@@ -293,8 +255,8 @@ fn the_diagnostic_locator_answers_bytes_empty_and_not_recorded_as_three_things()
         other => panic!("{other:?}"),
     }
 
-    // **The kind is carried, not inferred.** The same id asked for the other half is a
-    // different answer, which is what makes `(kind, id)` a locator rather than an id.
+    // The kind is carried, not inferred: the same id asked for the other half is a different
+    // answer, which is what makes `(kind, id)` a locator rather than an id.
     ask(&mut client, "has-bytes", DiagnosticKind::Reply);
     match next_frame(&rx, 3000) {
         Some(ServerFrame::Diagnostic { kind, body, .. }) => {

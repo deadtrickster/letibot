@@ -1,23 +1,13 @@
-//! §5.7 — no output cap, and `finish_reason: length` is **acted on**.
+//! §5.7: no output cap, and `finish_reason: length` is acted on.
 //!
-//! # The failure this is written against
+//! A subagent once spent its whole budget thinking and returned empty content with a full
+//! `reasoning_content`, and that was recorded as a completed turn - nine such rows sat in a
+//! session database unnoticed. The lesson is not "check a flag" but that success was
+//! representable, so this does not return a bool a caller may ignore: the two empty cases
+//! produce [`LengthVerdict::HardFail`] and the engine turns it into an `Err`.
 //!
-//! opencode capped output at 32,000 tokens (`provider/transform.ts:18`), parsed
-//! `finish_reason`, and threw it away (`session/processor.ts`, `case "finish":
-//! return`). A subagent spent its whole budget thinking and returned empty content
-//! with a full `reasoning_content`. That was recorded as a completed turn. Nine
-//! such rows sat in a session database unnoticed.
-//!
-//! The lesson is not "check a flag". It is that **success was representable** for a
-//! turn that produced nothing. So the policy here does not return a bool that a
-//! caller may ignore: [`LengthVerdict::HardFail`] is the only value the two empty
-//! cases can produce, and the engine turns it into an `Err`. A turn that hit the
-//! output limit with nothing to show cannot be constructed as a success — see
-//! `crate::engine::TurnOk`, which has no variant for it.
-//!
-//! Grok's `LengthPolicy` (`conversation.rs:513-575`) names the two fail cases
-//! `NoVisibleContent` and `ReasoningOnly`, and confirms at `:569-573` that *an
-//! empty Length response fails under every policy value*. Taken as written.
+//! `ReasoningOnly` names a budget problem; `NoVisibleContent` names a generation that never
+//! started.
 
 use letibot_transcript::ToolCall;
 
@@ -60,11 +50,9 @@ pub enum LengthVerdict {
 }
 
 impl LengthVerdict {
-    /// Whether this turn may be recorded as a completed one.
-    ///
-    /// Deliberately not `is_ok()`: the question a caller asks is not "did it go
-    /// well" but "am I allowed to write this down as a success", and only one of
-    /// those has a defensible answer here.
+    /// Whether this turn may be recorded as a completed one. Not `is_ok()`: the question is
+    /// not "did it go well" but "am I allowed to write this down as a success", and only one
+    /// of those has a defensible answer here.
     pub fn may_record_as_success(&self) -> bool {
         !matches!(
             self,
@@ -117,11 +105,9 @@ pub fn classify(hit_length: bool, shape: TurnShape<'_>) -> LengthVerdict {
     LengthVerdict::TruncatedText
 }
 
-/// Whether a tool call's arguments are complete JSON.
-///
-/// Empty arguments count as complete: a zero-argument tool renders `{}` or `""`
-/// and treating that as truncation would fail every no-argument call that happened
-/// to land on the limit.
+/// Whether a tool call's arguments are complete JSON. Empty arguments count as complete: a
+/// zero-argument tool renders `{}` or `""`, and treating that as truncation would fail every
+/// no-argument call that happened to land on the limit.
 fn arguments_are_complete(arguments: &str) -> bool {
     let t = arguments.trim();
     if t.is_empty() {
@@ -130,10 +116,8 @@ fn arguments_are_complete(arguments: &str) -> bool {
     serde_json::from_str::<serde_json::Value>(t).is_ok()
 }
 
-/// The message the model is told, in the **tool result**, not in a log.
-///
-/// pi's wording, ported verbatim because it is already right: it says what
-/// happened, why, and what to do, and it does so where the model will read it.
+/// The message the model is told, in the tool result rather than in a log: it says what
+/// happened, why, and what to do, where the model will read it.
 pub fn batch_failed_notice(call_name: &str) -> String {
     format!(
         "Tool call {call_name} was not executed: the response hit the output token \
@@ -142,11 +126,8 @@ pub fn batch_failed_notice(call_name: &str) -> String {
     )
 }
 
-/// Bounds the salvage loop.
-///
-/// Grok has a test named `length_salvage_streak_proceeds_to_the_cap_then_exhausts`
-/// for a reason: a salvage that always retries is its own failure mode, and a model
-/// that truncates once usually truncates again.
+/// Bounds the salvage loop: a salvage that always retries is its own failure mode, and a
+/// model that truncates once usually truncates again.
 #[derive(Debug, Clone, Copy)]
 pub struct SalvageBudget {
     pub cap: u32,

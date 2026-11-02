@@ -1,40 +1,11 @@
-//! **The coordinator's socket** — the accept loop, one read loop per connection, the [`Room`]
-//! behind a single `&mut` in one place, the clock, and the routing of a bell to the connections it
-//! is about.
+//! The coordinator's socket: the accept loop, one read loop per connection, the [`Room`] behind a
+//! single `&mut` in one place, the clock, and the routing of a bell to the connections it is about.
 //!
-//! `docs/room.md` § *What the daemon still owes* items 1–3, in one file:
-//!
-//! 1. **The socket and the daemon** — a unix socket, `Hello` first, [`Room::answer_traced`] behind
-//!    it. The room is `Mutex<Room>` and every mutating path takes that one lock, so *one writer* is
-//!    a fact of the type rather than a promise about the threads.
-//! 2. **The clock** — [`Server::sweep_every_ms`], well inside the ninety-second lease, and
-//!    [`Room::note_gone`] on every connection close. A close is the DAEMON's liveness and a beat is
-//!    the WORK's; the two are different facts and this module keeps them apart: a session whose
-//!    turn ended keeps its socket and loses its claim to the beat.
-//! 3. **Routing** — every event a verb (or the sweep, or a close) produces goes to the connections
-//!    it is about: the sessions queued under that tag, the session the event names, and the
-//!    arbiter, who is a member of every tag because a question is addressed to it.
-//!
-//! # One connection per top-level session, and the door
-//!
-//! The first frame on a connection must be [`Request::Hello`], and a subagent is refused there
-//! ([`Refused::Subagent`]) before any verb exists to refuse. A connection whose `Hello` is refused
-//! is answered and closed: there is nothing else it could say.
-//!
-//! # The arbiter is a member of every tag
-//!
-//! [`Server::with_arbiter`] names one session that hears every event, whether or not it has an item
-//! under the tag. That is the tie-breaker: it must be told about a raise, and it is never a poster.
-//! It is a fact about the SERVER and not about the room — the room has no idea who arbitrates it —
-//! which is why it lives here.
-//!
-//! # What a restart means, in words
-//!
-//! The room has **no durability**: [`Server::started_ms`] and the `Welcome`'s own words are the
-//! only memory a restarted coordinator has. [`Server::identity`] is what a pane prints — *this
-//! coordinator started at T and the queues it holds are the ones since then* — so *restarted clean*
-//! and *restarted empty* cannot be read as the same thing. There is no store to be empty: an
-//! in-memory room is empty at every start, and it says so rather than looking quiet.
+//! The room is `Mutex<Room>` and every mutating path takes that one lock, so one writer is a fact of
+//! the type rather than a promise about the threads. A close is the DAEMON's liveness and a beat is
+//! the WORK's, and this module keeps them apart. The room has no durability: a restarted coordinator
+//! remembers only [`Server::started_ms`], and [`Server::identity`] is what a pane prints so that
+//! *restarted clean* and *restarted empty* cannot be read as the same thing.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader, Write};
@@ -65,14 +36,9 @@ struct Conn {
 
 /// **The server's own state**, shared by the accept loop, the read loops and the clock.
 struct Inner {
-    /// **One room per PROJECT**, keyed by [`crate::project_key`]'s answer — the operator's
-    /// hierarchy is `<project>/<top-sessions>/<subagents>*|system/`, so a room is a project's and
-    /// the box's coordinator holds one for each project whose sessions have dialled it.
-    ///
-    /// The key [`crate::DEFAULT_PROJECT`] is always present: it is the box's own room, where a
-    /// one-shot, a fixture, the arbiter and any session the daemon could not place live — the room
-    /// this coordinator served before there were projects, kept so that a box with no projects is
-    /// not a box with no room.
+    /// One room per PROJECT, keyed by [`crate::project_key`]'s answer: the box's coordinator holds
+    /// one for each project whose sessions have dialled it. [`crate::DEFAULT_PROJECT`] is always
+    /// present - the box's own room, where a one-shot, a fixture and the arbiter live.
     rooms: Mutex<BTreeMap<String, Room>>,
     /// The lease every room created later is given, so two projects' claims go stale on one clock.
     lease_ms: u64,
@@ -81,10 +47,9 @@ struct Inner {
     path: PathBuf,
     started_ms: u64,
     sweep_every_ms: u64,
-    /// **The box half of every room's name** — `lease::host_key()` by default, or whatever
-    /// [`Server::with_name`] was given. A room's full name is `<this>/<project key>`
-    /// ([`crate::room_name`]); a `Hello` that names another box's room is refused with both names,
-    /// because obeying it would put its post in another machine's queue.
+    /// The box half of every room's name - `lease::host_key()` by default, or whatever
+    /// [`Server::with_name`] was given. A `Hello` that names another box's room is refused with both
+    /// names, because obeying it would put its post in another machine's queue.
     name: Mutex<String>,
     /// **The session that hears everything** — the tie-breaker. `None` on a room whose arbiter is a
     /// person at a head, which is a room where every question waits.
@@ -96,12 +61,9 @@ struct Inner {
     stop: AtomicBool,
     /// How many connections have been served since the start — the pane's *is anybody here*.
     served: AtomicU64,
-    /// **The events this room addressed to a session that had no connection** — the count and the
-    /// first of them, per session, taken (and cleared) by that session's next `Hello`.
-    ///
-    /// It exists because the room keeps no log: an event routed to nobody is gone, and a session
-    /// that reconnects is owed the fact that it was away rather than a `Welcome` identical to a
-    /// session that had never left. See `wire`'s version-4 note.
+    /// The events this room addressed to a session that had no connection - the count and the first
+    /// of them, per session, taken (and cleared) by that session's next `Hello`. The room keeps no
+    /// log, so this is how a session learns it was away rather than reading a plain `Welcome`.
     missed: Mutex<BTreeMap<String, Missed>>,
 }
 
@@ -131,11 +93,7 @@ impl std::fmt::Debug for Server {
 }
 
 impl Server {
-    /// **Bind `path` and start serving `room`** — which is the **box's own room**
-    /// ([`crate::DEFAULT_PROJECT`]). Every other project's room is created when that project's
-    /// first session says hello, empty, because a room keeps no store (`docs/room.md` § *What the
-    /// state machine assumes*).
-    ///
+    /// Bind `path` and start serving `room`, which is the box's own room ([`crate::DEFAULT_PROJECT`]).
     /// The listener is bound before anything is spawned, so a socket another coordinator already
     /// serves is the caller's error and not a thread's: the caller is the one that can say it.
     pub fn serve(path: &Path, room: Room) -> std::io::Result<Server> {
@@ -199,12 +157,9 @@ impl Server {
             .collect()
     }
 
-    /// **The project a `Hello` is asking for**, or the sentence refusing it.
-    ///
-    /// An empty name is *I do not say* — a protocol-1 client — and it reaches the box's own room,
-    /// where the version check will refuse it by name anyway. A name that is not this box's
-    /// ([`crate::room_of_name`], which checks the round trip AND the key's shape) is refused here,
-    /// before any verb exists to refuse.
+    /// The project a `Hello` is asking for, or the sentence refusing it. An empty name is *I do not
+    /// say* - a protocol-1 client - and reaches the box's own room, where the version check refuses
+    /// it. A name that is not this box's is refused here, before any verb exists to refuse.
     fn project_of_hello(&self, asked: &str) -> Result<String, String> {
         let asked = asked.trim();
         if asked.is_empty() {
@@ -229,31 +184,17 @@ impl Server {
         self
     }
 
-    /// **Hand the server the ledger of tag agents** — who owns each queue and how many times it had
-    /// to be brought back.
-    ///
-    /// The writer is the daemon's upkeep thread ([`crate::agent::AgentLedger`]), and this is the one
-    /// reader that puts it on the wire. A room with no ledger answers `agents: []`, which is exactly
-    /// what a room whose daemon does not seat tag agents should say — *no tag has an agent here* —
-    /// rather than an empty column a pane would draw as *nothing to report*.
+    /// Hand the server the ledger of tag agents - who owns each queue and how many times it had to
+    /// be brought back. A room with no ledger answers `agents: []`, which is what a room whose
+    /// daemon does not seat tag agents should say.
     pub fn with_agents(&self, ledger: Arc<crate::agent::AgentLedger>) -> &Self {
         *self.inner.agents.lock().expect("the agents lock") = Some(ledger);
         self
     }
 
-    /// **The tags that have a live item**, sorted and deduplicated — the list a daemon's upkeep asks
-    /// for to decide which agents it owes.
-    ///
-    /// Live is [`crate::Item::live`]: not finished and not dropped. A tag whose work is all done
-    /// needs no agent, and one whose items are all frozen still does — a frozen item is waiting for
-    /// a ruling, which is the one thing an agent is for.
-    ///
-    /// **The box's own room's tags, and only those** — a tag's agent is `s-room-<host key>-<tag>`
-    /// ([`crate::tag_session`]), a name with no project in it, and a session of that name can only
-    /// be in one room. So a project's tags have no agent until that derivation carries the project
-    /// too, which is `--session host:ram`'s own slice (`docs/room.md` § *Slice 6*, *what it leaves
-    /// open*). Answering the box's room here is today's behaviour exactly, rather than a new agent
-    /// seated in a room it cannot see.
+    /// The tags that have a live item, sorted and deduplicated - what a daemon's upkeep asks to
+    /// decide which agents it owes. Live is [`crate::Item::live`] (a frozen item still counts), and
+    /// only the box's own room answers, because an agent's name carries no project.
     pub fn live_tags(&self) -> Vec<String> {
         let room = self.inner.rooms.lock().expect("the rooms lock");
         let mut out: Vec<String> = room
@@ -278,10 +219,9 @@ impl Server {
         self
     }
 
-    /// **The box half of a room's name** — what a `Hello` is held to.
-    ///
-    /// A room's full name is `<this>/<project key>` ([`crate::room_name`]), and the pane prints it
-    /// ([`Server::identity`]). This is only the half that is the same for every project here.
+    /// The box half of a room's name - what a `Hello` is held to. A room's full name is
+    /// `<this>/<project key>` ([`crate::room_name`]), and this is the half that is the same for every
+    /// project here.
     pub fn name(&self) -> String {
         self.inner.name.lock().expect("the name lock").clone()
     }
@@ -313,13 +253,9 @@ impl Server {
         self.inner.arbiter.lock().expect("the arbiter lock").clone()
     }
 
-    /// **Every session connected right now**, sorted — the pane's *who is up*, and the list a
-    /// `hand` names. The socket is the daemon's liveness, so this is not the same fact as a beat:
-    /// a session whose turn ended is here and not beating.
-    ///
-    /// `project: None` is every room on this box (the census a banner prints); `Some(p)` is that
-    /// project's — which is what a pane in a session of project `p` is drawn from, so that a room
-    /// of another project is not drawn as *here*.
+    /// Every session connected right now, sorted - the pane's *who is up*, and the list a `hand`
+    /// names. The socket is the daemon's liveness, so this is not the same fact as a beat: a session
+    /// whose turn ended is here and not beating. `None` is every room on this box.
     pub fn connected_in(&self, project: Option<&str>) -> Vec<String> {
         let mut out: Vec<String> = self
             .inner
@@ -346,14 +282,9 @@ impl Server {
         self.identity_at(crate::DEFAULT_PROJECT, now_ms())
     }
 
-    /// [`Server::identity`] for one project's room, at a given clock, so a test can pin the age
-    /// rather than wait for one.
-    ///
-    /// **The age and the count are both in the sentence, and neither is decoration.** An in-memory
-    /// room holds nothing at every start, so *no items* is the same reading for a room that has been
-    /// up for an hour and one that has just restarted — unless the sentence says how long it has
-    /// been up and how much has happened since. The name it prints is the ROOM's
-    /// (`<host key>/<project key>`), because a pane in one project must not print another's.
+    /// [`Server::identity`] for one project's room at a given clock, so a test can pin the age rather
+    /// than wait for one. The age and the count are both in the sentence: an in-memory room holds
+    /// nothing at every start, so *no items* alone cannot tell a restart from an idle hour.
     pub fn identity_at(&self, project: &str, now: u64) -> String {
         let n = self.inner.served.load(Ordering::SeqCst);
         let items = self.with_room(project, |r| r.all().len());
@@ -367,15 +298,9 @@ impl Server {
         )
     }
 
-    /// **One frame, answered** — the room's dispatch with this server's own facts filled in, and
-    /// with the two refusals that need a fact the state machine has not got: the version, and which
-    /// room this is.
-    ///
-    /// `project` is the connection's room ([`Server::project_of_hello`]'s answer, resolved once at
-    /// the `Hello`). Every other frame is the room's. [`Request::Room`] is the pane's read, and
-    /// several of its fields are facts about this PROCESS rather than about the state machine, so
-    /// the room answers its half and this fills the rest — here, once, so that a pane and a client
-    /// cannot be told two different things about who arbitrates or who is up.
+    /// One frame, answered: the room's dispatch with this server's own facts filled in, plus the two
+    /// refusals that need a fact the state machine has not got - the version, and which room this is.
+    /// `project` is the connection's room, resolved once at the `Hello`.
     fn answer_frame(&self, project: &str, who: &Speaker, frame: &Request, now: u64) -> Answer {
         // **The door, and it is answered before the room sees the frame.** A skew or a wrong room
         // must not be half-obeyed: the room would vouch for a session that is not going to be
@@ -394,10 +319,9 @@ impl Server {
                 };
             }
         }
-        // **A `rule` is the one frame that may name another room.** The arbiter hears every
-        // project's events (routing sends it everything), and two rooms number their questions from
-        // 1 — so a ruling that names its project is answered there, and one that does not is
-        // answered in the room that holds the question, which is the one the ruling is about.
+        // A `rule` is the one frame that may name another room: two rooms number their questions
+        // from 1, so a ruling that names its project is answered there, and one that does not is
+        // answered in the room that holds the question.
         let ruling_in = match frame {
             Request::Rule {
                 project: Some(named),
@@ -490,13 +414,9 @@ impl Server {
         answer
     }
 
-    /// **The room whose OPEN question is `question`, when exactly one room has one.**
-    ///
-    /// This is what lets a ruling name no project and still land: the arbiter is one session of the
-    /// box's own room and hears every project's questions, so `project: None` has to mean *the
-    /// question I was told about*. Two rooms numbering their questions from 1 make that ambiguous,
-    /// and an ambiguity is answered by `None` — the ruling then goes to the connection's own room
-    /// and is refused by name there, which is honest, rather than being applied to the wrong item.
+    /// The room whose OPEN question is `question`, when exactly one room has one. This is what lets a
+    /// ruling name no project and still land, since the arbiter hears every project's questions. An
+    /// ambiguity is answered by `None`, so the ruling is refused by name rather than misapplied.
     fn room_holding(&self, question: u64) -> Option<String> {
         let mut holding = None;
         let rooms = self.inner.rooms.lock().expect("the rooms lock");
@@ -530,12 +450,9 @@ impl Server {
         all
     }
 
-    /// **The open questions**, oldest first — what the tie-breaker is prompted with, from EVERY
-    /// room, each stamped with the project that asked it (`Question::project`).
-    ///
-    /// The arbiter is one session of the box's own room and hears every project's events, so it is
-    /// asked every project's questions; the stamp is what lets it answer the right one
-    /// (`Request::Rule`'s `project`).
+    /// The open questions, oldest first - what the tie-breaker is prompted with, from EVERY room,
+    /// each stamped with the project that asked it (`Question::project`), which is what lets the
+    /// arbiter answer the right one.
     pub fn open_questions(&self) -> Vec<crate::room::Question> {
         let mut out = Vec::new();
         for project in self.projects() {
@@ -772,37 +689,9 @@ impl Server {
 
     // ===== Routing =====
 
-    /// **Send each event to the connections it is about** — in ONE room.
-    ///
-    /// `project` is the room the event came out of, and the first rule is that a connection in
-    /// another project never hears it: two projects do not leak into each other, and an event
-    /// carries no project of its own (a tag is a project's, so the room it was routed from is the
-    /// only thing that says which).
-    ///
-    /// Three audiences inside the room, and they are the design rather than a convenience:
-    ///
-    /// * **the sessions queued under the tag** — everybody with a live item there, which is who a
-    ///   claim, a finish or an abandonment changes the world for. Derived from the room at the
-    ///   moment of routing, so a session that has just posted is a member and a session that only
-    ///   ever READ the queue is not: one read is not membership.
-    /// * **the session the event names** — the one who did it, and the one a ruling hands an item
-    ///   to, who may have nothing under that tag.
-    /// * **the arbiter**, for every event and from every room, because a question is addressed to it
-    ///   and it is never a poster. It is one session of the box's own room, so this is the line that
-    ///   lets it hear a project it is not in — and `Question::project` is what tells it which.
-    ///
-    /// **And the audience is counted before it is written to.** A member that has no connection is
-    /// a bell that rang where nobody was, and the room owes that session the fact of it: the count
-    /// goes into [`Inner::missed`] and the next `Hello` carries it back (`wire`'s version-4 note).
-    /// Counting here rather than at each verb is what makes it one rule: every event this room ever
-    /// produces is routed by this function, so no event can be lost silently — a dropped connection
-    /// mid-`route`, a session between two daemons, and a tag agent nobody has seated yet are the
-    /// same fact and get the same number.
-    ///
-    /// **The count is per ROOM and keyed by SESSION**, which is the pair this function has: the
-    /// audience is derived from `project`'s queue, so a session is told about the gap in the room
-    /// it was routed in — and the arbiter, whose connection is in the box's room and whose audience
-    /// membership is every room's, is the one session that hears all of them.
+    /// Send each event to the connections it is about, in ONE room: the sessions queued under the
+    /// tag, the session it names, and the arbiter. A connection in another project never hears it,
+    /// and a member with no connection is counted into [`Inner::missed`] rather than lost.
     fn route(&self, project: &str, events: &[Event]) {
         if events.is_empty() {
             return;
@@ -859,14 +748,9 @@ impl Server {
                     None => BTreeSet::new(),
                 };
                 who.extend(event.named().into_iter().map(str::to_string));
-                // **And the tag's own agent**, which is a member of every queue under that tag and
-                // of none other. It is not a poster and not a holder, so without this line the one
-                // session whose job is the tag would never hear about it — and *a claim, a stale
-                // beat, a dispute reach that tag's agent* would be a claim about a note nobody
-                // sent. Derived from the box's own key, so two boxes' agents cannot be confused.
-                //
-                // It is the BOX's agent for the tag, which lives in the box's own room: a project's
-                // tags have no agent until the derivation carries the project too (`Server::live_tags`).
+                // And the tag's own agent, a member of every queue under that tag and of none other.
+                // It is not a poster and not a holder, so without this line the one session whose
+                // job is the tag would never hear about it. It is the BOX's agent, in the box's room.
                 if project == crate::DEFAULT_PROJECT
                     && let Some(agent) = tag
                         .as_deref()
@@ -917,10 +801,9 @@ impl Server {
         entry.count += 1;
     }
 
-    /// **What this session missed, and forget it** — the `Hello`'s half of
-    /// [`Server::count_missed`]. Taking rather than reading is the whole of the design: the number
-    /// is a statement about the gap that just ended, and a client told the same gap twice would
-    /// think the room had gone quiet a second time.
+    /// What this session missed, and forget it - the `Hello`'s half of [`Server::count_missed`].
+    /// Taking rather than reading is the design: the number is a statement about the gap that just
+    /// ended, and a client told the same gap twice would think the room had gone quiet again.
     fn take_missed(&self, session: &str) -> Missed {
         self.inner
             .missed
@@ -939,10 +822,9 @@ fn write_to(conn: &Conn, response: &Response) -> std::io::Result<()> {
     write_frame(&mut *w, response)
 }
 
-/// **One frame, one line of JSON.**
-///
-/// A line rather than a length prefix because the two ends are this crate on both sides and a
-/// frame that a person can read with `nc` is worth more than the bytes it costs.
+/// One frame, one line of JSON. A line rather than a length prefix because the two ends are this
+/// crate on both sides, and a frame a person can read with `nc` is worth more than the bytes it
+/// costs.
 fn write_frame(w: &mut impl Write, response: &Response) -> std::io::Result<()> {
     let mut line = serde_json::to_string(response)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
@@ -1029,12 +911,9 @@ mod tests {
         line
     }
 
-    /// **A room that has been up for a while and holds nothing is not a room that has just
-    /// restarted**, and the only thing that says so is the age.
-    ///
-    /// An in-memory room holds nothing at every start (`docs/room.md` § *What the state machine
-    /// assumes*), so *no items* is the same reading for both — which is exactly why the sentence
-    /// carries how long it has been up and how much has happened since.
+    /// A room that has been up for a while and holds nothing is not a room that has just restarted,
+    /// and the only thing that says so is the age. An in-memory room holds nothing at every start,
+    /// so the sentence carries how long it has been up and how much has happened since.
     #[test]
     fn the_identity_tells_a_long_up_empty_room_from_a_just_restarted_one() {
         let dir = std::env::temp_dir().join(format!("letibot-room-ident-{}", std::process::id()));
@@ -1060,11 +939,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// **A client that reached the wrong coordinator is TOLD, with both names in the sentence.**
-    ///
-    /// A room is per box, and two boxes can both call themselves `localhost`. Before the name was on
-    /// the wire, a session that dialled the wrong socket was obeyed: its post landed in another
-    /// machine's queue and its claim locked a tag nobody there was waiting for.
+    /// A client that reached the wrong coordinator is TOLD, with both names in the sentence. A room
+    /// is per box and two boxes can both call themselves `localhost`, so before the name was on the
+    /// wire a post landed in another machine's queue.
     #[test]
     fn a_hello_that_names_another_room_is_refused_with_both_names() {
         let dir = std::env::temp_dir().join(format!("letibot-room-name-{}", std::process::id()));
@@ -1151,12 +1028,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// **A ruling that names no project lands in the room that holds the question.**
-    ///
-    /// The arbiter is one session of the box's own room and hears every project's events, so it is
-    /// asked every project's questions — and two rooms number theirs from 1. `project: None` is
-    /// therefore resolved by the question, not by the connection, and only when exactly one room
-    /// has it open: an ambiguity is refused rather than applied to the wrong item.
+    /// A ruling that names no project lands in the room that holds the question, and only when
+    /// exactly one room has it open: two rooms number theirs from 1, so an ambiguity is refused
+    /// rather than applied to the wrong item.
     #[test]
     fn a_ruling_with_no_project_lands_where_the_question_is() {
         let dir = std::env::temp_dir().join(format!("letibot-room-cross-{}", std::process::id()));
@@ -1269,11 +1143,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// **The protocol number is pinned once**, here, as a literal.
-    ///
-    /// It is the only place in the tree that spells the number rather than the constant, and that is
-    /// the point: a wire change that misses a pin is a quiet lie about what two binaries share, so
-    /// the pin is a literal a reviewer sees in a diff and every other use is the symbol.
+    /// The protocol number is pinned once, here, as a literal: the only place in the tree that
+    /// spells the number rather than the constant, so a wire change that misses a pin is a quiet lie
+    /// about what two binaries share.
     #[test]
     fn the_room_speaks_protocol_five() {
         assert_eq!(ROOM_PROTOCOL_VERSION, 5);
@@ -1285,11 +1157,9 @@ mod tests {
         assert_eq!(crate::wire::protocol_refusal(5), None);
     }
 
-    /// **The pane's read: the room's half from the room, the server's three from the server.**
-    /// This is the frame a pane is drawn from, and it is the only one whose answer the server
-    /// completes — so what is asserted here is that the completion happens at all, that it is the
-    /// server's own answer (`identity`, the arbiter, who is connected) and that a second caller
-    /// gets the same three.
+    /// The pane's read: the room's half from the room, the server's three from the server. What is
+    /// asserted is that the completion happens, that it is the server's own answer (`identity`, the
+    /// arbiter, who is connected), and that a second caller gets the same three.
     #[test]
     fn the_rooms_read_carries_the_servers_own_three_facts() {
         let dir = std::env::temp_dir().join(format!("letibot-room-read-{}", std::process::id()));
@@ -1358,10 +1228,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// **The audience of a tag's event includes that tag's agent** — and no other tag's.
-    ///
-    /// This is the server's half of *a bell per tag*: an agent is neither a poster nor a holder, so
-    /// without it the one session whose job is the tag would never hear about its own queue.
+    /// The audience of a tag's event includes that tag's agent, and no other tag's. An agent is
+    /// neither a poster nor a holder, so without it the one session whose job is the tag would never
+    /// hear about its own queue.
     #[test]
     fn a_tags_events_reach_that_tags_agent_and_no_other() {
         let dir = std::env::temp_dir().join(format!("letibot-room-route-{}", std::process::id()));

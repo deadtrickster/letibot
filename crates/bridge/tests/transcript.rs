@@ -1,36 +1,21 @@
-//! **`leticode_transcript` against a real daemon** — a turn's rows, a cursor, and the cap.
+//! `leticode_transcript` against a real daemon - a turn's rows, a cursor, and the cap.
 //!
-//! # What this file is about
+//! A pane that follows a package's session read-only and tailed needs the rows themselves, not
+//! the progress ring's one-line summaries, and reading the session store directly is ruled out.
+//! So `leticode_transcript` asks the daemon for the rows a head would be handed.
 //!
-//! The operator's Claude Code pane follows a package's session read-only and tailed, and until
-//! B8 it did that through `leticode_events` — the bridge's progress ring, whose texts are cut to
-//! one line. Reading the session store directly is their ruled-out answer (*"not a good idea"*),
-//! so `leticode_transcript` asks the daemon for the rows a head would be handed and renders them
-//! with the item in them.
+//! Three facts, and each is a way the tool could quietly lie: a turn's rows come back in order
+//! with their content; `since` returns only newer rows; and long text is complete up to the cap,
+//! with `cut: true` and the cap in the answer. A watched session answers the same read.
 //!
-//! Three facts, and each one is a way the tool could quietly lie:
+//! The rows are the daemon's - a fixture handing back a `Snapshot` it built itself would be
+//! asserting what this file wrote - so the daemon is harnessd's own `Daemon::serve` over a real
+//! `Registry` and a real `Sessions::open_first`. What is replaced is the MODEL, by a loopback HTTP
+//! server answering the OpenAI frames the provider parses; the session opens on the byte
+//! vocabulary, so no GGUF is involved.
 //!
-//! | fact | how it is measured |
-//! |---|---|
-//! | a turn's rows come back IN ORDER, with their content | the user row of the brief is before the assistant row that answered it, in a real turn's snapshot |
-//! | `since` returns only newer rows | the cursor from before a second turn, then the second turn's two rows and nothing else |
-//! | long text is complete up to the cap | a 9 000-character answer comes back at exactly `cap`, with `cut: true`, and the cap is in the answer |
-//! | a WATCHED session answers it too | a second `Bridge` attaches `watch_only` and reads the same rows |
-//!
-//! # Why a daemon and not a stub
-//!
-//! The rows are the daemon's: a fixture that handed back a `Snapshot` it built itself would be
-//! asserting what this file wrote. So the daemon here is harnessd's own `Daemon::serve` over a
-//! real `Registry` and a real `Sessions::open_first`, exactly as `end_to_end.rs` and harnessd's
-//! integration tests build one. What is replaced is **the model** — a loopback HTTP server
-//! answering the OpenAI frames the provider parses — because a test cannot have one and must not
-//! reach for one. Nothing here talks to a provider, to 127.0.0.1:8080, or to a GGUF: the session
-//! opens on the byte vocabulary.
-//!
-//! **One test, because the environment is process-wide.** `$LETIBOT_SOCKET`, `$LETIBOT_STORE` and
-//! the config directories are what the bridge and the daemon read, and no argument stands in for
-//! them; a second `#[test]` in this binary racing on them would be the defect rather than the
-//! check. This file is a test binary of its own for that reason.
+//! One test, because the environment is process-wide: `$LETIBOT_SOCKET`, `$LETIBOT_STORE` and the
+//! config directories are what the bridge and the daemon read, and no argument stands in for them.
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -45,16 +30,16 @@ use letibot_harnessd::{Daemon, Dialect, Parts, Sessions};
 use letibot_sessionlog::registry::Registry;
 use serde_json::{Value, json};
 
-/// The brief, and the marker its answer carries — so a row can be traced to the turn that
-/// produced it rather than to *an* answer.
+/// The brief, and the marker its answer carries - so a row can be traced to the turn that produced
+/// it rather than to an answer.
 const BRIEF: &str = "brief-marker: write the long thing";
 const LONG_MARK: &str = "long-answer-marker";
 const SECOND_LINE: &str = "second-marker: and now the short thing";
 const SECOND_ANSWER: &str = "second-answer-marker: done";
 
-/// **The answer that is longer than the cap**, so the cap is what cuts it and nothing else. It
-/// carries its marker at the FRONT, because the row a reader gets is the first `cap` characters
-/// of it and a marker at the back would be evidence of nothing.
+/// The answer that is longer than the cap, so the cap is what cuts it and nothing else. It carries
+/// its marker at the FRONT, because the row a reader gets is the first `cap` characters of it and a
+/// marker at the back would be evidence of nothing.
 fn long_answer() -> String {
     format!("{LONG_MARK}: {}", "y".repeat(9_000))
 }
@@ -63,12 +48,8 @@ fn long_answer() -> String {
 /// milliseconds, and the assertion is what happened, not how fast.
 const PATIENCE: Duration = Duration::from_secs(60);
 
-// ---------------------------------------------------------------------------
-// A scratch directory, and the fake model
-// ---------------------------------------------------------------------------
-
-/// A directory that removes itself — a test that leaks a store per run fills the disk, and the
-/// run that finds out is not this one.
+/// A directory that removes itself - a test that leaks a store per run fills the disk, and the run
+/// that finds out is not this one.
 struct TempDir(PathBuf);
 
 impl TempDir {
@@ -196,10 +177,6 @@ fn write_sse(mut stream: TcpStream, text: &str) -> std::io::Result<()> {
     stream.flush()
 }
 
-// ---------------------------------------------------------------------------
-// The daemon
-// ---------------------------------------------------------------------------
-
 /// The daemon, the fake model and the config they share.
 struct World {
     dir: TempDir,
@@ -213,9 +190,9 @@ impl World {
     fn start() -> World {
         let dir = TempDir::new("transcript");
         let root = dir.path();
-        // **Nothing of the operator's may reach this session**: a key in their
-        // `providers.toml` or a mode row in their store would decide what answers, and the
-        // models catalogue in their `~/.cache` what a turn costs.
+        // Nothing of the operator's may reach this session: a key in their `providers.toml` or a
+        // mode row in their store would decide what answers, and the models catalogue in their
+        // `~/.cache` what a turn costs.
         std::fs::create_dir_all(root.join("config/letibot")).expect("config dir");
         // SAFETY: this test binary runs one test, and the variables are set before the
         // daemon, any thread that reads config, or the bridge exists.
@@ -248,11 +225,11 @@ impl World {
         .expect("providers.toml");
 
         let socket = root.join("daemon.sock");
-        // The bridge finds a folder's daemon by the workspace's hash, so `$LETIBOT_SOCKET`
-        // names this one — the same override the shell honours.
+        // The bridge finds a folder's daemon by the workspace's hash, so `$LETIBOT_SOCKET` names
+        // this one - the same override the shell honours.
         unsafe { std::env::set_var("LETIBOT_SOCKET", &socket) };
-        // The operator's hosts file, with nothing in it: this file is about rows, and a host
-        // this box does not have would only make `leticode_start` refuse.
+        // The operator's hosts file, with nothing in it: this file is about rows, and a host this
+        // box does not have would only make `leticode_start` refuse.
         std::fs::write(
             root.join("config/letibot/hosts.toml"),
             "# Written by crates/bridge/tests/transcript.rs — no hosts.\n",
@@ -263,9 +240,8 @@ impl World {
         let mut cfg = Config::for_this_box(&worktree);
         cfg.dialect = Dialect::Qwen;
         cfg.seat = Seat::Leticode;
-        // **No exec backend**: a delegated cgroup is apparatus this box may not have, and
-        // nothing in this file runs a command. The writable backend is enough for a turn that
-        // only talks and for a session that only needs a point.
+        // No exec backend: a delegated cgroup is apparatus this box may not have, and nothing in
+        // this file runs a command. The writable backend is enough for a turn that only talks.
         cfg.allow_bash = false;
         // The byte vocabulary: a session whose turns go to a provider needs no GGUF.
         cfg.vocab_gguf = None;
@@ -278,10 +254,9 @@ impl World {
         cfg.web_search = None;
         cfg.permission = Vec::new();
         cfg.http_retries = 0;
-        // **A window the prompt fits inside.** The byte vocabulary counts every byte of the
-        // system prompt and the tool schemas as a token, so a session's message zero is ~54k by
-        // that measure; a 32k window made the harness try to compact before every turn, which is
-        // a failed compaction per turn and nothing this file is about.
+        // A window the prompt fits inside. The byte vocabulary counts every byte of the system
+        // prompt and the tool schemas as a token, so a session's message zero is ~54k by that
+        // measure; a 32k window made the harness try to compact before every turn.
         cfg.context_window = Some(200_000);
         cfg.store = Some(root.join("sessions.db"));
         cfg.socket = socket.clone();
@@ -355,9 +330,9 @@ where
     }
 }
 
-/// The row whose `text` contains `marker`, and where it is in the answer — the assertions are
-/// about order and content, so they are made against the rows rather than against indexes this
-/// file would be guessing at.
+/// The row whose `text` contains `marker`, and where it is in the answer - the assertions are about
+/// order and content, so they are made against the rows rather than against indexes this file would
+/// be guessing at.
 fn row_with(rows: &[Value], marker: &str) -> (usize, Value) {
     rows.iter()
         .enumerate()
@@ -386,7 +361,7 @@ fn a_sessions_conversation_comes_back_as_rows_from_a_cursor_with_the_long_text_w
     );
     let bridge = Bridge::new();
 
-    // --- a turn runs, and its rows are there afterwards -----------------------
+    // a turn runs, and its rows are there afterwards
     let started = bridge
         .start(
             &world.worktree.display().to_string(),
@@ -418,8 +393,8 @@ fn a_sessions_conversation_comes_back_as_rows_from_a_cursor_with_the_long_text_w
     let list = first["rows"].as_array().expect("rows").clone();
     assert!(!list.is_empty(), "a turn ran and left no rows: {first}");
 
-    // **The user row first, then the answer** — the order the conversation is in, and the one
-    // thing a tailing reader depends on.
+    // The user row first, then the answer - the order the conversation is in, and the one thing a
+    // tailing reader depends on.
     let (at_brief, brief_row) = row_with(&list, "brief-marker");
     let (at_answer, answer_row) = row_with(&list, LONG_MARK);
     assert!(
@@ -437,7 +412,7 @@ fn a_sessions_conversation_comes_back_as_rows_from_a_cursor_with_the_long_text_w
     );
     assert_eq!(answer_row["kind"], json!("assistant"), "{answer_row}");
 
-    // --- the long answer is whole up to the cap -------------------------------
+    // the long answer is whole up to the cap
     let text = answer_row["text"].as_str().expect("the text");
     assert_eq!(
         text.chars().count(),
@@ -454,7 +429,7 @@ fn a_sessions_conversation_comes_back_as_rows_from_a_cursor_with_the_long_text_w
         "a row that was cut says so: {answer_row}"
     );
 
-    // --- the cursor reads on, and returns only what is new ---------------------
+    // the cursor reads on, and returns only what is new
     let next = first["next"].as_u64().expect("a cursor");
     assert_eq!(next, first["rows_total"].as_u64().unwrap_or(0));
     let nothing = bridge
@@ -501,9 +476,9 @@ fn a_sessions_conversation_comes_back_as_rows_from_a_cursor_with_the_long_text_w
         "the first turn's rows are behind the cursor: {rows:#?}"
     );
 
-    // --- and a WATCHED session answers the same read --------------------------
-    // The operator's pane follows a package it did not start as often as one it did, and a read
-    // is not an act on somebody's session: a `watch_only` head takes the same rows.
+    // and a WATCHED session answers the same read
+    // A pane follows a package it did not start as often as one it did, and a read is not an act
+    // on somebody's session: a `watch_only` head takes the same rows.
     let watcher = Bridge::new();
     watcher
         .attach(&world.worktree.display().to_string(), &session, true)
@@ -520,7 +495,7 @@ fn a_sessions_conversation_comes_back_as_rows_from_a_cursor_with_the_long_text_w
         json!(0),
         "from the session's first row: {watched}"
     );
-    // And it still may not act on the session — the cap is on the three verbs, not on a read.
+    // And it still may not act on the session - the cap is on the three verbs, not on a read.
     let refused = watcher
         .set_mode(&session, "read-only")
         .expect_err("a watcher does not change a session's point");

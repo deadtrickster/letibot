@@ -1,16 +1,6 @@
-//! **A stop tells the head what it ended, and it does so before that head is told `Bye`.**
-//!
-//! The daemon's own sentence (`daemon_stopping_runs`) is the difference between *it killed the
-//! run* and *it killed the run and told you*, and the stop under test is the one that has a run
-//! to end: an operator's `!` command in flight, held by the session's `PromptDriver`, and a run
-//! ender that takes a beat over it — a killed tree leaving its cgroup is seconds, not
-//! microseconds.
-//!
-//! **Why a socket and not the hub.** `crates/harnessd/tests/stop_ends_runs.rs` measured the real
-//! daemon on a 24-core host: the head's `Bye` arrived 11.7 ms after the stop while the run was
-//! still being killed at 313, and no sentence ever came. A hub-level test cannot see that: a
-//! closed hub still queues what is published to it, so the sentence is there for anybody who
-//! asks. What came apart was the ORDER the frames went out on the socket, which is this file.
+//! A stop tells the head what it ended, and does so before that head is told `Bye`. A hub-level
+//! test cannot see this - a closed hub still queues what is published to it, so the sentence is
+//! there for anybody who asks - what comes apart is the ORDER the frames went out on the socket.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -45,7 +35,7 @@ fn socket(tag: &str) -> std::path::PathBuf {
     ))
 }
 
-/// **The frames as they arrived, with the sentence's place in them recorded.**
+/// The frames as they arrived, so the sentence's place among them is a fact.
 fn frames_until_bye(rx: &std::sync::mpsc::Receiver<Inbound>) -> Vec<String> {
     let mut out = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(20);
