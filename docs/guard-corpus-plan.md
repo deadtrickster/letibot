@@ -111,24 +111,24 @@ is another reason step 5 comes first.
   (`nmap`, `masscan`, `hping3`), power (`shutdown`, `reboot`), disk (`sgdisk`, `cfdisk`). Two new intents
   where ours have no home: `Persist`, `Escalate`.
 - `SENSITIVE_WRITE_PATHS` (`/etc/`, `/boot/`, `/sys/`, `/proc/sys/`, `/dev/` minus the benign devices)
-  beside `NEVER_WRITE`, plus `/etc/shadow`, `/etc/sudoers` and `~/.netrc` in the secret list. These belong
-  in `config/sensitive.json`, which is **written and not loaded** - loading it is part of this step,
-  behind the "a model must ask to change this file" rule that already exists.
-- The 31 GTFOBins techniques as **tree rules over `Stage`** - `find -exec sh`, `awk system()`, `vim :!`,
-  `git -c alias.x=!sh`, `docker run --privileged`, interpreters with `-e` spawning a shell - not as regexes
-  over the string, re-expressed from the technique with the CARE rule id cited per rule. Nothing copied
-  from GTFOBins' pages (GPL).
-- Not taken: `grep -r "password"` and `chown root`, which would prompt on ordinary work.
-- **The L4 regex bank, measured and not taken.** All 139 patterns over the etalon's commands: 31 fire at
-  all, and together they would add 879 prompts on rows that ran and catch 5 refused rows (4 of them
-  already caught by `credential_use`). The heaviest firers are wrong: "shutdown/reboot" matches the *word*
-  in grep patterns and source text, `/home` counts as a system directory so every `rm -rf
-  /home/…/Projects/x` prompts, and the confidence-1.0 hits - `rm -rf /`, `cat ~/.ssh/id_rsa`, `curl … |
-  sh` - are every one of them **text about a dangerous command**: this repository's own fixtures, its docs,
-  the tool survey's table, written into files by heredoc. A whole-string regex over a corpus produced by
-  people building a guard matches the guard's own vocabulary. That is the argument for tree rules, and the
-  reason the lexicon is the part of CARE that ported. What it does not say: the etalon is benign work, so
-  the 108 patterns that never fired have zero false-positive cost here and zero evidence of value here.
+  beside `NEVER_WRITE`, plus `/etc/shadow`, `/etc/sudoers` and `~/.netrc` in the secret list. They belong
+  in `config/sensitive.json`, which is **written and not loaded** - loading it is the last piece of this
+  step, behind the "a model must ask to change this file" rule that already exists.
+- The 31 GTFOBins techniques as **tree rules over `Stage`** (`find -exec sh`, `awk system()`, `vim :!`,
+  `git -c alias.x=!sh`, `docker run --privileged`, interpreters with `-e` spawning a shell) rather than
+  regexes over the string, re-expressed from the technique with the CARE rule id cited per rule and
+  nothing copied from GTFOBins' pages (GPL). Not taken: `grep -r "password"` and `chown root`, which would
+  prompt on ordinary work.
+- **The L4 regex bank, measured and not taken.** All 139 patterns over the etalon: 31 fire at all, and
+  together they would add 879 prompts on rows that ran while catching 5 refused rows (4 already caught by
+  `credential_use`). The heaviest firers are wrong - "shutdown/reboot" matches the *word* in grep patterns
+  and source text, `/home` counts as a system directory so every `rm -rf /home/…/Projects/x` prompts, and
+  the confidence-1.0 hits (`rm -rf /`, `cat ~/.ssh/id_rsa`, `curl … | sh`) are every one of them **text
+  about a dangerous command**: this repository's fixtures, its docs, the tool survey's table, written into
+  files by heredoc. A whole-string regex over a corpus produced by people building a guard matches the
+  guard's own vocabulary, which is the argument for tree rules and the reason the lexicon is the part of
+  CARE that ported. It does not say the other 108 patterns are harmless - the etalon is benign work, so
+  they have zero false-positive cost here and zero evidence of value here.
 - **The bank's CPU cost is not the problem** if a session with real teeth wants all of it: Rust's `regex`
   compiles 136 of the 139, and as separate values tried in turn it is 7.7 µs a command (25 µs worst), so
   a thousand rules of this kind stay under the 300 µs the tree parse already spends. The cost is the 587
