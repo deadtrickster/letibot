@@ -1,38 +1,16 @@
-//! **Fixtures that are real images** — because a fixture that only *looked* like one hid a bug
-//! that cost a session.
+//! Fixtures that are real images, because a fixture that only looked like one hid a bug that cost
+//! a session: a 33-byte PNG header was stored as an image and a provider refused the whole request
+//! on every turn, for ever.
 //!
-//! MEASURED 2026-10-30: every picture fixture in this tree was a PNG signature, an `IHDR`, and
-//! nothing else — 33 bytes, no `IDAT`, no `IEND`, a zeroed CRC. Every test that used one asserted
-//! that `read` had called it an image, and it had: [`crate::media::Media::of`] read the magic and
-//! the header and asked nothing more. Then a `read` of exactly those bytes was stored as an image
-//! and sent to a provider, which refused the **whole request** —
-//! `.messages[1861].image[0]: You have uploaded an unsupported image` — on every turn, for ever,
-//! because a transcript row is append-only and the picture was history.
+//! So [`png`] is a picture a decoder can read and [`png_header_only`] is the incident's bytes, kept
+//! so a test can assert they are refused. Public for the reason the session log's fixtures are: the
+//! crates that need a picture in a fixture are not this one.
 //!
-//! So the fixtures here are **complete** images: [`png`] is a real RGBA picture whose bytes
-//! CoreGraphics (`sips -g pixelWidth`) decodes, and [`png_header_only`] is the incident's 33 bytes,
-//! kept on purpose so a test can assert that they are refused.
-//!
-//! Public rather than `#[cfg(test)]` for the reason `letibot_sessionlog::testing` is public: the
-//! crates that need a picture in a fixture — the head, the daemon, `read`'s own test — are not this
-//! one, and a second copy of a PNG builder is a second copy that can drift back into a stub.
-//!
-//! # What each fixture claims
-//!
-//! [`png`] is a decodable picture: the scanlines are there, the CRCs are right, the deflate stream
-//! is a real one (a stored block, so the bytes are visible rather than compressed).
-//!
-//! [`jpeg`], [`gif`] and [`webp`] are **structurally complete** — the header, the payload chunks
-//! and the trailer [`crate::media::complete_image`] reads — and their pixels are stubs, because
-//! nothing in this tree decodes them and a hand-written baseline JPEG would be a page of tables in
-//! the middle of a test fixture. Said here rather than implied.
+//! [`jpeg`], [`gif`] and [`webp`] are structurally complete and their pixels are stubs, said here
+//! rather than implied.
 
-/// **A real PNG**, `w`×`h`, opaque black RGBA.
-///
-/// Built rather than embedded so a caller can ask for the dimensions it needs and read them back
-/// out of the header. The `IDAT` is one zlib stream made of stored (uncompressed) deflate blocks,
-/// which is why the bytes are four times the pixel count plus a header — the fixture is a picture,
-/// not a compression test.
+/// A real PNG, `w`x`h`, opaque black RGBA. Built rather than embedded so a caller asks for the
+/// dimensions it needs; the `IDAT` is one zlib stream of stored blocks, so the bytes are visible.
 pub fn png(w: u32, h: u32) -> Vec<u8> {
     // One row of opaque black, built once: filter type 0 (none), then the pixels.
     let mut row = Vec::with_capacity(1 + 4 * w as usize);
@@ -56,12 +34,8 @@ pub fn png(w: u32, h: u32) -> Vec<u8> {
     out
 }
 
-/// **The bytes that wedged a session** — a PNG signature and an `IHDR` for `w`×`h`, a zeroed CRC,
-/// and no picture at all.
-///
-/// Kept as a fixture because the refusal it produces is the behaviour under test: a file that
-/// announces itself as a PNG and holds no image is not an image, and the cost of treating it as
-/// one is a session no restart could revive.
+/// The bytes that wedged a session: a PNG signature and an `IHDR`, a zeroed CRC, and no picture.
+/// Kept because the refusal it produces is the behaviour under test.
 pub fn png_header_only(w: u32, h: u32) -> Vec<u8> {
     let mut p = b"\x89PNG\r\n\x1a\n".to_vec();
     p.extend_from_slice(&13u32.to_be_bytes());
@@ -74,11 +48,9 @@ pub fn png_header_only(w: u32, h: u32) -> Vec<u8> {
     p
 }
 
-/// **A structurally complete JPEG** — `SOI`, a JFIF `APP0`, a `SOF0` carrying `w`×`h`, a `DQT`, an
-/// `SOS` header, a few bytes of entropy-coded data and `EOI`.
-///
-/// The entropy-coded data is a stub: nothing here decodes a JPEG, and [`crate::media::jpeg_size`]
-/// is the only reader, which is the header walk this fixture exists to exercise.
+/// A structurally complete JPEG: `SOI`, a JFIF `APP0`, a `SOF0` carrying the size, a `DQT`, an `SOS`
+/// header, a few bytes of entropy-coded data and `EOI`. The pixels are a stub, since only the header
+/// walk reads them.
 pub fn jpeg(w: u16, h: u16) -> Vec<u8> {
     let mut out = b"\xff\xd8".to_vec();
     let app0 = b"JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00";
