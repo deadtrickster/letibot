@@ -396,9 +396,9 @@ struct Scan {
     skipped_large: usize,
     /// Files after [`BYTES_BUDGET`] ran out, never opened.
     unreached: usize,
-    /// The languages among the files opened that `outline` has a grammar for. Collected here because
-    /// it is the only place that knows which files were really read, and a suggestion to use `outline`
-    /// is only honest if it would have worked.
+    /// The languages among the files opened that `outline` has a grammar for, collected here
+    /// because it is the only place that knows which files were really read: a suggestion to use
+    /// `outline` is only honest if it would have worked.
     languages: Vec<&'static str>,
 }
 
@@ -749,9 +749,9 @@ mod tests {
             r.render()
         );
         assert!(r.payload.contains("src/lib.rs:"), "{}", r.payload);
-        // The assertion that actually distinguishes the fix. Without it the scope yielded nothing and
-        // the LADDER rescued the call by re-searching the whole session root: same hits, same payload,
-        // and a passing test that proves nothing. What the fix changes is a DIRECT search.
+        // The assertion that actually distinguishes the fix: without it the scope yielded nothing
+        // and the LADDER rescued the call by re-searching the whole session root, same hits and
+        // same payload, so a passing test proves nothing. The fix changes a DIRECT search.
         let notes = r.notes.join(" ");
         assert!(
             !notes.contains("whole session root"),
@@ -918,9 +918,9 @@ mod tests {
         assert!(r.payload.contains("src"), "{}", r.payload);
     }
 
-    /// A file past [`FILE_CEILING`] is never opened, and the result says so: a search that silently
-    /// skipped a file would report an absence it did not establish. The file is created SPARSE, so the
-    /// test costs a metadata call, and its name is a candidate for the same search.
+    /// A file past [`FILE_CEILING`] is never opened, and the result says so: a search that
+    /// silently skipped a file would report an absence it did not establish. The file is created
+    /// SPARSE, so the test costs a metadata call, and its name is a candidate for the search.
     #[test]
     fn a_file_over_the_ceiling_is_skipped_and_the_result_says_so() {
         let mut h = harness();

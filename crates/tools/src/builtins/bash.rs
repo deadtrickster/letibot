@@ -490,9 +490,9 @@ impl Tool for Bash {
             scope_name,
             background,
             env,
-            // The operator's own run meets their console; a model's does not. `ls` colours only when
-            // `isatty(1)` is true, so an operator run gets a pty and their shell's rc file; the model's
-            // call keeps its pipe, because escape codes around every name are a cost it cannot see.
+            // The operator's own run meets their console; a model's does not. `ls` colours only
+            // under a tty, so an operator run gets a pty and their rc file, and the model's call
+            // keeps its pipe: escape codes around every name are a cost it cannot see.
             tty: ctx.tty,
             memory,
         };
@@ -524,9 +524,9 @@ impl Tool for Bash {
         let label = crate::exec::job_label(slug.as_deref(), &id.0);
 
         if background {
-            // Where this job's own output goes, which changes what the sentences below may SAY and
-            // not merely adds a footnote: a note that argues with the line beneath it is worse than no
-            // note, because the model believes the line it has seen before.
+            // Where this job's own output goes changes what the sentences below may SAY, and is
+            // not a footnote: a note that argues with the line beneath it is worse than none,
+            // because a model believes the line it has seen before.
             let redirected = crate::builtins::output_redirect_path(command);
             // Where the whole of it is, said at the one moment the caller learns the handle: a reader
             // told only about the 8 MiB window loses a long build's first half. Not when the command
@@ -743,9 +743,9 @@ impl Tool for Bash {
                     }
                     inv
                 }
-                // No deadline was armed, so this is not a timeout and the run is not stopped.
-                // `Running` with no deadline arrives when the wait ended without the run ending, which
-                // is a fact about this daemon; killing here would end a person's run by no clock.
+                // No deadline was armed, so this is not a timeout and the run is not stopped: a
+                // `Running` with no deadline is a fact about this daemon, and killing here would
+                // end a person's run by no clock.
                 None => Invocation::failed(
                     format!("`{label}` is still running"),
                     format!(
@@ -1097,9 +1097,9 @@ fn ask_if_waiting(
 mod tests {
     use super::*;
 
-    /// A name is never invented from the command, which is the whole point of the parameter: a guessed
-    /// slug is worse than none, since the command is already on the row, and a test where the command
-    /// is exactly the shape a deriver would reach for must answer no name at all.
+    /// A name is never invented from the command, which is the whole point of the parameter: a
+    /// guessed slug is worse than none, since the command is already on the row. A test where
+    /// the command is the shape a deriver would reach for must answer no name at all.
     #[test]
     fn no_slug_is_ever_derived_from_the_command() {
         let deriver_bait = serde_json::json!({

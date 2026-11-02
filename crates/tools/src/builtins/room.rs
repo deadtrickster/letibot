@@ -1,6 +1,6 @@
 //! `room` is the host's tagged queues, seen from a top-level session: one tool and a `verb`.
 //! The socket behind it is the daemon's ([`RoomLink`]), so a subagent is refused at the door.
-//! The daemon beats while a turn runs; [`RoomLink::beats_on_my_behalf`] says which of the two is happening.
+//! The daemon beats while a turn runs, and [`RoomLink::beats_on_my_behalf`] says which.
 
 use std::sync::Arc;
 

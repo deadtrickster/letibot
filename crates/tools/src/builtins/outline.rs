@@ -202,7 +202,7 @@ impl OutlineTool {
 
         // A page at a time, not a file at a time: over firecode one `read` is one `firecode in`
         // (~0.5 s), so a tree-wide outline was hundreds of round trips with no result until the last.
-        // The page is chosen by the language, known before any read, so no boundary can change an answer.
+        // The page is chosen by the language, known before any read, so no boundary changes it.
         let mut i = 0usize;
         while i < files.len() {
             let mut page: Vec<(usize, Language)> = Vec::new();
