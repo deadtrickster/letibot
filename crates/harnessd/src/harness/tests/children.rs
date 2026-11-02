@@ -354,11 +354,17 @@ fn a_failed_child_leaves_no_worktree_and_keeps_its_branch() {
 
     // A failure: the tree goes and the branch stays, at the commit the child made.
     std::fs::write(std::path::Path::new(&path).join("a.txt"), "two\n").expect("write");
-    super::git_in(
-        &path,
-        &["-c", "commit.gpgsign=false", "commit", "-qam", "the work"],
-    )
-    .expect("the child commits");
+    // Through the fixture's own git, which carries an identity and no signing: a commit made with
+    // the box's own config depends on what the operator's `~/.gitconfig` says.
+    let made = letibot_tools::testing::git(std::path::Path::new(&path))
+        .args(["-c", "commit.gpgsign=false", "commit", "-qam", "the work"])
+        .output()
+        .expect("git");
+    assert!(
+        made.status.success(),
+        "the child's commit: {}",
+        String::from_utf8_lossy(&made.stderr)
+    );
     let head = super::git_in(&path, &["rev-parse", "HEAD"]).expect("its head");
     let slot = TaskSlot::new("s-parent");
     slot.set_deliverable(deliverable::Deliverable::of(&placement));
