@@ -3440,9 +3440,27 @@ pub fn abandoned_calls(items: &[TranscriptItem]) -> Vec<(String, String)> {
     // A call asked for TWICE and answered once is answered: the set difference, not a count.
     asked
         .into_iter()
-        .filter(|(id, _)| !answered.contains(id))
+        .filter(|(id, _)| {
+            probe_answer();
+            !answered.contains(id)
+        })
         .map(|(id, name)| (id.to_string(), name.to_string()))
         .collect()
+}
+
+// The answer lookups this thread's sweeps have made, so the cost is a number a test can read.
+// The sweep runs on the worker after every turn, over a transcript that only grows: one probe
+// per asked call, never a scan of the answers.
+#[cfg(test)]
+thread_local! {
+    static ANSWER_PROBES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// One answer lookup - counted under test, and nothing at all in a shipped build.
+#[inline(always)]
+fn probe_answer() {
+    #[cfg(test)]
+    ANSWER_PROBES.with(|n| n.set(n.get() + 1));
 }
 
 #[cfg(test)]
@@ -3469,6 +3487,7 @@ mod endpoint_retry {
     /// process both vanished: it sat `running` for eight minutes while `esc esc` did nothing.
     mod abandoned_call_sweep {
         use crate::harness::abandoned_calls;
+        use crate::harness::turns::ANSWER_PROBES;
         use letibot_transcript::{ToolCall, ToolOutcome, TranscriptItem, UserPart};
 
         fn assistant(call_id: &str, name: &str) -> TranscriptItem {
@@ -3543,6 +3562,29 @@ mod endpoint_retry {
                 result_for("c1"),
             ];
             assert!(abandoned_calls(&items).is_empty());
+        }
+
+        /// **The sweep's cost, pinned as a count** - the reason a quadratic pass cannot come back
+        /// unnoticed: it is one probe per asked call however many results the transcript holds.
+        #[test]
+        fn the_sweep_probes_the_answers_once_per_asked_call() {
+            const CALLS: usize = 4_000;
+            let items: Vec<TranscriptItem> = (0..CALLS)
+                .flat_map(|i| {
+                    [
+                        assistant(&format!("c{i}"), "grep"),
+                        result_for(&format!("c{i}")),
+                    ]
+                })
+                .collect();
+            ANSWER_PROBES.with(|n| n.set(0));
+            assert!(abandoned_calls(&items).is_empty());
+            let probes = ANSWER_PROBES.with(|n| n.get());
+            assert_eq!(
+                probes, CALLS,
+                "{probes} probes for {CALLS} asked calls over {CALLS} answers: the answers are a \
+                 set read once per call, not a list walked once per call"
+            );
         }
 
         /// A transcript with no tool calls at all - the common case - costs nothing and says nothing.
