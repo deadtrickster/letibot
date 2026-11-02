@@ -89,6 +89,13 @@ Three placement bugs seen running packages on lubuntu1, lubuntu2 and lab2x1.
 
 ---
 
+
+More callers, from the operator on 2026-11-03:
+
+- Waits. When a brief, task or subagent prompt is written, score it against the open todo rows of the session and its relatives. A close match is offered as "this looks like todo X, owned by Y - consider `needs`/wait_on it instead of starting it".
+- Already done. Score a new brief against recent commit subjects and TODO-settled.md. A close match is offered as "looks like <sha> already did this - check before starting". On 2026-11-02 four of fifteen packages found their whole scope already fixed on main.
+- Compaction relevance. Rank old turns by their score against the current todos and plan, keep the relevant ones in full and summarise the rest, instead of cutting by age. This feeds R22.
+
 ## R113 - Skills are offered like notes, the index shows only pins, and a live check proves the whole path - **OPEN, filed 2026-11-02, operator's ask**
 
 The prompt's skill index (`crates/tools/src/builtins/skill.rs`, `SkillRegistry::index`) sorts by source priority then name and stops at 60 rows, 4000 bytes or 800 tokens. Nothing ranks by relevance, so a box with many installed skills fills the slots alphabetically, and nothing offers a skill the way `crates/harnessd/src/notes_offer.rs` offers a note. The operator (2026-11-02): the offer is wanted, listing skills in full is not, pins are wanted.
