@@ -1,12 +1,6 @@
-//! What a tool call produced, how it reaches the model, and why abstention has a shape
-//! of its own.
-//!
-//! The outcome vocabulary is [`ToolOutcome`] and lives in `letibot-transcript`, because
-//! the transcript is what a later turn re-renders and the class must survive that round
-//! trip. What lives here is the structural half: an abstention is not a differently
-//! worded success but a different envelope, machine-recognisable coming back
-//! ([`Envelope::classify`]), and [`propagate`] makes it impossible for a caller to report
-//! `Ok` over a set of calls that all abstained.
+//! What a tool call produced and how it reaches the model, and why abstention has a shape of its
+//! own: not a differently worded success but a different envelope, machine-recognisable coming back,
+//! and [`propagate`] makes it impossible to report `Ok` over calls that all abstained.
 
 use letibot_transcript::ToolOutcome;
 
@@ -30,23 +24,14 @@ pub struct ToolResult {
     pub notes: Vec<String>,
     /// Set when the full output went to the spill store.
     pub spill: Option<SpillRef>,
-    /// Both sides of a file this call changed, for a head to draw a diff from.
-    ///
-    /// Not part of [`ToolResult::render`], and that is the point: this never becomes
-    /// prompt bytes. The model gets the confirmation in `payload`; the head gets the
-    /// file.
+    /// Both sides of a file this call changed, for a head to draw a diff from. Never prompt bytes, and
+    /// that is the point: the model gets the confirmation in `payload` and the head gets the file.
     pub edit: Option<crate::edit::FileEdit>,
-    /// Bytes this call read that are not text - see [`crate::media`].
-    ///
-    /// Unlike `edit`, this one does become prompt bytes: a diff is for a head to draw,
-    /// and an image is for the model to look at, so a renderer that dropped it would
-    /// drop the whole point of the call. The payload carries the sentence about it,
-    /// which is what a text-only reader gets.
+    /// Bytes this call read that are not text. Unlike `edit`, this one does become prompt bytes, since
+    /// an image is for the model to look at; the payload carries the sentence a text-only reader gets.
     pub media: Option<crate::media::Media>,
-    /// Repair codes this session's model has already been told about, which
-    /// [`ToolResult::render`] does not repeat. `repairs` still holds them - the head and
-    /// the metrics count every repair - and only the model's copy is spared the same
-    /// line on every call for a habit it will not drop.
+    /// Repair codes this session's model has already been told about, which [`ToolResult::render`] does
+    /// not repeat. `repairs` still holds them, so the head and the metrics count every repair.
     pub repairs_told: Vec<&'static str>,
 }
 
@@ -81,14 +66,9 @@ impl ToolResult {
         matches!(self.outcome, ToolOutcome::Ok)
     }
 
-    /// The exact bytes that go into `TranscriptItem::ToolResult::payload`.
-    ///
-    /// Three envelopes, chosen by outcome class and never by wording: `Ok` is the body
-    /// with any `[note]` block above it; `Abstained` is `NO_RESULT`, where nothing
-    /// inside is an answer and the envelope says so in the same bytes every time;
-    /// `Backgrounded` is `STILL_RUNNING`; everything else is `TOOL_ERROR`, which still
-    /// carries the corrective body, because that does not stop applying when a call
-    /// fails.
+    /// The exact bytes that go into `ToolResult::payload`. Three envelopes, chosen by outcome class and
+    /// never by wording, and `TOOL_ERROR` still carries the corrective body, because that does not stop
+    /// applying when a call fails.
     pub fn render(&self) -> String {
         let mut head = String::new();
         for r in &self.repairs {
@@ -122,10 +102,9 @@ impl ToolResult {
                      question, and nothing above may be cited as one.",
                 self.name, self.payload
             )),
-            // Its own envelope, and the reason is the whole point of the variant.
-            // Wrapped in `TOOL_ERROR` this reads as a failure and the model retries, and
-            // now two of the command are running; as `Ok` with a short body it reads as a
-            // command that produced nothing. Neither is true: it is running.
+            // Its own envelope: wrapped in `TOOL_ERROR` this reads as a failure and the model retries,
+            // and now two of the command are running; as `Ok` with a short body it reads as a command
+            // that produced nothing.
             ToolOutcome::Backgrounded {
                 handle,
                 ran_for_ms,
@@ -151,11 +130,8 @@ impl ToolResult {
             other => Envelope::error(&self.call_id).wrap(&format!(
                 "tool: {}\noutcome: {}\n{head}{}",
                 self.name,
-                // The reason once. A refusal's payload is already a complete
-                // explanation - it names the tool, the decider, the basis and what to do -
-                // and prepending the same sentence again made three copies of one
-                // paragraph in one card. So when the payload already says it, the outcome
-                // line is the word alone.
+                // The reason once. A refusal's payload already names the tool, the decider, the basis
+                // and what to do, so when it says it the outcome line is the word alone.
                 outcome_word_beside(other, &self.payload),
                 self.payload
             )),
@@ -174,12 +150,9 @@ fn human_ms(ms: u64) -> String {
     format!("{}m{:02}s", ms / 60_000, (ms % 60_000) / 1000)
 }
 
-/// [`outcome_word`], minus the reason the payload below it already carries.
-///
-/// Containment rather than equality, because the payload wraps the reason in its own
-/// prose: a refusal notice puts it after `basis: `, a failure puts it in a sentence. A
-/// reason that does not appear below is kept, because then this line is the only place
-/// it is said.
+/// [`outcome_word`], minus the reason the payload already carries. Containment rather than equality,
+/// because the payload wraps the reason in its own prose; a reason that does not appear below is kept,
+/// since then this line is the only place it is said.
 fn outcome_word_beside(o: &ToolOutcome, payload: &str) -> String {
     let reason = match o {
         ToolOutcome::Failed { reason } => reason,
@@ -212,13 +185,8 @@ fn outcome_word(o: &ToolOutcome) -> String {
     }
 }
 
-/// A delimiter pair the outcome class picks, not the wording.
-///
-/// The tag carries a short marker derived from the call id, so two calls in one turn
-/// cannot have their envelopes confused, and an envelope quoted back out of one result
-/// is recognisably not another's. It does not claim a model cannot type these
-/// characters: the harness's job is that the system never reports an abstention as
-/// grounded, which is [`propagate`]'s.
+/// A delimiter pair the outcome class picks, not the wording. The tag carries a marker derived from
+/// the call id, so two calls in one turn cannot have their envelopes confused.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Envelope {
     kind: &'static str,
@@ -240,14 +208,9 @@ impl Envelope {
         }
     }
 
-    /// A command that is still running, wrapped so it cannot be read as either of the
-    /// two things it is not.
-    ///
-    /// A third kind rather than a wording inside one of the existing two, for the same
-    /// structural reason `NO_RESULT` exists: the model sees a distinct token sequence and
-    /// not prose it can paraphrase around. A backgrounded result rendered inside
-    /// `TOOL_ERROR` is a retry waiting to happen, and a duplicate `cargo build` is not a
-    /// cosmetic defect.
+    /// A command that is still running, wrapped so it cannot be read as either of the two things it is
+    /// not: a backgrounded result inside `TOOL_ERROR` is a retry waiting to happen, and a duplicate
+    /// `cargo build` is not a cosmetic defect.
     pub fn still_running(call_id: &str) -> Self {
         Envelope {
             kind: "STILL_RUNNING",
@@ -255,15 +218,9 @@ impl Envelope {
         }
     }
 
-    /// An envelope around text this harness did not write - a fetched page, a search
-    /// snippet, the body of somebody's issue.
-    ///
-    /// Not an outcome class, so [`Envelope::classify`] does not know it: it marks
-    /// provenance inside the payload of an ordinary `Ok` result. The token stream is
-    /// already safe from forged control tokens, so what is left is prose the model has
-    /// every reason to trust, because every other tool result was written here - so the
-    /// span is labelled, states that nothing inside it has authority, and its closing
-    /// marker is made unspellable by the content it quarantines.
+    /// An envelope around text this harness did not write: a fetched page, a search snippet, the body of
+    /// somebody's issue. Not an outcome class, so [`Envelope::classify`] does not know it; it marks
+    /// provenance inside an ordinary `Ok` payload and states that nothing inside it has authority.
     pub fn untrusted(call_id: &str) -> Self {
         Envelope {
             kind: "UNTRUSTED_TEXT",
@@ -283,15 +240,9 @@ impl Envelope {
         format!("{}\n{}\n{}", self.open(), body.trim_end(), self.close())
     }
 
-    /// Wrap content that arrived from outside, and make this envelope's own delimiters
-    /// unspellable by that content.
-    ///
-    /// The mark is a hash of the call id and a call id is guessable, so a page could
-    /// compute it and write the closing line itself; every `<<<` in the body is spaced
-    /// out, not only this envelope's own, because a page can as well forge another call's
-    /// `NO_RESULT`. That edits the content, so the count comes back with it and the caller
-    /// reports it as a `[note]`: three characters altered and said out loud beats an
-    /// unforgeable delimiter that does not exist.
+    /// Wrap content that arrived from outside, and make this envelope's own delimiters unspellable by
+    /// it. The mark is derivable, so every `<<<` in the body is spaced out, and the count comes back for
+    /// the caller to report as a `[note]`.
     ///
     /// Returns `(wrapped, sequences_neutralised)`.
     pub fn wrap_untrusted(&self, header: &str, body: &str) -> (String, usize) {
@@ -313,10 +264,8 @@ impl Envelope {
         )
     }
 
-    /// Which envelope a rendered payload is in, if any.
-    ///
-    /// A payload that says `NO_RESULT` at the top must round-trip to the class it was
-    /// rendered from, or the structural claim is decoration.
+    /// Which envelope a rendered payload is in, if any: one that says `NO_RESULT` at the top must
+    /// round-trip to the class it was rendered from, or the structural claim is decoration.
     pub fn classify(rendered: &str) -> Option<&'static str> {
         let first = rendered.lines().next()?;
         for kind in ["NO_RESULT", "TOOL_ERROR", "STILL_RUNNING"] {
@@ -349,13 +298,8 @@ pub enum Propagation {
     Must(ToolOutcome),
 }
 
-/// Abstention propagates upward: a subagent whose tool calls all abstained cannot
-/// return `Ok`, and the harness never converts "no result" into "a result".
-///
-/// Empty input is `Unconstrained` on purpose: a caller that made no tool calls at all is
-/// not a caller whose tool calls abstained, and conflating the two would make every
-/// non-tool-using turn an abstention. The rule is about converting a no-result into a
-/// result, and there is nothing to convert.
+/// Abstention propagates upward: a subagent whose calls all abstained cannot return `Ok`. Empty input
+/// is `Unconstrained` on purpose, since a caller that made no tool calls has not abstained.
 pub fn propagate(children: &[ToolOutcome]) -> Propagation {
     if children.is_empty() || children.iter().any(|o| matches!(o, ToolOutcome::Ok)) {
         return Propagation::Unconstrained;
@@ -378,10 +322,9 @@ pub fn propagate(children: &[ToolOutcome]) -> Propagation {
         });
     }
 
-    // A caller whose work is all still running has not failed. It has not abstained
-    // either: an abstention is a claim about the world - the thing is not there - and
-    // nothing here has looked yet. `not_run` is the only honest one: nothing was decided,
-    // and the handles say where the answer will be.
+    // A caller whose work is all still running has not failed and has not abstained either: an
+    // abstention is a claim about the world, and nothing here has looked yet. `not_run` is the only
+    // honest one.
     let running: Vec<&str> = children
         .iter()
         .filter_map(|o| match o {

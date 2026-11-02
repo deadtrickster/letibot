@@ -1,16 +1,9 @@
-//! A remote is an RPC, and the client follows the practices: what does it do about a
-//! machine that is slow, down, refusing or busy?
-//!
-//! A host that is down is not dialled ([`before`]/[`after`] keep a per-host breaker, and one
-//! call after the cooldown is a probe that may close it); every call is recorded in a
-//! bounded ring ([`record`], [`report`]); a host takes a bounded number of sessions
-//! ([`enter`] queues under the caller's deadline); and [`run_bounded`] is the one place a
-//! local process gets a wall clock, so no caller can drift on what bounded means.
+//! A remote is an RPC, so this follows the practices: a host that is down is not dialled, every call
+//! is recorded in a bounded ring, a host takes a bounded number of sessions, and [`run_bounded`] is
+//! the one place a local process gets a wall clock.
 //!
 //! The state is process-wide because every caller reaches the same machine over the same
-//! `ControlMaster`, so private breakers would cost a down host one timeout each. A test that
-//! opens a breaker opens it for its whole test binary, so each test uses a host name of its
-//! own rather than a reset door production does not have.
+//! `ControlMaster`, so private breakers would cost a down host one timeout each.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::Path;
@@ -23,27 +16,16 @@ use std::os::unix::process::CommandExt;
 // Rule 5 - the circuit breaker
 // ---------------------------------------------------------------------------
 
-/// How many connection failures in a row open the breaker.
-///
-/// Three, because one failure already costs two attempts and two timeouts: waiting for
-/// two steps to fail would mean four timeouts before anything decided the host was
-/// down. A machine that misses three dials in a minute is down, not slow.
+/// How many connection failures in a row open the breaker: three, because each failure already
+/// costs two timeouts and a machine that misses three dials in a minute is down, not slow.
 pub const BREAKER_THRESHOLD: u32 = 3;
 
-/// The window the failures must fall inside to count as consecutive.
-///
-/// "Consecutive" alone is not enough: a streak that never expires would open the breaker
-/// on three unrelated bad minutes in a day. A minute is also comfortably longer than
-/// the failures of one hung turn take to accumulate, so a machine that goes away
-/// mid-session always accumulates.
+/// The window the failures must fall inside to count as consecutive, because a streak that never
+/// expires would open the breaker on three unrelated bad minutes in a day.
 pub const BREAKER_WINDOW: Duration = Duration::from_secs(60);
 
-/// How long an open breaker refuses before it lets one probe through.
-///
-/// Long enough that the calls it refuses are actually saved a timeout, and short enough
-/// that a machine which rebooted in ten seconds is usable again without the operator
-/// restarting a daemon. It is also longer than the keepalives take to give up on a dead
-/// link, so "did it come back" is a real question rather than a race.
+/// How long an open breaker refuses before one probe is let through: long enough that refused calls
+/// are saved a timeout, short enough that a rebooted machine is usable without restarting a daemon.
 pub const BREAKER_COOLDOWN: Duration = Duration::from_secs(30);
 
 /// What one call is admitted as, before it is made.
@@ -91,12 +73,8 @@ fn health_lock() -> std::sync::MutexGuard<'static, BTreeMap<String, Health>> {
     HEALTH.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Is this host worth dialling right now? - asked before every call.
-///
-/// `Err` is the sentence a caller is refused with, and it says the three things a person
-/// needs: why the host is unavailable, when it was last reached, and when letibot will
-/// try it again. A conversation that retried and then said only "ssh failed" is what
-/// this replaces.
+/// Is this host worth dialling right now? `Err` is the sentence a caller is refused with, and it says
+/// why the host is unavailable, when it was last reached and when letibot will try again.
 pub fn before(host: &str) -> Result<Pass, String> {
     let mut map = health_lock();
     let h = map.entry(host.to_string()).or_default();
@@ -145,11 +123,9 @@ fn refusal(host: &str, h: &Health, until: Instant) -> String {
     )
 }
 
-/// Record how a call that was admitted ended - and the breaker's whole state machine.
-///
-/// `connected` is *the far side said something*, which includes a refusal: `Permission
-/// denied` is a machine that is up and will not have us, and counting it as a connection
-/// failure would open the breaker on a host whose only problem is a key nobody installed.
+/// Record how an admitted call ended, and run the breaker. `connected` is the far side saying
+/// something, which includes a refusal: counting `Permission denied` as a connection failure would
+/// open the breaker on a key nobody installed.
 pub fn after(host: &str, pass: Pass, connected: bool) {
     let now = Instant::now();
     let mut map = health_lock();
@@ -205,13 +181,10 @@ pub fn standing(host: &str) -> Standing {
 // Rule 8 - back-pressure
 // ---------------------------------------------------------------------------
 
-/// How many ssh invocations this process will have in flight to one host.
-///
-/// Eight, and the number is OpenSSH's rather than ours: `MaxSessions` defaults to 10 per
-/// connection, which is what a `ControlMaster` is, and the two this leaves are the
-/// master's own channel and one `-O check`. Going to 10 exactly would have the *server*
-/// refuse the eleventh with `Session open refused`, which reads like a fault on the host
-/// - so the client keeps a queue, and the server never has to.
+/// How many ssh invocations this process has in flight to one host. Eight, because OpenSSH's
+/// `MaxSessions` is 10 per `ControlMaster` and the two left over are the master's own channel and one
+/// `-O check`: a ninth would have the server refuse with `Session open refused`, which reads as a
+/// fault on the host.
 pub const MAX_SESSIONS_PER_HOST: usize = 8;
 
 struct Gate {
@@ -234,11 +207,8 @@ fn gate(host: &str) -> Arc<Gate> {
         .clone()
 }
 
-/// A place in a host's queue, held for as long as the call it was taken for.
-///
-/// Dropping it is what lets the next call through, so the only way to leak a slot is to
-/// leak the value - which a `?` inside the call would do, hence this is a guard rather
-/// than a pair of functions a caller has to remember to pair.
+/// A place in a host's queue, held for as long as the call it was taken for. Dropping it lets the next
+/// call through, so it is a guard rather than a pair of functions a caller must remember to pair.
 pub struct Entered {
     host: String,
     gate: Arc<Gate>,
@@ -265,11 +235,8 @@ impl Entered {
     }
 }
 
-/// Wait for a slot, but never past the call's own deadline.
-///
-/// The queue is under the caller's clock and not beside it: a queue that outlives the
-/// deadline it was queued under is the hang coming back through the door marked
-/// back-pressure.
+/// Wait for a slot, but never past the call's own deadline: a queue that outlives the deadline it was
+/// queued under is the hang coming back through the door marked back-pressure.
 pub fn enter(host: &str, within: Duration) -> Result<Entered, String> {
     let gate = gate(host);
     let began = Instant::now();
@@ -365,11 +332,8 @@ pub const RECORD_RING: usize = 256;
 static RING: LazyLock<Mutex<VecDeque<CallRecord>>> =
     LazyLock::new(|| Mutex::new(VecDeque::with_capacity(RECORD_RING)));
 
-/// Record one call, and - when `$LETIBOT_RPC_DEBUG` is set - print its line.
-///
-/// The line goes to stderr, which is the daemon's log, one line per call, no payload, and
-/// off unless somebody asked. A remote session that is slow then has a record instead of
-/// a feeling.
+/// Record one call, and print its line to stderr when `$LETIBOT_RPC_DEBUG` is set: one line, no
+/// payload, off unless somebody asked.
 pub fn record(host: &str, step: &str, took: Duration, outcome: Outcome) {
     let record = CallRecord {
         host: host.to_string(),
@@ -421,10 +385,8 @@ pub fn all(n: usize) -> Vec<CallRecord> {
     ring.iter().rev().take(n).cloned().collect()
 }
 
-/// What a head should see about one host's calls - the last few, and the slowest.
-///
-/// One line each, because this is a row in `hosts {probe: true}` beside the load average:
-/// a model deciding where to place work needs *flaky or fine*, not a trace.
+/// What a head should see about one host's calls: the last few and the slowest, one line each, since
+/// this is a row in `hosts {probe: true}` beside the load average.
 pub fn report(host: &str) -> String {
     let last = recent(host, 4);
     if last.is_empty() {
@@ -455,13 +417,9 @@ pub fn report(host: &str) -> String {
 // One bounded runner
 // ---------------------------------------------------------------------------
 
-/// What a caller may do when a call does not answer at all - the retry rule, as a value a
-/// second caller can carry.
-///
-/// An operation that cannot have changed anything is asked once more, and one that may
-/// have run is never asked twice. It lives here as well as in [`crate::remote`] because
-/// `letibot --migrate` is a second caller of an ssh call, and a retry rule spelled twice
-/// is a retry rule that drifts.
+/// What a caller may do when a call does not answer: an operation that cannot have changed anything is
+/// asked once more, and one that may have run is never asked twice. Here as well as in the remote
+/// backend because `letibot --migrate` is a second caller.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Retried {
     /// Asking again is the same as asking once.
@@ -480,34 +438,16 @@ pub enum Ended {
     Unstartable(String),
 }
 
-/// Run a program to completion, or kill everything it started at the deadline.
-///
-/// The one place a local process this client starts for its own purposes - never a
-/// model's command, which keeps the tool's own deadline - is given a wall clock. Both
-/// streams are drained on threads of their own: a pipe holds a buffer's worth and no
-/// more, so a child that fills it blocks for ever and the wait below would never see it
-/// finish.
-///
-/// The whole process group is killed, not the child: a killed child leaves whatever it
-/// spawned holding the pipes it inherited, and this side's readers then block for as long
-/// as that grandchild lives.
+/// Run a program to completion, or kill everything it started at the deadline. Both streams are drained
+/// on their own threads, because a child that fills a pipe blocks for ever, and the process group is
+/// killed rather than the child, or a grandchild holds the inherited pipes open.
 pub fn run_bounded(program: &Path, args: &[String], within: Duration) -> Ended {
     run_with_input(program, args, within, None)
 }
 
-/// The same runner, with bytes fed to the child's stdin - how a large write leaves this
-/// box without being spliced into an argv.
-///
-/// It is the same function underneath on purpose: the process group, the deadline and the
-/// two drained pipes are the ones [`run_bounded`] documents, and a second runner that
-/// spelled them again would be a second thing to be wrong about. The one addition is a
-/// writer thread, because a payload bigger than a pipe's buffer cannot be written before
-/// the child is waited on: the child would block on a full pipe while this side blocks on
-/// the child.
-///
-/// A child that exits early is not a write failure: its end of the pipe closes, the
-/// writer's last `write` answers `EPIPE`, and the child's exit status is the answer - which
-/// is the shape a stream a refused session killed half way has.
+/// The same runner with bytes fed to the child's stdin, so a large write leaves this box without being
+/// spliced into an argv. A child that exits early is not a write failure: `EPIPE` closes the writer and
+/// the exit status is the answer.
 pub fn run_bounded_fed(program: &Path, args: &[String], within: Duration, fed: &[u8]) -> Ended {
     run_with_input(program, args, within, Some(fed))
 }
@@ -598,10 +538,8 @@ fn drain<R: std::io::Read + Send + 'static>(
     })
 }
 
-/// End everything one call started, by the process group it leads.
-///
-/// `kill` rather than a libc call because this crate has no `libc` dependency, and a
-/// `/bin/kill` that is missing is a box with worse problems than this one.
+/// End everything one call started, by the process group it leads. `kill` rather than a libc call
+/// because this crate has no `libc` dependency.
 fn kill_group(pid: u32) {
     let _ = std::process::Command::new("kill")
         .args(["-KILL", &format!("-{pid}")])
