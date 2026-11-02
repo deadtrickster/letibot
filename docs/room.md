@@ -1,696 +1,323 @@
-# The room — one host's agents, one queue per tag
+# The room - one host's agents, one queue per tag
 
-The long form of `crates/room`. The crate's docs are the map; this is the reasoning, the wire, and
-the list of what the next slice still owes.
+The long form of `crates/room`. The crate's docs are the map; this is the reasoning, the wire, and what
+is still owed.
 
-## The brief, and the two decisions that shaped it
+## The brief
 
-The operator, 2026-10-29:
+All agents on one host have to be able to talk to each other, with a tagged queue so a top-level session
+can coordinate. A RAM shortage is the example: three sessions want the same scarce thing and one runs. A
+claim whose holder dies is marked as such and the queue moves on, and a holder gets reminders (with a
+`waits_on` they can set) so they do not occupy an item for ever.
 
-> *"we have to be able to let all agents running in letibot communicate on a single host for
-> starters. look how firecode chat works. we need builtins. top level sessions only. Example — there
-> is RAM shortage — agents should be able to talk thru it and coordinate. so this chat should come
-> with a tagged priority queue — queue per tag essentially. top level session can coordinate via it.
-> once agent that claimed the queue item dies (or goes offline) that item is marked as such and
-> queue moves on. Just like with todo top level session get reminds (with ability to mark waits_on)
-> so they dont occupy it forever."*
-
-**First decision — a table in `sessions.db` plus a pass.** Every daemon on this box shares that
-store, and the merge queue proves the shape survives restarts.
-
-**Second decision — a socket, a dedicated daemon, a tie-breaker, a pane.** The operator reversed the
-first one the same night:
-
-> *"id still do it as a socket tho, we have a dedicated harnessd instance that autostarts and has a
-> tie breaker agent (model configurable with deepseek as default) and then we gain a wasm plugin for
-> that server — raw session of the tie breaker, queues, etc, with the manual controls"*
-
-So there is **no store and no migration**. What the state machine owns is independent of transport
-and is what this crate is: the item lifecycle, the claim as a lease with a beat, the abandonment
-with a reason and a count, top-level-sessions-only, the ordering per tag, and the reminder question.
-The wire is proposed here; the daemon that owns the socket is the next slice.
+The design is a socket, a dedicated coordinator daemon with a tie-breaker agent, and a pane. There is no
+store and no migration: what the state machine owns is independent of transport.
 
 ## The state machine
 
 ```
-open ──claim──▶ claimed ──done──▶ done
-  ▲                │
-  └──abandoned◀────┘          (beat stopped · session gone · released on purpose)
+open --claim--> claimed --done--> done
+  ^                 |
+  +--abandoned<-----+          (beat stopped, session gone, released on purpose)
 ```
 
-* **`abandoned` is not terminal.** The item returns to the head of its tag, claimable again, with
-  its count up; the state names the last thing that happened so a reader cannot mistake a re-queued
-  item for one nobody ever tried. `Item::claimable()` is the predicate; `state == Open` is not.
-* **`done`** ends the item. **`dropped`** is the terminal a ruling can give a raised item — it is
-  not `done`, because nobody did the work.
+`abandoned` is not terminal: the item returns to the head of its tag, claimable again, with its count up,
+and the state names the last thing that happened so a re-queued item cannot be mistaken for one nobody
+tried. `Item::claimable()` is the predicate, not `state == Open`. `done` ends the item; `dropped` is the
+terminal a ruling can give a raised item, and it is not `done` because nobody did the work.
 
-### A tag is a lock
+A tag is a lock: one live claim per tag, and while it lives every other claim under the tag is refused
+`Busy`, naming the holder and the item. Two independent jobs that may run at once need two tags
+(`merge-a`, `merge-b`): a tag is a resource, not a category.
 
-One live claim per tag. A session claims *the head of a tag*; while that claim lives every other
-claim under the tag is refused `Busy`, naming the holder and the item. That is the RAM example's
-whole shape: three sessions want the same scarce thing, one runs.
+The order is `(posted_ms, id)`, and there is no priority number: a number invites every session to claim
+0, and then it carries no information and the room has a tie it cannot settle without the arbiter. Urgent
+work gets its own tag (`ram-urgent`), a name a reader can see. An abandoned item returns to the head,
+because it was posted before everything behind it.
 
-The consequence to know: two independent jobs that may run at once need two tags (`merge-a`,
-`merge-b`), not one. A tag is a resource, not a category.
-
-### The order is `(posted_ms, id)` — and there is no priority number
-
-First come, first served; the room's own id breaks a tie within one millisecond. **A numeric
-priority was rejected on purpose**: a number invites every session to claim 0, and then the number
-carries no information and the room has a tie it cannot settle without the arbiter. Urgent work gets
-its own tag (`ram-urgent`) — a name a reader can see, in place of a number nobody can rank.
-
-The property that makes this more than a sort: **an abandoned item returns to the head**, because it
-was posted before everything behind it. The queue moves on from a claimant, not from the request.
-
-### A claim is a lease with a beat
-
-`claimed_by`, `claim_ms`, `beat_ms` — the `queue_lease`/`host_lease` discipline. The default lease
-is the merge queue's own **90 s** (`mergequeue::lease::LEASE_TTL_MS`), eighteen missed beats at a
-five-second beat.
-
-A claim is lost in three ways, and they are different facts:
+A claim is a lease with a beat: `claimed_by`, `claim_ms`, `beat_ms`, the merge queue's own 90 s, eighteen
+missed beats at a five-second beat. It is lost in three ways, and they are different facts:
 
 | how | when the room knows | what it records |
 |---|---|---|
-| `Room::sweep` — the beat stopped | `now - beat_ms > lease_ms` | `Why::BeatStale { age_ms }` |
-| `Room::note_gone` — the session is gone | at once, from the daemon | `Why::SessionGone { says }` |
-| `Room::abandon` — the holder gives up | at once, from the holder | `Why::Released { says }` |
+| `Room::sweep` - the beat stopped | `now - beat_ms > lease_ms` | `Why::BeatStale { age_ms }` |
+| `Room::note_gone` - the session is gone | at once, from the daemon | `Why::SessionGone { says }` |
+| `Room::abandon` - the holder gives up | at once, from the holder | `Why::Released { says }` |
 
-The first two are the difference between *the daemon is alive and the session is not working on it*
-(a parked turn, a model that stopped calling `beat`) and *the daemon is gone* (exited, restarted, its
-socket closed). A voluntary release is still counted: an item everybody gives up on is a problem
-whether or not each gave up politely, and a rule with an exception is a rule somebody has to explain.
-
-**The abandonment is loud.** It is an `Event::Abandoned` carrying the reason, the count and whether
-the item is back in the queue, and the item keeps every abandonment in its history.
-
-### Three abandonments raise the item
-
-`ABANDON_THRESHOLD = 3`. The first abandonment is usually an accident — a daemon restarted, a
-session killed, a box that slept — and one is far too few to give up on a request. The second says
-the work is fragile or the claimant picked badly. At the third, cycling costs more than asking:
-three different claimants have been killed by this item, and the next one would be chosen by who is
-fastest rather than by who can do it.
-
-So the third abandonment **raises** it: marked abandoned, the count stops moving, no longer
-claimable, and its tag's queue **moves past it** to the next item — which is the point, since an
-item that keeps killing its claimants must not block the tag for ever. A `Question` is asked; the
-item is frozen until it is answered.
+The first two are the difference between the daemon being alive and the session not working on the item
+and the daemon being gone. A voluntary release is still counted: an item everybody gives up on is a
+problem whether or not each gave up politely. At `ABANDON_THRESHOLD = 3` the item is raised: the count
+stops moving, it is no longer claimable, its tag's queue moves past it, and a `Question` is asked while it
+stays frozen.
 
 ## Where the tie-breaker decides
 
-The arbiter is a model, so it is asked **a question with a decision in it**, never a dashboard.
-`Question::text` is that question and `Question::facts` is the evidence it names, so the model can
-check the words against the numbers.
+The arbiter is a model, so it is asked a question with a decision in it, never a dashboard.
+`Question::text` is the question and `Question::facts` is the evidence it names.
 
-1. **An item that has abandoned three claimants** — `About::ItemRaised`. The question names the
-   item, its body, each claimant it lost and why, and who is queued behind it (the cost of keeping
-   it), and asks for one of:
-   * `Retry` — offer it again, the count kept, so the next loss raises at once;
-   * `Hand { to }` — give the claim to a named session, now;
-   * `Drop { why }` — out of the queue for good, with the reason on the item.
-2. **An abandonment under dispute** — `About::ClaimDisputed`. A claimant comes back after its beat
-   went stale (its daemon was paused, the box slept, its model was thinking) and finds the item
-   abandoned and perhaps claimed by somebody else. The room refuses its late beat **by name**; the
-   dispute is how it says *"I am still on it"* instead of fighting for the claim, and the arbiter is
-   asked which of the two has it.
-3. **Two items at one tag's head** — the room's answer is `(posted_ms, id)`, deterministically, so
-   the arbiter is never *needed* for it. It is reachable all the same: a session that believes its
-   request should have gone first asks through the dispute, and the question carries both items'
-   facts. The ordering rule stays the room's; a ruling is how a person overrides it, not a second
-   ordering rule.
+1. An item that has abandoned three claimants (`About::ItemRaised`): the question names the item, each
+   claimant it lost and why, and who is queued behind it, and asks for `Retry` (the count kept, so the
+   next loss raises at once), `Hand { to }` (give the claim to a named session, now) or `Drop { why }`.
+2. An abandonment under dispute (`About::ClaimDisputed`): a claimant comes back after its beat went stale
+   and finds the item abandoned, perhaps claimed by somebody else. The room refuses its late beat by
+   name; the dispute is how it says *I am still on it*, and the arbiter is asked which of the two has it.
+3. Two items at one tag's head: the answer is `(posted_ms, id)`, deterministically. It is reachable through
+   the dispute, and a ruling overrides the ordering rule rather than being a second one.
 
-**What is not a question for the arbiter: two coordinators.** The room is one process and one clock,
-so "two claimants that each believe they are alive" cannot arise *inside* it — the room's state is
-the truth. It arises only if two daemons both own a room, and that is answered with a lease on the
-coordinator itself (the merge queue's own shape), not with a model. Asking a model to settle a
-question a lock can settle is how an arbiter becomes a single point of slowness.
-
-**A ruling is refused rather than half-applied.** A `Hand { to }` naming a session the room has
-never met, or a subagent, or a tag that another item holds, leaves the item frozen and the question
-open. The daemon vouches for a session the room has not met (`Room::vouch`) — the tie-breaker's own,
-or one the operator names in the pane — and that is the only way a stranger becomes a target.
+Two coordinators are not a question for the arbiter: two daemons owning a room is answered with a lease on
+the coordinator, since the room is one process and one clock. A ruling is refused rather than half-applied:
+a `Hand { to }` naming a session the room has never met, or a subagent, or a tag another item holds, leaves
+the item frozen and the question open. The daemon vouches for a stranger (`Room::vouch`), and a session the
+room has met as a member of a project's room counts too.
 
 ## The wire
 
-`ROOM_PROTOCOL_VERSION = 4` — the room's own number, not `letibot_sessionlog::PROTOCOL_VERSION`. The
-coordinator is a different socket with a different lifetime, and pairing a head with a daemon must
-not be entangled with pairing a session with a room.
+`ROOM_PROTOCOL_VERSION` is the room's own number, not `letibot_sessionlog::PROTOCOL_VERSION`: the
+coordinator is a different socket with a different lifetime, and pairing a head with a daemon must not be
+entangled with pairing a session with a room.
 
-**Version 2 is the room saying which room it is**, and it moved the number once, with both fields
-(see *Still owed* below): `Hello` carries the name of the room the client believes it reached, and
-`Welcome` carries `Server::identity()`. A session that dialled the wrong coordinator is now TOLD
-rather than obeyed — a room is per box and two boxes can both call themselves `localhost`, so
-before this a `post` could land in another machine's queue and a claim could lock a tag nobody
-there was waiting for. A skew is `Bye` with both numbers and **which side is older** in the
-sentence, so a reader knows which binary to restart.
-
-**One connection per top-level session.** `Hello { protocol, speaker, room }` carries the session,
-the parent it speaks through (read by the daemon from `session.parent_session_id`), and the room's
-name; a subagent is refused at the door. Per session rather than per daemon, for two reasons worth
-the sockets:
-
-* **a push has an address** — an `Event` goes to the connections that own the sessions it is about;
-* **the close is a fact** — a session whose daemon died drops its socket, and the coordinator calls
-  `note_gone` at once instead of waiting out the lease. The socket is the liveness of the *daemon*;
-  the beat is the liveness of the *work*.
+One connection per top-level session. `Hello { protocol, speaker, room }` carries the session, the parent
+it speaks through, and the room's name; a subagent is refused at the door. Per session rather than per
+daemon, because a push has an address and because the close is a fact: a session whose daemon died drops
+its socket and the coordinator calls `note_gone` at once instead of waiting out the lease. The socket is
+the liveness of the daemon; the beat is the liveness of the work. `Welcome` carries `Server::identity()`,
+so a session that dialled the wrong coordinator is told rather than obeyed.
 
 | frame | answer | idempotent because |
 |---|---|---|
-| `post {id, tag, body}` | `Posted {id, item}` | the reply is remembered per `(session, id)`; a repeat is the same item |
-| `claim {id, tag}` | `Claimed {id, item}` | a repeat by the holder is the same claim; `claim_ms` does not move |
-| `claim_item {id, item}` | `Claimed {id, item}` | same, and the item must still be the head |
-| `beat {id, item}` | `Beaten {id, item}` | stamping the same claim again is harmless |
-| `waiting {id, item, text}` | `Waited {id, item}` | a set, not an append |
-| `acknowledge {id, item, text}` | `Acknowledged {id, item}` | a set, not an append — and a DIFFERENT field from `waiting`: see *A claim's words* below |
-| `done {id, item}` | `Finished {id, item}` | a second is refused by name once the replay window forgets |
-| `abandon {id, item, why}` | `Abandoned {id, item}` | same |
-| `dispute {id, item, says}` | `Question {id, question}` | one open question per item; asking twice is the same question |
-| `rule {id, question, decision}` | `Ruled {id, question}` | a question is answered once (`AlreadyRuled`) |
-| `queue {tag}` | `Queue {tag, rows}` | a read: no id, nothing to act on twice |
-| `holding {session?}` | `Holding {session, rows}` | a read |
-| `reminders` | `Reminders {rows}` | a read |
-| `questions` | `Questions {rows}` | a read |
-| `members {rows}` | `Members {count}` | a set: a repeat is the same tree |
-| `room` | `Room {identity, arbiter, connected, items, questions}` | a read: the PANE's, and the only one the server completes |
+| `post`, `claim`, `claim_item` | `Posted`, `Claimed` | the reply is remembered per `(session, id)`; a repeat by the holder is the same claim |
+| `beat`, `waiting`, `acknowledge` | `Beaten`, `Waited`, `Acknowledged` | a stamp or a set, not an append |
+| `done`, `abandon` | `Finished`, `Abandoned` | a second is refused by name once the replay window forgets |
+| `dispute`, `rule` | `Question`, `Ruled` | one open question per item; a question is answered once (`AlreadyRuled`) |
+| `members` | `Members` | a set: a repeat is the same tree |
+| `queue`, `holding`, `reminders`, `questions` | `Queue`, `Holding`, `Reminders`, `Questions` | reads: no id, nothing to act on twice |
+| `room` | `Room {identity, arbiter, connected, items, questions, agents, members}` | a read: the PANE's, and the only one the server completes |
 
-The replay window is 256 replies per room. **A client away for longer than that must re-read**, not
-replay: every reply carries the item as it stands, so a re-read is cheap and cannot be wrong, and a
-replay window is not a durable log. **A reply to a repeat carries no events** — the bell rang the
-first time.
-
-**And a request id is not a clock.** The window keys on `(session, id)`, so two acts in one
-millisecond are one act: the second is answered *the same* rather than performed. Round trips on a
-unix socket are tens of microseconds, so `claim` and `release` on one row really can share one;
-`room::link::request_id` is the counter that makes an id unique.
-
-A protocol mismatch is `Bye { why }` with both numbers in the sentence **and which side is older**
-(`wire::protocol_refusal`, one sentence for the two doors that refuse it): the clean refusal the
-daemon's own `Hello` makes.
-
-## The bell, and the client that cannot hear it
-
-firecode's fourth rule, paid for there: **a bell is something that can inject a turn.** A client that
-only acts when a person prompts it cannot be woken; the room is a mailbox to it, not a bell.
-
-The room produces the events; delivering them is the daemon's job. What is worth ringing about is
-`Posted`, `Claimed`, `Done`, `Abandoned`, `Raised`, `Asked`, `Ruled` — and **not a beat**, because a
-bell that rings five times a minute is a bell nobody listens to.
-
-The other three of firecode's rules land on the daemon's side too: **listen before you start
-working** (a note posted mid-turn is read at the round boundary, not after the work it would have
-changed); **one read is not membership** (a `queue` read leaves no subscription behind, and a client
-that was away is told how much it missed rather than handed a `Welcome` that looks the same as
-never having left); **acknowledge before you act** — a one-line *seen, doing X* before the work,
-because silence reads as absence.
+Every mutating frame carries a client-minted `id`. The replay window is 256 replies per room: a client
+away for longer must re-read, not replay, since every reply carries the item as it stands, and a reply to
+a repeat carries no events because the bell rang the first time. A request id is not a clock: the window
+keys on `(session, id)`, so two acts in one millisecond are one act, and `room::link::request_id` is the
+counter that makes an id unique. A version mismatch is `Bye { why }` with both numbers and which side is
+older.
 
 ### A claim's words: what it is DOING, and what it is WAITING on
 
-A claim carries two things a holder can say, and they are opposite facts — which is why they are two
-fields and not one (protocol 5):
+`Claim::said` is *seen #1; working on it*, written by `acknowledge` when the claim is taken: the holder is
+saying the item is its own work, so a queue read can tell a claim from a session that took the row and
+died. `Claim::waits_on` is what the holder waits for, written by `waiting`: something outside moves the
+item, which is why this one makes a reminder quiet. A fact that means *this is mine to do* must never be
+written into the field that means *this is not mine to move*, or the reminder that says *finish it or
+release it* never fires.
 
-* **`Claim::said`** — *seen #1; working on it*, written by `acknowledge` when the claim is taken. The
-  holder is saying the item is its own work, so that a queue read can tell a claim from a session
-  that took the row and died.
-* **`Claim::waits_on`** — what the holder is waiting on, written by `waiting`. Something *outside*
-  moves the item, which is why this one is what makes a reminder quiet.
+## The bell, and the client that cannot hear it
 
-They were one field until 5, and the consequence was silent: every claim acknowledged itself through
-`waiting`, so every claim read as *nothing here is mine to move* and the reminder that exists to say
-*finish it or release it* (`harnessd::room::remind`) never fired. A fact that means *this is mine to
-do* must never be written into the field that means *this is not mine to move*.
+A bell is something that can inject a turn. A client that only acts when a person prompts it cannot be
+woken; the room is a mailbox to it, not a bell. What is worth ringing about is `Posted`, `Claimed`,
+`Done`, `Abandoned`, `Raised`, `Asked`, `Ruled`, and not a beat.
 
 ### The bell, per client
 
-**Verified per client, never assumed.** This box runs four kinds of client that could plausibly be
-woken by a room event, and two of them cannot be — which is a fact about the code and not a gap to
-be discovered later. Each row names the mechanism, or the absence and its reason.
+Verified per client, never assumed. Four kinds of client could plausibly be woken by a room event, and two
+of them cannot be.
 
-| client | is it a room client? | can a room event start a turn? | the mechanism, or the absence |
+| client | a room client? | can an event start a turn? | the mechanism, or the absence |
 |---|---|---|---|
-| **a leticode session** (`crates/harnessd`) | yes — one `SessionRoom` per top-level session, opened by `Harness::open` when the box has a coordinator | **yes** | the socket reader turns the `Event` into a sentence (`room::wake::sentence`), pushes it on the session's queue, and rings `Bell::ring_wake`; the worker's `Harness::wake` finds it, puts it in front of the model as `Speaker::Agent`, and runs a turn. Proved live by `crates/harnessd/tests/room_bell_turn.rs`, and the mid-turn half by `room_bell.rs` |
-| **the head** (`letibot-tui`) | **no** | no — it is woken by the daemon, and a room event reaches the screen as the turn it starts | `letibot-tui` does not depend on `letibot-room` and holds no socket. Its room pane is drawn from the daemon's plugin feed (`crates/harnessd/src/plugins/room_feed.rs`), so it is a picture of the room and never a subscriber to it. A room note draws a **notice row** in the transcript (the `Speaker::Agent` item the turn opened with), never a card: a card is *a person must*, and a bell is addressed to a model |
-| **the bridge** (`crates/bridge`, `Head::wait`) | **no** | no — `wait` answers on an open ask, a failure, a turn that ended, or the deadline; a room event is none of those | `letibot-bridge` does not depend on `letibot-room`. A room event reaches a bridge head only *through* a turn in the session the bridge holds — so `wait` returns `TurnEnded` afterwards, and a room event can never be the `Ask` that exits `10`. Stated on `Head::wait`'s own doc |
-| **a firecode VM agent** (`crates/tools/src/firecode.rs`) | **no** | no — it is a subagent, and the room refuses a subagent at the door by name (`Refused::Subagent`) | `Harness::open` gives a session with a parent **no link at all** rather than one that refuses (the seat does not name `room` either), and a VM agent's own door is `firecode in --project P 'cmd'` — an exec channel that runs one command, with no message verb to ring. A VM agent speaks through its parent, which is the room's rule for every child |
+| **a leticode session** (`crates/harnessd`) | yes, one `SessionRoom` per top-level session | **yes** | the reader turns the `Event` into a sentence (`room::wake::sentence`), queues it and rings `Bell::ring_wake`; `Harness::wake` runs a turn with it as a `Speaker::Agent` row. `crates/harnessd/tests/room_bell_turn.rs` proves both halves |
+| **the head** (`letibot-tui`) | **no** | no: the daemon wakes it | no `letibot-room` dependency and no socket; its pane comes from the daemon's feed (`crates/harnessd/src/plugins/room_feed.rs`). A room note draws a notice row, never a card |
+| **the bridge** (`crates/bridge`) | **no** | no: `Head::wait` answers on an ask, a failure, a turn that ended, or the deadline | no `letibot-room` dependency; a room event reaches it only through a turn, so it can never be the `Ask` that exits 10 |
+| **a firecode VM agent** | **no** | no: a subagent is refused at the door (`Refused::Subagent`) | `Harness::open` gives a session with a parent no link at all, and a VM agent's door is `firecode in`, an exec channel with no message verb |
 
-**What the two absences cost, and what they do not.** A head and a bridge head are both *clients of
-the daemon*, and that is the design: the daemon is the only process with a room connection per
-session, so it is the only place a bell can become a turn. What they lose is the ability to see a
-room event that the daemon chose not to turn into a turn — a `Claimed` on a tag agent's queue, which
-arrives as a note and not a wake (slice 5's cost model). What they keep is everything that matters:
-the pane, the transcript row, and the turn.
+A head and a bridge head are clients of the daemon, so they cannot see a room event the daemon chose not
+to turn into a turn; what they keep is the pane, the transcript row and the turn.
 
-`crates/harnessd/tests/room_bell_turn.rs` asserts both absences as manifests rather than as prose:
-the day `tui` or `bridge` grows the dependency, the test fails and names this table.
+## The coordinator
 
-## The precedent: the review queue's own session
+The room is a whole `harnessd --room` (`crates/harnessd/src/room/coordinator.rs`), serving
+`letibot_room::Server`: an accept loop, one read loop per connection, `Hello` at the door, and the room
+behind one `Mutex`. Its clock thread runs `sweep(now)` every five seconds and the lease's beat.
 
-`crates/harnessd/src/sessions/gatekeeper.rs` is the shape "a dedicated, autostarted session with an
-identity" already has in this tree, and the fit is close:
+That lease is a file, `<data dir>/room-<host key>.lease`, with `host/pid/<ns>` for an owner, a ten-second
+beat and the merge queue's ninety-second TTL; a refusal names the live holder. A file and not a row,
+because the room keeps no store. The names all derive from the host (socket, lease,
+`s-room-<host key>`), so two boxes never collide.
 
-* **An id derived from the workspace**, not a constant — `s-gatekeeper-<key>`. Two daemons on one
-  box shared `s-gatekeeper` once and appended to one transcript at the same time; the derived id is
-  what stops that. The coordinator's own id must be derived the same way (a room is per box, so
-  `s-room-<host key>`), for the same reason.
-* **Ensured on every pass**, not started once: `ensure_gatekeeper` opens it if it is not open, and
-  says a standing failure once per reason instead of every pass. A room whose tie-breaker could not
-  open must be visible in words, not as a queue that looks quiet.
-* **A root with no `parent_session_id`**, a title a person reads, a seat that carries the tools it
-  needs and no gated ones, and a prompt composed at open from the crate's own constants.
-* **Its board is a view of state that lives elsewhere** — `TodoBy::Queue`, replaced from the store
-  on every pass. The room's board is the same idea with the room as the state.
+### Which seats carry `room`
 
-What differs, and it is the reason this is a *daemon* and not a session:
-
-* the gatekeeper is a session inside a daemon whose real job is the operator's project; the
-  coordinator is a whole `harnessd` whose only job is the room — its own socket, its own data
-  directory, no project, and **autostart is the launcher's** (`scripts/letibot` already starts or
-  attaches a daemon per folder; a room is one folder with a `room` mode).
-* the gatekeeper refuses to open without a store (`--store` daemons have no queue). The coordinator
-  needs no store at all — that is the whole point of the socket — so its "apparatus" is the socket
-  and the model, and a box without the model must say so rather than run a room nobody arbitrates.
-* the gatekeeper's model is the daemon's own configuration; the coordinator's is **configurable with
-  deepseek as the default**, which is a `providers.toml` entry and a `--model` on that daemon, the
-  same two knobs every other role uses.
-
-## What the daemon still owes
-
-### Slice 2, as built
-
-The runtime is in, and it is one mode plus one crate's second half:
-
-| what the list asked for | where it is |
-|---|---|
-| the socket and the daemon | `harnessd --room` (`crates/harnessd/src/room/coordinator.rs`), serving `letibot_room::Server` — accept loop, one read loop per connection, `Hello` at the door, the room behind **one** `Mutex` |
-| the coordinator's own lease | `letibot_room::lease` — a **file**, `<data dir>/room-<host key>.lease`, with `host/pid/<ns>` for an owner, a ten-second beat, the merge queue's ninety-second TTL, a stale takeover that says whether the beat stopped or the pid is gone, and a refusal that names the live holder |
-| the clock and the pass | the server's own clock thread: `sweep(now)` every five seconds, the lease's beat on the same thread (one process, one clock), and `note_gone` on every connection close |
-| the tie-breaker session | the coordinator's own session, `s-room-<host key>`, opened with **no store**, seated `orchestrator` — which names `room` (see *Which seats carry `room`*) — prompted with `open_questions`, a sentence with the decision in it plus the typed facts, and answering through `rule` |
-| the session-side tool | `room` (`crates/tools/src/builtins/room.rs`): post, claim, claim_item, beat, waiting, done, abandon, dispute, rule, queue, holding, reminders, questions |
-| the beat on the session's behalf | `Harness::begin_turn_clock` starts it, `Harness::end_turn_clock` stops it, and `letibot_room::client::Client::start_beating` re-reads what the session holds on every tick |
-| the wake | a `Response::Event` on the connection's reader thread becomes a sentence in `crate::room::wake`, rings the worker's bell, and `Harness::wake` composes it as a `room` notice |
-
-The names are all derived from the host — the socket, the lease and the session id
-(`s-room-<host key>`) — so two boxes never collide and `letibot --session host` always resolves.
-The lease is a **file and not a row**: the room keeps no store, so a coordinator that opened
-`sessions.db` to hold its own lock would be the first half of putting the queue in it too.
-
-### Which seats carry `room`, and why the coordinator's own has to
-
-**Two seats, and they are the two a person's own session runs on:**
-
-| seat | role | carries `room` | why |
-|---|---|---|---|
-| `orchestrator` (the default; `letibot`, `letibot --read-only`) | `roles::m1_orchestrator()` | **yes** | the default top-level seat, and **the coordinator's own** (`s-room-<host key>`) — the arbiter rules through this tool |
-| `leticode` (`leticode`, `letibot --role leticode`) | `roles::leticode()` | **yes** | the working top-level seat |
-| `planner`, `researcher` | their roles | no | a plan mode and a seat with no retrieval backend; neither holds work a tag would be locked for |
-| `coder`, `runner` | `m2_coder`, `m2_runner` | no | a subagent's seat — its words go through the session that spawned it |
-| `gatekeeper` | `roles::gatekeeper()` | no | the review queue's session and its reviewers: the reviewers are children, and the room refuses a subagent at its door |
-| `notes_keeper` | `roles::notes_keeper()` | no | a hidden child, and read-only |
-
-**A session on any other seat does not see the tool at all.** `Registry::resolve_role` keeps only
-the tools a role NAMES, so a seat that does not name `room` has it dropped from the session's
-registry even though `Harness::open` registered it — and a model that calls it anyway is answered
-by the runtime's unknown-tool miss: *"no tool called `room` is available here"* plus the list of
-the tools it does have. That is deliberate: a tool in the prompt that always refuses is prefix
-bytes and a wrong verb taught to a model that cannot use either.
-
-**This is the defect the first cut shipped, and the reason it is written down here.** The name was
-put into §8.4's `roles::orchestrator()` — a table **no seat resolves** — while the live seat is
-`roles::m1_orchestrator()`. The coordinator's session therefore had a `room`-less registry, and the
-tie-breaker was woken, handed *"Answer with the `room` tool: verb `rule`"*, and had no such tool:
-every raised item froze for ever, silently, which is the one outcome the no-model refusal above
-exists to prevent. `crates/harnessd/tests/room_coordinator.rs` is the test that now says otherwise
-— it boots a coordinator on a socket of its own, opens the arbiter's session through
-`Harness::open`, asserts the seat resolves a registry holding `room`, and then rules on a raised
-item **through the tool**, which is the call the prompt tells the model to make.
-
-**The wake, exactly.** A session is woken by a `Response::Event` about it — posted, claimed, done,
-abandoned, raised, asked, ruled — and by nothing else. A beat is not an event. The connection is
-per session and stays open for the session's life, so the *close* is the daemon's liveness and the
-beat is the work's: a session whose turn ended keeps its socket and loses its claim to the beat.
+The tool is seated on `m1_orchestrator` (the default top-level seat, and the coordinator's own) and on
+`leticode`, and nowhere else: a subagent's words go through the session that spawned it, and the room
+refuses a subagent at its door. A session on any other seat does not see the tool at all, because
+`Registry::resolve_role` keeps only the tools a role NAMES. This shipped wrong once, with the name in a
+roles table no seat resolves, and every raised item froze for ever, silently;
+`crates/harnessd/tests/room_coordinator.rs` now rules on a raised item through the tool.
 
 ### The launcher starts it, and the lease decides which one
 
-The list below used to end with *"the launcher's autostart"*: `--room` existed and nothing started a
-coordinator, so a session's `room` tool refused by name — honest, and not the same as the room being
-there. `scripts/letibot` now starts one, and five decisions make that safe.
+`scripts/letibot`'s `room_ensure` starts a coordinator before any session opens, because the tool is
+seated at `Harness::open` from the socket that exists then, and the tool cannot do it: a daemon that
+forked another daemon would be a second `harnessd` under a lease it does not hold. Two runs at the same
+instant start two coordinators and exactly one wins, `letibot_room::lease` refusing the other by name;
+what the launcher owns is the key, `room-<host key>.sock` derived in bash from `uname -n` and pinned to
+`lease::host_key_of` by a test, since a key that drifted would look for a socket no coordinator binds.
 
-* **Before any session opens, and nowhere else.** A session's `room` tool is seated at
-  `Harness::open` from the socket that exists *then*, so a coordinator started afterwards is one the
-  session cannot see. The launcher's one call (`room_ensure`) is on the path every run takes before
-  its daemon opens anything — after `--stop`/`--ls`/`--status`, which touch no daemon, and before
-  the one-shot and the attach/start. The tool cannot do it: it runs inside a daemon, and a daemon
-  that forked another daemon would be a second `harnessd` under a lease it does not hold.
-* **One per box, and the lease is the only guard.** Two runs at the same instant start two
-  coordinators and exactly one wins: `letibot_room::lease` refuses the other by name, and the
-  launcher prints *that* sentence — it invents no lock of its own. What the launcher does own is the
-  **key**: it derives `room-<host key>.sock` in bash from `uname -n`, so a key that drifted from
-  `lease::host_key_of` would look for a socket no coordinator binds and start a second one on every
-  run. Both sides are pinned to one table (`lease.rs`'s
-  `the_host_key_matches_what_the_launcher_derives`).
-* **It outlives the run that asked.** It is started through the launcher's `detach` (setsid, and a
-  systemd scope on Linux), the same door a folder's daemon goes through, and `configure` already
-  sets `idle_exit_after = None` — a room that emptied itself overnight would be worse than none,
-  since it exists for the moment a session cannot reach anything else.
-* **A start that fails is said, not swallowed.** The coordinator's own last words are read out of
-  its log — the lease's refusal naming the holder, or the no-model refusal naming the key — and the
-  run goes on. The session's `room` tool still refuses by name, which is true; what the launcher may
-  not do is replace a true sentence with silence.
-* **`--stop` sees it.** The launcher writes the same flat record it writes for a folder's daemon,
-  with `role: room`, so `--daemons` and `--ls` name it and `--stop --all` stops it (without the
-  interrupt: the room's socket answers another protocol). `letibot --room` is the verb for it alone —
-  bare, it makes sure one is serving and says what it is; `--room --stop` stops it.
+It is started detached with `idle_exit_after = None`, and it writes the flat record a folder's daemon
+writes with `role: room`, so `--ls` and `--stop --all` see it. `letibot --room` makes sure one is serving
+and says what it is; `--room --stop` stops it. A start that fails is said, not swallowed: the
+coordinator's last words are read out of its log. No model flags are passed, so the arbiter is
+`providers.toml`'s default or deepseek and a provider session needs no GGUF.
 
-**No model flags are passed.** A coordinator's arbiter is `providers.toml`'s default or deepseek,
-not the folder's local model, and a provider session's byte vocabulary needs no GGUF — so the start
-is `harnessd --room` and nothing else. An operator who wants another model runs
-`harnessd --room --model …` by hand, and every launcher after that finds it and leaves it alone.
+## The pane
 
-### Slice 3, as built — the pane, and the room's name on the wire
+`plugins/builtin/room` draws the queues per tag from the `room` feed
+(`crates/harnessd/src/plugins/room_feed.rs`), built from the session's own connection
+(`room::link::SessionRoom` reads `Request::Room` once a second on a thread of its own). Its `identity` is
+`Server::identity()` verbatim: *started T ago and holding N item(s)*, and the sentence saying the room
+keeps no store.
 
-| what the list asked for | where it is |
+The four manual controls are rows. `claim` is `claim_item`, on behalf of the session whose pane it is, and
+the item must still be the head. `release` and `abandon` are the same verb with two different sentences
+left on the item's history, because a voluntary release is still an abandonment and still counted. `rule`
+answers a question, and the decision rides in the row's entry (`q3:retry`, `q3:drop`, `q3:hand:<session>`).
+
+A key is only offered where it would do something: a row held by somebody else carries no act, a row this
+session holds leads with `release` and offers `x` for `abandon`, and a frozen item offers nothing because
+its question is the `a` panel. The manifest gates both doors to a verb:
+`actions = ["claim", "release", "abandon", "rule"]`, and `View::validate_for` refuses a row whose `enter`
+OR whose letter names a verb that is not in it, which the daemon runs before a pane is drawn.
+
+### The restart, and what it says about itself
+
+| what | where it is |
 |---|---|
-| the queues per tag, with each item's claimant, the age of its beat and its abandonment count | `crates/harnessd/src/plugins/room_feed.rs` — the `room` feed, built from the session's own connection (`room::link::SessionRoom` reads `Request::Room` once a second on a thread of its own) |
-| the room's own identity, printed | the feed's `identity` field, which is `Server::identity()` verbatim — *started T ago and holding N item(s)*, and the sentence saying the room keeps no store. `Server::identity_at(now)` exists so a test can pin the age |
-| the four manual controls | `plugins/builtin/room` draws them; `room::link::pane_frame` turns a row's entry and verb into a frame; `PluginHost::action` performs it and says a refusal (`room_act_refused`) |
-| the room's name in the protocol | `ROOM_PROTOCOL_VERSION` 2: `Hello.room`, `Welcome.identity`, and a `Bye` that names which side is older |
+| the act asks the SUPERVISOR, the launcher, with the two verbs a person would type (`--room --stop`, then `--room`), never the coordinator on itself | `crates/harnessd/src/room/supervise.rs` (`RestartFrame`, `RoomSupervisor`, `Launcher`); `SessionRoom::restart` |
+| what survives is stated: the `s` panel says a restart begins with no items at all | `plugins/builtin/room`'s `server()`; the feed's `restart` block |
+| a marker says when and why: `<data dir>/room-<host key>.restart`, holding `at_ms`, `started_ms`, the cause, the session and the writer's own clause | `crates/room/src/restart.rs` (`Marker`, `Cause`) |
 
-**The four controls, and what each is in the room's own vocabulary.** `claim` is `claim_item` — on
-behalf of the session whose pane it is, and the item must still be the head. `release` and
-`abandon` are the SAME verb (`abandon`) with two different sentences left on the item's history: a
-voluntary release is still an abandonment and still counted, so the difference the person gets is
-the reason, and the reason is the host's to write. `rule` answers a question, and the decision
-rides in the row's entry (`q3:retry`, `q3:drop`, `q3:hand:<session>`) because the decision is what
-the person picked.
+The coordinator cannot do it: the pane is fed by the instance it would kill, so a coordinator that stopped
+itself mid-act could not report the outcome. Its own daemon is therefore never given a supervisor
+(`coordinator::configure` clears `Config::restart_room`), and its pane draws the reason instead of a key
+that would refuse.
 
-**A key is only offered where it would do something.** A row held by somebody else carries no act:
-`claim` would be refused `Busy` and `release` would be refused `NotHeld`. A row this session holds
-leads with `release` and offers `x` for `abandon`. A frozen item offers nothing — its question is
-the `a` panel, where the decisions are rows.
+`RestartFrame { at_ms, by, was_running, why }` is the act, written as one JSON line on the launcher's
+stdin; `was_running`, read off the lease before the act, tells a restart from a start. The causes are
+`asked`, `daemon` (nothing was running) and `crashed` (an instance change nobody recorded), and the
+instance is the lease's `started_ms`, a number two readers can compare where the identity sentence is
+prose whose age moves every second. A refusal is `room_restart_refused` with the launcher's own last line
+in the sentence and nothing written to the marker, and the success is `room_restarted`.
 
-**The manifest gates both doors to a verb.** `actions = ["claim", "release", "abandon", "rule"]`,
-and `View::validate_for` refuses a row whose `enter` OR whose letter names a verb that is not in it.
-The daemon runs that check before a pane is drawn (`plugins::validated`), so a layer cannot reach a
-verb nobody reviewed.
+## The reminder, as built
 
-### Still owed
+`crates/harnessd/src/room/remind.rs` joins `reminders` to the session's own todo board on the daemon's
+idle tick, because a board may only be written by the thread that drives the harness: `Sessions`'
+per-session idle arm (`OwnWork::TimedOut`, where `deliver_due_nags` runs) calls
+`Harness::fill_room_board` every `ROOM_PASS_EVERY` (5 s, the room's own sweep interval).
 
-1. ~~**Restart the server**~~ — **built, and it is slice 4 below.** The pane's fifth control asks the
-   launcher, not the coordinator. What is still owed from it is named there.
-2. ~~**A reminder row on the board.**~~ **Done — see *The reminder, as built* below.**
-3. **The room's first start costs a terminal line.** A box with no key for the arbiter's provider
-   says so on every run that finds no coordinator, because a launcher may not remember a refusal on
-   the operator's behalf. A once-per-box note (a stamp file beside the lease) would be the fix, and
-   it needs its own decision about what clears it.
-4. **A daemon the bridge started has no room.** `leticode_start` spawns `harnessd` itself rather
-   than going through `scripts/letibot`, so a box whose daemons all came from the bridge has no
-   coordinator until a launcher run — the same shape as R102's missing record, and the same fix:
-   whichever program starts a daemon writes what the launcher would (the record here, the room
-   there).
-
-### The reminder, as built
-
-The join between `reminders` and the board, and the five rules that decided its shape.
-
-**The pass is `crates/harnessd/src/room/remind.rs`, and it runs on the daemon's idle tick.** Not on
-its own thread: a board may only be written by the thread that drives the harness, and the room's
-connection already has two threads of its own (the reader and the beat) that may not touch it. So
-`Sessions`' per-session idle arm — `OwnWork::TimedOut`, the same place `deliver_due_nags` runs —
-calls `Harness::fill_room_board` every `ROOM_PASS_EVERY` (5 s, the room's own sweep interval), and
-that is the only caller in production. A court (a session on its own thread) keeps its own copy of
-the clock, because its harness is on its thread; the daemon walks only what it holds.
-
-**The row.** One per item the session holds, in the session's own half:
+One row per item the session holds, in the session's own half:
 
 ```text
-content  you hold `ram` #3 — 8 GB, ~10 min     ← tag, number, body, and NOTHING that moves
-by       model                                  ← the nag draws it as `yours`
+content  you hold `ram` #3, 8 GB, ~10 min     <- tag, number, body, and NOTHING that moves
+by       model                                <- the nag draws it as `yours`
 status   in_progress
-needs    [Room { item: 3, working: bool }]      ← the room's edge, always present
+needs    [Room { item: 3, working: bool }]    <- the room's edge, always present
 ```
 
-**The words carry no clock**, and that is the whole of *one row per item, updated not appended*: a
-row's identity on this board is its exact `content`, so `… for 4m` would be a new row every pass —
-the nag machine. Everything that moves lives in the edge's `working` and in nothing else.
+The words carry no clock, and that is the whole of *one row per item, updated not appended*: a row's
+identity on this board is its exact `content`, so `… for 4m` would be a new row every pass. Everything
+that moves lives in the edge's `working`. `true` means the holder told the room what it waits for and its
+claim's beat is fresh: the row is BLOCKED and `waits_on_the_room` filters it out of the idle check. `false`
+means no declared wait, or a beat that stopped: the row is READY and the check names it, *you hold `ram`
+#3, 8 GB, ~10 min, yours (in progress) … mark it done with `todo_write`'s `update`*. Two loud facts, and
+they are different: nothing outside is going to move the item, or the room is about to take it.
 
-**`working` is the whole of quiet-or-loud, and it is ON THE ROW.** `true` — the holder told the room
-what it waits for (`room waiting`) and its claim's beat is fresh — makes the row BLOCKED, and
-`waits_on_the_room` filters it out of the idle check entirely (`the_check_may_ask_about`). `false` —
-no declared wait, or a beat that has stopped and a room about to take the item back — makes the row
-READY, and the check names it: *"you hold `ram` #3 — 8 GB, ~10 min — yours (in progress) … mark it
-done with `todo_write`'s `update`"*. Two loud facts, and they are different ones: nothing outside is
-going to move the item, or the room is about to take it.
+The edge is on every room row, loud or quiet, and that is what makes retirement survive a restart:
+`Harness::open` rebuilds the board from the store, and `TodoBoard::set_room_rows` retires a row whose room
+edge names an item this session no longer holds. It is the only door on the model's half that can remove a
+row: a room row is the ROOM seen from a session, not a plan. Top-level only, twice: `Harness::open` gives
+a session with a `parent_session_id` no link at all, and `fill_room_board` refuses one by name.
 
-**The claim's own acknowledgement is not one of them.** Every claim writes *seen #1; working on it*
-as it takes the item, and that word is `Claim::said` — the holder saying the item is its own work,
-which is the opposite of *something outside moves this* (`§ A claim's words`). It used to be written
-through `waiting`, and the whole edge went quiet: no room row was ever named by the check. `said` is
-carried in the reminder and read by nobody's decision — the pane and a queue read can show it.
+## Slice 5, as built: one agent per tag, and what a turn costs
 
-**The edge is on every room row, loud or quiet**, and that is what makes retirement survive a
-restart: `Harness::open` rebuilds the board from the store, so the first pass of a new process has
-written nothing and remembers nothing — `TodoBoard::set_room_rows` retires *a row whose room edge
-names an item this session no longer holds*, which needs no memory. It is the only door on the
-model's half that can remove a row, and the argument is the queue's: a room row is the ROOM seen
-from a session, not a plan.
-
-**Top-level only, twice.** `Harness::open` gives a session with a `parent_session_id` no link at
-all, and `fill_room_board` refuses one a second time by name; and `reminders` is one read for the
-whole room, so the pass keeps only the rows whose `session` is this one — a subagent never gets a
-row it did not hold.
-
-**And a row that already says the same thing is reused**: the board has one key and it is the
-trimmed `content`, so a row with these words IS this row, whoever typed it. The pass moves it into
-place and adds no second copy of the same sentence.
-
-What is still open here, so nobody reads this as finished:
-
-* **A row the model re-worded is the model's.** The words are the key, so a restatement is a NEW
-  row, and the pass's own row stays beside it until the item goes. That is this board's rule
-  everywhere, and the alternative is a second identity for a row.
-* **`todo_write` cannot write a room edge.** The only way to make a row quiet on the room is
-  `room waiting`, which is deliberate — the room's own verb is the one that knows whether the
-  coordinator agreed — and it means a model cannot silence a reminder by hand.
-* **The loud window after a stopped beat is short.** `sweep` runs every five seconds in the
-  coordinator, so a stale claim is abandoned before most passes see it; the pass says `stale`
-  loudly when it does, and the item's abandonment is the ordinary outcome.
-* **The pass asks the room once per session per tick**, which is one socket frame each. On a box
-  with a coordinator and many sessions that is the cost; a box with none pays one `Option` test and
-  is not woken for it at all (`Sessions::has_a_room`).
-
-### Slice 4, as built — the restart, and what it says about itself
-
-The operator, on the pane's four controls: *"and since we are going full blown agents orchestration
-again — that panel must explicitly let me to restart the server"*. Three consequences, and they are
-the requirement:
+A tag can be talked to about itself: one subsession per tag, owned by the host, idle without a model call
+and taking a turn only when it must rule. A claim, a healthy beat and a finished item are comparisons, not
+judgements; only a dispute earns a turn.
 
 | what | where it is |
 |---|---|
-| **the act asks the SUPERVISOR** — the launcher, with the two verbs a person would type (`--room --stop`, then `--room`), and never the coordinator on itself | `crates/harnessd/src/room/supervise.rs` (`RestartFrame`, `RoomSupervisor`, `Launcher`); `SessionRoom::restart` asks it and writes the note |
-| **what survives is stated, not assumed** — the `s` panel says a restart begins with no items at all, beside the identity sentence that says how long the room has been up | `plugins/builtin/room`'s `server()`; the feed's `restart` block |
-| **a marker says when and why** — a file beside the lease, `<data dir>/room-<host key>.restart`, holding `at_ms`, the room's `started_ms`, the cause (`asked`/`daemon`/`crashed`), the session, and the writer's own clause | `crates/room/src/restart.rs` (`Marker`, `Cause`), written by `SessionRoom::restart` and observed by the link's reader thread |
+| the name is derived, never invented: `s-room-<host key>-<tag>`, and `--session host:ram` resolves to it | `crates/room/src/lease.rs` (`tag_session`, `tag_of_session`); `harnessd::room::session_named`; `cli`'s `--session` |
+| one agent per tag, for every tag with a live item and never a second one for one tag | `crates/harnessd/src/room/agents.rs` (`ensure_tag_agents`) |
+| a bell per tag: the server addresses an event to that tag's agent, and the connection keeps only its own tag | `crates/room/src/server.rs` (`route`), `crates/harnessd/src/room/link.rs` |
+| re-seating, counted, drawn in the feed's per-tag `agent` block | `letibot_room::AgentLedger`; `Response::Room { agents }`; `plugins/builtin/room`'s `agent_cell` |
 
-**The supervisor is the launcher, and that is the whole of the first consequence.** A coordinator is a
-whole `harnessd --room`, started detached by `scripts/letibot`'s `room_ensure`; nothing resident
-watches it, so *asking the supervisor* is running it. That is also what keeps the room visible: the
-launcher writes the record `letibot --ls` and `letibot --stop` read, so a room restarted from a pane
-is still a room the operator can see and stop — a daemon that spawned `harnessd --room` itself would
-leave a coordinator with no record, which is a second way for a room to become invisible.
+The suffix is an escape, not a sanitisation: `a-z`, `0-9` and `-` are kept, `_` is written `__`, and every
+other character is `_` plus two hex digits per byte of its UTF-8. So `8 gb` and `8-gb` stay two tags with
+two agents, `RAM` and `ram` are one (the room's own `normalise_tag` is the one function both read), and
+`tag_of_session` inverts it exactly.
 
-**Why the coordinator cannot do it.** The pane is fed by the instance it would kill: a coordinator
-that stopped itself mid-act could not report the outcome, and the person would be left looking at a
-frozen pane unable to tell a restart from a hang. The **coordinator's own daemon is therefore never
-given a supervisor** (`coordinator::configure` clears `Config::restart_room`), and its pane draws the
-reason instead of a key that would refuse.
+A re-seat is: *dead* means the registry no longer holds it, so the upkeep seats it again through
+`Registry::create_under` with the box's owner as the parent, which is what makes it a subsession the picker
+draws under `host`. A first seat is zero and every return is one more, and `seat` is separate from
+`reseat` so a caller that has not checked liveness cannot inflate the number.
 
-**The frame.** `RestartFrame { at_ms, by, was_running, why }` is the act, handed to
-`RoomSupervisor::restart`. The production implementation writes it as one JSON line on the launcher's
-stdin — a launcher ignores its stdin, and a supervisor that wants to record *why* it was asked has it
-without a second channel — and a test asserts the frame it received, which is what makes *the control
-was pressed* a fact rather than a guess. `was_running` (read off the lease before the act) is what
-tells a restart from a start: a key pressed on a room that had already died did not empty the queue.
+Three structural facts keep the deterministic path from opening a turn: `ensure_tag_agents` takes no bell;
+a tag's agent hears its own tag and only `Raised` and `Asked` ring it, while a post, a claim, an
+abandonment and a `done` arrive as notes; and a session seated and never woken runs no turn, because
+`Harness::wake` with an empty notice list answers `Ok(None)`.
 
-**The three causes, and who writes each.**
+A tag's agent is not a claimer. Still open: nothing closes it, so a box with hundreds of finished tags
+keeps hundreds of idle sessions; it does not rule its own disputes yet; the re-seat count is drawn and not
+raised; and its notes are unbounded until something rings it.
 
-| cause | written by | the sentence |
-|---|---|---|
-| `asked` | the daemon, after the act, when there was a room to stop | *restarted 4s ago: `s-a` pressed restart in the room pane* |
-| `daemon` | the daemon, after the act, when nothing was running | *restarted 4s ago by the daemon, and nothing was running to stop — the key did not empty the queue, the room had already gone* |
-| `crashed` | the link's reader thread, on an instance change nobody recorded | *restarted 4s ago and nobody asked — the room before it went away* |
+## Slice 6, as built: a room is a project's, and its membership is the tree
 
-The instance is the **lease's `started_ms`** — a number two readers can compare, where the identity
-sentence is prose whose age moves every second. An observation never overwrites an act: a marker that
-already claims the instance the reader is looking at is left alone (`Marker::claims`).
-
-**What a refusal is.** A launcher that is not there, a stop that did not stop, a start that did not
-come back: each is `room_restart_refused` with the launcher's own last line in the sentence, and
-nothing is written to the marker — a restart that did not happen is not a restart. The success is
-`room_restarted`. Both are notices, because the outcome of a key nobody printed is a key a person
-cannot trust.
-
-**What slice 4 leaves open.**
-
-1. **The launcher's `--room` verbs are on another branch.** `supervise::Launcher` runs `letibot
-   --room --stop` and `letibot --room`, which is what `agent/the-launcher-starts-the-room` adds;
-   until that lands, the production supervisor refuses with *unknown flag: --room* — said, not
-   swallowed, and the pane still works. Nothing in this crate assumes the script's flags beyond
-   those two.
-2. **A crash while nobody is looking is not a marker.** The observation needs a daemon holding a
-   connection across the change; a room that died and stayed dead is drawn as the pane's
-   `unreadable` sentence, and the last note it left is about the room before it.
-3. **Nothing autostarts.** A room that is gone stays gone until somebody presses the key or runs the
-   launcher; there is no upkeep that restarts one, so `daemon` can only mean *the key found nothing
-   running*.
-4. **The marker is not a log.** One file, overwritten, beside the lease — a restart's history is not
-   kept, and the alternative (a journal) is the same answer the queue's own durability waits on.
-
-### Slice 5, as built — one agent per tag, and what a turn costs
-
-The operator, 2026-10-31: *"one subsession per tag, owned by the host … so a tag can be talked to
-about itself"*, and, on the cost: *"idle without a model call, and a turn only when it must rule — a
-claim, a healthy beat and a finished item are comparisons, not judgements; only a dispute earns a
-turn."*
+The tree is `<project>/<top-sessions>/<subagents>*|system/`, and it already existed in
+`crates/tui/src/app/session.rs`'s `App::placements()`. The gap this closed was that two unrelated sessions
+had no way to find each other: a message door takes a session id, and nothing in the tree will name one.
 
 | what | where it is |
 |---|---|
-| **the name is derived, never invented** — `s-room-<host key>-<tag>`, and `--session host:ram` resolves to it the way `--session host` resolves to the box's owner | `crates/room/src/lease.rs` (`tag_session`, `tag_of_session`, `named_session`); `harnessd::room::session_named`; `cli`'s `--session` |
-| **one agent per tag, seated by the coordinator** — for every tag with a live item, and never a second one for one tag | `crates/harnessd/src/room/agents.rs` (`ensure_tag_agents`, `spawn`) |
-| **a bell per tag** — the server addresses an event to that tag's agent, and the connection keeps only its own tag | `crates/room/src/server.rs` (`route`), `crates/harnessd/src/room/link.rs` (`SessionRoom::connect`'s wake) |
-| **re-seating, counted** — a dead agent is seated again and the count is a fact about the tag | `letibot_room::AgentLedger`; drawn in `room_feed`'s per-tag `agent` block |
-| **the count reaches the pane** — the `Room` read carries the agents, so a pane in another daemon can draw them | `Response::Room { agents }` (protocol **3**), `RoomSnapshot.agents`, `plugins/builtin/room`'s `agent_cell` |
+| a project's key is the tree's own: the twelve hex characters `scripts/letibot` cuts and `s-gatekeeper-<key>` is spelled from | `crates/room/src/tree.rs` (`project_key`), pinned to `workspace_key` by `crates/harnessd/tests/room_tree.rs` |
+| a room's name derives both ways (`<host key>/<project key>`), and `room_of_name` checks the round trip AND the key's shape | `tree.rs` (`room_name`, `room_of_name`) |
+| one room per project on the one socket, and a session names no room: its daemon derives the project from the root of its chain | `crates/room/src/server.rs` (`Inner::rooms`, `project_of_hello`), `crates/harnessd/src/harness.rs` (the `room_link` arm) |
+| the membership is the tree: the project's sessions, their subagents at any depth, and `system`'s groups | `crates/harnessd/src/room/roster.rs`; `Request::Members` -> `Room::set_members` |
+| two projects never leak: routing is filtered by room, and a question says which room asked it | `Server::route`, `Question::project`, `Request::Rule`'s `project` |
 
-**The name, and why it must be a function.** Two readers derive it — the coordinator's upkeep, which
-seats the session, and a person typing `--session host:ram` — and a name either of them guessed
-would be a session the other cannot find. The suffix is an **escape**, not a sanitisation: `a-z`,
-`0-9` and `-` are kept, `_` is written `__`, and every other character is `_` plus two hex digits per
-byte of its UTF-8. So `8 gb` and `8-gb` stay two tags with two agents, `RAM` and `ram` are one (the
-room's own normalisation, `normalise_tag`, is the one function both read), and `tag_of_session`
-inverts it exactly — including for a tag in Cyrillic. Two boxes cannot collide: the host key already
-carries a hash of the raw host name for the two machines that both answer `localhost`.
+`project_key` is `workspace_key`'s rule written a second time, because the room crate holds no store and no
+`tokencore`, and the two spellings are pinned to one table by a test, exactly as `lease::host_key_of` is
+pinned to the launcher's bash.
 
-**What a re-seat is.** The tag's agent is a session of the coordinator's own, so *dead* means *the
-registry no longer holds it* — the daemon restarted, the session was stopped, or its open failed. The
-upkeep reads `Registry::holds` (the same question the review queue asks before it re-seats a
-reviewer), and when the answer is no it seats the session again through `Registry::create_under`
-with the box's owner as the parent — which is what makes it a *subsession* the picker draws under
-`host`. **The count is `AgentLedger::reseat`'s**: a first seat is zero, and every return is one more.
-`seat` is separate from `reseat` on purpose — a caller that has not checked liveness cannot inflate
-the number — and a create that loses a race is `Exists`, which is a seat and not a return.
+The default project is a project: `DEFAULT_PROJECT` is the empty key, its room is the bare host key, and it
+is where a one-shot, a fixture, the arbiter and any session the daemon could not place live. A membership
+is a list of sessions with the group the tree draws each in, its depth under the project, its parent, and
+whether the daemon holds it live or only on disk; it is not the connections, since a subagent never opens
+one, and the daemon's tree replaces what the room held rather than merging into it.
 
-**How the deterministic path avoids opening a turn.** Three structural facts, not a promise:
-
-1. `ensure_tag_agents` takes a ledger, a registry and a list of tags — **and no bell**. There is
-   nothing in its signature to ring with.
-2. A tag's agent hears its own tag and nothing else, and **only `Raised` and `Asked` ring its bell**
-   (`link.rs`). A post, a claim, an abandonment and a `done` arrive as *notes* in `wake`'s queue —
-   read by the next turn that is started for a reason — and cost nothing while it idles.
-3. A session that is seated and never woken runs no turn: `Harness::wake` with an empty notice list
-   answers `Ok(None)`, which is the same rule the coordinator's own arbiter lives by.
-
-**What would have opened a turn under the other cost model** — *a turn per event*, which is what a
-naive bell would give: every `post`, every `claim` and every `done` under a tag is one model call on
-that tag's agent. On this box a busy afternoon's traffic under one tag is dozens of claims, so the
-bill would be dozens of turns per tag per hour, each reading a queue the room had already compared
-for it. The dispute-only rule is the same saving the arbiter's own filter makes (`Posted`/`Claimed`/
-`Done` are not the arbiter's business), applied one level down — where the volume is higher.
-
-**What a tag's agent is not.** It is not a claimer: nothing in this slice has it take an item. It
-rules, it is reachable, and it reads its own queue when something wakes it — the *"a tag can be
-talked to about itself"* half of the operator's sentence. A slice that made it claim would be a
-different decision about who runs the work.
-
-**What slice 5 leaves open.**
-
-1. **Nothing closes a tag's agent.** A tag whose items are all done keeps its session, seated and
-   idle. That is cheap (a session, no turn) and it is not a leak a person can see, but a box with
-   hundreds of finished tags would keep hundreds of idle sessions. The remedy is a close on the same
-   upkeep pass, and it needs a decision about what a closed agent's count means.
-2. **A tag's agent does not rule its own disputes yet.** `Raised`/`Asked` reach it, and the box's
-   arbiter is still the one whose answer unfreezes an item. Wiring `rule` to whichever session holds
-   the tag is the next decision, and it changes who is allowed to answer.
-3. **The count is drawn, not raised.** A tag re-seated five times says so in the pane; nothing raises
-   a warning code for it, because a new code has to be classified in `sessionlog::warning` and that
-   is a register's decision rather than a pane's.
-4. **A tag's notes are unbounded.** A tag whose agent is never woken accumulates one note per event
-   until something rings it. The fix is a bounded digest (the shape
-   `.letibot/notes/a-wall-of-notices-becomes-a-count.md` describes), and it is not in this slice.
-
-### Slice 6, as built — a room is a project's, and its membership is the tree
-
-The operator, 2026-10-31: *"yeah i want a room (it is actually in the markdowns). the herarchy was
-`<project>/<top-sessions>/<subagents>*|system/`"*. The tree that sentence draws already existed —
-`crates/tui/src/app/session.rs`'s `App::placements()` and the doc comment above it — and the gap it
-closed was measured: **two unrelated sessions had no way to find each other**, because a message
-door takes a session id and nothing in the tree will name one.
-
-| what | where it is |
-|---|---|
-| **a project's key is the tree's own** — the twelve hex characters `scripts/letibot` cuts, `letibot_sessionlog::workspace_key` computes and `s-gatekeeper-<key>` is spelled from | `crates/room/src/tree.rs` (`project_key`); pinned to `sessionlog`'s by `crates/harnessd/tests/room_tree.rs` |
-| **a room's name derives, both ways** — `<host key>/<project key>`, and `room_of_name` checks the round trip AND the key's shape | `tree.rs` (`room_name`, `room_of_name`) |
-| **one room per project, on the one socket** | `crates/room/src/server.rs` (`Inner::rooms`, `project_of_hello`, `route`) |
-| **a session names no room** — its daemon derives the project from the root of its chain and dials that room | `crates/harnessd/src/harness.rs` (the `room_link` arm), `room::link::SessionRoom::connect` |
-| **the membership is the tree** — the project's sessions, their subagents at any depth, and `system`'s three groups | `crates/harnessd/src/room/roster.rs`; `Request::Members` → `Room::set_members` |
-| **a member is a session the room has met**, so a ruling may hand it an item without a vouch | `Room::rule`'s `Decision::Hand` arm |
-| **two projects never leak** — routing is filtered by room, and a question says which room asked it | `Server::route`, `Question::project`, `Request::Rule`'s `project` |
-
-**The key is not a new hash, and that is the point.** `project_key` is
-`letibot_sessionlog::workspace_key`'s rule written a second time — the room crate holds no store and
-no `tokencore`, so it cannot import it — and the two spellings are pinned to one table by a test,
-exactly as `lease::host_key_of` is pinned to the launcher's bash `room_host_key`. A project's
-`system/gatekeepers` row is therefore *recognisably* this project's: its session id ends with the
-same twelve characters the room is keyed by.
-
-**The default project is a project.** `DEFAULT_PROJECT` is the empty key, its room is the bare host
-key, and it is where a one-shot, a fixture, the arbiter and any session the daemon could not place
-live — so a box with no projects is not a box with no room, and `Client::connect`'s old spelling of
-the box's name still reaches one. **A folder that is no repository is no project**
-(`room::roster::Roster::project_of` answers empty): a scratch directory has no identity to hang a
-tree from, and the sessions that have no project are exactly the ones that must land here — which is
-also the room `Server::live_tags` and the tag-agent derivation are about.
-
-**What a membership is, and what it is not.** It is a list of sessions, each with the group the tree
-draws it in, its depth under the project, its parent, and whether the daemon holds it live or only
-on disk. It is **not** the connections: a subagent never opens one (the door refuses it), and the
-operator's sentence names subagents twice. The daemon describes the tree and the room replaces what
-it held — a tree is the answer to *who is here now*, and a merge would keep a session that has been
-closed since. The link sends it on the same one-second poll that reads the pane's snapshot, so a
-restarted coordinator (which knows nobody) is told again within a second.
-
-**The arbiter is still one session, and it hears every room.** `Server::route` sends it each room's
-events — that is how a question reaches it — and two rooms number their questions from 1, so
-`Question::project` is stamped by the server as the answer leaves the room and `Request::Rule`'s
-`project` is what a ruling says back. A ruling that names no project is resolved by the question
-itself, and only when exactly one room has it open: an ambiguity is refused rather than applied to
-the wrong item.
-
-**What slice 6 leaves open, and why.**
-
-1. **The pane does not draw the tree.** `RoomSnapshot.members` carries it (`Response::Room`), and
-   `plugins/builtin/room` draws the queues per tag and nothing about who is in the room — a pane
-   that grows a second tree beside the head's session list is a drawing decision, and the head's own
-   list is the one the operator asked for last.
-2. **A head's view is unchanged.** `letibot --sessions` still prints the five groups
-   (`harnessd::cli::grouped`), and the head's `/sessions` tree is the TUI's; this slice makes the
-   ROOM agree with the tree, not the CLI agree with the room.
-3. **A tag's agent is still the box's.** `tag_session` is `s-room-<host key>-<tag>`, a name with no
-   project in it, and a session of that name can only be in one room — so `Server::live_tags` answers
-   the box's own room's tags and a project's tags have no agent yet. Making it per project means
-   `--session host:ram` has to name a project, which is the launcher's `--session` spelling and its
-   own slice. It is left *stated* rather than half-built: an agent seated in a room it cannot see
-   would be worse than none.
-4. **No agent per project.** A project does not get a session of its own; its room's membership is
-   the sessions the daemon already holds, and the arbiter is still the box's. An agent per project
-   is a different decision about who speaks for a project.
+Still open: the pane does not draw the tree, since `RoomSnapshot.members` carries it; `letibot --sessions`
+still prints the five groups, because this slice makes the ROOM agree with the tree, not the CLI agree
+with the room; a tag's agent is still the box's, since `tag_session` has no project in its name; and no
+project gets an agent of its own.
 
 ## What the state machine assumes
 
-* **One clock**, given as `now` in milliseconds by the caller. A clock that goes backwards is
-  survived, not corrected: a beat stamps `now`, and staleness is `now.saturating_sub(beat_ms)`, so a
-  beat from the future reads as fresh rather than as instantly stale.
-* **Liveness is two facts, both given**: the beat (it is working) and the caller's word (it is
-  gone). The room never asks the OS, never reads a store, never guesses.
-* **One writer.** Every mutating method is `&mut self`; there is no interior mutability, so the
-  process that owns the room is the only writer by construction.
-* **No durability.** A restart empties the room. That is a decision the pane must state (see above),
-  and the alternative — a journal — is a later answer if the operator wants one.
+- One clock, given as `now` in milliseconds by the caller. A clock that goes backwards is survived, not
+  corrected: staleness is `now.saturating_sub(beat_ms)`, so a beat from the future reads as fresh.
+- Liveness is two facts, both given: the beat (it is working) and the caller's word (it is gone). The room
+  never asks the OS, never reads a store, never guesses.
+- One writer: every mutating method is `&mut self`, so the process that owns the room is the only writer
+  by construction.
+- No durability. A restart empties the room, and the pane states it; a journal is a later answer if the
+  operator wants one.
+
+## Still owed
+
+1. ~~Restart the server~~: built, and the pane's fifth control asks the launcher, not the coordinator.
+2. ~~A reminder row on the board~~: built (see *The reminder, as built*).
+3. The room's first start costs a terminal line: a box with no key for the arbiter's provider says so on
+   every run that finds no coordinator, because a launcher may not remember a refusal on the operator's
+   behalf. A once-per-box note (a stamp file beside the lease) would be the fix, and it needs its own
+   decision about what clears it.
+4. A daemon the bridge started has no room: `leticode_start` spawns `harnessd` itself rather than going
+   through `scripts/letibot`, so a box whose daemons all came from the bridge has no coordinator until a
+   launcher run, the same shape as R102's missing record and the same fix.
+
+Also open, in the slices above: a tag's agent is never closed, does not rule its own disputes, and its
+notes are unbounded (slice 5); the pane draws no membership tree, and a tag's agent is still the box's
+rather than a project's (slice 6).
