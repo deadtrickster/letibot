@@ -45,6 +45,8 @@ use letibot_sessionlog::protocol::{Caps, ServerFrame};
 use letibot_sessionlog::registry::Registry;
 use letibot_transcript::{Backgrounding, ToolOutcome, TranscriptItem};
 
+mod support;
+
 /// How long the run sleeps if nothing intervenes. Long enough that a promote sent
 /// about a second in is unambiguously mid-flight; short enough that the broken
 /// shape's failure path (the row only when the sleep ends) still lands inside the
@@ -73,10 +75,7 @@ fn config(session: &str, socket: &std::path::Path, model_port: u16) -> Config {
     cfg.web_search = None;
     cfg.permission = Vec::new();
     cfg.dialect = Dialect::Qwen;
-    cfg.vocab_gguf = std::env::var("LETIBOT_VOCAB_GGUF")
-        .ok()
-        .map(std::path::PathBuf::from)
-        .or_else(letibot_harnessd::vocab_gguf);
+    cfg.vocab_gguf = support::vocab::gguf();
     cfg.session_id = session.into();
     cfg.socket = socket.to_path_buf();
     cfg.endpoint = letibot_turn::Endpoint::new("127.0.0.1", model_port);

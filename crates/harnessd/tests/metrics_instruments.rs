@@ -14,12 +14,12 @@ use letibot_harnessd::turn_tail::{Bare, Door, run_turn};
 use letibot_metrics::{Event, kind};
 use letibot_sessionlog::hub::Hub;
 
-#[path = "../../turn/tests/support/canned.rs"]
-mod canned;
+mod support;
 
-const IM_END: u32 = 248046;
+use support::canned;
+use support::qwen::{IM_END, THINK_CLOSE, spoken};
+
 const THINK_OPEN: u32 = 248068;
-const THINK_CLOSE: u32 = 248069;
 const TOOL_CALL_OPEN: u32 = 248058;
 const TOOL_CALL_CLOSE: u32 = 248059;
 
@@ -56,20 +56,8 @@ fn config(dir: &TempDir, session_id: &str) -> Config {
     cfg.http_retries = 0;
     cfg.store = Some(dir.0.join("sessions.db"));
     cfg.session_id = session_id.to_string();
-    cfg.vocab_gguf = std::env::var("LETIBOT_VOCAB_GGUF")
-        .ok()
-        .map(std::path::PathBuf::from)
-        .or_else(letibot_harnessd::vocab_gguf);
+    cfg.vocab_gguf = support::vocab::gguf();
     cfg
-}
-
-fn spoken(vocab: &letibot_tokencore::Vocab, ids: &[u32]) -> Vec<canned::Frame> {
-    ids.iter()
-        .map(|id| canned::Frame::Token {
-            id: *id,
-            text: vocab.detokenize(&[*id], true).unwrap().leak(),
-        })
-        .collect()
 }
 
 fn a_plain_answer(vocab: &letibot_tokencore::Vocab, answer: &str, n_prompt: u64) -> canned::Reply {

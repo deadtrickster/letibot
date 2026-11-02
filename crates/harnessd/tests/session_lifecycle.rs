@@ -23,8 +23,7 @@
 //!
 //! The vocabulary GGUF (`Harness::open` renders its stable prefix) and no model.
 
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpListener;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -36,22 +35,18 @@ use letibot_sessionlog::SessionEvent;
 use letibot_sessionlog::hub::{CommandKind, Hub};
 use letibot_sessionlog::protocol::Caps;
 use letibot_sessionlog::registry::{Registry, SessionWiring, Work, WorkOrIdle};
-use letibot_tokencore::Vocab;
 use letibot_tools::NullToolSink;
 use letibot_transcript::{Speaker, ToolCall, TranscriptItem, UserPart};
 use letibot_turn::Endpoint;
 
-#[path = "../../turn/tests/support/canned.rs"]
-mod canned;
+mod support;
+
+use support::canned::Frame;
 // **The descriptors a binary's parallel tests need** — see [`room`]'s own note: on this box the
 // soft open-file limit is 256 and fifty concurrent subagents want ~350.
-#[path = "support/room.rs"]
-mod room;
-
-use canned::Frame;
-
-const IM_END: u32 = 248046;
-const THINK_CLOSE: u32 = 248069;
+use support::qwen::a_plain_answer_turn;
+use support::room;
+use support::stub::{read_request, write_frames, write_props};
 
 const PATIENCE: Duration = Duration::from_secs(30);
 
@@ -75,10 +70,7 @@ fn config(session_id: &str, endpoint: Endpoint, store: &Path) -> Config {
     cfg.session_id = session_id.to_string();
     cfg.web_search = None;
     cfg.permission = Vec::new();
-    cfg.vocab_gguf = std::env::var("LETIBOT_VOCAB_GGUF")
-        .ok()
-        .map(std::path::PathBuf::from)
-        .or_else(letibot_harnessd::vocab_gguf);
+    cfg.vocab_gguf = support::vocab::gguf();
     cfg
 }
 
@@ -132,102 +124,6 @@ impl Stub {
     fn turns(&self) -> usize {
         self.turns.load(std::sync::atomic::Ordering::SeqCst)
     }
-}
-
-fn read_request(mut s: TcpStream) -> (String, String) {
-    let mut acc: Vec<u8> = Vec::new();
-    let mut buf = [0u8; 4096];
-    let mut head_end = None;
-    let mut want = 0usize;
-    loop {
-        match s.read(&mut buf) {
-            Ok(0) | Err(_) => break,
-            Ok(n) => acc.extend_from_slice(&buf[..n]),
-        }
-        if head_end.is_none()
-            && let Some(at) = acc.windows(4).position(|w| w == b"\r\n\r\n")
-        {
-            head_end = Some(at);
-            want = acc[..at]
-                .split(|b| *b == b'\n')
-                .find_map(|line| {
-                    let line = String::from_utf8_lossy(line);
-                    let (name, value) = line.split_once(':')?;
-                    name.trim()
-                        .eq_ignore_ascii_case("content-length")
-                        .then(|| value.trim().parse::<usize>().ok())?
-                })
-                .unwrap_or(0);
-        }
-        if let Some(at) = head_end
-            && acc.len() - (at + 4) >= want
-        {
-            break;
-        }
-    }
-    let text = String::from_utf8_lossy(&acc).into_owned();
-    match head_end {
-        Some(at) => (
-            text[..at].lines().next().unwrap_or("").trim().to_string(),
-            text[at + 4..].to_string(),
-        ),
-        None => (String::new(), text),
-    }
-}
-
-fn write_props(mut stream: TcpStream) -> std::io::Result<()> {
-    const BODY: &str = "{\"default_generation_settings\":{\"n_ctx\":32768}}";
-    write!(
-        stream,
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{BODY}",
-        BODY.len()
-    )?;
-    stream.flush()
-}
-
-fn write_frames(mut stream: TcpStream, frames: &[Frame]) -> std::io::Result<()> {
-    stream.write_all(
-        b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
-          Transfer-Encoding: chunked\r\n\r\n",
-    )?;
-    stream.write_all(&canned::sse_body(frames))?;
-    stream.flush()
-}
-
-fn ids(vocab: &Vocab, text: &str) -> Vec<u32> {
-    vocab.tokenize_text(text).expect("text tokenizes")
-}
-
-fn spoken(vocab: &Vocab, ids: &[u32]) -> Vec<Frame> {
-    ids.iter()
-        .map(|id| Frame::Token {
-            id: *id,
-            text: vocab
-                .detokenize(&[*id], true)
-                .expect("one token decodes")
-                .leak(),
-        })
-        .collect()
-}
-
-fn a_plain_answer_turn(vocab: &Vocab, thought: &str, answer: &str, n_prompt: u64) -> Vec<Frame> {
-    let thought_ids = ids(vocab, thought);
-    let answer_ids = ids(vocab, answer);
-    let mut frames = vec![Frame::Progress {
-        total: n_prompt,
-        processed: n_prompt,
-    }];
-    frames.extend(spoken(vocab, &thought_ids));
-    frames.extend(spoken(vocab, &[THINK_CLOSE]));
-    frames.extend(spoken(vocab, &answer_ids));
-    frames.extend(spoken(vocab, &[IM_END]));
-    frames.push(Frame::Final {
-        stop_type: "eos",
-        n_decoded: (thought_ids.len() + answer_ids.len() + 2) as u64,
-        n_prompt,
-        cache_n: 0,
-    });
-    frames
 }
 
 struct TempDir {

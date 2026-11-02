@@ -27,10 +27,7 @@ fn config(store: &std::path::Path, session_id: &str) -> Config {
     // the byte vocabulary needs none), so a harness built here is handed one: the
     // operator's `LETIBOT_VOCAB_GGUF` if it is set, else the box's own GGUF — the
     // same path this file's `vocab_gguf` gate consults.
-    cfg.vocab_gguf = std::env::var("LETIBOT_VOCAB_GGUF")
-        .ok()
-        .map(std::path::PathBuf::from)
-        .or_else(letibot_harnessd::vocab_gguf);
+    cfg.vocab_gguf = support::vocab::gguf();
     cfg
 }
 
@@ -187,6 +184,8 @@ use letibot_harnessd::sessions::Outcome;
 use letibot_sessionlog::event::{TodoBy as WireTodoBy, TodoEntry, TodoStatus as WireTodoStatus};
 use letibot_sessionlog::hub::{CommandKind, QueuedCommand};
 use letibot_sessionlog::registry::Registry;
+
+mod support;
 
 /// A store holding one session with an unfinished plan. The session row first —
 /// the todo row carries a foreign key to it.

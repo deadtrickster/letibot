@@ -30,6 +30,8 @@ use letibot_tools::builtins::task::{WorktreePlacement, worktree_branch, worktree
 use letibot_transcript::ToolCall;
 use letibot_turn::Endpoint;
 
+mod support;
+
 const PARENT: &str = "s-build-cache-parent";
 /// A repository's own build config, as a project that tracks one would have it.
 const TRACKED: &str = "[build]\nrustflags = [\"-Dwarnings\"]\ntarget-dir = \"own-target\"\n";
@@ -47,10 +49,7 @@ fn config(repo: &Path, session: &str) -> Config {
     cfg.session_id = session.to_string();
     cfg.web_search = None;
     cfg.permission = Vec::new();
-    cfg.vocab_gguf = std::env::var("LETIBOT_VOCAB_GGUF")
-        .ok()
-        .map(PathBuf::from)
-        .or_else(letibot_harnessd::vocab_gguf);
+    cfg.vocab_gguf = support::vocab::gguf();
     cfg
 }
 

@@ -33,6 +33,8 @@ use letibot_harnessd::{Dialect, Harness, Parts};
 use letibot_sessionlog::hub::Hub;
 use letibot_tokencore::store::Store;
 
+mod support;
+
 const WANTED: Dialect = Dialect::Qwen;
 
 fn config(store: &std::path::Path, session_id: &str) -> Config {
@@ -45,10 +47,7 @@ fn config(store: &std::path::Path, session_id: &str) -> Config {
     // the byte vocabulary needs none), so a harness built here is handed one: the
     // operator's `LETIBOT_VOCAB_GGUF` if it is set, else the box's own GGUF — the
     // same path this file's `vocab_gguf` gate consults.
-    cfg.vocab_gguf = std::env::var("LETIBOT_VOCAB_GGUF")
-        .ok()
-        .map(std::path::PathBuf::from)
-        .or_else(letibot_harnessd::vocab_gguf);
+    cfg.vocab_gguf = support::vocab::gguf();
     cfg
 }
 

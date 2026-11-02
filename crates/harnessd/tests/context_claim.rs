@@ -23,17 +23,14 @@ use letibot_sessionlog::event::SessionEvent;
 use letibot_sessionlog::hub::Hub;
 use letibot_transcript::{Speaker, TranscriptItem, UserPart};
 
-// Shared by path with the turn crate, which uses the parts this file does not.
-#[path = "../../turn/tests/support/canned.rs"]
-mod canned;
+mod support;
 
-use canned::Reply;
+use support::canned;
+use support::canned::Reply;
+use support::qwen::{IM_END, THINK_CLOSE, spoken};
 
 /// leticl, 2026-10-11 11:48, verbatim.
 const EXCUSE: &str = "My context is at the wall, so I'll stop here rather than start a piece I can't finish: what's left of the port is scroll regions.";
-
-const IM_END: u32 = 248046;
-const THINK_CLOSE: u32 = 248069;
 
 struct TempDir {
     path: std::path::PathBuf,
@@ -70,23 +67,8 @@ fn config(dir: &TempDir, session_id: &str) -> Config {
     cfg.http_retries = 0;
     cfg.store = Some(dir.path.join("sessions.db"));
     cfg.session_id = session_id.to_string();
-    cfg.vocab_gguf = std::env::var("LETIBOT_VOCAB_GGUF")
-        .ok()
-        .map(std::path::PathBuf::from)
-        .or_else(letibot_harnessd::vocab_gguf);
+    cfg.vocab_gguf = support::vocab::gguf();
     cfg
-}
-
-fn spoken(vocab: &letibot_tokencore::Vocab, ids: &[u32]) -> Vec<canned::Frame> {
-    ids.iter()
-        .map(|id| canned::Frame::Token {
-            id: *id,
-            text: vocab
-                .detokenize(&[*id], true)
-                .expect("one token decodes")
-                .leak(),
-        })
-        .collect()
 }
 
 /// A round that answers in plain text and makes no tool call — the shape that ends a

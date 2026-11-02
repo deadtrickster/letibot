@@ -49,6 +49,8 @@ use letibot_sessionlog::hub::Hub;
 use letibot_sessionlog::registry::Registry;
 use letibot_turn::CompactionOutcome;
 
+mod support;
+
 /// A directory that removes itself, so the fixtures here never compete for a name under
 /// `/tmp` (the same shape `standing_notes.rs` rolls for itself).
 struct TempDir(std::path::PathBuf);
@@ -95,10 +97,7 @@ fn config(store: &std::path::Path, session_id: &str, workspace: &std::path::Path
     cfg.http_retries = 0;
     cfg.store = Some(store.to_path_buf());
     cfg.session_id = session_id.to_string();
-    cfg.vocab_gguf = std::env::var("LETIBOT_VOCAB_GGUF")
-        .ok()
-        .map(std::path::PathBuf::from)
-        .or_else(letibot_harnessd::vocab_gguf);
+    cfg.vocab_gguf = support::vocab::gguf();
     cfg
 }
 

@@ -35,6 +35,8 @@ use letibot_sessionlog::{Registry, SessionWiring, SnapshotItem};
 use letibot_tools::{AdjudicationDecision, AdjudicationRequest, Adjudicator};
 use letibot_transcript::{CallOrigin, Speaker, TranscriptItem};
 
+mod support;
+
 fn config(session: &str, socket: &std::path::Path) -> Config {
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -58,10 +60,7 @@ fn config(session: &str, socket: &std::path::Path) -> Config {
     // the byte vocabulary needs none), so a harness built here is handed one: the
     // operator's `LETIBOT_VOCAB_GGUF` if it is set, else the box's own GGUF — the
     // same path this file's `vocab_gguf` gate consults.
-    cfg.vocab_gguf = std::env::var("LETIBOT_VOCAB_GGUF")
-        .ok()
-        .map(std::path::PathBuf::from)
-        .or_else(letibot_harnessd::vocab_gguf);
+    cfg.vocab_gguf = support::vocab::gguf();
     cfg
 }
 

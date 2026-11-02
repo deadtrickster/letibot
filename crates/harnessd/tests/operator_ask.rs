@@ -26,6 +26,8 @@ use letibot_sessionlog::registry::Registry;
 use letibot_tokencore::store::{SessionRecord, Store, TodoBy, TodoItem, TodoNeed, TodoStatus};
 use letibot_turn::Endpoint;
 
+mod support;
+
 fn config(store: &std::path::Path, session_id: &str) -> Config {
     let mut cfg = Config::for_this_box("/tmp");
     cfg.dialect = Dialect::Qwen;
@@ -35,10 +37,7 @@ fn config(store: &std::path::Path, session_id: &str) -> Config {
     cfg.permission = Vec::new();
     cfg.endpoint = Endpoint::new("127.0.0.1", 1);
     cfg.http_retries = 0;
-    cfg.vocab_gguf = std::env::var("LETIBOT_VOCAB_GGUF")
-        .ok()
-        .map(std::path::PathBuf::from)
-        .or_else(letibot_harnessd::vocab_gguf);
+    cfg.vocab_gguf = support::vocab::gguf();
     cfg
 }
 

@@ -40,6 +40,8 @@ use letibot_sessionlog::registry::Registry;
 use letibot_transcript::{CallOrigin, Speaker, TranscriptItem, UserPart};
 use letibot_turn::Endpoint;
 
+mod support;
+
 /// How long the in-flight run sleeps. Long enough that a probe submitted about a
 /// second in is still mid-flight on any box; short enough that the old shape's
 /// failure path (the probe served only after the run) stays inside the driver's
@@ -71,10 +73,7 @@ fn config(session: &str, socket: &std::path::Path, model_port: u16) -> Config {
     // daemon on the byte vocabulary needs none, which is main's change — so a harness
     // built here must be handed one. `LETIBOT_VOCAB_GGUF` wins, as everywhere else; the
     // box's own GGUF is the same path the test's gate consulted.
-    cfg.vocab_gguf = std::env::var("LETIBOT_VOCAB_GGUF")
-        .ok()
-        .map(std::path::PathBuf::from)
-        .or_else(letibot_harnessd::vocab_gguf);
+    cfg.vocab_gguf = support::vocab::gguf();
     cfg.session_id = session.into();
     cfg.socket = socket.to_path_buf();
     cfg.endpoint = Endpoint::new("127.0.0.1", model_port);
@@ -82,14 +81,6 @@ fn config(session: &str, socket: &std::path::Path, model_port: u16) -> Config {
     // mode that needs no oracle — the point here is the exec path, not the mode.
     cfg.seat = Seat::Leticode;
     cfg.allow_bash = true;
-    // `Config::for_this_box` carries no vocabulary default any more (a daemon on
-    // the byte vocabulary needs none), so a harness built here is handed one: the
-    // operator's `LETIBOT_VOCAB_GGUF` if it is set, else the box's own GGUF — the
-    // same path this file's `vocab_gguf` gate consults.
-    cfg.vocab_gguf = std::env::var("LETIBOT_VOCAB_GGUF")
-        .ok()
-        .map(std::path::PathBuf::from)
-        .or_else(letibot_harnessd::vocab_gguf);
     cfg
 }
 

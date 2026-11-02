@@ -22,11 +22,10 @@ use letibot_sessionlog::registry::{Registry, SessionWiring};
 use letibot_transcript::{Speaker, TranscriptItem, UserPart};
 use letibot_turn::CompactionOutcome;
 
-#[path = "../../turn/tests/support/canned.rs"]
-mod canned;
+mod support;
 
-const IM_END: u32 = 248046;
-const THINK_CLOSE: u32 = 248069;
+use support::canned;
+use support::qwen::{IM_END, THINK_CLOSE, spoken};
 
 struct TempDir(std::path::PathBuf);
 
@@ -58,23 +57,8 @@ fn config(store: &std::path::Path, session_id: &str, workspace: &std::path::Path
     cfg.http_retries = 0;
     cfg.store = Some(store.to_path_buf());
     cfg.session_id = session_id.to_string();
-    cfg.vocab_gguf = std::env::var("LETIBOT_VOCAB_GGUF")
-        .ok()
-        .map(std::path::PathBuf::from)
-        .or_else(letibot_harnessd::vocab_gguf);
+    cfg.vocab_gguf = support::vocab::gguf();
     cfg
-}
-
-fn spoken(vocab: &letibot_tokencore::Vocab, ids: &[u32]) -> Vec<canned::Frame> {
-    ids.iter()
-        .map(|id| canned::Frame::Token {
-            id: *id,
-            text: vocab
-                .detokenize(&[*id], true)
-                .expect("one token decodes")
-                .leak(),
-        })
-        .collect()
 }
 
 fn a_plain_answer(vocab: &letibot_tokencore::Vocab, answer: &str) -> canned::Reply {

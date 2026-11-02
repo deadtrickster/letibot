@@ -32,7 +32,7 @@
 //! of the main test, which it HOLDS so the daemon can be stopped while the child is mid-turn.
 //! Needs the vocabulary GGUF (a harness renders its stable prefix), no model.
 
-use std::io::{Read, Write};
+use std::io::Write;
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
@@ -55,17 +55,16 @@ use letibot_tools::builtins::task::{TaskSpec, WorktreePlacement};
 use letibot_transcript::{ToolCall, TranscriptItem, UserPart};
 use letibot_turn::Endpoint;
 
-#[path = "../../turn/tests/support/canned.rs"]
-mod canned;
+mod support;
+
+use support::canned;
+use support::canned::Frame;
 // **The descriptors a binary's parallel tests need** — see [`room`]'s own note: on this box the
 // soft open-file limit is 256 and eighteen daemons and their children at once want more.
-#[path = "support/room.rs"]
-mod room;
+use support::qwen::{IM_END, THINK_CLOSE};
+use support::room;
+use support::stub::{read_request, write_props};
 
-use canned::Frame;
-
-const IM_END: u32 = 248046;
-const THINK_CLOSE: u32 = 248069;
 const PATIENCE: Duration = Duration::from_secs(30);
 const PARENT: &str = "s-restart-parent";
 const OLD: &str = "d-old-daemon";
@@ -88,10 +87,7 @@ fn config(repo: &Path, store: &Path, endpoint: Endpoint) -> Config {
     cfg.session_id = PARENT.to_string();
     cfg.web_search = None;
     cfg.permission = Vec::new();
-    cfg.vocab_gguf = std::env::var("LETIBOT_VOCAB_GGUF")
-        .ok()
-        .map(PathBuf::from)
-        .or_else(letibot_harnessd::vocab_gguf);
+    cfg.vocab_gguf = support::vocab::gguf();
     cfg
 }
 
@@ -348,57 +344,6 @@ impl Drop for Stub {
     fn drop(&mut self) {
         self.release();
     }
-}
-
-fn read_request(mut s: TcpStream) -> (String, String) {
-    let mut acc: Vec<u8> = Vec::new();
-    let mut buf = [0u8; 4096];
-    let mut head_end = None;
-    let mut want = 0usize;
-    loop {
-        match s.read(&mut buf) {
-            Ok(0) | Err(_) => break,
-            Ok(n) => acc.extend_from_slice(&buf[..n]),
-        }
-        if head_end.is_none()
-            && let Some(at) = acc.windows(4).position(|w| w == b"\r\n\r\n")
-        {
-            head_end = Some(at);
-            want = acc[..at]
-                .split(|b| *b == b'\n')
-                .find_map(|line| {
-                    let line = String::from_utf8_lossy(line);
-                    let (name, value) = line.split_once(':')?;
-                    name.trim()
-                        .eq_ignore_ascii_case("content-length")
-                        .then(|| value.trim().parse::<usize>().ok())?
-                })
-                .unwrap_or(0);
-        }
-        if let Some(at) = head_end
-            && acc.len() - (at + 4) >= want
-        {
-            break;
-        }
-    }
-    let text = String::from_utf8_lossy(&acc).into_owned();
-    match head_end {
-        Some(at) => (
-            text[..at].lines().next().unwrap_or("").trim().to_string(),
-            text[at + 4..].to_string(),
-        ),
-        None => (String::new(), text),
-    }
-}
-
-fn write_props(mut stream: TcpStream) -> std::io::Result<()> {
-    const BODY: &str = "{\"default_generation_settings\":{\"n_ctx\":32768}}";
-    write!(
-        stream,
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{BODY}",
-        BODY.len()
-    )?;
-    stream.flush()
 }
 
 fn write_body(mut stream: TcpStream, body: &[u8]) -> std::io::Result<()> {

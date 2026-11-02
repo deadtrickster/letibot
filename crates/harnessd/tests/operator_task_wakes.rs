@@ -52,13 +52,11 @@ use letibot_tokencore::Vocab;
 use letibot_tokencore::store::{SessionRecord, Store};
 use letibot_transcript::{Speaker, TranscriptItem, UserPart};
 
-#[path = "../../turn/tests/support/canned.rs"]
-mod canned;
+mod support;
 
-use canned::Reply;
-
-const IM_END: u32 = 248046;
-const THINK_CLOSE: u32 = 248069;
+use support::canned;
+use support::canned::Reply;
+use support::qwen::{IM_END, THINK_CLOSE, spoken};
 
 /// How long a correct build takes milliseconds for. Generous on purpose: the assertion is what
 /// happened, not how fast.
@@ -132,24 +130,9 @@ fn session(tag: &str) -> (TempDir, Config, Parts) {
     cfg.session_id = session_id;
     cfg.web_search = None;
     cfg.permission = Vec::new();
-    cfg.vocab_gguf = std::env::var("LETIBOT_VOCAB_GGUF")
-        .ok()
-        .map(std::path::PathBuf::from)
-        .or_else(letibot_harnessd::vocab_gguf);
+    cfg.vocab_gguf = support::vocab::gguf();
     let parts = Parts::load(&cfg).expect("the vocabulary must load");
     (dir, cfg, parts)
-}
-
-fn spoken(vocab: &Vocab, ids: &[u32]) -> Vec<canned::Frame> {
-    ids.iter()
-        .map(|id| canned::Frame::Token {
-            id: *id,
-            text: vocab
-                .detokenize(&[*id], true)
-                .expect("one token decodes")
-                .leak(),
-        })
-        .collect()
 }
 
 fn a_plain_answer(vocab: &Vocab, answer: &str) -> Reply {

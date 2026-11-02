@@ -30,6 +30,8 @@ use letibot_tokencore::store::{SessionRecord, Store, TodoBy, TodoCondition, Todo
 use letibot_transcript::ToolOutcome;
 use letibot_turn::Endpoint;
 
+mod support;
+
 /// What the stub says, so a failure's reason can be traced to it.
 const REFUSAL: &str = "stub-refusal-r68-turn-tail";
 
@@ -87,10 +89,7 @@ fn config(store: &std::path::Path, session_id: &str, model_port: u16) -> Config 
     cfg.permission = Vec::new();
     cfg.http_retries = 0;
     cfg.endpoint = Endpoint::new("127.0.0.1", model_port);
-    cfg.vocab_gguf = std::env::var("LETIBOT_VOCAB_GGUF")
-        .ok()
-        .map(std::path::PathBuf::from)
-        .or_else(letibot_harnessd::vocab_gguf);
+    cfg.vocab_gguf = support::vocab::gguf();
     cfg
 }
 

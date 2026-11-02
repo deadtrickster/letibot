@@ -23,13 +23,11 @@ use letibot_sessionlog::registry::{Registry, SessionWiring, Work, WorkOrIdle};
 use letibot_tokencore::store::{SessionRecord, Store, TodoBy, TodoItem, TodoNeed, TodoStatus};
 use letibot_transcript::{Speaker, TranscriptItem, UserPart};
 
-#[path = "../../turn/tests/support/canned.rs"]
-mod canned;
+mod support;
 
-use canned::Reply;
-
-const IM_END: u32 = 248046;
-const THINK_CLOSE: u32 = 248069;
+use support::canned;
+use support::canned::Reply;
+use support::qwen::{IM_END, THINK_CLOSE, spoken};
 
 struct TempDir {
     path: std::path::PathBuf,
@@ -89,24 +87,9 @@ fn session(tag: &str, todos: &[TodoItem]) -> (TempDir, Config, Parts) {
     cfg.http_retries = 0;
     cfg.store = Some(store);
     cfg.session_id = session_id;
-    cfg.vocab_gguf = std::env::var("LETIBOT_VOCAB_GGUF")
-        .ok()
-        .map(std::path::PathBuf::from)
-        .or_else(letibot_harnessd::vocab_gguf);
+    cfg.vocab_gguf = support::vocab::gguf();
     let parts = Parts::load(&cfg).expect("the vocabulary must load");
     (dir, cfg, parts)
-}
-
-fn spoken(vocab: &letibot_tokencore::Vocab, ids: &[u32]) -> Vec<canned::Frame> {
-    ids.iter()
-        .map(|id| canned::Frame::Token {
-            id: *id,
-            text: vocab
-                .detokenize(&[*id], true)
-                .expect("one token decodes")
-                .leak(),
-        })
-        .collect()
 }
 
 fn a_plain_answer(vocab: &letibot_tokencore::Vocab, answer: &str) -> Reply {

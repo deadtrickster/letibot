@@ -31,6 +31,8 @@ use letibot_sessionlog::registry::Registry;
 use letibot_tokencore::store::{SessionRecord, Store, TodoBy, TodoItem, TodoStatus};
 use letibot_turn::Endpoint;
 
+mod support;
+
 /// **A model server that refuses in the one way the retry rule respects** — `run_off_worker.rs`'s,
 /// for the reason it gives: a 400 fails the turn at once, a refused port is retried.
 fn refusing_model_stub() -> u16 {
@@ -84,10 +86,7 @@ fn config(store: &std::path::Path, session_id: &str, model_port: u16) -> Config 
     cfg.permission = Vec::new();
     // **Never this box's model server**: the nag's turn goes to the stub.
     cfg.endpoint = Endpoint::new("127.0.0.1", model_port);
-    cfg.vocab_gguf = std::env::var("LETIBOT_VOCAB_GGUF")
-        .ok()
-        .map(std::path::PathBuf::from)
-        .or_else(letibot_harnessd::vocab_gguf);
+    cfg.vocab_gguf = support::vocab::gguf();
     cfg
 }
 

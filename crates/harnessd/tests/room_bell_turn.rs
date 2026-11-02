@@ -45,20 +45,13 @@ use letibot_room::{Request, Response, Room, Speaker};
 use letibot_sessionlog::SessionEvent;
 use letibot_sessionlog::hub::Hub;
 use letibot_sessionlog::registry::{Registry, SessionWiring, Work, WorkOrIdle};
-use letibot_tokencore::Vocab;
 use letibot_tools::NullToolSink;
 use letibot_transcript::{Speaker as Row, ToolCall, TranscriptItem};
 
-/// The canned server the turn crate's tests replay, shared by path rather than copied — a second
-/// copy of the wire shape would drift from the first.
-#[path = "../../turn/tests/support/canned.rs"]
-mod canned;
+mod support;
 
-use canned::Frame;
-
-// Qwen's own ids, the same values the turn crate's canned tests pin.
-const IM_END: u32 = 248046;
-const THINK_CLOSE: u32 = 248069;
+use support::canned;
+use support::qwen::a_plain_answer_turn;
 
 /// The sentence the room pushes, as the link composes it — matched rather than reproduced, so a
 /// reworded `wake::sentence` fails in one place instead of two.
@@ -88,50 +81,8 @@ fn config(store: &std::path::Path, session: &str) -> Config {
     // **The link is the subject**, so it is asked for explicitly rather than inherited: a
     // constructor that stopped setting it would otherwise make this test measure nothing.
     cfg.room_link = true;
-    cfg.vocab_gguf = std::env::var("LETIBOT_VOCAB_GGUF")
-        .ok()
-        .map(PathBuf::from)
-        .or_else(letibot_harnessd::vocab_gguf);
+    cfg.vocab_gguf = support::vocab::gguf();
     cfg
-}
-
-fn ids(vocab: &Vocab, text: &str) -> Vec<u32> {
-    vocab.tokenize_text(text).expect("text tokenizes")
-}
-
-fn spoken(vocab: &Vocab, ids: &[u32]) -> Vec<Frame> {
-    ids.iter()
-        .map(|id| Frame::Token {
-            id: *id,
-            text: vocab
-                .detokenize(&[*id], true)
-                .expect("one token decodes")
-                .leak(),
-        })
-        .collect()
-}
-
-/// A complete turn that answers in plain text: the model thinks, closes the block, answers, ends —
-/// `child_nag.rs`'s shape, kept identical so the two files' fixtures cannot drift apart on the
-/// wire bytes that matter.
-fn a_plain_answer_turn(vocab: &Vocab, thought: &str, answer: &str, n_prompt: u64) -> Vec<Frame> {
-    let thought_ids = ids(vocab, thought);
-    let answer_ids = ids(vocab, answer);
-    let mut frames = vec![Frame::Progress {
-        total: n_prompt,
-        processed: n_prompt,
-    }];
-    frames.extend(spoken(vocab, &thought_ids));
-    frames.extend(spoken(vocab, &[THINK_CLOSE]));
-    frames.extend(spoken(vocab, &answer_ids));
-    frames.extend(spoken(vocab, &[IM_END]));
-    frames.push(Frame::Final {
-        stop_type: "eos",
-        n_decoded: (thought_ids.len() + answer_ids.len() + 2) as u64,
-        n_prompt,
-        cache_n: 0,
-    });
-    frames
 }
 
 /// **Everything the session's log holds as a user row** — the rows a prompt is built from, and the

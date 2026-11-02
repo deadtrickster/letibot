@@ -22,6 +22,8 @@ use letibot_harnessd::standing_notes;
 use letibot_harnessd::{Dialect, Harness, Parts};
 use letibot_sessionlog::hub::Hub;
 
+mod support;
+
 /// A directory that removes itself, so the fixtures here never compete for a
 /// name under `/tmp` (the same shape `compact.rs` rolls for itself).
 struct TempDir(std::path::PathBuf);
@@ -71,10 +73,7 @@ fn opened(workspace: &std::path::Path, nonce: &str) -> (Harness, TempDir) {
     cfg.http_retries = 0;
     cfg.store = Some(dir.path().join("sessions.db"));
     cfg.session_id = format!("standing-{nonce}");
-    cfg.vocab_gguf = std::env::var("LETIBOT_VOCAB_GGUF")
-        .ok()
-        .map(std::path::PathBuf::from)
-        .or_else(letibot_harnessd::vocab_gguf);
+    cfg.vocab_gguf = support::vocab::gguf();
     let parts = Parts::load(&cfg).expect("the vocabulary must load");
     std::fs::write(workspace.join("AGENTS.md"), format!("note-{nonce}-one\n"))
         .expect("fixture AGENTS.md");

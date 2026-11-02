@@ -30,12 +30,12 @@ use letibot_sessionlog::hub::Hub;
 use letibot_tokencore::store::Store;
 use letibot_turn::CompactionOutcome;
 
-/// The canned server the turn crate's tests replay, shared by path rather than
-/// copied: a second copy of the wire shape would drift from the first, and the
-/// frames here are the same bytes those tests replay. It serves an ephemeral
-/// port, so nothing here can meet the model server.
-#[path = "../../turn/tests/support/canned.rs"]
-mod canned;
+/// The shared fixtures: the canned turn these tests replay, and the vocabulary a harness
+/// opens with.
+mod support;
+
+use support::canned;
+use support::qwen::{THINK_CLOSE, a_plain_answer_turn, ids, spoken};
 
 const WANTED: Dialect = Dialect::Qwen;
 
@@ -54,10 +54,7 @@ fn config(store: &std::path::Path, session_id: &str) -> Config {
     // the byte vocabulary needs none), so a harness built here is handed one: the
     // operator's `LETIBOT_VOCAB_GGUF` if it is set, else the box's own GGUF — the
     // same path this file's `vocab_gguf` gate consults.
-    cfg.vocab_gguf = std::env::var("LETIBOT_VOCAB_GGUF")
-        .ok()
-        .map(std::path::PathBuf::from)
-        .or_else(letibot_harnessd::vocab_gguf);
+    cfg.vocab_gguf = support::vocab::gguf();
     cfg
 }
 
@@ -211,10 +208,7 @@ fn a_session_without_a_store_refuses_to_fork_by_name() {
     // the byte vocabulary needs none), so a harness built here is handed one: the
     // operator's `LETIBOT_VOCAB_GGUF` if it is set, else the box's own GGUF — the
     // same path this file's `vocab_gguf` gate consults.
-    cfg.vocab_gguf = std::env::var("LETIBOT_VOCAB_GGUF")
-        .ok()
-        .map(std::path::PathBuf::from)
-        .or_else(letibot_harnessd::vocab_gguf);
+    cfg.vocab_gguf = support::vocab::gguf();
     cfg.session_id = "compact-no-store".into();
     let parts = load_parts(&cfg);
     let mut h = opened(&cfg, &parts);
@@ -327,53 +321,7 @@ impl Drop for TempDir {
 }
 
 // Qwen's own ids, the same values the turn crate's canned tests pin.
-const IM_END: u32 = 248046;
 const THINK_OPEN: u32 = 248068;
-const THINK_CLOSE: u32 = 248069;
-
-fn ids(vocab: &letibot_tokencore::Vocab, text: &str) -> Vec<u32> {
-    vocab.tokenize_text(text).expect("text tokenizes")
-}
-
-fn spoken(vocab: &letibot_tokencore::Vocab, ids: &[u32]) -> Vec<canned::Frame> {
-    ids.iter()
-        .map(|id| canned::Frame::Token {
-            id: *id,
-            text: vocab
-                .detokenize(&[*id], true)
-                .expect("one token decodes")
-                .leak(),
-        })
-        .collect()
-}
-
-/// A complete turn that answers in plain text: the model thinks, closes the
-/// block, answers, ends. No tool calls, so the harness's round loop ends after
-/// one round.
-fn a_plain_answer_turn(
-    vocab: &letibot_tokencore::Vocab,
-    thought: &str,
-    answer: &str,
-    n_prompt: u64,
-) -> Vec<canned::Frame> {
-    let thought_ids = ids(vocab, thought);
-    let answer_ids = ids(vocab, answer);
-    let mut frames = vec![canned::Frame::Progress {
-        total: n_prompt,
-        processed: n_prompt,
-    }];
-    frames.extend(spoken(vocab, &thought_ids));
-    frames.extend(spoken(vocab, &[THINK_CLOSE]));
-    frames.extend(spoken(vocab, &answer_ids));
-    frames.extend(spoken(vocab, &[IM_END]));
-    frames.push(canned::Frame::Final {
-        stop_type: "eos",
-        n_decoded: (thought_ids.len() + answer_ids.len() + 2) as u64,
-        n_prompt,
-        cache_n: 0,
-    });
-    frames
-}
 
 /// The live finding of 2026-09-15, replayed: the stream stops with a normal
 /// `eos` while the reasoning block is still open and nothing but reasoning was

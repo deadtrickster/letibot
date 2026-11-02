@@ -41,6 +41,8 @@ use letibot_sessionlog::hub::Hub;
 use letibot_transcript::{ToolOutcome, TranscriptItem};
 use letibot_turn::Endpoint;
 
+mod support;
+
 /// One at a time: this box's slots are shared with real work.
 fn serial() -> MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -118,10 +120,7 @@ fn config() -> Option<Config> {
     // the byte vocabulary needs none), so a harness built here is handed one: the
     // operator's `LETIBOT_VOCAB_GGUF` if it is set, else the box's own GGUF — the
     // same path this file's `vocab_gguf` gate consults.
-    cfg.vocab_gguf = std::env::var("LETIBOT_VOCAB_GGUF")
-        .ok()
-        .map(std::path::PathBuf::from)
-        .or_else(letibot_harnessd::vocab_gguf);
+    cfg.vocab_gguf = support::vocab::gguf();
     // **The dialect follows the model, and that is what makes the escape hatch
     // work.** `serving::expect`'s panic tells an operator whose box serves another
     // model to point these tests elsewhere with LETIBOT_COMPLETION_URL,

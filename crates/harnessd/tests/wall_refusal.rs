@@ -32,12 +32,13 @@ use letibot_sessionlog::hub::Hub;
 use letibot_sessionlog::registry::Registry;
 use letibot_tokencore::store::{SessionRecord, Store, TodoBy, TodoCondition, TodoItem, TodoStatus};
 
-/// The canned server the turn crate's tests replay, shared by path rather than
-/// copied — a second copy of the wire shape would drift from the first.
-#[path = "../../turn/tests/support/canned.rs"]
-mod canned;
+/// The shared fixtures: the canned turn these tests replay, and the vocabulary a harness
+/// opens with.
+mod support;
 
-use canned::Reply;
+use support::canned;
+use support::canned::Reply;
+use support::qwen::{a_plain_answer_turn, ids, spoken};
 
 const WANTED: Dialect = Dialect::Qwen;
 
@@ -64,10 +65,7 @@ fn config(store: &std::path::Path, session_id: &str) -> Config {
     cfg.http_retries = 0;
     cfg.store = Some(store.to_path_buf());
     cfg.session_id = session_id.to_string();
-    cfg.vocab_gguf = std::env::var("LETIBOT_VOCAB_GGUF")
-        .ok()
-        .map(std::path::PathBuf::from)
-        .or_else(letibot_harnessd::vocab_gguf);
+    cfg.vocab_gguf = support::vocab::gguf();
     cfg
 }
 
@@ -107,54 +105,10 @@ impl Drop for TempDir {
 }
 
 // Qwen's own ids, the same values the turn crate's canned tests pin.
-const IM_END: u32 = 248046;
 const THINK_OPEN: u32 = 248068;
 const THINK_CLOSE: u32 = 248069;
 const TOOL_CALL_OPEN: u32 = 248058;
 const TOOL_CALL_CLOSE: u32 = 248059;
-
-fn ids(vocab: &letibot_tokencore::Vocab, text: &str) -> Vec<u32> {
-    vocab.tokenize_text(text).expect("text tokenizes")
-}
-
-fn spoken(vocab: &letibot_tokencore::Vocab, ids: &[u32]) -> Vec<canned::Frame> {
-    ids.iter()
-        .map(|id| canned::Frame::Token {
-            id: *id,
-            text: vocab
-                .detokenize(&[*id], true)
-                .expect("one token decodes")
-                .leak(),
-        })
-        .collect()
-}
-
-/// A complete turn that answers in plain text: the model thinks, closes the
-/// block, answers, ends. No tool calls, so the round loop ends after one round.
-fn a_plain_answer_turn(
-    vocab: &letibot_tokencore::Vocab,
-    thought: &str,
-    answer: &str,
-    n_prompt: u64,
-) -> Vec<canned::Frame> {
-    let thought_ids = ids(vocab, thought);
-    let answer_ids = ids(vocab, answer);
-    let mut frames = vec![canned::Frame::Progress {
-        total: n_prompt,
-        processed: n_prompt,
-    }];
-    frames.extend(spoken(vocab, &thought_ids));
-    frames.extend(spoken(vocab, &[THINK_CLOSE]));
-    frames.extend(spoken(vocab, &answer_ids));
-    frames.extend(spoken(vocab, &[IM_END]));
-    frames.push(canned::Frame::Final {
-        stop_type: "eos",
-        n_decoded: (thought_ids.len() + answer_ids.len() + 2) as u64,
-        n_prompt,
-        cache_n: 0,
-    });
-    frames
-}
 
 /// **The wedge's own first half**: one round that answers the prompt with a
 /// BATCH of ten `read` calls, exactly the shape that pushes a session past its

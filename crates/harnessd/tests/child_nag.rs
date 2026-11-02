@@ -59,21 +59,14 @@ use letibot_harnessd::{Dialect, Harness, Parts};
 use letibot_sessionlog::SessionEvent;
 use letibot_sessionlog::hub::Hub;
 use letibot_sessionlog::registry::{Registry, SessionWiring};
-use letibot_tokencore::Vocab;
 use letibot_tokencore::store::{Store, TodoBy, TodoStatus};
 use letibot_tools::builtins::todo::ChildTodos;
 use letibot_transcript::{Speaker, TranscriptItem};
 
-/// The canned server the turn crate's tests replay, shared by path rather than
-/// copied — a second copy of the wire shape would drift from the first.
-#[path = "../../turn/tests/support/canned.rs"]
-mod canned;
+mod support;
 
-use canned::Frame;
-
-// Qwen's own ids, the same values the turn crate's canned tests pin.
-const THINK_CLOSE: u32 = 248069;
-const IM_END: u32 = 248046;
+use support::canned;
+use support::qwen::a_plain_answer_turn;
 
 /// The injected window — the one difference between a child this daemon parks and one this
 /// test parks. Small enough that the whole schedule runs in well under a second of the
@@ -107,50 +100,8 @@ fn config(store: &std::path::Path, session_id: &str) -> Config {
     cfg.http_retries = 0;
     cfg.store = Some(store.to_path_buf());
     cfg.session_id = session_id.to_string();
-    cfg.vocab_gguf = std::env::var("LETIBOT_VOCAB_GGUF")
-        .ok()
-        .map(std::path::PathBuf::from)
-        .or_else(letibot_harnessd::vocab_gguf);
+    cfg.vocab_gguf = support::vocab::gguf();
     cfg
-}
-
-fn ids(vocab: &Vocab, text: &str) -> Vec<u32> {
-    vocab.tokenize_text(text).expect("text tokenizes")
-}
-
-fn spoken(vocab: &Vocab, ids: &[u32]) -> Vec<Frame> {
-    ids.iter()
-        .map(|id| Frame::Token {
-            id: *id,
-            text: vocab
-                .detokenize(&[*id], true)
-                .expect("one token decodes")
-                .leak(),
-        })
-        .collect()
-}
-
-/// A complete turn that answers in plain text: the model thinks, closes the
-/// block, answers, ends — `wall_refusal.rs`'s shape, kept identical so the two
-/// files' fixtures cannot drift apart on the wire bytes that matter.
-fn a_plain_answer_turn(vocab: &Vocab, thought: &str, answer: &str, n_prompt: u64) -> Vec<Frame> {
-    let thought_ids = ids(vocab, thought);
-    let answer_ids = ids(vocab, answer);
-    let mut frames = vec![Frame::Progress {
-        total: n_prompt,
-        processed: n_prompt,
-    }];
-    frames.extend(spoken(vocab, &thought_ids));
-    frames.extend(spoken(vocab, &[THINK_CLOSE]));
-    frames.extend(spoken(vocab, &answer_ids));
-    frames.extend(spoken(vocab, &[IM_END]));
-    frames.push(Frame::Final {
-        stop_type: "eos",
-        n_decoded: (thought_ids.len() + answer_ids.len() + 2) as u64,
-        n_prompt,
-        cache_n: 0,
-    });
-    frames
 }
 
 /// The `[todo check]` items on the child's own log, as their text — the harness's

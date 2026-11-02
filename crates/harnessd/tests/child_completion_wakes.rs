@@ -43,8 +43,7 @@
 //! names the delegation trio — the default seat names none of them, and a test that invoked a
 //! tool its session does not seat would be measuring the seat table.
 
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpListener;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime};
@@ -56,20 +55,16 @@ use letibot_tokencore::store::{SessionRecord, Store};
 use letibot_transcript::{Speaker, ToolOutcome, TranscriptItem, UserPart};
 use letibot_turn::Endpoint;
 
-/// The canned server the turn crate's tests replay, shared by path rather than copied — a
-/// second copy of the wire shape would drift from the first. This file writes its own server
-/// (it has to hold one request and answer the others): what it takes from here is
-/// [`canned::Frame`] and [`canned::sse_body`], and the file's own `dead_code` allow covers the
-/// rest.
-#[path = "../../turn/tests/support/canned.rs"]
-mod canned;
+/// The shared fixtures. This file writes its own server (it has to hold one request and answer
+/// the others), so what it takes from there is the frames, the stub's HTTP and the vocabulary.
+mod support;
 
-use canned::Frame;
+use support::canned::Frame;
+use support::qwen::{THINK_CLOSE, a_plain_answer_turn, ids, spoken};
+use support::stub::{read_request, write_frames, write_props};
 
 /// Qwen's own ids, the same values the turn crate's canned tests pin.
-const IM_END: u32 = 248046;
 const THINK_OPEN: u32 = 248068;
-const THINK_CLOSE: u32 = 248069;
 const TOOL_CALL_OPEN: u32 = 248058;
 const TOOL_CALL_CLOSE: u32 = 248059;
 
@@ -158,10 +153,7 @@ fn config(
     cfg.session_id = session_id.to_string();
     cfg.web_search = None;
     cfg.permission = Vec::new();
-    cfg.vocab_gguf = std::env::var("LETIBOT_VOCAB_GGUF")
-        .ok()
-        .map(std::path::PathBuf::from)
-        .or_else(letibot_harnessd::vocab_gguf);
+    cfg.vocab_gguf = support::vocab::gguf();
     cfg
 }
 
@@ -475,10 +467,6 @@ impl Drop for Stub {
     }
 }
 
-fn ids(vocab: &letibot_tokencore::Vocab, text: &str) -> Vec<u32> {
-    vocab.tokenize_text(text).expect("text tokenizes")
-}
-
 /// **What the model was handed for one request** — the token ids, detokenized with the vocabulary
 /// the session tokenized with. This is how the stub tells the child's request from the parent's:
 /// a prompt is the only thing a request carries that says who it is for.
@@ -494,44 +482,6 @@ fn prompt_of(vocab: &letibot_tokencore::Vocab, body: &str) -> String {
         .filter_map(|v| v.as_u64().map(|n| n as u32))
         .collect();
     vocab.detokenize(&ids, true).unwrap_or_default()
-}
-
-fn spoken(vocab: &letibot_tokencore::Vocab, ids: &[u32]) -> Vec<Frame> {
-    ids.iter()
-        .map(|id| Frame::Token {
-            id: *id,
-            text: vocab
-                .detokenize(&[*id], true)
-                .expect("one token decodes")
-                .leak(),
-        })
-        .collect()
-}
-
-/// A complete turn that answers in plain text: thinks, closes the block, answers, ends.
-fn a_plain_answer_turn(
-    vocab: &letibot_tokencore::Vocab,
-    thought: &str,
-    answer: &str,
-    n_prompt: u64,
-) -> Vec<Frame> {
-    let thought_ids = ids(vocab, thought);
-    let answer_ids = ids(vocab, answer);
-    let mut frames = vec![Frame::Progress {
-        total: n_prompt,
-        processed: n_prompt,
-    }];
-    frames.extend(spoken(vocab, &thought_ids));
-    frames.extend(spoken(vocab, &[THINK_CLOSE]));
-    frames.extend(spoken(vocab, &answer_ids));
-    frames.extend(spoken(vocab, &[IM_END]));
-    frames.push(Frame::Final {
-        stop_type: "eos",
-        n_decoded: (thought_ids.len() + answer_ids.len() + 2) as u64,
-        n_prompt,
-        cache_n: 0,
-    });
-    frames
 }
 
 /// A turn that calls `task` and ends — the call is what arms the watcher, and this is the shape a
@@ -570,74 +520,6 @@ fn a_task_call_turn(vocab: &letibot_tokencore::Vocab, prompt: &str, n_prompt: u6
         cache_n: 0,
     });
     frames
-}
-
-/// Drain one request — headers plus the body `Content-Length` names — so the client's write
-/// side is finished before the answer arrives. The request line comes back too, so the caller
-/// can tell a `/props` probe from a turn.
-fn read_request(mut s: TcpStream) -> (String, String) {
-    let mut acc: Vec<u8> = Vec::new();
-    let mut buf = [0u8; 4096];
-    let mut head_end = None;
-    let mut want = 0usize;
-    loop {
-        match s.read(&mut buf) {
-            Ok(0) | Err(_) => break,
-            Ok(n) => acc.extend_from_slice(&buf[..n]),
-        }
-        if head_end.is_none()
-            && let Some(at) = acc.windows(4).position(|w| w == b"\r\n\r\n")
-        {
-            head_end = Some(at);
-            want = acc[..at]
-                .split(|b| *b == b'\n')
-                .find_map(|line| {
-                    let line = String::from_utf8_lossy(line);
-                    let (name, value) = line.split_once(':')?;
-                    name.trim()
-                        .eq_ignore_ascii_case("content-length")
-                        .then(|| value.trim().parse::<usize>().ok())?
-                })
-                .unwrap_or(0);
-        }
-        if let Some(at) = head_end
-            && acc.len() - (at + 4) >= want
-        {
-            break;
-        }
-        if acc.len() > (1 << 22) {
-            break;
-        }
-    }
-    let text = String::from_utf8_lossy(&acc).into_owned();
-    match head_end {
-        Some(at) => (
-            text[..at].lines().next().unwrap_or("").trim().to_string(),
-            text[at + 4..].to_string(),
-        ),
-        None => (String::new(), text),
-    }
-}
-
-/// The endpoint's own props, as `served_ctx` reads them: the one field a spawn asks for is the
-/// window, and a server that answers nothing gets `None`, which is no wall at all.
-fn write_props(mut stream: TcpStream) -> std::io::Result<()> {
-    const BODY: &str = "{\"default_generation_settings\":{\"n_ctx\":32768}}";
-    write!(
-        stream,
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{BODY}",
-        BODY.len()
-    )?;
-    stream.flush()
-}
-
-fn write_frames(mut stream: TcpStream, frames: &[Frame]) -> std::io::Result<()> {
-    stream.write_all(
-        b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
-          Transfer-Encoding: chunked\r\n\r\n",
-    )?;
-    stream.write_all(&canned::sse_body(frames))?;
-    stream.flush()
 }
 
 // ---------------------------------------------------------------------------

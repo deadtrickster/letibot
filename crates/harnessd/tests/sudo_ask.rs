@@ -79,6 +79,8 @@ use letibot_sessionlog::protocol::{Caps, ServerFrame};
 use letibot_sessionlog::server::serve_registry;
 use letibot_transcript::TranscriptItem;
 
+mod support;
+
 /// How long any wait in this file may take before it is a failure rather than a hang.
 const PATIENCE: Duration = Duration::from_secs(60);
 
@@ -116,10 +118,7 @@ fn config(session: &str, socket: &Path) -> Config {
     // the byte vocabulary needs none), so a harness built here is handed one: the
     // operator's `LETIBOT_VOCAB_GGUF` if it is set, else the box's own GGUF — the
     // same path this file's `vocab_gguf` gate consults.
-    cfg.vocab_gguf = std::env::var("LETIBOT_VOCAB_GGUF")
-        .ok()
-        .map(std::path::PathBuf::from)
-        .or_else(letibot_harnessd::vocab_gguf);
+    cfg.vocab_gguf = support::vocab::gguf();
     cfg
 }
 
