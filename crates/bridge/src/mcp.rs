@@ -1,23 +1,11 @@
 //! **MCP over stdio**: JSON-RPC 2.0, one message per line, and nothing else on stdout.
 //!
-//! # Why there is no MCP library here
-//!
-//! The protocol this needs is three methods and one notification, and the message framing
-//! is a newline. A library would add a dependency, an executor and a decoder between the
-//! bridge and the seven hundred lines it already has; what it would save is this file.
-//!
-//! # The two rules that are easy to get wrong, and are tested
-//!
-//! * **A line that does not parse is an answer, not the end of the server.** A client that
-//!   writes something odd to stdin gets `-32700` and the next line is served as usual:
-//!   a bridge that exited there would look to Claude Code like a server that crashed, with
-//!   the real cause invisible.
-//! * **A notification gets no reply.** `notifications/initialized` has no `id`, and a
-//!   JSON-RPC peer that answers it is a peer that will be answered out of order.
-//!
-//! **stdout is the wire.** Every diagnostic goes to stderr, because a single stray `print!`
-//! lands in the middle of a JSON line and the client's decoder reports a protocol error
-//! about the bridge's own logging.
+//! No MCP library: the protocol here is three methods and one notification, the framing is a
+//! newline, and a library would add a dependency, an executor and a decoder for it.
+//! Two rules are easy to get wrong and are tested: **a line that does not parse is an answer,
+//! not the end of the server** (a client gets `-32700` and the next line is served as usual),
+//! and **a notification gets no reply**. And **stdout is the wire**: every diagnostic goes to
+//! stderr, because one stray `print!` lands in the middle of a JSON line.
 
 use std::io::{BufRead, Write};
 
@@ -30,11 +18,9 @@ use crate::tools::Bridge;
 /// reads it, because the fields it uses are the same three.
 pub const PROTOCOL_VERSION: &str = "2025-06-18";
 
-/// Serve one client, reading requests from `input` and writing answers to `output`.
-///
-/// Returns when the input ends. Errors on the writer are returned rather than swallowed:
-/// a client that closed stdout is gone, and continuing to read its requests would be work
-/// nobody receives.
+/// Serve one client, reading requests from `input` and writing answers to `output`. Returns when
+/// the input ends. Errors on the writer are returned rather than swallowed: a client that closed
+/// stdout is gone, and reading its requests would be work nobody receives.
 pub fn serve<R: BufRead, W: Write>(
     mut input: R,
     mut output: W,
@@ -112,14 +98,9 @@ fn handle(bridge: &Bridge, request: &Value) -> Option<Value> {
     Some(json!({ "jsonrpc": "2.0", "id": id, "result": result.unwrap_or(Value::Null) }))
 }
 
-/// `tools/call`: run the verb and wrap what it said.
-///
-/// Two kinds of failure and two different shapes, on purpose. **A caller's mistake** — an
-/// unknown tool, a missing argument — is a JSON-RPC error, because the request was not a
-/// well-formed call of anything. **A tool that ran and failed** is `isError: true` with the
-/// reason as text, because the client asked a question this server understood and the answer
-/// is no: an error object there would make a perfectly answerable call look like a broken
-/// server.
+/// `tools/call`: run the verb and wrap what it said. Two kinds of failure, on purpose: **a
+/// caller's mistake** - an unknown tool, a missing argument - is a JSON-RPC error, while **a tool
+/// that ran and failed** is `isError: true`, because an error object would look like a broken server.
 fn call_tool(bridge: &Bridge, params: &Value) -> Value {
     let Some(name) = params.get("name").and_then(Value::as_str) else {
         return text("tools/call needs a `name`".into(), true);

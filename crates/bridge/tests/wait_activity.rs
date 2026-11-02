@@ -1,20 +1,11 @@
 //! **A `wait` holds on the session's own job, and it trusts the daemon's answer about a parked one**
 //! over a real socket and a real `Registry`, with no daemon and no apparatus.
 //!
-//! The half that costs orchestrator runs is the first: a session whose turn ended with a job still
-//! running must not answer *the turn ended*, because the job's settlement is going to wake the model
-//! and start a turn of its own. Before the fix the wait saw an activity it could not read as *mine*
-//! (`Waiting::Job`), so it sat out the start grace and then polled for a quiet that was not coming:
-//! a caller's deadline of an hour was answered with `Timeout` about a session that had been working
-//! the whole time.
-//!
-//! The second is the reason the first is usable: the daemon says `quiet` about the job the model
-//! PARKED (`wake: "later"`), and a wait that second-guessed that with its own `jobs_open` set would
-//! hold every package that leaves a server running.
-//!
-//! What this does not cover, and does not pretend to: that a real `bash` job really does settle into
-//! a real turn. That needs a process backend, and it is `wait_jobs.rs` (which skips on a box without
-//! a cgroup v2 tree, per AGENTS.md).
+//! A session whose turn ended with a job still running must not answer *the turn ended*, because
+//! the job's settlement wakes the model and starts a turn of its own; before the fix the wait sat
+//! out the start grace and polled for a quiet that was not coming, answering an hour's deadline with
+//! `Timeout`. And the daemon says `quiet` about the job the model PARKED (`wake: "later"`), which a
+//! wait that second-guessed would hold every package that leaves a server running.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -193,11 +184,7 @@ fn a_wait_holds_on_a_running_job_and_trusts_the_daemons_quiet() {
     }
 
     // --- the parked half: the daemon's `quiet` is the answer, job or no job -----------------
-    //
-    // The head's own `jobs_open` list still holds a job here, exactly as `leticode_status` shows it
-    // for a server left running; and the daemon says the session is quiet, because the model
-    // started it with `wake: "later"`. A wait that second-guessed that with its own list would
-    // hold every package that leaves a server up.
+    // The head's own `jobs_open` list still holds a job here, and the daemon says the session is quiet.
     started_a_job(&hub, "j8");
     said(&hub, "the turn that parked the server");
     hub.publish(testing::turn_finished("t1"));

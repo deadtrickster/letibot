@@ -1,16 +1,10 @@
-//! **A `wait` holds on the session's own background job, and not on the one the model parked**,
-//! over the wire, once.
+//! A `wait` holds on the session's own background job, and not on the one the model parked.
 //!
-//! The report: a session idle with a job open and `waiting_on` empty made `letibot-mcp wait` exit
-//! `0` at once, though the job's settlement was going to wake the model and start a turn of its own.
-//! The orchestrator read *done* and the package had a turn left in it. The other half is what keeps
-//! that usable: a dev server left running is `bash {background: true, wake: "later"}`, the model
-//! saying it does not need waking for it, and a `wait` must not sit out its deadline for one.
-//!
-//! | what | how |
-//! |---|---|
-//! | a `sleep` the model started still holds the wait | it returns the WOKEN turn's words, seconds later, and not the turn that started the job |
-//! | a job parked with `wake: "later"` does not | the wait returns the parked turn's own words while that job is still running |
+//! A session idle with a job open used to make `letibot-mcp wait` exit `0` at once, though the
+//! job's settlement was going to wake the model and start a turn of its own: the orchestrator read
+//! *done* and the package had a turn left in it. The other half is what keeps that usable - a dev
+//! server left running is `bash {background: true, wake: "later"}`, the model saying it does not
+//! need waking for it, and a `wait` must not sit out its deadline for one.
 //!
 //! The daemon here is a real one in this process: a real `bash`, a real watcher thread, a real
 //! settlement on the session's bell, and the wake the daemon takes from it.
@@ -215,9 +209,9 @@ impl World {
         }
         let worktree = root.join("worktree");
         std::fs::create_dir_all(&worktree).expect("worktree");
-        // **Six answers, in the order the turns take them**: the brief's call, its answer, the
-        // wake's answer when the short job ends, then the parked call, its answer, and one more
-        // `Say` for a turn that must not happen.
+        // Six answers, in the order the turns take them: the brief's call, its answer, the wake's
+        // answer when the short job ends, then the parked call, its answer, and one more `Say` for
+        // a turn that must not happen.
         let fake = Fake::serve(vec![
             Answer::Call("bash", json!({"command": SHORT_JOB, "background": true})),
             Answer::Say(STARTED_ANSWER),
@@ -272,9 +266,9 @@ impl World {
             .create(cfg.session_id.clone(), "", Sessions::wiring(&cfg))
             .expect("a fresh registry takes the session");
         let daemon = Daemon::serve(registry.clone(), &socket).expect("the socket binds");
-        // **The record a joining bridge reads**: without it the daemon is placed *nowhere it can
-        // see*, and `leticode_start` refuses to join rather than guess where its tools run. This
-        // daemon's tools do run here, so the spelling is the bare `host`.
+        // The record a joining bridge reads: without it the daemon is placed nowhere it can see,
+        // and `leticode_start` refuses to join rather than guess where its tools run. This daemon's
+        // tools do run here, so the spelling is the bare `host`.
         letibot_sessionlog::placement::write(&socket, "host").expect("the placement record");
         let worker_registry = registry.clone();
         let worker = std::thread::spawn(move || {
@@ -329,7 +323,7 @@ fn settled_with(bridge: &Bridge, session: &str, marker: &str) -> Value {
 #[test]
 fn a_wait_holds_on_a_running_job_and_not_on_the_one_the_model_parked() {
     // The seat names a process backend, so the apparatus is a tree the box must have; absent
-    // apparatus is announced rather than asserted about (AGENTS.md), and the gate has it.
+    // apparatus is announced rather than asserted about.
     let Some(_) = letibot_tokencore::apparatus::present(
         "a process-lifetime tree (cgroup v2; process groups on macOS)",
         letibot_tools::host_tree().is_ok(),
@@ -354,7 +348,7 @@ fn a_wait_holds_on_a_running_job_and_not_on_the_one_the_model_parked() {
         "the job the brief started is still running: {idle}"
     );
 
-    // --- the first half: the wait holds until the WOKEN turn ends -----------------
+    // the first half: the wait holds until the WOKEN turn ends
     let began = Instant::now();
     let (code, said) = tools::wait(&tree, &session, Instant::now() + PATIENCE);
     let took = began.elapsed();
@@ -369,7 +363,7 @@ fn a_wait_holds_on_a_running_job_and_not_on_the_one_the_model_parked() {
         "it held on the running job rather than answering at once (took {took:?})"
     );
 
-    // --- the second half: a parked job does not hold it ---------------------------
+    // the second half: a parked job does not hold it
     bridge
         .send(&session, PARK_BRIEF)
         .expect("a second line into the session");

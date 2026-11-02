@@ -1,41 +1,20 @@
-//! **Where a folder's daemon lives, and how to start one** — the launcher's job, done
-//! from a head.
+//! **Where a folder's daemon lives, and how to start one** - the launcher's job, done from a head.
 //!
-//! `scripts/letibot` owns this knowledge for a person: one daemon per workspace, a socket
-//! named by the workspace's own hash under `$XDG_RUNTIME_DIR/letibot`, and a start
-//! sequence that refuses to begin a second daemon over a live one. The bridge needs the
-//! same answers, because a session it starts must live in the daemon that folder already
-//! has — a same-shaped second one would mean two daemons interleaving rows into one
-//! transcript until the store refuses every write (the defect `scripts/letibot`'s `live`
-//! and `live_detached` read `ss` to avoid).
-//!
-//! **This is a port of the paths, not of the launcher.** The launcher's crate
-//! (`crates/letibot`) is a binary-only crate — `src/launcher.rs` has no library target —
-//! so there is nothing to call; what is here is the same three facts spelled again:
-//!
-//! * the socket is `<rundir>/<sha256(workspace)[..12]>.sock`,
-//! * the store is `$LETIBOT_STORE` or `~/.local/share/letibot/sessions.db`,
-//! * the daemon is started detached, with the seat and mode the `leticode` wrapper
-//!   starts it with, and its own log beside the socket's key.
-//!
-//! A difference between this and the shell would name a socket no daemon listened on, so
-//! the two facts a person can check — the key, and the path it makes — are asserted
-//! against the values `launcher.rs` measured on this box.
+//! `scripts/letibot` owns this knowledge for a person, and the bridge needs the same answers: a
+//! session it starts must live in the daemon that folder already has, or two daemons interleave
+//! rows into one transcript until the store refuses every write.
+//! A port of the paths, not of the launcher (`crates/letibot` is binary-only): the socket is
+//! `<rundir>/<sha256(workspace)[..12]>.sock`, the store is `$LETIBOT_STORE` or the config dir,
+//! and the daemon starts detached with its own log beside the socket's key.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use letibot_tools::builtins::task::Placement;
 
-/// The name a head attaches under — a fact of the daemon's log, so it is the bridge's own
-/// and not a guess: `HeadAttached`/`HeadDetached` name it, and the decision corpus records
-/// the answers given from it.
-///
-/// **And it is the mark the session list groups by**: the daemon records who opened a session
-/// (`letibot_sessionlog::SessionOrigin::of_opener`, from this identity), so a conversation a
-/// package started is drawn under `packages` instead of among the operator's own. One string
-/// and one definition, because the two halves have to agree or the grouping silently stops
-/// recognising `letim`'s sessions.
+/// The name a head attaches under - a fact of the daemon's log, so it is the bridge's own and
+/// not a guess: `HeadAttached`/`HeadDetached` name it. It is also the mark the session list
+/// groups by, so a conversation a package started is drawn under `packages`.
 pub const IDENTITY: &str = letibot_sessionlog::MCP_IDENTITY;
 
 /// The handshake kind this head sends. The protocol's vocabulary is `tui`, `remote`,
@@ -44,9 +23,8 @@ pub const IDENTITY: &str = letibot_sessionlog::MCP_IDENTITY;
 pub const HEAD_KIND: &str = "remote";
 
 /// The directory the runtime files live in: `$XDG_RUNTIME_DIR/letibot`, else
-/// `/run/user/<uid>/letibot` on Linux and the per-user temp dir on macOS —
-/// `launcher::rundir`'s rule, asked of the system rather than read from `$TMPDIR` so a
-/// daemon started without that variable lands where the head looks.
+/// `/run/user/<uid>/letibot` on Linux and the per-user temp dir on macOS - `launcher::rundir`'s
+/// rule, asked of the system rather than read from `$TMPDIR`.
 pub fn rundir() -> PathBuf {
     let base = match std::env::var_os("XDG_RUNTIME_DIR") {
         Some(d) if !d.is_empty() => PathBuf::from(d),
@@ -101,11 +79,9 @@ pub struct Daemon {
     pub log: PathBuf,
     /// Where the daemon keeps transcripts. `$LETIBOT_STORE` wins, as it does in the shell.
     pub store: PathBuf,
-    /// **Where this daemon's tools run** — the record it wrote beside its socket
-    /// ([`letibot_sessionlog::placement`]), so this is the daemon's own answer and not the
-    /// caller's hope. `None` is *nothing is known*: a daemon from a build before the record
-    /// existed, or one whose record names a socket that is gone. Never read as *local* — see
-    /// [`ensure_here`], which refuses rather than guesses.
+    /// **Where this daemon's tools run** - the record it wrote beside its socket
+    /// ([`letibot_sessionlog::placement`]), so this is the daemon's own answer. `None` is
+    /// *nothing is known*, never *local*: see [`ensure_here`], which refuses rather than guesses.
     pub placement: Option<Placement>,
     /// True when THIS call started the daemon, so the answer can say so — a bridge that
     /// claimed to have started a daemon somebody else's process was already serving would
@@ -120,12 +96,9 @@ fn home() -> Result<PathBuf, String> {
         .ok_or_else(|| "no $HOME: the store and the log have no default without one".to_string())
 }
 
-/// **The workspace a path belongs to**, as the launcher resolves it: the git toplevel when
-/// the path is inside a checkout, else the path itself, normalised with `cd`'s own answer.
-///
-/// A path that does not exist is refused by name rather than hashed: an empty workspace is
-/// a socket key everything shares, and the shell's own guard exists because a failed `cd`
-/// there once reopened another project's conversation.
+/// **The workspace a path belongs to**, as the launcher resolves it: the git toplevel when the
+/// path is inside a checkout, else the path itself. A path that does not exist is refused by
+/// name rather than hashed: an empty workspace is a socket key everything shares.
 pub fn workspace_of(worktree: &Path) -> Result<PathBuf, String> {
     let dir =
         std::fs::canonicalize(worktree).map_err(|e| format!("{}: {e}", worktree.display()))?;
@@ -154,26 +127,9 @@ fn socket_in(rundir: &Path, key: &str) -> PathBuf {
     rundir.join(format!("{key}.sock"))
 }
 
-/// **The record beside the socket: what this folder's daemon is** — R102.
-///
-/// `scripts/letibot` writes one of these when it starts a daemon (`record_write`), and it is
-/// what four of its verbs read: `--daemons` and `--ls` glob `$RUNDIR/*.json`, `--stop N` and
-/// `--stop --all` resolve a handle through the same glob, and the attach banner prints the
-/// model out of it. A daemon the BRIDGE started wrote none, so on 2026-10-27 the operator's box
-/// had about forty `harnessd` processes and `letibot --daemons` answered *no daemons recorded* —
-/// and the launcher's own liveness test had nothing to compare against.
-///
-/// **Written here rather than taught to the listing, and the reason is the name.** The socket is
-/// `<sha256(workspace)[..12]>.sock`: a socket with no record names a hash and nothing else — not
-/// the folder, not the role, not what answers its turns — so a `--daemons` that read sockets
-/// could only print forty lines of hex. The record is the one place those facts exist, and the
-/// bridge is a starter that knows all of them.
-///
-/// The shape is the shell's, field for field, because the shell reads it with `sed`: a flat
-/// object, `pid` as a NUMBER (its `json_str` cannot see a number and `json_num` cannot see a
-/// string — that pair is why `json_field` exists), and the file named `<key>.json` beside the
-/// socket. `started` is RFC3339 in UTC; the shell writes the local offset and nothing reads
-/// either but a person.
+/// **The record beside the socket: what this folder's daemon is** - R102. A socket names a hash
+/// and nothing else - not the folder, not the role - so the record is the one place those facts
+/// exist, and the shell reads it with `sed`: a flat object, `pid` as a NUMBER, named `<key>.json`.
 fn write_record(d: &Daemon, pid: u32, model: Option<&str>) -> std::io::Result<PathBuf> {
     let answers = match model {
         Some(m) => match m.split_once('/') {
@@ -266,23 +222,16 @@ pub fn resolve(workspace: &Path) -> Result<Daemon, String> {
     })
 }
 
-/// Is something accepting connections on this socket right now?
-///
-/// A connect, not a `stat`: the daemon's own shutdown unlinks the socket file while the
-/// process goes on listening on the nameless inode, so "is there a file" answers *no* for
-/// a folder that has a daemon — measured by the shell, and the reason it reads a listener
-/// rather than a path.
+/// Is something accepting connections on this socket right now? A connect, not a `stat`: the
+/// daemon's own shutdown unlinks the socket file while the process goes on listening on the
+/// nameless inode, so "is there a file" answers *no* for a folder that has a daemon.
 pub fn is_up(socket: &Path) -> bool {
     std::os::unix::net::UnixStream::connect(socket).is_ok()
 }
 
-/// The daemon's binary: `$LETIBOT_BIN`, then `harnessd` on `PATH`, then beside this
-/// executable.
-///
-/// The launcher resolves it against its own location and `../../target/release`; a bridge
-/// started by Claude Code has no launcher beside it, so the order is inverted — an
-/// explicit `LETIBOT_BIN` first (the same variable the shell treats as authoritative) and
-/// then whatever `harnessd` the box has.
+/// The daemon's binary: `$LETIBOT_BIN`, then `harnessd` on `PATH`, then beside this executable.
+/// The launcher resolves it against its own location instead; a bridge started by Claude Code has
+/// no launcher beside it, so an explicit `LETIBOT_BIN` comes first.
 fn daemon_binary() -> Result<PathBuf, String> {
     if let Some(dir) = std::env::var_os("LETIBOT_BIN")
         && !dir.is_empty()
@@ -315,28 +264,9 @@ fn daemon_binary() -> Result<PathBuf, String> {
     Err("no harnessd: set $LETIBOT_BIN to the directory holding it, or put it on PATH".into())
 }
 
-/// **The daemon's flags, as the `leticode` wrapper passes them.**
-///
-/// `scripts/letibot` starts a daemon with a seat, an approval point and a shell, and those
-/// three are what make a session answerable at all: the reviewer-in-the-loop design
-/// (`docs/claude-code-bridge.md`) is `writes-allowed` plus the gate's asks reaching this
-/// head — a daemon started at `always-ask` with no shell would ask about nothing and do
-/// nothing.
-///
-/// **And `--no-queue`, which the launcher never passes.** A daemon the bridge starts on a
-/// package's worktree is one of that repository's session daemons by the queue's own rule
-/// (`mergequeue::serves`: the checkout, under it, or one of its worktrees), so without the
-/// flag it claims the repository's lease and runs the queue itself: on 2026-10-26 the daemon
-/// started for package P1 found letibot's `main` red and put an EMERGENCY in front of the
-/// package's model before its brief. A package worker is not the repository's queue holder —
-/// the operator's own daemon is — and two daemons interleaving landings for one repository is
-/// the second half of that defect. A daemon that is already up is not this call's to change;
-/// `ensure` returns it as it is.
-///
-/// **`--host NAME` is the placement**, and it is spelled once: `docs/remote-hosts.md` names
-/// `leticode --host lab2x1` for the operator and `leticode_start { host }` for a Claude Code
-/// package, and both are this flag on a daemon whose sessions run their tools over ssh. The
-/// model, the store and the gate stay here — the daemon names the host, it does not move.
+/// **The daemon's flags, as the `leticode` wrapper passes them.** A seat, an approval point and
+/// a shell are what make a session answerable at all. `--no-queue` because a package worker is
+/// not the repository's queue holder, and without it the daemon runs the queue itself.
 fn daemon_args(d: &Daemon, model: Option<&str>, mode: &str, placement: &Placement) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "--workspace".into(),
@@ -399,12 +329,8 @@ fn is_provider(name: &str) -> bool {
 }
 
 /// Start the daemon detached, in its own session, writing to its own log, and hand back the
-/// child so that whoever started it can wait for it.
-///
-/// `setsid` rather than a plain spawn: a daemon that died with the MCP process would take
-/// every session it holds with it, which is the one property the two-process split exists
-/// to deny. The launcher gets the same effect from `setsid(1)` on Linux and perl's
-/// `POSIX::setsid` on a Mac; the syscall is the same thing without a fork of either.
+/// child. `setsid` rather than a plain spawn: a daemon that died with the MCP process would take
+/// every session it holds with it, which is what the two-process split exists to deny.
 fn start(
     binary: &Path,
     d: &Daemon,
@@ -450,38 +376,17 @@ fn start(
         .map_err(|e| format!("starting {}: {e}", binary.display()))
 }
 
-/// **Every child this process starts is waited for** — the bridge's half of the rule this whole
-/// tree is held to: *any process letibot starts is supervised, no exceptions*.
-///
-/// MEASURED 2026-10-26: a `Child` is not waited for on drop, and the bridge dropped it the
-/// moment it had the pid — so every daemon that exited stayed `<defunct>` under `letibot-mcp`
-/// for as long as that bridge lived. One bridge held twelve (aged 1.5 to 9.5 hours, package
-/// daemons stopped cleanly with `letibot --stop`) and another seven. A zombie holds a process
-/// table entry and, worse, counts as a running daemon in `ps`: the person asking *is this
-/// folder's daemon still up* cannot tell a dead one from a live one.
-///
-/// **A thread per child, and not a `SIGCHLD` handler.** A handler is process-wide and
-/// `wait(2)`-shaped: it would take the exit of *any* child this program ever has — including
-/// ones the bridge did not start and cannot account for — and it would have to be installed
-/// once and coexist with anything else that wants that signal. A bridge starts one daemon per
-/// folder and lives for hours, so a thread per daemon is one stack each, waiting on exactly the
-/// child it was handed.
-///
-/// **And it does not tie the daemon's lifetime to the bridge's.** The child is `setsid`'d
-/// ([`start`]), so it is in a session of its own: no signal aimed at this process's group
-/// reaches it, and when the bridge exits the waiting thread simply goes with it and the kernel
-/// hands the running daemon to init. Waiting is not owning — what is reaped here is a corpse,
-/// never a live child.
+/// **Every child this process starts is waited for** - the tree's rule: *any process letibot
+/// starts is supervised*. A `Child` is not waited for on drop, so a bridge that dropped it at
+/// the pid left every exited daemon `<defunct>`. Waiting is not owning: the child is `setsid`'d.
 fn reap(mut child: std::process::Child) {
     let pid = child.id();
     let spawned = std::thread::Builder::new()
         .name(format!("reap-{pid}"))
         .spawn(move || {
             // The status is not this thread's business: *did the daemon come up* is answered by
-            // the socket, with the log's tail behind it (`ensure`), and a daemon that came up
-            // and later exits is the operator's act or the idle exit's. What is owed here is the
-            // wait itself, and an error from it (a child somebody else already waited for) is
-            // the same fact as success.
+            // the socket, with the log's tail behind it. What is owed here is the wait itself,
+            // and an error from it is the same fact as success.
             let _ = child.wait();
         });
     if let Err(e) = spawned {
@@ -496,11 +401,9 @@ fn reap(mut child: std::process::Child) {
     }
 }
 
-/// **This folder's daemon started, detached, and reaped when it exits** — the pid the answer
-/// names and nothing else about the child.
-///
-/// The binary is the caller's so that the start path a test can drive is the one a daemon
-/// start really takes; resolving it ([`daemon_binary`]) is `ensure`'s business.
+/// **This folder's daemon started, detached, and reaped when it exits** - the pid the answer
+/// names and nothing else about the child. The binary is the caller's so that the start path a
+/// test drives is the one a daemon start really takes; resolving it is `ensure`'s business.
 fn spawn(
     binary: &Path,
     d: &Daemon,
@@ -515,27 +418,8 @@ fn spawn(
 }
 
 /// **This folder's daemon, started if nothing is listening, and never one whose placement is
-/// not the one asked for.**
-///
-/// `placement` is what the caller asked for — [`Placement::Host`] when it asked for nothing, so
-/// *nothing* is a placement and not an absence — and it is checked against the record the daemon
-/// wrote beside its socket before the daemon is reused.
-///
-/// **A daemon already up with another placement is refused, not reused, and it is not this
-/// call's to stop.** Stopping it would end sessions somebody else is running — the operator's
-/// own daemon for that folder is the usual case — so the refusal names what the running daemon
-/// says about itself and the command that ends it, and the caller decides. The defect this
-/// closes is silent and expensive: a package asking for `host: lab2x1` that joined the local
-/// daemon would run its whole brief on this box, and nothing in any answer would say so.
-///
-/// **A daemon that recorded nothing is refused too, in both directions.** `None` is *unknown*,
-/// not *local*: an older build, or a record whose socket is gone. Guessing *local* there is the
-/// same silent wrong answer, and guessing `remote` is worse.
-///
-/// The wait is the launcher's: poll the cheap check — is anything accepting — up to sixty
-/// times at half a second, then report the log's tail rather than a bare timeout, because
-/// a daemon that did not come up has said why on its own log and the person reading the
-/// bridge's answer needs those lines.
+/// not the one asked for.** A daemon already up with another placement is refused, not reused
+/// and not stopped: stopping it would end sessions somebody else is running.
 pub fn ensure(
     worktree: &Path,
     model: Option<&str>,
@@ -559,20 +443,16 @@ pub fn ensure_here(
         }
         return Err(placed_elsewhere(&d, placement));
     }
-    // **A second daemon for one folder is what corrupts a transcript**, and the refusal
-    // that catches it is harnessd's own folder claim: it refuses a start over a live
-    // daemon by name. So the start is attempted, and a refusal reaches the caller as the
-    // log tail rather than being pre-empted by a guess about a lock this box may not let
-    // a head read.
+    // **A second daemon for one folder is what corrupts a transcript**, and the refusal that
+    // catches it is harnessd's own folder claim. So the start is attempted, and a refusal
+    // reaches the caller as the log tail rather than being pre-empted by a guess.
     let pid = spawn(&daemon_binary()?, &d, model, mode, placement)?;
     for _ in 0..60 {
         if is_up(&d.socket) {
             d.started = true;
             // **The record the launcher's own verbs read** (R102): `--daemons`, `--ls`,
-            // `--stop N`, `--stop --all` and the attach banner all read `<key>.json` beside the
-            // socket, and a daemon started here used to leave none — forty `harnessd` processes
-            // and *no daemons recorded*. A record that cannot be written is said and not fatal:
-            // the daemon is up and serving, and what is lost is a listing line.
+            // `--stop N` and the attach banner all read `<key>.json` beside the socket, and a
+            // daemon started here used to leave none. A record that cannot be written is said.
             if let Err(e) = write_record(&d, pid, model) {
                 eprintln!(
                     "  harnessd pid {pid} came up and its record could not be written: {e}. \
@@ -581,9 +461,8 @@ pub fn ensure_here(
                 );
             }
             // The daemon's own record, read back rather than echoed: what it wrote is what a
-            // later head will read, so the answer this call gives is the answer `status` gives.
-            // The flags this call passed are the fallback for a daemon whose build predates the
-            // record — it was started with them, so they are true of it.
+            // later head will read. The flags this call passed are the fallback for a daemon
+            // whose build predates the record.
             d.placement = letibot_sessionlog::placement::read(&d.socket)
                 .and_then(|s| Placement::parse(&s).ok())
                 .or_else(|| Some(placement.clone()));
@@ -601,12 +480,9 @@ pub fn ensure_here(
     ))
 }
 
-/// **The refusal for a daemon that is already up and placed somewhere else** (or nowhere this
-/// build can see).
-///
-/// It says three things, because a refusal a caller cannot act on costs an hour: where the
-/// running daemon's tools run, that this bridge will not change it, and the one command that
-/// ends it so the call can be made again.
+/// **The refusal for a daemon that is already up and placed somewhere else.** It says three
+/// things, because a refusal a caller cannot act on costs an hour: where the running daemon's
+/// tools run, that this bridge will not change it, and the one command that ends it.
 fn placed_elsewhere(d: &Daemon, asked: &Placement) -> String {
     let running = match d.placement.as_ref().and_then(Placement::host) {
         Some(host) => format!("its tools run on `{host}`"),
@@ -647,10 +523,8 @@ mod tests {
     use super::*;
 
     /// **The key is the shell's key.** These four values are the same ones
-    /// `crates/letibot/src/launcher.rs` asserts against, and each is the filename of a
-    /// record on the operator's box that names the workspace on the left. If they ever
-    /// disagree, the bridge and the launcher are talking about two different sockets for
-    /// one folder.
+    /// `crates/letibot/src/launcher.rs` asserts against; if they ever disagree, the bridge and
+    /// the launcher are talking about two different sockets for one folder.
     #[test]
     fn the_key_matches_what_the_launcher_derives() {
         for (workspace, want) in [
@@ -667,12 +541,9 @@ mod tests {
         }
     }
 
-    /// The socket is the key plus one suffix, under the rundir — the whole contract of
-    /// "which daemon belongs to this folder", checked on the path rather than on a digest.
-    ///
-    /// Built from a literal key rather than from `resolve`, because `resolve` asks the
-    /// filesystem about a folder and this assertion is about the naming rule — a test that
-    /// needed the operator's own checkouts to exist would be reporting its box.
+    /// The socket is the key plus one suffix, under the rundir - the whole contract of "which
+    /// daemon belongs to this folder". Built from a literal key rather than from `resolve`,
+    /// because a test that needed the operator's own checkouts would be reporting its box.
     #[test]
     fn the_socket_is_the_key_under_the_rundir() {
         assert_eq!(
@@ -708,22 +579,9 @@ mod tests {
         assert!(e.contains("definitely/not/a/checkout"), "{e}");
     }
 
-    /// **A daemon the bridge started is waited for, and is still nobody's child to kill.**
-    ///
-    /// The two halves are one property each and both are the reason the reaper is a waiting
-    /// thread and not a `SIGCHLD` handler:
-    ///
-    /// * the child is started in a session of its own, so the bridge going away leaves it
-    ///   running — asserted while it is alive, before anything waits for it;
-    /// * when it exits it is REAPED — `kill(pid, 0)` answers `ESRCH` rather than `0`, which is
-    ///   the difference between *gone from the process table* and *a zombie that `ps` still
-    ///   counts as a running daemon*. MEASURED 2026-10-26: without the reaper this assertion
-    ///   hangs at its deadline for ever, which is exactly what one bridge's twelve `<defunct>`
-    ///   harnessds were.
-    ///
-    /// The binary is a shell script rather than `harnessd`, so the test needs no GGUF, no
-    /// socket and no daemon of the operator's — what it drives is the start path `ensure`
-    /// drives, not what the daemon does once it is up.
+    /// **A daemon the bridge started is waited for, and is still nobody's child to kill.** The
+    /// child is started in a session of its own, so the bridge going away leaves it running; and
+    /// when it exits it is REAPED - `kill(pid, 0)` answers `ESRCH`, not `0`.
     #[test]
     fn a_daemon_the_bridge_started_is_reaped_when_it_exits() {
         let nanos = std::time::SystemTime::now()
@@ -735,18 +593,8 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("temp dir");
         let script = dir.join("harnessd");
         // Two seconds: long enough to be seen alive and in its own session, short enough not to
-        // hold the suite — **and nothing at all when the script is run with no arguments**, which
-        // is the probe `write_stub` runs before it hands the file back.
-        //
-        // **Written through that helper, because writing an executable and then starting it is a
-        // race against every other test in this binary.** A child forked while the write
-        // descriptor is open holds it until its own exec, and the `spawn` below in that window is
-        // `ETXTBSY`: MEASURED in the gate under load, `starting
-        // /tmp/letibot-reap-…/harnessd: Text file busy (os error 26)`, which reads as a broken
-        // bridge and is a fact about the fixture's own process. One successful exec is the proof
-        // that nobody holds a write descriptor any more, and nobody can get one after it. The
-        // probe's `argv` is EMPTY and the daemon's own is never (`daemon_args`), so the two cannot
-        // be mistaken for each other.
+        // hold the suite - and nothing at all with no arguments, which is the probe `write_stub`
+        // runs. Written through that helper because write-then-exec races every fork in this binary.
         letibot_tools::testing::write_stub(&script, "#!/bin/sh\n[ $# -eq 0 ] && exit 0\nsleep 2\n");
 
         let d = Daemon {
@@ -800,11 +648,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// **A package's daemon serves no queue.** The flag is not a nicety: without it the daemon
-    /// in a package's worktree is one of the repository's session daemons, takes its lease and
-    /// tells the package's model to fix `main` (2026-10-26). Asserted on the argument list
-    /// rather than on a started daemon, because what has to hold is the flag every start
-    /// carries — `ensure` does not touch a daemon that is already up.
+    /// **A package's daemon serves no queue.** Without the flag the daemon in a package's
+    /// worktree is one of the repository's session daemons, takes its lease and tells the
+    /// package's model to fix `main`. Asserted on the argument list, not on a started daemon.
     #[test]
     fn every_daemon_the_bridge_starts_serves_no_queue() {
         let d = a_daemon();
@@ -817,10 +663,8 @@ mod tests {
         }
     }
 
-    /// A provider is `--provider NAME`; anything else is the local binding `--model`. The
-    /// launcher never passes both for a provider (`MODEL_ARGS=()` when `--provider` is
-    /// given), and a bridge that invented `--model deepseek` would bind a local alias no
-    /// server serves.
+    /// A provider is `--provider NAME`; anything else is the local binding `--model`. A bridge
+    /// that invented `--model deepseek` would bind a local alias no server serves.
     #[test]
     fn a_provider_is_a_provider_and_a_model_is_a_binding() {
         let d = a_daemon();
@@ -859,15 +703,8 @@ mod tests {
     }
 
     /// **A host is `--host NAME` on the daemon this call starts, and nothing when no host was
-    /// asked for.**
-    ///
-    /// The flag rather than a bridge-side backend: `docs/remote-hosts.md`'s placement is one
-    /// fact of the daemon (its sessions run their tools over ssh) and `harnessd --host` is
-    /// where the tree already checks the name and builds the backend. A bridge that ran ssh
-    /// itself would be a second implementation of the thing that doc exists to keep single.
-    ///
-    /// The empty case matters as much: a daemon started with `--host` on a call that asked for
-    /// none would run a package's tools on a machine nobody named.
+    /// asked for.** The flag rather than a bridge-side backend: the placement is one fact of the
+    /// daemon, and a bridge that ran ssh itself would be a second implementation of it.
     #[test]
     fn a_host_is_the_flag_the_daemon_is_started_with() {
         let d = a_daemon();
@@ -923,18 +760,9 @@ mod tests {
         assert!(!args.iter().any(|a| a == "--host"), "{args:?}");
     }
 
-    /// **A daemon already up for the folder is joined only when it says it is placed where
-    /// this call asked.**
-    ///
-    /// Three answers, and the two refusals are the point: a package must not end up running on
-    /// this box (or on the wrong machine) because a daemon somebody else started happened to be
-    /// listening. The refusal names where the running daemon's tools are and the one command
-    /// that ends it, because it is not this call's to stop — the folder's daemon is usually the
-    /// operator's own.
-    ///
-    /// The daemon here is a bare `UnixListener` with a placement record beside it, which is
-    /// exactly what a real one leaves: `ensure` reads the socket and the record, and neither the
-    /// binary nor a started daemon is involved.
+    /// **A daemon already up for the folder is joined only when it says it is placed where this
+    /// call asked.** A package must not end up running on the wrong machine because a daemon
+    /// somebody else started happened to be listening, and it is not this call's to stop it.
     #[test]
     fn a_daemon_already_up_is_joined_only_where_this_call_asked() {
         let (d, _listener, dir) = a_listening_daemon("joined-only", "host");
@@ -960,8 +788,8 @@ mod tests {
     }
 
     /// **A daemon placed on a host is joined by a call that asked for that host, and by nothing
-    /// else** — the other direction of the test above, and the one that used to be silent: a call
-    /// asking for this box joining a daemon whose tools are on `lab2x1` would run *nothing* here.
+    /// else** - the other direction of the test above: a call asking for this box joining a
+    /// daemon whose tools are on `lab2x1` would run *nothing* here.
     #[test]
     fn a_daemon_placed_on_a_host_is_not_joined_as_this_box() {
         let (d, _listener, dir) = a_listening_daemon("host-only", "host:lab2x1");
@@ -980,14 +808,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// **A daemon that recorded nothing is refused in both directions** — `None` is *unknown*,
-    /// never *local*.
-    ///
-    /// The case is real: a daemon from a build before the record existed, and a `.placement`
-    /// left by a daemon that is gone (the record names the socket's `(dev, ino)`, so a record
-    /// whose socket has been replaced reads as nothing — `letibot_sessionlog::placement`). The
-    /// refusal says which file it looked at, so the person who has to stop the daemon can see
-    /// why this build cannot place it.
+    /// **A daemon that recorded nothing is refused in both directions** - `None` is *unknown*,
+    /// never *local*: an older build, or a `.placement` left by a daemon that is gone. The
+    /// refusal says which file it looked at, so the person who must stop it can see why.
     #[test]
     fn a_daemon_that_recorded_nothing_is_not_taken_for_this_box() {
         let (d, _listener, dir) = a_listening_daemon("no-record", "");
@@ -1011,10 +834,8 @@ mod tests {
     }
 
     /// A daemon value for a folder with a real socket bound at it and, when `record` is not
-    /// empty, a placement record beside it — the two files a live daemon leaves.
-    ///
-    /// The listener is returned so it outlives the calls: dropping it would leave a socket path
-    /// nobody accepts on, which is a different test (`ensure` would start a daemon instead).
+    /// empty, a placement record beside it. The listener is returned so it outlives the calls:
+    /// dropping it would leave a socket nobody accepts on, which is a different test.
     fn a_listening_daemon(
         tag: &str,
         record: &str,

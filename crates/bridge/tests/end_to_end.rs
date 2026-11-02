@@ -1,51 +1,11 @@
-//! **The bridge against a real daemon** — the end-to-end test, and what it is made of.
+//! **The bridge against a real daemon** - the end-to-end test, and what it is made of.
 //!
-//! # A daemon, not a stub of one
-//!
-//! The daemon here is harnessd's own `Daemon::serve` over a real `Registry` and a real
-//! `Sessions::open_first`, exactly as its integration tests build one (`slash.rs`,
-//! `steering_survives_retry.rs`): a socket, the head protocol, the worker loop, the gate and
-//! the turn loop are all the shipped ones. What is replaced is **the model**, by a loopback
-//! HTTP server answering the OpenAI frames the provider parses — which is the only piece a
-//! test cannot have and must not reach for (`fake_provider.rs` is the same fake one crate
-//! down). Nothing here talks to 127.0.0.1:8080, to a provider on the network, or to a GGUF:
-//! the session opens on the byte vocabulary, which is the vocabulary a provider session uses.
-//!
-//! # What is asserted, and where each fact is pinned
-//!
-//! | fact | measured by |
-//! |---|---|
-//! | `start` creates a session and sends the brief | the model's own request body |
-//! | **the brief runs in the session the answer names** | the daemon's own registry, session by session |
-//! | status goes `running` then `idle` with the last message | `leticode_status` |
-//! | **the brief's report comes back as fields** | `leticode_status.report` |
-//! | **`wait` on a session that never turned is a timeout** | the verb, in this process |
-//! | a gated call reaches the bridge as an ask | `leticode_asks`, with the tool and the ladder |
-//! | an answer the ask never offered is refused, with the list | `leticode_answer` |
-//! | an offered answer settles it, and the turn continues | the third model request and the second turn's answer |
-//! | **a tool call and the job it started are entries** | `leticode_events` |
-//! | `wait` exits 10 on a pending ask and 0 on a turn end | the verb, in this process |
-//! | `diff` reads the branch against its merge base | a real git repository |
-//! | `stop` interrupts and detaches | the daemon's registry no longer lists a head |
-//! | **`attach` watches a session another head started** (B6) | a second `Bridge` on the same daemon, and the daemon's own head count |
-//! | **a watching head is attached but is not a decider** | `Hub::attached_heads` against `Hub::deciding_heads` |
-//! | **`send`, `answer` and `stop` refuse on a watched session** | the three tools, watched and not held |
-//! | **`attach` refuses a folder with no daemon, and starts none** | the refusal, and the socket that was never created |
-//! | **where a session's tools run reaches every answer** (RH2) | `placement` on `leticode_start`, `leticode_status` and `leticode_list`, from the record the fixture wrote beside the socket |
-//!
-//! # What it deliberately does not cover
-//!
-//! **A daemon actually placed on a host.** Nothing here runs `ssh` or boots a machine: the record
-//! beside this fixture's socket says `host:lab2x1` and the daemon behind it is local, so what is
-//! measured is the bridge reporting the daemon's own record — which is the whole of the bridge's
-//! part. `leticode_start` *choosing* a placement is `daemon.rs`'s (the `--host` flag, and the
-//! refusal to join a daemon placed elsewhere), and the ssh half is `crates/tools`'s own suite.
-//!
-//! **`leticode_start` starting a daemon**: the daemon here is already up, so the branch
-//! that spawns `harnessd` is not taken. Spawning a second daemon inside a test would be the
-//! one thing this suite must never do — a stray `harnessd` on the box outlives the run — and
-//! the spawn itself is asserted where it can be: `daemon.rs`'s unit tests pin the key, the
-//! path and the flags against the launcher's own values.
+//! The daemon is harnessd's own `Daemon::serve` over a real `Registry` and a real
+//! `Sessions::open_first`, so the socket, the head protocol, the worker loop, the gate and the
+//! turn loop are the shipped ones; only **the model** is replaced, by a loopback HTTP server
+//! answering the OpenAI frames the provider parses, on the byte vocabulary. Asserted: `start`
+//! runs the brief in the session the answer names, a gated call reaches the bridge as an ask,
+//! `wait` exits 10 on an ask and 0 on a turn end. Not covered: a daemon placed on a host.
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -94,11 +54,9 @@ const THIRD_ANSWER: &str = "third-answer-marker: one more turn";
 /// What the fake says to the line the FIRST bridge sends once a SECOND bridge is watching:
 /// the point is that the watcher sees a turn it did not start, so the words say so.
 const WATCHED_ANSWER: &str = "watched-answer-marker: a second head saw this turn";
-/// The backgrounded command. Two halves and both for a reason: `git push` is what makes the
-/// gate ask at `writes-allowed` (a bare `sleep` is a command the classifier admits without
-/// asking), and `sleep 30` keeps the job running past the end of the test — a job that
-/// settled mid-test would start an unprompted turn of its own, and a test that raced an
-/// unprompted turn is a test that passes on Tuesdays.
+/// The backgrounded command, and both halves are for a reason: `git push` is what makes the
+/// gate ask at `writes-allowed` (a bare `sleep` is admitted without asking), and `sleep 30`
+/// keeps the job running past the end of the test, so it settles no unprompted turn.
 const SLOW_COMMAND: &str = "git push origin bridge; sleep 30";
 
 /// Generous on purpose: every wait here is for something a correct build produces in
@@ -153,10 +111,9 @@ enum Answer {
     Refuse,
 }
 
-/// A fake provider on a loopback port, answering the scripted list in order.
-///
-/// It keeps the request bodies, because *what the model was handed* is half of what the
-/// bridge promises: a brief that never reached the model would still produce a turn here.
+/// A fake provider on a loopback port, answering the scripted list in order. It keeps the
+/// request bodies, because *what the model was handed* is half of what the bridge promises: a
+/// brief that never reached the model would still produce a turn here.
 struct Fake {
     url: String,
     seen: Arc<Mutex<Vec<String>>>,
@@ -177,8 +134,7 @@ impl Fake {
                 let body = read_request(stream.try_clone().expect("clone the socket"));
                 // The first answer is held back a moment, so the test can see the session
                 // `running` at all: a turn answered in under a millisecond is a turn no
-                // assertion about `running` could ever meet, and asserting it against a
-                // faster fake would be asserting a race.
+                // assertion about `running` could ever meet.
                 if turn == 0 {
                     std::thread::sleep(Duration::from_millis(400));
                 }
@@ -357,11 +313,9 @@ impl World {
     fn start() -> World {
         let dir = TempDir::new("e2e");
         let root = dir.path();
-        // **Nothing of the operator's may reach this session**: a key in their
-        // `providers.toml` or in the environment would decide what answers, a mode row
-        // in their store would decide the approval point, and the models catalogue in
-        // their `~/.cache` would decide what a turn COSTS. All three are pointed at
-        // scratch.
+        // **Nothing of the operator's may reach this session**: a key in their `providers.toml`
+        // would decide what answers, a mode row in their store the approval point, and the
+        // models catalogue in their `~/.cache` what a turn COSTS. All three are pointed at scratch.
         std::fs::create_dir_all(root.join("config/letibot")).expect("config dir");
         // SAFETY: this test binary runs one test, and the variables are set before the
         // daemon, any thread that reads config, or the bridge exists.
@@ -385,10 +339,9 @@ impl World {
         std::fs::create_dir_all(root.join("cache/letibot")).expect("cache dir");
         std::fs::write(root.join("cache/letibot/models.json"), "{}").expect("models.json");
 
-        // **One entry per model round, in the order the turns take them.** The deny turn
-        // spends two (the call, then the answer past it), the job turn two more (the call
-        // it is asked about, then its answer), and the rest are one turn each — the last of
-        // them the line sent while a SECOND bridge is watching (B6).
+        // **One entry per model round, in the order the turns take them.** The deny turn spends
+        // two (the call, then the answer past it), the job turn two more, and the rest are one
+        // turn each - the last the line sent while a SECOND bridge watches (B6).
         let fake = Fake::serve(vec![
             Answer::Say(REPORT),
             Answer::AskBash,
@@ -415,10 +368,8 @@ impl World {
         // be sure it is talking to the socket it started.
         unsafe { std::env::set_var("LETIBOT_SOCKET", &socket) };
         // **The host this package is placed on**, as the operator's file would declare it. The
-        // daemon here runs on this box — nothing in this file boots a second machine or runs
-        // an `ssh` — and what the record below says is an INPUT: `leticode_status`'s
-        // `placement` is the bridge reporting the daemon's record, and a daemon on `lab2x1`
-        // would have written that line itself.
+        // daemon here runs on this box, so what the record below says is an INPUT: `placement` is
+        // the bridge reporting the daemon's record, and a daemon on `lab2x1` would have written it.
         std::fs::write(
             root.join("config/letibot/hosts.toml"),
             "# Written by crates/bridge/tests/end_to_end.rs — a host no test connects to.\n\
@@ -521,11 +472,9 @@ where
     }
 }
 
-/// Poll `leticode_events` until one entry matches, and hand that entry back.
-///
-/// A page rather than a predicate on the whole answer, because the fact being asserted is
-/// always *one entry appeared*: the ring is a stream and the interesting question is never
-/// about the shape of the page.
+/// Poll `leticode_events` until one entry matches, and hand that entry back. A page rather than
+/// a predicate on the whole answer, because the fact being asserted is always *one entry
+/// appeared*: the ring is a stream and the interesting question is never the page's shape.
 fn until_entry<F>(bridge: &Bridge, session: &str, what: &str, mut want: F) -> Value
 where
     F: FnMut(&Value) -> bool,
@@ -558,20 +507,14 @@ fn state_is(v: &Value, want: &str) -> bool {
 // The run
 // ---------------------------------------------------------------------------
 
-/// **The whole bridge, over the wire, once.**
-///
-/// One test rather than several because the parts are one story: the brief's turn, the ask
-/// the gate raises on the second turn, the answer that settles it, and the two wake-ups a
-/// background `wait` would deliver. Split apart, each would need its own daemon and its own
-/// fake, and none of them would be able to say that a session survives an ask.
+/// **The whole bridge, over the wire, once.** One test rather than several because the parts are
+/// one story: the brief's turn, the ask the gate raises on the second turn, the answer that
+/// settles it, and the wake-ups a `wait` delivers. Split apart, none could say a session survives.
 #[test]
 fn a_bridge_holds_a_session_over_the_gate_and_wakes_a_caller() {
     // **This suite's daemon runs commands, and that is apparatus.** `Seat::Leticode` +
-    // `allow_bash` opens the session on `HostBackend::executable`, which needs a delegated cgroup
-    // v2 subtree (on macOS, its process groups); inside a boundary or on a box without one,
-    // `Sessions::open_first` refuses with *whole-host backend: … not a cgroup v2 host*. That is
-    // absent apparatus reported as a failed assertion — AGENTS.md's rule — so it is announced and
-    // skipped here, and the merge gate, which has the subtree, is where this runs.
+    // `allow_bash` needs a delegated cgroup v2 subtree (on macOS, its process groups), so absent
+    // apparatus is announced and skipped here rather than reported as a failed assertion.
     let Some(_) = letibot_tokencore::apparatus::present(
         "a process-lifetime tree (cgroup v2; process groups on macOS)",
         letibot_tools::host_tree().is_ok(),
@@ -616,15 +559,13 @@ fn a_bridge_holds_a_session_over_the_gate_and_wakes_a_caller() {
     );
     assert_eq!(started["mode"], "writes-allowed", "{started}");
     assert_eq!(started["daemon_started"], false, "{started}");
-    // **The join path, and the one that broke**: a daemon that was already up has a session
-    // of somebody else's, so a new one is created and the head is on it before the brief is
-    // sent. (The other branch — a daemon this call started — is the one no test may take,
-    // because a test that spawns `harnessd` leaves one running.)
+    // **The join path, and the one that broke**: a daemon that was already up has a session of
+    // somebody else's, so a new one is created and the head is on it before the brief is sent.
+    // (The branch where this call started the daemon is the one no test may take.)
     assert_eq!(started["session_opened"], "new", "{started}");
-    // **Where the tools run, said twice**: the spelling a caller can store and compare, and
-    // the sentence a model reads — which has to carry what stayed here as well, because a
-    // result from that session means something different if the store and the gate did not
-    // move with the tools.
+    // **Where the tools run, said twice**: the spelling a caller can store and compare, and the
+    // sentence a model reads - which carries what stayed here as well, because a result from that
+    // session means something different if the store and the gate did not move with the tools.
     assert_eq!(started["placement"], "host:lab2x1", "{started}");
     let where_ = started["tools_run"].as_str().unwrap_or_default();
     assert!(where_.contains("on `lab2x1`"), "{started}");
@@ -670,10 +611,8 @@ fn a_bridge_holds_a_session_over_the_gate_and_wakes_a_caller() {
     );
 
     // --- the brief ran in the session the answer names -----------------------
-    // **The defect this pins, in the operator's words**: a freshly started daemon opens its
-    // own first session, the answer named a second one, and the brief ran where nothing was
-    // watching. `leticode_status` cannot prove this on its own — it reports what its own
-    // head holds — so the daemon's registry is asked which session has the rows.
+    // The daemon's registry is asked which session has the rows, because `status` reports only
+    // what its own head holds: a freshly started daemon's own first session is the trap here.
     assert_eq!(
         idle["session"],
         session.as_str(),
@@ -737,10 +676,8 @@ fn a_bridge_holds_a_session_over_the_gate_and_wakes_a_caller() {
     );
 
     // --- wait on a session that has never turned: a timeout, not an end ------
-    // **The other defect from the first real run.** A session with no turn behind it has
-    // nothing to report as ended, so `0 — the turn ended` after the grace window is a lie
-    // the orchestrator reads as *the brief is done*. The daemon's own first session has run
-    // nothing here, which is exactly that session.
+    // A session with no turn behind it has nothing to report as ended, so `0 - the turn ended`
+    // after the grace window is a lie the orchestrator reads as *the brief is done*.
     let began = Instant::now();
     let (code, out) = tools::wait(
         &world.worktree.display().to_string(),
@@ -879,10 +816,8 @@ fn a_bridge_holds_a_session_over_the_gate_and_wakes_a_caller() {
     );
 
     // --- a backgrounded call is a job, and the progress tool sees it --------
-    // The ring's whole point is that an orchestrator can follow a turn without the
-    // transcript: the call's name and the command it ran, and the job it left behind. The
-    // job is `sleep 30`, so its ending is never part of this run — the *started* entry is
-    // the one an attached caller reads while the model waits for its next round.
+    // The call's name and the command it ran, and the job it left behind: the job is `sleep 30`,
+    // so its ending is never part of this run - the *started* entry is what a caller reads.
     bridge
         .send(&session, "and start the slow one in the background")
         .expect("a fourth line");
@@ -1011,9 +946,8 @@ fn a_bridge_holds_a_session_over_the_gate_and_wakes_a_caller() {
     assert!(out.contains(THIRD_ANSWER), "{out}");
 
     // --- wait: a timeout with nothing to report is exit 30 ------------------
-    // The turn is over and nothing is running, so the only thing the verb can do is wait
-    // out its own deadline. It is given one shorter than the grace window on purpose: a
-    // session with nothing to do is a timeout, not a turn that never started.
+    // The turn is over and nothing is running, so the verb can only wait out its own deadline,
+    // given one shorter than the grace window on purpose: nothing to do is a timeout.
     let (code, out) = tools::wait(
         &world.worktree.display().to_string(),
         &session,
@@ -1043,20 +977,8 @@ fn a_bridge_holds_a_session_over_the_gate_and_wakes_a_caller() {
     );
 
     // --- R103: a session whose DAEMON never started is exit 20, at once --
-    // **The reported shape**, measured 2026-10-27: a package's daemon failed at placement, so its
-    // session never ran a round; `leticode_status` said `idle` with zero rounds, `leticode_events`
-    // held one `daemon_start_failed` warning, and `wait --until attention` sat for an HOUR on each
-    // of two packages. The warning is a `Class::Failure` the daemon publishes on the session's hub
-    // before its hubs close (`cli::Boot::failed`) and replays to every head that attaches later,
-    // and it is the one fact the verb needed: no turn can start on a daemon whose session never
-    // opened, so there is nothing to wait for.
-    //
-    // Published from another thread, 300 ms in, because the subject is what a head does with it
-    // WHILE it is waiting: `wait` attaches a fresh head per call, and a fresh attach is handed a
-    // snapshot and no backlog (`Hub::attach`), so a warning published before the call is one the
-    // head never sees. The real sequence is the live one — the bridge's `ensure` returns as soon
-    // as the socket answers, which is before the session opens, so the head is already attached
-    // when the boot fails and the warning fans out to it.
+    // Published 300 ms in from another thread because the subject is what a head does with it
+    // WHILE waiting: `wait` attaches fresh per call, and a fresh attach is handed no backlog.
     let boot = world
         .registry
         .get(&session)
@@ -1102,10 +1024,9 @@ fn a_bridge_holds_a_session_over_the_gate_and_wakes_a_caller() {
          never run"
     );
 
-    // **And the shape the operator actually hit**: a session that has NEVER turned — a package's,
-    // which never ran a round — so `wait` has no grace window to fall out of and waits the whole
-    // deadline. The daemon's review-queue session is one that never turns here, and it is the
-    // one this box's report named (`leticode_status` said `idle`, zero rounds).
+    // **And the shape the operator actually hit**: a session that has NEVER turned - a package's -
+    // so `wait` has no grace window to fall out of and waits the whole deadline. The daemon's
+    // review-queue session is one that never turns here.
     let queue = letibot_sessionlog::gatekeeper_session(&world.worktree);
     let quiet = world
         .registry
@@ -1171,11 +1092,8 @@ fn a_bridge_holds_a_session_over_the_gate_and_wakes_a_caller() {
     );
 
     // --- attach: a session another head started, watched read-only (B6) -----
-    // **The operator's question**: who in the merge queue is doing what. The review queue's
-    // session — the one that spawns a reviewer per row — is a session this bridge did not
-    // start and must not steer, so it is attached and watched with the tools the table
-    // already has. Everything below is one of those tools against a session whose head is
-    // the FIRST bridge's.
+    // The review queue's session - the one that spawns a reviewer per row - is a session this
+    // bridge did not start and must not steer, so it is attached and watched.
     let watcher = Bridge::new();
     let watched = watcher
         .attach(&world.worktree.display().to_string(), &session, true)
@@ -1188,20 +1106,15 @@ fn a_bridge_holds_a_session_over_the_gate_and_wakes_a_caller() {
         "an attach joins a daemon and never starts one: {watched}"
     );
     // **The head count is the daemon's, and it is the fact the caps are for.** Two heads are
-    // attached to this session and exactly one of them will answer a card: a watcher that
-    // declared itself able would make `Answers::ask` post a card to a head that never
-    // answers, and the operator's `s-gatekeeper` would then wait out five minutes and report
-    // a decision nobody made.
+    // attached and exactly one will answer a card: a watcher that declared itself able would
+    // make `Answers::ask` post to a head that never answers, and wait out five minutes for it.
     let hub = world
         .registry
         .get(&session)
         .unwrap_or_else(|| panic!("the daemon holds `{session}`"));
-    // **A head count converges, and it is polled rather than sampled** — `wait` attaches a
+    // **A head count converges, and it is polled rather than sampled**: `wait` attaches a
     // watching head per call and drops it on the way out, and the daemon unregisters a head when
-    // its connection's read loop sees the close. So a head from the `wait` two lines up can still
-    // be in the map for a few milliseconds after the verb has returned, which is a race the
-    // assertion used to lose about once in twenty runs once `wait` stopped taking ten seconds to
-    // answer. What it asserts is the same fact, at the moment it is true.
+    // its read loop sees the close, so one can still be in the map for a few milliseconds.
     let deadline = Instant::now() + PATIENCE;
     while hub.attached_heads() > 2 {
         assert!(
@@ -1294,12 +1207,9 @@ fn a_bridge_holds_a_session_over_the_gate_and_wakes_a_caller() {
         .expect_err("a session this bridge already holds is not attached again");
     assert!(twice.contains("already holds"), "{twice}");
 
-    // **The name `gatekeeper` is THIS daemon's review-queue session** — one per folder now
-    // (`s-gatekeeper-<workspace key>`), because every daemon on the box shares one store and two
-    // appending to one transcript is the corruption the store's trigger then refuses. This daemon
-    // opens it at startup (`Sessions::ensure_gatekeeper`), which is what makes the name testable
-    // at all: an attach by the name resolves through the worktree's own key — the same key the
-    // bridge found the daemon with — and lands on the id `gatekeeper_session` derives there.
+    // **The name `gatekeeper` is THIS daemon's review-queue session** - one per folder now
+    // (`s-gatekeeper-<workspace key>`), because every daemon shares one store and two appending
+    // to one transcript is the corruption the trigger refuses. The daemon opens it at startup.
     let queue_id = letibot_sessionlog::gatekeeper_session(&world.worktree);
     let queue = watcher
         .attach(&world.worktree.display().to_string(), "gatekeeper", true)
@@ -1320,12 +1230,8 @@ fn a_bridge_holds_a_session_over_the_gate_and_wakes_a_caller() {
         .events(&queue_id, None, None)
         .expect("events on a watched session");
     // **This is the case the caps exist for, on the session B6 is about.** The review queue's
-    // session is opened by the daemon with nobody attached, and the watcher is now its only
-    // head: attached, and nobody who can answer. `Answers::ask` reads exactly these two facts
-    // before it posts, so a reviewer's card would be refused at once (`gate:no-head`) instead
-    // of being posted to a head that never answers and reported five minutes later as a
-    // decision nobody made — the *"real answer given for a fake reason"* `Caps::can_decide`
-    // is written against. A watcher that declared itself able would have produced the second.
+    // session is opened with nobody attached and the watcher is now its only head, so a reviewer's
+    // card would be refused at once (`gate:no-head`) instead of being posted and never answered.
     let queue_hub = world
         .registry
         .get(&queue_id)
@@ -1366,10 +1272,8 @@ fn a_bridge_holds_a_session_over_the_gate_and_wakes_a_caller() {
     );
 
     // --- attach to a folder with no daemon: refused, and nothing is started ---
-    // **The one thing an attach must never do.** A daemon nobody asked for is the defect Q1
-    // fixed in the other direction, and it is worst in the folder an attach is usually
-    // pointed at — the operator's own. Nothing listening means the answer is a refusal naming
-    // the socket, and no socket file appears where `leticode_start` would have made one.
+    // **The one thing an attach must never do.** Nothing listening means a refusal naming the
+    // socket, and no socket file appears where `leticode_start` would have made one.
     let gone = world.dir.path().join("no-daemon-here.sock");
     // SAFETY: this test binary runs one test, and no other thread reads the override between
     // these two lines: every head it could reach already holds an open socket.

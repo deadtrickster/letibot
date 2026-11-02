@@ -49,18 +49,9 @@ use serde_json::{Value, json};
 
 use crate::daemon::{Daemon, HEAD_KIND, IDENTITY};
 
-/// **How long `wait` gives a just-sent prompt to start before it answers with what it sees.**
-///
-/// A prompt is queued the moment it is sent and starts when the daemon's worker reaches
-/// it, so a `wait` that attached in the same breath as a `send` can find the session
-/// still quiet — the daemon's own `Delivery` covers most of that window, and this covers
-/// the rest. Answering `0 — the turn ended` there would be a lie about a prompt nobody
-/// had run yet, and waiting for ever would turn a healthy session into a timeout; the
-/// window is what makes the difference visible without inventing one.
-///
-/// It is not a poll interval and it is **not the settle window this used to be**: nothing
-/// happens in this time except a turn starting, and whether it did is read from the
-/// daemon's own [`Activity`] rather than guessed from a clock. See [`Head::wait`].
+/// **How long `wait` gives a just-sent prompt to start before it answers with what it
+/// sees.** Not a poll interval: whether the turn started is read from the daemon's own
+/// [`Activity`], not guessed from a clock. See [`Head::wait`].
 pub const START_GRACE: Duration = Duration::from_secs(3);
 
 /// How long a head gives a `Switch` to land before it reports that it is on the wrong
@@ -69,9 +60,8 @@ pub const START_GRACE: Duration = Duration::from_secs(3);
 const SEAT_PATIENCE: Duration = Duration::from_secs(5);
 
 /// **How many progress entries a head keeps**, and the number a `since` older than the
-/// ring is measured against. Five hundred is a long turn's worth of calls and jobs: past
-/// that an orchestrator is reading history rather than following progress, and the
-/// transcript is where history lives.
+/// ring is measured against. Past five hundred an orchestrator is reading history, and
+/// the transcript is where history lives.
 pub const RING: usize = 500;
 
 /// The longest one-liner an entry carries — the number `crates/ui/DESIGN.md` §4.1 arrived
@@ -87,10 +77,8 @@ const MESSAGE_LINE: usize = 160;
 /// rest are the tail of a conversation about `allow-all` that nobody is reading.
 pub const SETTLED_KEEP: usize = 8;
 
-/// **How long a reader waits for the daemon to answer a `Peek`.** One round trip on the
-/// connection that asked: the daemon answers off its own view, and a session it does not hold
-/// is refused at once. The patience is for a daemon that has stopped talking, not for one that
-/// is thinking.
+/// **How long a reader waits for the daemon to answer a `Peek`.** One round trip: the
+/// patience is for a daemon that has stopped talking, not for one that is thinking.
 pub const PEEK_PATIENCE: Duration = Duration::from_secs(10);
 
 /// **How long a head waits for the daemon's answer to a `/` line it sent.** The reply is
@@ -98,12 +86,9 @@ pub const PEEK_PATIENCE: Duration = Duration::from_secs(10);
 /// that has stopped talking, not for one that is thinking.
 pub const SLASH_PATIENCE: Duration = Duration::from_secs(20);
 
-/// **The answer to one request for a mode confirmation** — the point, whether it is in force,
-/// who settled it in one word, and the daemon's own sentence.
-///
-/// `answer` is `yes`, `no` or `nobody`, and `applied` is a different question: a point that needs
-/// nobody's confirmation is applied and settled `nobody`, and a `yes` the session cannot carry is
-/// `yes` with `applied: false` and the prerequisite check's words in `said`.
+/// **The answer to one request for a mode confirmation.** `answer` is `yes`, `no` or
+/// `nobody`; `applied` is a different question, and a `yes` the session cannot carry is
+/// `applied: false` with the prerequisite check's words in `said`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModeSettled {
     pub name: String,
@@ -118,12 +103,9 @@ pub struct AskOption {
     pub kind: String,
 }
 
-/// **A permission ask that is still owed an answer**, as the head sees it.
-///
-/// `tool` is joined from the `ToolCallProposed` event by `call_id` rather than parsed out
-/// of [`Self::summary`]: the card's sentence is the daemon's warning prose and it has
-/// changed wording before, while the call's name is a fact the log carries in its own
-/// field.
+/// **A permission ask that is still owed an answer**, as the head sees it. `tool` is
+/// joined from the `ToolCallProposed` event by `call_id`, not parsed out of
+/// [`Self::summary`]: the card's prose has changed wording before.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ask {
     pub req_id: String,
@@ -137,9 +119,8 @@ pub struct Ask {
     pub access: String,
     pub options: Vec<AskOption>,
     /// **Why a rung is not on the ladder**, in one line from the gate, or empty when the
-    /// ladder is complete. A machine head reads it for the same reason a person does: an
-    /// option list that is silently shorter is one it cannot explain to whoever it is
-    /// reporting to.
+    /// ladder is complete. An option list that is silently shorter is one it cannot
+    /// explain to whoever it is reporting to.
     pub options_note: String,
     pub choices: Vec<String>,
     pub deadline: Option<u64>,
@@ -205,12 +186,8 @@ fn option_kind(k: letibot_sessionlog::event::OptionKind) -> String {
 }
 
 /// **One line of what a turn is doing**, folded from the events so an orchestrator can
-/// follow a session without reading its transcript.
-///
-/// `docs/claude-code-bridge.md` is the contract: *tool calls (name + one line), job starts
-/// and ends, failures, asks — never banner or memwatch lines*. The kinds are this file's
-/// own closed vocabulary, because a head that let the event names through would be
-/// publishing the protocol's shape as an answer and would change it every version.
+/// follow a session without reading its transcript. The kinds are this file's own closed
+/// vocabulary: publishing the protocol's event names would change it every version.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
     /// **The position in the session's progress**, monotonic for the life of the head and
@@ -346,10 +323,9 @@ impl Ring {
     }
 }
 
-/// **The first line of a message, cut to `max` characters.**
-///
-/// Characters rather than bytes, and the ellipsis counts inside the budget: an entry that
-/// overran its own cap by one character to say it was cut would be the cap lying.
+/// **The first line of a message, cut to `max` characters.** Characters rather than
+/// bytes, and the ellipsis counts inside the budget: an entry that overran its own cap to
+/// say it was cut would be the cap lying.
 fn one_line(text: &str, max: usize) -> String {
     let line = text
         .lines()
@@ -364,14 +340,9 @@ fn one_line(text: &str, max: usize) -> String {
     out
 }
 
-/// **The branch a child was given, when the child's task names one.**
-///
-/// A review's task carries its placement a line at a time (`- branch: agent/P1`), and that
-/// line is the only place a head learns which branch a reviewer is judging: a child's own
-/// `Subagent` event has no branch field, and the row's `branch` column is the queue's, not
-/// the wire's. Prose is read here because there is nothing else to read — one marker, and
-/// only that one: an absent marker yields nothing, and the entry then says what the child
-/// was asked instead of guessing a branch out of a sentence.
+/// **The branch a child was given, when the child's task names one.** A review's task
+/// carries `- branch: agent/P1` and nothing else on the wire does, so an absent marker
+/// yields nothing rather than guessing a branch out of a sentence.
 fn branch_of(text: &str) -> Option<&str> {
     text.lines().find_map(|line| {
         let rest = line
@@ -422,11 +393,9 @@ pub struct Meter {
     pub cost_micros_usd: Option<u64>,
 }
 
-/// **What the daemon said to one `/` line this head sent**: the verb's own answer, kept whole.
-///
-/// The progress ring keeps one clamped line of a warning, and for a `/` reply that line is the
-/// echo of the request rather than what it did. A caller that asked a question needs the answer
-/// underneath it, so this is recorded apart from the ring.
+/// **What the daemon said to one `/` line this head sent**: the verb's own answer, kept
+/// whole. The progress ring keeps one clamped line, and for a `/` reply that line is the
+/// echo of the request rather than what it did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SlashSaid {
     /// The line as it was sent, without the `/` (`models deepseek`).
@@ -450,11 +419,9 @@ impl SlashSaid {
     }
 }
 
-/// Everything this head keeps about the session it is attached to.
-///
-/// Deliberately not the transcript: a head that drew one would be the TUI, and the bridge's
-/// question is *what do I tell the orchestrator* — the last answer, what is being asked,
-/// what is planned.
+/// Everything this head keeps about the session it is attached to. Deliberately not the
+/// transcript: the bridge's question is *what do I tell the orchestrator* — the last
+/// answer, what is being asked, what is planned.
 #[derive(Debug, Default)]
 pub struct State {
     pub session: String,
@@ -471,45 +438,30 @@ pub struct State {
     pub todos: Vec<TodoEntry>,
     pub meter: Meter,
     /// **The rounds this head watched, summed**: what the package cost so far. `meter` is
-    /// one round — the P1 run reported $0.0015 for an hour of work, which was its last
-    /// round's price. Since attach, because a snapshot carries no history of spend; the
-    /// bridge attaches before the brief, so for a package it is the whole run.
+    /// one round, and the P1 run reported $0.0015 for an hour of work — its last round's
+    /// price. Since attach, which for a package is the whole run.
     pub spent: Meter,
     /// How many rounds `spent` sums.
     pub rounds: u64,
-    /// **The newest assistant message that is a report.** A model that reports and is
-    /// then woken by its own background jobs says *nothing new in them* and stops: the
-    /// last message is that, and a report read only from the last message was lost under
-    /// it on the first package that used jobs (P1).
+    /// **The newest assistant message that is a report.** A model that reports and is then
+    /// woken by its own background jobs says *nothing new in them* and stops, so a report
+    /// read only from the last message was lost under it (P1).
     pub last_report: Option<String>,
     /// The calls proposed and not yet finished, joined to their tool's name. Bounded, because a
     /// session's calls are many. **Not turn bookkeeping** — *is the turn still going* is the
     /// daemon's [`Activity`] now — this is only how an ask names the tool it is about.
     calls: std::collections::HashMap<String, String>,
-    /// **The children whose start this head has announced**, by child session id.
-    ///
-    /// The one line an entry-per-fact fold needs to stay one line: `opening` and `running`
-    /// are two events about the same child, and a resync's snapshot says a third time what
-    /// a head already knew.
+    /// **The children whose start this head has announced**, by child session id: what an
+    /// entry-per-fact fold needs to stay one line, since `opening`, `running` and a
+    /// resync's snapshot are three sayings of one child.
     children: std::collections::HashSet<String>,
     /// **Background jobs started and not yet settled**, from the `Backgrounded` handle and the
     /// `JobSettled` that names it — `leticode_status`' own list, and nothing else: whether a job
     /// holds the work open is the daemon's [`Activity`] (`waiting_on`), not this set.
     pub jobs_open: std::collections::BTreeSet<String>,
-    /// **What the DAEMON says this session is waiting on** — `PROTOCOL_VERSION` 52.
-    ///
-    /// The replacement for four guesses this head used to make from outside: a ten-second settle
-    /// window, a `wake_due` flag raised by a `JobSettled` an unfinished todo row needed, an
-    /// `in_flight` set that decided when a round's calls were done, and a `round_done` flag. Every
-    /// one of them was a model of the daemon's state built from events that do not carry it — the
-    /// engine publishes `TurnStarted`/`TurnFinished` once per ROUND — and each fixed one false wake
-    /// and left the next. The operator: *"it is easy to see if any jobs are running, etc etc, why
-    /// timeouts?"*
-    ///
-    /// Folded from [`SessionEvent::ActivityChanged`], which the daemon publishes **only when the
-    /// value changes**, and seeded from the snapshot, which carries the current one so a head that
-    /// attaches mid-turn is not blind. Quiet is the default, which is what a daemon older than 52
-    /// can only ever say: such a head then falls back to the round-level turn it always had.
+    /// **What the DAEMON says this session is waiting on** — `PROTOCOL_VERSION` 52. It
+    /// replaced four guesses this head made from outside, each a model of the daemon's
+    /// state built from events that do not carry it. Folded from `ActivityChanged`.
     pub activity: Activity,
     /// **Whether a turn has ever run here**, from the snapshot's own turn or from one this
     /// head watched. `wait` needs it to tell *a session between turns* from *a session that
@@ -518,9 +470,8 @@ pub struct State {
     /// The compact progress `leticode_events` answers from.
     pub events: Ring,
     /// **The rows the last `Peek { shape: Rows }` answered with**, and the session they are
-    /// rows OF. Kept rather than folded into the transcript, because this head's whole design
-    /// is that it holds no transcript: `leticode_transcript` asks for the window it needs, when
-    /// it needs it, and reads the `items_dropped` in the answer to know where that window sits.
+    /// rows OF. Kept apart because this head holds no transcript: the window is asked for
+    /// when it is needed, and `items_dropped` says where it sits.
     pub peek: Option<(String, Snapshot)>,
     /// How many answers have landed, so a reader can tell a fresh one from the one it was
     /// already holding when it sent its own request.
@@ -534,19 +485,9 @@ pub struct State {
     /// `Some(reason)` when the daemon closed the connection; every later send says so
     /// rather than failing on a dead socket two frames later.
     pub closed: Option<String>,
-    /// **The daemon's boot failed, and this session will never run anything** — R103.
-    ///
-    /// `daemon_start_failed` is a [`letibot_sessionlog::warning::Class::Failure`] warning the
-    /// daemon publishes on the session's hub before its hubs close (`cli::Boot::failed`): a
-    /// placement that could not be made, a vocabulary that would not load, a store that would
-    /// not open. It is replayed to every head that attaches afterwards, which is how a head
-    /// learns why a session is sitting there with no turn, no rounds and nothing running.
-    ///
-    /// **`wait` used to ignore it**, and the consequence is measured: on 2026-10-27 two packages
-    /// whose daemons failed at placement were each waited on for an hour — the verb sat on a
-    /// session that was never going to do anything, and the orchestrator's `wait --until
-    /// attention` had no way to learn the one fact the hub was holding. Quiet is not an answer
-    /// when the reason for the quiet is terminal.
+    /// **The daemon's boot failed, and this session will never run anything** — R103. A
+    /// `Class::Failure` warning published before the hubs close and replayed to every head
+    /// that attaches after. Quiet is not an answer when the reason for it is terminal.
     pub boot_failed: Option<String>,
     /// The daemon's answer to the last mutating frame, when it refused one. A refusal is a
     /// real answer (`already stopped`, a stale option) and is worth saying back.
@@ -559,11 +500,8 @@ pub struct State {
 }
 
 /// **One child of this session, as one place or the other reports it** — the `Subagent`
-/// event, or the same child in a snapshot's `subagents`.
-///
-/// Borrowed fields rather than clones because the fold is a projection of an event it is
-/// handed: the event owns the strings, and a head that copied every one of them would be
-/// paying for a transcript it deliberately does not keep.
+/// event, or the same child in a snapshot's `subagents`. Borrowed rather than cloned: the
+/// fold is a projection of an event it is handed.
 struct Child<'a> {
     id: &'a str,
     slug: &'a str,
@@ -587,15 +525,9 @@ impl State {
         }
     }
 
-    /// **Whether the work is waiting on a job or a child of its own** — the daemon's own answer
-    /// ([`Activity`]), which is what this replaced.
-    ///
-    /// This used to be a guess built here: an unfinished todo row that `needs` a handle in
-    /// `jobs_open`, plus a `wake_due` flag. It is read from the daemon now, and the rule behind the
-    /// entries is the daemon's: **every running job or child holds the session, because its
-    /// settlement is said to the model as a turn of its own**, except the one the model parked with
-    /// `wake: "later"`, which is what a server left running is. Kept as a method so a reader of
-    /// `leticode_status` asks the same question it always did.
+    /// **Whether the work is waiting on a job or a child of its own** — the daemon's own
+    /// answer ([`Activity`]), which replaced a guess built here from an unfinished todo row
+    /// and a `wake_due` flag. Kept so a reader of `leticode_status` asks what it always did.
     pub fn waiting_on_jobs(&self) -> bool {
         self.activity
             .waiting_on()
@@ -609,13 +541,9 @@ impl State {
         self.activity.waiting_labels()
     }
 
-    /// The word `leticode_status` answers with. `asking` wins over `running` because a
-    /// turn blocked on a card is a turn whose next step is a person's.
-    ///
-    /// **`running` is read from two places on purpose.** The activity's `Turn`/`Calls` is the
-    /// daemon's own answer and is right through the whole of a round's tool calls; the round-level
-    /// turn is the fallback for a daemon older than `PROTOCOL_VERSION` 52, which can send no
-    /// `ActivityChanged` at all — and such a head then says exactly what it said before.
+    /// The word `leticode_status` answers with. `asking` wins over `running` because a turn
+    /// blocked on a card is a turn whose next step is a person's. `running` is read from the
+    /// daemon's activity and, for a daemon older than 52, from the round-level turn.
     pub fn word(&self) -> &'static str {
         if !self.asks.is_empty() {
             "asking"
@@ -657,9 +585,8 @@ impl State {
             }
             ServerFrame::Resync { snapshot, .. } => {
                 // The daemon demoted this head — it fell too far behind, and its own doc is
-                // explicit that this is a normal answer and never an error. The frame
-                // carries a fresh snapshot, so nothing is stale after it: the same seeding
-                // an attach does, and the connection stays up.
+                // explicit that this is a normal answer. The frame carries a fresh snapshot,
+                // so nothing is stale after it.
                 self.seed(&snapshot);
             }
             ServerFrame::Todos { todos, .. } => self.todos = todos,
@@ -675,21 +602,17 @@ impl State {
                 reason,
                 ..
             } => {
-                // **A refused `Peek` has to wake the reader that is waiting for rows**, because
-                // the answer is a `Rejected` keyed by the id the daemon mints for a peek
-                // (`peek:<session>` — it is the only correlation that frame has, since `Peeked`
-                // carries no client id). Without this, a peek of a session the daemon does not
-                // hold would sit out the patience and then report a timeout about an answer that
-                // had already arrived.
+                // **A refused `Peek` has to wake the reader waiting for rows**: the answer is a
+                // `Rejected` keyed `peek:<session>`, the only correlation that frame has. Without
+                // this the peek would sit out the patience and report a timeout.
                 if let Some(on) = client_request_id.strip_prefix("peek:") {
                     self.peek_error = Some((on.to_string(), reason.clone()));
                 }
                 self.rejection = Some(reason);
             }
-            // **The rows `leticode_transcript` asked for.** `Peek { shape: Rows }` is answered
-            // with the session's own snapshot — the same rows an attach is handed — and it is
-            // kept together with the session it names, because a reader waiting on it must be
-            // sure it is not the answer to somebody else's read.
+            // **The rows `leticode_transcript` asked for.** Kept together with the session it
+            // names, because a reader waiting on it must be sure it is not somebody else's
+            // read.
             ServerFrame::Peeked {
                 session_id,
                 snapshot: Some(snap),
@@ -787,15 +710,9 @@ impl State {
         }
         self.asks = snap.open_decisions.iter().map(Ask::from_open).collect();
         self.asks.retain(|a| !a.req_id.is_empty());
-        // **The children, as the parent's own view last reported them.** A head that attaches
-        // in the middle of a review has seen no `Subagent` event yet, and the snapshot is the
-        // only place that says a reviewer is running — the flow of a review-queue session is
-        // exactly *attach while children are in flight*, which is what B6 is for. A child the
-        // snapshot still has running is announced as started; a child this head was already
-        // watching and that the snapshot now calls finished gets its ending, which is the hole
-        // a demotion (`Resync`) would otherwise leave in the ring. A child that had already
-        // finished before this head existed is not progress, and is not announced: history is
-        // the transcript's, not the ring's.
+        // **The children, as the parent's own view last reported them**: a head that attaches
+        // mid-review has seen no `Subagent` event, and a child already finished before this head
+        // existed is history, not progress.
         for child in &snap.subagents {
             self.child(
                 Child {
@@ -811,20 +728,9 @@ impl State {
         }
     }
 
-    /// **One line about a child of this session** — the reviewer, the branch it was given, and
-    /// how it ended — from the `Subagent` event, or from the same child in a snapshot.
-    ///
-    /// `docs/claude-code-bridge.md` (B6) asks for `leticode_events` on the review queue to show
-    /// its reviewers' starts and ends: a review is a child session, its own turns are on its own
-    /// hub, and the **only** thing a head attached to the parent is told about it is this event
-    /// — so following a reviewer's turn needs a second attach ([`Head::attach_watching`] on the
-    /// child's id), and what lands here is one line per child per phase.
-    ///
-    /// A child announced as running keeps its start from being repeated: `opening` and `running`
-    /// are two events about one child, and a resync says it a third time. `from_snapshot` is
-    /// what keeps a head from announcing, as news, a child that finished before it attached:
-    /// the snapshot carries every child the parent's view holds, and only the ones that were
-    /// still running (or that this head was already watching) belong in a progress ring.
+    /// **One line about a child of this session** — the branch it was given and how it ended
+    /// — from the `Subagent` event or from the same child in a snapshot. `from_snapshot`
+    /// keeps a head from announcing, as news, a child that finished before it attached.
     fn child(&mut self, child: Child<'_>, from_snapshot: bool) {
         let name = if child.slug.is_empty() {
             child.id
@@ -898,10 +804,9 @@ impl State {
                 }
             }
             SessionEvent::TurnFinished { usage, .. } => {
-                // **The turn is over at the level this event can see; whether it is really over is
-                // the daemon's** — a round that proposed calls leaves the session busy with them,
-                // and that fact reaches this head as `ActivityChanged` and `ToolFinished`, never as
-                // this event. So nothing here decides it.
+                // **The turn is over at the level this event can see; whether it is really over
+                // is the daemon's** — a round that proposed calls leaves the session busy with
+                // them, and that reaches this head as `ActivityChanged`. Nothing here decides it.
                 self.turn = Turn::Idle;
                 self.turned = true;
                 if !self.streaming.is_empty() {
@@ -1042,9 +947,8 @@ impl State {
             }
             SessionEvent::Warning { code, detail, .. } => {
                 // **A boot that failed is terminal for the whole session**, not one turn: no
-                // turn can start on a daemon whose session never opened. Recorded here so
-                // `wait` can answer with it instead of timing out about a session that has
-                // nothing to report (R103).
+                // turn can start on a daemon whose session never opened. Recorded so `wait`
+                // can answer with it instead of timing out (R103).
                 if code == "daemon_start_failed" {
                     self.boot_failed = Some(detail.clone());
                 }
@@ -1235,12 +1139,9 @@ fn question_answer(
 pub enum Attention {
     /// The turn is over. The words are the last assistant message, as it stands.
     TurnEnded { message: String },
-    /// The session is stopped on a card and every further step waits for an answer.
-    ///
-    /// Boxed because a card is a whole `DecisionRequested` — the sentence, the ladder, the
-    /// model's own choices — and an unboxed one would make every wake-up that is not a
-    /// card pay for the size of the one that is (the argument `Hello.snapshot` makes one
-    /// frame over).
+    /// The session is stopped on a card and every further step waits for an answer. Boxed
+    /// because a card is a whole `DecisionRequested`, and every wake-up that is not a card
+    /// would otherwise pay for the size of the one that is.
     Ask(Box<Ask>),
     /// The turn ended in a failure.
     Failed { why: String },
@@ -1259,15 +1160,12 @@ pub struct Head {
     pub worktree: PathBuf,
     pub socket: PathBuf,
     /// **This head is watching and will not touch the session** (B6): it never sends a
-    /// prompt, never answers a card and never interrupts. Declared to the daemon as
-    /// `Caps::can_decide = false` and enforced here, because a head is not a person and the
-    /// one thing it must not do to somebody else's session is act on it.
+    /// prompt, never answers a card and never interrupts. Declared as `can_decide: false`,
+    /// because the one thing a head must not do to another session is act on it.
     pub watch_only: bool,
-    /// **Where this session's tools run**, taken from the daemon's own record when the head
-    /// attached ([`crate::daemon::Daemon::placement`]): `host` for this box, `host:NAME` for a
-    /// machine, `None` when the daemon recorded nothing this build can read. Held here rather
-    /// than looked up per answer, because it is a fact of the daemon the head joined and a
-    /// socket that is gone must not change what this head says about the session it holds.
+    /// **Where this session's tools run**, from the daemon's own record at attach
+    /// ([`crate::daemon::Daemon::placement`]): `host`, `host:NAME`, or `None` when nothing
+    /// readable was recorded. Held, not looked up per answer.
     pub placement: Option<Placement>,
     shared: Arc<Shared>,
     /// Shared with the collecting thread because an `Ack` is a client frame: a head that
@@ -1276,32 +1174,16 @@ pub struct Head {
 }
 
 impl Head {
-    /// **Attach as a head and start collecting.**
-    ///
-    /// `since_seq = 0` asks for the whole snapshot, which is what a head that has just
-    /// started needs: the asks already open, the turn already running and the last answer
-    /// it missed are all in it.
+    /// **Attach as a head and start collecting.** `since_seq = 0` asks for the whole
+    /// snapshot, which is what a head that has just started needs: the asks already open,
+    /// the turn already running and the last answer it missed are all in it.
     pub fn attach(d: &Daemon, session: &str) -> Result<Head, String> {
         Head::attach_with(d, session, false)
     }
 
-    /// **Attach to a session somebody else is driving, and only watch it** (B6).
-    ///
-    /// The session keeps its own head — the operator's TUI, usually — and this one asks for
-    /// nothing: everything [`Head::attach`] gives a caller (the turn, the last message, the
-    /// cards, the todos, the ring of progress, [`Head::wait`]) and none of the three verbs
-    /// that would act on it. A card the daemon posts is still folded into `asks` and still
-    /// reaches `wait`, so a watcher can say *this session is stopped on a decision* without
-    /// being the one who settles it.
-    ///
-    /// **Why the caps matter and not just the refusal.** The daemon publishes a card to
-    /// every head and settles it with whoever answers first, so a watcher steals nothing by
-    /// attaching; what it would do with `can_decide: true` is count as somebody who *can* —
-    /// `Hub::deciding_heads` is read by `Answers::ask` before anything is posted, and a
-    /// session whose only head is a watcher would then wait out the whole deadline and be
-    /// told nobody answered. That is the *"real answer given for a fake reason"* the field's
-    /// own doc names, so a watcher says `false`, and the daemon then refuses any `Answer`
-    /// from it with `this head declared can_decide: false`.
+    /// **Attach to a session somebody else is driving, and only watch it** (B6). It gets
+    /// everything [`Head::attach`] gives and none of the three verbs that act on it; a card
+    /// still reaches `wait`, and `can_decide: false` keeps it from counting as an answerer.
     pub fn attach_watching(d: &Daemon, session: &str) -> Result<Head, String> {
         Head::attach_with(d, session, true)
     }
@@ -1352,15 +1234,9 @@ impl Head {
         Ok(head)
     }
 
-    /// **The head is on the session it was asked for, or this says so.**
-    ///
-    /// The first real `leticode_start` sent a brief into the daemon's own first session
-    /// while `leticode_status` watched the new, empty one — the answer named one session and
-    /// the work happened in another, which is the worst shape a reply can have because
-    /// everything in it is true except what it is about. So the id the daemon seated this
-    /// connection on is compared with the id asked for, and a difference is corrected with
-    /// `Switch` rather than assumed away: the socket *is* the head's claim about which
-    /// session it speaks for.
+    /// **The head is on the session it was asked for, or this says so.** The first real
+    /// `leticode_start` sent a brief into one session while `leticode_status` watched
+    /// another, so a difference is corrected with `Switch` rather than assumed away.
     fn seated_on(&self, want: &str) -> Result<(), String> {
         if want.is_empty() {
             // A bare attach asks for the daemon's own choice, so there is nothing to check
@@ -1438,9 +1314,8 @@ impl Head {
             turned: g.turned,
             events: g.events.clone(),
             // **Not carried across**: the peeked rows and the mode answers are read by the two
-            // verbs that ask for them ([`Head::rows`], [`Head::ask_mode`]) and by nothing that
-            // takes this copy — a transcript cloned on every `leticode_status` poll would be
-            // work nobody asked for, which is `Head::events`' own argument one field over.
+            // verbs that ask for them ([`Head::rows`], [`Head::ask_mode`]), and a transcript
+            // cloned on every status poll would be work nobody asked for.
             peek: None,
             peeks: g.peeks,
             peek_error: None,
@@ -1456,11 +1331,8 @@ impl Head {
     }
 
     /// **The progress since a cursor**: the entries, the cursor to ask from next, and how
-    /// many fell off the ring before the caller could reach them.
-    ///
-    /// Taken under the state's own lock rather than through [`Self::snapshot`], because a
-    /// ring of five hundred entries cloned on every status poll would be work nobody asked
-    /// for; the page is what the caller wanted.
+    /// many fell off the ring before the caller could reach them. Taken under the state's
+    /// own lock, because a ring cloned on every status poll is work nobody asked for.
     pub fn events(&self, since: u64, limit: usize) -> Page {
         self.shared
             .state
@@ -1487,17 +1359,13 @@ impl Head {
         let mut c = self.said_client()?;
         // `expected_seq = 0` is what the protocol reads as *I am not claiming a position*,
         // and `Hub::submit` accepts a prompt on a stale seq anyway. A bridge is a second
-        // head on a session a person may be typing into, so it must never be the head that
-        // loses the race and drops what it was told.
+        // head on a session a person may be typing into, so it must never drop what it was told.
         c.prompt(0, text).map_err(|e| e.to_string())
     }
 
-    /// **Answer a card**, by an option the card itself offered.
-    ///
-    /// The check is the bridge's as well as the daemon's, because the two failures are
-    /// different: an option the ask never had is a caller's mistake and is refused here
-    /// with the list; an option the ask had and the daemon no longer wants is the daemon's
-    /// word, and arrives as a `Rejected` frame.
+    /// **Answer a card**, by an option the card itself offered. The check is the bridge's as
+    /// well as the daemon's, because the two failures differ: an option the ask never had is
+    /// refused here with the list, and one the daemon no longer wants arrives as a `Rejected`.
     pub fn answer(&self, ask: &str, option: &str, note: Option<&str>) -> Result<(), String> {
         // **Before the ask is looked for.** A caller that tried to answer a watched session's
         // card must be told the bridge is not holding it, not that the card is gone — the
@@ -1523,10 +1391,8 @@ impl Head {
             )
         };
         // **A question carries the model's own choices**, and is answered with
-        // `AnswerQuestion`: `option` names a choice by its exact words or by its number
-        // (1-based, as a person reads the list), `free:<words>` is a typed reply, and
-        // `abstain` is the deliberate no-answer. Package RH5's question sat unanswered for
-        // its whole deadline because this path refused every question (2026-10-26).
+        // `AnswerQuestion`: `option` names a choice by its exact words or its 1-based number,
+        // `free:<words>` is a typed reply, `abstain` the deliberate no-answer.
         if kind == "question" {
             let answer =
                 question_answer(option, note, &choices).map_err(|e| format!("ask `{ask}`: {e}"))?;
@@ -1566,15 +1432,9 @@ impl Head {
         c.detach().map_err(|e| e.to_string())
     }
 
-    /// **Ask the daemon to move this session to an approval point.**
-    ///
-    /// Queued like a prompt, and it takes effect from the next call — so a `start` sends
-    /// it before the brief and the brief's first tool call already runs under it.
-    ///
-    /// `consented: false` always. The one point that needs a person's confirmation is
-    /// `allow-all` on a box with no structural boundary, and a bridge is not a person: it
-    /// can ask for the point and the daemon answers with the question, which is the honest
-    /// answer to a machine.
+    /// **Ask the daemon to move this session to an approval point.** Queued like a prompt
+    /// and effective from the next call, so a `start` sends it before the brief. `consented:
+    /// false` always: a bridge is not a person, and `allow-all` needs one.
     pub fn set_mode(&self, mode: &str) -> Result<(), String> {
         self.may_write()?;
         let mut c = self.said_client()?;
@@ -1583,13 +1443,9 @@ impl Head {
             .map_err(|e| e.to_string())
     }
 
-    /// **Put this session on the model the caller named**: the daemon's `/models` verb, which is
-    /// per SESSION. It writes the session's own row, so a restart restores it, and a daemon whose
-    /// first session chose one provider still answers this session's turns on the one asked for.
-    ///
-    /// A refusal is the answer, not a silence: a name this build does not know, or a provider with
-    /// no key, comes back as the daemon's own sentence rather than as a brief that ran on the model
-    /// the caller did not ask for.
+    /// **Put this session on the model the caller named**: the daemon's `/models` verb, which
+    /// is per SESSION. It writes the session's own row, so a restart restores it; a refusal
+    /// is the answer, not a silence, because a brief must not run on a model nobody asked for.
     pub fn set_model(&self, want: &str) -> Result<String, String> {
         self.may_write()?;
         let line = format!("models {}", want.trim());
@@ -1633,16 +1489,8 @@ impl Head {
     }
 
     /// **The session's own rows, as the daemon serves them to a head** — `leticode_transcript`.
-    ///
-    /// `Peek { shape: Rows }` is the wire's own answer to *what would an attach to this session
-    /// be handed*: the daemon's view of the conversation, its newest rows, with
-    /// `items_dropped` saying how many came before the window. It is the same read for a session
-    /// this bridge holds and for one it is only watching — a read is not an act on the session,
-    /// so a watcher may take it — and it moves no seat and settles no card.
-    ///
-    /// **Asked every time rather than kept.** This head holds no transcript by design (see
-    /// `State`), and a fresh read is what lets a caller's cursor be the daemon's own numbering
-    /// rather than a count of frames this process happened to be attached for.
+    /// `Peek { shape: Rows }` is *what an attach to this session would be handed*, and it is
+    /// asked every time: this head holds no transcript, so a caller's cursor is the daemon's own.
     pub fn rows(&self, session: &str, patience: Duration) -> Result<Snapshot, String> {
         let (before, was, closed) = {
             let g = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -1695,15 +1543,8 @@ impl Head {
     }
 
     /// **Ask the daemon to put a confirmation in front of a person** — `leticode_mode`, B8.
-    ///
-    /// The one route to `allow-all` that this bridge has, and it is deliberately not a set: the
-    /// request goes to the daemon, whose rule is that any head attached to the session EXCEPT
-    /// this one may answer it. So the answer that comes back is a person's, or nobody's — the
-    /// bridge has no frame in it that consents to anything on its own behalf.
-    ///
-    /// The point may need nobody: `writes-allowed`, `read-only`, and `allow-all` inside a VM are
-    /// applied by the daemon and settled `applied`, which is why this returns the daemon's own
-    /// sentence rather than a verdict of its own.
+    /// The one route to `allow-all` this bridge has, and deliberately not a set: the daemon
+    /// lets any head attached to the session EXCEPT this one answer, so the answer is a person's.
     pub fn ask_mode(&self, name: &str, patience: Duration) -> Result<ModeSettled, String> {
         self.may_write()?;
         // What this head had already been refused, so a refusal from BEFORE the ask is not read
@@ -1755,13 +1596,8 @@ impl Head {
     }
 
     /// The sentence a watching head answers every verb with, and `Ok` for a head that holds
-    /// its session.
-    ///
-    /// `docs/claude-code-bridge.md` (B6): *"a watching head never answers the session's asks
-    /// and never sends prompts"* — a refusal that said only `refused` would leave the caller
-    /// wondering whether the daemon was down or the argument wrong, so it names both facts:
-    /// this head attached read-only, and the head that does hold the session is somebody
-    /// else's.
+    /// its session. It names both facts - this head attached read-only, and the head that does
+    /// hold the session is somebody else's - because `refused` alone explains nothing.
     fn may_write(&self) -> Result<(), String> {
         if !self.watch_only {
             return Ok(());
@@ -1790,67 +1626,18 @@ impl Head {
         }
     }
 
-    /// **Block until the session needs somebody**, or the deadline passes.
-    ///
-    /// The precedence is the whole of `wait`'s meaning:
-    ///
-    /// * an **open ask** wins over everything — the session is stopped on it, so one of the
-    ///   daemon's [`Waiting::Ask`] entries ends the wait with exit 10;
-    /// * a **failure** is terminal and is reported as one;
-    /// * otherwise **the daemon's own [`Activity`] says when the session is quiet** — nothing
-    ///   running, nothing owed, nobody asked: that is `0`, the turn ended. A job or a child holds
-    ///   that answer while it runs, because its settlement wakes the model and the turn it starts is
-    ///   what this wait is waiting for; the one the model PARKED (`wake: "later"`) does not, so a
-    ///   server left running is not a reason to wait;
-    /// * and a session that is quiet **when the wait starts** is answered with what it looks like
-    ///   after [`START_GRACE`], but **only on a session that has run a turn before**: the first
-    ///   real `leticode_start` was followed by a `wait` that exited `0 — the turn ended` in three
-    ///   seconds on a session no prompt had reached, and the orchestrator read that as the brief
-    ///   having finished. A session that has never turned has nothing to report as ended, so the
-    ///   only honest answers there are a turn starting and ending, an ask, a failure, or the
-    ///   timeout saying so.
-    ///
-    /// **What this is not, any more.** It used to be a model of the daemon built from round-level
-    /// events: a turn that stayed `running` while a set of calls was open, a `wake_due` flag an
-    /// unfinished todo row raised, and ten seconds of quiet before a turn counted as ended
-    /// ([`SETTLE`], which this deleted). Every one of those was a guess at a fact the daemon holds
-    /// exactly, and each guess was a false wake waiting to happen: a round that spent an hour in
-    /// tool calls read as *between rounds* for as long as the settle window held, and a settlement
-    /// the daemon delivered late read as *done*. The activity is the same question answered by the
-    /// process that has the answers — a job the work waits on, a settlement queued, a monitor
-    /// armed, a child running are all *this session acts again on its own*, and only a card is
-    /// *a person must*.
-    ///
-    /// **A failure that was already there when this head attached does not count**: a
-    /// `wait` fired after a `send` must not report the previous turn's death as this
-    /// one's.
-    ///
-    /// **And this head holds no room connection, so a room event never wakes it directly.**
-    /// `docs/room.md` § *The bell, per client* is the table; this is the row. The bridge is a
-    /// client of the DAEMON: it reads the session protocol, so what can end a wait is an ask, a
-    /// failure, a turn that ended, or the deadline. A room event is none of those — it becomes a
-    /// sentence in the daemon (`room::wake`), the daemon runs a turn for it, and this wait sees the
-    /// turn start and then `TurnEnded` with the model's answer. The consequence a caller must not
-    /// be surprised by: **a room event can never be the `Ask` that exits `10`**, because a card is
-    /// something a person must answer and a bell is addressed to a model. Giving this head a room
-    /// connection of its own would make it a second place a bell becomes a turn, which is the one
-    /// thing the room's design keeps in a single process.
+    /// **Block until the session needs somebody**, or the deadline passes. An open ask wins
+    /// over everything, then a failure, then the daemon's own [`Activity`] saying the session
+    /// is quiet. A session that has never run a turn is never answered as ended.
     pub fn wait(&self, deadline: Instant) -> Attention {
         let mut g = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
         let baseline = match &g.turn {
             Turn::Failed(why) => Some(why.clone()),
             _ => None,
         };
-        // **Whether this wait saw the session working.** Turn and calls only: `delivery` says a turn
-        // is OWED, which is not the same as one having run — a prompt queued behind another
-        // session's turn would otherwise answer `0` the moment the worker took it off the queue, with
-        // the previous turn's words. What that queue is for is the *quiet-from-the-start* case
-        // below, where the activity is not quiet and the wait keeps waiting.
-        //
-        // **A job or a child counts too**: its settlement wakes the model, so a session holding one
-        // is about to act and this wait will see the turn it starts. Without it the wait sat out its
-        // grace and then polled for a quiet that was not coming, and a job that outlived the caller's
-        // patience was answered with a timeout about a session that had been working the whole time.
+        // **Whether this wait saw the session working.** Turn and calls only: `delivery` says
+        // a turn is OWED, which is not one having run. A job or a child counts too, because
+        // its settlement wakes the model and this wait will see the turn it starts.
         let mut armed = g.activity.waiting_on().iter().any(|w| {
             matches!(
                 w,
@@ -1863,17 +1650,14 @@ impl Head {
                 return Attention::Ask(Box::new(a.clone()));
             }
             // **A daemon whose boot failed is not waited on** (R103). It is not a failure of
-            // THIS wait's turn — there is no turn — so the baseline rule below does not cover
-            // it, and the session can never produce the thing this loop is waiting for. The
-            // reason the daemon published is the answer.
+            // THIS wait's turn, so the baseline rule below does not cover it, and the session
+            // can never produce what this loop waits for.
             if let Some(why) = &g.boot_failed {
                 return Attention::Failed { why: why.clone() };
             }
-            // **And a connection the daemon closed is the end of the wait**, for the same
-            // reason: nothing else will ever arrive on it. The boot-failure path is exactly
-            // where this bit — the daemon publishes the reason, waits a moment for a head to
-            // read it, and shuts down — so a wait that ignored `closed` sat on a dead socket
-            // until its deadline, which is the *hour* two packages' orchestrator spent.
+            // **And a connection the daemon closed is the end of the wait**: nothing else will
+            // ever arrive on it. A wait that ignored `closed` sat on a dead socket until its
+            // deadline, which is the hour two packages' orchestrator spent.
             if let Some(why) = &g.closed {
                 return Attention::Failed {
                     why: format!("the daemon closed this connection: {why}"),
@@ -1896,9 +1680,8 @@ impl Head {
                 }
                 if g.turned && now >= grace {
                     // Nothing ran during this wait, and something has run before: this session
-                    // was already between turns when the caller got here, so the honest answer is
-                    // the last thing it said rather than a timeout about a session doing nothing
-                    // wrong.
+                    // was already between turns when the caller got here, so the honest answer
+                    // is the last thing it said.
                     return Attention::TurnEnded {
                         message: g.last_message().to_string(),
                     };
@@ -1932,13 +1715,9 @@ impl Head {
     }
 }
 
-/// **A head that nobody holds lets go of the daemon.**
-///
-/// The collecting threads keep the socket alive — they own the reader and the writer — so
-/// dropping the last handle without shutting the connection down would leave the daemon
-/// with a head it believes is watching and a socket that never reaches EOF. That is not
-/// only untidy: `Daemon::shutdown` joins its connection threads, so a bridge that went
-/// away quietly is a daemon that cannot stop.
+/// **A head that nobody holds lets go of the daemon.** The collecting threads keep the socket
+/// alive, so dropping the last handle without shutting it down would leave the daemon with a
+/// head it believes is watching and a socket that never reaches EOF - and `shutdown` joins.
 impl Drop for Head {
     fn drop(&mut self) {
         if let Ok(mut c) = self.client.lock() {
@@ -1947,12 +1726,9 @@ impl Drop for Head {
     }
 }
 
-/// Read frames off the socket forever, folding them and acking what was handled.
-///
-/// The reader is `pump`, which hands over a line this build cannot read instead of ending
-/// the connection: two builds a version apart is a fact about them and not about the
-/// stream, and a bridge that exited on the first unknown frame would look like a daemon
-/// that stopped answering.
+/// Read frames off the socket forever, folding them and acking what was handled. The reader is
+/// `pump`, which hands over a line this build cannot read instead of ending the connection: a
+/// bridge that exited on the first unknown frame would look like a daemon that stopped answering.
 fn collect(
     reader: letibot_sessionlog::wire::FrameReader<std::os::unix::net::UnixStream>,
     shared: Arc<Shared>,
@@ -2017,15 +1793,9 @@ fn said(socket: &Path, e: ClientError) -> String {
     }
 }
 
-/// The session a bare attach lands on — the daemon's own choice, which for a daemon that
-/// has just started is the one session it opened eagerly.
-///
-/// **A bridge that started the daemon uses this session rather than minting a second one.**
-/// One brief is one conversation, and the reply that names one session while the work
-/// happens in another is the defect that put this function here: the first real
-/// `leticode_start` answered with a session id it had just created, and the brief ran in the
-/// daemon's own first one, so `leticode_status` watched an empty session report `idle` while
-/// a turn was happening one session over.
+/// The session a bare attach lands on - the daemon's own choice, which for a daemon that has
+/// just started is the one session it opened eagerly. A bridge that started the daemon uses
+/// this rather than minting a second one: one brief is one conversation.
 pub fn open_default(d: &Daemon) -> Result<String, String> {
     let (mut client, hello, _reader) = HeadClient::attach(
         &d.socket,
@@ -2047,13 +1817,9 @@ pub fn open_default(d: &Daemon) -> Result<String, String> {
     Ok(id)
 }
 
-/// **Make a session in this daemon and hand back its id.**
-///
-/// `NewSession` answers with the whole list and the id it minted, and it deliberately does
-/// not switch — so this is a control connection that creates and leaves, and the head that
-/// will hold the session attaches to it afterwards. Two connections rather than a `Switch`
-/// because a `Switch` re-seats this head on the same socket, and the socket the bridge
-/// holds for a session must be that session's from the first frame.
+/// **Make a session in this daemon and hand back its id.** `NewSession` does not switch, so
+/// this is a control connection that creates and leaves, and the head that will hold the
+/// session attaches afterwards: the socket a head holds must be that session's from frame one.
 pub fn create_session(d: &Daemon, title: &str) -> Result<String, String> {
     // A daemon always opens one session eagerly, so a bare attach lands somewhere; a daemon
     // that holds none yet is a build this cannot create a session on, and says so by name.
@@ -2193,13 +1959,9 @@ mod tests {
         view.snapshot(0, 0)
     }
 
-    /// **A round's end is not the turn's, and the head no longer has to work that out.**
-    ///
-    /// The engine publishes `TurnFinished` per round and the round's calls run after it. This head
-    /// used to keep an `in_flight` set and a `round_done` flag to decide what that meant, and the
-    /// first `wait` on a real package still woke its caller between rounds one and two. What it
-    /// reads now is the daemon's `Activity`: `Turn` while a round generates, `Calls` while the round
-    /// that ended has calls running, and quiet only when there is nothing left.
+    /// **A round's end is not the turn's, and the head no longer has to work that out.** The
+    /// engine publishes `TurnFinished` per round and the round's calls run after it; what this
+    /// reads now is the daemon's `Activity`, quiet only when there is nothing left.
     #[test]
     fn the_daemons_activity_says_what_the_rounds_events_cannot() {
         let mut state = State::default();
@@ -2244,14 +2006,9 @@ mod tests {
         );
     }
 
-    /// **A turn that ended to wait on its own job is not the end of the work** — and whether a job
-    /// holds the work open is the DAEMON's answer now, not an edge this head derives off the todo
-    /// board.
-    ///
-    /// QA's case is the first half: a turn ended *waiting on the last probe target*, and a `wait`
-    /// that answered there handed the orchestrator a package with an hour of work left. The second
-    /// half is what keeps the first usable: the job the model PARKED with `wake: "later"` (a
-    /// server left running) is not something the work waits on and must not hold a later turn open.
+    /// **A turn that ended to wait on its own job is not the end of the work**, and whether a
+    /// job holds the work open is the DAEMON's answer now. The job the model PARKED with
+    /// `wake: "later"` is not something the work waits on and must not hold a later turn open.
     #[test]
     fn a_job_the_work_waits_on_keeps_the_session_busy_and_a_server_does_not() {
         let mut state = State::default();
@@ -2377,12 +2134,9 @@ mod tests {
         );
     }
 
-    /// **A recorded turn folds into the compact entries `leticode_events` answers with.**
-    ///
-    /// The sequence is a turn as this daemon actually publishes one: a start, a call, a
-    /// result, a card and its answer, a backgrounded call and its settlement, a warning, an
-    /// answer row, and an end — with the interactive noise (deltas, prompt progress, token
-    /// counts) interleaved where the daemon puts it.
+    /// **A recorded turn folds into the compact entries `leticode_events` answers with.** The
+    /// sequence is a turn as this daemon actually publishes one, with the interactive noise
+    /// (deltas, prompt progress, token counts) interleaved where the daemon puts it.
     #[test]
     fn a_recorded_turn_folds_into_compact_entries() {
         let mut state = State::default();
@@ -2562,13 +2316,9 @@ mod tests {
         assert!(state.turned, "a failed turn is a turn that ran");
     }
 
-    /// **A reviewer's start and end are two lines, and they name the branch** (B6).
-    ///
-    /// The review queue's reviewers are child sessions: their turns are on their own hubs,
-    /// and the only thing a head attached to the parent is told about them is
-    /// `SessionEvent::Subagent`. So this is what `leticode_events` on `s-gatekeeper` can say —
-    /// the reviewer's slug, the branch its task named, and on the finish, its verdict in its
-    /// own first line.
+    /// **A reviewer's start and end are two lines, and they name the branch** (B6). A reviewer
+    /// is a child session, and the only thing a head attached to the parent is told about it is
+    /// `SessionEvent::Subagent` - so this is what `leticode_events` on `s-gatekeeper` can say.
     #[test]
     fn a_reviewers_start_and_end_are_one_line_each() {
         let task = "You are the gatekeeper. A subagent has finished work on a branch.\n\n\
@@ -2649,11 +2399,8 @@ mod tests {
     }
 
     /// **A reviewer that is already running when the head attaches is announced from the
-    /// snapshot, and a resync completes the ones that ended while it was demoted.**
-    ///
-    /// Attaching in the middle of a review is the whole of B6 — the orchestrator does not
-    /// schedule the queue's children — and the snapshot's `subagents` is the only place the
-    /// running ones exist before their next event.
+    /// snapshot, and a resync completes the ones that ended while it was demoted.** Attaching
+    /// mid-review is the whole of B6: the snapshot's `subagents` is the only place they exist.
     #[test]
     fn a_child_already_running_is_read_from_the_snapshot() {
         let hub = letibot_sessionlog::hub::Hub::new("s-gatekeeper");

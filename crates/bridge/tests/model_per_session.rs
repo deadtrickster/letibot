@@ -1,18 +1,13 @@
-//! **Each session's model is its own**, over the wire, once.
+//! Each session's model is its own, over the wire, once.
 //!
-//! The report: `leticode_start {model: "deepseek"}` on a worktree whose daemon a `glm` session had
-//! started answered with glm's own 429, because the daemon's `--provider` is the *default* and
-//! nothing carried the caller's model into the session that was created for it. So this measures
-//! the two halves of the fix:
+//! The daemon's `--provider` is only the DEFAULT, so a session created for a caller that named a
+//! model has to carry that name itself - otherwise it answers on whatever the daemon's first
+//! session chose. So: a join with another model runs that session's turns on it, the choice is
+//! written to the session's own row and survives a restart, and a model this box cannot serve is
+//! refused before the brief.
 //!
-//! | what | how |
-//! |---|---|
-//! | a join with another model runs THAT session's turns on it | the provider's own request body names the model |
-//! | and the choice is the session's, durably | the store's `provider_choice` row for that session, and the daemon's own session left alone |
-//! | a model this box cannot serve is refused before the brief | the error, and the provider that was never asked |
-//!
-//! The daemon here runs on `glm` on purpose: it is the reported shape, and it is what makes a
-//! session that inherits the daemon's provider distinguishable from one that named its own.
+//! The daemon here runs on `glm` on purpose: it is what makes a session that inherits the daemon's
+//! provider distinguishable from one that named its own.
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -30,7 +25,7 @@ use serde_json::json;
 /// The brief, and the marker its answer carries.
 const BRIEF: &str = "brief-marker: say the one line";
 const ANSWER: &str = "answer-marker: said";
-/// What the daemon's first session is on, which is the shape the report came from.
+/// What the daemon's first session is on.
 const DAEMON_MODEL: &str = "glm";
 
 /// A directory that removes itself: a leaked store per run fills the disk.
@@ -192,8 +187,8 @@ impl World {
         let worktree = root.join("worktree");
         std::fs::create_dir_all(&worktree).expect("worktree");
         let fake = Fake::serve();
-        // **Two providers, one fake**, so the request that arrives is the same wire either way
-        // and the model named in its body is what says where the turn went.
+        // Two providers, one fake, so the request that arrives is the same wire either way and the
+        // model named in its body is what says where the turn went.
         std::fs::write(
             root.join("config/letibot/providers.toml"),
             format!(
@@ -212,8 +207,8 @@ impl World {
         let mut cfg = Config::for_this_box(&worktree);
         cfg.dialect = Dialect::Qwen;
         cfg.seat = Seat::Leticode;
-        // **No process backend, so nothing of the apparatus is needed**: these turns call no tool,
-        // and `unconfined` with no `bash` is the writable host view every mode check wants.
+        // No process backend, so nothing of the apparatus is needed: these turns call no tool, and
+        // `unconfined` with no `bash` is the writable host view every mode check wants.
         cfg.unconfined = true;
         cfg.allow_bash = false;
         // The byte vocabulary: a session whose turns go to a provider needs no GGUF.
@@ -243,8 +238,8 @@ impl World {
             .create(session.clone(), "", Sessions::wiring(&cfg))
             .expect("a fresh registry takes the session");
         let daemon = Daemon::serve(registry.clone(), &socket).expect("the socket binds");
-        // **The record a joining bridge reads** (R102): without it the daemon is placed *nowhere it
-        // can see*, and `leticode_start` refuses to join rather than guess where its tools run.
+        // The record a joining bridge reads: without it the daemon is placed nowhere it can see,
+        // and `leticode_start` refuses to join rather than guess where its tools run.
         letibot_sessionlog::placement::write(&socket, "host").expect("the placement record");
         let worker_registry = registry.clone();
         let worker = std::thread::spawn(move || {
@@ -317,8 +312,8 @@ fn a_session_that_joins_a_daemon_runs_its_own_model() {
         "the daemon's own sentence says where the turns go: {started}"
     );
 
-    // **The turn really went there**: the request the provider received names the model the
-    // caller asked for, and not the daemon's own.
+    // The turn really went there: the request the provider received names the model the caller
+    // asked for, and not the daemon's own.
     let deadline = std::time::Instant::now() + Duration::from_secs(60);
     let first = loop {
         let bodies = world.fake.requests();
@@ -336,8 +331,8 @@ fn a_session_that_joins_a_daemon_runs_its_own_model() {
         "the turn went to the model the caller named: {first}"
     );
 
-    // **And the choice is the session's, written down**: a restart of that session comes back on
-    // it (`restore_provider_choice`), and the daemon's own session was not moved.
+    // And the choice is the session's, written down: a restart of that session comes back on it
+    // (`restore_provider_choice`), and the daemon's own session was not moved.
     assert_eq!(
         world.model_of(&session).as_deref(),
         Some("deepseek/deepseek-chat")
@@ -348,8 +343,8 @@ fn a_session_that_joins_a_daemon_runs_its_own_model() {
         "the daemon's own session keeps the daemon's provider"
     );
 
-    // **A name this box cannot serve is refused BEFORE the brief**, so nothing runs on a model
-    // nobody asked for, and the refusal names the model and the session it left behind.
+    // A name this box cannot serve is refused BEFORE the brief, so nothing runs on a model nobody
+    // asked for, and the refusal names the model and the session it left behind.
     let before = world.fake.requests().len();
     let refused = bridge
         .start(

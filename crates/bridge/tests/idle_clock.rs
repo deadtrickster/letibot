@@ -2,40 +2,10 @@
 //! work to be over instead of for a clock.
 //!
 //! This file exists because the instrument it tests decided a red on the merge gate and nobody
-//! could tell what the number meant. Four facts, in one test and in this order, because each
-//! depends on the process being quiet at the start of the next:
-//!
-//! 1. **The two readings are one number.** `/proc/<pid>/stat`'s `utime + stime` and
-//!    `getrusage(RUSAGE_SELF)`'s `ru_utime + ru_stime` are the same two fields of the same
-//!    process, and `no_spin.rs` takes the syscall because it needs no `/proc` walk. A test that
-//!    says *this is the child's CPU* has to be able to show the two agree — MEASURED on lab2x1
-//!    (2026-11-01, USER_HZ 100): they agree to the tick, and the assertion allows two ticks
-//!    because a tick can land between the two calls.
-//! 2. **A neighbour's CPU is not this process's CPU.** A sampled percentage — `ps`, `top`, a
-//!    delta of the whole machine — answers *the box is busy* for every process on it, which is
-//!    what the gate's three reds had in common. So a real burner is started BESIDE this process,
-//!    and this process's own reading must not move: measured with a child at a full core,
-//!    **4–10 µs of a one-second span**. The burner's own reading is taken too, so the test cannot
-//!    pass by the burner having failed to start — **where this box can take it**: `/proc/<pid>/stat`
-//!    is a facility macOS can never be given, and there the burner is unproved rather than
-//!    proved-not-burning, which part 2 says out loud (the same `else` part 1 takes).
-//! 3. **The settle waits for a burn to end.** [`cpu::wait_until_idle`] is the half that was
-//!    missing on 2026-11-01: a fixed `sleep(500 ms)` after a daemon's start opened the measured
-//!    window on the daemon's opening, so the number was a function of how fast the box got
-//!    through 260 ms of fixed work (1.3 ms quiet, 178 ms loaded). Here a burn runs for a second
-//!    inside this process, and the settle must not return until it is over — which a fixed pause
-//!    cannot do.
-//! 4. **And a process that never goes quiet is reported as one.** The failure path is the half
-//!    that has to work: a daemon that spins never settles, so the ceiling is what turns it into a
-//!    red, and the red has to name the defect. Proved against a one-second ceiling rather than
-//!    [`cpu::CEILING`]'s two minutes.
-//!
-//! **The load this file does not need to be run under**, and why: the instrument's whole claim is
-//! that the number is the same on a quiet box and on a busy one. `no_spin.rs`'s report is where
-//! that is measured — the same six windows, **0.76–3.72 ms** across the four runs on record
-//! (2.02–2.38 on a quiet box, 0.76–2.12 under four hundred busy processes on the gate's box,
-//! 1.87–3.72 on a 32-core box at load 28) — and what is proved here is the mechanism that makes it
-//! so.
+//! could tell what the number meant. Four facts, in one test and in this order: the `/proc` and
+//! `getrusage` readings are one number; a neighbour's CPU does not move this process's reading;
+//! the settle waits for a burn to end; and a process that never goes quiet is reported as one.
+//! `no_spin.rs` is where the same number is measured on a quiet box and on a busy one.
 
 use std::io::Write;
 use std::process::{Child, Command, Stdio};
@@ -72,15 +42,9 @@ impl Drop for Burner {
     }
 }
 
-/// **Wait until a pid's own reading has advanced by `at_least`** — so a claim about a burner is
-/// measured on the burner, and a burner that never ran cannot make a test pass.
-///
-/// Three answers, because a pid's reading has three fates and only one of them is a defect:
-/// `Some(true)` it burned, `Some(false)` the reading exists and moved by less than `at_least`
-/// (a burner that never got going, which is the fixture failing), and **`None` where this box has
-/// no `/proc/<pid>/stat` at all** — macOS. [`cpu::of_pid`]'s contract is that a caller says the
-/// reading is not available rather than failing on it, so the absence is answered here and judged
-/// at the call site, where the platform is known.
+/// **Wait until a pid's own reading has advanced by `at_least`** - so a claim about a burner is
+/// measured on the burner. Three answers: `Some(true)` it burned, `Some(false)` the reading moved
+/// too little, and `None` on a box with no `/proc/<pid>/stat` - macOS - judged at the call site.
 fn has_burned(pid: u32, at_least: Duration, within: Duration) -> Option<bool> {
     let started = Instant::now();
     let first = cpu::of_pid(pid)?;
@@ -120,17 +84,8 @@ fn the_idle_clock_reads_one_child_and_waits_for_the_work_to_be_over() {
     // --- 2. a neighbour's CPU is not this process's CPU --------------------
     let burner = Burner::start();
     // **The burner's own reading, where this box can take it.** `cpu::of_pid` answers `None` where
-    // there is no `/proc` — macOS — and `unwrap_or_default()` here used to turn that into a burner
-    // that read 0 for ever, so thirty seconds later a Darwin run failed with *the burner never got
-    // going*: a red that reads as a defect in the instrument and is the platform. **This is the
-    // line the `else` below covers**, and a Darwin run takes it because `/proc/<pid>/stat` does
-    // not exist there at all, so the first read is the `None`.
-    //
-    // `apparatus::present` is deliberately NOT the door: `/proc` is a facility macOS can never be
-    // given, `present` panics under `LETIBOT_REQUIRE_APPARATUS=1` — the gate's own test step — so
-    // a Mac would be red for its OS, and `apparatus::applies` is for a test with nothing left to
-    // test here, while the window below still measures this process's own `getrusage`, which
-    // every box has.
+    // there is no `/proc` - macOS - and `unwrap_or_default()` used to turn that into a burner that
+    // read 0 for ever, so a Darwin run failed with *the burner never got going*.
     match has_burned(
         burner.pid(),
         Duration::from_millis(300),
@@ -202,11 +157,8 @@ fn the_idle_clock_reads_one_child_and_waits_for_the_work_to_be_over() {
     );
 
     // --- 4. a process that never goes quiet is reported as one ------------
-    // **The failure path, which is the half that has to work.** The daemon this instrument was
-    // written for spent a whole core per stopped session; a settle that waited for that process to
-    // go quiet would wait for ever, so the ceiling is what turns the spin into a red. Proved here
-    // with a ceiling of two seconds against a burn of three, so the proof costs a couple of seconds
-    // rather than [`cpu::CEILING`]'s two minutes.
+    // **The failure path, which is the half that has to work.** A settle that waited for a spinning
+    // process would wait for ever, so the ceiling is what turns the spin into a red.
     let until = Instant::now() + Duration::from_secs(3);
     let burning = std::thread::spawn(move || {
         while Instant::now() < until {

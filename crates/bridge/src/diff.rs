@@ -1,14 +1,11 @@
 //! **What the worktree's branch has done**, for the reviewer who is about to read it.
 //!
-//! `leticode_diff` answers three things and only the last one is big: the branch, the
-//! commits it put on top of its base, and the shape of what changed. The base is the
-//! branch's upstream when it has one and `main`/`master` otherwise, and the comparison is
-//! always against the **merge base** — `git diff main` shows the base's own new commits
-//! as this branch's work undone, which is exactly the reading a review must not be given.
-//!
-//! **The full diff is asked for, never sent.** A branch of twenty files is a few hundred
-//! kilobytes of text, and the orchestrator that wanted it knows when: a bridge that
-//! returned it by default would put it in Claude's context on every status check.
+//! `leticode_diff` answers the branch, the commits it put on top of its base, and the shape of
+//! what changed. The base is the branch's upstream when it has one and `main`/`master`
+//! otherwise, and the comparison is always against the **merge base** - `git diff main` shows
+//! the base's own new commits as this branch's work undone, which a review must not be given.
+//! **The full diff is asked for, never sent**: a branch of twenty files is a few hundred
+//! kilobytes, and a bridge that returned it by default would put it in context on every check.
 
 use std::path::Path;
 use std::process::Command;
@@ -48,11 +45,9 @@ fn git(worktree: &Path, args: &[&str]) -> Option<String> {
     Some(String::from_utf8_lossy(&out.stdout).trim_end().to_string())
 }
 
-/// The diff, as the tool answers it.
-///
-/// `error` is present instead of the fields when the folder is not a repository or has no
-/// commits yet — a git failure and an empty diff must not look alike, because one means
-/// "nothing to review" and the other means "nobody looked".
+/// The diff, as the tool answers it. `error` is present instead of the fields when the folder is
+/// not a repository or has no commits yet - a git failure and an empty diff must not look alike,
+/// because one means "nothing to review" and the other means "nobody looked".
 pub fn diff(worktree: &Path, full: bool) -> serde_json::Value {
     let Some(branch) = git(worktree, &["rev-parse", "--abbrev-ref", "HEAD"]) else {
         return serde_json::json!({

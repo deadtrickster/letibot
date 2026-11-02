@@ -1,22 +1,11 @@
 //! **The ten verbs**, and the map of sessions the bridge holds.
 //!
-//! `docs/claude-code-bridge.md` fixes the table: each tool's input, and what it answers.
-//! Three things in it are worth naming here because they are the design rather than a
-//! shape:
+//! `docs/claude-code-bridge.md` fixes the table. Three things are the design rather than a shape:
+//! `leticode_start` keeps the head (a session nobody is attached to cannot ask anybody
+//! anything), `leticode_attach` joins and does not start, and `leticode_answer` sends the
+//! protocol's `Answer` so the decision lands in the corpus attributed to the head that gave it.
 //!
-//! * **`leticode_start` keeps the head.** It creates the session, sends the brief and
-//!   stays attached on its own socket, because a session nobody is attached to cannot ask
-//!   anybody anything — and the whole point of running leticode from Claude Code is that
-//!   the gate has somebody to ask.
-//! * **`leticode_attach` joins, and does not start.** The same head, on a session somebody
-//!   else opened — the review queue's `s-gatekeeper`, most of the time — and by default
-//!   read-only: a watcher never sends, never answers, never interrupts (B6).
-//! * **`leticode_answer` sends the protocol's `Answer`**, not a shell command and not a
-//!   prompt: the decision lands in the corpus attributed to the head that gave it, which
-//!   is what makes "who approved this" answerable afterwards.
-//!
-//! Nothing here talks to a model. A tool call either drives the head protocol or runs
-//! `git` in the worktree; the model is leticode's, on the other side of the socket.
+//! Nothing here talks to a model: a tool call either drives the head protocol or runs `git`.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -43,15 +32,12 @@ pub const EVENTS_LIMIT: usize = 50;
 
 /// **How long `leticode_mode` waits for the confirmation it asked for.** Two minutes: long
 /// enough for a person to read the card and answer it, short enough that a tool call does not
-/// look hung. The daemon keeps the request open past this — an answer that arrives later still
-/// applies the point, with the caller already told that nobody had answered — because the
-/// alternative is a card that expires under the person reading it.
+/// look hung. The daemon keeps the request open past this, so a late answer still applies.
 pub const MODE_PATIENCE: Duration = Duration::from_secs(120);
 
 /// What the bridge holds: one attached head per session it started or joined, by session id.
-///
-/// A `HashMap` behind a mutex rather than an actor: the tools are called one at a time by
-/// one MCP client, and the only concurrency here is each head's own collecting thread.
+/// A `HashMap` behind a mutex rather than an actor: the tools are called one at a time, and the
+/// only concurrency here is each head's own collecting thread.
 #[derive(Default)]
 pub struct Bridge {
     heads: Mutex<HashMap<String, Arc<Head>>>,
@@ -62,34 +48,9 @@ impl Bridge {
         Bridge::default()
     }
 
-    /// **Start leticode on a worktree.**
-    ///
-    /// The daemon is this folder's — started if nothing is listening, joined if one is —
-    /// because a second daemon for one folder is how two processes come to interleave rows
-    /// into one transcript.
-    ///
-    /// **Which session the brief runs in is the first thing that has to be right.** When
-    /// this call started the daemon, the daemon has already opened its first session —
-    /// eagerly, and it is the session its worker is holding — so that is the session to
-    /// use: one brief is one conversation, and a second one minted beside it only creates
-    /// the possibility of the reply naming one session while the work happens in the other.
-    /// When the daemon was already up, its first session is somebody else's conversation,
-    /// so a new one is created and the head attaches **to that id** before the brief is
-    /// sent; `Head::attach` then refuses to hand back a head the daemon seated elsewhere.
-    ///
-    /// The first real run got this wrong the other way round: the answer named the session
-    /// it had just created and the brief ran in the daemon's own first one, so
-    /// `leticode_status` watched an empty session report `idle` while a turn was happening
-    /// one session over.
-    ///
-    /// **`host` is where the session's TOOLS run** (`docs/remote-hosts.md`): a name the
-    /// operator declared in `~/.config/letibot/hosts.toml`, passed to the daemon as `--host`,
-    /// so `bash`, `read`, `write`, `edit` and the jobs run on that machine while the model,
-    /// the store and the gate stay here. The name is checked before anything is started
-    /// ([`placement_arg`]), and a daemon already running for this folder with a different
-    /// placement (or none this build can read) is refused rather than joined
-    /// ([`daemon::ensure`]) — the one failure that would be silent, since a package whose
-    /// tools ran here while its caller asked for a host would look exactly like a working one.
+    /// **Start leticode on a worktree.** A daemon this call started already holds its first
+    /// session, so that is the session the brief runs in: one brief is one conversation. A daemon
+    /// already up belongs to somebody else, so a new session is created and attached by id.
     pub fn start(
         &self,
         worktree: &str,
@@ -102,11 +63,9 @@ impl Bridge {
         if brief.trim().is_empty() {
             return Err("`brief` is empty: a session with no brief runs no turn".into());
         }
-        // **The host is checked before anything is done**, with the tree's own reader: a name
-        // this file does not declare is refused by the operator's rule, listing the names it
-        // does (`Hosts::refusal`, the sentence `task { where: "host:NAME" }` gives), and no
-        // daemon is started for it. The plan's whole point is that a caller can find out it
-        // misspelled a machine before a brief runs on the wrong one.
+        // **The host is checked before anything is done**: a name this file does not declare is
+        // refused by the operator's rule, listing the names it does, and no daemon is started
+        // for it.
         let placement = placement_arg(host, vm, &Hosts::load())?;
         let d = daemon::ensure(Path::new(worktree), model, mode, &placement)?;
         let (session, opened) = if d.started {
@@ -125,10 +84,9 @@ impl Bridge {
             // and a caller that expected to have opened one should be able to see that it
             // inherited the daemon's.
             "session_opened": opened,
-            // **Where this session's tools run**, from the daemon's own record and not from
-            // the argument: an already-running daemon was refused unless it agreed, so the two
-            // are one fact — but the fact is the daemon's, and a head that cannot tell would
-            // report a package's work as being somewhere it is not.
+            // **Where this session's tools run**, from the daemon's own record and not from the
+            // argument: the fact is the daemon's, and a head that cannot tell would report a
+            // package's work as being somewhere it is not.
             "placement": placement_json(h.placement.as_ref()),
             // The same thing in a sentence, because this is the field a model reads to answer
             // *where is my work happening* — and the half that matters as much is what did NOT
@@ -137,9 +95,7 @@ impl Bridge {
         });
         // **Each session's model is its own**, and this is the half that makes it so: the daemon's
         // `--provider` is the DEFAULT, so a session joining a running daemon would otherwise answer
-        // every turn on whatever the daemon's first session chose. `/models` is per session (the
-        // daemon writes it to that session's row), so this brief runs on the model the caller named;
-        // a refusal is returned before anything is sent rather than being quietly replaced.
+        // every turn on whatever its first session chose. `/models` is per session.
         if let Some(m) = model.filter(|m| !m.trim().is_empty()) {
             match h.set_model(m) {
                 Ok(said) => {
@@ -184,27 +140,9 @@ impl Bridge {
         g.insert(h.session.clone(), h.clone());
     }
 
-    /// **Join a session this bridge did not start** — `leticode_attach` (B6).
-    ///
-    /// The operator cannot see who in the merge queue is doing what: the review queue's own
-    /// session lives in the operator's daemon and spawns a reviewer per row, and until now
-    /// the only way to follow it from Claude Code was to read the store and guess. This
-    /// attaches a head to it — or to any other session a folder's daemon holds — and
-    /// everything else in the table then works on it: `status`, `events`, `asks`, `list`,
-    /// `wait`, `diff`. What it does not do is the brief: a session that already exists has
-    /// already been told what to do.
-    ///
-    /// **It joins a running daemon and never starts one.** A daemon nobody asked for is the
-    /// defect Q1 fixed in the other direction — a package's own daemon taking a repository's
-    /// merge-queue lease — and here the folder is usually the operator's: `leticode_start` is
-    /// the tool that starts a daemon, and this one refuses rather than *helpfully* beginning a
-    /// second daemon over a workspace whose daemon is momentarily busy.
-    ///
-    /// `watch_only` is the default and the whole point (see [`Head::attach_watching`]): the
-    /// session keeps the head that holds it, and this one only watches — no prompt, no
-    /// answer, no interrupt — so a queue the operator is also watching is not steered by a
-    /// second hand. `watch_only: false` exists for the other job, driving a session this
-    /// bridge did not open (a resumed package, a session a person left idle).
+    /// **Join a session this bridge did not start** - `leticode_attach` (B6). It joins a running
+    /// daemon and never starts one, and `watch_only` is the default: the session keeps the head
+    /// that holds it, and this one only watches - no prompt, no answer, no interrupt.
     pub fn attach(&self, worktree: &str, session: &str, watch_only: bool) -> Result<Value, String> {
         // **The daemon first**, because the name `gatekeeper` resolves against ITS workspace key:
         // the review queue's session id is per folder, so a name resolved to a constant would
@@ -221,10 +159,9 @@ impl Bridge {
                 d.socket.display()
             ));
         }
-        // **A second attach to a session this bridge already holds is refused.** The map is
-        // keyed by session id, so a second entry would silently replace the first: the socket
-        // that answers its cards would shut down, the ring would start over, and a caller
-        // holding a `since` cursor would read a stream that went backwards.
+        // **A second attach to a session this bridge already holds is refused.** The map is keyed
+        // by session id, so a second entry would silently replace the first: the socket that
+        // answers its cards would shut down and a `since` cursor would read a stream going back.
         if let Some(held) = self.held(&session) {
             return Err(format!(
                 "this bridge already holds `{session}` ({}); an attach would replace that head \
@@ -296,10 +233,9 @@ impl Bridge {
         let mut out = json!({
             "session": session,
             "state": s.word(),
-            // **Where this session's tools run** — `host`, or `host:NAME`, or null when the
+            // **Where this session's tools run** - `host`, or `host:NAME`, or null when the
             // daemon recorded nothing this build can read. A caller reading a diff or a test
-            // result needs it: the same words mean one thing on this box and another on a
-            // machine whose toolchains are its own.
+            // result needs it: the same words mean one thing here and another on a machine.
             "placement": placement_json(h.placement.as_ref()),
             // **Whether this head may act on the session at all** (B6): a caller that cannot
             // see the difference asks twice why `leticode_send` refused.
@@ -327,11 +263,9 @@ impl Bridge {
             // idle session holding one is waiting rather than done, unless the model parked it with
             // `wake: "later"`; the daemon's `activity` answers that and this list does not.
             "jobs_open": s.jobs_open.iter().collect::<Vec<_>>(),
-            // **What the DAEMON says the session is waiting on** (`PROTOCOL_VERSION` 52) — the
-            // replacement for the settle windows this verb used to time. `waiting_on` is the
-            // list in a reader's words (`["job j8032", "monitor ci"]`), and `activity` is the
-            // value itself (`quiet`, or `busy` with the entries tagged by kind), so a caller can
-            // branch on the kind instead of on a sentence.
+            // **What the DAEMON says the session is waiting on** (`PROTOCOL_VERSION` 52), the
+            // replacement for the settle windows this verb used to time. `waiting_on` is the list
+            // in a reader's words and `activity` is the value itself, so a caller can branch on it.
             "activity": serde_json::to_value(&s.activity).unwrap_or(Value::Null),
             "waiting_on": s.waiting_on(),
             // Whether an unfinished todo needs one of the running jobs: `wait` does not hold on
@@ -339,21 +273,15 @@ impl Bridge {
             // question a caller already asks, answered now from the daemon's own list.
             "waiting_on_jobs": s.waiting_on_jobs(),
             "pending_asks": s.asks.iter().map(|a| a.req_id.clone()).collect::<Vec<_>>(),
-            // **What the daemon said to the last frame it refused.** An answer that arrives
-            // after its card closed is refused rather than applied (`docs`: a reply to a
-            // question asked ten minutes ago is input from nowhere), and an orchestrator
-            // that could not see the refusal would keep believing it answered.
+            // **What the daemon said to the last frame it refused.** An answer that arrives after
+            // its card closed is refused rather than applied, and an orchestrator that could not
+            // see the refusal would keep believing it answered.
             "last_rejection": s.rejection,
             "seq": s.seq,
         });
-        // **The brief's report, when the last message is one.** Absent, not empty, when it
-        // is not: a status answer with four blank fields would have a reviewer asking
-        // whether the run produced nothing or the parser failed, and this build says
-        // nothing rather than something untrue.
-        //
-        // The newest report rather than the last message: a run that reports and is then
-        // woken by its own jobs ends on *nothing new in them*, and the report is the one
-        // before. `report_is_last` says which, so a reviewer knows words came after it.
+        // **The brief's report, when the last message is one.** Absent, not empty, when it is
+        // not. The newest report rather than the last message, because a run that reports and is
+        // then woken by its own jobs ends on *nothing new in them*; `report_is_last` says which.
         if let Some(report) = crate::report::parse(s.last_message()) {
             out["report"] = report.to_json();
             out["report_is_last"] = json!(true);
@@ -364,13 +292,9 @@ impl Bridge {
         Ok(out)
     }
 
-    /// **The progress since a cursor**: tool calls, results, jobs, turns, asks, warnings and
-    /// the first line of what was said — and never the banner, the memory watcher or a
-    /// payload.
-    ///
-    /// A cursor older than the ring is answered with what remains *and* a `dropped` count:
-    /// a caller that believes it has the whole story when it has the tail of it would read
-    /// a report of ten calls as a turn that made ten calls.
+    /// **The progress since a cursor**: tool calls, results, jobs, turns, asks, warnings and the
+    /// first line of what was said. A cursor older than the ring is answered with what remains
+    /// *and* a `dropped` count, because a caller that believes it has the whole story cannot tell.
     pub fn events(
         &self,
         session: &str,
@@ -425,19 +349,9 @@ impl Bridge {
         Ok(out)
     }
 
-    /// **The conversation itself**, from a cursor, as the daemon serves it to a head —
-    /// `leticode_transcript` (B8).
-    ///
-    /// Not the store, and that is the operator's ruling rather than a preference: one SQLite
-    /// file is shared by every daemon on the box, its rows are the store's shape rather than the
-    /// conversation's, and a reader there sees sessions it was never told about. What this asks
-    /// for instead is `ClientFrame::Peek { shape: Rows }` — the same rows an attach to that
-    /// session is handed — so a package's pane follows the conversation the way a second TUI
-    /// would, with full text up to [`crate::rows::CAP`] and a cursor that only moves forward.
-    ///
-    /// **A watched session answers this too.** Reading is not acting: a `watch_only` attach
-    /// holds no prompt, no answer and no interrupt, and every one of those is a write to
-    /// somebody else's session where a read is not.
+    /// **The conversation itself**, from a cursor, as the daemon serves it to a head. Not the
+    /// store: one SQLite file is shared by every daemon on the box, and a reader there sees
+    /// sessions it was never told about. A watched session answers this too: reading is not acting.
     pub fn transcript(
         &self,
         session: &str,
@@ -453,19 +367,9 @@ impl Bridge {
         Ok(out)
     }
 
-    /// **Move the session's approval point, and ask a PERSON for the one that needs them** —
-    /// `leticode_mode` (B8).
-    ///
-    /// **The bridge never consents.** `allow-all` on a box with no structural boundary is a
-    /// person's answer about their own machine, and a program that sent `consented: true` for it
-    /// would be exactly the lie the consent exists to prevent. So the ask goes to the daemon,
-    /// which puts the confirmation in front of every OTHER head attached to the session, and the
-    /// point moves only if one of them says yes. With nobody attached to ask, the daemon refuses
-    /// with the command that opens a head, and this tool returns that refusal and changes
-    /// nothing.
-    ///
-    /// **A point that needs nobody is applied at once** — `writes-allowed`, `read-only`, and
-    /// `allow-all` inside a VM — and the daemon says `nobody` was asked.
+    /// **Move the session's approval point, and ask a PERSON for the one that needs them** -
+    /// `leticode_mode` (B8). **The bridge never consents**: a program that sent `consented: true`
+    /// for `allow-all` would be exactly the lie the consent exists to prevent.
     pub fn set_mode(&self, session: &str, mode: &str) -> Result<Value, String> {
         if mode.trim().is_empty() {
             return Err("`mode` is empty: name the approval point, e.g. `writes-allowed`".into());
@@ -543,15 +447,9 @@ impl Bridge {
     }
 }
 
-/// **The session an attach names.**
-///
-/// Most attaches name an id, but the review queue's session is the one session in the tree with a
-/// NAME rather than an id a person would remember — and that name has to resolve to *this folder's*
-/// daemon's queue and not to another folder's. **The review queue is one session per daemon**
-/// ([`letibot_sessionlog::gatekeeper_session`], `s-gatekeeper-<workspace key>`), because every
-/// daemon on the box shares one store and two of them appending to one transcript is silent
-/// corruption. So `gatekeeper` resolves through `key` — the workspace key of the daemon this
-/// attach is joining, which the caller already resolved to find that daemon at all.
+/// **The session an attach names.** `gatekeeper` resolves through the workspace key, because the
+/// review queue is one session per daemon (`s-gatekeeper-<workspace key>`) and every daemon on
+/// the box shares one store, so two appending to one transcript is silent corruption.
 fn session_name(raw: &str, key: &str) -> Result<String, String> {
     let raw = raw.trim();
     if raw.is_empty() {
@@ -579,19 +477,9 @@ fn first_line(text: &str) -> String {
         .collect()
 }
 
-/// **The `host` argument, as a placement, checked before anything is started.**
-///
-/// `None` (or an empty string) is [`Placement::Host`] — *this box* is what a caller asked for
-/// when it asked for nothing, and it is a placement, so it is compared against a running
-/// daemon's record like any other. `vm: true` with no `host` is [`Placement::Firecode`], a VM on
-/// this box, and with a name it is [`Placement::RemoteVm`] — a VM on that machine.
-///
-/// A name is checked against the operator's `hosts.toml` **here**, with the reader and the
-/// refusal `task { where: "host:NAME" }` uses (`docs/remote-hosts.md`: one rule, whichever
-/// spelling asked): the refusal names the file and lists the hosts it declares, which is the
-/// difference between a caller that fixes its typo and one that guesses. A daemon started for
-/// a name the file does not declare would fail at its own start, in a log the caller has to go
-/// and read, after this tool had answered that it started one.
+/// **The `host` argument, as a placement, checked before anything is started.** `None` is
+/// [`Placement::Host`] - a placement, compared against a running daemon's record like any
+/// other. A name is checked against the operator's `hosts.toml` here, with the same refusal.
 fn placement_arg(host: Option<&str>, vm: bool, hosts: &Hosts) -> Result<Placement, String> {
     let Some(name) = host.map(str::trim).filter(|n| !n.is_empty()) else {
         // **`vm` with no host is a VM on this box**, which is the same placement `--vm` asks
@@ -617,12 +505,9 @@ fn placement_arg(host: Option<&str>, vm: bool, hosts: &Hosts) -> Result<Placemen
     })
 }
 
-/// **Where a held session's tools run, as an answer's field.**
-///
-/// `host` for this box and `host:NAME` for a machine — the spellings [`Placement::parse`]
-/// reads back, so a value a caller stores is a value it can ask for again. `null` when the
-/// daemon recorded nothing this build can read: *not known*, which is not the same as *here*
-/// and must not be printed as though it were.
+/// **Where a held session's tools run, as an answer's field.** `host` for this box and
+/// `host:NAME` for a machine - the spellings [`Placement::parse`] reads back. `null` when the
+/// daemon recorded nothing this build can read: *not known*, not *here*.
 fn placement_json(placement: Option<&Placement>) -> Value {
     match placement {
         Some(p) => json!(p.as_str()),
@@ -650,11 +535,9 @@ fn tools_run(placement: Option<&Placement>) -> String {
     }
 }
 
-/// **The ten tools, exactly as the design's table names them.**
-///
-/// The schemas are JSON Schema objects because MCP requires `inputSchema` to be one, and
-/// `required` is stated rather than inferred: a client that sends `leticode_answer` without
-/// an option should be told which field is missing, not have an argument defaulted.
+/// **The ten tools, exactly as the design's table names them.** The schemas are JSON Schema
+/// objects because MCP requires `inputSchema` to be one, and `required` is stated rather than
+/// inferred: a client that omits a field should be told which, not have it defaulted.
 pub fn list() -> Value {
     json!({ "tools": [
         tool("leticode_start",
@@ -977,19 +860,9 @@ pub fn call(bridge: &Bridge, name: &str, args: &Value) -> Result<Value, String> 
 /// How long the `wait` verb will wait when the caller named no `--timeout`.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(2 * 60 * 60);
 
-/// **The wake-up.** Attach, wait for the first thing that needs a person, and say which it
-/// was — the exit code is the notification, and the line on stdout is the payload.
-///
-/// **The head this verb attaches is a WATCHER** (B6). A `wait` is a process that never
-/// answers anything and is usually gone within minutes, so declaring it able to decide is the
-/// lie the caps field exists against: `Answers::ask` reads `deciding_heads` before it posts,
-/// and a session whose only head was a `wait` would post a card, be watched exit `10` with it,
-/// and then sit on that card until its deadline — a timeout reported as nobody having
-/// answered a question that nobody was ever able to answer. As a watcher it still SEES the
-/// cards (the daemon publishes to every attached head), which is all it ever did with them.
-///
-/// Codes: `0` the turn ended (the last assistant message is on stdout), `10` an ask is
-/// pending (the ask is on stdout), `20` the session failed, `30` the timeout passed.
+/// **The wake-up.** Attach, wait for the first thing that needs a person, and say which it was -
+/// the exit code is the notification. **The head this verb attaches is a WATCHER** (B6), so a
+/// session never waits on a card nobody could answer. Codes: `0` ended, `10` ask, `20` failed.
 pub fn wait(worktree: &str, session: &str, deadline: Instant) -> (i32, String) {
     let d = match daemon::resolve(Path::new(worktree)) {
         Ok(d) => d,
@@ -1011,10 +884,9 @@ pub fn wait(worktree: &str, session: &str, deadline: Instant) -> (i32, String) {
 mod tests {
     use super::*;
 
-    /// **Twelve tools, each with a schema and a required list** — the count and the names the
-    /// design's table fixes, with `leticode_events` added by B2, `leticode_attach` by B6, and
-    /// `leticode_transcript` and `leticode_mode` by B8. A tool added to `tools/list` and
-    /// forgotten in `call` (or the other way round) is the defect this pairs against.
+    /// **Twelve tools, each with a schema and a required list** - the count and the names the
+    /// design's table fixes. A tool added to `tools/list` and forgotten in `call` (or the other
+    /// way round) is the defect this pairs against.
     #[test]
     fn the_twelve_tools_are_listed_with_schemas() {
         let listed = list();
@@ -1072,12 +944,9 @@ mod tests {
         );
     }
 
-    /// **A host name is checked before anything is started, with the tree's own refusal.**
-    ///
-    /// The `Hosts` is built from text rather than from `$LETIBOT_HOSTS`, because a unit test
-    /// that set a process-wide variable would race every other test in this binary — the same
-    /// reason `tools::builtins::hosts` takes the file as an argument. The variable's own path
-    /// is pinned end to end in `crates/bridge/tests/placement.rs`.
+    /// **A host name is checked before anything is started, with the tree's own refusal.** The
+    /// `Hosts` is built from text rather than from `$LETIBOT_HOSTS`, because a unit test that set
+    /// a process-wide variable would race every other test in this binary.
     #[test]
     fn an_undeclared_host_is_refused_with_the_names_this_box_has() {
         let hosts = Hosts::parse("[host.lab2x1]\nhostname = \"lab2x1\"\n").expect("a hosts file");
@@ -1209,10 +1078,8 @@ mod tests {
     }
 
     /// **`gatekeeper` is the review queue's id, not a second spelling of it** (B6): the name
-    /// resolves to THIS daemon's queue — one session per workspace, so it is the id the daemon the
-    /// attach joins computed for the same folder — an id passes through, and an empty one is
-    /// refused rather than read as "whatever the daemon calls current" — a watcher that landed on
-    /// somebody else's session would report on the wrong conversation.
+    /// resolves to THIS daemon's queue - one session per workspace. An id passes through, and an
+    /// empty one is refused rather than read as "whatever the daemon calls current".
     #[test]
     fn the_gatekeeper_name_resolves_to_this_daemons_queue() {
         // The workspace key the caller resolved to find the daemon: `abc123def456` stands for the

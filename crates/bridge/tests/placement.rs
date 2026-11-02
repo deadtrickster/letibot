@@ -1,25 +1,11 @@
-//! **`leticode_start { host }` on a box whose host is not there** — the two refusals, end to end.
+//! **`leticode_start { host }` on a box whose host is not there** - the two refusals, end to end.
 //!
-//! Package RH2 places a package's TOOLS on another machine (`docs/remote-hosts.md`), and the two
-//! ways that goes wrong are both refusals rather than failures, because either one silently
-//! running the work somewhere nobody asked for is the defect this file exists against:
-//!
-//! | what | where it stops |
-//! |---|---|
-//! | a host name `hosts.toml` does not declare | before anything is resolved or started — the refusal the `where: host:NAME` tool gives, listing the names the file does have |
-//! | a daemon already running for the folder, placed somewhere else (or nowhere this build can read) | before it is joined — the refusal names where its tools run and the command that stops it |
-//!
-//! **Nothing here reaches a host, and nothing here starts a daemon.** `$LETIBOT_BIN` is pointed at
-//! an empty directory: a start would fail with *no harnessd*, so every assertion below is also a
-//! proof that no start was attempted. The "daemon" in the second half is a `UnixListener` bound in
-//! a scratch directory, with the placement record a real daemon writes beside its socket
-//! ([`letibot_sessionlog::placement`]) written by hand.
-//!
-//! **One test, because the environment is process-wide.** `$LETIBOT_HOSTS` and `$LETIBOT_SOCKET`
-//! are what the code under test reads — that is the point of setting them, and no argument can
-//! stand in for them the way `tools::builtins::hosts` takes a file — so a second `#[test]` in this
-//! binary racing on them would be the defect rather than the check. This file is a test binary of
-//! its own precisely so that nothing else in the suite reads what is set here.
+//! Both ways placing a package's TOOLS on another machine goes wrong are refusals rather than
+//! failures, because either one silently running the work somewhere nobody asked for is the
+//! defect this file exists against: a host name `hosts.toml` does not declare is refused before
+//! anything is started, and a daemon already up for the folder but placed elsewhere is refused
+//! before it is joined. **Nothing here reaches a host, and nothing starts a daemon**: `$LETIBOT_BIN`
+//! points at an empty directory, so a start would fail. One test, as the environment is process-wide.
 
 use std::path::{Path, PathBuf};
 
@@ -74,9 +60,8 @@ fn a_package_is_placed_on_a_host_only_when_the_host_and_the_daemon_agree() {
     .expect("hosts.toml");
     let socket = root.join("daemon.sock");
 
-    // SAFETY (Rust 2024's `unsafe` on `set_var`): this test binary is one test, and these are set
-    // before the bridge exists. `HOME`, `XDG_CONFIG_HOME` and `XDG_DATA_HOME` are here so nothing
-    // of the operator's — their own hosts file, their store, their providers — can decide an
+    // SAFETY: this test binary is one test, and these are set before the bridge exists. `HOME`,
+    // `XDG_CONFIG_HOME` and `XDG_DATA_HOME` are here so nothing of the operator's can decide an
     // answer this file is asserting.
     unsafe {
         std::env::set_var("LETIBOT_HOSTS", &hosts);
@@ -158,9 +143,8 @@ fn a_package_is_placed_on_a_host_only_when_the_host_and_the_daemon_agree() {
     );
 
     // --- 3. a daemon that recorded nothing ----------------------------------
-    // A daemon from a build before the record existed, or one whose record names a socket that
-    // is gone. *Unknown* is refused in both directions: it is not *local*, and a bridge that
-    // guessed either way would be reporting a placement nobody measured.
+    // A daemon from a build before the record existed, or one whose record names a socket that is
+    // gone. *Unknown* is refused in both directions: it is not *local*, and guessing is worse.
     std::fs::remove_file(letibot_sessionlog::placement::path(&socket)).expect("the record");
     let refused = tools::call(&bridge, "leticode_start", &elsewhere)
         .expect_err("nothing recorded is not an answer for a host either");

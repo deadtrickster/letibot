@@ -1,39 +1,11 @@
-//! **A session's transcript ROWS, as a head is served them** — the answer to
-//! `leticode_transcript`.
+//! **A session's transcript ROWS, as a head is served them** - the answer to `leticode_transcript`.
 //!
-//! # Why the rows and not the store
-//!
-//! The operator's ruling, 2026-10-26: reading `sessions.db` from a package's pane is *"not a
-//! good idea"*. They are right for two reasons that have nothing to do with taste. The store is
-//! one file every daemon on the box shares, so a reader there sees rows from sessions it was
-//! never told about and rewrites nothing it should; and the shape of a row is the STORE's —
-//! `item_json` beside tokens and a hash chain — where what a reader wants is the item.
-//!
-//! So this module renders what the daemon already serves a head: a [`Snapshot`]'s items, the
-//! same rows a TUI attached to that session is drawing, asked for with
-//! `ClientFrame::Peek { shape: Rows }` (`PROTOCOL_VERSION`, "the session's own rows … the same
-//! thing an attach answers with"). Nothing here opens a file.
-//!
-//! # The three things a row can be, and the one it cannot
-//!
-//! A row is either its item (user, assistant, tool result, reasoning, a segment mark), or it is
-//! `content: null` — a row the daemon saw announced and has not reconciled, which is *"there is
-//! a row here and this build cannot show you what is in it"*. The second is a real state and it
-//! is not an empty message: `SnapshotItem::item`'s own doc says a head renders it as a
-//! placeholder, and so does this.
-//!
-//! # The cap, and why it is stated
-//!
-//! A tool result can be a megabyte and a prompt can be a book, so every string is cut at
-//! [`CAP`] characters — **characters, not bytes**, because a reader counting what it got and a
-//! cap counting bytes disagree the first time a row carries a glyph. A string that was cut says
-//! so on its own row (`"cut": true`) and every answer states the cap in force, because a
-//! caller that does not know the number cannot tell a complete 8000-character payload from one
-//! that stopped there.
-//!
-//! **Generous on purpose.** This is a READER's view, not a model's context: the whole point is
-//! that a package's orchestrator can read a real tool result rather than the one-line summary
-//! `leticode_events` gives it, so the cap is the largest thing that is still a screen of text.
+//! Not the store, on the operator's ruling: `sessions.db` is one file every daemon shares, so a
+//! reader there sees sessions it was never told about, and the shape of a row is the STORE's.
+//! So this renders what the daemon already serves a head: a `Snapshot`'s items, asked for with
+//! `ClientFrame::Peek { shape: Rows }`. A row is either its item, or `content: null` - a row
+//! announced and not reconciled, which is not an empty message. Every string is cut at [`CAP`]
+//! **characters, not bytes**, and every answer states the cap, so a caller can tell a cut payload.
 
 use letibot_sessionlog::view::{Snapshot, SnapshotItem};
 use letibot_transcript::{ToolOutcome, TranscriptItem, UserPart};
@@ -216,16 +188,9 @@ fn carried_row(item: &TranscriptItem, reasoning: bool) -> Option<Value> {
     })
 }
 
-/// **One page of a session's rows**, with the cursor that reads on from it.
-///
-/// `since` is the `next` of the previous answer — *the number of rows this reader has already
-/// seen* — and the arithmetic is against `items_dropped`, because a snapshot is the TAIL of a
-/// conversation: row 3 of the window is row `items_dropped + 3` of the session, and a cursor
-/// that counted window positions would silently re-read or skip every time the window moved.
-///
-/// `dropped` is present only when the caller's cursor is older than the window can reach —
-/// the same rule `leticode_events` follows for its ring: a reader that believes it has the
-/// whole story when it has the tail of it would read ten calls as a turn that made ten calls.
+/// **One page of a session's rows**, with the cursor that reads on from it. `since` is the
+/// `next` of the previous answer, and the arithmetic is against `items_dropped`, because a
+/// snapshot is the TAIL: a cursor counting window positions would re-read or skip when it moved.
 pub fn page(snap: &Snapshot, since: u64, limit: usize, reasoning: bool) -> Value {
     let dropped = snap.items_dropped;
     let skip = since.saturating_sub(dropped) as usize;
