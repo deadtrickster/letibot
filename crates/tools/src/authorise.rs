@@ -621,13 +621,9 @@ pub enum OracleAnswer {
     },
 }
 
-/// The authority an oracle has earned, as a value rather than as an opinion.
-///
-/// Calibration is measured, never assumed: an oracle ships with the narrowest useful
-/// scope, every verdict and every operator override is a [`CorpusRow`], and widening is
-/// then a configuration change with a number attached. [`ModelAdjudicator`] enforces it
-/// - an action outside `intents` or `max_scope` escalates without the oracle being
-/// asked, so it cannot be wrong about a question nobody put to it.
+/// The authority an oracle has earned, as a value rather than as an opinion: it ships with
+/// the narrowest useful scope, and widening it is a configuration change with a number
+/// attached. [`ModelAdjudicator`] refuses anything outside it, without asking the oracle.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OracleScope {
     /// Intents this oracle may authorise. An action carrying any intent outside this
