@@ -25,34 +25,8 @@ pub(crate) const ATTACH_ANYWAY_CHORD: &str = "ctrl-^";
 impl App {
     /// A key. Returns an action for the driver to send, if any.
     ///
-    /// # Who owns which key
-    ///
-    /// Five keys are the head's: the two folds, the redraw, and the two page
-    /// keys that move the transcript. **Everything else goes to the composer**,
-    /// which is the whole reason `letibot_ui::editor` exists — word motion, undo
-    /// batching, the kill ring, the paste ledger and the two double-tap windows
-    /// are interaction policy, and interaction policy in a match arm in a head is
-    /// how it ends up subtly different in the second head.
-    ///
-    /// # Up and Down
-    ///
-    /// The composer's, and only then the transcript's. `Editor::vertical` moves
-    /// by **visual** row inside a wrapped prompt and walks history at the edges,
-    /// which is what every shell does and what a person pressing Up after
-    /// sending something expects. When it refuses — nothing to recall, or a
-    /// recalled entry has been edited and moving would destroy the edit — the
-    /// press falls through to scrolling by a line, so an empty composer with no
-    /// history still scrolls with the arrows it always did.
-    ///
-    /// # Ctrl+C no longer interrupts
-    ///
-    /// It cleared nothing and quit an idle head on one press, so there was no way
-    /// to abandon a half-typed prompt and a stray Ctrl+C killed the head. The
-    /// composer's rule (opencode's) is: Ctrl+C on a non-empty composer **clears
-    /// it**, twice within a second on an empty one quits, and **Esc twice within
-    /// five seconds interrupts the turn**. The hint bar says which, and changes
-    /// after the first press — that is the entire mechanism by which anyone
-    /// discovers a double-tap exists.
+    /// Only the folds, the redraw and the two page keys are the head's: everything else is the
+    /// composer's, because interaction policy in a match arm is how two heads drift apart.
     pub fn key(&mut self, k: Key) -> Option<Action> {
         // **The front card is settled before and after every key** (R90.3, R90.4) — see
         // [`App::sync_front`].
@@ -367,42 +341,9 @@ impl App {
             return None;
         }
 
-        // **Parked in the scrollback, the arrows belong to the scrollback — and the composer
-        // does not get them.**
-        //
-        // The intent was already written down two arms above (*"parked in the scrollback, Up
-        // still scrolls"*) and it was never true. The composer is asked FIRST, and an empty
-        // composer hands Up straight to the editor's `recall(true)`: that walks readline history
-        // and answers `Changed`, so the transcript's own fallback below was reached only by the
-        // keys the editor had no use for.
-        //
-        // MEASURED in the operator's own window, 2026-09-27, on a head that had been up for
-        // hours — the three lines are the banner, then three presses of the key it names:
-        //
-        // ```text
-        //   ── holding your place · 138 line(s) below … ↓ to the bottom or esc follows again
-        //   Down ×3   ·  139 line(s) below                      ← the number did not move
-        //   Up        ·  composer: "on this letibot head scrolll is …"
-        //   Down ×3   ·  composer: "yeah scrol…"
-        // ```
-        //
-        // Four presses of the keys the banner advertises, and the reader was no closer to the
-        // bottom while an old prompt had appeared in the box. Their report: *"no way to scroll
-        // back to the bottom, stuck at holding"*. It was not stuck — the arrows were being spent
-        // on history, and a head with a long session had hundreds of entries to spend them on.
-        //
-        // **And ↓ is the whole of the way back, in one press.** A key that moves one line cannot
-        // out-run a stream that adds lines faster, so *"↓ to the bottom"* was unreachable by
-        // design as well as by the ordering: three ↓'s against a generating turn moved the count
-        // by nothing measurable. The reference does not move one line either — `%normal-key`'s
-        // `:down` sets the scroll to ZERO when the reader is parked: *"parked in the scrollback,
-        // ↓ follows the stream again — it is what the banner says it does; only then does it move
-        // inside the prompt"*. So this arm does what this head's banner already promised, and
-        // what `esc` does beside it.
-        //
-        // **Esc is the way back to the composer**, which is the other key the banner names, and
-        // the reason taking ↑ is safe: a reader who wants their draft's arrows back has an
-        // advertised key for it rather than a hunt.
+        // Parked in the scrollback the arrows belong to the scrollback: the composer is asked
+        // first and hands Up to its history, so the transcript's fallback was reached only for keys
+        // the editor had no use for. Down at the bottom follows again, as the banner says.
         if !self.following() && self.todo_draft.is_none() {
             match k {
                 Key::Up => {
@@ -436,68 +377,9 @@ impl App {
             self.redraw = true;
         }
 
-        // **A single Esc inside a subagent's session is the way back UP the tree.**
-        //
-        // `ctrl-s` and a row's Enter was the only way back before this, and it is the
-        // gesture the operator had to invent: *"so after o I couldnt just Esc from the
-        // subagent — had to switch back here via session … make sure a single Esc goes up
-        // to subagents list"*. Enter goes down a level (the pane's arm), Esc comes back
-        // up, and the list you came out of is on the screen when you land — which is the
-        // tree walk, with no state kept beyond the parent link the daemon already sends.
-        //
-        // # It sits HERE, after everything else that claims Esc
-        //
-        // Because Esc already means four things in this head and every one of them keeps
-        // its contract:
-        //
-        // * **Esc closes a pane** — the arm near the top of this function closes help,
-        //   the picker, the todos/jobs/subagents/config panes, a `pick` and the quit card,
-        //   and *whichever surface prints `esc closes` owns Esc*. None of those says
-        //   `esc goes up`, so none of them is shaved: this arm is below all of them.
-        // * **Esc un-parks the scrollback**, **Esc closes a payload window** and **Esc
-        //   closes a slash listing**, whose seams print exactly that — the arms above,
-        //   likewise untouched.
-        // * **Esc-Esc is the interrupt frame**, and it is armed by the composer's own
-        //   editor below. That one *is* changed while this head is inside a subagent, and
-        //   it is the conflict rather than an oversight — see the note under this arm.
-        //
-        // No empty-composer guard here, unlike every pane key in this file: see the note at
-        // the arm. An open decision keeps the operator in the child, said and not armed.
-        //
-        // # The conflict, reported rather than taken
-        //
-        // Esc-Esc is the ONLY interrupt key, and it is the editor's (five seconds, two
-        // presses). A single Esc that leaves the session and a first Esc that arms an
-        // interrupt are the same keystroke, so inside a subagent the arm is what it is:
-        // **one Esc goes up, and the pair no longer interrupts the child from inside the
-        // child.** Two things bound the cost, and both are existing, tested behaviour
-        // rather than something added here: the child's turn can still be interrupted
-        // *from the child* with `/interrupt`, and from the parent with `job_kill HANDLE`,
-        // which is how this tree already documents stopping a subagent (`harness.rs`: *"a
-        // subagent is stopped by interrupting the turn it runs"*). Nothing else about the
-        // frame moves: in a session that is not a subagent there is no parent to go to and
-        // this arm does not fire, so Esc-Esc is byte for byte what it was.
-        //
-        // **The one thing this arm does to the frame here, with Esc gone up:** the editor
-        // never sees this press, so it is not counted as the first of a pair. That is the
-        // true statement — the keystroke went to the tree and not to the composer — but it
-        // has a second edge: an Esc the operator pressed in the PARENT, inside the five
-        // seconds, can pair with the NEXT press after an up-and-down round trip, and that
-        // second press would interrupt the parent. Three presses across a switch inside
-        // one window, and it needs the descent arm's press to have been taken by this arm
-        // too; the parent presses are otherwise untouched. It is written down rather than
-        // fixed because the fix is a way for a head to disarm the editor's pair, and
-        // `Editor` publishes no such call — inventing one is a change to the UI crate for
-        // a window narrower than the keystroke that opens it.
-        // **Inside a subagent, a single Esc never reaches the composer**, and that is the
-        // second fix of this arm. It used to step aside for a half-typed line and for an open
-        // decision, and both handed the press to the editor — which counted it as the FIRST of
-        // the Esc-Esc pair, so the operator's next Esc interrupted the child they were only
-        // trying to leave: *"pressed esc and it didnt work, pressed second time - subagent
-        // stopped lol"* (2026-10-08). A switch keeps the composer's text (it is the head's, not
-        // the session's), so the draft goes up with the operator and nothing is lost by
-        // leaving; a decision waiting in the child is the one thing that keeps them there, and
-        // it is said rather than armed.
+        // Esc inside a subagent's session goes back UP the tree: Enter goes down a level, Esc comes
+        // up. It sits after every other Esc contract and never reaches the composer, so the pair
+        // cannot interrupt the child; an open decision is said rather than armed.
         if matches!(k, Key::Esc)
             && let Some(parent) = self.parent_session()
         {
@@ -756,32 +638,9 @@ impl App {
         }
     }
 
-    /// **The pane's keyboard: the raw bytes the reader consumed, turned into actions.**
-    ///
-    /// # The way out is found HERE and nowhere else, and that is what makes it untrappable
-    ///
-    /// `0x1c` — `Ctrl-\` — is looked for in the byte stream **before anything is forwarded**,
-    /// and the bytes before it are the last thing the program gets. A key the program never
-    /// receives is a key no program can trap, whatever it does to `SIGQUIT` or to its own input
-    /// handling. **And the act it performs is a detach**: the head hides the rectangle and sends
-    /// nothing at all, so the program is not signalled, not killed, and not even told — see
-    /// [`TermPane`] for why the default is the non-destructive one.
-    ///
-    /// **This is the one recogniser, and the caller's route decides what it ever sees.**
-    /// `Link::tick` calls this with a pane open — from the tick's start, or opened by the keys
-    /// of the same read — and hands a read the composer consumed to nobody: a way-out byte in
-    /// *that* read (a paste of text carrying a literal `0x1c`) is content, not a leaving. The
-    /// head once kept such bytes in a latch of its own and spent them on the next pane that
-    /// opened, which opened already detached — the same fact recognised in two places, and the
-    /// two disagreeing about what a byte with no pane behind it means.
-    ///
-    /// **The byte cannot be part of anything else.** `0x1c` is below `0x20`, so it is not a
-    /// UTF-8 continuation and cannot appear inside a character; and it is not a CSI final byte
-    /// (those are `0x40`-`0x7e`), so it cannot appear inside an escape sequence the reader is
-    /// holding. It *can* appear inside a bracketed paste — somebody pasting a file that
-    /// contains a literal `0x1c` — and the pane detaches: the honest reading of *the operator's
-    /// terminal sent the way-out byte*, and a hole named in [`TermPane`] rather than a
-    /// silent one.
+    /// The pane's keyboard. `Ctrl-\` is looked for before anything is forwarded, so a program never
+    /// receives it and cannot trap it, and the act is a detach: nothing is sent, so the program is
+    /// neither signalled nor told. The byte cannot sit inside a character or a CSI final.
     pub fn pane_keys(&mut self, raw: &[u8]) -> Vec<Action> {
         let Some(p) = self.term.as_ref() else {
             return Vec::new();
@@ -838,44 +697,9 @@ impl App {
         }
     }
 
-    /// **Tab on a `!` line completes from what this session has actually run — and,
-    /// when the history has nothing, from what the model proposes.**
-    ///
-    /// The operator's own words for the feature: *"smart autocomplete here for ! -
-    /// you trying to suggest me commands based on conversation context"*, and then
-    /// *"i want smart ! when a model suggest completions."* The candidates are whole
-    /// lines, newest first, deduped — the operator's own `!` rows verbatim, and the
-    /// model's `bash` calls as `! ` plus the command they ran — and the match is a
-    /// whole-line prefix, so `! ls` reaches `! ls .`.
-    ///
-    /// **History first, model second.** The history is the first answer, because a
-    /// command this session actually ran is a fact and a model's proposal is a guess,
-    /// and a real command beats an invented one. The model is the fallback, asked
-    /// only when the history has no match for the prefix — or its cycle is exhausted
-    /// — and asked once per (prefix, transcript position), so the same prefix asked
-    /// twice is not two model calls.
-    ///
-    /// **The one recogniser for "is this a `!` line" is `operator_shell_command`**,
-    /// the same rule the daemon re-checks at the send: a bang with nothing after it
-    /// is not a `!` line, so `!` alone does nothing here, the way it is refused
-    /// there. A second list of what counts would be a second answer to the same
-    /// question.
-    ///
-    /// **The cycle is the field `complete_slash` uses, and the same rule holds**: it
-    /// only trusts a prefix that is still being typed, so a character typed on after
-    /// a completion matches fresh rather than clobbering what was typed, and a
-    /// prefix nothing matches leaves the composer exactly as it was and says so.
-    /// Nothing is ever submitted — a candidate only fills the composer.
-    /// **Move the open payload window** by `by` wrapped lines, clamped to the last full
-    /// page the draw recorded (`payload_max`) — so Down stops where the output ends and the
-    /// first Up after it moves at once, instead of unwinding steps past the end.
-    ///
-    /// **And what the window cannot take, the conversation does** — the operator: *"i want
-    /// them to connect. so say i scrolled to the bottom of the ctrl-v view port it should
-    /// keep scrolling the main convo"*. A window at its last line passes the rest of a
-    /// Down to the transcript, and one at its first line passes the rest of an Up, the way
-    /// a scroll box nested in a page hands over at its edge. Home and End are jumps inside
-    /// the window and pass nothing on.
+    /// Move the payload window by `by` wrapped lines, clamped to the last full page the draw
+    /// recorded, so Down stops where the output ends. What the window cannot take the conversation
+    /// does, the way a scroll box hands over at its edge; Home and End are jumps inside it.
     pub(crate) fn page_payload(&mut self, up: bool, by: usize) {
         let max = self.payload_max.get();
         let from = self.payload_page.min(max);
