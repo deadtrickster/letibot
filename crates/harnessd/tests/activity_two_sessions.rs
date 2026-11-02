@@ -13,7 +13,8 @@ use letibot_sessionlog::registry::Registry;
 
 /// The session `open_first` opens eagerly, and the one this test needs to stay quiet.
 const FIRST: &str = "s-daemon-first";
-/// The second session: the daemon's same worker, its same `Parts`, its own hub.
+/// The second session: the same `Parts`, its own hub - and, in a daemon, a thread of its own
+/// (`sessions::Court`). This test drives `Sessions` by hand, which is the single-threaded path.
 const SECOND: &str = "s-second";
 
 #[test]

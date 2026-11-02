@@ -10,9 +10,10 @@
 //!
 //! > A run must not block the door that serves it.
 //!
-//! The daemon has one worker for every session (`harnessd/src/daemon.rs`) and the
-//! operator's `!` line runs *on* it - `run_operator_shell` calls `invoke_operator`, which waits
-//! on the job - so for as long as the command runs, everything queued behind it waits.
+//! The daemon served every session from one worker when this was measured
+//! (`harnessd/src/daemon.rs`; since R63 each root session has a thread of its own), and the
+//! operator's `!` line ran *on* it - `run_operator_shell` calls `invoke_operator`, which waited
+//! on the job - so for as long as the command ran, everything queued behind it waited.
 //!
 //! # Mechanism 1, refuted here
 //!

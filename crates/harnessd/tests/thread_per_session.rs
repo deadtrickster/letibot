@@ -111,6 +111,23 @@ fn a_held_turn_in_one_session_does_not_delay_another() {
     wait_until("both sessions to be served by their own threads", || {
         quick.owner() == Owner::OwnThread && slow.owner() == Owner::OwnThread
     });
+    // ---- 1b. and those are two OS threads, not one reader wearing two hats ----------------
+    // `Owner::OwnThread` is the daemon's own word for it; the kernel's task list is the fact.
+    // `spawn_court` names a session's thread `session-<id>` (15 bytes of it survive on Linux,
+    // which is enough to hold both of these), so a shared worker would leave one task, not two.
+    #[cfg(target_os = "linux")]
+    {
+        wait_until("a thread named for each session", || {
+            let names = session_threads();
+            names.iter().any(|n| n.starts_with("session-s-held"))
+                && names.iter().any(|n| n.starts_with("session-s-quick"))
+        });
+        let names = session_threads();
+        assert!(
+            names.len() >= 2,
+            "two root sessions on one daemon are two reader threads; this process has {names:?}"
+        );
+    }
 
     // ---- 2. a held turn in one session does not delay another ----------------------------
     fake.hold(Hold::Next);
@@ -253,6 +270,27 @@ fn prompt(hub: &Arc<letibot_sessionlog::Hub>, head: &Attached, request: &str, te
         !matches!(frame, letibot_sessionlog::ServerFrame::Rejected { .. }),
         "{request} was not accepted by the hub: {frame:?}"
     );
+}
+
+/// The threads this process is running whose name begins `session-` - one per root session, since
+/// that is what `spawn_court` names them. Read from `/proc`, so the box is the witness.
+#[cfg(target_os = "linux")]
+fn session_threads() -> Vec<String> {
+    let mut out = Vec::new();
+    let Ok(tasks) = std::fs::read_dir("/proc/self/task") else {
+        return out;
+    };
+    for task in tasks.flatten() {
+        let Ok(name) = std::fs::read_to_string(task.path().join("comm")) else {
+            continue;
+        };
+        let name = name.trim().to_string();
+        if name.starts_with("session-") {
+            out.push(name);
+        }
+    }
+    out.sort();
+    out
 }
 
 /// Wait for `what`, or fail saying what never happened.

@@ -405,7 +405,7 @@ struct Inner {
     /// longest wait of the three, and a head that arrives late must still show it.
     filling_now: Option<SessionEvent>,
     closed: bool,
-    /// Rung when this hub takes a command, so one worker can wait on many sessions without a
+    /// Rung when this hub takes a command, so a reader can wait on its own session without a
     /// timer. See [`crate::registry`].
     bell: Option<Arc<crate::registry::Bell>>,
     /// Where a settled decision goes instead of the command queue. See

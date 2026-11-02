@@ -1,8 +1,9 @@
 //! A stop ends the runs a session has in flight - and says so.
 //!
-//! `Registry::close` wakes the daemon's worker out of `next_command`, but a worker inside a run
-//! has not reached it: the daemon has one worker, so a stop that arrives mid-command waits for that
-//! command, and the command's own deadline - two minutes at the `bash` default - is what ends it.
+//! `Registry::close` wakes each session's reader out of `next_command`, but a reader inside a run
+//! has not reached it: when this was measured there was one worker, so a stop that arrived
+//! mid-command waited for that command, and the command's own deadline - two minutes at the `bash`
+//! default - was what ended it.
 //! Measured on a live daemon
 //!
 //! ```text

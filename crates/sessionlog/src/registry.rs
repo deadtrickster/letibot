@@ -3,14 +3,14 @@
 //! ```text
 //!            ┌─────────── Registry ───────────┐
 //!   head ────┤  "s-1" → Hub ─┐                │
-//!   head ────┤  "s-2" → Hub ─┼── Bell ────────┼──> one worker
-//!   head ────┤  "s-3" → Hub ─┘                │    (harnessd's Sessions)
+//!   head ────┤  "s-2" → Hub ─┼── Bell ────────┼──> a reader per session
+//!   head ────┤  "s-3" → Hub ─┘                │    (harnessd's `sessions::Court`)
 //!            └────────────────────────────────┘
 //! ```
 //!
 //! `Hub` stays per-session by construction, and nothing here reaches inside one: the ledger, the
 //! region and the prefix invariant are per session, and the registry only decides which hub exists,
-//! which one a bare attach lands on, and which are waiting for a worker.
+//! which one a bare attach lands on, and which are waiting for their own reader.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Condvar, Mutex};
