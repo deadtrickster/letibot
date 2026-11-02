@@ -329,7 +329,7 @@ pub(crate) fn spawn_monitor_wake(
         .map(|h| Arc::downgrade(&h))
         .unwrap_or_default();
     let id = session_id.to_string();
-    std::thread::Builder::new()
+    let started = std::thread::Builder::new()
         .name(format!("monitor-wake-{}", &id[..id.len().min(24)]))
         .spawn(move || {
             // The waiter's own cursor, advanced by what it has already rung for. The harness has a
@@ -348,8 +348,15 @@ pub(crate) fn spawn_monitor_wake(
                 notified += fired.len();
                 bell.ring_wake(&id);
             }
-        })
-        .map_err(|e| e.to_string())?;
+        });
+    if let Err(e) = started {
+        // **Said here rather than only by the caller's warning**, because the banner is what a
+        // reader trusts and *POLL ONLY* for a thread that would not start reads exactly like
+        // *POLL ONLY* for a session nobody armed. One is a knob somebody can move; the other is
+        // this box at this moment.
+        h.declare_monitor_wake_failed();
+        return Err(e.to_string());
+    }
     h.declare_monitor_wake();
     Ok(true)
 }

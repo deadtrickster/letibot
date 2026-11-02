@@ -1692,12 +1692,30 @@ fn every_new_seam_is_disclosed_and_the_line_moves_with_it() {
     };
     assert!(detail(&watching, "monitor wake").contains("poll"));
     let woken = GateWiring {
-        monitor_wake: true,
+        monitor_wake: crate::config::MonitorWake::Armed,
         ..watching.clone()
     };
     assert_ne!(
         detail(&woken, "monitor wake"),
         detail(&watching, "monitor wake")
+    );
+    // **And a wake nobody could arm is its own line.** T24 left this one open: from a bool,
+    // *the daemon's waiter would not start* and *no daemon armed one* were one sentence, and a
+    // reader told *POLL ONLY* goes looking for a knob that would not have helped.
+    let failed = GateWiring {
+        monitor_wake: crate::config::MonitorWake::Failed,
+        ..watching.clone()
+    };
+    let unarmed = detail(&watching, "monitor wake");
+    let tried = detail(&failed, "monitor wake");
+    assert_ne!(tried, unarmed);
+    assert!(
+        tried.contains("could not be started") && tried.contains("monitor_wake_not_armed"),
+        "the failed line names the attempt and the warning that holds the error: {tried}"
+    );
+    assert!(
+        unarmed.contains("No daemon armed"),
+        "and the unarmed line says nobody tried: {unarmed}"
     );
 }
 

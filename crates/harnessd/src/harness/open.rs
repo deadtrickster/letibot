@@ -1951,8 +1951,8 @@ impl Harness {
             intent_encoder: intent.encoder(),
             // A wake needs three things and this reads all three: a monitor registry, the `monitor` tool seated, and
             // `Sessions::watch` having armed the waiter, which the daemon stamps and a harness a test drives honestly
-            // answers `false`.
-            monitor_wake: false,
+            // answers `Unarmed`.
+            monitor_wake: crate::config::MonitorWake::Unarmed,
             // Read from the sink, not from the config: `--store` being set is not the same fact as a corpus
             // connection having opened, and the counts come from the table rather than from a count this process kept.
             corpus: corpus_counts,

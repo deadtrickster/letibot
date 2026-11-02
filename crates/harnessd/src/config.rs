@@ -2455,22 +2455,34 @@ impl Config {
             ));
         }
         // The monitor wake. A poll and a wake are different facts, and T24 says
-        // so in the entry that left this gap open.
+        // so in the entry that left this gap open. Three states, because *nobody armed one* and
+        // *the thread would not start* are the same word to a reader and different facts to
+        // somebody deciding what to do next.
         if wiring.seated.iter().any(|t| t == "monitor") {
-            if wiring.monitor_wake {
-                out.push(Disclosure::on(
+            match wiring.monitor_wake {
+                MonitorWake::Armed => out.push(Disclosure::on(
                     "monitor wake",
                     "a monitor that fires WAKES this session between turns; it does \
                      not wait to be asked.",
-                ));
-            } else {
-                out.push(Disclosure::off(
+                )),
+                MonitorWake::Unarmed => out.push(Disclosure::off(
                     "monitor wake",
                     "POLL ONLY",
                     "a fired monitor reaches the model only when something calls \
                      `job_list`. That is a poll, not a wake, and a condition that \
-                     fires while nothing is running is a condition nobody acts on.",
-                ));
+                     fires while nothing is running is a condition nobody acts on. \
+                     No daemon armed a wake for this session — a `Harness` driven \
+                     directly by a test or by `letibot-m1` never has one.",
+                )),
+                MonitorWake::Failed => out.push(Disclosure::off(
+                    "monitor wake",
+                    "POLL ONLY",
+                    "a fired monitor reaches the model only when something calls \
+                     `job_list`. This is NOT the same as a session nobody armed: the \
+                     daemon asked for the waiter and the thread could not be started, \
+                     and the `monitor_wake_not_armed` warning on this session's log \
+                     says why. Nothing is watching what a firing was meant to wake.",
+                )),
             }
         }
         // A subagent's downgrade, said as what is gone: the tools of those
@@ -2682,10 +2694,14 @@ pub struct GateWiring {
     /// the turn *said* it would do against what ran. `false` makes every completion
     /// `Verification::NoEncoder` - not complete, and the reason is ours.
     pub intent_encoder: bool,
-    /// Whether a fired monitor wakes the loop rather than waiting to be asked.
-    /// `false` means monitors are polled: `job_list` shows a firing, with why, and
-    /// nothing acts on it until the model happens to look.
-    pub monitor_wake: bool,
+    /// Whether a fired monitor WAKES this session between turns, or only waits to be asked, and
+    /// when it waits, WHICH of the two waits it is.
+    ///
+    /// Three states and not a bool: *no daemon armed one* and *the waiter thread failed to start*
+    /// render the same line from a bool, and they are different facts - the second already
+    /// published a `Warning` naming the error, and a reader told only *POLL ONLY* goes looking
+    /// for a knob that would not have helped.
+    pub monitor_wake: MonitorWake,
     /// Whether the gate's decisions are written somewhere durable, and what is already there. `None`
     /// means the corpus is discarded: the rows die with this daemon, and nothing about a session
     /// that is dropping them looks different from one that is keeping them.
@@ -2693,6 +2709,22 @@ pub struct GateWiring {
     /// The firecode a subagent would be placed in a VM with, asked once at start - `None`
     /// when this host has none, so `task(where: firecode)` would be refused.
     pub firecode: Option<letibot_tools::firecode::Installed>,
+}
+
+/// What the monitor wake is, as the banner has to say it: armed, never armed, or asked for and
+/// failed. [`GateWiring::monitor_wake`]'s three states.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MonitorWake {
+    /// Nothing armed a wake. A `Harness` a test or `letibot-m1` drives directly reports this
+    /// honestly: there was no daemon and no thread to start.
+    #[default]
+    Unarmed,
+    /// The daemon's waiter is running, so a firing wakes the session between turns.
+    Armed,
+    /// The daemon asked for the waiter and the thread could NOT be started
+    /// ([`crate::turn_tail::spawn_monitor_wake`]). Different from [`MonitorWake::Unarmed`] because
+    /// somebody tried: the error is already a `Warning` on the session's own log.
+    Failed,
 }
 
 impl GateWiring {
@@ -2712,7 +2744,7 @@ impl GateWiring {
             denials_surfaced: false,
             trail_installed: false,
             intent_encoder: false,
-            monitor_wake: false,
+            monitor_wake: MonitorWake::Unarmed,
             corpus: None,
             firecode: None,
         }

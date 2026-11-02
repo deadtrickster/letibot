@@ -2759,7 +2759,15 @@ impl Harness {
     /// setter because arming is the daemon's act, and a harness claiming a wake it was not given would
     /// be the banner defect this file has already paid for.
     pub fn declare_monitor_wake(&mut self) {
-        self.wiring.monitor_wake = true;
+        self.wiring.monitor_wake = crate::config::MonitorWake::Armed;
+    }
+
+    /// **The waiter was asked for and could not be started.** The caller still publishes the
+    /// `Warning` with the error; this is the banner's half, which from a bool read exactly like a
+    /// session nobody armed - and a reader told *POLL ONLY* goes looking for a knob that would not
+    /// have helped.
+    pub fn declare_monitor_wake_failed(&mut self) {
+        self.wiring.monitor_wake = crate::config::MonitorWake::Failed;
     }
 
     // The metrics instruments' harness half: each call site in this file is one line, and what the
