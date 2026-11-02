@@ -44,8 +44,8 @@ Three refusals, each naming what it looked at: no seat named and two on the box 
 identity, so it is not guessed"*); `~/.config/flowy/token`, never read, because it is the
 operator's own credential; and `https://`, because the client has no TLS.
 
-`--flowy` that cannot be honoured is a startup error. A node merely away at startup is not: the
-seat opens (claim + spool), the loop starts stalled, and the banner says so.
+`--flowy` that cannot be honoured is a startup error; a node merely away is not - the seat opens
+(claim + spool), the loop starts stalled, and the banner says so.
 
 ## 3. Persistent seats, temporary minds
 
@@ -139,7 +139,7 @@ many the node filtered, so a room the session asked to be spared from never read
 | `todo` | `GET /api/stream?topics=todos` - an envelope per move | `[todo ID] todo ID: todo.note by OP at …` plus the body, after re-reading `GET /api/events` from just under the envelope's hlc |
 | `artifact` (a diagram, a memory, any row) | `GET /api/artifact/{id}` every 30 s against a baseline read **at subscription** | `[artifact ID] … changed; body 2 → 9 bytes; updated t2. Re-read it: this is an envelope, not the change.` |
 
-Envelopes, not deltas - a duplicate is a wasted read, an out-of-order one is invisible, nothing
+Envelopes, not deltas: a duplicate is a wasted read, an out-of-order one is invisible, and nothing
 partial is applied. A row that cannot be read is refused at subscribe time rather than watched
 forever in silence.
 

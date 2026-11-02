@@ -89,7 +89,6 @@ the calls, the monitors, the children and the cards, so the daemon answers.
 The exception is the job the model PARKED (`bash {background: true, wake: "later"}`): `wait` does
 not hold on it, and that is the whole of the `wake` argument - absent, the session's own end wakes
 it; `now`, the completion comes the moment it ends; `later`, the model is not waiting.
-
 **A daemon that never started is exit 20, not an hour of waiting.** A daemon whose placement fails
 publishes a `daemon_start_failed` warning (`Class::Failure`) on the session's hub before its hubs
 close (`cli::Boot::failed`) and shuts down, and the bridge's head is already attached. It sets
@@ -103,10 +102,9 @@ reason, and `leticode_status` says `failed` rather than `idle`.
 With the bridge attached the session no longer needs allow-all: `writes-allowed` (approve a class
 once) puts the routine through and sends what the gate asks about - a push, network, a write outside
 the worktree, the always-ask list - to the attached head, which Claude reads with `leticode_asks` and
-answers with `leticode_answer`; the corpus records each answer with who gave it. The brief's closing
-report is asked for in a fixed markdown shape and parsed into fields by `leticode_status`. `/delegate`
-packages the workflow as a skill, and an `escalate` tool would later let a session post a design
-question it should not decide alone.
+answers with `leticode_answer`. The brief's closing report is asked for in a fixed markdown shape and
+parsed into fields by `leticode_status`. `/delegate` packages the workflow as a skill, and an
+`escalate` tool would later let a session post a design question it should not decide alone.
 
 ## The queue, from the orchestrator's side (B5)
 
@@ -145,7 +143,6 @@ whichever answers first - but it *can* be counted: `Answers::ask` and `ask_quest
 is empty, because posting to a head that will never answer and sitting out the five-minute deadline
 is *"a real answer given for a fake reason"*. So a watching head declares `Caps { can_decide: false
 }`, and the daemon refuses any `Answer` from it.
-
 **The reviewers are child sessions, and one line each is what the parent's hub carries.**
 `SessionEvent::Subagent` becomes a `subagent` entry in `leticode_events` - the slug, the branch its
 task named (*"- branch: agent/P1"*, the only place a child's branch appears on the wire) and its
@@ -219,13 +216,13 @@ first. **A caller reads back the point IN FORCE**: a consented `allow-all` on a 
 
 ## What is measured
 
-`crates/bridge/tests/transcript.rs` (its own binary, because the environment is process-wide) and
-`crates/bridge/tests/mode_consent.rs` drive the daemon's own `Daemon::serve` over a real store, with
-only the MODEL a fake on loopback, and read every *did it change* back through a second, watching
-head (`can_decide: false`). The TUI's half is
+`crates/bridge/tests/transcript.rs` and `crates/bridge/tests/mode_consent.rs` drive the daemon's own
+`Daemon::serve` over a real store, with only the MODEL a fake on loopback, and read every *did it
+change* back through a second, watching head (`can_decide: false`); `daemon_record.rs` runs
+`scripts/letibot --daemons` over a bridge-started fake `harnessd`. The TUI's half is
 `a_confirmation_another_head_asked_for_is_the_same_card_answered_by_its_id`
-(`crates/tui/src/app/tests/settings.rs`); `daemon_record.rs` runs `scripts/letibot --daemons` over a
-bridge-started fake `harnessd`. The two suites that seat `--bash` need a delegated cgroup v2 subtree.
+(`crates/tui/src/app/tests/settings.rs`). The two suites that seat `--bash` need a delegated cgroup
+v2 subtree.
 
 ## Packages
 
