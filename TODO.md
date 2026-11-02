@@ -43,6 +43,19 @@ engine_decisions}`, `tools/{exec,background,confine}`.
 
 ---
 
+## R114 - Embeddings as the second similarity tier, for the notes offer and the skill offer - **BLOCKED on R113's take-up log, filed 2026-11-02, operator's ask**
+
+`crates/tools/src/similarity.rs` is lexical, and its own measurement shows where that ends: a paraphrase of the review-queue note scored 0.126, under a docker prompt's 0.133 against an unrelated note, so no floor separates them. The skill offer (R113) will meet the same gap on synonyms (presentation and beamer).
+
+1. Engine. No dependency on `crates/llama` or llama.cpp: the embedder must build and run where the harness does, with no GGUF runtime. Candidates, in order: a static embedding model (model2vec, e.g. potion-base-8M: a token lookup and a mean, pure Rust, no transformer, about 30 MB) and a small BERT through candle (bge-small, all-MiniLM). The choice is measured on the cases from point 3, recall and the time per round on CPU.
+2. Shape. Each note and skill is embedded once when it changes, cached on disk beside the corpus; per round only the round's text is embedded. Cosine over the whole corpus, no vector store, since the corpus is hundreds of documents. The score is combined with the lexical one, not a replacement for it, and one floor is tuned from the take-up log.
+3. Data first. R113 logs every skill offer taken and missed, as the notes offer already does. The test set is the missed cases from both logs plus the paraphrase above. If the misses are not mostly synonyms, this entry closes as not needed.
+
+**Done when**: the paraphrase case scores above the worst negative in the measured set, the offer's per-round cost on lab2x1 CPU is stated, and the harness builds with the embedder and without llama.
+**Still open?** whether R113's log shows synonym misses.
+
+---
+
 ## R113 - Skills are offered like notes, the index shows only pins, and a live check proves the whole path - **OPEN, filed 2026-11-02, operator's ask**
 
 The prompt's skill index (`crates/tools/src/builtins/skill.rs`, `SkillRegistry::index`) sorts by source priority then name and stops at 60 rows, 4000 bytes or 800 tokens. Nothing ranks by relevance, so a box with many installed skills fills the slots alphabetically, and nothing offers a skill the way `crates/harnessd/src/notes_offer.rs` offers a note. The operator (2026-11-02): the offer is wanted, listing skills in full is not, pins are wanted.
