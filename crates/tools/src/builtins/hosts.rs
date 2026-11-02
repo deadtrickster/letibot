@@ -1,36 +1,6 @@
-//! `hosts` — **which machines the operator declared, and which of them is least loaded**.
-//!
-//! # Why this is a tool and not a sentence in the prompt
-//!
-//! `task`'s `where` argument has taken `host:NAME` since RH1, and until this tool there was no
-//! way for a model to learn *which* names exist: the refusal for a wrong one listed them, so the
-//! only way to find out was to guess wrong. Putting the list in the prompt is the other obvious
-//! answer and it is worse in two ways — the file is the operator's and changes without a restart,
-//! so a prompt would go stale, and the prompt is a cached prefix, so a list in it would be
-//! re-prefilled every time a machine was added. A tool reads the file **at the call** and its
-//! answer is as fresh as the file.
-//!
-//! # Two answers, one tool
-//!
-//! * no arguments — one line per declared host: the name, `user@hostname`, its `root`, and whether
-//!   the two things a connection is refused without are in place — its dedicated key file, and a
-//!   host key accepted in letibot's own known-hosts file. **No ssh call is made**, so this answer
-//!   is instant and works with every machine switched off.
-//! * `probe: true` — one bounded ssh call per host, **in parallel**, reporting whether it is
-//!   reachable or the refusal/timeout sentence, and its live facts: cores, load average, memory
-//!   total and available, free disk under its root, and whether `git` and `cargo` are on its
-//!   `PATH` (with the host's `path` list in front, which is how a session's own commands see it).
-//!   That is the answer to *which machine should this work go to*.
-//!
-//! A probe never writes anything on the far side: [`crate::remote::probe`] runs one script of
-//! `uname`, `nproc`, `/proc/loadavg`, `/proc/meminfo`, `df -Pk`, `command -v` and nothing else.
-//!
-//! # Read-only, and it never asks
-//!
-//! [`Access::Read`]: it reads two files here (the operator's `hosts.toml` and letibot's own
-//! known-hosts file) and asks machines questions. Nothing it can do changes anything on any host,
-//! so nothing it does raises a permission card — a model asking *where can I put this* should not
-//! cost the operator a decision.
+//! `hosts`: which machines the operator declared, and which of them is least loaded. A tool
+//! rather than a line in the prompt: the file changes without a restart, and a prompt is a
+//! cached prefix. No arguments lists them from two file reads; `probe: true` asks each host.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -45,12 +15,9 @@ use crate::schema::{Access, ToolSchema};
 /// The name this tool is registered and seated by.
 pub const TOOL: &str = "hosts";
 
-/// **How long the whole probe may take**, whatever the machines do.
-///
-/// A probe of four hosts is four ssh calls in parallel, and this is the promise to the caller: the
-/// tool returns inside this, with a host that did not answer reported as timed out rather than
-/// waited on. [`HOST_BOUND`] is the per-host share; the total is enforced by the collecting loop,
-/// so a host whose ssh ignores its own bound cannot hold the answer.
+/// How long the whole probe may take, whatever the machines do: the tool returns inside this,
+/// with a host that did not answer reported as timed out. [`HOST_BOUND`] is the per-host share,
+/// and the collecting loop enforces the total.
 pub const PROBE_TOTAL: Duration = Duration::from_secs(10);
 
 /// The bound on one host's probe. Under [`PROBE_TOTAL`] on purpose, so a slow host's own bound
@@ -58,10 +25,9 @@ pub const PROBE_TOTAL: Duration = Duration::from_secs(10);
 pub const HOST_BOUND: Duration = Duration::from_secs(8);
 
 pub struct HostsTool {
-    /// The file to read. `None` is [`hosts_file`] **asked at the call** — the operator's file, or
-    /// `$LETIBOT_HOSTS` — which is what makes a call see a file edited a second ago. A test names
-    /// one instead of setting the variable, because a test that set `$LETIBOT_HOSTS` would race
-    /// every other test in the same process.
+    /// The file to read. `None` is [`hosts_file`] asked at the call, which is what makes a call see
+    /// a file edited a second ago; a test names one rather than setting the variable, which would
+    /// race every other test in the process.
     file: Option<PathBuf>,
     /// letibot's own ssh material (the keys, the known-hosts file), when the caller says. `None`
     /// is [`Paths::from_env`].
@@ -157,10 +123,8 @@ impl Tool for HostsTool {
 }
 
 impl HostsTool {
-    /// **The whole tool, without a call context.** It reads two files here and asks machines
-    /// questions there, so there is nothing a backend, a gate or a session could add to the
-    /// answer — which is why this takes `args` and nothing else, and why a test can drive it
-    /// without a runtime.
+    /// The whole tool, without a call context: it reads two files here and asks machines questions
+    /// there, so there is nothing a backend, a gate or a session could add to the answer.
     pub fn answer(&self, args: &Value) -> Invocation {
         let file = self.file();
         // **Read at the call, never cached.** The file is the operator's and they edit it while a
@@ -246,11 +210,9 @@ impl HostsTool {
     }
 }
 
-/// **The listing**: what is declared, and what would have to be true for a connection to work.
-///
-/// No connection is made — the two checks are file reads — so this answer works with every
-/// machine off, and it is the one that says *why* a placement would fail before anybody waits for
-/// a timeout.
+/// The listing: what is declared, and what would have to be true for a connection to work. No
+/// connection is made (both checks are file reads), so this works with every machine off and says
+/// why a placement would fail before anybody waits for a timeout.
 fn listing(file: &std::path::Path, hosts: &[Host], paths: &Paths) -> String {
     let mut out = format!(
         "**{} host(s) declared** in {} — the operator's file, never a project's. No connection \
@@ -320,12 +282,9 @@ fn listing(file: &std::path::Path, hosts: &[Host], paths: &Paths) -> String {
 }
 
 impl HostsTool {
-    /// **Every chosen host asked at once**, each bounded, and the whole thing bounded.
-    ///
-    /// A host per thread, one bounded call each ([`crate::remote::probe`]), and a collecting loop
-    /// with the total on it. A host that has not answered when the total passes is reported as
-    /// timed out — the thread itself ends when its own bound fires, so nothing is left running
-    /// past the answer this returns.
+    /// Every chosen host asked at once, each bounded, and the whole thing bounded: a host that has
+    /// not answered when the total passes is reported as timed out, and its thread ends at its own
+    /// bound, so nothing is left running past the answer this returns.
     fn probe(
         &self,
         file: &std::path::Path,
@@ -418,22 +377,17 @@ fn format_facts(host: &Host, f: &Facts) -> String {
         ),
         None => format!("free space under {} unknown", f.disk_path),
     };
-    // **The toolchain, and mise is what a toolchain means here.** The operator: *"regarding cargo
-    // and stuff - we do it via mise generally"*. So the line this reports is the mise version and
-    // the versions it currently pins — which is the fact a model needs to decide *can I build
-    // there* — rather than *is `cargo` on `PATH`*, which is the wrong question on a host whose
-    // versions come from a `mise.toml` in the tree. A host with no mise falls back to the old
-    // answer, because on such a machine `PATH` is the whole story.
+    // The toolchain, and mise is what a toolchain means here: the line reports the mise version
+    // and the versions it pins, which is what a model needs to decide can I build there, rather
+    // than whether `cargo` is on `PATH`; a host with no mise falls back to that.
     let mut tools = String::new();
     match &f.git {
         Some(p) => tools.push_str(&format!("git {p}")),
         None => tools.push_str("no git on PATH"),
     }
     let mut extra = String::new();
-    // **The boundary (RH3).** Three answers and they are three different facts: a boundary that
-    // really runs, a host that was asked and cannot, and a host nobody has asked about in this
-    // process. The last one says so rather than claiming either — a `confined` line nobody
-    // measured is the banner defect this slice removed.
+    // The boundary: three answers, and they are three different facts - a boundary that really
+    // runs, a host that was asked and cannot, and a host nobody has asked about in this process.
     match (&f.confine, &f.bwrap) {
         (Some(what), _) => extra.push_str(&format!("  confine:  {what}\n")),
         (None, Some(version)) => extra.push_str(&format!(
@@ -495,14 +449,9 @@ fn format_facts(host: &Host, f: &Facts) -> String {
     )
 }
 
-/// **What is left of the machine for anyone else** (RH9) — `cores − load − reserve`, which is the
-/// arithmetic the Stroppy session's fleet runner placed work by, and the one number a model
-/// choosing where to put a build actually needs.
-///
-/// Three answers rather than one, because they are three different facts: a number (the host said
-/// its cores and its load), a number with the reservation named (so a person can see why a 32-core
-/// box reports 24), and a refusal to compute (a host that did not answer its load is not a host with
-/// no load).
+/// What is left of the machine for anyone else: `cores - load - reserve`, the number a model
+/// choosing where to put a build needs. Three answers, not one: a number, a number with the
+/// reservation named, and a refusal to compute, because a host that did not answer has no load.
 fn spare_line(host: &Host, f: &Facts) -> String {
     let Some(n) = host.spare_cores(f.cores, &f.load) else {
         return "  spare:    unknown — the host did not say its cores or its load\n".to_string();
