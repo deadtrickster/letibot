@@ -1540,6 +1540,13 @@ impl RepoQueue {
             if changed {
                 self.store.set_target_health(&h, &me)?;
             }
+            // Nothing lands on a branch that is not there, and the row is the only place this fact
+            // was written: raised once, so a person is told rather than left to read the pane.
+            self.alarm(
+                &h,
+                "target_unjudged",
+                super::notices::target_missing(&h, &self.key),
+            )?;
             return Ok(Health::Known(h, false));
         };
         if let Some(h) = self.store.target_health(&self.key, target)?

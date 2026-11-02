@@ -2879,6 +2879,41 @@ fn a_gate_that_could_not_run_leaves_the_target_gating_and_tries_again_by_itself(
     assert!(w.door.warnings("target_red").is_empty());
 }
 
+/// A target nobody can name stops everything for it, so it is raised: the row said `blocked` on the
+/// pane and nothing said it anywhere a person reads a warning, so the branches waiting for it sat
+/// there.
+#[test]
+fn a_target_that_does_not_exist_is_said_once() {
+    let w = World::new("missingtarget");
+    let settings = QueueSettings {
+        target: Some("release".into()),
+        ..QueueSettings::default()
+    };
+    let q = w.worker_with(Arc::new(GreenGate), "a", settings);
+    run(&q, 3);
+    let h = w
+        .store()
+        .target_health(&w.key(), "release")
+        .unwrap()
+        .expect("the missing target's health is written");
+    assert_eq!(h.state, HealthState::Blocked, "{h:?}");
+    assert!(
+        h.evidence.contains("does not exist in"),
+        "{}: nothing lands on a branch that is not there",
+        h.evidence
+    );
+    // Said once, and not once per pass.
+    let said = w.door.warnings("target_unjudged");
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(
+        said[0].contains("`release` is not a branch")
+            && said[0].contains(&w.key())
+            && said[0].contains("nothing lands on it"),
+        "a reader is told which branch is missing, where, and what happens next: {}",
+        said[0]
+    );
+}
+
 /// A branch whose own gate could not run goes back in line, and waits its window too - the
 /// landing half of the same rule: parked `blocked` it needed `/queue restart`, and taken again on
 /// the next pass it was one ssh attempt per second at a host that was down.

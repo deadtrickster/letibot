@@ -155,6 +155,18 @@ pub fn target_unjudged(h: &TargetHealth, key: &str) -> String {
     )
 }
 
+/// `target_missing`: the branch the queue is set to land on is not in the repository - the
+/// `[queue] target` names one that was never made, or the one the rows name is gone. Nothing can be
+/// judged for it, so nothing lands and the rows wait.
+pub fn target_missing(h: &TargetHealth, key: &str) -> String {
+    format!(
+        "`{}` is not a branch in {}, so nothing is judged for it and nothing lands on it. Branches \
+         waiting for it stay in the queue until it exists: fix the branch the project lands on \
+         (`[queue] target` in its leticode.toml), or create `{}`.",
+        h.target, key, h.target
+    )
+}
+
 /// `merge_conflict`: an approved branch does not rebase onto the target.
 pub fn merge_conflict(m: &MergeRow, why: &str) -> String {
     format!(
