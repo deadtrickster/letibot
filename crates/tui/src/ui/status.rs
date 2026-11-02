@@ -1,4 +1,4 @@
-//! **The status lines**: `/status`'s report, and the link's and a stop's one-line state.
+//! The status lines: `/status`'s report, and the link's and a stop's one-line state.
 
 use crate::app::*;
 use crate::ui::render::{dur_human, row, row_strings};

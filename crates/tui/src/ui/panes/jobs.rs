@@ -1,5 +1,5 @@
-//! **The jobs pane**: the background jobs this session started, and a job's output — drawn
-//! by `rano::agent::jobs` from the daemon's job table this head keeps.
+//! The jobs pane: the background jobs this session started, and a job's output - drawn by
+//! `rano::agent::jobs` from the daemon's job table this head keeps.
 
 use crate::app::*;
 use crate::ui::render::row_strings;

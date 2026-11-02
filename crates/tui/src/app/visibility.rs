@@ -1,5 +1,5 @@
-//! **What the conversation shows**: the verbosity profiles, the per-kind switches and levels,
-//! and the visibility a frame is drawn under (`/verbosity`).
+//! What the conversation shows: the verbosity profiles, the per-kind switches and levels, and the
+//! visibility a frame is drawn under (`/verbosity`).
 
 use super::*;
 

@@ -1,4 +1,4 @@
-//! The editor pane: rano inside the head — getting there by click and by chord, the keyboard
+//! The editor pane: rano inside the head - getting there by click and by chord, the keyboard
 //! crossing between it and the composer, leaving it, and a send landing in the composer.
 
 use super::*;

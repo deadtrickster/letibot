@@ -4,8 +4,8 @@
 //! The lift is one field (`App::lift`), applied to whatever `payload_sel` names - a run of rows or
 //! `LIVE_RUN` for the turn in flight - and the panel goes with it, because a lift with no panel has
 //! no key that could close it.
-//! The thinking has two spellings of open - the fold where the rung draws the reasoning, the lift
-//! where it hides it - and `thinking_open`/`set_thinking` are the one reader and writer of both.
+//!
+//! The thinking has two spellings of open: the fold, and the lift where the rung hides it.
 
 use super::*;
 use crate::app::visibility::Show;
