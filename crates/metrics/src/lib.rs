@@ -81,12 +81,8 @@ pub mod kind {
     pub const FEEDBACK: &str = "operator.feedback";
     /// The writer's own health: events dropped on a full channel since the last report.
     pub const DROPPED: &str = "metrics.dropped";
-    /// **A key the writer is holding back** (`docs/metrics.md` §2.9) — one repeating event over its
-    /// per-second budget, which on 2026-10-27 meant a defect and not activity.
-    ///
-    /// `name` = the suppressed kind; `session_id`/`outcome` the key's; n1 = events held back in
-    /// that second, n2 = events seen in it (the rate, per second); `attrs.key` is
-    /// `session|kind|name|outcome` and `attrs.budget` the budget that was exceeded.
+    /// A key the writer is holding back (§2.9): one repeating event over its per-second budget,
+    /// where n1 is the events held back in that second and n2 the events seen in it.
     pub const SUPPRESSED: &str = "metrics.suppressed";
 }
 
@@ -98,11 +94,8 @@ pub fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// **One observation** — a row of `event` before it is written.
-///
-/// `daemon` and `build` are not here: they are the writer's, filled once per row from what
-/// [`store::start`] was given. `root_id` may be left `None`: the writer fills it from the tree
-/// [`session_parent`] taught it, so a site deep in a subagent need not walk its ancestry.
+/// One observation, a row of `event` before it is written. `daemon` and `build` are the writer's,
+/// filled once per row, and `root_id` may be left `None` for the writer to fill from the tree.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Event {
     /// **The moment of the observation**, not of the write — a batch lands up to a second later.
@@ -233,10 +226,8 @@ pub enum Msg {
     Flush(SyncSender<()>),
 }
 
-/// **The bounded channel and its drop counter** — the whole of the emitting side.
-///
-/// Its own type rather than two statics so the never-blocks property can be tested on a
-/// channel nobody drains, without installing anything process-wide.
+/// The bounded channel and its drop counter: its own type rather than two statics so the
+/// never-blocks property is testable on a channel nobody drains.
 #[derive(Debug)]
 pub struct Emitter {
     tx: SyncSender<Msg>,

@@ -178,14 +178,9 @@ impl fmt::Display for Skipped {
     }
 }
 
-/// **Write a whole conversation as a transcript `claude --resume` opens, plus a Markdown
-/// transcript a person can read.**
-///
-/// `items` is `(ts_ms, item)` in the order the conversation happened; `ts_ms` is the row's
-/// own time, and `0` means the source recorded none. `dir` is created if it is not there,
-/// and is deliberately **not** `~/.claude/projects`: by absolute path a resume needs the
-/// file nowhere in particular, and writing into another tool's directory is a thing to do
-/// only when there is no other way.
+/// Write a whole conversation as a transcript `claude --resume` opens, plus a Markdown transcript a
+/// person can read. `items` is `(ts_ms, item)` in the order the conversation happened, and `dir` is
+/// deliberately not `~/.claude/projects`: writing into another tool's directory is a last resort.
 pub fn write_handover(items: &[(u64, TranscriptItem)], meta: &Meta, dir: &Path) -> Result<Written> {
     std::fs::create_dir_all(dir).map_err(|e| ImportError::Io {
         path: dir.to_path_buf(),
@@ -494,11 +489,9 @@ impl Live for NoOneLive {
     }
 }
 
-/// **The real check**, through `ps`. A candidate is a process whose command's program is
-/// `claude` and whose command line names this project's directory or this session id, or
-/// whose working directory is the project. A candidate whose working directory cannot be
-/// read counts as live: the check failing is not the same fact as nobody being there, and
-/// this is a write into somebody else's file.
+/// The real check, through `ps`: a candidate's program is `claude` and its command line names this
+/// project or this session, or its working directory is the project. A candidate whose directory
+/// cannot be read counts as live, since the check failing is not the same as nobody being there.
 pub struct PsLive;
 
 impl Live for PsLive {
@@ -568,23 +561,9 @@ fn process_cwd(pid: &str) -> Option<PathBuf> {
         .find_map(|l| l.strip_prefix('n').map(PathBuf::from))
 }
 
-/// **Put one line on the end of a transcript, with a backup first.**
-///
-/// In this order, and each step is a refusal rather than a warning:
-///
-/// 1. **Nobody live.** A `claude` process appending to this project while we append is two
-///    writers on one file, and the check failing counts as somebody being there.
-/// 2. **A backup, proven.** `<name>.jsonl` → `<name>.jsonl.bak-<YYYYmmdd-HHMMSS>` with
-///    `cp -p` semantics (mode and mtime copied), then read back and compared byte for byte.
-///    **No backup, no write** — a note is not worth the risk, and a backup that was written
-///    but not proven is not a backup.
-/// 3. **One `O_APPEND` write**, of one complete line, so a reader of the file never sees a
-///    half line and two writers cannot interleave inside ours.
-///
-/// The line is the conservative one: `type: "user"`, a plain-string `message.content`, a
-/// fresh `uuid`, `parentUuid` = the file's last line's `uuid`, and the file's own
-/// `sessionId`/`cwd`/`gitBranch`/`version` copied off that last line — because a note that
-/// invents a new session id is a note in no conversation.
+/// Put one line on the end of a transcript, with a backup first: nobody live, a backup proven by a
+/// byte-for-byte read-back, then one `O_APPEND` write of one complete line. No backup, no write, and
+/// the line copies the file's own session id so a note cannot invent a session.
 pub fn append_note(path: &Path, text: &str, now_ms: u64, live: &dyn Live) -> Result<Appended> {
     let project = path.parent().unwrap_or(Path::new("."));
     let tail = last_line(path)?;
@@ -666,15 +645,9 @@ pub fn append_note(path: &Path, text: &str, now_ms: u64, live: &dyn Live) -> Res
     })
 }
 
-/// **Copy the file aside, with `cp -p` semantics, and prove the copy.**
-///
-/// The name is `<file>.bak-<YYYYmmdd-HHMMSS>`; a second backup in the same second gets
-/// `-2`, `-3`, … rather than overwriting the first, so the pristine original is always the
-/// oldest backup and every step is revertible.
-///
-/// The proof is a byte-for-byte read-back, not a size comparison: a short write, a full
-/// disk or a page of zeroes from a failing disk all have the right size, and only one of
-/// them is a backup.
+/// Copy the file aside with `cp -p` semantics and prove the copy by reading it back: a short write or
+/// a page of zeroes has the right size, and only one of them is a backup. A second backup in the same
+/// second gets a suffix, so the pristine original is always the oldest.
 pub fn backup(path: &Path, now_ms: u64) -> Result<PathBuf> {
     let stamp = stamp_utc(now_ms);
     let base = PathBuf::from(format!("{}.bak-{stamp}", path.display()));
@@ -743,11 +716,8 @@ pub fn backup(path: &Path, now_ms: u64) -> Result<PathBuf> {
     Ok(target)
 }
 
-/// **Put the transcript back, byte for byte, from a named backup.**
-///
-/// The backup is *not* consumed: it stays where it is, so a revert can be reverted by
-/// reverting again. And this refuses while a `claude` process is live for the project, for
-/// the same reason the append does — it is a write into a file another program owns.
+/// Put the transcript back, byte for byte, from a named backup. The backup is not consumed, so a
+/// revert can be reverted, and this refuses while a `claude` process is live for the project.
 pub fn revert(path: &Path, backup: &Path, live: &dyn Live) -> Result<u64> {
     let bytes = std::fs::read(backup).map_err(|e| ImportError::Io {
         path: backup.to_path_buf(),
@@ -861,11 +831,8 @@ fn last_line(path: &Path) -> Result<Value> {
 
 // --- ids and times ------------------------------------------------------------------
 
-/// **A fresh v4 uuid.** From `/dev/urandom`, because a handover's session id must not
-/// collide with anything: a duplicated id is exactly the failure the documentation names
-/// (*a session id resolves only when one project holds it*), so this cannot be a counter.
-/// A box with no `/dev/urandom` gets a time-and-pid id instead, and [`new_session_id`]'s
-/// caller cannot tell — which is why the fallback still sets the version nibble.
+/// A fresh v4 uuid, from `/dev/urandom`, because a duplicated handover id is exactly the failure the
+/// documentation names. A box with no `/dev/urandom` gets a time-and-pid id, still versioned.
 pub fn new_session_id() -> String {
     let mut b = [0u8; 16];
     let filled = std::fs::File::open("/dev/urandom")

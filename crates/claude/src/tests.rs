@@ -26,12 +26,9 @@ fn fixture(tag: &str) -> PathBuf {
 
 const UUID: &str = "11111111-2222-3333-4444-555555555555";
 
-/// **The whole mapping in one transcript**, in the order a conversation writes it:
-/// the operator's words, a thought, an answer with a call, the call's result, a recap, a
-/// compaction summary, a sidechain line, and a block this build does not read.
-///
-/// The timestamps are distinct and deliberately not monotone-with-the-clock: nothing here
-/// may read a clock, so the assertion is that each row carries ITS OWN line's time.
+/// The whole mapping in one transcript, in the order a conversation writes it. The timestamps are
+/// distinct and deliberately not monotone, because nothing here may read a clock: the assertion is
+/// that each row carries its own line's time.
 fn written(tag: &str) -> (PathBuf, PathBuf) {
     let dir = fixture(tag);
     let path = dir.join("proj-a").join(format!("{UUID}.jsonl"));
@@ -653,10 +650,8 @@ fn a_compaction_boundary_is_a_mark_that_renders_nothing() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **The idempotency rule** — a resumed session does not import a second time, because a
-/// second copy of the conversation appended to a session that already holds it is the one
-/// way an import can corrupt a transcript. Tested here, where the rule lives, rather than
-/// through a daemon that would need a vocabulary to say it.
+/// The idempotency rule: a resumed session does not import a second time, because a second copy of
+/// the conversation is the one way an import can corrupt a transcript.
 #[test]
 fn a_fresh_cc_session_imports_and_a_resumed_one_does_not() {
     let id = "e90320f4-b550-4aa0-aa11-1c2673df88e8";
