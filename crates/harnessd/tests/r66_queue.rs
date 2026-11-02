@@ -382,7 +382,14 @@ const TURNS: usize = 40;
 
 /// A model that answers every request with one word, in the frames a provider parses.
 fn a_model_that_says_ok() -> String {
+    a_model_that_says("ok")
+}
+
+/// A model that answers every request with `answer`, in the frames a provider parses. The answer
+/// is the size knob: what a child says is what the tree keeps of it.
+fn a_model_that_says(answer: &str) -> String {
     use std::io::{Read, Write};
+    let answer = answer.to_string();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a loopback port");
     let port = listener.local_addr().unwrap().port();
     std::thread::spawn(move || {
@@ -418,7 +425,8 @@ fn a_model_that_says_ok() -> String {
                 }
             }
             let mut body = String::new();
-            body.push_str("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n");
+            let said = serde_json::json!({ "choices": [{ "delta": { "content": answer } }] });
+            body.push_str(&format!("data: {said}\n\n"));
             body.push_str("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n");
             body.push_str("data: [DONE]\n\n");
             let _ = write!(
@@ -563,4 +571,137 @@ fn turns_through_the_worker_leave_no_entry_behind() {
     );
     registry.close();
     let _ = sessions.drain_subagents(Duration::from_secs(5));
+}
+
+// ---------------------------------------------------------------------------
+// The children a session has run
+// ---------------------------------------------------------------------------
+
+/// Children the fixture starts. A session that has served one project for two days starts dozens
+/// to hundreds; twenty is where a per-child retention has to show.
+const CHILDREN: usize = 6;
+
+/// One tool call on a session's own runtime, as the model's call would arrive.
+fn call(
+    sessions: &letibot_harnessd::sessions::Sessions<'_>,
+    root: &str,
+    name: &str,
+    args: serde_json::Value,
+) -> letibot_tools::ToolResult {
+    let call = letibot_transcript::ToolCall {
+        id: format!("call_{name}"),
+        name: name.to_string(),
+        arguments: args.to_string(),
+    };
+    sessions
+        .harness_of(root)
+        .expect("the root is open")
+        .runtime_handle()
+        .invoke("t1", &call, &mut letibot_tools::NullToolSink)
+}
+
+/// What a child says. The size is the knob: a child's answer is what the tree keeps of it, and a
+/// real child's answer is kilobytes.
+const CHILD_ANSWER: usize = 16 << 10;
+
+/// A session that has run ten children, three ways: with a big answer and a small one, each child
+/// parked as soon as it is quiet, and once with the children left open. The parked runs separate
+/// the answer's cost from the row's, and the open one is what a child still running costs on top.
+#[test]
+fn children_a_session_has_run_leave_their_answers_behind() {
+    use letibot_harnessd::sessions::Sessions;
+
+    let _serial = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let big = format!("the child's own answer. {}", "a".repeat(CHILD_ANSWER));
+    let small = "ok".to_string();
+    let dir = TempDir::new("harnessd-r66-children");
+
+    let cost = |url: &str, park: Option<Duration>, what: &str| -> usize {
+        let (parts, mut cfg, registry) = a_daemon(&dir, url);
+        cfg.child_park_after = park;
+        let id = cfg.session_id.clone();
+        let sessions =
+            Sessions::open_first(&parts, cfg, registry.clone()).expect("the daemon opens");
+        let (live0, _, _) = memwatch::heap();
+        let mut marks: Vec<(usize, usize)> = Vec::new();
+        for n in 0..CHILDREN {
+            let r = call(
+                &sessions,
+                &id,
+                "task",
+                serde_json::json!({"prompt": format!("child {n}: answer and stop")}),
+            );
+            let handle = match r.outcome {
+                letibot_transcript::ToolOutcome::Backgrounded { handle, .. } => handle,
+                other => panic!("`task` did not start a child: {other:?} - {}", r.payload),
+            };
+            // And the child's own answer, which is what its slot keeps: nothing here may run on
+            // before the child has said something, or the heap measured is a child still opening.
+            let until = Instant::now() + Duration::from_secs(60);
+            loop {
+                let asked = call(
+                    &sessions,
+                    &id,
+                    "task_result",
+                    serde_json::json!({"task": handle}),
+                );
+                if asked.outcome == letibot_transcript::ToolOutcome::Ok || Instant::now() > until {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            if (n + 1) % 3 == 0 {
+                marks.push((n + 1, memwatch::heap().0));
+            }
+        }
+        let (live1, _, _) = memwatch::heap();
+        let grew = live1.saturating_sub(live0);
+        println!(
+            "{what}: {} session(s) live · heap +{} ({} a child)",
+            registry.ids().len(),
+            mb(grew as f64),
+            grew / CHILDREN
+        );
+        for (n, live) in &marks {
+            println!(
+                "  after {n:>3} children: +{} ({} a child)",
+                mb(live.saturating_sub(live0) as f64),
+                live.saturating_sub(live0) / n
+            );
+        }
+        registry.close();
+        let _ = sessions.drain_subagents(Duration::from_secs(10));
+        grew
+    };
+
+    let big_url = a_model_that_says(&big);
+    let small_url = a_model_that_says(&small);
+    let closed_big = cost(&big_url, Some(Duration::ZERO), "parked, 16 KiB answer");
+    let closed_small = cost(&small_url, Some(Duration::ZERO), "parked, 2 byte answer");
+    let open_big = cost(&big_url, None, "not parked, 16 KiB answer");
+    let each = |total: usize| total / CHILDREN;
+    let per_answer_byte = (each(closed_big).saturating_sub(each(closed_small)) as f64)
+        / (big.len().saturating_sub(small.len())) as f64;
+    println!(
+        "one closed child: {} with a {} byte answer, {} with {} · one still open: {} · the answer \
+         costs {per_answer_byte:.1}x its own bytes",
+        each(closed_big),
+        big.len(),
+        each(closed_small),
+        small.len(),
+        each(open_big),
+    );
+    assert!(
+        closed_big >= CHILDREN * big.len(),
+        "the {CHILDREN} closed children hold {} between them, less than their {} of answers: the \
+         slot is supposed to keep what the child said",
+        mb(closed_big as f64),
+        mb((CHILDREN * big.len()) as f64)
+    );
+    assert!(
+        open_big > closed_big,
+        "a child still open holds no more than a closed one ({} vs {}), so the two costs are one",
+        mb(open_big as f64),
+        mb(closed_big as f64)
+    );
 }
