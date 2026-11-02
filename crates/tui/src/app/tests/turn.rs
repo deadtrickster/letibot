@@ -15,10 +15,9 @@ fn a_head_that_filters_everything_still_says_so() {
         )));
     }
     assert_eq!(a.filtered - before, 10);
-    // Where it says so is `/status`, not the bottom border. §13.2b's rule is
-    // about the moment the disclosure is READ — the count has to exist, be
-    // exact, and be reachable without restarting anything. It was never an
-    // argument for a resident row of zeros next to the prompt.
+    // The count belongs where the disclosure is READ - `/status` - and not on
+    // the bottom border: the rule asks that it exist, be exact and be reachable,
+    // never that a resident row of zeros sit beside the prompt.
     a.command("status");
     let screen = a.screen(120, 40).join("\n");
     assert!(screen.contains("filtered"), "{screen}");
@@ -27,13 +26,9 @@ fn a_head_that_filters_everything_still_says_so() {
     assert_eq!(a.status_line(200), "", "a clean head has a clean border");
 }
 
-/// **A turn whose only work is a running tool call can be interrupted** (R51 item 16, and the
-/// preamble's first gate).
-///
-/// The measured defect: `TurnFinished` fires per ROUND, so the state name reads `finished` from
-/// the instant a call starts — and this gate read the state name, so esc esc was dead for the
-/// whole of every command. leticl measured the same thing on its own head: esc esc during a
-/// `sleep 60`, and forty seconds later still `Responding · 42.0s` with the call running.
+/// A turn whose only work is a running tool call can still be interrupted:
+/// `TurnFinished` fires per ROUND, so the state name reads `finished` from the
+/// instant a call starts, and a gate on it leaves esc esc dead throughout.
 #[test]
 fn esc_twice_interrupts_a_turn_that_is_only_waiting_on_a_call() {
     let mut a = app();
@@ -64,25 +59,14 @@ fn esc_twice_interrupts_a_turn_that_is_only_waiting_on_a_call() {
     );
 }
 
-/// **The status row is drawn for the whole life of the turn — including through a call** (R51
-/// item 3).
-///
-/// The measured defect was not the wrong tense but NO LINE AT ALL: the gate read the state
-/// name, so `Responding · 4.2s` vanished the moment a call started and the screen became
-/// indistinguishable from a head that had stopped. The row says what the model is doing, and a
-/// model waiting on a command is still doing something.
+/// The status row is drawn for the whole life of the turn, including through a
+/// call: `TurnFinished` per round would erase `Responding · 4.2s` the moment a
+/// call starts, and a model waiting on a command is still doing something.
 #[test]
 fn the_status_row_survives_a_tool_call() {
-    // `began_ms` is the PROMPT's stamp and the daemon sends the same one on every round of it
-    // (`harnessd::sessions::run_prompt` → `begin_turn_clock`), which is what makes the clock a
-    // clock for the turn rather than for a round.
-    //
-    // **The id is the ROUND's, and it is a parameter because two rounds cannot share one.**
-    // `run_turn_steered` mints `{transcript}#{turn_seq}` with `turn_seq += 1` per round, so a
-    // second `TurnStarted` carrying the first round's id is not a round at all — it is that
-    // round taken twice, which the head now refuses to re-open (see
-    // `a_boundary_the_head_has_already_had_does_not_open_a_second_run`). This fixture used to
-    // hand both rounds `t1`, which no daemon does.
+    // `began_ms` is the PROMPT's stamp, the same on every round of it, which is
+    // what makes the clock the turn's rather than a round's. The id is the ROUND's,
+    // and a second `TurnStarted` with the same one is that round taken twice.
     let started = |seq, ts, id: &str, began: u64| {
         ServerFrame::Event(env_at(
             seq,
@@ -245,10 +229,9 @@ fn the_prefill_line_reads_as_nearly_done_when_the_prompt_was_mostly_cached() {
 fn a_turn_that_only_thinks_and_writes_calls_still_draws_its_row() {
     let mut a = app();
     a.clock(1_000);
-    // **Stamped, so the clock has something to count from.** `started_ms` comes from the
-    // envelope's `ts` when the prompt's own `began_ms` is absent, and a turn with 0 there is
-    // the snapshot case — the row says *"started before this head attached"* and has no
-    // duration to move, which is honest but not what is under test.
+    // Stamped, so the clock has something to count from: `started_ms` falls back
+    // to the envelope's `ts`, and a turn with 0 there is the snapshot case, whose
+    // row says the turn started before this head attached and has no duration.
     a.apply(ServerFrame::Event(env_at(
         1,
         1_000,
@@ -330,18 +313,15 @@ fn a_turn_that_was_cut_short_does_not_read_like_one_that_finished() {
     assert!(screen.contains("CUT SHORT"), "{screen}");
 }
 
-/// Found by watching a decode run: the last line of the streaming answer sat
-/// directly against whatever was drawn under it, and the blank appeared only
-/// when the turn ended and the pane stood down. The reasoning block and the
-/// call cards already carry their own trailing air, so the text block does
-/// too now, and this pins it.
+/// The last line of a streaming answer must not sit against what is drawn under
+/// it: the blank would otherwise appear only when the turn ends and the pane
+/// stands down. The reasoning block and the call cards already carry that air.
 #[test]
 fn a_running_decode_keeps_a_blank_line_above_what_follows_it() {
     let mut a = app();
-    // The window has to be full for this to mean anything: a short transcript
-    // is padded to the room the body has, and that padding would pass the
-    // assertion with or without the fix. Forty settled rows push the running
-    // answer to the bottom of the window, which is where the defect lived.
+    // The window has to be full for this to mean anything: a short transcript is
+    // padded to the room the body has, and that padding alone would pass the
+    // assertion. Forty rows push the running answer to the bottom.
     let mut seq = 1;
     for i in 0..40 {
         a.apply(ServerFrame::Event(env(
@@ -374,17 +354,9 @@ fn a_running_decode_keeps_a_blank_line_above_what_follows_it() {
     );
 }
 
-/// The defect the operator found by looking: *"thinking color rendering has
-/// something unclosed in escapes — it tries to be gray, then say goes green
-/// and becomes white for several rows and then gray again."*
-///
-/// It was not an unclosed escape and it was not a delta split mid-sequence. It
-/// was a **closed** one: a styled span inside the reasoning block closed with
-/// `\x1b[0m`, which restores the terminal default rather than the block. So
-/// the check is not "is everything closed" — it is "does every close hand the
-/// block's own style back".
-///
-/// A screenshot would not have stopped this coming back; this does.
+/// Every reset inside a reasoning row must hand the block's own style back:
+/// `\x1b[0m` restores the terminal default, so the check is not "is every span
+/// closed" but what each close leaves behind.
 #[test]
 fn every_reset_in_a_reasoning_row_restores_the_reasoning_style() {
     let mut a = App::new(RenderConfig {
@@ -438,12 +410,9 @@ fn every_reset_in_a_reasoning_row_restores_the_reasoning_style() {
     }
 }
 
-/// The third defect, from using it: *"tool calls — i see `<function…` like
-/// strings first, then closing tag arrives and it becomes a toolcall."*
-///
-/// The head's half of the fix. The engine's half — that the markup arrives on
-/// a channel of its own at all — is
-/// `letibot-turn`'s `the_body_of_a_tool_call_is_never_announced_as_assistant_text`.
+/// A tool call's raw markup is never on the screen by default: the engine keeps
+/// it off the assistant-text channel
+/// (`the_body_of_a_tool_call_is_never_announced_as_assistant_text`).
 #[test]
 fn the_raw_markup_of_a_tool_call_is_never_on_the_screen_by_default() {
     const MARKUP: &str = "\n<function=read>\n<parameter=path>\nsrc/main.rs\n</parameter>\n";
@@ -506,19 +475,9 @@ fn the_raw_chord_is_its_own_key_and_reaches_nothing_else() {
     assert_eq!(a.tools, Fold::Folded, "ctrl-x moved the tool-output fold");
 }
 
-/// **And where the ladder cannot draw the result, the verb says why instead of lying** — the
-/// operator's rule for the whole rewrite: a state that changes nothing is worse than an
-/// unfinished one, because it lies about the screen.
-///
-/// `read-edits` is `{edits: open}` and nothing else, so `thinking=open` there would be with
-/// `tools=hidden` — no rung draws it, and the set must not be stored. The refusal has to name the
-/// switch AND the way back, which is one word of the same verb.
-///
-/// **This is the typed verb's arm, and it is the only one left with a refusal in it.** `ctrl-r`
-/// used to land here too and no longer does: at a rung that hides the thinking its openness is
-/// the lift on a run, which is what a click on the marker's thinking clause throws — so the chord
-/// opens that instead of explaining a ladder the reader never asked about
-/// (`a_click_on_thinking_and_ctrl_r_are_one_verb` in `markerclick`).
+/// Where the ladder cannot draw a set, the verb says why instead of storing it:
+/// `read-edits` is `{edits: open}` alone, so `thinking=open` there would be with
+/// `tools=hidden`, and the refusal must name the switch and the way back.
 #[test]
 fn the_thinking_verb_in_read_edits_says_why_rather_than_storing_it() {
     let mut a = app();
@@ -569,11 +528,9 @@ fn the_thinking_verb_in_read_edits_says_why_rather_than_storing_it() {
     );
 }
 
-/// **Responding is green while the turn goes and yellow when it goes quiet, and nothing else
-/// is said.** The operator, 2026-10-08: *"we have Responding in yellow which is a warning color
-/// … I dont want notification that it is slow yet we continue … let usual Responding be green
-/// and when we detect delays - yellow it"*. The sentence this replaced (*"nothing received for
-/// 40.0s"*) dated from failed turns that never ended; they end with `TurnFailed` now.
+/// Responding is green while the turn goes and yellow once it goes quiet, and
+/// nothing more is said: the colour is the whole notice, so slowness never
+/// becomes a sentence of its own.
 #[test]
 fn a_quiet_turn_turns_responding_yellow_and_says_nothing_more() {
     let mut a = App::new(RenderConfig {
@@ -670,11 +627,9 @@ fn a_rounds_prose_moves_into_the_transcript_rather_than_being_copied_into_it() {
 
 #[test]
 fn the_session_header_degrades_by_deletion_and_never_wraps() {
-    // It handed both halves to `split_row`, which drops the **whole** right one
-    // when they do not both fit — correct for the in-flight line and wrong here,
-    // where the right half is the part you cannot get anywhere else. Measured
-    // under tmux at 110 columns: an 82-column path plus a 27-column tail is 111,
-    // and the entire tail vanished with nothing to say it had.
+    // The header's right half is the part you cannot get anywhere else, so a
+    // `split_row` that drops it whole when both halves do not fit loses it with
+    // nothing said: every width has to fit, and the parts go in a stated order.
     let mut a = app();
     let hub = Hub::new("s");
     hub.publish(testing::turn_started("t1"));
@@ -717,11 +672,9 @@ fn the_session_header_degrades_by_deletion_and_never_wraps() {
 
 #[test]
 fn the_turns_numbers_live_in_the_header_and_an_ordinary_ending_has_no_footer() {
-    // One fact, one place. The footer used to close with `45 tok/s · 12.3s ·
-    // 1.2k out` on a line that also repeated the header's context and cache
-    // numbers; the duplicates went, the measurements moved up, and an
-    // ordinary ending now leaves the body with no footer line at all — a
-    // settled fact was occupying the row a live fact used to have to earn.
+    // One fact, one place: the turn's numbers live in the header, and an ordinary
+    // ending leaves the body with no footer at all - a settled fact should not
+    // occupy the row a live fact has to earn.
     let mut a = app();
     a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
     a.apply(ServerFrame::Event(env(
@@ -755,13 +708,9 @@ fn the_turns_numbers_live_in_the_header_and_an_ordinary_ending_has_no_footer() {
     );
 }
 
-/// **While a turn runs, the header shows no duration — the composer row is the one clock.**
-///
-/// MEASURED: the composer row showed `Responding · 151s` while the header showed `· 4.5s ·`, a
-/// round's wall-ms that restarted at every tool call. The first fix made the header repeat the
-/// turn's elapsed; the operator, 2026-10-13: *"the top line has the same responding timer, i
-/// think it is redundant - i never look at it"*. Running → no duration in the header; idle → the
-/// last turn's wall-ms.
+/// While a turn runs, the header shows no duration: the composer row is the one
+/// clock. Running - no duration in the header; idle - the last turn's wall-ms,
+/// which is a settled fact and not a live one.
 #[test]
 fn while_a_turn_runs_the_header_shows_no_clock() {
     let mut a = app();
@@ -855,11 +804,9 @@ fn the_decode_line_does_not_repeat_the_prompts_cache_numbers() {
     let header = a.header_line(200);
     assert!(header.contains("41.2k ctx"), "{header}");
     assert!(header.contains("92% cached"), "{header}");
-    // **And this row repeats none of them, and carries no figure of its own** — the operator's
-    // ruling of 2026-09-27 is that the row says the turn is alive and nothing more: *"i dont
-    // care about those chars"*. The assertions are kept for the fields that were here
-    // (`5 chars` after a delta, `42 tok` from the server's counter) precisely because those
-    // are the ones a future change might put back.
+    // This row repeats none of the header's numbers and carries no figure of its
+    // own: it says the turn is alive and nothing more. The fields asserted absent
+    // below are the ones a future change might put back.
     a.apply(ServerFrame::Event(env(3, testing::delta("t1", "hello"))));
     a.apply(ServerFrame::Event(env(
         4,
@@ -875,11 +822,9 @@ fn the_decode_line_does_not_repeat_the_prompts_cache_numbers() {
 
 #[test]
 fn no_counter_rides_the_status_line_and_a_dead_one_never_did() {
-    // **This test used to be called `…wins_over_the_char_count`, and the question it settled
-    // is gone.** Both counters were removed from the row on 2026-09-27 — the operator's ruling,
-    // *"i dont care about those chars"* — so what is worth pinning now is the absence: neither
-    // the server's counter nor the character fallback reaches this row, through every event
-    // that used to put one there.
+    // The question this once settled is gone: both counters left the row, so what
+    // is worth pinning now is their absence - neither the server's counter nor the
+    // character fallback reaches this row, through any event that once put one there.
     let mut a = app();
     a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
     a.apply(ServerFrame::Event(env(
@@ -921,11 +866,9 @@ fn no_counter_rides_the_status_line_and_a_dead_one_never_did() {
 
 #[test]
 fn the_spinner_spins_on_the_heads_clock_not_on_the_daemons_events() {
-    // A spinner keyed off the last event's timestamp is not a spinner, it is
-    // a snapshot of one: a tool running thirty silent seconds froze it on one
-    // glyph, and the frozen duration beside it read as a dead turn. The phase
-    // and the duration both run on `now_ms`, which the driver advances every
-    // tick whether or not anything arrived.
+    // A spinner keyed off the last event's timestamp is a snapshot of one: a tool
+    // running silent froze the glyph, and the frozen duration read as a dead turn.
+    // Phase and duration both run on `now_ms`, which the driver advances every tick.
     let mut a = app();
     a.apply(ServerFrame::Event(env_at(
         1,
@@ -976,10 +919,9 @@ fn the_spinner_spins_on_the_heads_clock_not_on_the_daemons_events() {
     );
 }
 
-/// **And the counts move as the round runs** — *"obviously be updated earlier."*
-///
-/// A second call proposed on the same turn takes the count to two with no new row landing,
-/// and the thinking streamed but not committed is counted the same way.
+/// And the counts move as the round runs: a second call proposed on the same turn
+/// takes the count to two with no new row landing, and the thinking streamed but
+/// not committed is counted the same way.
 #[test]
 fn the_counts_move_as_the_round_runs() {
     let mut a = app();
@@ -1086,61 +1028,9 @@ fn a_marker_of_thinking_alone_goes_pending_nowhere() {
     );
 }
 
-/// **Nothing the model says reaches the screen before the prompt that caused it** — R2.
-///
-/// The operator, twice in one session: *"i also saw my queued message go up before being
-/// dequeued"* and then, with the order written out: *"my message | your line | and only then
-/// unqueued"*. Which is a claim about THREE events, and only one of them is the head's:
-///
-///   1. their prompt goes to the daemon and the echo says `queued`;
-///   2. the answer streams — `Delta`, which carries its text;
-///   3. the prompt's row is announced — `TranscriptAppended`, which carries NO text — and its
-///      body follows later on `TranscriptContent`.
-///
-/// The model's reply streams while the prompt's row is still only announced, so a head that
-/// waits for the BODY to stop saying `queued` is showing the answer to a question it has not
-/// drawn yet. R2's fix is optimistic binding: on the body-less `user` row, bind the oldest
-/// pending echo to it and draw the row from that text.
-///
-/// **What this test measures is the mark, because that is what the operator saw.** Their words
-/// are the assertion: after the row is announced and before its body arrives, the surface must
-/// not still be saying `queued` about words the model has already been given.
-/// **The turn's own row is reserved, so a turn starting does not move the screen.**
-///
-/// The operator: *"keep the line reserved for `Responding...` always free, or we have these ugly
-/// jumps"*. The row exists only while a turn does, so without the reservation every row above
-/// it — the transcript a reader is reading — moves by one the moment a turn begins, and moves
-/// back when it ends.
-///
-/// **What is pinned is the MOVE, not the row.** Asserting *the row is always there* would pass
-/// on a frame that reserved it in the wrong place; what the reader feels is the shove, so the
-/// test compares the rows that are not the status line across the turn boundary.
-/// **A delta changes the counts and nothing else** — the operator's rule for the rendered
-/// history, as a measurement.
-///
-/// Their words: *"once something is rendered nothing left to it except tool calls / thinking
-/// lines count shouldn't ever change by itself, without say me toggling verbosity."* So this
-/// renders a frame, streams one reasoning chunk, renders again, and compares **line by line**:
-/// every line but one must be byte-identical, and the one that differs must be the marker.
-///
-/// **What it would catch.** A mark that changes as a fact settles, a line that grows, a count
-/// that appears late — each of them shows up here as a second differing line, which is the
-/// assertion's whole point. The three defects this window has had (the backfilled count, the
-/// yellow that needed a row, the echo that kept saying `queued`) were all *one row changing
-/// without being asked*, and each would fail this.
-///
-/// Not asserted here: the verbosity toggle, which is the one case where every row may change.
-/// **The thinking count never falls** — including when its reasoning lands as a row.
-///
-/// The operator: *"lol, just saw how thinking lines count went from 22 to 15."* The arithmetic
-/// cannot produce that: `reasoning_display_lines` sums `ceil(width / cols)`, so text arriving can
-/// only add lines. What the number was counting was the reasoning **plus the rows that reasoning
-/// had already become**, and the round boundary — which rebuilds the pane, empty — took the
-/// inflation away. A count of work done fell, which is the defect leticl measured on the calls
-/// side, quoted in `LiveWork`'s own doc.
-///
-/// So this drives the whole life of one piece of reasoning: streamed, then landed as a row, then
-/// a new round. The count must climb and then hold — never fall.
+/// The thinking count never falls, including when its reasoning lands as a row:
+/// `reasoning_display_lines` sums `ceil(width / cols)`, so text arriving can only
+/// add lines, and a count that drops is counting work that has already happened.
 #[test]
 fn the_thinking_count_never_falls_not_even_when_its_reasoning_lands() {
     let mut a = app();
@@ -1325,20 +1215,9 @@ fn the_thinking_count_moves_while_the_thinking_streams() {
     assert!(last >= 6, "and it is the stream's own size: {last}");
 }
 
-/// **A boundary NOBODY MEASURED is the same run, not a new one.**
-///
-/// This is the frame the operator's screen was built from, and it is the daemon's own shape:
-/// `harnessd::sessions::run_prompt` stamps the whole turn's start (`begin_turn_clock`) and
-/// **`Sessions::wake` does not** — so the turn a job's settlement or a monitor's firing opens
-/// publishes `TurnStarted { began_ms: None }`, which is the one value the head used to read as
-/// *a new prompt*.
-///
-/// Read that way it emptied `turn_rows` and moved `started_ms` to the event's `ts`, so the run
-/// the work is still in stopped reading as this turn's (`live_here` and `walk_carried_live`
-/// both no), the pane drew its own marker beside the walk's, and the `Responding` clock
-/// restarted — *"it looks like turn end or some other border is misinterpreted and Responding
-/// timer resets and I get new line with `[N thinking lines]` which then gets merged to the
-/// previous `[N tools, M thinking]`"*. The merge is the next row landing.
+/// A boundary nobody measured - `TurnStarted` with `began_ms: None`, which is what
+/// `Sessions::wake` publishes - is the same run: only a measured start opens a new
+/// one, or the pane empties and the clock restarts mid-prompt.
 #[test]
 fn a_boundary_nobody_measured_does_not_split_the_run() {
     let mut a = app();
@@ -1368,11 +1247,9 @@ fn a_boundary_nobody_measured_does_not_split_the_run() {
             began_ms: None,
         },
     )));
-    // **And the thinking goes on across the boundary**, which is the whole point of it: the
-    // model is mid-thought when the event arrives and keeps streaming under the new round's
-    // id. It is also a DIFFERENT number of lines from the thinking before the boundary, so
-    // the assertion below cannot be satisfied by a row the last frame had already cached —
-    // the count has to be rebuilt from the run the work is in.
+    // And the thinking goes on across the boundary: the model is mid-thought and
+    // keeps streaming under the new round's id, and the count is a different number
+    // of lines, so it cannot come from a row the last frame cached.
     a.apply(ServerFrame::Event(env(
         6,
         SessionEvent::Delta {
@@ -1516,10 +1393,9 @@ fn thinking_that_is_still_arriving_is_one_fold_with_the_run_it_will_join() {
         },
     );
     seq += 1;
-    // **The turn ends and the daemon WAKES the session** — a job settlement, a monitor, a todo
-    // nag. `Sessions::wake` does not stamp a clock (`harnessd::sessions`: `run_prompt` calls
-    // `begin_turn_clock` and `wake` does not) and appends no prompt row, so this turn starts with
-    // an empty `turn_rows` and nothing the reader can see in front of it.
+    // The turn ends and the daemon WAKES the session - a settlement, a monitor, a
+    // nag. `wake` stamps no clock and appends no prompt row, so this turn starts
+    // with an empty `turn_rows` and nothing in front of the reader.
     a.apply(ServerFrame::Event(env_at(
         seq,
         2_000,
@@ -1576,10 +1452,9 @@ fn thinking_that_is_still_arriving_is_one_fold_with_the_run_it_will_join() {
         "and the fold carries the sum, committed and in flight: {streaming}"
     );
 
-    // **Two thinking rows land, one after the other, and the merge does not move.** The first is
-    // the streamed text becoming a row, which takes the in-flight count to zero and adds the same
-    // lines to the run — so the number the reader is looking at does not change. The second is a
-    // new round's own working-out, and it joins the same fold: one block, the summed count.
+    // Two thinking rows land, one after the other, and the merge does not move: the
+    // streamed text becoming a row takes the in-flight count to zero and adds the
+    // same lines, and a new round's working-out joins the same fold.
     for (id, text) in [("s.5", STREAMED), ("s.7", SECOND)] {
         a.apply(ServerFrame::Event(env(
             seq,
@@ -1653,14 +1528,9 @@ fn thinking_that_is_still_arriving_is_one_fold_with_the_run_it_will_join() {
     );
 }
 
-/// **A subagent whose whole product is prose is readable.**
-///
-/// The peek rendered tool results and nothing else, so a `digest` subagent —
-/// handed a slice of transcript in its prompt, answering in text, calling no
-/// tools by design — showed "no tool output" and threw its report away.
-/// Measured in the operator's store: six of them, one user item, one
-/// reasoning item and one assistant item each, zero tool results. *"i see
-/// them and i see their output but when i enter - no output"*.
+/// A subagent whose whole product is prose is readable: the peek once rendered tool
+/// results only, so a child that answers in text and calls no tools by design showed
+/// "no tool output" and threw its report away.
 #[test]
 fn a_prose_only_subagent_shows_its_answer_and_not_its_thinking() {
     let content = |id: &str, item: TranscriptItem| {
@@ -1701,12 +1571,9 @@ fn a_prose_only_subagent_shows_its_answer_and_not_its_thinking() {
     );
 }
 
-/// **A message taken from the queue mid-turn lands BELOW the reply it interrupted, and never
-/// above it first.** The operator, 2026-10-08: *"when it dequeued during active turn it can go
-/// above the most recent piece of reply and then get reordered to the bottom. very strange
-/// feeling."* At the step boundary the daemon announces the round's assistant row and then the
-/// taken prompt's row; the reply's TEXT is already on screen (it streamed), its row's BODY
-/// arrives a moment later. Every frame in between must keep the reply above the message.
+/// A message taken from the queue mid-turn lands below the reply it interrupted, and
+/// never above it first: the reply's text is already on screen while its row's body
+/// arrives later, and every frame between must keep the reply on top.
 #[test]
 fn a_message_taken_mid_turn_never_jumps_above_the_reply_it_follows() {
     let mut a = app();
@@ -1774,13 +1641,9 @@ fn a_message_taken_mid_turn_never_jumps_above_the_reply_it_follows() {
     assert_eq!(settled.matches("a follow-up").count(), 1, "{settled}");
 }
 
-/// **What the daemon holds back from the model is drawn beside `Responding`, by kind, and only
-/// while something is held.**
-///
-/// The operator, 2026-10-11: *"what would be useful is a counter of how much and what kind is
-/// held - somewhere close to Responding ...."*. The daemon sends `HeldResults` whenever the held
-/// set changes; the head draws the last counts on the turn's status row, names a failure, and
-/// draws nothing once they are all zero.
+/// What the daemon holds back from the model is drawn beside `Responding`, by kind,
+/// and only while something is held: the counts ride the turn's status row, a
+/// failure is named, and all zero draws nothing.
 #[test]
 fn the_held_counter_rides_the_responding_row_while_something_is_held() {
     let mut a = app();
@@ -1880,16 +1743,9 @@ fn a_snapshot_drops_the_held_counter_the_daemon_will_say_again() {
     );
 }
 
-/// **The status row says what the session is WAITING on, when no turn is running.**
-///
-/// The case it exists for is the one no transcript row can say: a turn that ended and a session
-/// that is nonetheless going to act again on its own, because a job the plan depends on is still
-/// running. Drawn in the row a turn's state uses — the row is reserved whether or not a turn runs,
-/// so it costs the conversation no line — and drawn in the muted register, because it is a fact
-/// about the session and not something the model said.
-///
-/// It is the daemon's list (`PROTOCOL_VERSION` 52), so what is asserted here is the drawing: the
-/// words, that a turn of its own takes the row back, and that a quiet session draws nothing.
+/// The status row says what the session is WAITING on when no turn runs - a turn
+/// that ended and a session that will act again on its own - drawn in the row a
+/// turn's state uses, in the muted register, because the model did not say it.
 #[test]
 fn a_waiting_list_is_drawn_while_no_turn_runs() {
     use letibot_sessionlog::activity::{Activity, Waiting};
@@ -2018,13 +1874,9 @@ fn a_waiting_list_names_its_children_and_counts_what_repeats() {
     assert_eq!(line.trim_end(), "waiting on: child …of-child");
 }
 
-/// **The daemon's `Turn` is the PROMPT, and the row stays up across a round boundary because of
-/// it** (R55, R51 §3).
-///
-/// The window it closes: a round's last call has finished and the next round has not started, so
-/// every round-level fact says *not busy*. The daemon knows the prompt is still in flight and says
-/// so, and this head asks the activity before its own round-level state — which is what stops the
-/// row standing down and coming back in the middle of one prompt.
+/// The daemon's `Turn` is the PROMPT, so the row stays up across a round boundary:
+/// every round-level fact says not busy between rounds, and the head asks the
+/// activity before its own state or the row stands down mid-prompt.
 #[test]
 fn a_prompt_in_flight_holds_the_row_up_between_its_rounds() {
     use letibot_sessionlog::activity::{Activity, Waiting};

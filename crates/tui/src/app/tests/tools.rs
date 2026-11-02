@@ -2,16 +2,9 @@
 
 use super::*;
 
-/// **The control: a model's row is unmarked, and its paint has not moved.**
-///
-/// Beside the test above, this pair is what says the mark reads `origin` rather than
-/// appearing on tool rows in general — `origin: None` is a call the MODEL proposed, and it
-/// is also every row written before the field existed.
-///
-/// **The header is pinned literally**, because *a model-origin row is unchanged* is a claim
-/// about bytes and there is no other way to hold one: a change that moves the operator's row
-/// is expected to leave this one exactly as it is, and a change that moves this one is the
-/// defect this test exists to catch.
+/// The control: a model's row is unmarked and its paint has not moved - `origin:
+/// None` is a call the MODEL proposed, so the mark reads `origin` and not tool rows
+/// in general. The header is pinned literally, because that is a claim about bytes.
 #[test]
 fn a_models_tool_row_is_unmarked_and_its_paint_has_not_moved() {
     let body: String = (0..60).map(|i| format!("line {i}\n")).collect();
@@ -215,31 +208,13 @@ fn content_this_head_did_not_write_cannot_reconfigure_the_terminal() {
     }
 }
 
-// **The half of §3.1 that is easy to get wrong** now lives with the functions, in
-// `letibot_ui::text`'s own tests — a single-line sanitiser applied to a document
-// collapses every paragraph, and the pair of functions is where that is pinned. It
-// used to be duplicated here.
+// The sanitiser's other half lives with the functions, in `letibot_ui::text`'s own
+// tests: a single-line sanitiser applied to a document collapses every paragraph,
+// and the pair of functions is where that is pinned.
 
-/// **R13: the number beside a running call comes from a clock that keeps moving.**
-///
-/// The operator: *"when a tool call takes time — say `cargo build` — it is frozen
-/// at 0ms until it finishes. A live coarse timer would be nice, say 1/10th of a
-/// second."*
-///
-/// **And my head's defect is not leticl's, which is worth writing down because the
-/// two look identical on a screen.** leticl's number was already read from its own
-/// clock; what was frozen was the *asking*, because its loop painted only when a
-/// frame or a key marked the head dirty. This head composes a frame on every tick
-/// — `Terminal::events()` returns after ~100 ms of quiet under `VMIN=0 VTIME=1`, and
-/// `App::screen` is called unconditionally after it — so the asking was never the
-/// problem here. What was wrong is that **the row read a different clock from the
-/// spinner two hundred lines below it**: the spinner is `App::now_ms`, which the
-/// driver advances every tick, and the running card's elapsed was
-/// `TurnPane::last_ms`, the last event's timestamp — a clock that *stops*
-/// whenever the daemon stops talking, which is precisely what a silent build does.
-///
-/// So the assertion is the pair: with no event in between, thirty seconds of
-/// silence, the number moves and the spinner moves with it.
+/// The number beside a running call comes from a clock that keeps moving, and it is
+/// the same clock as the spinner: a call timed from the last event's timestamp froze
+/// through a silent build, and the frozen duration read as a dead turn.
 #[test]
 fn a_running_call_counts_up_while_the_daemon_says_nothing() {
     let mut a = app();
@@ -266,11 +241,9 @@ fn a_running_call_counts_up_while_the_daemon_says_nothing() {
         },
     )));
 
-    // **The premise: nothing else arrives.** Every assertion below is about a
-    // clock that moved with no event to carry it, so an event in between would
-    // make this test pass against a head that never fixed anything. (The head's
-    // clock and the events' `ts` are advanced together, the way a live session's
-    // are — same machine, same clock, one tick apart at most.)
+    // The premise: nothing else arrives. Every assertion below is about a clock that
+    // moved with no event to carry it, so an event in between would let the test pass
+    // against a head that never fixed anything.
     let last_event = a.last_event_at;
 
     // Two hundred milliseconds in, nothing said: the call counts from when it
@@ -302,10 +275,9 @@ fn a_running_call_counts_up_while_the_daemon_says_nothing() {
         "the border's own spinner is the comparison: {late}"
     );
 
-    // **A call with no anchor keeps the log's clock**, and this is the half that
-    // must not be lost: a `--replay` applies every frame *before* it sets a
-    // clock, so there is no anchor to measure against and the recorded span is
-    // the only honest number. Here the log says the call ran 1.0s.
+    // A call with no anchor keeps the log's clock: a `--replay` applies every frame
+    // before it sets a clock, so there is nothing to measure against and the recorded
+    // span is the only honest number. Here the log says 1.0s.
     let mut b = app();
     b.apply(ServerFrame::Event(env_at(
         1,
@@ -382,19 +354,9 @@ fn a_call_from_a_snapshot_has_no_duration_rather_than_a_zero_one() {
     );
 }
 
-/// **A tool's output cannot reconfigure the operator's terminal.**
-///
-/// A payload is whatever the command wrote. Rendering it straight put its
-/// escapes on the wire — and in the operator's own store, 2026-09-20, 44
-/// `tool_result` rows carry an escape and 20 carry a MODE string: `?1002`
-/// and `?1006` are mouse reporting, `?1049` the alternate screen, `?2004`
-/// bracketed paste.
-///
-/// Turning mouse reporting off is why *"when i expand tools with Ct scroll
-/// stops working"*: ctrl-t renders payloads that were folded away, one of
-/// them disables the wheel, and folding back cannot undo what the terminal
-/// was already told. Switching byobu windows fixes it because tmux
-/// re-asserts its modes on focus.
+/// A tool's output cannot reconfigure the operator's terminal: a payload is whatever
+/// the command wrote, and a mode reset in it turns mouse reporting off - folding back
+/// cannot undo what the terminal was already told.
 #[test]
 fn an_expanded_tool_payload_cannot_turn_the_mouse_off() {
     let mut a = app();
@@ -423,11 +385,9 @@ fn an_expanded_tool_payload_cannot_turn_the_mouse_off() {
         },
     )));
     let screen = a.screen(100, 30).join("\n");
-    // **The ESC is what makes a sequence a command.** `[?1002l` as literal
-    // text is four harmless characters; it is `ESC` in front of it that the
-    // terminal acts on. So this asserts the pairing, not the substring —
-    // and deliberately not "no ESC anywhere", because the head's own colour
-    // is made of them.
+    // The ESC is what makes a sequence a command: `[?1002l` as literal text is
+    // harmless, so this asserts the pairing and not the substring - and deliberately
+    // not "no ESC anywhere", because the head's own colour is made of them.
     for bad in ["[?1002", "[?1006", "[?1049", "[?2004", "[1;1H"] {
         let seq = format!("{esc}{bad}");
         assert!(
@@ -501,12 +461,9 @@ fn a_running_tool_call_says_what_it_is_running_on() {
     );
 }
 
-/// A settled call is **one** row, not two.
-///
-/// It used to be two: `→ Read TODO.md` from the assistant row, then
-/// `▸ Read TODO.md · ok · 129 lines · ctrl-t` from the result row three lines
-/// below, saying the same thing with an outcome attached. Four calls cost
-/// eight rows of a thirty-four-row terminal before any output was on it.
+/// A settled call is one row, not two: the assistant row's call line and the result row
+/// said the same thing with an outcome attached, so four calls cost eight rows before any
+/// output was on screen.
 #[test]
 fn a_settled_call_is_one_row_and_the_row_is_the_one_with_the_result_on_it() {
     let mut a = app();
@@ -636,18 +593,9 @@ fn a_result_whose_round_the_head_cannot_see_says_so_rather_than_borrowing() {
     assert!(screen.contains("(call_0)"), "{screen}");
 }
 
-/// **A snapshot that carries a finished call is seated, and counts as nothing executing.**
-///
-/// The late-join and resync path, and the brief for this work named it as the lead: *"the head
-/// learns each call's state at the one moment the daemon hands it over"*. `App::load` does exactly
-/// that — `self.turn = s.turn.map(…)` seats the pane's state and every call's own state out of the
-/// daemon's folded turn — so this is a RECORD of that seating rather than a fix for it. The daemon
-/// half is asserted first, because the head half would pass on a snapshot that carried nothing:
-/// a `Hub` that published `ToolFinished` reports the call `Finished` in its own view.
-///
-/// The second half is the control and it is not decoration — a snapshot whose call is genuinely
-/// executing, with no result row yet, must count as executing, or the first half would pass on a
-/// colour that never lights.
+/// A snapshot that carries a finished call is seated, and counts as nothing executing:
+/// `App::load` seats every call's state out of the daemon's folded turn. The control is
+/// the other half - a genuinely executing call must count as executing.
 #[test]
 fn a_snapshot_that_carries_a_finished_call_is_seated_and_counts_as_nothing_executing() {
     /// The call as the daemon proposes and starts it.
@@ -712,19 +660,9 @@ fn a_snapshot_that_carries_a_finished_call_is_seated_and_counts_as_nothing_execu
     );
 }
 
-/// **A settled row takes its register from the ONE outcome mapping** — R51 item 9.
-///
-/// The operator, looking at a command the harness had just backgrounded: *"why on earth
-/// backgrounding message is in red"*. The row asked `bad = !matches!(outcome, Ok)` and drew
-/// every non-`ok` outcome in `Failure`, so a job still working read as something to retry and a
-/// refusal read as a malfunction. This asks the mapping for each outcome, and only `ok` is
-/// overruled — faint, because a green line under every command says nothing.
-///
-/// **And the register a backgrounded call gets changed afterwards, by a ruling of its own:**
-/// *"wait, color change can mean some rerenders, so lets make it white as soon as job starts"*.
-/// So it is no longer one of the *attention* outcomes — the CALL is over, and the job behind it
-/// is counted on the composer's edge and listed in the jobs pane. See the two arms' notes in
-/// `card::Outcome`.
+/// A settled row takes its register from the ONE outcome mapping, and only `ok` is
+/// overruled - faint, because a green line under every command says nothing. Every
+/// other outcome is drawn as the mapping says, so a refusal is not a malfunction.
 #[test]
 fn a_settled_rows_register_comes_from_the_outcome_not_from_a_not_ok_test() {
     use letibot_transcript::ToolOutcome as O;
@@ -977,12 +915,9 @@ fn the_diff_verb_sets_the_style_and_redraws_what_is_already_drawn() {
         "the refusal does not name what it would have taken: {notice}"
     );
     assert!(!a.diff_split, "a refusal changed the setting");
-    // **And the spellings the SHARED preference file accepts are taken.** The file is
-    // read by both heads, and leticl's parser takes `split` / `side-by-side` / `auto`
-    // and `unified` / `single`. A verb with a list of its own would refuse a value the
-    // file the two of them share had already accepted — so this is `DiffPref::parse`,
-    // and the same word reaching either door lands the same way. Asserted through the
-    // preference parser's own answer rather than by repeating the list here.
+    // The spellings the SHARED preference file accepts are taken here too: the file is
+    // read by both heads, so a verb with a list of its own would refuse a value the file
+    // had already accepted - the same word lands the same way at either door.
     for (typed, want) in [
         ("auto", crate::prefs::DiffPref::Split),
         ("side-by-side", crate::prefs::DiffPref::Split),
@@ -1004,10 +939,9 @@ fn the_diff_verb_sets_the_style_and_redraws_what_is_already_drawn() {
     }
 }
 
-/// **The file is named once.** The operator, on `▸ Wrote …/pr-body-align.md · ok` with the
-/// same path on the line under it: *"why two times?"*. A header that names the file drops
-/// the diff's own name line; a header that could not name it (a call id in its place) keeps
-/// it, which is what that line was added for.
+/// The file is named once: a header that names it drops the diff's own name line, and a
+/// header that could not name it - a call id in its place - keeps that line, which is
+/// what it was added for.
 #[test]
 fn an_edit_card_names_its_file_once() {
     let count = |rows: &[String]| rows.iter().filter(|l| l.contains("a.rs")).count();
@@ -1075,10 +1009,9 @@ fn an_edit_call_renders_the_two_panel_diff_when_it_is_on() {
     );
 }
 
-/// The toggle is the whole gate. Off is a unified diff at any width; on is
-/// a split at any width — a narrow pane gets a narrow split, not the byte
-/// count, because an edit drawn cramped is still an edit the operator can
-/// read, and the width gate's other answer was *no diff at all*.
+/// The toggle is the whole gate: off is a unified diff at any width, on is a split at
+/// any width. A narrow pane gets a narrow split, because an edit drawn cramped is still
+/// an edit the operator can read, and the width gate's other answer was no diff at all.
 #[test]
 fn the_diff_toggle_alone_picks_split_or_unified_at_any_width() {
     let off = call_card(
@@ -1116,24 +1049,9 @@ fn the_diff_toggle_alone_picks_split_or_unified_at_any_width() {
     );
 }
 
-/// **A restarted head still draws the last turn's edit panels.**
-///
-/// The excerpt rides the `ToolFinished` event, and the snapshot's turn
-/// carries the turn's calls with it. Live, the head copied the excerpt into
-/// `call_edits` as the row landed, and history rows render their panels from
-/// that map; the map was memory-only, so a restart drew every landed edit
-/// panel-less even though the snapshot had just handed the head the turn's
-/// calls with the excerpt still on them (operator, 2026-09-17). The fix
-/// seeds the map from the snapshot, positionally, the way the live hand-off
-/// matched rows to calls. This walks the whole restart: a hub whose turn
-/// edited a file and then finished, a fresh head attaching to its snapshot —
-/// attach replays no events, so the snapshot's turn is the excerpt's only
-/// carrier — and the panel on the screen.
-///
-/// The row here deliberately carries **no** excerpt of its own: rows written
-/// before the field existed read as `None`, and this is the case where the
-/// seeded map is the only thing between the operator and a panel-less edit.
-/// The row-borne path has its own test below.
+/// A restarted head still draws the last turn's edit panels: the excerpt rides
+/// `ToolFinished`, the snapshot's turn carries the calls, and `App::load` seeds
+/// `call_edits` from it. This row carries no excerpt, so the map is the only carrier.
 #[test]
 fn a_restarted_head_still_draws_the_last_turns_edit_panels() {
     let hub = Hub::new("s");
@@ -1187,17 +1105,9 @@ fn a_restarted_head_still_draws_the_last_turns_edit_panels() {
     );
 }
 
-/// **A resumed daemon's rows draw their panels with no turn on the wire.**
-///
-/// The seed above needs the snapshot's turn: it matches rows to calls
-/// positionally through `t.appended`. The operator's second report
-/// (2026-09-18) was a daemon that had *resumed from the store* — its view
-/// was rebuilt from rows alone, the resume publishes no turn events, and
-/// the snapshot it handed a fresh head had `turn: None` with the rows in
-/// it. Nothing to seed from, and every landed edit drew panel-less again
-/// even after the first fix. The row now carries the excerpt itself, so
-/// the row is the carrier: no turn, no event, no map — and the panel
-/// still renders.
+/// A resumed daemon's rows draw their panels with no turn on the wire: the seed needs
+/// the snapshot's turn, and a daemon resumed from the store publishes none, so the row
+/// carries the excerpt itself - no turn, no event, no map.
 #[test]
 fn a_row_from_a_resumed_daemon_draws_its_panel_without_a_turn() {
     let hub = Hub::new("s");
@@ -1234,13 +1144,9 @@ fn a_row_from_a_resumed_daemon_draws_its_panel_without_a_turn() {
     );
 }
 
-/// **The clip the operator photographed.** The card built its diff for the
-/// body width, and the turn block then stepped the whole card in by the
-/// activity indent — *after* the card had rendered — so every split row
-/// left the frame two columns wider than the frame trims to, and a
-/// full-width panel line lost its tail at the terminal edge. The panels
-/// are built for the width the row will actually have, which is the
-/// arithmetic the transcript's own diff arm already does at its `let w`.
+/// A split row must not exceed the frame: the turn block steps the whole card in by the
+/// activity indent after the card has rendered, so a diff built for the body width leaves
+/// the frame too wide and loses the panel's tail at the terminal edge.
 #[test]
 fn the_split_diff_fits_after_the_indent_the_caller_applies() {
     let w = 209; // a 211-column terminal minus the gutter
@@ -1310,20 +1216,9 @@ fn a_created_file_renders_as_all_right_panel_and_a_cap_says_so() {
     );
 }
 
-/// **The verb decides the HEADER; the pair decides the BODY.**
-///
-/// This read *"a non-edit call never grows a second panel"*, and that was right while `edit`
-/// and `write` were the only calls that carried an excerpt: the name was the whole signal,
-/// and a `grep` carrying one was a shape that could not happen. `crates/tools/src/detect.rs`
-/// made a `bash` call a **second carrier** — a shell that rewrites a file hands the head both
-/// sides deliberately, so that the change can be read — and the gate on the name then drew
-/// the note and no diff. The operator, watching a `python3` heredoc rewrite a file: *"right,
-/// but i didnt see the diff"*.
-///
-/// So what survives of the old rule is the half that was ever about the NAME: a call draws a
-/// panel for the pair it holds and for nothing else, and it is still drawn under its own
-/// verb — `Ran` for a shell, which is the label `crates/tools/src/detect.rs` refuses to
-/// falsify by calling the change an `edit`.
+/// The verb decides the HEADER; the pair decides the BODY: a `bash` call that rewrites a
+/// file carries both sides deliberately, so a gate on the name drew the note and no diff.
+/// A call draws a panel for the pair it holds and is still drawn under its own verb.
 #[test]
 fn a_call_draws_a_panel_for_the_pair_it_carries_and_never_for_one_it_does_not() {
     // No pair, whatever the verb: no panel.
@@ -1390,11 +1285,9 @@ fn the_live_event_path_feeds_the_two_panel_view() {
     );
 }
 
-/// **The bug the operator reported.** The diff was drawn only by the live
-/// card, and the transcript takes a call over the moment its result row
-/// lands — so the diff existed for the gap between `ToolFinished` and
-/// `TranscriptAppended`, which is to say never. The settled row must draw
-/// it, folded and open, and must keep drawing it after the next turn starts.
+/// The settled row draws the diff, folded and open, and keeps drawing it after the next
+/// turn starts: the live card is replaced the moment the result row lands, so a diff drawn
+/// only there exists for the gap between `ToolFinished` and `TranscriptAppended`.
 #[test]
 fn a_settled_edit_row_draws_the_diff_and_keeps_it_across_turns() {
     let mut a = app();
@@ -1482,11 +1375,9 @@ fn a_settled_edit_row_draws_the_diff_and_keeps_it_across_turns() {
     }
 }
 
-/// **Ctrl+O guards the command, not the turn.** The operator, looking at a
-/// `◐ Running "cargo test …"` card while the head refused: *"nothing is
-/// running to move to the background"* / *"how come"*. The gate asked whether
-/// the TURN was running, and a terminal turn state can still hold a call the
-/// daemon is executing.
+/// Ctrl+O guards the command, not the turn: the gate asked whether the TURN was running,
+/// and a terminal turn state can still hold a call the daemon is executing - so a
+/// `Running` card was refused a promotion it should have had.
 #[test]
 fn ctrl_o_promotes_a_running_command_even_after_the_turn_went_terminal() {
     let mut a = app();
@@ -1518,11 +1409,9 @@ fn ctrl_o_promotes_a_running_command_even_after_the_turn_went_terminal() {
             partial_kept: false,
         },
     )));
-    // **Two different questions, and this is the test that pins them apart.** The turn is
-    // terminal — nothing is generating — and the head is still BUSY, because the call the
-    // daemon is executing belongs to it. That gap is R51's whole root cause: every gate that
-    // asked the state name for *is the model working* got `false` here, which is why esc-esc
-    // was dead through every command and the status row vanished through every call.
+    // Two different questions: the turn is terminal - nothing is generating - and the head
+    // is still BUSY, because the call the daemon is executing belongs to it. Every gate that
+    // asked the state name for "is the model working" got `false` here.
     assert!(!a.turn_generating(), "the turn is terminal");
     assert!(a.turn_busy(), "and the head is still working on its call");
     assert!(
