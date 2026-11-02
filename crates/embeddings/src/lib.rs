@@ -25,6 +25,8 @@ pub mod cache;
 pub mod config;
 pub mod cosine;
 pub mod model;
+pub mod remote;
+pub mod tier;
 
 #[cfg(test)]
 mod fixture;
@@ -33,3 +35,5 @@ pub use cache::{Cache, CacheError, Hit, db_path};
 pub use config::{ConfigError, Mode, Settings};
 pub use cosine::{Index, cosine};
 pub use model::{BUILTIN_MODEL, Model, ModelError, builtin_dir};
+pub use remote::{Remote, RemoteError};
+pub use tier::{Engine, Filled, Tier, TierError};
