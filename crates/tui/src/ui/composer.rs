@@ -1,4 +1,4 @@
-//! **The composer**: the box the person types in, and the completion lines over it.
+//! The composer: the box the person types in, and the completion lines over it.
 
 use crate::app::*;
 use crate::ui::render::{row, trim_to};
@@ -8,11 +8,8 @@ use rano::render::Line;
 use rano::width::text as width;
 
 impl App {
-    /// **The completions as a line, for the composer's bottom edge** — where they are drawn, so
-    /// that typing `/` moves nothing: the operator, 2026-10-08, *"when i type / this gray hint
-    /// line appears and conversation jumps one line. i hate that. leticl does this gray thing
-    /// instead of the bottom input border line and nothing jumps"*. The edge is always there;
-    /// a row above the box was a row the conversation gave up the moment a `/` was typed.
+    /// The completions as a line, for the composer's bottom edge: the edge is always there, so
+    /// typing `/` moves nothing, where a row above the box was a row the conversation gave up.
     pub(crate) fn completions_legend(&mut self, w: usize) -> Option<Line> {
         if !self.completion_slot() {
             return None;
@@ -38,19 +35,9 @@ impl App {
         completions_line(&items, w)
     }
 
-    /// **The live `!` completion row, with provenance.**
-    ///
-    /// The history's candidates — the commands this session actually ran — are
-    /// facts, and are drawn plain. The model's candidates are proposals, not
-    /// facts, and are drawn marked with a leading `~`, because **a line that
-    /// looks like the operator typed it and did not is the same class of lie as
-    /// an unattributed quote**: the operator has to be able to tell, at a glance,
-    /// which candidates are the session's own and which the model invented.
-    ///
-    /// The mark is display-only: a Tab fills the composer with the line itself
-    /// (`! git status`), never the marked form (`~! git status`). And nothing
-    /// here is submitted — the row is a typing aid, and Enter is still the
-    /// operator's.
+    /// The live `!` completion row, with provenance: the session's own commands are drawn plain
+    /// and the model's proposals carry a leading `~`, so a reader can tell a suggestion from a
+    /// recollection. The mark is display-only - Tab fills the line itself, never the marked form.
     #[cfg(test)]
     pub(crate) fn shell_completions_line(&mut self, w: usize) -> Option<String> {
         let p = self.cfg.palette();
@@ -67,9 +54,9 @@ impl App {
             text: t.clone(),
             proposed: false,
         };
-        // **The paths under the word being typed, when the reader has them for this line** —
-        // and then only those: a path is what the word is, and a history line beside it would
-        // be an answer to a different question.
+        // The paths under the word being typed, when the reader has them for this line, and
+        // then only those: a path is what the word is, and a history line beside it would be an
+        // answer to a different question.
         if let Some((line, names)) = &self.path_matches
             && *line == text
         {
@@ -99,13 +86,9 @@ impl App {
         completions_line(&items, w)
     }
 
-    /// The composer's rows, and the caret's `(row, column)` within them.
-    ///
-    /// The editor lays out the text; this puts a wall on each side of it and pads
-    /// to the full width, so the row is a *field* and not a line of text that
-    /// happens to be at the bottom. Padding matters for more than looks:
-    /// `term::paint` erases each row it rewrites with `\x1b[K`, and a row that
-    /// stops early leaves the field's right wall hanging in space.
+    /// The composer's rows and the caret's `(row, column)`. Each row is padded to the full
+    /// width because `term::paint` erases with `\x1b[K`: a row that stops early would leave the
+    /// field's right wall hanging in space.
     pub(crate) fn composer_rows(
         &self,
         w: usize,
@@ -119,19 +102,16 @@ impl App {
             let n = self.secret_buf.chars().count();
             (vec!["•".repeat(n)], (0, n))
         } else if self.prompt.is_some() && !self.prompt_away {
-            // **The prompt card's field is drawn IN THE OPEN** — the text as typed, the same
-            // editor renderer the composer uses — and that difference from the password's
-            // dots is the whole of what keeps the two channels apart. What this carries is a
-            // line for a program's stdin, on a card that says so; a secret has its own card
-            // and its own masked field. The text never reaches the composer's history either:
-            // `prompt_buf` is a field of its own.
+            // The prompt card's field is drawn IN THE OPEN - the text as typed - and that
+            // difference from a password's dots is what keeps the two channels apart: this is a
+            // line for a program's stdin, on a card that says so. `prompt_buf` is its own field.
             let mut e = Editor::new();
             e.insert(&self.prompt_buf);
             e.render(inner, self.cfg.palette())
         } else if self.key_ask.is_some() {
-            // **A provider key is masked exactly as a password is** — a dot per character,
-            // the text never rendered, not even to compute a width. The card above the
-            // composer says what the dots are for; this is the surface they are typed on.
+            // A provider key is masked exactly as a password is - a dot per character, the text
+            // never rendered, not even to compute a width. The card above the composer says what
+            // the dots are for; this is the surface they are typed on.
             let n = self.key_buf.chars().count();
             (vec!["•".repeat(n)], (0, n))
         } else {
@@ -144,13 +124,9 @@ impl App {
         // somewhere they cannot see.
         let start = crow.saturating_sub(show - 1).min(n - show);
         let mut out = Vec::with_capacity(show);
-        // **The wall is drawn once, not once per row.** It is the same two bytes of the same
-        // register for every row of the composer — `paint` allocates a `String` — and this loop
-        // used to rebuild it inside, which is a per-row allocation for a value that cannot vary.
-        //
-        // `Role::Faint`, not `sgr::GREY`. 90 is the theme's *bright black*, which `style.rs`
-        // measured landing within a hair of the background on several light themes; the attribute
-        // de-emphasises whatever foreground the reader has already chosen.
+        // The wall is drawn once, not once per row: it is the same bytes on every row and
+        // `paint` allocates. `Role::Faint` rather than `sgr::GREY`, whose 90 sits within a hair
+        // of the background on light themes; this de-emphasises the reader's own foreground.
         let wall = boxed.then(|| row(&rano::agent::pane::faint("│"), self.cfg.palette()));
         for i in start..start + show {
             let body = lines.get(i).cloned().unwrap_or_default();

@@ -1,47 +1,15 @@
-//! **The head's render config, and markdown drawn through `rano::markdown`.**
-//!
-//! The block painter that used to live here — headings, paragraphs, fences and their
-//! highlighter, lists, quotes, tables, the bounded body and the frozen-prefix cache — is
-//! rano's now (`rano::markdown::{render, view}`), ported from this file with its reasoning.
-//! What stays is the glue only the head has: [`RenderConfig`] (the width, the palette a
-//! `color`/`light` pair implies, the [`Budget`], the register a block is drawn inside), the
-//! reasoning pane's string [`Decor`], the picture placement, and [`BlockCache`] — rano's
-//! [`MarkdownView`] with its rows turned into the head's row strings once, as they settle.
-//!
-//! §13.3's wire rule and its lexer rule buy nothing if the *renderer* rebuilds every line
-//! from every block on every delta — that is pi's mistake moved one layer down. So the
-//! frozen prefix renders **once per width** (rano's view keeps its lines; this cache keeps
-//! their strings), and only the live tail is re-rendered and re-converted per frame.
-//!
-//! # Bounded body
-//!
-//! > There is a matching known-good shape from that same work: render the head of
-//! > a long block as a title and the tail as a bounded body, with the buffer size
-//! > configurable rather than hardcoded.
-//!
-//! [`Budget`] is that size, and it is a value on [`RenderConfig`], not a constant in the
-//! middle of a function; it reaches rano as [`RenderOptions::max_block_lines`]. A long
-//! reasoning block shows its first line as a title, a count of what was elided, and its
-//! last N lines — which is what a reader of a streaming model actually wants, because the
-//! interesting end is the end.
+//! The head's render config and the glue over `rano::markdown`: [`RenderConfig`], the reasoning
+//! pane's [`Decor`], the picture placement and [`BlockCache`]. The cache exists so a frame costs
+//! the tail and the window - the settled prefix is converted once per width, not once per frame.
 
 use rano::style::{Palette, Role};
 
 use rano::markdown::{Block, IncrementalMarkdown, MarkdownView, RenderOptions};
 use rano::render::{Line, Span, Style};
 
-/// Columns, wrapping and truncation come from `letibot-ui`.
-///
-/// These were three functions here, and all three counted a `char` as one column.
-/// The comment on the old `visible_width` called that *"the accepted cost of not
-/// vendoring a width table"*, and the cost is not accepted anywhere a person can
-/// see it: a status line one column too long is wrapped by the terminal, which
-/// puts a row on the screen the head did not count, which scrolls the frame it
-/// just painted. [`rano::width::text`] measures grapheme clusters and knows the
-/// wide ranges, never splits a cluster or an escape, breaks between wide clusters
-/// so CJK wraps at all, and carries SGR state across a break — which matters here
-/// because [`crate::term::paint`] emits `\x1b[K` per row and erase-to-end-of-line
-/// uses the *current* attributes.
+/// Columns, wrapping and truncation come from `letibot-ui`: counting a `char` as one column lets
+/// the terminal wrap a row the head did not count, which scrolls the frame it just painted, and
+/// the SGR state has to survive a break because `paint` erases each row with `\x1b[K`.
 pub use rano::width::text::{truncate as trim_to, width as visible_width, wrap};
 
 /// ANSI, kept as constants rather than a dependency.
@@ -90,19 +58,9 @@ pub struct RenderConfig {
     pub width: usize,
     pub color: bool,
     pub budget: Budget,
-    /// The role of the block this render is happening *inside*, if any.
-    ///
-    /// `None` is the top level, where a span closes with a plain reset and the
-    /// output is byte-for-byte what it always was. `Some(Role::Reasoning)` is the
-    /// model's working-out, and it is the whole reason this field exists: a
-    /// heading or an inline code span inside a themed block used to close to the
-    /// *terminal default*, so the reasoning "tries to be grey, then goes green and
-    /// becomes white for several rows and then grey again" — the operator's words,
-    /// from looking at the screen.
-    ///
-    /// A reset is not a restore. Carried here rather than passed alongside because
-    /// every span this module paints has to close the same way, and a parameter
-    /// that is threaded by hand is a parameter one call site will be missing.
+    /// The role of the block this render happens *inside*. `None` is the top level, where a span
+    /// closes with a plain reset. `Some(..)` is the whole reason the field exists: a reset is not a
+    /// restore, so a heading or a code span in a themed block would close to the terminal default.
     pub base: Option<Role>,
     /// **Hyperlinks (OSC 8) are on, and relative paths resolve against this** — the session's
     /// workspace. `None` is a terminal that does not speak them, and every pipe, replay and
@@ -156,10 +114,9 @@ pub fn markdown_images(text: &str) -> Vec<(String, String)> {
     out
 }
 
-/// **The pictures a reply's markdown named that the head has uploaded**: `(item, target)` →
-/// `(id, pixel width, pixel height)`. Filled by the head's upload pass, which reads the file;
-/// read by the renderer, which must not touch the disk while it draws a frame — so a reference
-/// the pass has not reached yet simply draws nothing until it has.
+/// The pictures a reply's markdown named that the head has uploaded: `(item, target)` ->
+/// `(id, pixel width, pixel height)`. The upload pass reads the file; the renderer must not touch
+/// the disk while it draws, so a reference the pass has not reached draws nothing yet.
 type ReplyImages = std::collections::BTreeMap<(String, String), (u32, Option<u32>, Option<u32>)>;
 static REPLY_IMAGES: std::sync::Mutex<ReplyImages> =
     std::sync::Mutex::new(std::collections::BTreeMap::new());
@@ -178,19 +135,16 @@ pub fn reply_image(item_id: &str, target: &str) -> Option<(u32, Option<u32>, Opt
         .copied()
 }
 
-/// **The pictures an operator's row carries that the head has uploaded**: `(item, part index)` →
-/// `(id, pixel width, pixel height)`. The same bargain as [`REPLY_IMAGES`] and for the same reason:
-/// the upload pass has `&mut App` and reads the bytes, the renderer has `&` and must not allocate a
-/// megabyte of base64 to draw a frame — so a picture the pass has not reached yet draws nothing,
-/// and the row is redrawn when it has (the pass marks the history dirty).
+/// The pictures an operator's row carries that the head has uploaded: `(item, part)` ->
+/// `(id, pixel width, pixel height)`. Same bargain as [`REPLY_IMAGES`]: the renderer has `&` and
+/// must not encode a megabyte of base64 to draw, so an unreached picture draws nothing yet.
 type UserImages = std::collections::BTreeMap<(String, usize), (u32, Option<u32>, Option<u32>)>;
 static USER_IMAGES: std::sync::Mutex<UserImages> =
     std::sync::Mutex::new(std::collections::BTreeMap::new());
 
-/// **The word a user row's image id is spelled with** — `s-7#img1`. The `#` and the word are what
-/// keep a picture's id from colliding with the row's own ([`rano::term::graphics::image_id`] of an
-/// item id is a reply's picture, of `item#target` a markdown one), and the index keeps two pictures
-/// in one prompt apart.
+/// The word a user row's image id is spelled with - `s-7#img1`. The `#` and the word keep a
+/// picture's id from colliding with the row's own, and the index keeps two pictures in one prompt
+/// apart.
 pub(crate) const USER_PART: &str = "img";
 
 pub fn remember_user_image(item_id: &str, part: usize, image: (u32, Option<u32>, Option<u32>)) {
@@ -212,10 +166,9 @@ pub fn user_image(item_id: &str, part: usize) -> Option<(u32, Option<u32>, Optio
 /// from, absent when the upload pass could not measure them.
 pub(crate) type PlacedPicture = (u32, u32, u32, (Option<u32>, Option<u32>));
 
-/// **The cell box of a user row's picture at this width** — the thumbnail under the chip, the
-/// enlarged picture in the popup, and the same function the upload pass places it with, so the rows
-/// a renderer draws always match the placement the terminal holds. The pixels come back with it
-/// because the popup's box is cut from them and re-cutting needs the aspect.
+/// The cell box of a user row's picture at this width: the thumbnail, the popup, and the placement
+/// the upload pass uses, so the rows drawn always match what the terminal holds. The pixels come
+/// back with it because the popup's box is cut from them.
 pub(crate) fn user_picture_box(item_id: &str, part: usize, width: usize) -> Option<PlacedPicture> {
     let (id, w, h) = user_image(item_id, part)?;
     let (cols, rows) =
@@ -223,12 +176,9 @@ pub(crate) fn user_picture_box(item_id: &str, part: usize, width: usize) -> Opti
     Some((id, cols, rows, (w, h)))
 }
 
-/// **Where a reply's picture goes**: after the first rendered line, at or past `from`, that
-/// shows its reference — the markdown itself when it is drawn literally (a code block), else
-/// the bare target, else its alt text, which is what the markdown renderer leaves of an image.
-/// In that order: the operator's reply named the path in a sentence before the `![…]` line, and
-/// a search for the path alone hung the picture under the sentence. `None` when none of the
-/// three is on any line, and the caller puts it at the end.
+/// Where a reply's picture goes: after the first line at or past `from` showing its reference -
+/// `](target` first, then the bare target, then the alt text - because a reply names the path in a
+/// sentence before the `![..]` line. `None` when none is on a line; the caller ends the block.
 pub fn picture_anchor(lines: &[String], from: usize, alt: &str, target: &str) -> Option<usize> {
     let plain = |l: &String| {
         let mut t = String::with_capacity(l.len());
@@ -271,11 +221,9 @@ pub fn picture_anchor(lines: &[String], from: usize, alt: &str, target: &str) ->
 }
 
 impl RenderConfig {
-    /// The `letibot-ui` palette this config implies.
-    ///
-    /// One place, because `color: false` is not a monochrome theme — it is the
-    /// `--replay`, pipe-to-a-file and CI case, and it has to produce
-    /// byte-identical output on every machine.
+    /// The `letibot-ui` palette this config implies. One place, because `color: false` is not a
+    /// monochrome theme but the `--replay`, pipe and CI case, and its output has to be
+    /// byte-identical on every machine.
     pub fn palette(&self) -> Palette {
         if self.color && self.light {
             Palette::Light
@@ -295,11 +243,9 @@ impl RenderConfig {
     }
 }
 
-/// The `rano::markdown` options a config implies, with `limit` rows per block.
-///
-/// The register is [`RenderConfig::base`]: rano lays it under every row as the row's own
-/// style, so a heading or a code span inside the reasoning cannot close to the terminal
-/// default — the defect `RenderConfig::base` was introduced for, fixed structurally.
+/// The `rano::markdown` options a config implies, with `limit` rows per block. The register is
+/// [`RenderConfig::base`]: rano lays it under every row as the row's own style, so a heading or a
+/// code span inside the reasoning cannot close to the terminal default.
 pub fn md_options(cfg: &RenderConfig, limit: usize) -> RenderOptions {
     RenderOptions {
         base: cfg.base,
@@ -327,18 +273,9 @@ fn md_row(l: &Line, p: Palette) -> String {
 
 pub use crate::ui::rows::{row, row_strings};
 
-/// **A path the head prints, as a span the terminal can open** (OSC 8).
-///
-/// The one place a printed path becomes a rendered span: [`rano::term::links::file_url`] is
-/// rano's decision about what a path is and which URL opens it — absolute, or relative to
-/// `root`, and carrying this machine's name so a link drawn by a head on the far end of `ssh`
-/// does not open the same-named file on the near one — and it was never called from this tree.
-/// `root` is [`RenderConfig::links`]: `None` is a terminal that does not speak OSC 8, and every
-/// pipe, replay and test, and the span is then byte-for-byte the one that was drawn before.
-///
-/// The caller says which text is a path, because that is the half only it knows — a note's
-/// path, the file a change is in. `file_url` decides whether what it was handed is one path and
-/// nothing else, so a target that is a command line or a call id comes back as plain text.
+/// A printed path as a span the terminal can open (OSC 8), through rano's `file_url`, which
+/// decides what a path is and carries this machine's name so a link drawn over ssh opens there.
+/// `root` is `RenderConfig::links`: `None` - a pipe, a replay, a test - draws the plain span.
 pub fn path_span(root: Option<&str>, text: &str, style: Style) -> Span {
     match root.and_then(|r| rano::term::links::file_url(r, text)) {
         Some(url) => Span::styled(text, style.link(url)),
@@ -364,17 +301,9 @@ pub fn render_bounded(b: &Block, cfg: &RenderConfig, limit: usize) -> Vec<String
     )
 }
 
-/// A per-line decoration applied to everything a [`BlockCache`] produces.
-///
-/// It exists so the reasoning pane can carry `card::REASONING_RAIL_WIDTH`'s `┃`
-/// rail **without** copying its frozen prefix into every frame. The rail has to
-/// be on every line — that is the point of it, it is the signal that survives a
-/// copy-paste when the colour does not — and the only place it can be applied
-/// once per line rather than once per line per frame is at the moment the line
-/// enters the cache.
-///
-/// A string, not `rano::markdown::Decor`'s spans: the rail and the step it is set in are
-/// this head's frame, painted by the head, and they wrap a row rano has already drawn.
+/// A per-line decoration applied to everything a [`BlockCache`] produces, so the reasoning pane
+/// carries its rail without copying its frozen prefix into every frame: it is applied once, when
+/// the line enters the cache. A string, because the rail wraps a row rano already drew.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Decor {
     /// Prepended to every line, already painted. Its *visible* width must be
@@ -386,10 +315,9 @@ pub struct Decor {
 }
 
 impl Decor {
-    /// Decorate one line. Public because a head that draws a single line beside a
-    /// cached block — the live tail of a folded reasoning pane — has to decorate
-    /// it the same way, and the only way to guarantee that is for there to be one
-    /// function.
+    /// Decorate one line. Public because a head drawing a single line beside a cached block - the
+    /// live tail of a folded reasoning pane - has to decorate it the same way, and only one
+    /// function guarantees that.
     pub fn apply(&self, l: &str) -> String {
         match (self.prefix.is_empty(), self.open.is_empty()) {
             (true, true) => l.to_string(),
@@ -404,12 +332,9 @@ impl Decor {
 /// *another document*. See [`BlockCache::split`].
 const DRAWN_HEAD: usize = 64;
 
-/// Rendered rows for a growing document, with the frozen prefix cached.
-///
-/// rano's [`MarkdownView`] keeps the settled blocks' *lines* and re-renders only the tail;
-/// this keeps the settled lines' *strings* beside it, converted once as each one settles,
-/// so the per-frame path hands the prefix back borrowed and converts only the tail. A
-/// frame's cost is then the tail and the window, not everything said so far (§13.3).
+/// Rendered rows for a growing document, with the frozen prefix cached: rano's `MarkdownView`
+/// keeps the settled blocks' lines, this keeps their strings, converted once as each settles, so
+/// a frame costs the tail and the window rather than everything said so far.
 #[derive(Debug, Default)]
 pub struct BlockCache {
     view: MarkdownView,
@@ -418,24 +343,15 @@ pub struct BlockCache {
     /// re-renders on the first, third and fourth itself; the palette is the head's alone —
     /// rano's lines hold no colour — so a `color` flip must drop the strings here.
     key: Option<(usize, Palette, Option<Role>, usize, bool)>,
-    /// **The document these rows were drawn from**, as far as it can be checked for the cost
-    /// of a frame: the bytes at its head and its length. A document that is not an extension of
-    /// this one is a document nobody wrote, and the rows are not its rows.
-    ///
-    /// The first site of this bug was fixed in `feed` — *a text that is no longer an extension
-    /// of what was fed starts the parse over rather than appending to a tree that describes
-    /// something else* — and this is the same cause one layer up, in the half of the cache the
-    /// head owns: the settled rows were keyed on the width, the palette, the register and the
-    /// bound, and reused **by count**, so a replaced document was drawn as the old one's rows
-    /// followed by the new one's tail. See [`BlockCache::split`].
+    /// The document these rows were drawn from, as far as a frame can afford to check: its head
+    /// bytes and its length. A hash would be O(document) per frame, so a replacement that shares
+    /// those bytes and is no shorter still reads as growth.
     drawn: Option<(String, usize)>,
     /// The view's settled lines, as rows, decorated.
     stable_rows: Vec<String>,
-    /// **The live tail's rows, and the document they were drawn from.** A frame with nothing
-    /// new to draw — the settled steady state, which is most frames — hands these back
-    /// rather than rendering and converting the tail again: the document has not moved
-    /// (`lex_calls` counts every push, the length every byte), and neither has anything else
-    /// the rows depend on, because a change of key or decor clears them.
+    /// The live tail's rows and the document they were drawn from. A frame with nothing new - the
+    /// settled steady state - hands these back instead of rendering the tail again; the key and the
+    /// decor clear them, so what they depend on cannot change under them.
     tail_rows: Vec<String>,
     tail_of: Option<(u64, usize)>,
 }
@@ -453,10 +369,8 @@ impl BlockCache {
         }
     }
 
-    /// Set the decoration, throwing the converted prefix away if it changed.
-    ///
-    /// It changes when `color` does, and a prefix decorated under the old palette
-    /// is stale in exactly the way a prefix rendered at the old width is.
+    /// Set the decoration, throwing the converted prefix away if it changed: a prefix decorated
+    /// under the old palette is stale in exactly the way one rendered at the old width is.
     pub fn set_decor(&mut self, decor: Decor) {
         if self.decor != decor {
             self.decor = decor;
@@ -466,12 +380,9 @@ impl BlockCache {
         }
     }
 
-    /// Total lines for the document: the cached prefix plus a freshly rendered
-    /// tail.
-    ///
-    /// Convenience over [`BlockCache::split`], and it **copies the prefix**. Fine
-    /// for a one-shot render of a finished document; not for the per-frame path,
-    /// where the copy is O(accumulated output) and §13.3 says a frame must not be.
+    /// Total lines for the document: the cached prefix plus a freshly rendered tail. Convenience
+    /// over [`BlockCache::split`] that copies the prefix, so it is for a one-shot render of a
+    /// finished document, not the per-frame path where that copy is O(accumulated output).
     pub fn lines(
         &mut self,
         md: &IncrementalMarkdown,
@@ -487,13 +398,9 @@ impl BlockCache {
         out
     }
 
-    /// The frozen prefix **by reference**, and the live tail — rendered afresh when the
-    /// document has moved, handed back as it was when it has not.
-    ///
-    /// This is the per-frame form. The prefix is the part that grows without bound
-    /// over a long answer, and handing it back borrowed is what keeps the cost of
-    /// drawing a frame proportional to the tail and the window rather than to
-    /// everything said so far.
+    /// The frozen prefix by reference and the live tail, rendered afresh when the document has
+    /// moved. This is the per-frame form: the prefix grows without bound, and borrowing it keeps a
+    /// frame proportional to the tail and the window.
     pub fn split(
         &mut self,
         md: &IncrementalMarkdown,
@@ -511,18 +418,9 @@ impl BlockCache {
             self.tail_of = None;
             self.drawn = None;
         }
-        // **A document that is not an extension of the one these rows were drawn from starts
-        // the cache over.** The same reasoning as the fence highlighter's: what was drawn is a
-        // prefix of what is being drawn only while the document grows at its end, and a
-        // replaced document — a re-seat, a fork, a row re-rendered from another item — is not
-        // an extension of anything. Without this the frame is the old document's settled rows
-        // followed by the new one's tail: rows from a text nobody wrote, in one frame.
-        //
-        // The head is what is compared, and the length, because that is the check a frame can
-        // afford — a hash of the whole prefix would be O(document) per frame, which is the cost
-        // this cache exists to avoid. A replaced document that shares its first
-        // [`DRAWN_HEAD`] bytes and is no shorter is still mistaken for an extension of the one
-        // before it; said rather than left to be discovered.
+        // A document that is not an extension of the one these rows were drawn from starts the
+        // cache over: a re-seat, a fork, a row re-rendered from another item. Without it the frame
+        // is the old document's settled rows followed by the new one's tail.
         let raw = md.raw();
         let head = raw.get(..raw.len().min(DRAWN_HEAD)).unwrap_or("");
         if !self
@@ -530,11 +428,9 @@ impl BlockCache {
             .as_ref()
             .is_some_and(|(h, n)| h == head && *n <= raw.len())
         {
-            // **The view goes with the rows.** It keeps the settled blocks' *lines*, keyed on
-            // the width and the bound alone, so clearing only the strings here left the frame
-            // drawn from the other document's lines anyway — measured while fixing this: the
-            // test below still showed the previous document's three fences. A restart is what
-            // the first site's fix does (a fresh `Stream`), one layer down.
+            // The view goes with the rows: it keeps the settled blocks' lines keyed on the width
+            // and the bound alone, so clearing the strings here would still draw the other
+            // document's lines. A fresh view is what the parse layer's own fix does.
             self.view = MarkdownView::new();
             self.stable_rows.clear();
             self.tail_rows.clear();
@@ -630,10 +526,9 @@ mod tests {
         }
     }
 
-    /// **A fence streamed in is highlighted once its language arrives.** The first frame of a
-    /// streamed fence usually holds only its backticks; the cache built the highlighter then,
-    /// for no language, and kept it — so the block stayed plain while a one-shot render of
-    /// the same text was coloured. Found porting this cache to `rano::markdown`.
+    /// A fence streamed in is highlighted once its language arrives: the first frame of a streamed
+    /// fence usually holds only its backticks, so a highlighter built then and kept would leave the
+    /// block plain while a one-shot render of the same text is coloured.
     #[test]
     fn a_fence_named_after_its_backticks_is_still_highlighted() {
         let cfg = RenderConfig {
@@ -656,13 +551,9 @@ mod tests {
         );
     }
 
-    /// **A document that is not an extension of the one the cache drew is not drawn as the old
-    /// one's rows.** The first site of this bug was fixed in `feed` (see
-    /// `a_fence_named_after_its_backticks_is_still_highlighted`, and its commit message for the
-    /// cause); this is the same cause in the half of the cache the head owns. Before the fix
-    /// this test drew the first document's three fences followed by the second document's tail
-    /// — rows from a text nobody wrote, in one frame — because the settled rows were reused by
-    /// count.
+    /// A document that is not an extension of the one the cache drew is not drawn as the old one's
+    /// rows: reusing the settled rows by count would put the first document's fences above the
+    /// second's tail. Growth keeps its rows - the restart is for another document, not for growth.
     #[test]
     fn a_replaced_document_is_not_drawn_as_the_previous_ones_rows() {
         let cfg = RenderConfig {

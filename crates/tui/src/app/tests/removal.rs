@@ -1,18 +1,6 @@
-//! **Taking a session off the list, and what this head refuses to pretend it can do.**
-//!
-//! The operator, on the pane they use most: *"and add controls to remove sessions"*. There are
-//! three senses of *remove* and they are different — hide it from this pane, forget it in the
-//! store, or close it and then forget it — and `app::removal` is the argument for the one built
-//! here. These are the tests of that argument:
-//!
-//! * `del` takes a row off the list, twice over (armed, then removed), and `ctrl-z` puts it back;
-//! * **a name is still a name**: the picker's typed line is a filter, so its keys are the two
-//!   chords a line can never be (`a_typed_name_is_never_a_removal` is the test the letters this
-//!   started with needed and did not have);
-//! * the row this head is standing in cannot go, **nor any session above it** — the list is the
-//!   answer to *where am I*, and the row you are in is drawn through its chain;
-//! * `/forget` refuses, by name, and the refusal says what a forget would cost and which door
-//!   could do it — a live session first of all, because the daemon is holding it.
+//! Taking a session off the list, and what this head refuses to pretend it can do: `del` asks
+//! twice, `ctrl-z` puts the row back, a typed name is a filter and never a removal, and the row this
+//! head stands in - nor any above it - cannot go. `/forget` refuses by name and says what it costs.
 
 use super::*;
 use letibot_plugins::Stack;
@@ -49,13 +37,9 @@ fn a_head_at(here: &str, sessions: Vec<SessionBrief>) -> App {
     a
 }
 
-/// **The head with the built-in `sessions` layer actually installed.**
-///
-/// Without this a head has no `sessions_host`, so `picker_rows` falls back to the head's own
-/// `session_list` — and a test that meant to ask the LAYER would be comparing two head-side
-/// functions over one source, which proves nothing about `App::sessions_feed` (the one place a
-/// removal meets the built-in layer). `sessions_override`'s tests stand the real build in the
-/// same way.
+/// The head with the built-in `sessions` layer actually installed: without it there is no
+/// `sessions_host` and `picker_rows` falls back to the head's own `session_list`, so a test meaning
+/// to ask the LAYER would compare two head-side functions over one source and prove nothing.
 fn with_the_layer(a: &mut App) {
     let project = std::env::temp_dir().join(format!("letibot-removal-{}", std::process::id()));
     std::fs::create_dir_all(&project).expect("a project dir");
@@ -96,10 +80,8 @@ fn said(a: &App) -> String {
     a.notice.clone().unwrap_or_default()
 }
 
-/// **`del` is asked twice: the first press says what would go, the second removes it.**
-///
-/// The first press must not remove anything — that is the whole of "ask for the act twice" — and
-/// the sentence has to name the row, the subtree under it, and where it stays.
+/// `del` is asked twice: the first press must remove nothing - that is the whole of asking twice -
+/// and its sentence names the row, the subtree under it and where it stays. The second removes it.
 #[test]
 fn del_asks_before_it_removes() {
     let mut a = a_head(vec![
@@ -165,14 +147,9 @@ fn ctrl_z_brings_the_last_removed_row_back() {
     assert!(said(&a).contains("nothing is removed"), "{}", said(&a));
 }
 
-/// **A name typed into the picker is a name, letter by letter** — the picker is the one surface in
-/// this head whose typed line is not a `/verb`, so a letter bound here is matched exactly when the
-/// composer is empty, which is exactly the first character of a filter.
-///
-/// The keys this branch started with were `x`, `u` and `f`: typing `fix the parser` produced a
-/// refusal sentence and a filter missing its `f`, and `x` armed a removal of whatever row the
-/// cursor happened to be on. `del` and `ctrl-z` are spellings a typed line can never be, and
-/// `/forget` is typed — so this test is the whole of what the letters could not pass.
+/// A name typed into the picker is a name, letter by letter: the picker is the one surface whose
+/// typed line is not a `/verb`, so a letter bound here matches exactly when the composer is empty -
+/// which is the first character of a filter. `del` and `ctrl-z` are spellings a typed line cannot be.
 #[test]
 fn a_typed_name_is_never_a_removal() {
     let mut a = a_head(vec![
@@ -318,11 +295,9 @@ fn removing_a_parent_takes_its_children_off_the_list() {
     assert_eq!(line, "letibot (1)", "a count that lies is worse than none");
 }
 
-/// **Landing on a row you removed brings it back** — the refusal seen from the other side.
-///
-/// `/switch <name>` searches every session the daemon holds, not the drawn rows, so a person can
-/// switch into a row this list is hiding — and then the list would be filtering out the very
-/// session it is standing in. The `Hello` that seats them drops the removal.
+/// Landing on a row you removed brings it back. `/switch <name>` searches every session the daemon
+/// holds, not the drawn rows, so a person can switch into a row this list is hiding - and the
+/// `Hello` that seats them drops the removal.
 #[test]
 fn landing_on_a_removed_row_brings_it_back() {
     let sessions = vec![
@@ -347,16 +322,9 @@ fn landing_on_a_removed_row_brings_it_back() {
     );
 }
 
-/// **The chain to where this head stands is never off the list, whatever the list says.** The
-/// refusal (`remove_row`), the seating (`prune_removed`) and the predicate (`removed_chain`) are
-/// three doors on one invariant, and this test goes through the third: a `removed` list naming the
-/// parent of the session this head is in — which is what a list built by anything that skipped the
-/// other two would hold — leaves the family view exactly as it was.
-///
-/// The reviewer's finding: the family branch of `session_rows` pushes the parent's row with no
-/// guard of its own, so a removal of that row drew the parent, dropped every child including the
-/// row the head was standing in, and made the layer fall out of the family view into the whole
-/// project tree — the pane changing shape on a removal.
+/// The chain to where this head stands is never off the list, whatever the list says: the refusal,
+/// the seating and the predicate are three doors on one invariant and this test goes through the
+/// third - a list naming the parent of this head's session must leave the family view as it was.
 #[test]
 fn a_removal_above_here_is_not_a_removal_at_all() {
     let mut a = a_head_at(
@@ -381,10 +349,9 @@ fn a_removal_above_here_is_not_a_removal_at_all() {
     );
 }
 
-/// **The two drawings agree about a removed row, and the LAYER is one of them.** The built-in
-/// `sessions` layer draws from `App::sessions_feed`, so that is where a removal has to be applied
-/// for it — and this test asks the layer, with a real `Host` over the modules this binary carries,
-/// rather than the head's own fallback dressed as one.
+/// The two drawings agree about a removed row, and the LAYER is one of them: it draws from
+/// `App::sessions_feed`, so a removal has to be applied there - and this asks the layer, with a real
+/// `Host` over the modules this binary carries, not the head's own fallback dressed as one.
 #[test]
 fn the_heads_list_and_the_layers_list_both_drop_the_removed_row() {
     let mut a = a_head(vec![
@@ -432,10 +399,9 @@ fn the_heads_list_and_the_layers_list_both_drop_the_removed_row() {
         vec!["s-habr"],
         "the removed session is not in the feed"
     );
-    // **By name it is still reachable**: a removal is about the row, not the session — `/switch`
-    // searches every session the daemon holds, so a hidden conversation is one keystroke away.
-    // (This one is `ResumeSession` because the fixture's session is not live in the daemon: the
-    // point is that `pick` still finds it at all.)
+    // By name it is still reachable: a removal is about the row, not the session - `/switch` searches
+    // every session the daemon holds, so a hidden conversation is one keystroke away. It is
+    // `ResumeSession` here only because the fixture's session is not live in the daemon.
     assert_eq!(
         a.pick("rust"),
         Some(Action::ResumeSession("s-rust".into())),
@@ -443,11 +409,9 @@ fn the_heads_list_and_the_layers_list_both_drop_the_removed_row() {
     );
 }
 
-/// **`/forget` refuses a live session by name** — the destructive sense, and the one refusal the
-/// operator's own history asks for: a key must not take away something that is running.
-///
-/// The sentence has to carry four facts: which session, that it is live, what a forget would cost,
-/// and that nothing was done.
+/// `/forget` refuses a live session by name, and the sentence carries four facts: which session,
+/// that it is live, what a forget would cost, and that nothing was done. A key must not take away
+/// something that is running.
 #[test]
 fn forget_refuses_a_live_session_by_name() {
     let mut a = a_head(vec![
@@ -517,10 +481,9 @@ fn forget_says_which_door_could_forget_an_empty_session() {
     );
 }
 
-/// **`/forget` resolves the session it is given, and refuses to guess** — the same reading
-/// `/switch` gives its argument, minus the switching: an id or a unique prefix, and a refusal that
-/// names what it found rather than taking the first match. Forgetting the wrong conversation is
-/// not a keystroke to take back.
+/// `/forget` resolves the session it is given and refuses to guess - an id or a unique prefix, the
+/// same reading `/switch` gives its argument - and a refusal names what it found rather than taking
+/// the first match: forgetting the wrong conversation is not a keystroke to take back.
 #[test]
 fn forget_resolves_the_id_it_is_given() {
     let mut a = a_head(vec![

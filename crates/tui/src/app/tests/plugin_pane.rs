@@ -1,9 +1,6 @@
-//! **A plugin's pane**: the document a `pane_<name>` hook answered, held by name and drawn
-//! under the host's keys (`docs/plugins-slice1.md` C3/C4).
-//!
-//! Every test here starts from the JSON a plugin would answer — the wire's own shape — because
-//! that is what the head parses: a fixture written as a `View` would prove the types agree with
-//! themselves and nothing about what a plugin has to send.
+//! A plugin's pane: the document a `pane_<name>` hook answered, held by name and drawn under the
+//! host's keys. Every test starts from the JSON a plugin would answer - the wire's own shape -
+//! because a fixture written as a `View` would only prove the types agree with themselves.
 
 use super::*;
 
@@ -64,12 +61,9 @@ fn holding(view: serde_json::Value) -> App {
     a
 }
 
-/// **A pane whose one block is a TREE** — C3's nesting, which is the block a plan is written
-/// as: a root with two children, one of them a child in its own right.
-///
-/// Written as JSON, like every fixture here, because a tree is what a plugin sends and not
-/// what a test would build out of the host's types: the row's `cells`, its `id`, its `role`,
-/// its `detail` and its `actions` are all fields of the wire's own shape.
+/// A pane whose one block is a TREE - C3's nesting, which is the block a plan is written as: a root
+/// with two children, one of them a child in its own right. Written as JSON like every fixture here,
+/// because a tree is what a plugin sends and not what a test would build out of the host's types.
 fn treed() -> serde_json::Value {
     serde_json::json!({
         "title": "a plan",
@@ -326,11 +320,9 @@ fn a_look_action_asks_for_a_fresh_look() {
     );
 }
 
-/// **The selected stop's own action letters are on the bottom bar** — C3: *action keys are single
-/// lowercase letters shown in the hint bar for the selected stop*.
-///
-/// The bar is where a reader learns that `s` and `e` exist at all, and it has to follow the
-/// cursor: a letter offered on a row the cursor has left is a letter that does nothing.
+/// The selected stop's own action letters are on the bottom bar - C3's rule - and it has to follow
+/// the cursor: the bar is where a reader learns `s` and `e` exist, and a letter offered on a row the
+/// cursor has left is a letter that does nothing.
 #[test]
 fn the_bar_names_the_selected_stops_action_keys() {
     let mut a = opened();
@@ -406,10 +398,9 @@ fn a_click_on_a_panel_opens_its_view() {
     );
 }
 
-/// **A pane the head cannot honour is refused rather than drawn**, and says why: a view whose
-/// action key is `q` would let a plugin own the key the operator leaves with. The verdict is
-/// the same one the daemon runs (`View::validate`), and it is drawn where the dashboard would
-/// have been.
+/// A pane the head cannot honour is refused rather than drawn, and says why: a view whose action key
+/// is `q` would let a plugin own the key the operator leaves with. The verdict is the daemon's own
+/// (`View::validate`), drawn where the dashboard would have been.
 #[test]
 fn a_view_that_collides_with_the_hosts_keys_is_refused_and_says_why() {
     let view = serde_json::json!({
@@ -544,18 +535,9 @@ fn the_wheel_over_the_pane_scrolls_the_pane() {
     );
 }
 
-/// **A tree block draws its rows indented under their parent** — the snapshot this port has to
-/// keep: what a plan's rows read like, drawn by rano's one tree list.
-///
-/// A snapshot and not a set of `contains` assertions, because the port replaced the drawing
-/// function wholesale: the indent, the mark, the columns and the break between one cell and the
-/// next are exactly what changes when a private renderer becomes a primitive's, and a test that
-/// only asked *is `step a` on the screen* would stay green through all of it.
-///
-/// **The one difference the port made, on purpose**: two cells of a row are now one space apart
-/// rather than two, because that is the list's own separator (`rano::agent::tree_list::row_line`)
-/// and a plugin's row should be laid out by the same rule as a session's. The mark, the indent,
-/// the order and the roles are unchanged, which is what the other half of this test pair checks.
+/// A tree block draws its rows indented under their parent. A snapshot, not `contains` assertions,
+/// because the port replaced the drawing wholesale - the indent, the mark, the columns and the break
+/// between one cell and the next are what changes when a private renderer becomes a primitive's.
 #[test]
 fn a_tree_block_draws_its_rows_indented_under_their_parent() {
     let mut a = tree_opened();
@@ -573,13 +555,9 @@ fn a_tree_block_draws_its_rows_indented_under_their_parent() {
     );
 }
 
-/// **A tree's rows are its stops, in reading order** — and the selected row's two acts still
-/// work: Enter reads it whole, and its own letter is sent back to the plugin that drew it.
-///
-/// The other half of the snapshot above. The port moves the drawing into rano's tree list, and
-/// the list also owns the stops (`TreeList::stops`) — so the count, the order, the detail an
-/// Enter opens and the `item` an action names are all one reading, and a port that changed any
-/// of them would be a pane whose keys act on a different row than the mark is on.
+/// A tree's rows are its stops, in reading order, and the selected row's two acts still work: Enter
+/// reads it whole and its own letter goes back to the plugin that drew it. The list owns the stops,
+/// so the count, the order, the detail and the action's `item` are one reading.
 #[test]
 fn a_trees_rows_are_its_stops_and_their_detail_and_actions_work() {
     let mut a = tree_opened();
@@ -613,13 +591,9 @@ fn a_trees_rows_are_its_stops_and_their_detail_and_actions_work() {
     assert!(detail.contains("step b's words"), "{detail}");
 }
 
-/// **A row's `enter` is the host's act, and this head performs it** — C3's `switch`.
-///
-/// The nick list (`plugins/builtin/irc`) is a list whose rows exist to be switched to: every row
-/// carries `enter: {"switch": <session>}`, declared in that layer's manifest. This head opened
-/// every row's DETAIL instead, so the gesture the layer asked for did nothing but read the row's
-/// own prose — a plugin that promises *enter goes there* and a host that answers *here is what
-/// that row says*.
+/// A row's `enter` is the host's act, and this head performs it - C3's `switch`. The nick list's rows
+/// exist to be switched to (`enter: {"switch": <session>}`), and a host that opened the row's DETAIL
+/// instead would answer a promise to go there with "here is what that row says".
 #[test]
 fn a_rows_enter_act_switches_and_the_pane_leaves_with_it() {
     const NICKS: &str = "irc/nicks";
@@ -660,13 +634,9 @@ fn a_rows_enter_act_switches_and_the_pane_leaves_with_it() {
     );
 }
 
-/// **A row's verb, and its letter, are both sent to the host that drew the row.**
-///
-/// `Act::Verb` names an entry and one of the layer's own verbs (`actions = ["claim", …]`, gated by
-/// `View::validate_for` before this head ever sees the view); `Action`'s `verb` does the same on a
-/// letter. Both are `PaneAction`s, because the host that performs them is the one that drew them —
-/// the room's daemon, which holds the connection the verbs go down. This head has no state to act
-/// on and must not invent one.
+/// A row's verb, and its letter, are both sent to the host that drew the row: `Act::Verb` names an
+/// entry and one of the layer's own verbs, `Action`'s `verb` does the same on a letter, and both are
+/// `PaneAction`s because the host that performs them holds the connection. This head invents nothing.
 #[test]
 fn a_rows_verb_act_and_verb_letter_go_to_the_host() {
     const ROOM: &str = "room/room";

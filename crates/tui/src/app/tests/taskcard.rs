@@ -1,15 +1,6 @@
-//! **A finished subagent's line is a door to that child.**
-//!
-//! The operator, 2026-11-01: *"when subagent finished main session gets notification and it is
-//! clickable. but the card shown is completely useless - i want the click to bring me to the
-//! subagent session instead, so i can read its conclusions"*.
-//!
-//! The line stays what it was — one line per settlement, the glance — and the click becomes the
-//! dive: `Act::Switch`, the gesture `ctrl-s` and a plugin pane's `switch` row already use, so the
-//! child's conversation is on the screen and `esc` comes back up to the parent.
-//!
-//! **The popup is still there** (`alt-n`, the newest notice whole) and every other notice row's
-//! click is unchanged. What changed is only what a click on a settlement's own line does.
+//! A finished subagent's line is a door to that child. The line stays what it was - one line per
+//! settlement, the glance - and the click becomes the dive: `Act::Switch`, so the child's
+//! conversation is on the screen and `esc` comes back up to the parent. The popup is still `alt-n`.
 
 use super::redcard::{holds, popup_text};
 use super::*;
@@ -169,10 +160,9 @@ fn a_failed_childs_line_switches_to_it() {
     assert!(a.diff_popup.is_none());
 }
 
-/// **A child the daemon has finished but still knows is resumed, not refused.** The settlement
-/// arrives *because* the child finished, so its session is the one case where the switch is
-/// usually to something the daemon no longer holds open — and `switch_to` brings it back from
-/// the store rather than telling the operator it is gone.
+/// A child the daemon has finished but still knows is resumed, not refused: the settlement arrives
+/// *because* the child finished, so its session is the one case where the switch is usually to
+/// something no longer held open - and `switch_to` brings it back from the store.
 #[test]
 fn a_finished_child_is_resumed_from_the_store() {
     let mut a = app();

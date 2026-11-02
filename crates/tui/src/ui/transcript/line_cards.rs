@@ -1,34 +1,6 @@
-//! **A notice the daemon writes as a wall of text, drawn as ONE line** — and the whole of it one
-//! click away, in the popup the job card opens. The one mechanism behind every such card; the
-//! readers are the cards' own modules.
-//!
-//! The operator asked for it twice. First of a red `main`, drawn as two big blocks: *"please make
-//! all this: … a one-line similar to job - with a popup"* (`red_card`). Then, pasting a review
-//! that could not decide — dozens of lines of the reviewer's reasons — *"same story about reviews
-//! - … one line + popup"* (`review_card`). And, pasting a stale-prompt note, a restart note and
-//!   the restart notice the model got, each a wrapped paragraph: *"these gray walls are hilarious
-//!   … make them the usual one liners"* (`stale_card`, `restart_card`).
-//!
-//! # The registry
-//!
-//! A card kind is a reader of the daemon's text: whether a text OPENS with one of its notices,
-//! the last words its notices END with (where a row of several notices is split), and the full
-//! reading, which hands back a [`Card`] — the line, the part of it drawn in a role, and the
-//! popup's title. A session row (a notice spoken in the operator's place) is read by
-//! [`SESSION_KINDS`]; a hub warning by [`WARNING_KINDS`], each under the codes it is raised with.
-//!
-//! # Only what this head can read is folded
-//!
-//! A reader answers `None` for any shape it does not know, and the row is then drawn as it was
-//! before cards existed. **A row must OPEN with a card**: one that opens with anything else is
-//! drawn as before, whole. A row that opens with a card and goes on is split after the card's
-//! last words only where what follows is another notice this head can open — another card, or a
-//! labelled `[job]`/`[task]` group — and the rest is drawn the way it is drawn without a card
-//! (the job card's lines, or the fold); a rest that is neither falls the WHOLE row back.
-//! Anything after the last words that does not open a notice stays inside the card: a sentence
-//! the daemon learned to say is the notice's, and the popup shows it.
-//!
-//! The record is untouched: the model reads the daemon's words, every one of them.
+//! A notice the daemon writes as a wall of text, drawn as ONE line with the whole of it one
+//! click away. A card kind reads a text that OPENS with one of its notices; anything this head
+//! cannot read is drawn as before, and the record keeps every word the model was given.
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -90,12 +62,9 @@ impl Card {
         }
     }
 
-    /// **The line cut to `cols`** with the head's `…`, the accent kept to what survived the cut.
-    ///
-    /// **The hint is the last thing cut** (R89): a line that ends with [`CLICK`] is cut in the
-    /// facts before it, so the one words that say a click opens the rest survive any width the
-    /// lead still fits in — a hint at the end of a line was the first thing a narrow terminal
-    /// took.
+    /// The line cut to `cols` with the head's ellipsis, the accent kept to what survived the cut. The
+    /// hint is cut LAST, so the words that say a click opens the rest survive any width the lead
+    /// still fits in - at the end of a line it was the first thing a narrow terminal took.
     pub(crate) fn cut(&self, cols: usize) -> CardLine {
         let hint = format!(" · {CLICK}");
         // The facts keep at least this much beside the hint; narrower, the line is cut whole.
@@ -131,12 +100,9 @@ pub(crate) struct SessionKind {
     pub(crate) opens: fn(&str) -> bool,
     /// The last words this kind's notices end with: where a row of several is split.
     pub(crate) ends: &'static [&'static str],
-    /// **The labelled groups this kind's notice CARRIES** — tags (`[task] `) whose groups, when
-    /// they follow the notice, are part of the same event and are read and drawn with it as its
-    /// one line, never split off. A restart's own deliveries (the children it handed over) are
-    /// the restart: drawn after its line as a fold, twelve of them were twelve more lines under
-    /// a card that already said *restored* (pg-noop, 2026-10-14). Empty for a kind that carries
-    /// nothing.
+    /// The labelled groups this kind's notice CARRIES: tags whose groups, following the notice,
+    /// are the same event and are drawn with it as one line, never split off - a restart's own
+    /// deliveries drawn separately were twelve more lines under a card that already said restored.
     pub(crate) carries: &'static [&'static str],
     /// The whole notice, read; `None` for a shape this head does not know.
     pub(crate) read: fn(&str) -> Option<Card>,
@@ -223,10 +189,9 @@ pub(crate) fn popup_title(text: &str) -> Option<(String, Role)> {
         .map(|c| (c.title, c.role))
 }
 
-/// **The compact row**: one line per card, and every other notice of the row drawn the way it
-/// is drawn without one (the job card, or the fold). `None` when the row does not open with a
-/// card, or when any part of it is a shape this head does not know — the row is then drawn as
-/// it was.
+/// The compact row: one line per card, and every other notice of the row drawn as it is drawn
+/// without one. `None` when the row does not open with a card, or when any part of it is a shape
+/// this head does not know - the row is then drawn whole.
 pub(crate) fn compact_cards(
     text: &str,
     subagents: &[SubagentState],
