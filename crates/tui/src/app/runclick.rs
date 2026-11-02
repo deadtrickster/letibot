@@ -1,11 +1,6 @@
 //! A run's marker opens by its parts: a click on the calls clause opens the tool calls, on the
-//! thinking clause the reasoning, and anywhere else the whole run. Esc folds it back.
-//!
-//! The lift is one field (`App::lift`), applied to whatever `payload_sel` names - a run of rows or
-//! `LIVE_RUN` for the turn in flight - and the panel goes with it, because a lift with no panel has
-//! no key that could close it.
-//!
-//! The thinking has two spellings of open: the fold, and the lift where the rung hides it.
+//! thinking clause the reasoning, and anywhere else the whole run. The lift is one field applied to
+//! whatever `payload_sel` names, and a lift with no panel has no key that could close it.
 
 use super::*;
 use crate::app::visibility::Show;

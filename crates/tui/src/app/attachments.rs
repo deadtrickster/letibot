@@ -1,11 +1,6 @@
-//! What the operator pastes, and what the composer makes of it. Three doors: ctrl-v or the
-//! terminal's paste key with an image on the clipboard; a bracketed paste whose whole text is
-//! existing files, which is what a terminal sends when a file is dragged in; and an EMPTY bracketed
-//! paste, the form a Cmd+V on an image arrives as, which is why it is the same act as ctrl-v.
-//!
-//! A chip is text in the composer's own buffer, so cursor, undo and what is submitted carry the same
-//! words the screen shows, and the ledger only turns a chip back into an `Attachment` at send time.
-//! Backspace inside a chip takes the whole chip; `Clipboard` is a trait, so no test reads a desktop.
+//! What the operator pastes and what the composer makes of it: an image on the clipboard, a
+//! bracketed paste of existing files, and the empty bracketed paste a Cmd+V on an image sends. A
+//! chip is text in the composer's own buffer, so cursor, undo and submit carry the words shown.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

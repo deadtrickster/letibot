@@ -1,11 +1,6 @@
-//! The surface stack: which screen holds the conversation's rectangle, and therefore which one the
-//! keys, the wheel and the hint bar are about.
-//!
-//! One stack, and its top is the surface. Opening pushes (or brings an open one to the top), Esc
-//! pops, and [`App::drawn`] is the single answer that `main_area` draws, `App::key` routes and
-//! `hint_bar` describes - so a surface that is not on top is not drawn and receives nothing, which
-//! is what three hand-written orders used to disagree about. An overlay a pane opens is on the same
-//! stack with the pane as its [`Surface::parent`], so Esc goes back one entry, not one handler.
+//! The surface stack: which screen holds the conversation's rectangle, and so which one the keys,
+//! the wheel and the hint bar are about. Opening pushes or raises, Esc pops, and `App::drawn` is
+//! the one answer `main_area` draws, `App::key` routes and `hint_bar` describes.
 
 use super::*;
 

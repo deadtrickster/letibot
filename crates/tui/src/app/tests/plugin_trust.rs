@@ -1,7 +1,6 @@
-//! D17's ladder from the operator's own seat: `/plugin` and `/plugin trust NAME`. The ladder is
-//! enforced where a layer reaches the world; what is here is the ONE act that puts a placed layer
-//! on the free side of it, a door a person has and a model does not - the `plugin` tool has no
-//! `trust` verb, because a layer that could pin itself would run freely because it said so.
+//! The ladder from the operator's own seat: `/plugin` and `/plugin trust NAME`. What is here is the
+//! one act that puts a placed layer on the free side of it, a door a person has and a model does
+//! not, so the `plugin` tool has no `trust` verb: a layer that pinned itself would run freely.
 
 use super::*;
 

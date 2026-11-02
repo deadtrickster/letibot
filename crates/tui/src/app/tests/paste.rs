@@ -1,9 +1,6 @@
-//! Pasting pictures and files into the composer: the clipboard, a drag-and-drop paste of paths,
-//! and the chip going out with the message, plus the two refusals that keep it honest (a paste
-//! that is not files stays text, and a chip whose file is gone is not sent empty).
-//!
-//! Nothing here reads the real clipboard: `app()` starts on the fake, and a test that wants a
-//! picture sets one with `a.set_clipboard(FakeClipboard(..))`.
+//! Pasting pictures and files into the composer: the clipboard, a drag-and-drop paste of paths, and
+//! the chip going out with the message, plus the two refusals that keep it honest. Nothing here
+//! reads the real clipboard; a test that wants a picture sets one on the fake.
 
 use super::*;
 use crate::app::attachments::{FakeClipboard, chip_text};

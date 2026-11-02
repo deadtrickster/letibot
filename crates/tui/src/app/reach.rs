@@ -1,11 +1,6 @@
-//! The model a sent message would go to, checked before it goes, and the chooser when it cannot
-//! be reached. The question lives here rather than in the launcher so that its answer is the two
-//! things already built for it: the `/models` card and its key card.
-//!
-//! Checked at the first message and not at open: the message is what is at risk, `App::submit` is
-//! the one place every prompt passes, and a local server that comes up later answers the next
-//! send - nothing is latched. Unreachable is the `vocab` row saying `none` (known from the rows,
-//! no probe) or the `endpoint` row's `/health` failing, probed on a thread of its own.
+//! The model a sent message would go to, checked before it goes: at the first message rather than
+//! at open, because the message is what is at risk and a local server that comes up later answers
+//! the next send. Unreachable is the `vocab` row saying `none`, or the endpoint's `/health` failing.
 
 use super::*;
 

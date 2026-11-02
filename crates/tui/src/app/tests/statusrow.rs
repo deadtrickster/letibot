@@ -1,23 +1,15 @@
-//! **Transient statuses ride the reserved status row, and the conversation never moves for them.**
-//!
-//! The operator, 2026-10-14: *"it showed me "resync..." in violet and "reading job output" very
-//! nice! but they were on their bottom lines and conversation was jumping back and forth. can we
-//! show such things [...] where Responding... line lives - it is preallocated and fixed"*.
-//!
-//! Every test here renders a frame before a transient, while it is up, and after it has gone, and
-//! asserts that every row above the status row — the header and the whole transcript body — is
-//! byte-identical in all three, and that the transient's words are on the status row itself.
+//! Transient statuses ride the reserved status row, and the conversation never moves for them:
+//! every test renders before, during and after, and asserts that every row above the status row
+//! is byte-identical in all three while the transient's words sit on that row itself.
 
 use super::*;
 
 const W: usize = 100;
 const H: usize = 24;
 
-/// **The three frames agree above the status row**, and the status row is where `needle` is.
-///
-/// The status row is found in `during` by its words; `before` and `after` must not carry them
-/// there, and must be the same height — so the row is the same reserved line in all three, and
-/// nothing above it moved.
+/// The three frames agree above the status row, and `needle` is on the status row itself.
+/// Found in `during` by its words; `before` and `after` must not carry them there and must be the
+/// same height, so the row is the same reserved line in all three and nothing above it moved.
 fn still(before: &[String], during: &[String], after: &[String], needle: &str) -> usize {
     assert_eq!(before.len(), during.len(), "the frame changed height");
     assert_eq!(during.len(), after.len(), "the frame changed height");
@@ -247,13 +239,9 @@ fn the_job_output_refresh_never_moves_the_pane() {
     still(&before, &during, &after, "reading output of job j16496");
 }
 
-// ---------------------------------------------------------------------------------------------
-// **The long waits**: the fill, fold and announced-rows progress, one line in the same row.
-//
-// The operator, 2026-10-14: *"yes, move the compacting progress blocks too"*. Each was a block of
-// two or three rows at the foot of the conversation that came when its operation started, changed
-// height when a fold went from reading to writing, and went when it ended.
-// ---------------------------------------------------------------------------------------------
+// The long waits: the fill, fold and announced-rows progress, drawn as one line in the status
+// row so the foot of the conversation never appears, changes height or empties as an operation
+// starts, moves from reading to writing, or ends.
 
 /// [`conversation`], with a turn this head watched start — so mid-turn the row reads
 /// `Responding · 4.0s` rather than the snapshot's long `started before this head attached`, and
@@ -625,17 +613,9 @@ fn a_notice_over_a_progress_takes_its_numbers_not_its_label() {
     assert!(after[at].contains("1000/2000 rows"), "{}", after[at]);
 }
 
-/// **A model switch the daemon has taken and not yet applied is the status row's, and it comes
-/// down the moment the switch lands.**
-///
-/// MEASURED 2026-10-26, the operator's own session: `/models deepseek/deepseek-flash` typed during
-/// a turn is recorded and applied when the turn ends — so the honest answer to *did that take?* is
-/// *not yet*, and it has to stay on the screen until it does. The `slash` reply that says so
-/// scrolls away inside the very turn it is about, and the header goes on naming the old model,
-/// which is the truth and half of it.
-///
-/// **The needle is the sentence's own middle**, because the row is trimmed to the frame: on the
-/// turn's line it follows `Responding · 12.3s`, and a longer needle would be asserting the width.
+/// A switch the daemon has taken and not yet applied is the status row's, and it goes when the
+/// switch lands: the `/models` reply saying so scrolls away inside the turn it is about, and the
+/// header keeps naming the old model. The needle is the middle, as the row is trimmed to the frame.
 #[test]
 fn a_switch_waiting_for_the_turn_rides_the_status_row_until_it_lands() {
     const SAID: &str = "turns go to glm/glm-4.6 when this turn ends";
@@ -696,18 +676,9 @@ fn a_switch_waiting_for_the_turn_rides_the_status_row_until_it_lands() {
     }
 }
 
-/// **A daemon older than its store says so in RED on the status row, and keeps saying it.**
-///
-/// The operator's ask of 2026-10-26, verbatim: *an older binary should keep working when the newer
-/// schema only ADDED things, and must say so in red on the head's usual status line*. Three claims
-/// and this test is all three: it is on the STATUS row (the line directly above the composer's
-/// box, which is the row `Responding…` uses and which costs the conversation no line at all); it
-/// is in the red register (the span's role is `Role::Failure`, and the code is classified `Failure`
-/// in `sessionlog::warning`, which is the one place a register is decided); and it is STATE, not a
-/// note — the same row says it on the next frame, and on the frame after a minute has passed.
-///
-/// It is drawn at 160 columns because the sentence is long on purpose: it names both schemas AND
-/// the command that fixes it, and a test at the row's usual 100 would be asserting a cut.
+/// A daemon older than its store says so in RED on the status row and keeps saying it: the row
+/// costs the conversation no line, the span's role and the warning's class both say `Failure`, and
+/// it is state rather than a note. Drawn at 160 columns, where the whole sentence fits, not a cut.
 #[test]
 fn a_daemon_older_than_its_store_says_so_in_red_and_stays() {
     const SAID: &str = "this daemon (schema 33) is older than its store (34) — restart it: \
@@ -764,10 +735,9 @@ fn a_daemon_older_than_its_store_says_so_in_red_and_stays() {
             during.join("\n")
         );
 
-        // **RED**, and not by the spelling of a colour code: the first transient's role is
-        // `Role::Failure`, and the code the daemon sent is classified `Failure` in the one table
-        // that decides registers. Both, because a head could paint it red and a second head could
-        // classify it quietly.
+        // RED, and by two facts rather than the spelling of a colour code: the transient's role
+        // is `Role::Failure`, and the code the daemon sent is classified `Failure` in the one table
+        // that decides registers, so a second head cannot classify it quietly either.
         let (text, role, is_notice) = a.transients().remove(0);
         assert!(text.contains("older than its store"), "{text}");
         assert_eq!(role, Role::Failure, "{text}");

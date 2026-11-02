@@ -1,11 +1,6 @@
-//! **The diff popup**: a change, read in its whole file, over the conversation.
-//!
-//! The operator, 2026-10-08: *"I dont need the full rano chrome when I look on the full edit,
-//! but i do need the context - so full file with diff and cursor placement at the beginning of
-//! the first diff. preferably in a popup and of course Esc must just close it"*. A click on an
-//! edit or write row used to open the rano editor — title bar, function bar, status line — on
-//! a review view, and Esc dropped into the file's text rather than closing anything. Reading a
-//! change is not editing a file: this is a viewer, with the editor one key away (`ctrl-]`).
+//! The diff popup: a change read in its whole file, over the conversation. Reading a change is not
+//! editing a file, so this is a viewer, with the cursor at the first diff and Esc closing it, and
+//! the editor is one key away.
 
 use std::ops::ControlFlow;
 

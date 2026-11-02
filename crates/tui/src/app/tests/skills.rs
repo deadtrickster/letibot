@@ -1,9 +1,6 @@
-//! **The skills pane** — the box's skills, one row each with where each was found, and a way to
-//! hand one to the session.
-//!
-//! Two halves, like the standing pane's fixtures: a `Skills` frame built by hand (what the daemon
-//! decides — the rows and their sources) and the head's own doors (`/skills`, `/skills NAME rest`
-//! and Enter), which are what this file asserts.
+//! The skills pane: the box's skills, one row each with where each was found, and a way to hand one
+//! to the session. Two halves, like the standing pane's fixtures: a `Skills` frame built by hand,
+//! and the head's own doors, which are what this file asserts.
 
 use super::*;
 use crate::app::Key;

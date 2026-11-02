@@ -1,11 +1,6 @@
-//! The terminal's bytes, through the driver's own loop, to what they do: the bytes one read
-//! consumed, rano's decoding, `key_of`'s reading of it, and `Link::tick` handing the keys to the
-//! head - or the raw bytes to a `!term` pane - in order, then drawing, then sending what the keys
-//! asked for.
-//!
-//! `app`'s unit tests hand `App::key` a `Key` they built, so these drive the seam with real bytes
-//! and assert on what the socket carried: for the acts that leave the head, *did the key do its
-//! act* is a fact about the socket.
+//! The terminal's bytes, through the driver's own loop, to what they do. `app`'s unit tests hand
+//! `App::key` a `Key` they built, so these drive the seam with real bytes and assert on what the
+//! socket carried: for the acts that leave the head, that is the fact.
 
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;

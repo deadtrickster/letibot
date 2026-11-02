@@ -1,11 +1,6 @@
-//! Taking a row off the session list: the row goes, the session does not.
-//!
-//! `del` twice removes the row under the cursor and `ctrl-z` puts it back; nothing reaches the
-//! store, because no frame from a head does and `letibot --delete` is the one-shot that would.
-//! `/forget` therefore refuses, and its sentence names that door.
-//!
-//! The path down to where the head is standing is never removable: the row it is in is drawn
-//! through that path, so removing a link above would take the row off the list with it.
+//! Taking a row off the session list: the row goes, the session does not. Nothing reaches the store,
+//! because no frame from a head does, so `/forget` refuses and its sentence names that door. The
+//! path down to the row the head is standing in is never removable.
 
 use super::*;
 

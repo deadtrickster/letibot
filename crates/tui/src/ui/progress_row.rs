@@ -1,9 +1,6 @@
-//! The long waits, as one line of the status row: a fill the daemon named, a fold,
-//! and a snapshot's announced rows still arriving.
-//!
-//! Each is ONE line (label, bar, numbers) drawn in the row the fit ladder reserves,
-//! so nothing above the composer moves for them; the row stays a click target while
-//! it leaves anything out, and the click opens the whole of it (`Progress::detail`).
+//! The long waits as one line of the status row: a fill the daemon named, a fold, and a snapshot's
+//! announced rows still arriving. One line in the row the fit ladder reserves, so nothing above the
+//! composer moves, and a click opens the whole of it while it leaves anything out.
 
 use crate::app::*;
 use crate::ui::loading::{BODY_PATIENCE, MIN_FILLING};

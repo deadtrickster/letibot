@@ -1,7 +1,6 @@
 //! The standing-notes pane: one row per note the harness reads into the prompt, with the form the
-//! budget gave each, and Enter to open one in the editor pane. The rows are the daemon's and the
-//! disk facts are read here at draw time, so the fixtures are two halves: a `StandingNotes` frame
-//! built by hand, and a real directory of real files.
+//! budget gave each, and Enter to open one in the editor. The rows are the daemon's and the disk
+//! facts are read here at draw time, so the fixtures are a frame and a real directory of files.
 
 use super::*;
 use letibot_sessionlog::protocol::{NoteEntry, NoteForm};

@@ -1,11 +1,6 @@
-//! The merge queue, hosted: the pane on this surface is the `queue` layer's answer
-//! (`plugins/builtin/queue`, drawn through `app::queue_pane`). This file keeps what a host owes it -
-//! the input routing, the feed, and the reading of the snapshot the composer's edge draws.
-//!
-//! What stays here is what the layer cannot know: the standings (the edge is drawn on every screen,
-//! not only on the pane), the scope (only the head knows which repository this session is in), the
-//! verbs (the daemon's rule, mirrored once), and the gate tails (whether a step moved is a fact
-//! about two snapshots, and the head is the only reader of two).
+//! The merge queue, hosted: the pane is the `queue` layer's answer, and this file keeps what a host
+//! owes it - the routing, the feed, and the reading of the snapshot the composer's edge draws. The
+//! standings, the scope and the gate tails stay here, because only the head knows them.
 
 use crate::app::*;
 use crate::ui::render::row_strings;

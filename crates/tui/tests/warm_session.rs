@@ -1,11 +1,6 @@
-//! A head that asks a running daemon for a stored session must end up holding its rows.
-//!
-//! The `Hello { snapshot }` a switching head gets is cut from a hub whose restore has likely not
-//! started, because `Work::Open` runs on the worker behind whatever turn it is on - so what the head
-//! can draw does not depend on the snapshot. It depends on the restored rows arriving as
-//! `TranscriptAppended` + `TranscriptContent` on the session the head is attached to, and on the
-//! head keeping them. `Harness` lives above this crate, so the restore is stood up here as the
-//! events it publishes, at the two moments it can: before the head switches, and after.
+//! A head that asks a running daemon for a stored session must end up holding its rows: the `Hello`
+//! snapshot is cut from a hub whose restore has likely not started, so what it can draw depends on
+//! the restored rows arriving as events. The restore is stood up here as the events it publishes.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};

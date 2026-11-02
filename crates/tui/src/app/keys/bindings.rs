@@ -1,10 +1,6 @@
-//! Each surface's keys, declared once: which keys it takes, under what guard, what each one
-//! does, and the words the hint bar and `/help` say about it - both generated from here.
-//!
-//! A [`Binding`] is `(keys, guard, act, says)`. [`App::key_surface`] finds the first binding of
-//! the focused surface that the key matches and whose guard holds; the bar and the help rows are
-//! the same table read as words. A plain letter always carries [`Guard::EmptyComposer`], because
-//! the letters are the operator's to type first, and a test walks every table to hold that.
+//! Each surface's keys, declared once: which keys it takes, under what guard, what each does, and
+//! the words the hint bar and `/help` say - both generated from here. A plain letter always carries
+//! `Guard::EmptyComposer`, because the letters are the operator's to type first.
 
 use super::*;
 use crate::ui::panes::queue::Verb;

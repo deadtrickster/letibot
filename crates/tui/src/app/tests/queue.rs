@@ -1,7 +1,6 @@
-//! The queue, hosted: the routing, the edge, and the feed the layer reads. The pane on
-//! `Surface::Queue` is the `queue` layer's answer drawn through the production host, so a test that
-//! looks at a screen looks at the layer's drawing and asserts what the HOST owes it. The layer's own
-//! policy is `plugins/builtin/queue/src/tests.rs`.
+//! The queue, hosted: the routing, the edge, and the feed the layer reads. The pane is the `queue`
+//! layer's answer drawn through the production host, so a test asserts what the HOST owes it; the
+//! layer's own policy is in the layer's tests.
 
 use super::*;
 

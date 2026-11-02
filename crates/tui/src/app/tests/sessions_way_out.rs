@@ -1,10 +1,6 @@
-//! The way out: the session picker is the way out of a broken session, so it must not depend on a
-//! plugin.
-//! Every other pane may fail into a sentence on the screen. This one cannot: a person whose session
-//! is wedged has one keystroke left, and it opens this list. So the list is drawn from three
-//! sources, each catching the one above - a layer's answer, else the head's own tree - and every
-//! test here stands a failure in and then presses the keys, because a list that draws and does not
-//! switch is not a way out.
+//! The way out: a person whose session is wedged has one keystroke left and it opens this list, so
+//! the list must not depend on a plugin. It is drawn from three sources, each catching the one
+//! above, and every test here stands a failure in and then presses the keys.
 
 use super::*;
 use letibot_plugins::{Capability, Loader, Module, Stack};

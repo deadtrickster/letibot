@@ -1,11 +1,6 @@
-//! The editor pane: rano, inside the head.
-//!
-//! Going there: a click on an edit or write row, or `ctrl-]` for the newest, opens rano on that file
-//! with the change drawn over the text as a review, and the standing-notes pane's Enter comes in
-//! through the same door with no change on it. There the pane takes the conversation's rectangle and
-//! owns every key, paste and mouse report inside it. Coming back: rano's `alt-s` puts a reference in
-//! the composer and nothing is submitted for the operator. `ctrl-]` is the only crossing, and rano's
-//! own exit closes the pane after its unsaved-edits question - it never quits the head.
+//! The editor pane: rano, inside the head. A click on an edit row or `ctrl-]` opens it with the
+//! change drawn over the text, and there the pane owns every key, paste and mouse report inside its
+//! rectangle. rano's own exit closes the pane; it never quits the head.
 
 use super::*;
 use letibot_sessionlog::view::CallState;

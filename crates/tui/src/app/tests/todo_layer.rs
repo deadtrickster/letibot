@@ -1,10 +1,6 @@
-//! `/todo` through a layer: the head owns the slash line and its own five verbs, the layer owns
-//! what a new row may look like, and the head performs the one act it has heard of. So a test can
-//! stand in a built-in, a project layer with a scripted answer, a layer that passes, or one that
-//! traps and lets the layer below answer.
-//!
-//! Nothing is faked except the layer's ANSWER: the real module is compiled, `install_builtins` is
-//! the head's own function, and the commands go through `App::command`, the composer's own door.
+//! `/todo` through a layer: the head owns the slash line and its five verbs, the layer owns what a
+//! new row may look like, and the head performs the one act it has heard of. Nothing is faked but
+//! the layer's answer: the real module is compiled and the commands go through `App::command`.
 
 use super::*;
 use letibot_plugins::{Capability, Loader, Module, Stack};

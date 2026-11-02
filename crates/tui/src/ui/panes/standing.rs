@@ -1,11 +1,6 @@
-//! The standing notes: the notes the harness reads into the system prompt, one row each,
-//! in the order the section carries them - `/standing`.
-//!
-//! A row's path, abstract and form (`verbatim`/`indexed`) come from the daemon, because the
-//! form is decided with the session's token counter; size, age and whether the file is still
-//! there are read from disk at DRAW time, since the operator edits notes under an open pane
-//! and only a fresh `stat` can say the index names a note that is gone. Enter opens the file
-//! in the editor pane, because an `indexed` note is not in the prompt whole.
+//! The standing notes, one row each in the order the section carries them. The path, abstract and
+//! form come from the daemon, because the form is decided with the session's token counter; size,
+//! age and presence are read from disk at draw time, since an open pane outlives an edit.
 
 use crate::app::standing::{Corpus, OnDisk};
 use crate::app::*;

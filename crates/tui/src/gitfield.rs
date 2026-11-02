@@ -1,11 +1,6 @@
-//! What the workspace's own repository says, for the row the operator crosses: gitstatus's
-//! segments and glyphs in a configurable template, one colour per segment.
-//! The facts and not the text (`GitState`), because the format decides the text and a preference
-//! may change it. A repository this cannot read is ABSENT and not empty: the row draws its blank
-//! slot, since `main` over a directory that is not a repository is a lie in the one row nobody
-//! checks.
-//! Read from the LOOP, never from a paint, and STARTED there rather than waited on, because a
-//! wait holds every key for as long as the process runs.
+//! What the workspace's own repository says, for the row the operator crosses: the facts and not
+//! the text, because the format decides the text and a preference may change it. A repository this
+//! cannot read is ABSENT, not empty, and the read is STARTED from the loop rather than waited on.
 
 use std::process::Command;
 

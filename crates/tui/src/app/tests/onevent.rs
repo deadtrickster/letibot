@@ -1,11 +1,6 @@
-//! A collapsed notice stays collapsed: the pairing `one_event` makes (one event, one row) holds
-//! across the doors that replace a transcript and across the reader's own retirement.
-//!
-//! A notice is collapsed when its one-line card stands for the session row that says the same event
-//! - a `[reseat]`, a `[restart]`, an `EMERGENCY` for a red tip, a stale prompt. The rule is that a
-//! row is collapsed while its note's card is on the screen OR the reader retired that note, and the
-//! pairing is keyed by the row's `item_id`, so a snapshot handing back the same rows keeps it. Keyed
-//! by index, every resync, reattach and switch back would clear it.
+//! A collapsed notice stays collapsed: the pairing of one event with one row holds across the doors
+//! that replace a transcript and across the reader's own retirement. The pairing is keyed by the
+//! row's `item_id`; keyed by index, every resync, reattach and switch back would clear it.
 
 use super::*;
 use letibot_transcript::Speaker;

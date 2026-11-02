@@ -1,10 +1,6 @@
 //! An exit-and-stop the ordinary stop cannot finish is finished by the head itself, the forced way,
 //! and the head says so. The force path signals a pid, and a head may signal only the process at the
-//! other end of its socket - so the daemon here is a separate process: this test executable run again
-//! with `--exact fixture_daemon`, serving the real `serve_registry` over a real `Registry`, so the
-//! stop frame, the session discovery, the `ListSessions` round trip and the goodbye are the real
-//! ones. The modes differ only in how each answers the stop: `orderly` exits, `wedged` stays and
-//! ignores SIGTERM, `older` sits behind a relay that rewrites the protocol and drops the stop frame.
+//! other end of its socket, so the daemon here is this executable run again as `fixture_daemon`.
 
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};

@@ -1,11 +1,6 @@
-//! The daemon goes away, and the head does not: the socket is closed under an attached head, and
-//! what is measured is that the head is still running - drawing its conversation, saying the link
-//! is down, holding the composer - and that a daemon coming back is RESUMED from the seq it had.
-//!
-//! A real daemon cannot produce this case in-process: `ServerHandle::shutdown` answers a `Bye`,
-//! which is by design not a drop and has its own test. So the peer below speaks protocol frames
-//! directly, closes without a word as a killed daemon does, and the assertion is on the wire:
-//! the retry's `ATTACH` carries `since_seq` = the seq the head had read.
+//! The daemon goes away and the head does not: it keeps drawing, says the link is down, and a
+//! daemon coming back is RESUMED from the seq the head had read. A real daemon cannot produce this
+//! in process (a `Bye` is by design not a drop), so the peer below speaks frames and closes silently.
 
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;

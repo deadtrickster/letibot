@@ -1,11 +1,6 @@
-//! The skills this box has - `/skills`, one row each: the name, where it was found and its one
-//! line. Enter hands that skill's body to the session.
-//!
-//! The row's label is the fact a reader needs to weigh a skill, since a skill is material to follow
-//! only as far as it does not contradict the operator: `the operator's` is their own instruction and
-//! `this project`, `installed from`, `the fabric` and `written by a model` are not. The prompt's
-//! index carries the same label, and the pane draws the daemon's rows unaltered so the two agree.
-//! Enter sends `LoadSkill`: a head that composed the prompt would be a second writer of a row.
+//! The skills this box has: the name, where it was found and its one line, and Enter to hand that
+//! skill's body to the session. The label is what lets a reader weigh a skill, and the prompt's
+//! index carries the same one, so the pane draws the daemon's rows unaltered.
 
 use crate::app::*;
 use rano::agent::pane::{self, PaneLines};

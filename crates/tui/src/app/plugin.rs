@@ -1,11 +1,6 @@
-//! Plugin panes as this head holds them: the view each answered, which of its screens is on
-//! screen, the stop under the cursor, and the three acts a key has - open a panel's view, read
-//! a stop whole, or send one of its actions back to the plugin.
-//!
-//! A plugin pane is not a `Surface` with its own fields, because there can be any number of
-//! them: `plugin_panes` maps a pane's name (`<layer>/<hook>`) to its view, `plugin_open` says
-//! which the surface shows - where vs what. Keys are the host's: a plugin chooses only its
-//! panels' keys and its stops' letters, refused by `View::validate` when they collide.
+//! Plugin panes as this head holds them: the view each answered, which screen is shown, and the
+//! stop under the cursor. A pane is not a `Surface`, because there can be any number of them; keys
+//! stay the host's, and a plugin chooses only its panels' keys and its stops' letters.
 
 use super::*;
 use crate::ui::panes::plugin as view;

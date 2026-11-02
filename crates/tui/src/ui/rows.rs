@@ -1,10 +1,6 @@
-//! rano's lines as this head's row strings - the one edge every `rano::agent` and
-//! `rano::markdown` line crosses on its way to the frame.
-//!
-//! A row is written one way: the line's own style (a tool row's dim register, a highlighted
-//! row's inverse) opened once, each styled span closed by a reset and then the line's style
-//! again ([`Line::to_ansi_inside`]), and a reset at the end. A reset is not a restore, so a
-//! span closed with a plain reset would end the line's register at its first coloured mark.
+//! rano's lines as this head's row strings - the one edge every `rano::agent` and `rano::markdown`
+//! line crosses on its way to the frame. A reset is not a restore, so each styled span is closed by
+//! a reset and then the line's own style again.
 
 use rano::render::Line;
 use rano::style::Palette;

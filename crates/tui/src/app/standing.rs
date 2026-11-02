@@ -1,11 +1,6 @@
-//! The standing-notes pane's state: which row the cursor is on, and the disk facts the rows are
-//! drawn from.
-//!
-//! The rows themselves come from the daemon (`ListNotes`), because the form the budget gave each
-//! file is decided where the section is assembled, with the session's own token counter. This head
-//! holds no counter and must not grow one: two answers to what a note is would let the pane
-//! disagree with the prompt about the very thing it shows. What is left here is the disk's half,
-//! read fresh because a file's size and presence change while the pane is open.
+//! The standing-notes pane's state: the cursor's row, and the disk facts the rows are drawn from.
+//! The form the budget gave each file is the daemon's, decided with the session's own token
+//! counter, and this head must not grow a second counter or the pane would contradict the prompt.
 
 use super::editor::FileRef;
 use super::*;

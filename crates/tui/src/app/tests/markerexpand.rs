@@ -1,10 +1,6 @@
-//! `ctrl-n` then a run's expansion: the expansion re-walks the whole conversation
-//! (`invalidate_history`), so the read mark has to be asked at the moment a note's line is
-//! written - there is no second cache of note rows to consult.
-//!
-//! Each test expands a run holding one notice the mark covers and one it does not, and asserts
-//! the screen holds exactly the second: a test that only says "nothing was drawn" is passed by a
-//! walk that draws no notices at all. Neutering `already_read`/`covered_by_mark` turns them red.
+//! `ctrl-n` then a run's expansion: expanding re-walks the whole conversation, so the read mark has
+//! to be asked where a note's line is written, as there is no second cache of note rows. Each test
+//! expands a run holding one covered notice and one it does not, and wants only the second.
 
 use super::*;
 

@@ -1,11 +1,6 @@
-//! The session list, drawn from a plugin: the built-in `sessions` layer decides the groups, the
-//! names, the counts and the keys, and the head draws what it answers through rano's one tree.
-//!
-//! The head runs the layer because the session list is how a person gets OUT of a broken
-//! session, so it cannot need a round trip through the daemon; the head already holds every
-//! fact, and the stack is built in-process. What the head keeps is the fold state and the acts.
-//! `App::sessions_list` answers `None` for any stack it cannot draw from, and the picker then
-//! draws the head's own tree - the escape hatch that must never depend on this file.
+//! The session list, drawn from a plugin: the built-in `sessions` layer decides the groups, names,
+//! counts and keys, and the head draws its answer through rano's one tree. The head runs the layer
+//! in process, because the list is how a person gets out of a broken session.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
