@@ -55,31 +55,10 @@ pub(crate) fn row_hidden_at(vis: Visibility, it: Option<&SnapshotItem>) -> bool 
 pub(crate) struct LiveWork {
     /// Calls proposed or running with no settled result row yet — **the NUMBER the marker carries**.
     pub(crate) calls: usize,
-    /// **Calls still EXECUTING — the number the YELLOW is on.** Two different facts, and conflating
-    /// them is what stuck a counter yellow:
-    ///
-    /// * `calls` counts what the marker says it has to count: a call leaves this number at the
-    ///   moment its result row starts being counted, which is when the row's BODY lands. That is
-    ///   also what keeps the number from going DOWN — *"2 tool calls dropping to 1 and then
-    ///   changing back to 2"*, the operator's own measurement of the first version.
-    /// * `running` is *is a call executing right now*. A call that has FINISHED while its row is
-    ///   still a frame away keeps the number and must lose the colour, because the yellow says
-    ///   *happening* and nothing is.
-    ///
-    /// **And the same handover in the other direction, which is the half that stuck the yellow ON
-    /// for the rest of the session:** a call whose row HAS landed is over, whatever its state says,
-    /// so `running` is never counted over the whole pane — a call this round's transcript has
-    /// answered is not asked ([`round_answered`]). The two numbers are then about one set of calls,
-    /// which is what lets the marker's colour be a fact about the marker's own number.
-    ///
-    /// leticl keeps both and says exactly why: *"The colour is a different fact — is a call still
-    /// executing — and that is `:running`, which `marker-rising-p` reads. A finished call whose row
-    /// is still in flight keeps the number and drops the yellow, which is what the screen should
-    /// say about it."* Its own version of the two cares only about the calls with no result row yet
-    /// either: `:calls` is `%hidden-run-live-work`'s count over `call-answered-p`, whose answer is
-    /// *this call has a row* — set when the row's BODY lands and from a snapshot's rows
-    /// (`src/cards/hidden-run.lisp:173-177`, `src/cards/roles.lisp:374`, `src/session/seq-gap.lisp:319`,
-    /// `src/cards/targets.lisp:433`).
+    /// Calls still executing, the number the yellow is on: `calls` counts what the marker says it
+    /// counts and drops only when a result row's body lands, while `running` says whether a call is
+    /// executing now, so a finished call whose row is a frame away keeps the number and loses the
+    /// colour. A call this round's transcript has answered is never asked ([`round_answered`]).
     pub(crate) running: usize,
     /// Display lines of reasoning streamed this turn and not yet a row.
     pub(crate) think_lines: usize,
@@ -91,39 +70,14 @@ impl LiveWork {
     }
 }
 
-/// **Does this row put anything on the SCREEN at this rung** — R37 AMENDED's boundary.
+/// Does this row put anything on the screen at this rung: a run ends only at a row the rung draws,
+/// so an item boundary, a hidden row or a whitespace-only text part does not break it. Contiguity is
+/// a property of the rendered screen and not of the item list.
 ///
-/// The operator ran the rung and got **eight markers in a row with no prose between any
-/// of them**: *"too many tool/thinking lines — they should all coalece to one."* Every
-/// marker's content was right; what was wrong was how many there were, and the cause was
-/// that the run was being broken by something the reader **cannot see**. An empty assistant
-/// part, a tool_result between a call and the next call, a row whose body has not arrived —
-/// each ended a run and started a new marker, and the result was the wall the rung exists
-/// to abolish, now with brackets.
-///
-/// So: **a run ends only at a row this rung actually draws.** Prose the reader can see
-/// ends a run. Nothing else does — not an item boundary, not a hidden row of another kind,
-/// not an empty or whitespace-only text part. **Contiguity is a property of the rendered
-/// screen, not of the item list**, and computing it over the list is the same class of
-/// error as counting lines instead of anchoring to a row, which is R36.
-///
-/// # The two rows that are kept but draw nothing, which is the whole of the bug
-///
-/// `Verbosity::keeps` keeps `User` and `Assistant`. Of those:
-///
-/// * an **`Assistant` row draws only its prose** at this rung — the loop over `tool_calls`
-///   is filtered out for it, so a row with no text and three calls renders to *nothing*.
-///   That is the common shape of a tool-calling round, which is to say it is the run.
-/// * a row whose **body has not arrived** draws nothing either, and draws it deliberately
-///   (`item_lines`' own comment: *"a row with no body is not information"*). It draws an
-///   echo only when this head has bound one to it.
-///
-/// The prose test is on the TEXT rather than on the rendered lines, and that is a choice
-/// worth naming: the renderer's own test is `!prose.iter().all(|l| l.trim().is_empty())`,
-/// and whitespace text lexes to whitespace lines. Lexing every row to ask the question would
-/// put a second renderer in the walk's inner loop; `trim()` answers it for every text the
-/// two can disagree about, and it errs toward *visible*, which errs toward *one more marker*
-/// rather than toward an invisible run.
+/// `Verbosity::keeps` keeps `User` and `Assistant`, and at this rung an assistant row draws only its
+/// prose, while a row whose body has not arrived draws nothing: the common shape of a tool-calling
+/// round is therefore invisible, which is the whole of the bug. The prose test is on the text, not
+/// on the rendered lines, because lexing every row would put a second renderer in the inner loop.
 pub(crate) fn row_drawn(
     items: &[SnapshotItem],
     vis: Visibility,
@@ -305,49 +259,15 @@ pub(crate) fn live_tail_covered(
     vis.hides_the_working() && items.last().is_some_and(|it| !row_drawn_at(vis, bound, it))
 }
 
-/// **Does the work in flight belong to this run** — R37 AMENDED's `live_here`, in ONE place,
-/// because three callers ask it and the marker the reader sees is the one they agree on.
+/// Does the work in flight belong to this run: it does when the run reaches the end of the
+/// transcript, since the work is after every row there is, or when the run holds one of the turn's
+/// own rows. One place, because three callers ask it and the marker the reader sees is the one they
+/// agree on.
 ///
-/// Two clauses, and the first is the one this function exists for:
-///
-///  * **the run reaches the end of the transcript** (`end == items.len()`). The work in flight
-///    is after every row there is, so it is contiguous with the LAST stretch of invisible rows
-///    and with no other — and a stretch that reaches the end is the stretch the next row will
-///    be appended to. Its absence is the operator's twice-reported screen: **a turn that has
-///    committed no row yet** (`TurnStarted` has landed, the round's rows have not) has an empty
-///    `turn_rows`, so the second clause below cannot answer for it, and the pane drew the work
-///    in flight as a SECOND fold beside the run it is about to join —
-///    `[36 tool calls, 869 thinking lines]` with `[94 thinking lines]` directly under it, which
-///    becomes one fold the moment the round's first row lands. Their words for the pair, twice
-///    in one evening: *"somehow you have thinking not merged again"*, *"again not merged - tho
-///    when you start to reply it merges"*. It is not only a new prompt: `Sessions::wake` — a job
-///    settlement, a monitor, a todo nag — opens a turn with no prompt row at all, so nothing the
-///    reader can see separates that turn's live work from the run above it.
-///  * **or the run holds one of the turn's own rows.** The turn is the second fact because
-///    contiguity alone is not enough: a run of a PREVIOUS turn's rows can be the last stretch of
-///    invisible rows while the current turn's work is not going to land in it — the operator's
-///    own message is a drawn row and ends a run, so the work after it starts a new one — and
-///    folding the live counts into that run is the defect `marker_carries_live` records (*"old
-///    tool calls stayed yellow for some reason"*).
-///
-/// **Neither clause merges two runs, and nothing here touches a boundary.** [`unseen_run_at`]
-/// still ends a run at every row the reader can see, so a tool row, the reply or a system row
-/// between two stretches keeps them two folds; what this decides is only whether the work with
-/// NO row yet — which is contiguous with the tail by construction — is drawn inside the run it
-/// is about to join or beside it.
-///
-/// **And the second clause is still needed**, which is why the first is a disjunction and not a
-/// replacement: a drawn row landing after the run (the model's own prose, the operator's
-/// message) leaves the run reaching nothing, and the run is still this turn's — see
-/// [`hidden_run_marker`]'s own account of the pair that fix was made for.
-///
-/// **And it stops at the model's reply (2026-10-14)**, by the operator's ruling on where a round's
-/// counts go: *all of it after the reply*. A reply of the model's landing after the run means the
-/// work in flight comes AFTER that reply, so it is drawn below it and never folded into the run
-/// above — folding it there was the marker *"above the current reply"* whose counts then jumped
-/// down when the next row landed, the *"backfilled"* the operator reported. Their own queued
-/// message between the two still does not split them: that was their earlier ruling (*"again it
-/// happens when we have my queued messages"*), and a reply of theirs is not the model's.
+/// The first clause is what a turn that has committed no row yet needs: `turn_rows` is empty, so the
+/// work in flight was drawn as a second fold beside the run it is about to join. The second is still
+/// needed, since a drawn row landing after the run leaves it reaching nothing and it is still this
+/// turn's. Neither merges two runs: [`unseen_run_at`] still ends a run at every row the reader sees.
 pub(crate) fn run_carries_live(
     items: &[SnapshotItem],
     turn_rows: &std::collections::HashSet<String>,
@@ -462,28 +382,14 @@ pub(crate) fn marker_seam_rung(newest: bool, rung: usize) -> &'static str {
     if newest { chord } else { verb }
 }
 
-/// **The calls THIS ROUND's result rows have answered** — the ids of the `tool_result` rows the
-/// round published whose bodies this head holds.
+/// The calls this round's result rows have answered: the ids of the `tool_result` rows the round
+/// published whose bodies this head holds. The daemon appends a round's results after every call in
+/// it has run, so a result row among [`TurnPane::appended`] answers one of that round's calls, and
+/// that is what the marker's colour reads.
 ///
-/// The daemon appends a round's results after every call in it has run, so a `tool_result` among
-/// [`TurnPane::appended`] is the answer to one of that round's calls — and this is the fact the
-/// marker's colour reads ([`LiveWork::running`]), because a call whose result row is on the screen
-/// is not executing. leticl's `call-answered-p` is the same answer, set when the row's BODY lands
-/// (`src/session/seq-gap.lisp:315-319`) and from a snapshot's own rows
-/// (`src/cards/targets.lisp:433`).
-///
-/// **Scoped to the round, and keyed on the row's own id.** Scoped, because the ids are
-/// round-positional — `crates/turn/src/items.rs` mints `call_0`, `call_1`, … for a wire format that
-/// carries none, and [`TurnPane::settled_calls`] already records that *"the ids repeat"* — so
-/// asking the whole transcript whether any row ever carried this id would answer YES for a call
-/// that has just started in the round after the last one's row landed, and put the yellow out while
-/// a command ran. Keyed on the id, because the positional handover counts ROWS and a row can land
-/// for a call the pane does not hold (R31 deposits an operator's own result row, and its
-/// `TranscriptAppended` reaches this head like any other) — a counter that ran ahead would claim
-/// the next call of the round for it, which is the same false negative from the other side.
-///
-/// A row whose body has not arrived yet carries no `call_id` and claims nothing: the row is the
-/// answer once it can be read, which is also the moment the walk starts counting it as a row.
+/// Scoped to the round because the ids are round-positional, so asking the whole transcript would
+/// answer yes for a call that has just started in the round after; keyed on the id because the
+/// positional handover counts rows and an operator's own result row lands like any other.
 pub(crate) fn round_answered<'a>(t: &TurnPane, items: &'a [SnapshotItem]) -> Vec<&'a str> {
     t.appended
         .iter()
