@@ -3,8 +3,9 @@
 #
 # The operator, 2026-10-09: *"make the gate configurable per repo, and let main project agent
 # manage it … all heuristics can be presented as choices"*. A real session, seated as leticode,
-# calls `merge_gate` in a repository with a Makefile `test` target and a CI workflow, and what it
-# gets back names both, says there is no gate yet, and gives the section to write.
+# calls `merge_gate` in a repository with a Makefile `test` target and a workflow that runs on a
+# push, and what it gets back names both, says there is no gate yet, and gives the section to
+# write. A workflow is only a choice when it judges a BRANCH (R62): a tag's release is not a gate.
 . "$(dirname -- "${BASH_SOURCE[0]}")/../lib.sh"
 [ -x "$ROOT/target/release/harnessd" ] || { echo "acceptance: cargo build --release first"; exit 2; }
 

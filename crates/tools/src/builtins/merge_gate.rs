@@ -35,7 +35,8 @@ fn has_target(text: &str, name: &str) -> bool {
 }
 
 /// The candidates this repository's own files suggest, most specific first: `make`/`just`/`task`
-/// before a toolchain's defaults, and CI (`act`) last because it needs Docker. Pure.
+/// before a toolchain's defaults, and a workflow that judges a branch last, run with `act`, because
+/// that needs Docker and an image prompt. Pure.
 pub fn candidates(read: &dyn Fn(&str) -> Option<String>, workflows: &[String]) -> Vec<Candidate> {
     let mut out = Vec::new();
     if let Some(mk) = ["Makefile", "makefile", "GNUmakefile"]
@@ -138,12 +139,49 @@ pub fn candidates(read: &dyn Fn(&str) -> Option<String>, workflows: &[String]) -
         out.push(cand(
             &["act"],
             format!(
-                "the repository's own CI, run locally with `act` (needs Docker): {}",
+                "the repository's own workflow, which judges a branch, run locally with `act` \
+                 (needs Docker): {}",
                 workflows.join(", ")
             ),
         ));
     }
     out
+}
+
+/// Whether a workflow file judges a BRANCH - a `pull_request` trigger, or a `push` that is not
+/// narrowed to tags. R62 took this repository's gate off GitHub Actions, and what is left there is
+/// the release, which only a tag starts and which is nobody's merge gate. Pure.
+pub fn judges_a_branch(text: &str) -> bool {
+    let lines: Vec<&str> = text
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .collect();
+    if lines
+        .iter()
+        .any(|l| l.trim_start().starts_with("pull_request"))
+    {
+        return true;
+    }
+    for (i, line) in lines.iter().enumerate() {
+        if line.trim_start() != "push:" {
+            continue;
+        }
+        let indent = line.len() - line.trim_start().len();
+        let mut tags_only = false;
+        for next in &lines[i + 1..] {
+            let deeper = next.len() - next.trim_start().len() > indent;
+            if next.trim().is_empty() || !deeper {
+                break;
+            }
+            if next.trim_start().starts_with("tags:") {
+                tags_only = true;
+            }
+        }
+        if !tags_only {
+            return true;
+        }
+    }
+    false
 }
 
 impl Tool for MergeGate {
@@ -189,9 +227,15 @@ impl Tool for MergeGate {
                 .map(|b| String::from_utf8_lossy(&b).into_owned())
         };
         let (wf, _) = walk(ctx.backend, &at(".github/workflows"), 64, &default_skip);
+        // Only a workflow that judges a BRANCH is a candidate gate: a tag's release is not one, and
+        // this repository's gate runs in the queue rather than on GitHub (R62).
         let workflows: Vec<String> = wf
             .iter()
             .filter(|e| !e.is_dir && (e.name.ends_with(".yml") || e.name.ends_with(".yaml")))
+            .filter(|e| {
+                read(&at(&format!(".github/workflows/{}", e.name)))
+                    .is_some_and(|t| judges_a_branch(&t))
+            })
             .map(|e| e.name.clone())
             .collect();
         let agents = ["AGENTS.md", "agents.md", "Agents.md"]
@@ -288,6 +332,21 @@ mod tests {
             "{got:?}"
         );
         assert_eq!(got.last().unwrap(), "act", "{got:?}");
+    }
+
+    /// **R62: a workflow that judges a branch is a candidate gate, and a tag's release is not.**
+    /// `act` rehearses a workflow, so what it can rehearse is a branch - and this repository's own
+    /// gate lives in the queue now, not in `.github/workflows`.
+    #[test]
+    fn only_a_workflow_that_judges_a_branch_is_a_candidate() {
+        assert!(judges_a_branch("on:\n  pull_request:\n"));
+        assert!(judges_a_branch("on:\n  push:\n"));
+        assert!(judges_a_branch("on:\n  push:\n    branches: [main]\n"));
+        // The release: a tag starts it, no branch does.
+        assert!(!judges_a_branch("on:\n  push:\n    tags: ['v*']\n"));
+        assert!(!judges_a_branch(
+            "on:\n  workflow_dispatch:\n# pull_request: disabled\n"
+        ));
     }
 
     #[test]
