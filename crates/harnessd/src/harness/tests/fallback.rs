@@ -1,10 +1,6 @@
-//! **The turn a fallback owes** — armed where the refusal is, taken once by the tail, and never
-//! started over a stop the operator pressed.
-//!
-//! `model_switch_at_turn_end.rs` measures the whole of it end to end (a refused model, the switch,
-//! the continuation turn, and the notice that opens it). What belongs here is the part a daemon
-//! cannot make deterministic: an interrupt that arrives in the microseconds between the refusal
-//! and the tail's take, which is exactly the window the guard exists for.
+//! The turn a fallback owes: armed where the refusal is, taken once by the tail, and never started over a stop the
+//! operator pressed. `model_switch_at_turn_end.rs` measures the whole of it end to end; what belongs here is the part a
+//! daemon cannot make deterministic, an interrupt arriving between the refusal and the tail's take.
 
 use super::*;
 
@@ -24,13 +20,9 @@ fn a_harness(id: &str) -> Option<(Harness, std::path::PathBuf)> {
     Some((h, dir))
 }
 
-/// **One fallback, one continuation — and none over the operator's stop.**
-///
-/// The operator's ruling of 2026-10-12 (*"when it finally applied the turn didnt continue"*) is
-/// what arms the notice; the two things measured here are its BOUNDS, because both failure modes
-/// cost somebody real money: a notice that could be taken twice would open a turn nobody asked
-/// for, and a continuation started over their interrupt would either be aborted by it or ignore
-/// their stop.
+/// One fallback, one continuation, and none over the operator's stop: the ruling is what arms the notice, and the two
+/// things measured here are its bounds. A notice taken twice would open a turn nobody asked for, and a continuation
+/// started over their interrupt would be aborted by it or ignore it.
 #[test]
 fn a_fallback_continuation_is_taken_once_and_never_over_a_stop() {
     let Some((mut h, dir)) = a_harness("s-fallback-continuation") else {

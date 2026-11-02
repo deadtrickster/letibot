@@ -1,9 +1,6 @@
-//! **The operator's answer to a row's question, reaching a RUNNING turn** — at the next step
-//! boundary, through the steering source the turn polls.
-//!
-//! The operator: *"and then when i submit todo becomes unblocked with reply attached"* — and an
-//! operator's words are immediate (R79), so an answer given while the model is mid-turn does not
-//! wait for the turn to end.
+//! The operator's answer to a row's question, reaching a RUNNING turn at the next step boundary through the steering
+//! source the turn polls. An operator's words are immediate, so an answer given while the model is mid-turn does not wait
+//! for the turn to end.
 
 use super::*;
 

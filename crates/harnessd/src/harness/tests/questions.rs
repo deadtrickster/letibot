@@ -2,11 +2,8 @@
 
 use super::*;
 
-/// **The answer row carries what the person said, and nothing of ours.**
-///
-/// The rule the `!` line's own row keeps — *their words, verbatim* — one vocabulary over.
-/// A label, an index or a harness sentence glued to the front would be a citable utterance
-/// of the wrong thing, and the trail cites this row.
+/// The answer row carries what the person said, and nothing of ours: a label, an index or a harness sentence glued to
+/// the front would be a citable utterance of the wrong thing, and the trail cites this row.
 #[test]
 fn the_answer_row_is_the_persons_words_and_nothing_else() {
     // A choice is the OPTION'S TEXT — the label they were shown and picked. An index is
@@ -42,10 +39,8 @@ fn the_answer_row_is_the_persons_words_and_nothing_else() {
     );
 }
 
-/// **The two rows: the question is the session's, the answer is the operator's.**
-///
-/// The speakers are the whole of what an `ALLOW <n>` rests on, so they are asserted on the
-/// rows the session writes and not on a rendering.
+/// The two rows: the question is the session's and the answer is the operator's. The speakers are the whole of what an
+/// `ALLOW <n>` rests on, so they are asserted on the rows and not on a rendering.
 #[test]
 fn the_question_row_is_the_sessions_and_the_answer_row_is_the_operators() {
     let rows = asked_rows(&asked(QuestionAnswer::choosing(1)), "sqlite");
@@ -90,12 +85,8 @@ fn the_question_row_is_the_sessions_and_the_answer_row_is_the_operators() {
     assert_eq!(text(&answer), "sqlite");
 }
 
-/// **A job this daemon never ran is answered from the record, not refused.**
-///
-/// The operator, after a restart: entering a job showed nothing at all — `no job ... here`
-/// about a job whose ending was written down. Three claims, and the third is the one a
-/// reader acts on: the state word is the row's own, the bytes are admitted LOST rather than
-/// silently absent, and a redirect names the file that still holds them (R41).
+/// A job this daemon never ran is answered from the record, not refused: three claims, and the third is the one a reader
+/// acts on. The state word is the row's own, the bytes are admitted lost, and a redirect names the file that holds them.
 #[test]
 fn a_recorded_job_says_what_happened_and_where_its_bytes_went() {
     let row = |state: &str, redirect: Option<&str>| JobRecord {
@@ -132,14 +123,9 @@ fn a_recorded_job_says_what_happened_and_where_its_bytes_went() {
     );
 }
 
-/// **A row announced through a capturing sink is filled by the pairing rule, and
-/// body-less without it** — the compaction defect at the smallest size there is.
-///
-/// This is the free half of `Harness::reconcile` (`reconcile_rows`), driven the way
-/// the summary-turn helper drives it. The false-first direction is the assertion that
-/// matters: a sink announces on `emit` and carries the id, so a caller that drops the
-/// sink has announced a row it never filled — which is what the daemon's view then
-/// serves to every head and to every `/resync`.
+/// A row announced through a capturing sink is filled by the pairing rule, and body-less without it: a sink announces on
+/// `emit` and carries the id, so a caller that drops the sink has announced a row it never filled, which is what the
+/// daemon's view then serves to every head and every `/resync`.
 #[test]
 fn an_announced_row_is_filled_by_the_pairing_rule_and_body_less_without_it() {
     use super::*;
@@ -182,14 +168,9 @@ fn an_announced_row_is_filled_by_the_pairing_rule_and_body_less_without_it() {
     );
 }
 
-/// **The question the operator pasted, and their answer to it** — DuckDB's `slt_good_*` row,
-/// asked through `ask_user_question` and answered with its first option. The TUI draws the
-/// question row as ONE line and names it on the answer's row (`ui::transcript::asked_card`) —
-/// the operator: *"again, too much on my screen, i saw the resulting selector anyway. but what
-/// is interesting - my reply doesnt have any hint on the question. lets mention the question i
-/// replied to"*. This writes the two rows' texts as the session writes them and pins them byte
-/// for byte; re-bless with `LETIBOT_BLESS_ASKED_CARD=1`, and teach `asked_card` the new shape
-/// if `asked: ` or `options offered: ` moved.
+/// The question the operator pasted and their answer to it: the TUI draws the question row as ONE line and names it on
+/// the answer's row. This writes the two rows' texts as the session writes them and pins them byte for byte; re-bless
+/// with `LETIBOT_BLESS_ASKED_CARD=1` and teach `asked_card` the new shape.
 #[test]
 fn the_tuis_asked_card_fixtures_are_what_the_session_writes() {
     let asked = crate::answers::Asked {

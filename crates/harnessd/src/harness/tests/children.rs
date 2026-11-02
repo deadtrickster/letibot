@@ -2,15 +2,9 @@
 
 use super::*;
 
-/// **A real worktree is arranged the way `task_start` arranges it**: the branch is
-/// `agent/<slug>`, cut from the base, and the main tree is untouched.
-///
-/// This drives the same `git_in` door `HarnessTaskRunner::start_worktree` uses, in a
-/// throwaway repo, so the branch name and the main tree's cleanliness are facts on
-/// disk rather than a claim in the answer. The operator's ask — *"we will need a new
-/// tool - task_start or what that will arrange worktree, firecode and subagent"* — is
-/// that the placement is arranged before the child is spawned, and this is the half of
-/// that that can be checked without a live subagent.
+/// A real worktree is arranged the way `task_start` arranges it: the branch is `agent/<slug>`, cut from the base, and
+/// the main tree is untouched. It drives the same `git_in` door in a throwaway repo, so the branch name and the main
+/// tree's cleanliness are facts on disk rather than a claim in the answer.
 #[test]
 fn a_worktree_is_arranged_with_its_branch_and_the_main_tree_untouched() {
     // A throwaway repo, the same shape `detect.rs`'s tests use.
@@ -96,15 +90,9 @@ fn a_worktree_is_arranged_with_its_branch_and_the_main_tree_untouched() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// **The subagent's title is not the session's name, and the two have different bounds.**
-///
-/// A session name is an **address** — `@seat/title`, which somebody types — so
-/// `derive_title` holds it to six words and 48 characters. A subagent's title is a **row**,
-/// and the operator's ruling is that a row's cap is the UI's: *"subagents list has
-/// everything capped at 48 chars. but this cap is a ui concern — for example my terminal is
-/// 160 cells wide, make the cap 256."* Reusing the address rule for the row cut every
-/// subagent line to a name's length. This pins both, so a later reader cannot quietly merge
-/// them again.
+/// The subagent's title is not the session's name, and the two have different bounds: a session name is an ADDRESS
+/// somebody types, held to six words and 48 characters, while a subagent's title is a ROW whose cap is the UI's.
+/// Reusing the address rule cut every subagent line to a name's length, so both are pinned here.
 #[test]
 fn a_subagent_title_is_a_row_and_a_session_name_is_an_address() {
     let long = "audit the session store and say which rows are never read by anything at \
@@ -136,20 +124,9 @@ fn a_subagent_title_is_a_row_and_a_session_name_is_an_address() {
     assert!(cut.ends_with('…'), "{cut}");
 }
 
-/// **The child's row says where its point came from, and says when it was clamped.**
-///
-/// The row's vocabulary is the one the settings table already uses for a mode's source, so
-/// the phrase `inherited from the parent session` is asserted here rather than trusted, and
-/// the clamp's sentence is asserted to survive INTO the row — a child silently at a
-/// different point than its parent is the state that made this a bug hunt.
-///
-/// **What this does NOT test**, and it is worth naming rather than leaving to be assumed:
-/// that the spawn reads the parent's live point. That is `HarnessTaskRunner::point` reading
-/// a cell `Harness::set_mode_consented` writes, and reaching either needs a session with a
-/// model behind it — no test in this crate opens a `Harness` (they all need a vocabulary
-/// GGUF and a server), so the wiring is read rather than driven. The DECISION is tested
-/// where it lives: `mode::tests::a_child_inherits_the_point_of_the_session_that_spawned_it`
-/// and its neighbours.
+/// The child's row says where its point came from, and says when it was clamped: the vocabulary the settings table
+/// already uses, asserted rather than trusted, and the clamp's sentence asserted to survive INTO the row. What it does
+/// not test is that the spawn reads the parent's live point, which needs a session with a model behind it.
 #[test]
 fn a_childs_row_says_where_its_point_came_from() {
     let inherited = super::child_mode_source(None);
@@ -173,23 +150,9 @@ fn a_childs_row_says_where_its_point_came_from() {
     assert!(said.contains("`writes allowed`"), "where it landed: {said}");
 }
 
-/// **Three children minted at one instant get three ids.**
-///
-/// leticl found this on the wire and could not read this tree: three `task` calls in a
-/// loop, one id — *"one pane row, no subagent counter, one `[task]` notice — and two of
-/// the three answers never reach me at all"*. The id is the handle `task_result`
-/// collects by, and it finds the FIRST slot under a handle, so the other replies exist,
-/// settle, and are unreachable.
-///
-/// The DEFECT was a millisecond clock, which three calls in one round share trivially;
-/// this drives the same instant down to a nanosecond, because the guard has to hold at
-/// the resolution the mint now uses and not merely at the one it was found at.
-///
-/// **Both halves of the guard are exercised, because either alone misses the real
-/// case.** The handed-out check is the one that catches the ordinary shape: `adopt`
-/// happens inside the child's thread, after a whole harness has been opened, while the
-/// mint returns at once — so three calls in one round all mint before any of them
-/// adopts, and a check against the registry alone finds nothing.
+/// Three children minted at one instant get three ids: the id is the handle `task_result` collects by and it finds the
+/// FIRST slot, so the other replies would exist, settle and be unreachable. The defect was a millisecond clock, so this
+/// drives the same instant to a nanosecond, and both halves of the guard are exercised because either alone misses it.
 #[test]
 fn three_children_minted_at_one_instant_get_three_ids() {
     use letibot_sessionlog::registry::{Registry, SessionWiring};
@@ -234,17 +197,9 @@ fn three_children_minted_at_one_instant_get_three_ids() {
     assert_ne!(next, adopted);
 }
 
-/// **A stored pair is an anchor on ONE conversation, and what came after it is
-/// added, never divided.** See [`super::recovered_scale`].
-///
-/// The defect the old equality test closed, measured 2026-10-02: a store holding
-/// 940,211 — the provider's count for a ~950k-token conversation — was paired
-/// with a ledger of 1,486,369 that the daemon had just rebuilt, as a RATIO. It came
-/// out 0.63 where the truth was 1.016, and the window 1,580,888 instead of about
-/// 1,015,628 — so a session 1.46M tokens deep planned against a window it was
-/// already far past, never compacted, and died at the provider's 400 on every
-/// attempt. As an anchor the same row is 940,211 PLUS the rows after it — a count
-/// that grows with the conversation, so it compacts.
+/// A stored pair is an anchor on ONE conversation, and what came after it is added, never divided. Measured: a store
+/// count of 940,211 paired as a RATIO with a rebuilt ledger of 1,486,369 came out 0.63 where the truth was 1.016, so a
+/// session 1.46M tokens deep never compacted. As an anchor it grows with the conversation, so it does.
 #[test]
 fn a_stored_token_pair_is_used_only_for_the_conversation_it_measured() {
     // The pair that matches: both halves of one measurement.
@@ -278,13 +233,9 @@ fn a_stored_token_pair_is_used_only_for_the_conversation_it_measured() {
     assert_eq!(super::recovered_scale(Some(940_211), Some(0), 0), None);
 }
 
-/// **A killed subagent settles as STOPPED, not as having answered.**
-///
-/// An interrupted turn still returns the text it had written when the interrupt
-/// landed, so `run_to_completion` comes back `Ok` — and a `task_result` that called
-/// that the child's last word would hand the parent a truncated answer with nothing on
-/// it to say it had been cut off. The same defect as a truncated summary presented as
-/// whole, one layer down.
+/// A killed subagent settles as STOPPED, not as having answered: an interrupted turn still returns the text it had
+/// written, so a `task_result` calling that the child's last word would hand the parent a truncated answer with nothing
+/// saying it was cut off.
 #[test]
 fn a_killed_subagent_settles_as_stopped_rather_than_as_an_answer() {
     use letibot_tools::builtins::task::TaskStatus;
@@ -359,14 +310,9 @@ fn a_child_with_no_model_named_runs_on_its_parents_model() {
     assert!(l.provider.is_none());
 }
 
-/// **A child refused before it opened is a failure `task_result` can read, at once.**
-///
-/// The operator, on a stroppy session whose `task` (`where: firecode`) came back "started"
-/// and whose `task_result` then sat out its whole 240 s: *"it hanged on task_result wtf"*.
-/// The refusal — whichever check at the top of `run_to_completion` it was — returned before
-/// `AnswerOnce` existed, the thread dropped the sentence, and the slot read `Running` with
-/// nothing behind it. No session row, no `opening` record, no thread: only the job row
-/// saying `running`.
+/// A child refused before it opened is a failure `task_result` can read, at once: the refusal returned before
+/// `AnswerOnce` existed, the thread dropped the sentence, and the slot read `Running` with nothing behind it. The
+/// operator's report of that: it hanged on task_result.
 #[test]
 fn a_child_refused_before_it_opened_settles_its_slot_with_the_reason() {
     use letibot_tools::builtins::task::TaskStatus;
@@ -407,20 +353,9 @@ fn a_child_refused_before_it_opened_settles_its_slot_with_the_reason() {
     );
 }
 
-/// **A stop takes THIS session's children and nobody else's, and not the ones that are
-/// gone** — the downward edge of the tree, at the size it can be asserted at.
-///
-/// The list is the TREE's (`Parts::tree_slots`: one list, so any ancestor can `task_result`
-/// any handle in it), which is exactly why stopping needs the owner back: a root that
-/// stopped every slot it could see would stop its own children AND their children in one
-/// go, and a child would stop its siblings' work. The operator's design says otherwise —
-/// *"we talk to parents and they own lifecycle"* — and one level per session is what makes
-/// the walk down finite and each session answerable for exactly its own.
-///
-/// The second filter is the one that was measured into existence: a child that has ANSWERED
-/// is still alive (a host child parks in `serve_child` and can be asked more) while a child
-/// whose thread has ended has no reader for an interrupt at all. So "has an answer" cannot
-/// stand for "is gone", and `TaskSlot::exited` is the fact that can.
+/// A stop takes THIS session's children and nobody else's, and not the ones that are gone. The list is the TREE's, so
+/// stopping needs the owner back: a root stopping every slot it could see would stop its grandchildren in one go, and a
+/// child its siblings' work. And a child that has ANSWERED is still alive, so `exited` is the fact that decides.
 #[test]
 fn a_stop_takes_this_sessions_children_and_not_the_ones_that_are_gone() {
     // The tree's one list, with four entries: three of mine — one still computing, one
@@ -434,10 +369,8 @@ fn a_stop_takes_this_sessions_children_and_not_the_ones_that_are_gone() {
     });
     let mine_and_gone = Arc::new(TaskSlot::new("s-child"));
     mine_and_gone.mark_exited();
-    // **A slot's handle follows its OWNER** (`<owner>-sub-N`, the shape
-    // `HarnessTaskRunner::start` mints), so the parent's child cannot be called
-    // `s-child-sub-*`: a name that says `s-child` on a slot the root started is the
-    // confusion this whole test is about, and the owner field is what settles it.
+    // A slot's handle follows its OWNER (`<owner>-sub-N`), so a parent's child cannot be called `s-child-sub-*`: a name
+    // saying `s-child` on a slot the root started is the confusion this test is about, and the owner field settles it.
     let my_parents = Arc::new(TaskSlot::new("s-root"));
     let slots = vec![
         ("s-child-sub-1".to_string(), mine_running),
@@ -467,20 +400,9 @@ fn a_stop_takes_this_sessions_children_and_not_the_ones_that_are_gone() {
     );
 }
 
-/// **The wait for a child's thread is a wait and not a hope.**
-///
-/// `TaskSlot::wait_until_exited` is what a caller about to let the process exit uses to
-/// know no child is still inside `libllama` when `exit()` finalizes it — the SIGSEGV this
-/// was written for (`message_between_turns`, after every test had printed `ok`). Two
-/// things have to be true of it and neither is free:
-///
-/// * **It does NOT return true for a child that is still here.** A wait that answered
-///   "gone" on a live thread would make the crash invisible rather than fixed, which is
-///   the worse of the two failures.
-/// * **It returns as soon as the thread leaves, not at the deadline.** The caller gives a
-///   deadline in seconds; a wait that spent it would make every shutdown as slow as its
-///   own patience. The child here exits after 50 ms and the deadline is 30 s, so a return
-///   within seconds is the child's own departure and not the clock.
+/// The wait for a child's thread is a wait and not a hope: `wait_until_exited` is what a caller about to let the
+/// process exit uses to know no child is inside `libllama` when `exit()` finalizes it. It must not answer gone on a
+/// live thread, and it must return as soon as the thread leaves rather than at the deadline.
 #[test]
 fn the_wait_for_a_childs_thread_ends_when_the_thread_does() {
     let slot = Arc::new(TaskSlot::new("s-parent"));
@@ -517,12 +439,9 @@ fn the_wait_for_a_childs_thread_ends_when_the_thread_does() {
     );
 }
 
-/// **The sentence a stopped session leaves names what it stopped, and what it could not.**
-///
-/// The pure half of `stop_children_first`, and the reason it is asserted rather than the
-/// `Warning` around it: a count that swallowed a refusal would be the claim-versus-fact
-/// defect this tree keeps paying for — a reader told *stopped 2* while one of them is still
-/// computing, and nothing anywhere saying so.
+/// The sentence a stopped session leaves names what it stopped and what it could not: a count that swallowed a refusal
+/// would be the claim-versus-fact defect this tree keeps paying for, with a reader told stopped two while one is still
+/// computing.
 #[test]
 fn a_stop_says_what_it_stopped_and_what_it_could_not() {
     // No children: no sentence at all, which is the ordinary case — a session with nothing
@@ -558,18 +477,9 @@ fn a_stop_says_what_it_stopped_and_what_it_could_not() {
     );
 }
 
-/// **A stop delivered to a running turn takes the session's CHILDREN with it first** — the
-/// operator's design in one line, *"we talk to parents and they own lifecycle"*, and the
-/// door an interrupt actually reaches a turn through.
-///
-/// The instrument is a fake runner, because the claim is about WHO IS TOLD and WHEN rather
-/// than about anything a child does: the parent is stopped by the very message the arm
-/// returns, and the children have to be told before it — a stop that waited for its subtree
-/// would hold the turn it is stopping open.
-///
-/// **Two levels, because the recursion is the shape.** Each session's arm stops ITS OWN
-/// runner and no other; the walk down is then one level per session, which is what makes it
-/// finite and what makes every session answerable for exactly its own children.
+/// A stop delivered to a running turn takes the session's CHILDREN with it first: the door an interrupt actually
+/// reaches a turn through. The instrument is a fake runner, since the claim is about who is told and when, and two
+/// levels, because each session's arm stops ITS OWN runner and the walk down is one level per session.
 #[test]
 fn a_stop_takes_the_sessions_children_before_it_takes_the_session() {
     /// Records that it was asked to stop, and what it was asked for after each stop.
@@ -695,10 +605,8 @@ fn a_stop_takes_the_sessions_children_before_it_takes_the_session() {
         "each session's own arm stopped its own children, in that order"
     );
 
-    // **The ordering, which is the requirement and not tidiness.** The arm stops the
-    // children on the way IN, before the urgent message it returns can stop the session —
-    // and the notice is on the stopping session's own log, where the person who pressed
-    // Esc is looking.
+    // The ordering, which is the requirement and not tidiness: the arm stops the children on the way IN, before the
+    // urgent message it returns can stop the session, and the notice is on the stopping session's own log.
     let said = |hub: &Arc<Hub>| {
         hub.retained()
             .iter()
@@ -727,12 +635,9 @@ fn a_stop_takes_the_sessions_children_before_it_takes_the_session() {
     );
 }
 
-/// **R7's tool-side half: the sentence says the result comes to you.**
-///
-/// The text is the deliverable — it is what taught the model that waiting was the
-/// only way to learn a result — so what it says is asserted rather than assumed. Two
-/// things must be in it: the job's own identity (id, command, how it ended), and the
-/// promise that there is nothing to wait for.
+/// R7's tool-side half: the sentence says the result comes to you. The text is the deliverable, since it taught the
+/// model that waiting was the only way to learn a result, so two things are asserted in it: the job's own identity and
+/// the promise that there is nothing to wait for.
 #[test]
 fn a_completion_notice_names_the_job_and_says_do_not_wait() {
     let text = completion_notice(
@@ -764,25 +669,9 @@ fn a_completion_notice_names_the_job_and_says_do_not_wait() {
     assert!(!text.contains("job_wait") && !text.contains('…'), "{text}");
 }
 
-/// **A prompt is answered, a parent's message is HEARD, a stop is a STOP for the whole
-/// subtree, and everything else a child inherits is left, and named.**
-///
-/// The operator's ruling is what makes the first arm right — *"subagent is just another
-/// agent… mid turn, post turn whatever"* — and the other arms are what keeps this door from
-/// running the parent's machinery in the parent's name.
-///
-/// **The interrupt arm is the correction, and it is the measured one.** It used to say
-/// *"nothing is running to interrupt"*, which was true of the session and false of its
-/// subtree: a child between turns, with children of its own still computing, was told
-/// nothing and left them running. See the supervision invariant on [`HarnessTaskRunner`].
-///
-/// **The message arm was the second correction** — the operator's ruling, verbatim: *"fix
-/// task_message - it should enqueue"*. It used to `Leave` a message here on the grounds
-/// that *"a message steers a turn in flight"*, which was true of the door it was written
-/// for and false of a child whose queue is drained between turns: the parent was told
-/// *nothing drains a child's queue between turns*, and what was actually missing was a
-/// meaning for the entry that arrived. It has one now — a turn of its own, spoken as the
-/// parent's (see [`Harness::submit_a_parents_message`]).
+/// A prompt is answered, a parent's message is HEARD, a stop is a STOP for the whole subtree, and everything else a child
+/// inherits is left and named. The interrupt arm is the measured correction, since it used to say nothing is running to
+/// interrupt about a session whose subtree was, and the message arm now starts a turn of its own.
 #[test]
 fn a_child_answers_a_prompt_and_leaves_the_machinery_its_parent_owns() {
     use letibot_sessionlog::CommandKind as K;
@@ -844,12 +733,8 @@ fn a_command_a_child_leaves_is_named_back_to_its_head() {
     assert!(said.contains("`compact`"), "{said}");
 }
 
-/// **A progress bar is ONE line, and the window must show its last state.**
-///
-/// The operator's report, 2026-10-05: *"more often than not i'd like to enter the job and
-/// hope to tail its out with ascii codes correctly processed"*. `cargo`, `docker` and `npm`
-/// redraw a single row with `\r` and no newline in it, so splitting on `\n` alone put every
-/// update on one row — `2%23%47%100%` — which is what they were reading.
+/// A progress bar is ONE line, and the window must show its last state: `cargo`, `docker` and `npm` redraw a row with
+/// `\r` and no newline, so splitting on `\n` alone put every update on one row, which is what the operator was reading.
 #[test]
 fn a_progress_bar_is_one_line_and_not_every_update_concatenated() {
     // The ordinary case: each redraw is longer, so the last one stands alone.
@@ -872,21 +757,9 @@ fn a_progress_bar_is_one_line_and_not_every_update_concatenated() {
     );
 }
 
-/// **A parent's correction reaches a running child as steering, and NOT as the
-/// operator's words** — the operator's ruling, 2026-10-06: *"in the tree all subagents
-/// must be addressable by their parents. that is how live corrections delivered."*
-///
-/// The path, end to end and without a daemon: the runner submits under the **daemon's**
-/// name (the parent is seated in another session's hub), the kind carries the parent's
-/// identity, and the child's own steering poll takes it at its next round boundary. What
-/// this pins is the pair of facts a correction cannot afford to get wrong — it is not
-/// `from_operator`, so it cannot authorise the act it races, coalesce with the operator's
-/// text, or be taken back by a recall; and it is not `urgent`, so a child told to change
-/// course finishes the call it is in rather than abandoning it.
-///
-/// The parent is named in the text because the trail cannot name it: `say` takes a
-/// speaker kind, not an identity, and *which* parent spoke is the whole of what
-/// addressability means.
+/// A parent's correction reaches a running child as steering, and NOT as the operator's words: the runner submits
+/// under the daemon's name, the kind carries the parent's identity, and the child's poll takes it at its next round. It
+/// is not `from_operator`, so it cannot authorise, and not `urgent`, so the child finishes the call it is in.
 #[test]
 fn a_parents_message_is_the_childs_steering_and_not_the_operators_words() {
     let hub = Hub::new("s-child");
@@ -948,15 +821,9 @@ fn a_parents_message_is_the_childs_steering_and_not_the_operators_words() {
     );
 }
 
-/// **A failed turn's words come back out of the hub's steering, still the
-/// operator's, and not twice.**
-///
-/// The hub half of the fix for the measured loss: a message is out of the hub's
-/// queue the moment `try_next` dequeues it, and a turn that fails commits nothing
-/// (§5.7), so the words go back to the source rather than being appended.
-/// `give_back` holds them, and the next `try_next` drains them before the hub's
-/// queue — with the flags they had when they were taken, because it is the same
-/// `SteeringMessage` coming out again.
+/// A failed turn's words come back out of the hub's steering, still the operator's, and not twice: a message is out of
+/// the queue the moment `try_next` dequeues it, and a turn that fails commits nothing, so the words go back to the
+/// source rather than being appended, with the flags they had when taken.
 #[test]
 fn a_handed_back_message_comes_out_of_the_next_poll_still_the_operators() {
     let hub = Hub::new("s-steer");
@@ -975,10 +842,8 @@ fn a_handed_back_message_comes_out_of_the_next_poll_still_the_operators() {
         parent: None,
     };
 
-    // An interrupt queued behind the failed turn: it must come out AFTER the
-    // handed-back words, which were taken before it. (The daemon may submit an
-    // interrupt and nothing else that speaks as a person, so this is the door
-    // the test goes through.)
+    // An interrupt queued behind the failed turn: it must come out AFTER the handed-back words, which were taken before
+    // it. The daemon may submit an interrupt and nothing else that speaks as a person, so this is the door the test uses.
     let f = hub.submit(
         letibot_sessionlog::hub::DAEMON_SUBMITTER,
         "interrupt-1",
@@ -1044,11 +909,9 @@ fn flowy_is_a_door_for_every_root_session_and_for_no_subagent() {
         "the leticode seat cannot ask the person a question: {:?}",
         root.tools
     );
-    // The whole opencode union plus the room fits the ceiling, which moved to
-    // twenty-four when `task_message` joined the delegation trio — see leticode's own
-    // note on `max_tools` for why it took a seat rather than trading for one. A tool
-    // added after this has to do the same: take a seat from something, or declare its
-    // own number where somebody deciding can read it.
+    // The whole opencode union plus the room fits the ceiling, which moved to twenty-four when `task_message` joined the
+    // delegation trio. A tool added after this takes a seat from something or declares its own number where somebody
+    // deciding can read it.
     assert!(
         root.tools.len() <= root.max_tools,
         "{} > {}",
@@ -1068,11 +931,9 @@ fn flowy_is_a_door_for_every_root_session_and_for_no_subagent() {
     assert!(runner.tools.len() <= runner.max_tools);
 }
 
-/// **A child that ends while its own children are still on their task stops them** — the edge a
-/// hold does not cover. pg-noop, 2026-10-14: `…-sub-1791998134948544726` failed its first turn on
-/// a store error at 17:18:21 while its children worked; they went on to boot two VM grandchildren,
-/// whose VMs held two of the four VM slots for a day. A child with nothing unsettled stops
-/// nothing and says nothing.
+/// A child that ends while its own children are still on their task stops them, the edge a hold does not cover: a
+/// child whose first turn failed on a store error left them to boot two VM grandchildren, whose VMs held two of four
+/// slots for a day. A child with nothing unsettled stops nothing and says nothing.
 #[test]
 fn a_child_that_ends_with_children_on_their_task_stops_them() {
     struct Children {

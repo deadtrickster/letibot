@@ -41,12 +41,9 @@ fn harness_on_a_store(dir: &Scratch, id: &str) -> Option<(Harness, std::path::Pa
     Some((h, path))
 }
 
-/// **A todo write the store refused is made by the next flush** (R91.7).
-///
-/// `flush_todos` recorded the board's version BEFORE `put_todos`, so a write that failed left
-/// the next flush seeing nothing to do: the store kept the old board until the board moved
-/// again, and a restart reverted the operator's answers and consumed conditions. The store is
-/// made to refuse by moving its `todo` table away through a second connection, then put back.
+/// A todo write the store refused is made by the next flush: `flush_todos` recorded the version BEFORE the write, so a
+/// failure left the next flush seeing nothing to do and a restart reverted the operator's answers and consumed
+/// conditions. The store is made to refuse by moving its `todo` table away, then put back.
 #[test]
 fn a_todo_write_the_store_refused_is_made_by_the_next_flush() {
     let dir = Scratch::new("r91-7-todos");
@@ -83,10 +80,9 @@ fn a_todo_write_the_store_refused_is_made_by_the_next_flush() {
     );
 }
 
-/// **A store write past the store's own minute of retries is waited for, not failed on**
-/// (R91.6) — the patience `persist_reporting` has, now shared by the todo flush. A write that
-/// comes back busy is taken again after the pause, and the wait is said on the session's log;
-/// a failure that is not busy is returned at once.
+/// A store write past the store's own minute of retries is waited for, not failed on: a write that comes back busy is
+/// taken again after the pause and the wait is said on the session's log, while a failure that is not busy is returned
+/// at once.
 #[test]
 fn a_busy_store_write_is_waited_out_and_said() {
     let dir = Scratch::new("r91-6-patience");
@@ -125,10 +121,8 @@ fn a_busy_store_write_is_waited_out_and_said() {
     assert_eq!(n, 1, "a failure that is not busy is not waited for");
 }
 
-/// **A `/mode` taken by a running turn is written down** — the operator, twice: *"i restart stroppy
-/// and allow-all goes"*. The running turn's door (`apply_queued_mode`) applied the point and wrote
-/// nothing, trusting the worker's door, which never saw the command. Read back the way a restart
-/// reads it: a fresh store, the session's own row and the project's.
+/// A `/mode` taken by a running turn is written down: the running turn's door applied the point and wrote nothing,
+/// trusting the worker's door, which never saw the command. Read back the way a restart reads it, from a fresh store.
 #[test]
 fn a_mode_set_mid_turn_survives_a_restart() {
     let dir = Scratch::new("mode-midturn");

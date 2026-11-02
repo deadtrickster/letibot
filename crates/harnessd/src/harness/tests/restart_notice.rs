@@ -1,21 +1,6 @@
-//! **A restart is said even when there is nothing to restore** — the operator, 2026-10-30: *"mb
-//! always tell agent about restart? with the current time lol"* — **and it starts a turn when the
-//! session still owes something** — the operator, 2026-11-01: *"it is not ok that restart notice
-//! arrived with my continue … so i expected that after restart you will continue"*.
-//!
-//! The condition `restore_after_restart` was written under was *what was running*: a session with
-//! no subagent, monitor or job had nothing restored and nothing reminded, so it was told nothing
-//! and the model went on believing no time had passed. What closes that gap is the time, and the
-//! daemon is the only thing that knows it — so the sentence is said on every restart that reopens
-//! a session, and this is where its three doors are pinned:
-//!
-//! * **idle, owing nothing** → a transcript row, and no turn of its own (a wake is a model call);
-//! * **idle, owing work** → a restart notice, which the daemon's own ring at open spends a turn on
-//!   ([`crate::restart::Owed`]: a turn in flight, a settlement nobody collected, a due row, a plan
-//!   with rows still owed);
-//! * **a turn already running** → the step boundary of that turn, in the same turn.
-//!
-//! The restore case keeps the door it has always had, and is pinned by `restart_restore.rs`.
+//! A restart is said even when there is nothing to restore, and it starts a turn when the session still owes something.
+//! Idle and owing nothing gets a row and no turn, idle and owing work gets a notice the ring spends a turn on, and a
+//! turn already running hears it at its step boundary.
 
 use super::*;
 use letibot_tokencore::store::{SessionRecord, Store, TodoBy, TodoItem, TodoStatus};
@@ -49,12 +34,9 @@ impl Drop for Scratch {
     }
 }
 
-/// **A session an earlier daemon had already created** — the row is written first, the vocabulary
-/// is loaded, and only then does `Harness::open` mint this daemon's registry: so the row's
-/// `created_at` is behind `Registry::started_ms`, which is the whole of what *a restart happened
-/// for this session* means when the session left no other record.
-///
-/// `None` when this box has no vocabulary GGUF, the way every harness test here answers that.
+/// A session an earlier daemon had already created: the row is written first and the vocabulary loaded, and only then
+/// does `Harness::open` mint this daemon's registry, so the row's `created_at` is behind `Registry::started_ms`. `None`
+/// when this box has no vocabulary GGUF.
 fn opened_by_a_later_daemon(dir: &Scratch, id: &str) -> Option<Harness> {
     opened_by_a_later_daemon_with(dir, id, |_| {})
 }
@@ -114,12 +96,8 @@ fn a_row(what: &str, status: TodoStatus) -> TodoItem {
     }
 }
 
-/// **One transcript row, written into the store behind the open harness's back.**
-///
-/// The harness is already open, so nothing resumes over this: it is the store's own last-row fact
-/// that [`crate::restart::mid_turn`] reads, and staging it here is staging exactly what a daemon
-/// that died mid-turn leaves. `seq` 0 needs the offset the transcript's stable prefix ends at, and
-/// the trigger's other two checks follow from the token blob.
+/// One transcript row, written into the store behind the open harness's back: nothing resumes over this, and it is the
+/// store's own last-row fact that `mid_turn` reads, so staging it stages what a daemon that died mid-turn leaves.
 fn stage_a_last_row(dir: &Scratch, id: &str, item: TranscriptItem) {
     let store = Store::open(&dir.store()).expect("the store");
     let transcript = store
@@ -179,12 +157,9 @@ fn restart_rows(h: &Harness) -> Vec<String> {
         .collect()
 }
 
-/// **A restart with nothing running is said, once, as a row — and it starts no turn.**
-///
-/// The three halves are one decision: the sentence is in the transcript (so the model reads it at
-/// its next turn), `restart_notices` is empty (so the daemon's own ring at open finds nothing to
-/// say and runs no turn — a wake is a model call), and the second open of the same session says
-/// nothing at all (the one-shot key is per (session, restart)).
+/// A restart with nothing running is said, once, as a row, and it starts no turn: the sentence is in the transcript so
+/// the model reads it at its next turn, `restart_notices` is empty so the ring finds nothing to say, and the second open
+/// of the same session says nothing at all.
 #[test]
 fn an_empty_restart_is_one_row_and_never_a_turn() {
     let dir = Scratch::new("restart-empty");
@@ -194,10 +169,8 @@ fn an_empty_restart_is_one_row_and_never_a_turn() {
     let text = h
         .restore_after_restart()
         .expect("a restart with nothing running is still said");
-    // The fixture stages a stopped life row, so `latest_box_stop` finds it: the stop is
-    // dated from that row, not Unknown, even though the session's own rows name no daemon.
-    // The down time is a fact about the box (three restarts in an hour measured 1 h 11 m
-    // when the notice asked only the session's daemons), so every stopped life row counts.
+    // The fixture stages a stopped life row, so `latest_box_stop` finds it: the stop is dated from that row even though
+    // the session's own rows name no daemon, since the down time is a fact about the box and every stopped life counts.
     assert!(
         text.contains("stopped at "),
         "the stop is dated from a stopped life row, not invented: {text}"
@@ -292,12 +265,9 @@ fn a_session_mid_turn_reads_the_line_at_its_next_round_boundary() {
 // What the session still OWES — the door the operator's 2026-11-01 ruling turns on
 // ---------------------------------------------------------------------------
 
-/// **A session whose plan still has rows owed is WOKEN, and the sentence says why.**
-///
-/// The operator: *"it is not ok that restart notice arrived with my continue. because just before
-/// restart you said 'after restart i owe you blabla' so i expected that after restart you will
-/// continue"*. A plan is the durable half of that promise — the model wrote it down — so the row
-/// it left is the reason the sentence is a turn and not a row nobody reads.
+/// A session whose plan still has rows owed is WOKEN, and the sentence says why: the operator expected the work to
+/// continue after a restart, and a plan is the durable half of that promise, so the row it left is why the sentence is
+/// a turn rather than a row nobody reads.
 #[test]
 fn a_plan_with_rows_owed_makes_the_restart_a_turn() {
     let dir = Scratch::new("restart-owed-plan");
@@ -448,13 +418,9 @@ fn a_session_that_answered_last_is_told_in_a_row_and_not_woken() {
     assert_eq!(restart_rows(&h), vec![text], "{:?}", h.items());
 }
 
-/// **A sentence the harness filed itself is not a turn in flight** — and that is what keeps an
-/// idle session from being woken on every second restart.
-///
-/// The empty restart's own row is a `User` row with `Speaker::Agent`, exactly the shape a wake's
-/// notice has; the store cannot tell them apart, so the class is left out ([`crate::restart::mid_turn`]).
-/// Without that, restart N+1 would read restart N's row as work owed, wake the session, and
-/// alternate a model call into every idle restart after the first.
+/// A sentence the harness filed itself is not a turn in flight, which is what keeps an idle session from being woken on
+/// every second restart: the empty restart's own row has exactly the shape a wake's notice has, so the store cannot tell
+/// them apart and the class is left out.
 #[test]
 fn the_restart_row_it_filed_is_not_work_it_owes() {
     let dir = Scratch::new("restart-owed-filed");
