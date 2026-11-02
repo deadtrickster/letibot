@@ -1,104 +1,6 @@
-//! **The room: one host's sessions, one queue per tag, and a claim that is a lease with a beat.**
-//!
-//! This module is the state machine and nothing else: no store, no socket, no clock. Every time in
-//! it is handed in by the caller, every item lives in this process's memory, and the whole of the
-//! transport is [`crate::wire`]. That is deliberate — the coordinator daemon that will own the
-//! socket is the next slice, and a state machine that needs a socket to be tested is a state
-//! machine whose bugs are found by hand.
-//!
-//! # A tag is a lock, and its queue is first come, first served
-//!
-//! **One live claim per tag.** A session claims *the head of a tag*, and while that claim lives no
-//! other session may claim anything under that tag — it is refused [`Refused::Busy`], naming the
-//! holder and the item. That is the RAM example's whole shape: three sessions each want the same
-//! scarce thing, and only one of them may run.
-//!
-//! **Order is `(posted_ms, id)`** — first come, first served, and the room's own id breaks a tie
-//! within one millisecond. **There is no priority number, on purpose.** A numeric priority invites
-//! every session to claim 0, and then the number carries no information and the room has a tie it
-//! cannot settle without the arbiter; a tag with one head and no ordering is what the RAM example
-//! actually needs, and urgent work gets its own tag (`ram-urgent`) — a name a reader can see, in
-//! place of a number nobody can rank.
-//!
-//! The ordering has one property worth stating because it is load-bearing: **an abandoned item
-//! returns to the head**, since it was posted before everything behind it. The queue moves on from
-//! a claimant, not from the request.
-//!
-//! # The claim is a lease, and there are two ways to lose it
-//!
-//! A claim carries `claim_ms` and `beat_ms` — the `queue_lease`/`host_lease` discipline
-//! ([`crate::DEFAULT_LEASE_MS`] is that queue's own ninety seconds). It is lost in two ways, and
-//! they are different facts:
-//!
-//! * **[`Room::sweep`] — the beat stopped.** `now - beat_ms > lease_ms` and the item is abandoned
-//!   with [`Why::BeatStale`]. A session can be alive and simply not working on it (a turn ended, a
-//!   model stopped calling `beat`), which is exactly the *"so they don't occupy it for ever"* case.
-//! * **[`Room::note_gone`] — the session is known gone.** Its daemon said it exited, or the socket
-//!   that owns it closed. A positive fact, so it does not wait out the lease.
-//!
-//! A third way is the holder's own [`Room::abandon`] — a voluntary release. It is still an
-//! abandonment and still counted: an item everybody gives up on is a problem whether or not each
-//! gave up politely, and a rule with an exception is a rule somebody has to explain.
-//!
-//! **An abandonment is loud.** It is an [`Event::Abandoned`] carrying the reason, the count and
-//! whether the item is back in the queue, and the item keeps every abandonment in its history. The
-//! item is *not* silently dropped: the state says `abandoned` so a reader cannot mistake a
-//! re-queued item for one nobody ever tried.
-//!
-//! # The count, and when an item raises instead of cycling
-//!
-//! [`ABANDON_THRESHOLD`] is **three**. The first abandonment is usually an accident — a daemon
-//! restarted, a session killed, a box that slept — and one is far too few to give up on a request.
-//! The second says the work is fragile or the claimant picked badly. At the third, cycling costs
-//! more than asking: three different claimants have now been killed by this item, and the next one
-//! would be chosen by who is fastest rather than by who can do it. So the third abandonment
-//! **raises** the item: it is marked abandoned, the count stops moving, and it is no longer
-//! claimable until a ruling answers a [`Question`]. Its tag's queue moves past it to the next
-//! item — which is the point: an item that keeps killing its claimants must not block the tag for
-//! ever.
-//!
-//! # Where the tie-breaker decides
-//!
-//! The arbiter is a model, so it is asked **a question with a decision in it** — never a dashboard
-//! to interpret. [`Question::text`] is that question and [`Question::facts`] is the evidence it
-//! names, so the model can check the words against the numbers.
-//!
-//! Three situations need a ruling, and the first is the one this slice implements end to end:
-//!
-//! 1. **An item that has abandoned its claimant three times** — [`About::ItemRaised`]. The question
-//!    names the item, its body, each claimant it lost and why, and who is queued behind it (the
-//!    cost of keeping it), and asks for one of [`Decision::Retry`], [`Decision::Hand`] or
-//!    [`Decision::Drop`]. Until it is answered the item is frozen.
-//! 2. **An abandonment under dispute** — [`About::ClaimDisputed`]. A claimant comes back after its
-//!    beat went stale (its daemon was paused, the box slept, its model was thinking) and finds the
-//!    item abandoned and perhaps claimed by somebody else. The room refuses its late beat by name
-//!    ([`Refused::NotHeld`]); [`Room::dispute`] is how it says *"I am still on it"* instead of
-//!    fighting for the claim, and the arbiter is asked which of the two has it.
-//! 3. **Two items at one tag's head** — the room's answer is `(posted_ms, id)`, deterministically,
-//!    so the arbiter is never *needed* for it. It is reachable all the same: a session that
-//!    believes its request should have gone first asks through [`Room::dispute`], and the question
-//!    it produces carries both items' facts. That is the honest shape — the ordering rule is the
-//!    room's, and a ruling is how a person overrides it, not a second ordering rule.
-//!
-//! **What is *not* a question for the arbiter: two coordinators.** This room is one process and one
-//! clock, so "two claimants that each believe they are alive" cannot arise *inside* it — the room's
-//! state is the truth. It arises only if two daemons both own a room, which is the next slice's
-//! problem and is answered with a lease on the coordinator itself (the merge queue's own shape),
-//! not with a model.
-//!
-//! # What the state machine assumes
-//!
-//! * **Time.** One clock, given as `now` in milliseconds, and it is the caller's. A clock that
-//!   goes backwards is survived, not corrected: a beat stamps `now`, and the staleness test is
-//!   `now.saturating_sub(beat_ms)`, so a beat from the future reads as fresh rather than as
-//!   instantly stale.
-//! * **Liveness.** The room knows two things about a session: the beat (it is working) and the
-//!   caller's word (it is gone). It never asks the OS, never reads a store, and never guesses.
-//! * **One writer.** No method here is `&self`-and-mutating behind a lock; the room is `&mut`
-//!   throughout, so the process that owns it is the only writer by construction.
-//! * **Ordering of events.** [`Room::sweep`] and [`Room::note_gone`] return the events they
-//!   produced, in the order they happened; every other verb returns its own in [`Outcome::events`].
-//!   A caller that drops them has dropped the bell, not the state.
+//! The room's state machine: one queue per tag, a claim that is a lease with a beat, and a raise
+//! when a tag keeps being abandoned. It holds no clock: every verb takes the time it is asked
+//! at, so a test can drive a ninety-second TTL in microseconds.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
@@ -107,25 +9,23 @@ use serde::{Deserialize, Serialize};
 
 use crate::item::{Abandonment, Claim, Item, Speaker, State, Wait, Why, duration};
 
-/// **Ninety seconds, and it is the merge queue's own number** — eighteen missed beats at a five
-/// second beat, so a daemon held up by a slow write is not mistaken for a dead one, and a dead one
-/// is replaced within a minute and a half (`mergequeue::lease::LEASE_TTL_MS`).
+/// Ninety seconds, the merge queue's own number: eighteen missed beats at a five second beat, so a
+/// daemon held up by a slow write is not mistaken for a dead one, and a dead one is replaced within
+/// a minute and a half.
 pub const DEFAULT_LEASE_MS: u64 = 90_000;
 
-/// How often a holder is expected to say it is alive — the merge queue's `HEARTBEAT_EVERY`.
+/// How often a holder is expected to say it is alive - the merge queue's `HEARTBEAT_EVERY`.
 pub const DEFAULT_BEAT_EVERY_MS: u64 = 5_000;
 
-/// **How many claimants an item may lose before it raises instead of cycling.** See the module
-/// header for why three.
+/// How many claimants an item may lose before it raises instead of cycling.
 pub const ABANDON_THRESHOLD: u32 = 3;
 
-/// **How many verb replies are remembered for a reconnecting client** — a duplicate `post` or a
-/// repeated `claim` after a reconnect is answered from here instead of acted on twice. A client
-/// that has been away for longer than this must re-read ([`Room::queue`], [`Room::holding`])
-/// rather than replay: every reply carries the item, so a re-read is cheap and always right.
+/// How many verb replies are remembered for a reconnecting client: a duplicate `post` or a repeated
+/// `claim` after a reconnect is answered from here instead of acted on twice. A client away longer
+/// than this must re-read ([`Room::queue`], [`Room::holding`]), which is cheap and always right.
 pub const REPLAY_WINDOW: usize = 256;
 
-/// **The room.** See the module header.
+/// The room. See the module header.
 #[derive(Debug)]
 pub struct Room {
     lease_ms: u64,
@@ -133,34 +33,27 @@ pub struct Room {
     next_item: u64,
     questions: Vec<Question>,
     next_question: u64,
-    /// **Who the room has met** — session id to the parent it declared, or `None` for a top-level
-    /// session. A ruling may name a session ([`Decision::Hand`]) that has never spoken here, and
-    /// the daemon vouches for it with [`Room::vouch`]; this is what makes "top-level only" true
-    /// for a hand as well as for a verb.
+    /// Who the room has met: session id to the parent it declared, or `None` for a top-level one. A
+    /// ruling may name a session ([`Decision::Hand`]) that has never spoken here, and the daemon
+    /// vouches for it with [`Room::vouch`] - which is what makes "top-level only" true for a hand.
     seen: BTreeMap<String, Option<String>>,
-    /// **Who is in this room** — the project's tree, as the daemon that holds it last described it.
-    ///
-    /// Not the connections: a subagent never opens one (the door refuses it) and is a member all
-    /// the same, which is the whole reason this is a list of its own. The room cannot work it out —
-    /// it holds no store and no registry — so `Request::Members` replaces it, and a room nobody has
-    /// described holds nobody (`docs/room.md` § *Slice 6*).
+    /// Who is in this room: the project's tree, as the daemon that holds it last described it.
+    /// Not the connections, because a subagent never opens one.
     members: Vec<crate::tree::Member>,
     replay: BTreeMap<(String, String), Outcome>,
     replay_order: VecDeque<(String, String)>,
 }
 
-/// **What a verb did** — the item as it now stands, and what a subscriber should be told.
-///
-/// `events` is empty for a verb that is not news: a beat, a `waits_on`, and any *repeat* of a verb
-/// already answered from the replay window (the bell rang the first time).
+/// What a verb did: the item as it now stands, and what a subscriber should be told. `events` is
+/// the whole of what a connection has to fan out.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Outcome {
     pub item: Item,
     pub events: Vec<Event>,
 }
 
-/// **Something a session may need to be woken by.** Beats are not events — a beat is a fact about
-/// one claim, and a bell that rings five times a minute is a bell nobody listens to.
+/// Something a session may need to be woken by. Beats are not events: a beat is a fact about one
+/// claim, and a bell that rings five times a minute is a bell nobody listens to.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum Event {
@@ -179,7 +72,7 @@ pub enum Event {
         tag: String,
         by: String,
     },
-    /// **Loud, by design.** `count` is how many claimants the item has now lost and
+    /// Loud, by design. `count` is how many claimants the item has now lost and
     /// `back_in_the_queue` is whether it is claimable again (`count < ABANDON_THRESHOLD`).
     Abandoned {
         item: u64,
@@ -189,7 +82,7 @@ pub enum Event {
         count: u32,
         back_in_the_queue: bool,
     },
-    /// The item reached the threshold and is frozen until a ruling — see [`Question`].
+    /// The item reached the threshold and is frozen until a ruling - see [`Question`].
     Raised {
         item: u64,
         tag: String,
@@ -223,8 +116,8 @@ impl Event {
         }
     }
 
-    /// **The tag the event is about** — which is the audience's own name: the sessions queued under
-    /// a tag are the ones a claim or an abandonment under it concerns.
+    /// The tag the event is about - the audience's own name: the sessions queued under a tag are
+    /// the ones a claim or an abandonment under it concerns.
     pub fn tag(&self) -> &str {
         match self {
             Event::Posted { tag, .. }
@@ -233,15 +126,15 @@ impl Event {
             | Event::Abandoned { tag, .. }
             | Event::Raised { tag, .. }
             | Event::Asked { tag, .. } => tag,
-            // A ruling names the item and the decision, not the tag — the server asks the room for
-            // it (`Room::item`), because the room is the one place a tag is decided.
+            // A ruling names the item and the decision, not the tag: the server asks the room for
+            // it ([`Room::item`]), because the room is the one place a tag is decided.
             Event::Ruled { .. } => "",
         }
     }
 
-    /// **The sessions this event NAMES**, beyond whoever is queued under its tag: the one who did
-    /// it, and the one a ruling hands something to. A server routes to these by name even when they
-    /// have no item under the tag — a ruling that hands an item to a session is the case.
+    /// The sessions this event NAMES beyond whoever is queued under its tag: the one who did it,
+    /// and the one a ruling hands something to. A server routes to these by name even when they
+    /// have no item under the tag.
     pub fn named(&self) -> Vec<&str> {
         match self {
             Event::Posted { by, .. }
@@ -264,12 +157,12 @@ impl Event {
     }
 }
 
-/// **Why a verb was refused.** Every sentence names the party it is about: a refusal that says
-/// *no* without saying *who* is a refusal somebody re-asks.
+/// Why a verb was refused. Every sentence names the party it is about: a refusal that says *no*
+/// without saying *who* is a refusal somebody re-asks.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "refused", rename_all = "snake_case")]
 pub enum Refused {
-    /// **A subagent speaks through its parent.** The rule, at the door.
+    /// A subagent speaks through its parent. The rule, at the door.
     Subagent {
         session: String,
         parent: String,
@@ -292,7 +185,7 @@ pub enum Refused {
         by: String,
         ms: u64,
     },
-    /// The tag has nothing claimable — empty, or everything under it is claimed or finished.
+    /// The tag has nothing claimable: empty, or everything under it is claimed or finished.
     NothingToClaim {
         tag: String,
     },
@@ -302,7 +195,7 @@ pub enum Refused {
         item: u64,
         holder: Option<String>,
     },
-    /// **A tag is a lock**: somebody holds a claim under it.
+    /// A tag is a lock: somebody holds a claim under it.
     Busy {
         tag: String,
         item: u64,
@@ -310,7 +203,7 @@ pub enum Refused {
         /// How long the holder has had it, as a duration a person reads (`1m 4s`).
         held_for: String,
     },
-    /// First come, first served — and this is not the one at the front.
+    /// First come, first served - and this is not the one at the front.
     NotTheHead {
         item: u64,
         tag: String,
@@ -327,14 +220,13 @@ pub enum Refused {
         count: u32,
         question: u64,
     },
-    /// A dispute about an item you hold yourself — there is nothing to rule on.
+    /// A dispute about an item you hold yourself: there is nothing to rule on.
     NotDisputed {
         item: u64,
     },
-    /// **A room that no derivation would have written.** A project key is twelve hex characters
-    /// ([`crate::is_project_key`]), so a frame naming anything else is naming a room that cannot
-    /// exist — refused rather than created, because a room made for a string nobody derived has no
-    /// membership and can never be reached again.
+    /// A room that no derivation would have written. A project key is twelve hex characters
+    /// ([`crate::is_project_key`]), so a frame naming anything else names a room that cannot exist -
+    /// refused rather than created, because it would have no membership and could never be found.
     UnknownRoom {
         project: String,
     },
@@ -424,8 +316,7 @@ impl fmt::Display for Refused {
 
 impl std::error::Error for Refused {}
 
-/// **A question for the tie-breaker** — see the module header for the three situations that
-/// produce one, and for why the framing is a question rather than a dashboard.
+/// A question for the tie-breaker: a decision to make, never a dashboard to interpret.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Question {
     pub id: u64,
@@ -434,13 +325,8 @@ pub struct Question {
     /// The question, in words, with the facts in it. A model answers this with a [`Decision`].
     pub text: String,
     pub facts: Facts,
-    /// **Which room asked it**, and the field the room itself cannot fill.
-    ///
-    /// A room is a project's (`crate::tree`), so a box holds several and every one of them numbers
-    /// its questions from 1: an arbiter that hears them all would otherwise rule on question 3 of
-    /// the wrong project. The server stamps this as the answer leaves the room
-    /// (`Server::answer_frame`), because the server is the only thing that knows which room it is
-    /// answering for — the same reason `Response::Room`'s first fields are its.
+    /// Which room asked it: the one field the room itself cannot fill, because a room is a
+    /// project's and the arbiter hears every project's question.
     #[serde(default)]
     pub project: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -457,7 +343,7 @@ pub enum About {
     ClaimDisputed { item: u64, tag: String, by: String },
 }
 
-/// **The evidence a question names**, so the arbiter can check the words against the numbers.
+/// The evidence a question names, so the arbiter can check the words against the numbers.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Facts {
     pub item: u64,
@@ -469,7 +355,7 @@ pub struct Facts {
     pub claim_ms: Option<u64>,
     pub beat_ms: Option<u64>,
     pub abandonments: Vec<Abandonment>,
-    /// Who is queued behind it, oldest first — the cost of keeping it alive.
+    /// Who is queued behind it, oldest first - the cost of keeping it alive.
     pub waiting: Vec<Waiting>,
 }
 
@@ -481,8 +367,8 @@ pub struct Waiting {
     pub since_ms: u64,
 }
 
-/// **What the arbiter may decide.** Three, because the question is about one item and the answers
-/// are *try again*, *give it to somebody*, or *stop asking*.
+/// What the arbiter may decide. Three, because the question is about one item and the answers are
+/// *try again*, *give it to somebody*, or *stop asking*.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "decision", rename_all = "snake_case")]
 pub enum Decision {
@@ -504,8 +390,8 @@ impl fmt::Display for Decision {
     }
 }
 
-/// **The answer**, and who gave it — a ruling is a decision with an author, because a pane that
-/// cannot say who ruled cannot say whether to trust it.
+/// The answer, and who gave it: a ruling is a decision with an author, because a pane that cannot
+/// say who ruled cannot say whether to trust it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Ruling {
     pub decision: Decision,
@@ -513,8 +399,8 @@ pub struct Ruling {
     pub ms: u64,
 }
 
-/// **What one session holds**, and what it says it is waiting on — the answer to *what am I
-/// holding*, which is the shape a todo reminder needs.
+/// What one session holds, and what it says it is waiting on - the answer to *what am I holding*,
+/// which is the shape a todo reminder needs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Holding {
     pub item: u64,
@@ -526,14 +412,14 @@ pub struct Holding {
     pub held_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub waits_on: Option<Wait>,
-    /// What the holder said it is doing with it, when it took it — [`Claim::said`]. Never a reason
+    /// What the holder said it is doing with it, when it took it - [`Claim::said`]. Never a reason
     /// for a reminder to be quiet: see [`Holding::waits_on`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub said: Option<Wait>,
 }
 
-/// **One line a session should be reminded of** — a holding, plus whether its beat has gone quiet
-/// enough that the next [`Room::sweep`] will take the item back.
+/// One line a session should be reminded of: a holding, plus whether its beat has gone quiet enough
+/// that the next [`Room::sweep`] will take the item back.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Reminder {
     pub session: String,
@@ -543,7 +429,7 @@ pub struct Reminder {
 }
 
 impl Reminder {
-    /// The sentence a todo reminder shows. Not a delivery mechanism — the sentence is the shape.
+    /// The sentence a todo reminder shows. Not a delivery mechanism - the sentence is the shape.
     pub fn sentence(&self) -> String {
         let h = &self.holding;
         let mut s = format!(
@@ -604,23 +490,14 @@ impl Room {
         self.lease_ms
     }
 
-    /// **Replace the room's membership with the tree the daemon just described.**
-    ///
-    /// A replacement and not a merge, because the tree is the daemon's answer to *who is in this
-    /// project* and a merge would keep a session that has been closed since — the row a person is
-    /// looking for is the one the daemon still draws, not every row ever drawn. The list is put in
-    /// the tree's own order ([`crate::tree_order`]) so a reader of the room and a pane drawing the
-    /// same project cannot be two orders.
-    ///
-    /// **A member is a session the room has met** — a ruling may hand an item to it
-    /// ([`Decision::Hand`]) without the daemon vouching for it first, which is what makes *the
-    /// room holds what the tree holds* a fact a hand can rely on.
+    /// Replace the room's membership with the tree the daemon just described: a replacement and
+    /// not a merge, because a session that left the tree has left the room.
     pub fn set_members(&mut self, rows: Vec<crate::tree::Member>) {
         self.members = rows;
         crate::tree::tree_order(&mut self.members);
     }
 
-    /// **Who is in this room**, in the tree's order.
+    /// Who is in this room, in the tree's order.
     pub fn members(&self) -> &[crate::tree::Member] {
         &self.members
     }
@@ -630,18 +507,15 @@ impl Room {
         self.members.iter().find(|m| m.session == session)
     }
 
-    /// **Declare a session the room has not met** — the daemon's word for a session that has not
-    /// spoken yet (the tie-breaker's own, or one the operator names in the pane). A subagent is
-    /// refused here exactly as it is at a verb.
+    /// Declare a session the room has not met: the daemon's word for one that has not spoken yet.
+    /// A subagent is refused here exactly as it is at a verb.
     pub fn vouch(&mut self, who: &Speaker) -> Result<(), Refused> {
         who.may_speak()?;
         self.seen.insert(who.session.clone(), who.parent.clone());
         Ok(())
     }
 
-    // ===== The verbs =====
-
-    /// **Post a need under a tag.**
+    /// Post a need under a tag.
     pub fn post(
         &mut self,
         who: &Speaker,
@@ -650,7 +524,7 @@ impl Room {
         body: &str,
         now: u64,
     ) -> Result<Outcome, Refused> {
-        // **Identity before dedupe**: a subagent is refused by name even when it reuses an id.
+        // Identity before dedupe: a subagent is refused by name even when it reuses an id.
         who.may_speak()?;
         if let Some(o) = self.replayed(who, request)? {
             return Ok(o);
@@ -686,9 +560,9 @@ impl Room {
         Ok(out)
     }
 
-    /// **Claim the head of a tag** — refused [`Refused::Busy`] while somebody else holds the tag,
-    /// naming them and the item. A repeat by the session that already holds it is the same claim:
-    /// no second `claim_ms`, and no second event.
+    /// Claim the head of a tag - refused [`Refused::Busy`] while somebody else holds the tag, naming
+    /// them and the item. A repeat by the session that already holds it is the same claim: no second
+    /// `claim_ms`, and no second event.
     pub fn claim(
         &mut self,
         who: &Speaker,
@@ -696,7 +570,7 @@ impl Room {
         tag: &str,
         now: u64,
     ) -> Result<Outcome, Refused> {
-        // **Identity before dedupe**: a subagent is refused by name even when it reuses an id.
+        // Identity before dedupe: a subagent is refused by name even when it reuses an id.
         who.may_speak()?;
         if let Some(o) = self.replayed(who, request)? {
             return Ok(o);
@@ -723,9 +597,8 @@ impl Room {
         self.take(who, head, now)
     }
 
-    /// **Claim one particular item** — the operator's manual control, and a client that read the
-    /// queue and means *that* row. It must still be the head: a tag is first come, first served,
-    /// and an item id is not a way to jump the queue.
+    /// Claim one particular item - the operator's manual control, and a client that read the queue
+    /// and means *that* row. It must still be the head: an item id is not a way to jump the queue.
     pub fn claim_item(
         &mut self,
         who: &Speaker,
@@ -733,7 +606,7 @@ impl Room {
         item: u64,
         now: u64,
     ) -> Result<Outcome, Refused> {
-        // **Identity before dedupe**: a subagent is refused by name even when it reuses an id.
+        // Identity before dedupe: a subagent is refused by name even when it reuses an id.
         who.may_speak()?;
         if let Some(o) = self.replayed(who, request)? {
             return Ok(o);
@@ -793,9 +666,8 @@ impl Room {
         self.take(who, item, now)
     }
 
-    /// **Say you are still working on it.** Only the holder may beat; a late beat from a session
-    /// whose claim was taken is refused by name ([`Refused::NotHeld`]) — see [`Room::dispute`] for
-    /// what to do about it.
+    /// Say you are still working on it. Only the holder may beat; a late beat from a session whose
+    /// claim was taken is refused by name ([`Refused::NotHeld`]) - see [`Room::dispute`].
     pub fn beat(
         &mut self,
         who: &Speaker,
@@ -803,7 +675,7 @@ impl Room {
         item: u64,
         now: u64,
     ) -> Result<Outcome, Refused> {
-        // **Identity before dedupe**: a subagent is refused by name even when it reuses an id.
+        // Identity before dedupe: a subagent is refused by name even when it reuses an id.
         who.may_speak()?;
         if let Some(o) = self.replayed(who, request)? {
             return Ok(o);
@@ -838,9 +710,9 @@ impl Room {
         Ok(out)
     }
 
-    /// **Say what you are waiting on**, in your own words. Empty text clears it. Only the holder
-    /// may, and it is the answer to *"so they don't occupy it for ever"*: the reminder carries it
-    /// back, and the queue shows it to whoever is waiting behind.
+    /// Say what you are waiting on, in your own words. Empty text clears it. Only the holder may, and
+    /// it is the answer to *so they don't occupy it for ever*: the reminder carries it back, and the
+    /// queue shows it to whoever is waiting behind.
     pub fn waiting_on(
         &mut self,
         who: &Speaker,
@@ -849,7 +721,7 @@ impl Room {
         text: &str,
         now: u64,
     ) -> Result<Outcome, Refused> {
-        // **Identity before dedupe**: a subagent is refused by name even when it reuses an id.
+        // Identity before dedupe: a subagent is refused by name even when it reuses an id.
         who.may_speak()?;
         if let Some(o) = self.replayed(who, request)? {
             return Ok(o);
@@ -892,18 +764,8 @@ impl Room {
         Ok(out)
     }
 
-    /// **Say what you are doing with it** — the acknowledgement, and the opposite fact from
-    /// [`Room::waiting_on`].
-    ///
-    /// Firecode's third rule is *acknowledge before acting*, because silence reads as absence: from
-    /// the queue, a claim with no word on it is indistinguishable from a session that took the item
-    /// and died. So a client says *seen, doing X* here, and it lands in [`Claim::said`].
-    ///
-    /// **It is not a wait, and it must never be written as one.** [`Claim::waits_on`] is what a
-    /// reminder reads to decide whether the holder still has to act — a holder that says *I am on
-    /// it* has said the opposite of *something else moves this* — so an acknowledgement recorded
-    /// there silences every reminder there is (the defect this verb exists to close). Empty text
-    /// clears it, the same rule as `waiting`.
+    /// Say what you are doing with it: the acknowledgement, and the opposite fact from declaring
+    /// a wait, because a holder that is working is not a holder somebody should take from.
     pub fn acknowledge(
         &mut self,
         who: &Speaker,
@@ -912,7 +774,7 @@ impl Room {
         text: &str,
         now: u64,
     ) -> Result<Outcome, Refused> {
-        // **Identity before dedupe**: a subagent is refused by name even when it reuses an id.
+        // Identity before dedupe: a subagent is refused by name even when it reuses an id.
         who.may_speak()?;
         if let Some(o) = self.replayed(who, request)? {
             return Ok(o);
@@ -955,7 +817,7 @@ impl Room {
         Ok(out)
     }
 
-    /// **The work is done.** Only the holder may.
+    /// The work is done. Only the holder may.
     pub fn done(
         &mut self,
         who: &Speaker,
@@ -963,7 +825,7 @@ impl Room {
         item: u64,
         now: u64,
     ) -> Result<Outcome, Refused> {
-        // **Identity before dedupe**: a subagent is refused by name even when it reuses an id.
+        // Identity before dedupe: a subagent is refused by name even when it reuses an id.
         who.may_speak()?;
         if let Some(o) = self.replayed(who, request)? {
             return Ok(o);
@@ -1004,7 +866,8 @@ impl Room {
         Ok(out)
     }
 
-    /// **Give it up on purpose.** Still an abandonment, still counted — see the module header.
+    /// Give it up on purpose. Still an abandonment, still counted: an item everybody gives up on is
+    /// a problem whether or not each gave up politely.
     pub fn abandon(
         &mut self,
         who: &Speaker,
@@ -1013,7 +876,7 @@ impl Room {
         why: &str,
         now: u64,
     ) -> Result<Outcome, Refused> {
-        // **Identity before dedupe**: a subagent is refused by name even when it reuses an id.
+        // Identity before dedupe: a subagent is refused by name even when it reuses an id.
         who.may_speak()?;
         if let Some(o) = self.replayed(who, request)? {
             return Ok(o);
@@ -1056,9 +919,9 @@ impl Room {
         Ok(out)
     }
 
-    /// **"I am still on it"** — a claimant whose beat went stale says so instead of fighting for
-    /// the claim, and the arbiter is asked which of the two has it. One open question per item:
-    /// asking twice is the same question.
+    /// *I am still on it* - a claimant whose beat went stale says so instead of fighting for the
+    /// claim, and the arbiter is asked which of the two has it. One open question per item: asking
+    /// twice is the same question.
     pub fn dispute(
         &mut self,
         who: &Speaker,
@@ -1067,7 +930,7 @@ impl Room {
         says: &str,
         now: u64,
     ) -> Result<Outcome, Refused> {
-        // **Identity before dedupe**: a subagent is refused by name even when it reuses an id.
+        // Identity before dedupe: a subagent is refused by name even when it reuses an id.
         who.may_speak()?;
         if let Some(o) = self.replayed(who, request)? {
             return Ok(o);
@@ -1111,8 +974,8 @@ impl Room {
         Ok(out)
     }
 
-    /// **Answer a question.** The decision is applied and the item unfreezes — [`Decision::Retry`]
-    /// back to the head with its count kept, [`Decision::Hand`] a claim for the named session now,
+    /// Answer a question. The decision is applied and the item unfreezes - [`Decision::Retry`] back
+    /// to the head with its count kept, [`Decision::Hand`] a claim for the named session now,
     /// [`Decision::Drop`] out of the queue for good.
     pub fn rule(
         &mut self,
@@ -1139,12 +1002,11 @@ impl Room {
             .item(item)
             .ok_or(Refused::UnknownItem { item })?
             .clone();
-        // **Validate before touching anything** — a ruling that is refused leaves the item frozen
-        // and the question open, which is the only honest outcome.
+        // Validate before touching anything: a ruling that is refused leaves the item frozen and the
+        // question open, which is the only honest outcome.
         if let Decision::Hand { to } = &decision {
-            // **The tree is the room's answer to *has it met this one*.** A member the daemon
-            // described is a session of this project, and a hand to one needs no separate
-            // vouch — that is what *the room holds what the tree holds* buys a ruling.
+            // The tree is the room's answer to *has it met this one*: a member the daemon described
+            // is a session of this project, and a hand to one needs no separate vouch.
             let known = match self.seen.get(to) {
                 Some(parent) => Some(parent.clone()),
                 None => self.member(to).map(|m| m.parent.clone()),
@@ -1221,10 +1083,8 @@ impl Room {
         })
     }
 
-    // ===== The pass =====
-
-    /// **Take back every claim whose beat has stopped.** `now - beat_ms > lease_ms`, exactly the
-    /// queue lease's comparison: a beat at the boundary is still alive.
+    /// Take back every claim whose beat has stopped: `now - beat_ms > lease_ms`, exactly the queue
+    /// lease's comparison, so a beat at the boundary is still alive.
     pub fn sweep(&mut self, now: u64) -> Vec<Event> {
         let stale: Vec<(u64, Abandonment)> = self
             .items
@@ -1253,9 +1113,9 @@ impl Room {
             .collect()
     }
 
-    /// **The session is gone** — its daemon exited, was restarted, or the socket that owns it
-    /// closed. Every claim it holds is abandoned at once, with the caller's reason on it, rather
-    /// than after the lease.
+    /// The session is gone: its daemon exited, was restarted, or the socket that owns it closed.
+    /// Every claim it holds is abandoned at once, with the caller's reason on it, rather than after
+    /// the lease.
     pub fn note_gone(&mut self, session: &str, says: &str, now: u64) -> Vec<Event> {
         let held: Vec<(u64, Abandonment)> = self
             .items
@@ -1288,20 +1148,17 @@ impl Room {
             .collect()
     }
 
-    // ===== The queries =====
-
     pub fn item(&self, id: u64) -> Option<&Item> {
         self.items.get(&id)
     }
 
-    /// **Every item in the room**, oldest first — what the pane draws, including the finished and
-    /// dropped ones.
+    /// Every item in the room, oldest first - what the pane draws, finished and dropped included.
     pub fn all(&self) -> Vec<&Item> {
         self.items.values().collect()
     }
 
-    /// **A tag's queue, in order** — `(posted_ms, id)`, the claimed and the abandoned rows
-    /// included, the finished and dropped ones out.
+    /// A tag's queue, in order: `(posted_ms, id)`, the claimed and the abandoned rows included, the
+    /// finished and dropped ones out.
     pub fn queue(&self, tag: &str) -> Vec<&Item> {
         let tag = tag.trim().to_lowercase();
         let mut rows: Vec<&Item> = self
@@ -1313,8 +1170,8 @@ impl Room {
         rows
     }
 
-    /// **The next item anybody may claim** — the first claimable row, so a raised item at the head
-    /// does not block the tag.
+    /// The next item anybody may claim - the first claimable row, so a raised item at the head does
+    /// not block the tag.
     pub fn head(&self, tag: &str) -> Option<&Item> {
         self.queue(tag).into_iter().find(|i| i.claimable())
     }
@@ -1327,7 +1184,7 @@ impl Room {
         tags
     }
 
-    /// **What this session holds, and what it is waiting on** — the reminder's facts.
+    /// What this session holds, and what it is waiting on - the reminder's facts.
     pub fn holding(&self, session: &str, now: u64) -> Vec<Holding> {
         self.items
             .values()
@@ -1350,7 +1207,7 @@ impl Room {
             .collect()
     }
 
-    /// **Every reminder the room owes**, one per live claim — what the todo pass turns into rows.
+    /// Every reminder the room owes, one per live claim - what the todo pass turns into rows.
     pub fn reminders(&self, now: u64) -> Vec<Reminder> {
         let mut out: Vec<Reminder> = self
             .items
@@ -1385,16 +1242,14 @@ impl Room {
         self.questions.iter().find(|q| q.id == id)
     }
 
-    /// **The open questions**, oldest first — what the tie-breaker is asked, in the order it
-    /// should answer them.
+    /// The open questions, oldest first - what the tie-breaker is asked, in the order it should
+    /// answer them.
     pub fn open_questions(&self) -> Vec<&Question> {
         self.questions
             .iter()
             .filter(|q| q.answer.is_none())
             .collect()
     }
-
-    // ===== The internals =====
 
     /// The live claim under a tag, if there is one.
     fn live_claim(&self, tag: &str) -> Option<Live> {
@@ -1438,8 +1293,8 @@ impl Room {
         })
     }
 
-    /// **Lose a claim** — the one path every abandonment goes through, so the count, the event and
-    /// the raise cannot drift apart.
+    /// Lose a claim - the one path every abandonment goes through, so the count, the event and the
+    /// raise cannot drift apart.
     fn lose(&mut self, item: u64, ab: Abandonment, now: u64) -> Outcome {
         let it = self.items.get_mut(&item).expect("a claim was found on it");
         it.abandonments.push(ab.clone());
@@ -1466,8 +1321,8 @@ impl Room {
                 count,
             });
         }
-        // **Read it back after the raise**, so the outcome carries the question id too: a caller
-        // that holds an item with `question: None` would draw a frozen item as claimable.
+        // Read it back after the raise, so the outcome carries the question id too: a caller that
+        // holds an item with `question: None` would draw a frozen item as claimable.
         Outcome {
             item: self.items[&item].clone(),
             events,
@@ -1609,8 +1464,8 @@ impl Room {
             .get(&(who.session.clone(), request.to_string()))
             .map(|o| Outcome {
                 item: o.item.clone(),
-                // **The bell rang the first time.** A repeat is the client catching up on the
-                // REPLY, not a second thing happening.
+                // The bell rang the first time: a repeat is the client catching up on the REPLY,
+                // not a second thing happening.
                 events: Vec::new(),
             }))
     }
@@ -1636,13 +1491,8 @@ struct Live {
     claim_ms: u64,
 }
 
-/// **A tag as the room spells it** — trimmed and lowercased, and empty is refused by name.
-///
-/// Public because a tag is now two things: a queue's name *and* the suffix of the agent that owns
-/// that queue ([`crate::lease::tag_session`]). A second normalisation beside this one would give
-/// `RAM` and `ram` one queue and two agents — the note
-/// `.letibot/notes/the-activity-and-the-delivery-had-two-copies-of-one-rule.md` is that mistake in
-/// another module.
+/// A tag as the room spells it: trimmed and lowercased, and empty is refused by name. Public
+/// because a caller that shows a tag must spell it the way the room will.
 pub fn normalise_tag(tag: &str) -> Result<String, Refused> {
     let tag = tag.trim().to_lowercase();
     if tag.is_empty() {
@@ -1652,7 +1502,7 @@ pub fn normalise_tag(tag: &str) -> Result<String, Refused> {
 }
 
 impl Speaker {
-    /// **The rule, at the door.** A subagent is refused by name; everything else passes.
+    /// The rule, at the door. A subagent is refused by name; everything else passes.
     pub fn may_speak(&self) -> Result<(), Refused> {
         match &self.parent {
             None => Ok(()),

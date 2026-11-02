@@ -1,73 +1,28 @@
-//! **A lease on the coordinator itself** — one coordinator per box, held with the merge queue's
-//! discipline, because two coordinators are two rooms with one name and no arbiter can settle that.
-//!
-//! `docs/room.md` § *What the daemon still owes* item 2 says *"a lease on the coordinator itself …
-//! otherwise two coordinators are two rooms with one name, which no arbiter can settle"*, and item
-//! 3 of the same list says the room keeps **no store**. So the lease is a **file**, not a row:
-//! `crate::lease::CoordinatorLease` is `mergequeue::lease`'s rules — an owner identity, a beat, a
-//! ninety-second TTL, a stale takeover — written where a process with no database can write it.
-//!
-//! # The three rules, and they are the queue lease's
-//!
-//! * **The owner is an identity, not a process name**: `host/pid/<ns>`, the same spelling
-//!   `Store::acquire_queue_lease` uses, because *which claim is this* has to survive a daemon
-//!   restarting into the same pid.
-//! * **The beat is the liveness.** [`COORDINATOR_LEASE_TTL_MS`] is the merge queue's ninety seconds
-//!   and [`LEASE_BEAT_EVERY_MS`] is a tenth of it, so nine beats are missed before a takeover.
-//! * **A stale lease is taken over, and it says what it took.** [`Acquired::TookOver`] carries the
-//!   dead holder and *why* it was dead — a beat that stopped, or a pid that is not running — because
-//!   the two are different stories a person reading the log will want to tell apart.
-//!
-//! # Loud when it is not alone
-//!
-//! [`CoordinatorLease::acquire`] against a live holder answers [`Held`], whose [`Held::sentence`]
-//! names the pid, the owner and how long the beat has been running. The coordinator refuses to
-//! start with that sentence rather than binding a second socket and serving a second, empty room
-//! that every session would find by the same name — which is the failure this whole module exists
-//! to make impossible rather than unlikely.
-//!
-//! # The file
-//!
-//! One line, tab-separated: `owner\tpid\tbeat_ms\tstarted_ms`, written to a temporary beside it and
-//! renamed, so a reader never sees half a lease. [`CoordinatorLease::read`] answers `None` for a
-//! file that is missing, empty or unparseable — a lease nobody can read is not a lease anybody can
-//! be refused by, and pretending otherwise would be a lock that is silently open.
-//!
-//! # The decision is atomic, because the launcher makes races ordinary
-//!
-//! `scripts/letibot` starts a coordinator for the box whenever one is not already serving, so two
-//! sessions opened in the same instant is not a thought experiment: it is two `harnessd --room`
-//! processes inside a millisecond of each other. Read-then-write is not atomic, and MEASURED on the
-//! 2026-11-01 tree, that pair produced **two** `Acquired::Fresh` — the loser then failed at the
-//! SOCKET BIND, so the operator was told about an address in use rather than about the coordinator
-//! that holds the room, and its `release()` deleted the winner's lease (the winner went on serving
-//! with no lease until its next beat put one back). So [`CoordinatorLease::acquire`] takes a lock
-//! for the length of the decision — a sibling file, never renamed, because `write` renames a
-//! temporary OVER the lease and a lock on that inode would follow the file that was just replaced.
-//! The lease itself is still the one claim: this lock is the atomicity of one read-modify-write,
-//! not a second thing to hold.
+//! A lease on the coordinator itself: one coordinator per box, held with the merge queue's
+//! discipline, because two coordinators are two rooms with one name and no arbiter can settle
+//! that. A file rather than a store row, because the room keeps no database.
 
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 
-/// **Ninety seconds** — the merge queue's own lease TTL (`mergequeue::lease::LEASE_TTL_MS`), so a
-/// coordinator whose box slept or whose process was stopped is replaced within a minute and a half
-/// and a coordinator held up by a slow write is not mistaken for a dead one.
+/// Ninety seconds - the merge queue's own lease TTL, so a coordinator whose box slept or whose
+/// process was stopped is replaced within a minute and a half, and one held up by a slow write is
+/// not mistaken for a dead one.
 pub const COORDINATOR_LEASE_TTL_MS: u64 = 90_000;
 
-/// How often the holder says it is still here — nine beats to the TTL.
+/// How often the holder says it is still here - nine beats to the TTL.
 pub const LEASE_BEAT_EVERY_MS: u64 = 10_000;
 
-/// How long one `acquire` waits for its turn at the decision. The act it guards is a read, a
-/// compare and one `rename` — microseconds — so this is only ever spent when the process holding
-/// the lock has stopped (a `SIGSTOP`, a box that slept), and then the fall-through is deliberate.
+/// How long one `acquire` waits for its turn at the decision. The act it guards is a read, a compare
+/// and one `rename` - microseconds - so this is only ever spent when the process holding the lock has
+/// stopped, and then the fall-through is deliberate.
 pub const DECISION_WAIT_MS: u64 = 2_000;
 
-/// **A coordinator that holds the lease** — who, and since when.
+/// A coordinator that holds the lease: who, and since when.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Holder {
-    /// `host/pid/<ns>` — the queue lease's spelling, and per CLAIM rather than per process.
+    /// `host/pid/<ns>` - the queue lease's spelling, and per CLAIM rather than per process.
     pub owner: String,
     pub pid: u32,
     /// The last time the holder said it is alive.
@@ -82,7 +37,7 @@ impl fmt::Display for Holder {
     }
 }
 
-/// **Another coordinator is alive here.** The refusal, with the words the daemon says.
+/// Another coordinator is alive here. The refusal, with the words the daemon says.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Held {
     pub holder: Holder,
@@ -92,8 +47,8 @@ pub struct Held {
 }
 
 impl Held {
-    /// **The sentence a second coordinator refuses with.** It names the pid, the owner, the file
-    /// and the age, because every one of those is a thing the operator needs to act on it.
+    /// The sentence a second coordinator refuses with. It names the pid, the owner, the file and the
+    /// age, because every one of those is a thing the operator needs to act on it.
     pub fn sentence(&self) -> String {
         format!(
             "another room coordinator is alive here: {} holds {} and beat {} ago. Two coordinators \
@@ -116,13 +71,13 @@ impl fmt::Display for Held {
 
 impl std::error::Error for Held {}
 
-/// **Why a stale lease was taken over** — two different stories, told apart.
+/// Why a stale lease was taken over - two different stories, told apart.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Takeover {
     /// Nobody beat inside the TTL.
     BeatStale { age_ms: u64 },
-    /// The recorded pid is not running, whatever its beat says — the ordinary case after a crash
-    /// or a `kill -9`, and the one that makes a takeover immediate instead of a minute and a half.
+    /// The recorded pid is not running, whatever its beat says: the ordinary case after a crash or a
+    /// `kill -9`, and the one that makes a takeover immediate instead of a minute and a half.
     PidGone { pid: u32 },
 }
 
@@ -148,7 +103,7 @@ pub enum Acquired {
     TookOver { from: Holder, why: Takeover },
 }
 
-/// **The coordinator's lease on one box.**
+/// The coordinator's lease on one box.
 #[derive(Debug, Clone)]
 pub struct CoordinatorLease {
     path: PathBuf,
@@ -164,8 +119,8 @@ impl CoordinatorLease {
         )
     }
 
-    /// A lease at `path` with an owner the caller spells — the fixture's door, and the one a
-    /// daemon that already has an identity (a restarted coordinator keeping its name) takes.
+    /// A lease at `path` with an owner the caller spells - the fixture's door, and the one a daemon
+    /// that already has an identity (a restarted coordinator keeping its name) takes.
     pub fn owned_by(path: impl Into<PathBuf>, owner: impl Into<String>) -> Self {
         Self {
             path: path.into(),
@@ -190,20 +145,14 @@ impl CoordinatorLease {
         self.holder.pid
     }
 
-    /// **What the file says**, or `None` — missing, empty, or unreadable as a lease.
+    /// What the file says, or `None` - missing, empty, or unreadable as a lease.
     pub fn read(&self) -> Option<Holder> {
         let text = std::fs::read_to_string(&self.path).ok()?;
         parse(&text)
     }
 
-    /// **Take the lease, or be refused by name.**
-    ///
-    /// A live holder — a beat inside the TTL and a pid that is running — is [`Held`]. Anything else
-    /// is a takeover, and it is written down as one.
-    ///
-    /// The decision is made under [`CoordinatorLease::decision_lock`], so two coordinators starting
-    /// in the same instant answer *one* `Fresh` and *one* [`Held`] naming the winner — see the
-    /// module doc for the measurement that made this necessary.
+    /// Take the lease, or be refused by name. A live holder - a beat inside the TTL and a pid that
+    /// is running - is named rather than waited for, because a second room is the failure.
     pub fn acquire(&self, now: u64) -> Result<Acquired, Held> {
         let _turn = self.decision_lock();
         let existing = self.read();
@@ -239,12 +188,12 @@ impl CoordinatorLease {
         Ok(acquired)
     }
 
-    /// **Say we are still here.** Rewrites the beat and leaves `started_ms` where it was.
+    /// Say we are still here. Rewrites the beat and leaves `started_ms` where it was.
     pub fn beat(&self, now: u64) -> io::Result<()> {
         self.write(now)
     }
 
-    /// Give it back — the coordinator stopping in an orderly way. A lease whose file is gone is
+    /// Give it back - the coordinator stopping in an orderly way. A lease whose file is gone is
     /// nobody's, which is what makes the next start [`Acquired::Fresh`] rather than a takeover.
     pub fn release(&self) -> io::Result<()> {
         match std::fs::remove_file(&self.path) {
@@ -254,17 +203,8 @@ impl CoordinatorLease {
         }
     }
 
-    /// **The lock one `acquire` holds while it reads, decides and writes.**
-    ///
-    /// `File`'s locks are `flock` on Unix and die with the process, including on `SIGKILL` — the
-    /// property a filename does not have, which is why `sessionlog::server`'s `FolderClaim` is the
-    /// same shape. The path is the lease's own with `.lock` on the end and is **never unlinked**:
-    /// `write` renames a temporary over the lease, so a lock taken on the lease's inode would be a
-    /// lock on a file that no longer has the name.
-    ///
-    /// A filesystem that cannot lock, and a turn that does not come inside [`DECISION_WAIT_MS`],
-    /// both fall through to the unlocked decision: refusing to start a room is a worse outcome than
-    /// failing to catch a second one, and the socket bind is still behind this.
+    /// The lock one `acquire` holds while it reads, decides and writes. `File`'s locks are `flock`
+    /// and belong to the process, so the decision is atomic without a second thing to hold.
     fn decision_lock(&self) -> Option<std::fs::File> {
         let path = self.path.with_extension("lease.lock");
         if let Some(dir) = path.parent() {
@@ -314,7 +254,7 @@ impl CoordinatorLease {
 
 fn parse(text: &str) -> Option<Holder> {
     // `trim_end` and not `trim`: a leading tab is the FIRST FIELD being empty, which is a lease
-    // nobody can read — and `trim` would eat it and read the pid as the owner.
+    // nobody can read - and `trim` would eat it and read the pid as the owner.
     let line = text.lines().next()?.trim_end();
     let mut f = line.split('\t');
     let owner = f.next()?.trim();
@@ -332,15 +272,8 @@ fn parse(text: &str) -> Option<Holder> {
     })
 }
 
-/// **Is `pid` a running process?** `kill -0`, which asks the kernel and signals nothing.
-///
-/// A pid we may not signal answers *not running*, and that is deliberate: the lease's holder is
-/// the same user as the asker on every box this runs on, and a lease taken over from a process we
-/// cannot even ask about is the safer of the two mistakes — the alternative is a room nobody can
-/// restart after a uid change.
-///
-/// Public because *is the room there* is a question two doors ask: this one, taking over a lease,
-/// and [`crate::restart::room_running`], deciding whether a restart has anything to stop.
+/// Is `pid` a running process? `kill -0`, which asks the kernel and signals nothing. A pid we
+/// may not signal answers nothing, which is a third state and not a death.
 pub fn pid_alive(pid: u32) -> bool {
     if pid == 0 {
         return false;
@@ -363,8 +296,7 @@ fn now_ns() -> u128 {
         .unwrap_or(0)
 }
 
-/// **This box's name**, as `uname -n` answers it — `hostname`'s own value, which is what a person
-/// comparing two boxes would type.
+/// This box's name, as `uname -n` answers it - what a person comparing two boxes would type.
 pub fn host_name() -> String {
     std::process::Command::new("uname")
         .arg("-n")
@@ -378,26 +310,14 @@ pub fn host_name() -> String {
         .unwrap_or_else(|| "localhost".to_string())
 }
 
-/// **The key a room is named by on this box** — the host's name, made safe for a filename, with a
-/// short hash of the raw name appended.
-///
-/// The hash is there for the two cases a bare name cannot survive: two boxes that both call
-/// themselves `localhost` (a container, a VM with no hostname set), and a name with characters a
-/// socket path cannot hold. It is FNV-1a and written out here rather than taken from a crate,
-/// because it must answer the same twelve hex characters for ever — the socket, the lease and the
-/// session id are all derived from it, and a `DefaultHasher` that changed with a Rust version would
-/// rename a live room.
+/// The key a room is named by on this box: the host's name made safe for a filename, with a
+/// short hash so two hosts with one name do not share a socket.
 pub fn host_key() -> String {
     host_key_of(&host_name())
 }
 
-/// **The key, from the name** — [`host_key`] without the `uname`, so a test can pin the answer and
-/// `scripts/letibot` can be held to the same table.
-///
-/// The launcher derives this key in bash (it has to know the socket before it starts anything), and
-/// the two spellings must agree or the launcher would check a path no coordinator ever binds: it
-/// would start a second one every run and be refused by the lease, for ever, loudly. The shell's
-/// copy is `room_host_key` in `scripts/letibot`, and both are pinned to the table in the test below.
+/// The key, from the name: [`host_key`] without the `uname`, so a test can pin the answer and
+/// the launcher can mirror it in shell.
 pub fn host_key_of(raw: &str) -> String {
     let mut safe: String = raw
         .chars()
@@ -428,33 +348,14 @@ fn fnv1a(bytes: &[u8]) -> u64 {
     h
 }
 
-/// **The coordinator's own session id** — `s-room-<host key>`, derived and never invented.
-///
-/// `docs/room.md` § *The precedent* asks for exactly this: the review queue's `s-gatekeeper-<key>`
-/// is derived from the workspace so two daemons cannot share one transcript, and a room is per BOX
-/// rather than per folder, so the coordinator's key is the host's. It is also the name the
-/// operator connects to (`letibot --session host` resolves to it), which is why it must not move.
+/// The coordinator's own session id, derived and never invented: `s-room-<host key>`, so the
+/// review queue and every picker can recognise it.
 pub fn coordinator_session(host_key: &str) -> String {
     format!("s-room-{host_key}")
 }
 
-/// **One tag's own agent, derived from the owner's id and the tag** — `s-room-<host key>-<slug>`.
-///
-/// The operator's design, 2026-10-31: *"one subsession per tag, owned by the host … so a tag can be
-/// talked to about itself"*. The box's owner session is [`coordinator_session`], and a tag's agent
-/// is that name plus the tag — so `--session host:ram` ([`named_session`]) always resolves without
-/// anybody remembering a hash, and a tag's agent is reachable from a shell the same way the box's
-/// owner is.
-///
-/// **It is a function, never an invention.** Two readers derive this name — the coordinator's
-/// upkeep, which opens the session, and a person typing `--session host:ram` — and a name one of
-/// them guessed would be a session the other cannot find. `None` for a tag the room would refuse
-/// ([`crate::room::normalise_tag`]: an empty one), because a tag with no name has no agent.
-///
-/// **The suffix is an escape, so the derivation runs both ways.** `a-z`, `0-9` and `-` are kept; `_`
-/// is written `__`; every other character is `_` and two hex digits per byte of its UTF-8. That is
-/// what makes [`tag_of_session`] exact rather than a guess — `8 gb` and `8-gb` are two tags, and a
-/// derivation that collapsed them would give one agent two queues.
+/// One tag's own agent, derived from the owner's id and the tag: `s-room-<host key>-<slug>`. The
+/// slug is an escape and not a sanitisation, so `8 gb` and `8-gb` stay two agents.
 pub fn tag_session(host_key: &str, tag: &str) -> Option<String> {
     let tag = crate::room::normalise_tag(tag).ok()?;
     let mut slug = String::new();
@@ -475,25 +376,25 @@ pub fn tag_session(host_key: &str, tag: &str) -> Option<String> {
     Some(format!("{}-{slug}", coordinator_session(host_key)))
 }
 
-/// **The tag a session id belongs to**, or `None` for a session that is not a tag's agent — the
-/// inverse of [`tag_session`], and the question the daemon asks when a session opens (may it join
-/// the room as a top-level speaker?) and when the room rings it (is this event its tag's?).
+/// The tag a session id belongs to, or `None` for a session that is not a tag's agent - the inverse
+/// of [`tag_session`], and the question the daemon asks when a session opens (may it join the room as
+/// a top-level speaker?) and when the room rings it (is this event its tag's?).
 pub fn tag_of_session(host_key: &str, session: &str) -> Option<String> {
     let rest = session.strip_prefix(&format!("{}-", coordinator_session(host_key)))?;
     if rest.is_empty() {
         return None;
     }
     let bytes = rest.as_bytes();
-    // **Bytes, not chars**: an escaped byte is one byte of a UTF-8 character, so `_d0_b4` is `д`
-    // and only the whole run decodes. A `char` accumulator would write each byte as a character of
-    // its own and the round trip below would then refuse a tag that was spelled correctly.
+    // Bytes, not chars: an escaped byte is one byte of a UTF-8 character, so `_d0_b4` is a Cyrillic
+    // letter and only the whole run decodes. A `char` accumulator would write each byte as a character
+    // of its own and the round trip below would refuse a tag that was spelled correctly.
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
         match bytes[i] {
             b'_' => {
-                // `__` is a literal underscore; `_hh` is one byte of a character. Anything else is
-                // a name this function did not write, and it says so rather than guessing.
+                // `__` is a literal underscore; `_hh` is one byte of a character. Anything else is a
+                // name this function did not write, and it says so rather than guessing.
                 if bytes.get(i + 1) == Some(&b'_') {
                     out.push(b'_');
                     i += 2;
@@ -510,18 +411,13 @@ pub fn tag_of_session(host_key: &str, session: &str) -> Option<String> {
         }
     }
     let tag = String::from_utf8(out).ok()?;
-    // **Only a tag that derives back to itself.** A hand-written id that happens to start with the
-    // prefix (`s-room-box-1a2b3c4d-nonsense_zz`) is not an agent of tag `nonsense_zz`, and the
-    // round trip is what tells the two apart — an escaped byte may not be a whole character.
+    // Only a tag that derives back to itself. A hand-written id that happens to start with the prefix
+    // is not an agent of the tag it names, and the round trip is what tells the two apart.
     (tag_session(host_key, &tag).as_deref() == Some(session)).then_some(tag)
 }
 
-/// **The session a person named**, when they named one by the two derived spellings — `host` for
-/// the box's owner and `host:<tag>` for one tag's agent.
-///
-/// This is the whole of `--session host:ram`: one function, so the shell, the launcher and a test
-/// all resolve a derived name the same way, and `None` means *this was an ordinary session id, use
-/// it as it is*.
+/// The session a person named, when they named one by the two derived spellings: `host` for the
+/// box's room, and a tag for that tag's agent.
 pub fn named_session(host_key: &str, name: &str) -> Option<String> {
     let (head, tag) = match name.split_once(':') {
         Some((head, tag)) => (head, Some(tag)),
@@ -541,10 +437,8 @@ pub fn lease_path(runtime_dir: &Path, host_key: &str) -> PathBuf {
     runtime_dir.join(format!("room-{host_key}.lease"))
 }
 
-/// The socket a box's coordinator serves, given the same directory.
-///
-/// The name is derived from the HOST and not from a folder, because a room is the box's: every
-/// daemon on this machine — whatever project it is serving — must find the same one socket.
+/// The socket a box's coordinator serves, given the same directory: the name is derived from the
+/// host key, so two boxes' coordinators cannot collide.
 pub fn socket_path(runtime_dir: &Path, host_key: &str) -> PathBuf {
     runtime_dir.join(format!("room-{host_key}.sock"))
 }
@@ -566,8 +460,8 @@ mod tests {
         impl TempDir {
             pub fn new() -> TempDir {
                 use std::sync::atomic::{AtomicU64, Ordering};
-                // A counter beside the clock: two tests can start inside one clock tick on this
-                // box, and a shared directory would make one test's `Drop` another's mystery.
+                // A counter beside the clock: two tests can start inside one clock tick on this box,
+                // and a shared directory would make one test's `Drop` another's mystery.
                 static NEXT: AtomicU64 = AtomicU64::new(0);
                 let n = NEXT.fetch_add(1, Ordering::SeqCst);
                 let p = std::env::temp_dir()
@@ -621,11 +515,11 @@ mod tests {
         first.acquire(1_000).unwrap();
         first.beat(1_000 + COORDINATOR_LEASE_TTL_MS).unwrap();
 
-        // At the boundary it is still alive — the queue lease's own comparison.
+        // At the boundary it is still alive - the queue lease's own comparison.
         let second = CoordinatorLease::owned_by(t.path().join("room.lease"), "box/2/200");
         assert!(second.acquire(1_000 + COORDINATOR_LEASE_TTL_MS).is_err());
 
-        // One millisecond later the beat is stale — but the pid is this test's, so it is the BEAT
+        // One millisecond later the beat is stale - but the pid is this test's, so it is the BEAT
         // that decides, and the takeover says which.
         let took = second
             .acquire(1_000 + COORDINATOR_LEASE_TTL_MS * 2 + 1)
@@ -729,10 +623,9 @@ mod tests {
         assert_eq!(coordinator_session(&key), format!("s-room-{key}"));
     }
 
-    /// **The table `scripts/letibot`'s `room_host_key` is pinned to as well.** The launcher derives
-    /// the socket's name in bash before it starts anything, so a key that disagrees with this one
-    /// means the launcher checks a path no coordinator binds: it starts a second coordinator on
-    /// every run and is refused by the lease, for ever. Both sides carry these four lines.
+    /// The table `scripts/letibot`'s `room_host_key` is pinned to as well. The launcher derives the
+    /// socket's name in bash before it starts anything, so a key that disagreed means it checks a path
+    /// no coordinator binds: a second coordinator on every run, refused by the lease, for ever.
     #[test]
     fn the_host_key_matches_what_the_launcher_derives() {
         for (raw, want) in [
@@ -754,11 +647,8 @@ mod tests {
         assert_eq!(host_key_of("---"), format!("host-{:08x}", 0xde1b_3246u32));
     }
 
-    /// **Two coordinators starting in the same instant: one room, and the loser is told who holds
-    /// it.** `scripts/letibot` starts a coordinator whenever one is not serving, so two sessions
-    /// opening together is an ordinary Tuesday — and before the decision lock, both answered
-    /// `Fresh` (the loser then failed at the socket bind, and its `release()` deleted the winner's
-    /// lease).
+    /// Two coordinators starting in the same instant: one room, and the loser is told who holds
+    /// it. `scripts/letibot` starts one whenever none is serving, so the race is ordinary.
     #[test]
     fn a_race_for_the_lease_gives_one_coordinator_and_names_the_holder() {
         let t = dir();
@@ -802,9 +692,8 @@ mod tests {
         assert_eq!(lease.read().map(|h| h.owner), Some(winner));
     }
 
-    /// **One tag, one agent, and the name runs both ways** — the whole of *`host:ram` is reachable*
-    /// rests on these two functions agreeing, and a tag that does not derive back to itself is an
-    /// agent nobody can find.
+    /// One tag, one agent, and the name runs both ways: *`host:ram` is reachable* rests on these two
+    /// functions agreeing, and a tag that does not derive back to itself is an agent nobody can find.
     #[test]
     fn a_tag_session_is_the_owners_id_plus_the_tag_and_derives_back() {
         let key = "lab2x1-1a2b3c4d";
@@ -837,17 +726,17 @@ mod tests {
                 "a session id is also a filename here: {session}"
             );
         }
-        // **`RAM` and `ram` are one queue, so they are one agent.** Two agents for one tag would be
-        // two sessions racing for one claim.
+        // `RAM` and `ram` are one queue, so they are one agent: two agents for one tag would be two
+        // sessions racing for one claim.
         assert_eq!(tag_session(key, "RAM"), tag_session(key, " ram "));
-        // **`8 gb` and `8-gb` are two tags**, and a derivation that collapsed them would give one
-        // agent two queues — which is why the suffix escapes rather than sanitises.
+        // `8 gb` and `8-gb` are two tags, and a derivation that collapsed them would give one agent
+        // two queues - which is why the suffix escapes rather than sanitises.
         assert_ne!(tag_session(key, "8 gb"), tag_session(key, "8-gb"));
         // A tag the room refuses has no agent at all.
         assert_eq!(tag_session(key, "   "), None);
     }
 
-    /// **The owner's own id is not a tag's**, and neither is a name this derivation did not write.
+    /// The owner's own id is not a tag's, and neither is a name this derivation did not write.
     #[test]
     fn the_owner_and_a_hand_written_id_are_not_tag_agents() {
         let key = "lab2x1-1a2b3c4d";
@@ -862,8 +751,8 @@ mod tests {
         assert_eq!(tag_of_session(key, "s-room-lab2x1-1a2b3c4d-"), None);
     }
 
-    /// **Two boxes never collide**, whatever they call themselves — the host key carries a hash of
-    /// the raw name for exactly the two boxes that both answer `localhost`.
+    /// Two boxes never collide, whatever they call themselves - the host key carries a hash of the raw
+    /// name for exactly the two boxes that both answer `localhost`.
     #[test]
     fn two_boxes_do_not_share_a_tag_agent() {
         let one = tag_session("localhost-0badf00d", "ram");
@@ -882,8 +771,8 @@ mod tests {
         );
     }
 
-    /// **`--session host` and `--session host:ram` are the two derived spellings**, and anything
-    /// else is an ordinary session id that must be passed through untouched.
+    /// `--session host` and `--session host:ram` are the two derived spellings, and anything else is an
+    /// ordinary session id that must be passed through untouched.
     #[test]
     fn the_two_named_spellings_resolve_and_nothing_else_does() {
         let key = "lab2x1-1a2b3c4d";
@@ -904,8 +793,8 @@ mod tests {
             Some("s-room-lab2x1-1a2b3c4d-ram"),
             "a tag is normalised before it is derived, or `host:RAM` would name nothing"
         );
-        // **An empty tag is not the owner.** `host:` typed by mistake must not silently attach to
-        // the arbiter: it resolves to nothing, and the caller passes the text through.
+        // An empty tag is not the owner: `host:` typed by mistake must not silently attach to the
+        // arbiter. It resolves to nothing, and the caller passes the text through.
         assert_eq!(named_session(key, "host:"), None);
         // Everything else is a session id, and a colon in one is not this function's business.
         assert_eq!(named_session(key, "s-a"), None);

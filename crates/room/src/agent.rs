@@ -1,58 +1,35 @@
-//! **A tag's own agent, and the count of how many times it had to be brought back.**
+//! A tag's own agent, and the count of how many times it had to be brought back: who the agent is
+//! (a derived session id), how many times it was reseated, and when the one now running was seated.
 //!
-//! The operator's design, 2026-10-31: *"one subsession per tag, owned by the host … so a tag can be
-//! talked to about itself"*. The NAME of that session is derived and is [`crate::tag_session`]'s
-//! job; this module is the other half — the facts only the coordinator knows, kept where a pane can
-//! read them:
+//! Whether it is UP is not here. That is a fact about a socket, and the room already answers it: an
+//! agent is up when it is connected, which is the same reading the pane makes of the arbiter.
 //!
-//! * **who** the tag's agent is (the derived session id),
-//! * **how many times it had to be re-seated** — a tag whose agent keeps dying is a fact about that
-//!   tag, not noise to swallow, and
-//! * **when the one now running was seated**, so the count has a clock beside it.
-//!
-//! # What is NOT here
-//!
-//! **Whether it is up.** That is a fact about a socket, and the room already answers it: an agent is
-//! up when it is connected (`Server::connected`), which is the same reading the pane makes of the
-//! arbiter. Two answers to one question is how a pane comes to disagree with itself.
-//!
-//! **No clock, no store.** Every time is handed in, exactly as [`crate::Room`] takes its own — the
-//! ledger is a value two threads share, not a scheduler.
-//!
-//! # Why a ledger at all, rather than a field on the room
-//!
-//! The room's state machine is about ITEMS. An agent is not an item: it outlives every item under
-//! its tag, and a restart of the room keeps neither. Putting the count in the room would make
-//! `Room::answer` the place a daemon's upkeep writes, and the room's one-writer rule is what makes
-//! the state machine checkable. So the ledger is a second, smaller object, held by the server and
-//! written by the daemon that re-seats — and the wire carries it out ([`crate::Response::Room`]).
+//! The ledger is not a field on the room because an agent is not an item: it outlives every item
+//! under its tag. The room keeps its one-writer rule, and the daemon's upkeep writes here instead.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 
-/// **One tag's agent** — the derived session id, how many times it was brought back, and when the
-/// one now seated began.
+/// One tag's agent: the derived session id, how many times it was brought back, and when the one now
+/// seated began.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TagAgent {
     /// The queue it owns, normalised (`crate::normalise_tag`).
     pub tag: String,
-    /// `crate::tag_session`'s answer — never a name the daemon invented.
+    /// `crate::tag_session`'s answer - never a name the daemon invented.
     pub session: String,
-    /// **How many times this tag's agent had to be re-seated.** Zero for one that has run since it
-    /// was first seated; a number that keeps climbing is a tag something keeps killing, and it is
-    /// said rather than hidden.
+    /// How many times this tag's agent had to be reseated. A number that keeps climbing is a tag
+    /// something keeps killing, and it is said rather than hidden.
     pub reseats: u32,
-    /// When the agent now seated was seated — so `reseats: 2` can be read as *twice in four
-    /// minutes* rather than *twice, ever*.
+    /// When the agent now seated was seated, so `reseats: 2` can be read as *twice in four minutes*
+    /// rather than *twice, ever*.
     pub since_ms: u64,
 }
 
-/// **The counts, shared by the daemon that re-seats and the server that answers the pane.**
-///
-/// `Arc`-shared and interior-mutable on purpose: the writer is the daemon's upkeep thread and the
-/// reader is the socket's answer path, and neither is the room's one writer.
+/// The counts, shared by the daemon that reseats and the server that answers the pane: `Arc`-shared
+/// and interior-mutable because neither of those is the room's one writer.
 #[derive(Debug, Default)]
 pub struct AgentLedger {
     agents: Mutex<BTreeMap<String, TagAgent>>,
@@ -63,9 +40,8 @@ impl AgentLedger {
         Arc::new(AgentLedger::default())
     }
 
-    /// **This tag's agent is seated** — the first time, or the same one found alive. Idempotent:
-    /// the count and the clock do not move for an agent that was already there, because nothing
-    /// happened to it.
+    /// This tag's agent is seated - the first time, or the same one found alive. Idempotent: the count
+    /// and the clock do not move for an agent that was already there, because nothing happened to it.
     pub fn seat(&self, tag: &str, session: &str, now: u64) -> TagAgent {
         let tag = key(tag);
         let mut g = self.lock();
@@ -81,9 +57,9 @@ impl AgentLedger {
         entry.clone()
     }
 
-    /// **This tag's agent is back** — it was gone, and the daemon has just seated it again. That is
-    /// the one event the count exists for, and it is why `seat` and `reseat` are two calls: a caller
-    /// that has not checked liveness must not be able to inflate the number.
+    /// This tag's agent is back - it was gone, and the daemon has just seated it again. That is the
+    /// one event the count exists for, and why `seat` and `reseat` are two calls: a caller that has
+    /// not checked liveness must not be able to inflate the number.
     pub fn reseat(&self, tag: &str, session: &str, now: u64) -> TagAgent {
         let tag = key(tag);
         let mut g = self.lock();
@@ -99,7 +75,7 @@ impl AgentLedger {
         entry.clone()
     }
 
-    /// Every tag that has an agent, in tag order — what the pane is handed.
+    /// Every tag that has an agent, in tag order - what the pane is handed.
     pub fn all(&self) -> Vec<TagAgent> {
         self.lock().values().cloned().collect()
     }
@@ -113,10 +89,9 @@ impl AgentLedger {
     }
 }
 
-/// **The room's own spelling of a tag, as a key** — `normalise_tag` and nothing else, so `RAM` and
-/// `ram` are one agent rather than two entries pointing at one session. The room already normalises
-/// what it stores, and this is the second reader of that rule; a private copy would be the drift
-/// `.letibot/notes/the-activity-and-the-delivery-had-two-copies-of-one-rule.md` is about.
+/// The room's own spelling of a tag, as a key - `normalise_tag` and nothing else, so `RAM` and `ram`
+/// are one agent rather than two entries pointing at one session. A private copy of that rule would be
+/// the drift this module exists to avoid.
 fn key(tag: &str) -> String {
     crate::normalise_tag(tag).unwrap_or_else(|_| tag.trim().to_lowercase())
 }
@@ -139,8 +114,8 @@ mod tests {
         assert_eq!(ledger.reseat("ram", "s-room-k-ram", 11_000).reseats, 2);
     }
 
-    /// **`RAM` and `ram` are one queue, so they are one agent** — the ledger keys on the room's own
-    /// spelling, and two entries for one session would be a pane drawing two agents for one tag.
+    /// `RAM` and `ram` are one queue, so they are one agent: two entries for one session would be a
+    /// pane drawing two agents for one tag.
     #[test]
     fn the_ledger_folds_two_spellings_of_one_tag() {
         let ledger = AgentLedger::new();

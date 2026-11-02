@@ -1,10 +1,6 @@
-//! **The operator's own example, as one test** — three top-level sessions that each need RAM, one
-//! that runs, and a claimant whose beat stops.
-//!
-//! The brief's words: *"there is RAM shortage — agents should be able to talk thru it and
-//! coordinate … once agent that claimed the queue item dies (or goes offline) that item is marked
-//! as such and queue moves on."* The acceptance test is that sentence end to end, from the room's
-//! API and with no socket in it.
+//! The RAM example, as one test: three top-level sessions that each need RAM, one that runs, and a
+//! claimant whose beat stops. The acceptance test is that sentence end to end, from the room's API and
+//! with no socket in it.
 
 use letibot_room::{DEFAULT_LEASE_MS, Event, Refused, Room, Speaker, Why};
 
@@ -32,8 +28,8 @@ fn three_sessions_need_ram_one_claims_and_a_stopped_beat_hands_it_on() {
     // 2. One head, first come first served: `s-a`'s, because it was posted first.
     assert_eq!(room.head("ram").map(|i| i.id), Some(1));
 
-    // 3. One claims; the others are refused BY NAME and told who has it — the room's half of
-    //    "the others are told rather than polling".
+    // 3. One claims; the others are refused BY NAME and told who has it, so the others are told rather
+    //    than polling.
     let claimed = room.claim(&a, "a-2", "ram", t0 + 100).unwrap();
     assert_eq!(claimed.item.holder(), Some("s-a"));
     assert_eq!(
@@ -69,7 +65,7 @@ fn three_sessions_need_ram_one_claims_and_a_stopped_beat_hands_it_on() {
         room.beat(&a, &format!("a-beat-{k}"), 1, last_beat).unwrap();
     }
 
-    // What is it holding, and what is it waiting on — the reminder's facts.
+    // What is it holding, and what is it waiting on - the reminder's facts.
     let holding = room.holding("s-a", last_beat + 1);
     assert_eq!(holding.len(), 1);
     assert_eq!(holding[0].item, 1);
@@ -119,7 +115,7 @@ fn three_sessions_need_ram_one_claims_and_a_stopped_beat_hands_it_on() {
     assert!(item.claimable(), "an abandoned item is back in the queue");
     assert_eq!(room.head("ram").map(|i| i.id), Some(1), "at the head");
 
-    // 6. The next session claims it — the same item, with its count still on it.
+    // 6. The next session claims it: the same item, with its count still on it.
     let next = room
         .claim(&b, "b-3", "ram", last_beat + DEFAULT_LEASE_MS + 2)
         .unwrap();
