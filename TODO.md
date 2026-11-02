@@ -2227,14 +2227,21 @@ the filter. Everything that follows is DELETION:**
 
   · **the picker lists sub-sessions**, under their parent or marked with it — the parent id is already
     on the row, so the information is there and is being thrown away;
+    — ✓ fixed in 3150516a, test a_child_sits_under_its_parent_and_a_grandchild_under_it
   · **attaching to one is ordinary**: `Attach { since_seq: 0 }` answers with a `Snapshot`, which both
     heads already draw with the real renderer — markdown, air rule, tool cards, the rung. Nothing to
     build;
+    — ✓ fixed in 0c841de0, test enter_into_a_subagent_and_one_esc_goes_back_up_to_the_list_it_came_from
   · **`sub_out_lines` and `subagent-out-lines` are deleted**, not taught and not re-pointed;
+    — decided against, and not owed: the entry's own RULED section (2026-10-03) keeps `Peek`, and
+    `sub_out_lines` as its degraded fallback (`crates/tui/src/ui/panes/subagents.rs:125`), so only the
+    ring path remains — `dc60a0c` made the real path `PeekShape::Rows` through `item_lines`
   · **the subagents pane becomes a view onto sessions-with-a-parent**, not a second renderer with its
     own idea of what a row looks like;
+    — ✓ fixed in 0c841de0, test a_fresh_head_rebuilds_the_subagent_rows_and_the_count_from_the_session_list
   · and **leticl's `a216cfa`** — the copy taught about tasks and rungs — goes with the copy. It is
     scaffolding around a session hidden by five lines, and worth naming as such.
+    — OPEN: leticl's repository, not this tree — nothing here can show that commit landed
 
 **The question that is actually yours:** does `Peek` still earn its place once the filter is gone? It may
 — reading a child without leaving the parent is a real convenience rather than a necessity — and that is
@@ -2497,6 +2504,8 @@ see a fork, and this entry is the fifth measurement to prove it.
 **done when** a settlement whose turn has not run yet is either delivered after the fork or reported as
 lost, in both cases with the transcript it belongs to named.
 
+— OPEN: a fork is not an open, so the suspect named above is falsified and the loss is unchanged. A compaction runs on the held harness (`crates/harnessd/src/sessions.rs:3226` → `harness.compact()`), so the pen survives it; the only door that re-queues a settlement nobody was told about is `deliver_settlements_left_undelivered`, called from `Harness::open` alone (`crates/harnessd/src/harness/turns.rs:461`), and a settlement taken for a turn that opened is marked read and skipped there (`:415`). `TODO-settled.md:3459` names the same residue as still a defect.
+
 ## A 429 that names money was retried six times — and the interrupt did not reach the retry — **MEASURED 2026-10-04 20:43**
 
 The operator, on a session they had just put on `glm/glm-5.3` with `/model glm/glm-5.3`:
@@ -2513,6 +2522,7 @@ is terminal and is no longer taken again, and a rate limit still is (the asserti
 worthless without). The sentence was wrong twice over, which is the same shape as `retry_host`'s note one
 function below: **the endpoint did answer**, and what it said was actionable — 请充值 is a thing to do,
 and "did not answer" sends the reader to a network problem.
+— ✓ fixed in 1362185e (after f53a349c and 3f995115), test what_is_retryable_and_what_the_operator_is_told
 
 **THE INTERRUPT HALF IS OPEN, and it is the half the operator actually complained about.** Two candidates,
 and this needs a live head to separate them:
@@ -2531,6 +2541,7 @@ and this needs a live head to separate them:
 `interrupt` line (`hub.rs:1079`) while pressing esc-esc. Present means the daemon heard it and the sleep
 ignored it — and then the fix is that the wait has to watch the same door the tool-call path watches.
 Absent means the head's own gate, and the fix is in `turn_busy`.
+— OPEN: the first candidate is the live one — `sleep_unless_closed` (`crates/harnessd/src/harness/turns.rs:2756`) still polls only `self.hub.is_closed()`, and `has_queued_interrupt` (`crates/sessionlog/src/hub.rs:1730`) has one reader (`turns.rs:993`), not the ladder. The second is closed: `turn_busy` reads the daemon's own `Waiting::Turn`/`Waiting::Calls` (`crates/tui/src/app/turn.rs:303`), so the head does send it.
 
 **still open?** the screen above, on a build with the classifier fix: a billing 429 now fails the turn
 once and says whose money it is; whether the interrupt lands during a *transient* wait is still open.
