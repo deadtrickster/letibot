@@ -130,6 +130,20 @@ of them cannot be.
 A head and a bridge head are clients of the daemon, so they cannot see a room event the daemon chose not
 to turn into a turn; what they keep is the pane, the transcript row and the turn.
 
+### Two daemons, one host: the end-to-end check
+
+`crates/harnessd/tests/room_two_sessions.rs` is the live one. Two `Daemon`s - two registries, stores,
+sockets and workspaces, a canned model behind each - against the shipped `Coordinator`, and the whole
+chain in one run: A posts a need with the tool, B claims the head and answers it with a `post` under
+the same tag, and A is woken by that answer with nobody typing into it and reads it back with `room
+queue`. Two sessions only share a queue inside ONE project (the same repository, slice 6 below), which
+is why the fixture's workspaces are plain directories - they both land in the box's own room.
+
+Nothing else in the tree runs two daemons against one room, so a break in the hop from a frame to
+another session's turn fails there rather than on somebody's screen. A person doing the same by hand:
+`letibot --room`, then a session in each of two worktrees of one repository, a prompt in each, and
+`/pane room/room` to watch the queues.
+
 ## The coordinator (slice 2, as built)
 
 The room is a whole `harnessd --room` (`crates/harnessd/src/room/coordinator.rs`), serving
