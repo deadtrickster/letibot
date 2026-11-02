@@ -150,9 +150,7 @@ fn a_repository(under: &Path, branch: &str) -> (PathBuf, String, String) {
     let repo = under.join("the-repository");
     std::fs::create_dir_all(&repo).expect("the repository");
     let git = |args: &[&str]| -> String {
-        let out = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&repo)
+        let out = letibot_tools::testing::git(&repo)
             .args(args)
             .output()
             .expect("git runs");

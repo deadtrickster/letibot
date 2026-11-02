@@ -60,17 +60,8 @@ fn parts_for(cfg: &Config) -> Parts {
 }
 
 fn git(dir: &Path, args: &[&str]) -> String {
-    let out = std::process::Command::new("git")
-        .args([
-            "-c",
-            "user.email=t@t",
-            "-c",
-            "user.name=t",
-            "-c",
-            "commit.gpgsign=false",
-        ])
+    let out = letibot_tools::testing::git(dir)
         .args(args)
-        .current_dir(dir)
         .output()
         .expect("git runs");
     assert!(

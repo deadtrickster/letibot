@@ -46,9 +46,7 @@ impl Drop for TempDir {
 }
 
 pub(crate) fn sh(dir: &Path, args: &[&str]) -> String {
-    let out = std::process::Command::new("git")
-        .arg("-C")
-        .arg(dir)
+    let out = letibot_tools::testing::git(dir)
         .args(args)
         .output()
         .unwrap();

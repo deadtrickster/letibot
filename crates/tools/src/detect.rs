@@ -257,12 +257,7 @@ mod tests {
     use super::*;
 
     fn git(root: &Path, args: &[&str]) {
-        let out = Command::new("git")
-            .arg("-C")
-            .arg(root)
-            .args(args)
-            .output()
-            .expect("git");
+        let out = crate::testing::git(root).args(args).output().expect("git");
         assert!(out.status.success(), "git {args:?}: {out:?}");
     }
 
@@ -272,8 +267,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("mkdir");
         git(&root, &["init", "-q"]);
-        git(&root, &["config", "user.email", "t@t"]);
-        git(&root, &["config", "user.name", "t"]);
         std::fs::write(root.join("a.txt"), "one\ntwo\n").expect("write");
         git(&root, &["add", "-A"]);
         git(&root, &["commit", "-qm", "first"]);

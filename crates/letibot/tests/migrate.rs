@@ -383,14 +383,8 @@ fn key12(path: &Path) -> String {
 }
 
 fn git(dir: &Path, args: &[&str]) {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(dir)
+    let out = letibot_tools::testing::git(dir)
         .args(args)
-        .env("GIT_AUTHOR_NAME", "letibot test")
-        .env("GIT_AUTHOR_EMAIL", "test@letibot.invalid")
-        .env("GIT_COMMITTER_NAME", "letibot test")
-        .env("GIT_COMMITTER_EMAIL", "test@letibot.invalid")
         .output()
         .expect("git ran");
     assert!(

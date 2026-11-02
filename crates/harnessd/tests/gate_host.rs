@@ -85,9 +85,7 @@ struct Rig {
 }
 
 fn git(dir: &Path, args: &[&str]) {
-    let out = std::process::Command::new("git")
-        .arg("-C")
-        .arg(dir)
+    let out = letibot_tools::testing::git(dir)
         .args(args)
         .output()
         .expect("git");

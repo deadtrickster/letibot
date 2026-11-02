@@ -29,9 +29,7 @@ use super::*;
 /// The sweep is a `git status` and nothing else: outside a repository it has nothing to
 /// compare, so the fixture has to be one.
 fn git(root: &std::path::Path, args: &[&str]) {
-    let out = std::process::Command::new("git")
-        .arg("-C")
-        .arg(root)
+    let out = letibot_tools::testing::git(root)
         .args(args)
         .output()
         .expect("git");
@@ -53,8 +51,6 @@ fn a_python_edit_detected_after_a_command_draws_its_diff() {
         .expect("the gate above said this box has a process-lifetime tree");
     let root = h.root().to_path_buf();
     git(&root, &["init", "-q"]);
-    git(&root, &["config", "user.email", "t@t"]);
-    git(&root, &["config", "user.name", "t"]);
     h.write_file("X.md", "one\ntwo\n");
     git(&root, &["add", "-A"]);
     git(&root, &["commit", "-qm", "first"]);

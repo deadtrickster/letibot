@@ -28,19 +28,9 @@ fn folder(tag: &str) -> Folder {
         for args in [
             &["init", "-q", "-b", "main"][..],
             &["add", "-A"],
-            &[
-                "-c",
-                "user.email=t@t",
-                "-c",
-                "user.name=t",
-                "commit",
-                "-qm",
-                "first",
-            ],
+            &["commit", "-qm", "first"],
         ] {
-            let ok = std::process::Command::new("git")
-                .arg("-C")
-                .arg(&d)
+            let ok = letibot_tools::testing::git(&d)
                 .args(args)
                 .output()
                 .unwrap()
@@ -254,19 +244,9 @@ fn one_repo(tag: &str, todo: Option<&str>) -> Folder {
     for args in [
         &["init", "-q", "-b", "main"][..],
         &["add", "-A"],
-        &[
-            "-c",
-            "user.email=t@t",
-            "-c",
-            "user.name=t",
-            "commit",
-            "-qm",
-            "first",
-        ],
+        &["commit", "-qm", "first"],
     ] {
-        let ok = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&repo)
+        let ok = letibot_tools::testing::git(&repo)
             .args(args)
             .output()
             .unwrap()

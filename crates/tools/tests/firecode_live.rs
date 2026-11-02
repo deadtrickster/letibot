@@ -192,37 +192,18 @@ fn a_vm_backend_on_a_worktree_works_in_it_directly() {
     let wt = base.join("repo-feat");
     std::fs::create_dir_all(&repo).unwrap();
     let git = |args: &[&str]| {
-        let ok = std::process::Command::new("git")
+        let ok = letibot_tools::testing::git(&repo)
             .args(args)
             .status()
             .unwrap()
             .success();
         assert!(ok, "git {args:?}");
     };
-    git(&["-C", repo.to_str().unwrap(), "init", "-q", "-b", "main"]);
+    git(&["init", "-q", "-b", "main"]);
     std::fs::write(repo.join("a.txt"), "base\n").unwrap();
-    git(&["-C", repo.to_str().unwrap(), "add", "a.txt"]);
-    git(&[
-        "-C",
-        repo.to_str().unwrap(),
-        "-c",
-        "user.name=t",
-        "-c",
-        "user.email=t@t",
-        "commit",
-        "-qm",
-        "base",
-    ]);
-    git(&[
-        "-C",
-        repo.to_str().unwrap(),
-        "worktree",
-        "add",
-        "-q",
-        "-b",
-        "feat",
-        wt.to_str().unwrap(),
-    ]);
+    git(&["add", "a.txt"]);
+    git(&["commit", "-qm", "base"]);
+    git(&["worktree", "add", "-q", "-b", "feat", wt.to_str().unwrap()]);
     assert!(letibot_tools::firecode::mounts(&wt));
 
     let cache = base.join("cache");

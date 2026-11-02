@@ -948,20 +948,13 @@ mod tests {
         .expect("write");
         std::fs::write(root.join("AGENTS.md"), "# the operator's own\n").expect("write");
         git(&root, &["init", "-q"]);
-        git(&root, &["config", "user.email", "t@t"]);
-        git(&root, &["config", "user.name", "t"]);
         git(&root, &["add", "-A"]);
         git(&root, &["commit", "-qm", "first"]);
         root
     }
 
     fn git(root: &Path, args: &[&str]) {
-        let out = Command::new("git")
-            .arg("-C")
-            .arg(root)
-            .args(args)
-            .output()
-            .expect("git");
+        let out = crate::testing::git(root).args(args).output().expect("git");
         assert!(out.status.success(), "git {args:?}: {out:?}");
     }
 
@@ -1231,8 +1224,6 @@ mod tests {
         std::fs::create_dir_all(repo.join("crates/tools/src")).expect("mkdir");
         std::fs::write(repo.join("crates/tools/src/here.rs"), "one\n").expect("write");
         git(&repo, &["init", "-q"]);
-        git(&repo, &["config", "user.email", "t@t"]);
-        git(&repo, &["config", "user.name", "t"]);
         git(&repo, &["add", "-A"]);
         git(&repo, &["commit", "-qm", "first"]);
 

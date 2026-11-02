@@ -13,7 +13,6 @@ use super::*;
 /// that that can be checked without a live subagent.
 #[test]
 fn a_worktree_is_arranged_with_its_branch_and_the_main_tree_untouched() {
-    use std::process::Command;
     // A throwaway repo, the same shape `detect.rs`'s tests use.
     let root = std::env::temp_dir().join(format!(
         "letibot-task-start-{}-{}-{}",
@@ -30,17 +29,13 @@ fn a_worktree_is_arranged_with_its_branch_and_the_main_tree_untouched() {
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).expect("mkdir");
     let git = |args: &[&str]| {
-        let out = Command::new("git")
-            .arg("-C")
-            .arg(&root)
+        let out = letibot_tools::testing::git(&root)
             .args(args)
             .output()
             .expect("git");
         assert!(out.status.success(), "git {args:?}: {out:?}");
     };
     git(&["init", "-q", "-b", "main"]);
-    git(&["config", "user.email", "t@t"]);
-    git(&["config", "user.name", "t"]);
     std::fs::write(root.join("a.txt"), "one\ntwo\n").expect("write");
     git(&["add", "-A"]);
     git(&["commit", "-qm", "first"]);

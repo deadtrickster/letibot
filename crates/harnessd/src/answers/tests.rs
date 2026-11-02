@@ -1044,9 +1044,7 @@ fn dir(tag: &str) -> Dir {
 }
 
 fn git_in(d: &std::path::Path, args: &[&str]) {
-    let out = std::process::Command::new("git")
-        .arg("-C")
-        .arg(d)
+    let out = letibot_tools::testing::git(d)
         .args(args)
         .output()
         .expect("git");

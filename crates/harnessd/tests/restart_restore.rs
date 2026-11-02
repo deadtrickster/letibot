@@ -125,21 +125,10 @@ impl Scratch {
         std::fs::create_dir_all(&repo).unwrap();
         for args in [
             vec!["init", "-q", "-b", "main"],
-            vec![
-                "-c",
-                "user.email=t@t",
-                "-c",
-                "user.name=t",
-                "commit",
-                "-q",
-                "--allow-empty",
-                "-m",
-                "base",
-            ],
+            vec!["commit", "-q", "--allow-empty", "-m", "base"],
         ] {
-            let ok = std::process::Command::new("git")
+            let ok = letibot_tools::testing::git(&repo)
                 .args(&args)
-                .current_dir(&repo)
                 .status()
                 .expect("git runs")
                 .success();

@@ -233,13 +233,7 @@ fn copy_tree(from: &Path, to: &Path) {
 }
 
 fn git(repo: &Path, args: &[&str]) -> String {
-    let out = std::process::Command::new("git")
-        // **A fixture's repository does not inherit the box's signing key**: this one signs
-        // every commit by habit, and a key a sandbox has not got is not this test's subject.
-        .arg("-c")
-        .arg("commit.gpgsign=false")
-        .arg("-C")
-        .arg(repo)
+    let out = letibot_tools::testing::git(repo)
         .args(args)
         .output()
         .expect("git runs");

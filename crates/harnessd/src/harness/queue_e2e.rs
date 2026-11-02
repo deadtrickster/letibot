@@ -217,9 +217,7 @@ impl Branch {
 /// Run one git command in `dir`, asserting it succeeds — so a failure names the command and
 /// git's own words rather than panicking on a bare `expect`.
 fn git(dir: &Path, args: &[&str]) {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(dir)
+    let out = letibot_tools::testing::git(dir)
         .args(args)
         .output()
         .expect("git");
@@ -233,9 +231,7 @@ fn git(dir: &Path, args: &[&str]) {
 /// Whether a git command in `dir` succeeds — for the assertions that are about a command
 /// FAILING, which is how a deleted branch is observed.
 fn git_ok(dir: &Path, args: &[&str]) -> bool {
-    Command::new("git")
-        .arg("-C")
-        .arg(dir)
+    letibot_tools::testing::git(dir)
         .args(args)
         .output()
         .map(|out| out.status.success())

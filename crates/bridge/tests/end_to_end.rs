@@ -322,8 +322,7 @@ fn write_sse(mut stream: TcpStream, answer: &Answer) -> std::io::Result<()> {
 /// merge base and a branch's own work to read.
 fn a_repository(at: &Path) {
     let run = |args: &[&str]| {
-        let out = std::process::Command::new("git")
-            .current_dir(at)
+        let out = letibot_tools::testing::git(at)
             .args(args)
             .output()
             .expect("git runs");
@@ -334,9 +333,6 @@ fn a_repository(at: &Path) {
         );
     };
     run(&["init", "-q", "--initial-branch=main"]);
-    run(&["config", "user.email", "bridge@example.invalid"]);
-    run(&["config", "user.name", "bridge test"]);
-    run(&["config", "commit.gpgsign", "false"]);
     std::fs::write(at.join("README.md"), "the base\n").expect("write");
     run(&["add", "."]);
     run(&["commit", "-q", "-m", "the base commit"]);

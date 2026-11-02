@@ -893,6 +893,29 @@ impl Retrieval for Scripted {
     }
 }
 
+/// **A fixture's `git`, with none of this box's configuration in it.**
+///
+/// A fixture asserts about a repository it just made, so the configuration it commits under has
+/// to be the fixture's: a box whose global config sets `commit.gpgsign` signs every fixture commit
+/// and, with no key an unattended process may use, refuses it. The result is a red test about
+/// the laptop and not about this tree.
+///
+/// Global and system config are dropped, the identity is supplied here rather than left to a
+/// `git config` line each fixture would have to remember, and nothing may prompt.
+pub fn git(dir: &std::path::Path) -> std::process::Command {
+    let mut cmd = std::process::Command::new("git");
+    cmd.current_dir(dir)
+        // `/dev/null` is this tree's only spelling: every box it builds on is a unix.
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_AUTHOR_NAME", "letibot fixture")
+        .env("GIT_AUTHOR_EMAIL", "fixture@letibot.invalid")
+        .env("GIT_COMMITTER_NAME", "letibot fixture")
+        .env("GIT_COMMITTER_EMAIL", "fixture@letibot.invalid");
+    cmd
+}
+
 /// **Write an executable stub and return only once it can be exec'd.**
 ///
 /// Writing a script and then exec'ing it races every other test thread that forks: a child

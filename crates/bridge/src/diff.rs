@@ -131,8 +131,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("temp dir");
         let run = |args: &[&str]| {
-            let out = Command::new("git")
-                .current_dir(&dir)
+            let out = letibot_tools::testing::git(&dir)
                 .args(args)
                 .output()
                 .expect("git runs");
@@ -143,8 +142,6 @@ mod tests {
             );
         };
         run(&["init", "-q", "--initial-branch=main"]);
-        run(&["config", "user.email", "bridge@example.invalid"]);
-        run(&["config", "user.name", "bridge test"]);
         std::fs::write(dir.join("a.txt"), "one\n").expect("write");
         run(&["add", "."]);
         run(&["commit", "-q", "-m", "the base"]);
