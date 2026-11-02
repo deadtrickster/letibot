@@ -1,41 +1,20 @@
-//! **The half a head was missing: a way to answer.**
+//! The half a head was missing: a way to answer a gate, and a way to answer a question.
 //!
-//! `TODO.md` D25. The console adjudicator reads the daemon's own stdin, which works
-//! for `harnessd --prompt …` and for a daemon in a foreground terminal and does not
-//! work for the shape people run — a daemon in the background with `letibot-tui`
-//! attached. The head already *renders* the question; there was no path back, so
-//! `write` and `exec` were a foreground thing and the operator was told to *"restart
-//! with `--role coder`"*, which is the least liftable form of a refusal there is.
+//! The console adjudicator reads the daemon's own stdin, which works for `harnessd --prompt`
+//! and for a daemon in a foreground terminal, and not for the shape people run - a daemon in
+//! the background with a head attached. The head already renders the question; there was no
+//! path back, so `write` and `exec` were a foreground thing.
 //!
-//! `docs/boundary-and-adjudication.md` §4b makes liftability a requirement: *"the
-//! grant path is reachable **at the moment of denial**, not after the task has
-//! died"*. A path that only goes one way is not a path.
-//!
-//! # The deadlock this is shaped around
-//!
-//! §13.2 has **one worker** per daemon. It takes a command, runs the turn, and a
-//! gated tool call happens *inside* that turn — so when the adjudicator blocks, the
-//! worker is inside `Sessions::dispatch`. An answer that arrives on the command queue
-//! is drained by the thread that is waiting for it, which is never.
-//!
-//! So the answer comes in through [`letibot_sessionlog::hub::AnswerSink`], delivered
-//! on the socket reader's thread, and this module is what is on the other end of it:
+//! The answer cannot come in on the command queue: the daemon has one worker, a gated call
+//! happens inside its turn, and the thread that would drain the queue is the thread waiting
+//! for the answer. So it arrives on the socket reader's thread through
+//! [`letibot_sessionlog::hub::AnswerSink`], and this module is what is on the other end of it
 //! a slot per open request, a condvar, and a deadline.
 //!
-//! # Every way this can end, and all but one of them refuse
-//!
-//! | | what the gate gets |
-//! |---|---|
-//! | a head answered | the option it chose |
-//! | **no head can answer** | `Unavailable`, *before* any wait — see [`Answers::ask`] |
-//! | the deadline passed | `Timeout` → the request's `on_timeout`, which is `Deny` |
-//! | the operator interrupted | `Cancelled` |
-//! | the session closed | `Cancelled` |
-//!
-//! Only the first opens the gate, and it opens it by naming an option the request
-//! offered — [`letibot_tools::AskAdjudicator`]'s rule, one layer up. The rest are all
-//! `NotRun`: *nobody decided*, which is a different sentence from *denied* and is the
-//! distinction §4b says stops a model inferring that its approach was wrong.
+//! Only a head's answer opens the gate, and it opens it by naming an option the request
+//! offered. No head, a deadline passing, an interrupt and a close all end as *nobody
+//! decided* - `NotRun`, which is a different sentence from *denied* and must stay one: a
+//! model that reads *denied* infers its approach was wrong.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Condvar, Mutex};
@@ -50,24 +29,17 @@ use letibot_tools::adjudicate::{
     AdjudicationDecision, AdjudicationRequest, Adjudicator, DecisionOutcome, ModelAdvice,
     OnTimeout, OptionKind as ToolOptionKind, RequestKind,
 };
-// **The question vocabulary, which is not the adjudication vocabulary.** §11.6's split,
-// one layer out: a permission is answered by an option id and a question by a person's
-// words, and the two must not be able to settle each other — `Hub::submit` refuses that
-// crossing at the door, and these types are why it can.
+// The question vocabulary, which is not the adjudication vocabulary: a permission is
+// answered by an option id and a question by a person's words, and neither may settle the
+// other. `Hub::submit` refuses that crossing at the door, and these types are why it can.
 use letibot_tools::builtins::intent::{AskError, Headless, Question, QuestionAnswer, Questioner};
 
 /// How long a person gets to answer before the gate fails closed.
 ///
-/// A number rather than §11.5's *"wait forever"*, and the reason is not impatience.
-/// A forever wait inside a tool call holds the daemon's only worker, so a session
-/// whose operator walked away stops every other session on the box — and nothing in
-/// this daemon polls, so there is no other thread that would notice.
-///
-/// Five minutes is long for a person who is looking at the screen and short for a
-/// daemon nobody is watching. An operator who is not there gets `not_run` and a
-/// refusal that says the deadline passed, which is recoverable by asking again; the
-/// alternative is a hung box, which is not. The deadline travels on the wire so the
-/// head can show what is left of it rather than the person guessing.
+/// Not forever, because a wait inside a tool call holds the daemon's only worker: a session
+/// whose operator walked away would stop every other session on the box. An operator who is
+/// not there gets `not_run` and can ask again; a hung box cannot be recovered. The deadline
+/// travels on the wire so a head can show what is left of it.
 pub const ANSWER_BUDGET: Duration = Duration::from_secs(300);
 
 /// What became of one open request.
@@ -81,22 +53,18 @@ enum Slot {
     Cancelled { why: String },
 }
 
-/// The rendezvous: one slot per open request, and the condvar the tool thread sleeps
-/// on.
+/// The rendezvous: one slot per open request, and the condvar the tool thread sleeps on.
 ///
-/// Owned by the session, shared with the hub as its [`AnswerSink`]. It is `Sync` and
-/// deliberately has no `&mut self` method: the thread that posts and the thread that
-/// answers are different threads by construction, which is the entire point.
+/// Owned by the session and shared with the hub as its [`AnswerSink`]. It has no `&mut self`
+/// method on purpose: the thread that posts and the thread that answers are different threads
+/// which is the entire point.
 pub struct Answers {
     slots: Mutex<HashMap<String, Slot>>,
     cv: Condvar,
     /// `(req_id, glob)` for the last answer that carried one, so
     /// [`HeadAdjudicator::last_pattern`] can pick it up after `ask` returns.
     ///
-    /// Keyed by request rather than kept as a bare `Option`, so a pattern can only
-    /// ever be applied to the call it was typed against. One ask is in flight per
-    /// daemon today — §13.2's single worker — and a value that is only correct
-    /// because of a property elsewhere is the kind that stops being correct quietly.
+    /// Keyed by request so a pattern can only be applied to the call it was typed against.
     pattern: Mutex<Option<(String, String)>>,
 }
 
@@ -115,12 +83,10 @@ impl Answers {
         }
     }
 
-    /// The glob that came with the answer to `req_id`, taken so it cannot be read
-    /// twice.
+    /// The glob that came with the answer to `req_id`, taken so it cannot be read twice.
     ///
-    /// Returns `None` for any other request, which is the property this is keyed
-    /// for: a pattern typed against one call must never reach the rule written for
-    /// another.
+    /// `None` for any other request: a pattern typed against one call must never reach the
+    /// rule written for another.
     pub fn take_pattern(&self, req_id: &str) -> Option<String> {
         let mut g = self.pattern.lock().unwrap_or_else(|e| e.into_inner());
         match g.as_ref() {
@@ -139,27 +105,14 @@ impl Answers {
 
     /// Open a slot and wait on it, up to `budget`.
     ///
-    /// The slot is inserted **before** the caller publishes the question, so an
-    /// answer that arrives while the publish is still fanning out has somewhere to
-    /// land. Doing it the other way round is a race with a window of exactly the
-    /// length of a fan-out, which is the kind nobody reproduces and everybody
-    /// eventually hits.
+    /// The slot is inserted before the caller publishes the question, so an answer that
+    /// arrives while the publish is still fanning out has somewhere to land.
     fn wait(&self, req_id: &str, budget: Duration) -> Waited {
         let deadline = Instant::now() + budget;
         let mut g = self.lock();
-        // **`or_insert`, never `insert`.** `ask` creates the slot BEFORE it
-        // publishes the question — that ordering is the whole rendezvous, and its
-        // comment says so — which leaves a window between the publish and this
-        // call. A head that answers inside that window sets `Slot::Answered`, and
-        // an unconditional insert here put `Waiting` back over it: the answer was
-        // dropped, this waited out the whole budget, and the call came back
-        // `Timeout` / *"nobody answered"* with the operator's own answer thrown
-        // away. The faster the answerer the likelier it was, so a guard model
-        // replying in 40ms lost more often than a person.
-        //
-        // Caught as a 2-in-8 flake in `a_head_answers_a_decision_the_daemons_stdin_could_not`,
-        // whose answering thread polls every 2ms and therefore lands in the window
-        // regularly. The test was right and the code was wrong.
+        // `or_insert`, never `insert`: `ask` creates the slot before it publishes, so a head
+        // that answers inside that window has already set `Answered`, and an unconditional
+        // insert here would put `Waiting` back over it and drop the answer.
         g.entry(req_id.to_string()).or_insert(Slot::Waiting);
         loop {
             match g.get(req_id) {
@@ -179,23 +132,19 @@ impl Answers {
         match g.remove(req_id) {
             Some(Slot::Answered { reply, by }) => Waited::Answered { reply, by },
             Some(Slot::Cancelled { why }) => Waited::Cancelled { why },
-            // `Waiting` at the deadline, or gone entirely. Both are *nobody
-            // answered*, and neither is a decision.
+            // `Waiting` at the deadline, or gone entirely. Both are *nobody answered*.
             _ => Waited::TimedOut,
         }
     }
 
-    /// **Post a request to the heads and wait for one of them to settle it.**
+    /// Post a request to the heads and wait for one of them to settle it.
     ///
-    /// `describe_heads` is asked first and the answer decides whether anything is
-    /// posted at all: a session whose only head is a read-only connector cannot
-    /// answer, and posting to it and then sitting out the deadline would report a
+    /// `describe_heads` is asked first, and an empty answer returns before anything is posted
+    /// posting to a session with no deciding head and then sitting out the deadline would report a
     /// timeout about a question nobody was ever asked.
     ///
-    /// `subagent` is who is asking, when it is not this session's own call: a child's
-    /// gate with no head of its own, posting its card to the tree's ROOT — the session
-    /// whose head exists. See [`SubagentAsk`] for the ruling. `None` is every ask this
-    /// daemon made before that existed, and the card then says nothing about attribution.
+    /// `subagent` is who is asking, when it is not this session's own call: a child's gate posts
+    /// its card to the tree's root, the session whose head exists. See [`SubagentAsk`].
     pub fn ask(
         &self,
         hub: &Arc<Hub>,
@@ -216,18 +165,9 @@ impl Answers {
             g.insert(req.id.clone(), Slot::Waiting);
             drop(g);
             hub.publish(pose(req, deadline_ms, subagent));
-            // **The yellow card says why it is yellow.** The call is still
-            // `Proposed` — `ToolStarted` fires only after the gate admits — so
-            // this note is the only thing on the card that explains the wait,
-            // and the operator's report was *"some tool calls stay yellow, no
-            // idea what that means"*. The ask renders in the chrome; the note
-            // renders on the call, where the eye already is.
-            //
-            // **A subagent's note lands where its card did**, on the root's hub, and the
-            // root has no such call — a head looks the id up, finds nothing and drops the
-            // note. That is the honest place for it (it travels with the card, and the
-            // child's own card is on a screen no head is watching), and the wait is still
-            // visible on the card itself, which carries the deadline.
+            // The yellow card says why it is yellow: the call is still `Proposed`, so this
+            // note is the only thing on it that explains the wait. A subagent's note lands on
+            // the root's hub where its card did, and the root has no such call to hang it on.
             hub.publish(SessionEvent::ToolProgress {
                 turn_id: req.turn_id.clone(),
                 call_id: req.call_id.clone(),
@@ -251,9 +191,9 @@ impl Answers {
                 }
                 settle(req, &reply, &by, latency_ms)
             }
-            // Nobody decided, so `by` is the gate and not the heads that were
-            // asked — the heads are named in the basis. A `human:` here put
-            // timeouts into the corpus as a person's refusals (2026-09-16).
+            // Nobody decided, so `by` is the gate and not the heads that were asked - the
+            // heads are named in the basis. A `human:` here would file timeouts in the corpus
+            // as a person's refusals.
             Waited::TimedOut => AdjudicationDecision {
                 request_id: req.id.clone(),
                 outcome: DecisionOutcome::Timeout,
@@ -273,12 +213,10 @@ impl Answers {
                 latency_ms,
             },
         };
-        // **The open decision is closed on every path**, including the ones nobody
-        // answered. A `DecisionRequested` with no matching `DecisionAnswered` stays
-        // in `SessionView::open` for the life of the session, so the head keeps
-        // offering a prompt for a call that was refused minutes ago — and the hub
-        // then accepts an answer to it, which is §13.2b's *"input arriving from
-        // nowhere"*.
+        // The open decision is closed on every path, including the ones nobody answered: a
+        // `DecisionRequested` with no matching `DecisionAnswered` stays in `SessionView::open`
+        // for the life of the session, so the head keeps offering a prompt for a call that was
+        // refused minutes ago - and the hub then accepts an answer to it.
         hub.publish(close(req, &decision));
         decision
     }
@@ -295,61 +233,24 @@ enum Waited {
 // ---------------------------------------------------------------------------
 
 impl Answers {
-    /// **Post a question to the heads and wait for one of them to answer it.**
+    /// Post a question to the heads and wait for one of them to answer it.
     ///
-    /// The operator's ruling, 2026-10-09: *"yeah i want you to be able to ask me for a
-    /// choice. each choice can have my note, and i can abstain or type my answer"*. The
-    /// tool has existed since D10 and had no way to reach a person: `Headless` was what
-    /// every session got, so `ask_user_question` was a verb that could only refuse.
+    /// The rendezvous is [`Answers::ask`]'s, because the deadlock is the same one. What differs is
+    /// the payload each way: the card is posed with `kind: "question"` and its plain-text
+    /// `choices`, and the reply is [`Reply::Question`], which `Hub::submit` will not accept for a
+    /// permission and will not accept a permission's answer for.
     ///
-    /// # Why this is not `Answers::ask`
-    ///
-    /// The rendezvous is the same one — the same slots, the same condvar, the same
-    /// deadline, the same answer sink — because the *deadlock* is the same deadlock: the
-    /// question is asked from inside a tool call on the daemon's only worker, so the
-    /// answer cannot come in through the command queue ([`Answers`] says why). What
-    /// differs is the payload in each direction, and that is the whole of it:
-    ///
-    /// * the card is posed with `kind: "question"` and its plain-text `choices`;
-    /// * the reply is [`Reply::Question`], which `Hub::submit` will not accept for a
-    ///   permission and will not accept a permission's answer for.
-    ///
-    /// # Every way this can end
-    ///
-    /// | | what the tool gets |
-    /// |---|---|
-    /// | a head answered | the answer, and who gave it |
-    /// | **no head can answer** | [`AskError::NoHead`], *before* any wait |
-    /// | the deadline passed | [`AskError::Expired`] — *nobody answered*, and the one a `default` is taken on |
-    /// | the operator interrupted, or the session closed | [`AskError::Unanswered`] |
-    ///
-    /// **An abstention is not one of those.** It comes back through the first row like
-    /// any other answer, and it is the tool (`accept`, in `letibot-tools`) that reports
-    /// it as `Abstained` rather than as silence. This function never decides that a person
-    /// meant anything: it carries what arrived, and who it arrived from.
-    ///
-    /// # The settled event, and the word it carries
-    ///
-    /// A question's ending is published as [`WireOutcome::Cancelled`] with the person's
-    /// own answer in the `basis`, which is `close`'s own precedent for an outcome the wire
-    /// has not got: the request is off the screen and nobody selected anything *from a
-    /// ladder*, because a question has no ladder. The alternative — inventing an option id
-    /// so a `Selected` would parse — would put a word in the log that nothing chose, and
-    /// the answer itself is in the basis and in the tool's result either way.
-    ///
-    /// **No `PROTOCOL_VERSION` bump.** Nothing about the wire changed: `kind: "question"`
-    /// and `choices` are `PROTOCOL_VERSION` 7, `AnswerQuestion` and [`Reply::Question`] are
-    /// 5, and `DecisionOutcome` grew nothing.
+    /// An abstention is an answer like any other and comes back through `Ok`; the tool reports it
+    /// as `Abstained` rather than as silence. This function never decides that a person meant
+    /// anything - it carries what arrived, and who it arrived from.
     pub fn ask_question(
         &self,
         hub: &Arc<Hub>,
         q: &Question,
         budget: Duration,
     ) -> Result<(QuestionAnswer, String), AskError> {
-        // **Read, not assumed**, and asked before anything is posted: a session whose only
-        // head is a read-only connector cannot answer, and posting to it and then sitting
-        // out the deadline would report a timeout about a question nobody was ever asked.
-        // The same check `Answers::ask` makes, for the same reason.
+        // Read, not assumed, and asked before anything is posted - the same check
+        // `Answers::ask` makes, for the same reason.
         let who = hub.deciding_heads();
         if who.is_empty() {
             return Err(AskError::NoHead(no_head_for_a_question()));
@@ -357,9 +258,7 @@ impl Answers {
 
         let req_id = question_id(&hub.session_id());
         let deadline_ms = unix_millis() + budget.as_millis() as u64;
-        // The slot exists before the question does. See `Answers::wait` — the window is
-        // the length of a fan-out and an answer that lands inside it must have somewhere
-        // to land.
+        // The slot exists before the question does. See `Answers::wait`.
         let waited = {
             let mut g = self.lock();
             g.insert(req_id.clone(), Slot::Waiting);
@@ -368,10 +267,9 @@ impl Answers {
             self.wait(&req_id, budget)
         };
 
-        // **The open card is closed on every path**, including the ones nobody answered —
-        // the same rule `Answers::ask` states: a `DecisionRequested` with no matching
-        // `DecisionAnswered` stays in the head's open set for the life of the session, and
-        // the hub then accepts an answer to a question that is over.
+        // The open card is closed on every path, including the ones nobody answered: an
+        // unclosed `DecisionRequested` stays in the head's open set for the life of the
+        // session, and the hub then accepts an answer to a question that is over.
         let close = |outcome: WireOutcome, by: Decider, basis: String| {
             hub.publish(close_question(&req_id, outcome, by, basis));
         };
@@ -395,10 +293,9 @@ impl Answers {
                 );
                 Ok((a, by))
             }
-            // **The other vocabulary's reply.** `Hub::submit` refuses this at the door, so
-            // it is unreachable through the daemon; the arm exists because the slot can
-            // only be filled by *something*, and calling it an answer would be the defect
-            // the two types exist to prevent.
+            // The other vocabulary's reply. `Hub::submit` refuses it at the door, so it is
+            // unreachable through the daemon; calling it an answer would be the defect the
+            // two types exist to prevent.
             Waited::Answered {
                 reply: Reply::Permission { .. },
                 by,
@@ -459,14 +356,9 @@ impl Answers {
 
 /// The wire's answer, as the tool's own shape.
 ///
-/// **A field-by-field copy and not a `From`, deliberately.** The two types exist
-/// because neither crate may learn about the other — `crates/sessionlog/src/question.rs`
-/// says why, and its `the_wire_shape_and_the_tool_shape_agree` is the pin that keeps
-/// them one shape. A conversion that lived in either crate would be that learning; the
-/// daemon is the place they meet, which is what `lift_tools` is for the other pair.
-///
-/// A field this forgets is a field a person sent that the model never sees, which is
-/// why it copies all four and why the pin above is worth having.
+/// A field-by-field copy and not a `From`: neither crate may learn about the other, and the
+/// daemon is the place they meet. A field this forgets is a field a person sent that the model
+/// never sees, which is why it copies all four.
 fn to_tool_answer(a: &letibot_sessionlog::question::QuestionAnswer) -> QuestionAnswer {
     QuestionAnswer {
         option: a.option,
@@ -476,30 +368,23 @@ fn to_tool_answer(a: &letibot_sessionlog::question::QuestionAnswer) -> QuestionA
     }
 }
 
-/// **The `DecisionRequested` a question is posed as.**
+/// The `DecisionRequested` a question is posed as.
 ///
-/// `choices` and not `options`: `options` carries the adjudication ladder, which is
-/// empty for a question, and `choices` is the plain-text list `PROTOCOL_VERSION` 7
-/// added so that a question could be posed *with* its choices rather than, in
-/// `protocol.rs`'s own words, *"only by discarding the choices"*.
+/// `choices` and not `options`: `options` carries the adjudication ladder, which is empty for
+/// a question, and `choices` is the plain-text list that lets a question be posed with its
+/// choices rather than only by discarding them.
 ///
-/// `call_id: None`: this is not a gated call, so there is no row for the card to
-/// ride — a head draws it as the ask it is, which is why a question's settled event
-/// becomes a note rather than a line on a call.
-///
-/// `on_timeout: Deny` is the honest one of the three the wire has. `Ask` draws *"the
-/// guard model decides"* — false, nothing is consulted for a question — and `Allow`
-/// draws *"it RUNS anyway"* — false, nothing was ever going to run. `Deny` draws *"if
-/// nobody answers, nothing runs"*, which is exactly what a question's deadline costs:
-/// the tool returns `not_run` and the turn proceeds with no answer.
+/// `call_id: None` because this is not a gated call and there is no row for the card to ride.
+/// `on_timeout: Deny` is the only honest one of the three the wire has: `Ask` would claim a
+/// guard model decides, `Allow` that it runs anyway, and a question's deadline costs neither.
 fn pose_question(req_id: &str, q: &Question, deadline_ms: u64) -> SessionEvent {
     SessionEvent::DecisionRequested {
         write_targets: Vec::new(),
         req_id: req_id.into(),
         kind: "question".into(),
         call_id: None,
-        // A question is not a gate: nothing about a declaration asks for it, and a
-        // card that drew an access class here would be claiming one.
+        // A question is not a gate: nothing about a declaration asks for it, and a card that
+        // drew an access class here would be claiming one.
         access: String::new(),
         summary: q.text.clone(),
         target: String::new(),
@@ -507,8 +392,8 @@ fn pose_question(req_id: &str, q: &Question, deadline_ms: u64) -> SessionEvent {
         options: Vec::new(),
         // A question has no adjudication ladder, so there is no rung to have left off.
         options_note: String::new(),
-        // **The model's default is on the card**, so the person who comes back to it knows
-        // what happens at the deadline: that choice is taken, not nothing.
+        // The model's default is on the card, so a person who comes back to it knows what
+        // happens at the deadline: that choice is taken, not nothing.
         choices: q
             .options
             .iter()
@@ -549,12 +434,11 @@ fn close_question(req_id: &str, outcome: WireOutcome, by: Decider, basis: String
     }
 }
 
-/// **Why nobody could be asked, in the words a question needs rather than a gate's.**
+/// Why nobody could be asked, in the words a question needs rather than a gate's.
 ///
-/// [`no_head`] is the gate's sentence and says the *gate* fails closed — nothing ran
-/// and nothing changed. A question never had anything to run, so the same sentence
-/// would be describing a call that was never gated. What a model needs told here is
-/// the other half: the question is still open, and an assumption is not an answer.
+/// [`no_head`] says the gate fails closed - nothing ran and nothing changed. A question never
+/// had anything to run, so what a model needs told is the other half: the question is still
+/// open, and an assumption is not an answer.
 fn no_head_for_a_question() -> String {
     "no head that can answer is attached to this session, so NOBODY was asked and nobody \
      answered. This is not a refusal and it is not permission to proceed on an \
@@ -577,47 +461,35 @@ fn one_line(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// **One question and the answer it got, as the daemon's own questioner saw them.**
+/// One question and the answer it got, as the daemon's own questioner saw them.
 ///
-/// The tool returns the answer to the model; the transcript is the SESSION's to write
-/// ([`crate::harness::Harness`] — *the writer is the daemon, not the tool*). This is how
-/// the two halves meet: the questioner records what it carried, and the round loop — the
-/// one place a result is appended — reads it back and writes the person's answer down as
-/// theirs.
+/// The tool returns the answer to the model and the transcript is the session's to write, so
+/// the questioner records what it carried and the round loop writes the person's answer down
+/// as theirs.
 ///
-/// **A record and not a parse.** The tool's payload is prose the harness itself rendered
-/// (`QuestionAnswer::render`), and reading a person's words back out of our own sentences
-/// would be the harness deciding what they said. What is kept here is the structured
-/// answer that came off the wire, beside the question it answers.
+/// A record and not a parse: reading a person's words back out of the harness's own rendered
+/// sentences would be the harness deciding what they said.
 #[derive(Debug, Clone)]
 pub struct Asked {
-    /// The question as it was posed, options and all — the answer row's context, and
-    /// where a chosen option's own text is read from.
+    /// The question as it was posed, options and all - where a chosen option's text is read.
     pub question: Question,
     /// What the person said.
     pub answer: QuestionAnswer,
-    /// Who said it: the head's identity, the same string the gate records as
-    /// `human:<who>`, so the row and its own adjudication name the actor the same way.
+    /// Who said it: the same identity the gate records as `human:<who>`.
     pub by: String,
 }
 
 /// Where a questioner records the exchange it just carried. `None` is an empty slot.
 ///
-/// One slot rather than a queue: a session runs one tool call at a time on its worker,
-/// so a second exchange cannot start before the first is written down.
+/// One slot and not a queue: a session runs one tool call at a time on its worker, so a second
+/// exchange cannot start before the first is written down.
 pub type AskLog = Arc<Mutex<Option<Asked>>>;
 
-/// **The questioner a session with a head is given.**
+/// The questioner a session with a head is given.
 ///
-/// The seam is [`Questioner`] and this is the implementation D10's tool was missing:
-/// it posts the question to the head and waits on the answer frame the head already
-/// had. It holds nothing of its own — the rendezvous is [`Answers`], shared with the
-/// adjudicator — so a question and a permission are one mechanism in the daemon too,
-/// differing in `kind`, which is §11.6's sentence made true one layer down.
-///
-/// The one thing it does hold is the [`AskLog`] a session hands it, which is not state
-/// of its own either: it is where the exchange goes so the session that owns the
-/// transcript can write the person's half of it down.
+/// It posts the question to the head and waits on the answer frame the head already had, and
+/// holds nothing of its own: the rendezvous is [`Answers`], shared with the adjudicator, so a
+/// question and a permission are one mechanism in the daemon too and differ only in `kind`.
 pub struct HeadQuestioner {
     hub: Arc<Hub>,
     answers: Arc<Answers>,
@@ -650,8 +522,8 @@ impl HeadQuestioner {
         self
     }
 
-    /// **Where the exchange is recorded for the session to write down.** `None` — the
-    /// default — is a questioner asked by a test that only wants the question asked.
+    /// Where the exchange is recorded for the session to write down. `None` - the default -
+    /// is a questioner asked by a test that only wants the question asked.
     pub fn with_ask_log(mut self, asked: AskLog) -> Self {
         self.asked = Some(asked);
         self
@@ -663,12 +535,9 @@ impl Questioner for HeadQuestioner {
         let got = self
             .answers
             .ask_question(&self.hub, q, q.timeout.unwrap_or(self.budget))?;
-        // **Recorded on the way past, and only an ANSWER.** Every `Err` arm of
-        // `ask_question` is *nobody answered* — no head, a deadline, an interrupt — and a
-        // refusal is not a person's utterance, so nothing is written down for one.
-        // Whether the tool then ACCEPTS the answer (an abstention is accepted, an option
-        // index nobody offered is not) is the tool's own call, and the round loop asks the
-        // result before it writes anything.
+        // Recorded on the way past, and only an answer. Every `Err` arm of `ask_question` is
+        // *nobody answered*, and a refusal is not a person's utterance. Whether the tool then
+        // accepts the answer is the tool's own call, and the round loop asks the result.
         if let Some(log) = &self.asked {
             *log.lock().unwrap_or_else(|e| e.into_inner()) = Some(Asked {
                 question: q.clone(),
@@ -679,10 +548,9 @@ impl Questioner for HeadQuestioner {
         Ok(got)
     }
 
-    /// The same shape [`HeadAdjudicator::describe`] gives, and read for the same
-    /// reason: *reachable* is a fact about right now, and a line that claimed a head
-    /// for a session with none is the disclosure claiming a safety property the
-    /// session does not have.
+    /// The same shape [`HeadAdjudicator::describe`] gives, and read for the same reason
+    /// *reachable* is a fact about right now, and a line claiming a head for a session with none
+    /// would be the disclosure claiming a safety property the session has not got.
     fn describe(&self) -> String {
         let heads = self.hub.deciding_heads();
         if heads.is_empty() {
@@ -711,9 +579,8 @@ impl Questioner for HeadQuestioner {
     }
 }
 
-/// **The log is never committed** — the operator: *"it should be gitignored"*, and then *"no,
-/// .gitignore"*: a line in the repository's own `.gitignore`, added once, so every clone and
-/// worktree of it ignores the file.
+/// The log is never committed: a line in the repository's own `.gitignore`, added once, so
+/// every clone and worktree of it ignores the file.
 fn ignore_locally(top: &std::path::Path) {
     let ignore = top.join(".gitignore");
     let had = std::fs::read_to_string(&ignore).unwrap_or_default();
@@ -731,14 +598,11 @@ fn ignore_locally(top: &std::path::Path) {
     let _ = std::fs::write(&ignore, format!("{had}{sep}/AUTO-DECISIONS.md\n"));
 }
 
-/// **A default taken, written down** — the operator: *"such default proceeds must be logged
-/// tho, in the project file called AUTO-DECISIONS.md stating repo commit, select options and
-/// default answer. If there is no repo - just a note … if it is a repo - show that too"*.
+/// A default taken, written down.
 ///
-/// In a repository: an entry appended to `AUTO-DECISIONS.md` at its top, naming the commit,
-/// the question, every option and the one taken. Outside one (a session above several
-/// repositories) there is no file; the sentence returned — which the session's note carries
-/// either way — is the record.
+/// In a repository: an entry appended to `AUTO-DECISIONS.md` at its top, naming the commit, the
+/// question, every option and the one taken. Outside one there is no file, and the sentence
+/// returned - which the session's note carries either way - is the record.
 pub fn auto_decision(
     workspace: &std::path::Path,
     session: &str,
@@ -823,17 +687,15 @@ pub fn auto_decision(
     }
 }
 
-/// **The questioner the intent wiring is given, whose head arrives with the gate.**
+/// The questioner the intent wiring is given, whose head arrives with the gate.
 ///
-/// The order is forced and not a design: `Harness::open` builds the intent wiring —
-/// and registers the tools that take it — *before* it builds the gate, and the gate is
-/// where [`Answers`] and the hub's answer sink are created, as one act, for the reason
-/// `Answers::ask` states. So the wiring gets a slot and this reads it at ask time.
+/// The order is forced: `Harness::open` builds the intent wiring and registers the tools that
+/// take it before it builds the gate, and the gate is where [`Answers`] and the hub's answer
+/// sink are created. So the wiring gets a slot and this reads it at ask time - which is also
+/// the honest reading, since what matters is whether a head is attached now.
 ///
-/// Reading it late is also the honest reading: what matters is whether a head is
-/// attached **now**, and a session whose head attached after it opened can be asked.
-/// An empty slot refuses with [`Headless`]'s own sentence rather than a copy of it —
-/// there is one place in this tree that says what *no head* means, and this is not it.
+/// An empty slot refuses with [`Headless`]'s own sentence rather than a copy of it: there is one
+/// place in this tree that says what *no head* means, and this is not it.
 pub struct SlotQuestioner(pub Arc<Mutex<Option<Arc<dyn Questioner>>>>);
 
 impl Questioner for SlotQuestioner {
@@ -863,10 +725,9 @@ impl AnswerSink for Answers {
     fn answer(&self, req_id: &str, identity: &str, reply: &Reply) -> bool {
         let mut g = self.lock();
         let Some(slot) = g.get_mut(req_id) else {
-            // Nothing is waiting. Dropped rather than held: §13.2b, *"a reply to a
-            // question asked ten minutes ago is not an answer, it is input arriving
-            // from nowhere"* — and applying a late allow to a call already reported
-            // as `not_run` is the worst outcome available here.
+            // Nothing is waiting. Dropped rather than held: a reply to a question asked ten
+            // minutes ago is input arriving from nowhere, and applying a late allow to a call
+            // already reported as `not_run` is the worst outcome available here.
             return false;
         };
         *slot = Slot::Answered {
@@ -898,10 +759,9 @@ impl AnswerSink for Answers {
 
 /// Turn a head's reply into the decision the gate reads.
 ///
-/// A **permission** names an option the request offered; anything else is
-/// `Unavailable`, which is [`letibot_tools::AskAdjudicator`]'s rule and is checked
-/// again there. A **question's** answer cannot settle a permission and the hub has
-/// already refused it at the door, so this arm is the belt to that pair of braces.
+/// A permission names an option the request offered; anything else is `Unavailable`, which
+/// [`letibot_tools::AskAdjudicator`] checks again. A question's answer cannot settle a
+/// permission, and the hub has already refused it at the door.
 fn settle(
     req: &AdjudicationRequest,
     reply: &Reply,
@@ -909,9 +769,8 @@ fn settle(
     latency_ms: u64,
 ) -> AdjudicationDecision {
     match reply {
-        // The glob is not read here. `settle` builds the decision, and a pattern is
-        // not part of one — it is what the answer said to do with the RULE, and only
-        // `AllowAlways` writes one. `Answers::take_pattern` is where it is picked up.
+        // The glob is not read here: a pattern is not part of a decision, only `AllowAlways`
+        // writes one, and `Answers::take_pattern` is where it is picked up.
         Reply::Permission {
             option_id, note, ..
         } => AdjudicationDecision {
@@ -920,19 +779,17 @@ fn settle(
                 option_id: option_id.clone(),
             },
             by: format!("human:{by}"),
-            // **The operator's own words reach the model.** `deny_and_tell` is
-            // labelled *"Deny, and tell the model why"*, and the why went nowhere:
-            // the basis said only which button was pressed. It is the basis now,
-            // which is what the refusal notice puts in front of the model and what
-            // the corpus row keeps.
+            // The operator's own words reach the model. `deny_and_tell` is labelled *"Deny
+            // and tell the model why"*, and the why went nowhere: the basis said only which
+            // button was pressed.
             //
-            // Quoted rather than paraphrased, and attributed — a sentence the
-            // model reads as the harness's own reasoning is a sentence it will
-            // argue with; one it reads as the operator's is an instruction.
+            // Quoted and attributed, because a sentence the model reads as the harness's own
+            // reasoning is one it will argue with; one it reads as the operator's is an
+            // instruction.
             basis: match note.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
                 Some(why) => format!("{by} chose `{option_id}` at the head: \"{why}\""),
-                // A `deny_and_tell` with nothing typed is a denial with no reason
-                // given, and says so rather than implying one was.
+                // A `deny_and_tell` with nothing typed is a denial with no reason given, and
+                // says so rather than implying one was.
                 None if option_id == "deny_and_tell" => format!(
                     "{by} chose `{option_id}` at the head, without saying why — the \
                      reason is typed after the option id, as `deny_and_tell <why>`"
@@ -941,9 +798,8 @@ fn settle(
             },
             latency_ms,
         },
-        // Not the person's decision: nobody chose an option. `by` says who
-        // decided, and here nothing did — see the same rule in
-        // `AskAdjudicator::decide`.
+        // Not the person's decision: nobody chose an option. `by` says who decided, and here
+        // nothing did.
         Reply::Question(_) => AdjudicationDecision {
             request_id: req.id.clone(),
             outcome: DecisionOutcome::Unavailable,
@@ -957,16 +813,15 @@ fn settle(
     }
 }
 
-/// **The sentence a gate gets when nobody at the head can answer.**
+/// The sentence a gate gets when nobody at the head can answer.
 ///
-/// A fact, not a policy — and for a subagent it is a different fact, told differently: the
-/// card is not this session's to draw, so the refusal has to say *which session it belongs
-/// to*, that no head is attached there, and what the child should do about it.
+/// A fact, not a policy - and for a subagent a different fact, told differently: the card is not
+/// this session's to draw, so the refusal has to say which session it belongs to, that no head
+/// is attached there, and what the child should do about it.
 ///
-/// **"Stop and report" rather than "retry", and the reason is the shape of the failure**: a
-/// retry reaches the same unattended session and costs another deadline, so a child that
-/// retried would burn its whole turn proving the same fact. What it can do instead is tell
-/// whoever asked for the work, who is the only party that can attach a head.
+/// *Stop and report* rather than *retry*: a retry reaches the same unattended session and costs
+/// another deadline, so a child that retried would burn its turn proving the same fact. What it
+/// can do is tell whoever asked for the work, which is the only party that can attach a head.
 fn no_head(subagent: Option<&SubagentAsk>) -> String {
     let Some(s) = subagent else {
         return "no head that can answer is attached to this session, so nothing was \
@@ -995,7 +850,7 @@ fn no_head(subagent: Option<&SubagentAsk>) -> String {
 /// The `DecisionRequested` a head renders.
 ///
 /// `subagent` is carried straight onto the card: a child's gate posts its card to the tree's
-/// ROOT, and a card that arrived there unlabelled would be answered for the wrong thing.
+/// root, and a card that arrived there unlabelled would be answered for the wrong thing.
 fn pose(
     req: &AdjudicationRequest,
     deadline_ms: u64,
@@ -1009,36 +864,18 @@ fn pose(
             RequestKind::Question => "question".into(),
         },
         call_id: Some(req.call_id.clone()),
-        // **The tool's declared access, so the card can say why it is asking.** §11.7:
-        // the headline names the declaration (`wants exec access`) and `detail` is layer
-        // A's reading of the *action*, and nothing joined them. The request has carried
-        // this as `ActionClass::access` all along; it had simply never been put on the
-        // wire, so a head could only have got it by parsing its own sentence.
+        // The tool's declared access, so the card can say why it is asking: the headline names
+        // the declaration and `detail` is layer A's reading of the action.
         access: req.class.access.as_str().to_string(),
-        // The one line a person decides from, and then what layer A read, because a
-        // permission the operator cannot evaluate is one they will approve out of
-        // fatigue — which is the mechanism behind the 67% in §1.
-        // **The question, and nothing else, on the line the operator reads first.**
-        //
-        // These three used to be one string — the sentence, then layer A's reading,
-        // joined with an em dash — and the head then appended `[permission]` to it.
-        // What that produced was *"`bash` wants exec access to `<no target
-        // argument>` — ask — intents [read_file write_file execute_code] over
-        // [host_other] [permission]"*: four registers in one line, the command
-        // missing from the middle of it, and the taxonomy taking the space the
-        // command needed. Now the head gets the parts and decides where each goes.
+        // The question, and nothing else, on the line the operator reads first. These three
+        // used to be one string with layer A's reading joined to it by an em dash, and the
+        // command ended up missing from the middle of four registers.
         summary: req.summary.clone(),
         target: req.target.clone(),
         detail: req.baseline.clone(),
-        // **R35's severed wire, joined.** The classifier found these and they stopped there; the
-        // card is where a person reads them. Taken off the request's own `reading` — the same
-        // `Baseline` the tier and the intents come from — so the card and layer A's line cannot
-        // disagree about what this call writes.
-        //
-        // **The MODEL is not told.** `brief()` is what a model sees and this does not touch it: the
-        // model wrote the script, so the paths are not news to it, and §11.7's exclusion stands. The
-        // operator is the reader this is for, which is also the cheaper claim — one head drawing
-        // what the daemon already knew, and nothing disclosed to a model that did not ask.
+        // What the call writes, taken off the request's own `reading` so the card and layer A's
+        // line cannot disagree. The model is not told - `brief` is what it sees, and it wrote
+        // the script - so this is the operator's, which is the cheaper claim besides.
         write_targets: req
             .reading
             .as_ref()
@@ -1053,26 +890,24 @@ fn pose(
             })
             .unwrap_or_default(),
         options: req.options.iter().map(wire_option).collect(),
-        // **What the ladder left off, and why**, verbatim from the gate: the rung and the
-        // sentence explaining its absence are one fact, and a head that composed the
-        // sentence would be re-deriving which refusal applied.
+        // What the ladder left off, and why, verbatim from the gate: the rung and the sentence
+        // explaining its absence are one fact, and a head that composed the sentence would be
+        // re-deriving which refusal applied.
         options_note: req.options_note.clone().unwrap_or_default(),
-        // A permission has no plain-text choices. `ask_user_question` fills these,
+        // A permission has no plain-text choices. `ask_user_question` fills these
         // and it goes through the same seam.
         choices: Vec::new(),
         because: req.boundary_facts.first().cloned().unwrap_or_default(),
-        // Verbatim from the request the model was asked about, not re-derived. A
-        // head that reconstructed the verdict would render a guess about what the
-        // oracle said — `ModelBrief`'s rule, one layer out.
+        // Verbatim from the request the model was asked about, not re-derived: a head that
+        // reconstructed the verdict would render a guess about what the oracle said.
         advice: req.advice.as_ref().map(|a| WireAdvice {
             consulted: a.consulted,
             would: a.would.to_string(),
             by: a.by.clone(),
             basis: a.basis.clone(),
             cites: a.cites.clone(),
-            // **R12's third outcome, as a token** — see `WireAdvice::unsure`. `as_str()` and
-            // not the debug name, because this is the same string the corpus column
-            // `oracle_reading` stores and one vocabulary with two destinations does not drift.
+            // `as_str` and not the debug name, because this is the same string the corpus
+            // column `oracle_reading` stores, and one vocabulary with two destinations drifts.
             unsure: a.unsure.map(|k| k.as_str().to_string()),
             latency_ms: a.latency_ms,
         }),
@@ -1092,32 +927,26 @@ fn close(req: &AdjudicationRequest, d: &AdjudicationDecision) -> SessionEvent {
             option_id: option_id.clone(),
         },
         DecisionOutcome::Timeout => WireOutcome::TimedOut,
-        // `Escalate` and `Unavailable` are not outcomes the wire has, and the honest
-        // mapping is `Cancelled`: the request is off the screen and nobody selected
-        // anything. The `basis` carries which it was.
+        // `Escalate` and `Unavailable` are not outcomes the wire has, and `Cancelled` is the
+        // honest mapping: the request is off the screen and nobody selected anything. The
+        // `basis` carries which it was.
         _ => WireOutcome::Cancelled,
     };
     SessionEvent::DecisionAnswered {
         req_id: req.id.clone(),
         outcome,
-        // **The decider says who it is; this does not guess.** `d.by` is already
-        // `kind:identity` — `human:dead`, `model:qwen-3.8-27b`, `gate:timeout` —
-        // so it is split rather than re-derived.
-        //
-        // It used to be derived from the OUTCOME, which made every `Selected` a
-        // `human` whoever chose it, and put the whole `human:dead` into `identity`
-        // besides — so a head drew `by human human:dead`, and a decision an oracle
-        // selected drew `by human` over a model's id. Two wrong facts from one
-        // guess about a field that was carrying the answer all along.
+        // The decider says who it is and this does not guess: `d.by` is already
+        // `kind:identity`, so it is split rather than re-derived. Deriving it from the outcome
+        // made every `Selected` a `human` whoever chose it, and put the whole `human:dead` in
+        // `identity` besides.
         by: split_decider(&d.by),
         basis: d.basis.clone(),
         late: false,
     }
 }
 
-/// `kind:identity` into its two halves. A `by` with no colon is all kind and no
-/// identity — `gate:timeout` has one, a bare `subagent` does not — and an empty
-/// identity renders as nothing rather than as an empty quoted name.
+/// `kind:identity` into its two halves. A `by` with no colon is all kind and no identity, and
+/// an empty identity renders as nothing rather than as an empty quoted name.
 fn split_decider(by: &str) -> Decider {
     match by.split_once(':') {
         Some((kind, identity)) => Decider {
@@ -1152,25 +981,21 @@ fn unix_millis() -> u64 {
         .unwrap_or(0)
 }
 
-/// **The adjudicator that asks whoever is looking at the session.**
+/// The adjudicator that asks whoever is looking at the session.
 ///
-/// The seam is [`letibot_tools::Adjudicator`] and this is the implementation D25 says
-/// is missing. It holds the call the way `ConsoleAdjudicator` does — §11.5 would
-/// rather a pending decision were a visible row than a held connection, and it *is* a
-/// visible row: the hold is on the tool thread, and the head sees
+/// It holds the call the way `ConsoleAdjudicator` does - a pending decision is a visible row
+/// not a held connection: the hold is on the tool thread, and the head sees
 /// `DecisionRequested` the instant it is posted.
 pub struct HeadAdjudicator {
     hub: Arc<Hub>,
     answers: Arc<Answers>,
     budget: Duration,
-    /// What the last request rendered to, for [`Adjudicator::last_brief`] and
-    /// therefore for the corpus row's `shown`. A person is shown the brief; recording
-    /// it is what keeps §4c's *"the trail as it was actually shown"* honest for a
-    /// human adjudicator as well as a model one.
+    /// What the last request rendered to, for [`Adjudicator::last_brief`] and so for the corpus
+    /// row's `shown`: a person is shown the brief, and recording it keeps the trail honest for
+    /// a human adjudicator as well as a model one.
     shown: Mutex<Option<String>>,
-    /// The glob the operator typed with the last answer, for
-    /// [`Adjudicator::last_pattern`]. `None` when they typed none, which means *use
-    /// the pattern derived from the call*.
+    /// The glob the operator typed with the last answer, for [`Adjudicator::last_pattern`].
+    /// `None` when they typed none, which means *use the pattern derived from the call*.
     pattern: Mutex<Option<String>>,
 }
 
@@ -1190,22 +1015,20 @@ impl HeadAdjudicator {
         self
     }
 
-    /// **The ask itself, with the caller's own attribution.**
+    /// The ask itself, with the caller's own attribution.
     ///
-    /// `None` is this session's own call, which is every card before R58's ask route
-    /// existed. `Some` is a subagent's, posted to the session whose head this is — the
-    /// only difference between the two, and it is one parameter rather than a second
-    /// adjudicator because the bookkeeping below (what the person was shown, the glob
-    /// they typed) is the same bookkeeping and must not be written twice.
+    /// `None` is this session's own call; `Some` is a subagent's, posted to the session whose
+    /// head this is. One parameter rather than a second adjudicator, because the bookkeeping
+    /// below - what the person was shown, the glob they typed - must not be written twice.
     pub fn decide_as(
         &self,
         req: &AdjudicationRequest,
         subagent: Option<&SubagentAsk>,
     ) -> AdjudicationDecision {
         *self.shown.lock().unwrap_or_else(|e| e.into_inner()) = Some(req.brief());
-        // **Cleared before the ask, not after.** A pattern left over from the
-        // previous answer would be applied to this one, which is a rule the operator
-        // did not write for a call they were not looking at when they typed it.
+        // Cleared before the ask, not after: a pattern left over from the previous answer
+        // would be applied to this one, which is a rule the operator did not write for a call
+        // they were not looking at when they typed it.
         *self.pattern.lock().unwrap_or_else(|e| e.into_inner()) = None;
         let d = self.answers.ask(&self.hub, req, self.budget, subagent);
         *self.pattern.lock().unwrap_or_else(|e| e.into_inner()) =
@@ -1222,10 +1045,8 @@ impl Adjudicator for HeadAdjudicator {
     fn describe(&self) -> String {
         let heads = self.hub.deciding_heads();
         if heads.is_empty() {
-            // **Read, not assumed.** A banner that said "a head decides" for a
-            // session with no head is the disclosure claiming a safety property the
-            // session does not have, which is the defect `startup_disclosure` exists
-            // to stop one layer up.
+            // Read, not assumed: a banner that said "a head decides" for a session with no head
+            // would be the disclosure claiming a safety property the session has not got.
             return format!(
                 "a head over the session socket — none attached right now, so every gated \
                  call refuses with not_run until one is (deadline {}s)",
@@ -1251,30 +1072,16 @@ impl Adjudicator for HeadAdjudicator {
     }
 }
 
-/// **A subagent's gate, asking the head at the ROOT of its tree.**
+/// A subagent's gate, asking the head at the root of its tree.
 ///
-/// The operator, on who a subagent's ask belongs to: *"who asks subagents permissions? i
-/// think they should surface to the parent head all the way to the root obviously"*. A child
-/// has no head attached and **cannot be driven** — it is adopted into the session registry and
-/// not into `Sessions::open`, so `Sessions::wake` cannot run its turn — so its
-/// gate's card is posted to the one session in the tree that does have a head: the root.
+/// A child has no head attached and cannot be driven - it is adopted into the session registry
+/// and not into `Sessions::open` - so its gate's card is posted to the one session in the tree
+/// that does have a head. Not a second mechanism: a [`HeadAdjudicator`] over the root's hub and
+/// answers, with the child's name on the card and on the refusal.
 ///
-/// This is deliberately **not a second mechanism**: it is a [`HeadAdjudicator`] over the
-/// root's hub and the root's answers, with the child's own name on the card and on the
-/// refusal. Everything about the ask — the slot, the rendezvous, the deadline, the close, the
-/// recorded brief and glob — is that one implementation, which is what makes a child's answer
-/// the same answer the root would have got.
-///
-/// **What it does not do: make the child drivable.** Nothing here touches `Sessions::open` or
-/// the child's watcher set; the card travels and the answer comes back on the asking thread,
-/// exactly as a root's does. A child that IS served is served by the thread that owns it —
-/// `Sessions::wake` handing the wake to `Hub::wake_its_own_reader` — which is a different
-/// door from this one.
-///
-/// `head` is `None` when the tree has no head-wired adjudicator at all — a root run with
-/// `--adjudicator console`, or one whose answers a child cannot reach. There is then nothing
-/// to post to, and the refusal says which session it would have been and that the child should
-/// stop and report rather than retry.
+/// `head` is `None` when the tree has no head-wired adjudicator at all. There is then nothing to
+/// post to, and the refusal says which session it would have been and that the child should stop
+/// and report rather than retry.
 pub struct SubagentAdjudicator {
     /// Who is asking: the child's handle, its task, and the root it belongs to.
     child: SubagentAsk,
@@ -1287,12 +1094,12 @@ impl SubagentAdjudicator {
         SubagentAdjudicator { child, head }
     }
 
-    /// **No head-wired adjudicator in this tree, said as the fact it is.**
+    /// No head-wired adjudicator in this tree, said as the fact it is.
     ///
-    /// `by` is `gate:no-head`, the same word the root's own no-head refusal uses, because it
-    /// is the same fact one level over: the gate could not ask anybody. The child's handle,
-    /// its task and the session the card would belong to are all in the basis, because a
-    /// refusal that does not name where it failed is one nobody can act on.
+    /// `by` is `gate:no-head`, the word the root's own no-head refusal uses, because it is the
+    /// same fact one level over. The child's handle, its task and the session the card would
+    /// belong to are all in the basis: a refusal that does not name where it failed is one
+    /// nobody can act on.
     fn no_path(&self) -> String {
         let task = if self.child.task.is_empty() {
             String::new()
@@ -1320,10 +1127,9 @@ impl Adjudicator for SubagentAdjudicator {
         }
     }
 
-    /// **Never starts with `none`**: that prefix is the harness's own signal for *nobody
-    /// reachable, refuse to open a gated session*, and a subagent does have a decider — the
-    /// ruleset it inherited. What reaches this adjudicator is only what that ruleset left as
-    /// `ask`, and that now goes to the tree's root.
+    /// Never starts with `none`: that prefix is the harness's own signal for *nobody reachable
+    /// refuse to open a gated session*, and a subagent does have a decider - the ruleset it
+    /// inherited. What reaches this adjudicator is only what that ruleset left as `ask`.
     fn describe(&self) -> String {
         match &self.head {
             Some(_) => format!(
@@ -1340,24 +1146,13 @@ impl Adjudicator for SubagentAdjudicator {
     }
 }
 
-/// **The model decides; when it cannot, the person does.**
+/// The model decides; when it cannot, the person does.
 ///
-/// `--adjudicator model` puts the model in front of the gate alone, and an oracle
-/// that timed out failed the call closed with a refusal the operator experienced as
-/// a card that sat yellow and then said `not run` — their rule, after that: *"if a
-/// tool call reaches oracle and timeouts — the timeout must be visible and result
-/// in a human ask"*. The timeout already is visible (the card's note names the
-/// consult while it waits); what was missing was the ask.
-///
-/// This wrapper forwards to the model and, when the answer means **nobody decided**
-/// — [`DecisionOutcome::Timeout`] or [`DecisionOutcome::Unavailable`] — asks the
-/// person instead. A `Cancelled` decision is *not* forwarded: a cancel is somebody
-/// stopping the turn, and asking over them would be input arriving from nowhere.
-/// And when no head is attached the ask returns `Unavailable` immediately, so an
-/// unattended session degrades to exactly the fail-closed refusal it had before —
-/// the fallback makes a session stronger when a person is there and changes nothing
-/// when one is not, which is the difference between this and the silent fallback
-/// `--oracle`'s absence refuses to make.
+/// This forwards to the model and, when the answer means nobody decided - `Timeout` or
+/// `Unavailable` - asks the person instead. A `Cancelled` decision is not forwarded: a cancel is
+/// somebody stopping the turn, and asking over them would be input arriving from nowhere. With no
+/// head attached the ask returns `Unavailable` at once, so an unattended session degrades to
+/// exactly the fail-closed refusal it had before.
 pub struct EscalateOnTimeout {
     inner: Arc<dyn Adjudicator>,
     human: Arc<dyn Adjudicator>,
@@ -1375,9 +1170,8 @@ impl Adjudicator for EscalateOnTimeout {
         match d.outcome {
             DecisionOutcome::Timeout | DecisionOutcome::Unavailable => {
                 let mut h = self.human.decide(req);
-                // The record keeps both facts: the person decided, and the reason
-                // they were asked is that the guard did not answer. A corpus row
-                // that showed only the first would read as a person overruling a
+                // The record keeps both facts: the person decided, and they were asked because
+                // the guard did not answer. Only the first would read as a person overruling a
                 // model that never spoke.
                 h.basis.push_str(&format!(" {}", d.basis));
                 h
@@ -1394,8 +1188,8 @@ impl Adjudicator for EscalateOnTimeout {
     }
 
     fn last_pattern(&self) -> Option<String> {
-        // Whichever of the two answered: a pattern typed with a person's answer
-        // belongs to the person, and a model that minted one reported its own.
+        // Whichever of the two answered: a pattern typed with a person's answer belongs to the
+        // person, and a model that minted one reported its own.
         self.human
             .last_pattern()
             .or_else(|| self.inner.last_pattern())
@@ -1405,16 +1199,16 @@ impl Adjudicator for EscalateOnTimeout {
         self.human.last_brief().or_else(|| self.inner.last_brief())
     }
 
-    /// **The model's bytes, not the person's** (R11). The corpus column is the input an
-    /// ORACLE was given, and the human's half of this pair has no such bytes; where both
-    /// answered, the model's is the exchange a reader came to check.
+    /// The model's bytes, not the person's: the corpus column is the input an ORACLE was given
+    /// and the human's half has no such bytes. Where both answered, the model's is the exchange
+    /// a reader came to check.
     fn last_reply(&self) -> Option<String> {
         self.inner.last_reply().or_else(|| self.human.last_reply())
     }
 
     fn last_advice(&self) -> Option<ModelAdvice> {
         // The model's verdict travels to the corpus row even when it lost the
-        // decision to the timeout — that row is the disagreement signal.
+        // decision to the timeout - that row is the disagreement signal.
         self.inner.last_advice()
     }
 }
@@ -1426,10 +1220,9 @@ mod tests;
 mod tell_tests {
     use super::*;
 
-    /// **The operator's words reach the model.** `deny_and_tell` is labelled
-    /// *"Deny, and tell the model why"* and the why went nowhere: the basis said
-    /// only which button was pressed, so a refusal with a reason and one without
-    /// were the same sentence.
+    /// The operator's words reach the model: `deny_and_tell` is labelled *"Deny, and tell the
+    /// model why"* and the why went nowhere, so a refusal with a reason and one without were
+    /// the same sentence.
     #[test]
     fn a_told_denial_carries_the_reason_and_an_untold_one_says_it_has_none() {
         let r = tests::request();
@@ -1443,9 +1236,9 @@ mod tell_tests {
             "deadtrickster",
             10,
         );
-        // Quoted and attributed: a sentence the model reads as the harness's own
-        // reasoning is one it will argue with; one it reads as the operator's is
-        // an instruction. Trimmed, because the words were typed at a prompt.
+        // Quoted and attributed: a sentence the model reads as the harness's own reasoning is
+        // one it will argue with; one it reads as the operator's is an instruction. Trimmed
+        // because the words were typed at a prompt.
         assert!(
             told.basis.contains("\"use the scratch dir, not /tmp\""),
             "{}",
@@ -1453,8 +1246,8 @@ mod tell_tests {
         );
         assert!(told.basis.contains("deadtrickster"), "{}", told.basis);
 
-        // Nothing typed is a denial with no reason, and says so rather than
-        // implying one was given — and names how to give one.
+        // Nothing typed is a denial with no reason, and says so rather than implying one was
+        // given - and names how to give one.
         for empty in [None, Some("   ".to_string())] {
             let untold = settle(
                 &r,

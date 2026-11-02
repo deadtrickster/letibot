@@ -1,78 +1,21 @@
-//! **The daemon's half of answering the operator's own command** — who holds the run's input,
-//! and how a line gets into it.
+//! The daemon's half of answering the operator's own command: who holds the run's input, and how
+//! a line gets into it.
 //!
-//! # What this module is
+//! [`letibot_sessionlog::PromptDriver`] is the seam and [`Prompts`] implements it. The mechanism
+//! is [`letibot_tools::exec::Stdin`] - a handle on the run's input, its terminal on the ordinary
+//! path - and the detection is [`letibot_tools::exec::ask`], which reads `/proc` and never the
+//! program's words. What lives here is what the daemon has to hold: the one operator command in
+//! flight, the open `req_id` for it, and the write a head's answer and a `!send` both become.
 //!
-//! [`letibot_sessionlog::PromptDriver`] is the seam: a trait the *server* can call on the
-//! connection's thread, implemented here because this is the crate with the daemon in it.
-//! [`Prompts`] is the implementation, and it is small on purpose — the mechanism is
-//! [`letibot_tools::exec::Stdin`], which is the handle the exec host took on the run's own
-//! **input** — its terminal on the ordinary path, and a pipe only on a box where no pty opens —
-//! and the detection is [`letibot_tools::exec::ask`], which reads
-//! `/proc` and never the program's words. What is here is the three things that are *the
-//! daemon's*:
+//! The state cannot live in the harness, because the run's own thread is blocked inside the very
+//! command that is asking. It is one per SESSION - a `!send` in one session must never write into
+//! another's command, and the id check in [`Prompts::send`] is the assertion that the registry's
+//! lookup was the right one.
 //!
-//! | | |
-//! |---|---|
-//! | **the run** | the one operator command this session has in flight: its job, the command the person typed, and the input handle |
-//! | **the card** | the open `req_id` for that run, minted here and published as [`SessionEvent::PromptRequested`] |
-//! | **the write** | [`PromptDriver::send`], which is what a head's answer and a `!send` both become |
-//! | **the offer** | [`Prompts::unreadable`], for the run this daemon may not look at — the card that does
-//! not claim the program asked, beside the sentence that names `!send` — see the method |
-//!
-//! # Why the state is here and not in the harness
-//!
-//! **The run's own thread is blocked inside the very command that is asking.** `invoke_operator`
-//! waits on the job — so by the time a card is up, the thread that owns the exec host is inside
-//! the wait and cannot be asked anything. That thread used to BE the session worker (a `!` run
-//! held it for as long as the command did, which is why this state could not live there either);
-//! it now has a thread of its own — see `crate::bangrun` — and the worker stays free. The server
-//! still has to reach the input without the run's thread, and this is the object it reaches:
-//! created by the harness at open (it is the half that has the handle), handed to the registry
-//! ([`Registry::set_prompt`](letibot_sessionlog::Registry::set_prompt)) keyed by the session,
-//! and driven from two threads at once.
-//!
-//! # One per SESSION, and the reason is not tidiness
-//!
-//! An input handle belongs to one session's run. Two sessions on one daemon each have their own, and a
-//! `!send` in one must never write into the other's command — so the registry looks the
-//! driver up by session id and [`Prompts::send`] checks the id it was given against its own.
-//! That check is not defensive: it is the assertion that the lookup was the right one.
-//!
-//! # The reports, and which thread each comes from
-//!
-//! * [`Prompts::opened`] and [`Prompts::ended`] come from the **run's own thread** (see
-//!   `crate::bangrun` — a `!` run no longer holds the worker), on the tool's own thread, around
-//!   the wait. `opened` is what makes the manual way in work when no card is
-//!   ever raised; `ended` is what takes a card down, so nobody types an answer into a program
-//!   that has already exited.
-//! * [`Prompts::asking`] comes from the same thread, once per question, when
-//!   [`letibot_tools::exec::ask`] says the run is **blocked reading the terminal this daemon
-//!   holds**.
-//! * [`Prompts::unreadable`] comes from the same thread too, once per run, when `ask` says the
-//!   opposite of a reading: **it could not look** — a process of the run belongs to another
-//!   uid, which is every `! sudo …` that reaches a program running as root. The sentence that
-//!   says so is still here, and beside it now stands the **offer**: a card raised on the fact
-//!   that a run of the operator's own is in flight — not on a reading — whose text says it
-//!   cannot tell whether the run is asking and that a line sent goes into it either way. See
-//!   the method: the operator's own report is the state this exists for, and their correction
-//!   (*"sudo can get input from here so can others"*) is what the card answers to.
-//! * [`PromptDriver::send`] comes from the **server's reader thread**, because the answer is
-//!   not an act on the session's timeline — it is the second half of one already in flight.
-//!   See the trait for why the queue cannot carry it.
-//!
-//! # What this module deliberately does not do
-//!
-//! * **No secret.** There is no method here that takes a password or returns one, and
-//!   [`Prompts`] holds nothing a password could travel on. `SUDO_ASKPASS` and the `askpass`
-//!   head keep their own path, and the two must not be mergeable by a later edit — see
-//!   `letibot_sessionlog`'s `PromptDriver` for the half of that which is a *shape*.
-//! * **No text matching.** Whether a run is waiting is [`letibot_tools::exec::ask`]'s answer
-//!   and it is about the process. The last line the program wrote is carried here to be
-//!   **shown** and is never looked at.
-//! * **No blocking under the lock.** [`Prompts::send`] clones the handle out and writes with
-//!   the lock released: the write is a syscall on the run's input, and the run's own wait loop wants
-//!   this lock to report the next question.
+//! Three things it deliberately does not do: hold a secret (`SUDO_ASKPASS` keeps its own path, and
+//! the two must not be mergeable by a later edit), match text (the last line a program wrote is
+//! carried to be shown and never looked at), or block under the lock (the write is a syscall, and
+//! the run's wait loop wants the lock to report the next question).
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -81,30 +24,26 @@ use letibot_sessionlog::hub::Hub;
 use letibot_sessionlog::{PromptDriver, PromptReading, SessionEvent};
 use letibot_tools::exec::Stdin;
 
-/// **One operator command, in flight.**
+/// One operator command, in flight.
 struct Run {
-    /// The job's handle, as `job_list` spells it. The key that ties the three reports
-    /// together: a report about a job that is not this run's is about something else.
+    /// The job's handle, as `job_list` spells it. The key that ties the three reports together.
     job: String,
-    /// The command as the operator typed it, verbatim. Carried on the card, because the
-    /// daemon cannot know which process in a pipeline asked — `sudo apt install mc` is three
-    /// programs and the question is the third one's — so the card names the one thing that
-    /// is certain.
+    /// The command as the operator typed it, verbatim. Carried on the card because the daemon
+    /// cannot know which process in a pipeline asked - `sudo apt install mc` is three programs and
+    /// the question is the third one's - so the card names the one thing that is certain.
     command: String,
-    /// **The way in.** A handle on the run's input, cloned out of the job — its own terminal on
-    /// the ordinary path. See [`letibot_tools::exec::Stdin`].
+    /// The way in: a handle on the run's input, cloned out of the job.
     stdin: Stdin,
-    /// The card that is up for this run, if any. `None` between the run starting and the
-    /// first question, and again after one is answered.
+    /// The card that is up for this run, if any. `None` between the run starting and the first
+    /// question, and again after one is answered.
     req: Option<String>,
-    /// **Whether the daemon has already said it cannot tell whether this run is waiting.**
-    /// Once per run: the report is about a condition that holds for as long as the run does,
-    /// and a sentence per beat would be a sentence nobody reads. See [`Prompts::unreadable`].
+    /// Whether the daemon has already said it cannot tell whether this run is waiting. Once per
+    /// run: the condition holds as long as the run does, and a sentence per beat is a sentence
+    /// nobody reads.
     unreadable_said: bool,
-    /// **Whether this run is one the daemon may not look at at all** — the condition, as
-    /// distinct from the once-per-run sentence above. It is what brings the card back after
-    /// an answer: a run this daemon cannot read stays that way for as long as it runs, and
-    /// `apt` asks more than one question. See [`Prompts::send`].
+    /// Whether this run is one the daemon may not look at at all - the condition, as distinct
+    /// from the once-per-run sentence. It is what brings the card back after an answer, because a
+    /// run this daemon cannot read stays that way and `apt` asks more than one question.
     unreadable: bool,
 }
 
@@ -113,19 +52,18 @@ pub struct Prompts {
     /// The session this driver is for, and the check in [`PromptDriver::send`].
     session: String,
     /// Where a card is raised and a settlement recorded. The hub is the session's own, so a
-    /// `PromptRequested` reaches every head attached to *this* session and no other.
+    /// `PromptRequested` reaches every head attached to this session and no other.
     hub: Arc<Hub>,
     /// The one run, or `None` when nothing of the operator's is in flight.
     inner: Mutex<Option<Run>>,
-    /// Mints request ids. Per driver and not per daemon: an id is only ever compared against
-    /// one run's own open card, so the session's name is the whole of the uniqueness that
-    /// matters, and a daemon-wide counter would make two sessions' ids look related.
+    /// Mints request ids. Per driver and not per daemon: an id is only ever compared against one
+    /// run's own open card, and a daemon-wide counter would make two sessions' ids look related.
     next: AtomicU64,
 }
 
 impl Prompts {
-    /// **A driver for one session.** Called by the session's own harness at open — the half
-    /// that owns the exec host, and so the half that has the handle.
+    /// A driver for one session. Called by the session's own harness at open - the half that owns
+    /// the exec host, and so the half that has the handle.
     pub fn new(session: &str, hub: Arc<Hub>) -> Arc<Prompts> {
         Arc::new(Prompts {
             session: session.to_string(),
@@ -139,16 +77,14 @@ impl Prompts {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// **The operator's own command has started, and it has a stdin.** See [`OperatorRun`]'s
-    /// counterpart in `letibot_tools::runtime` for why this report exists at all: it is what
-    /// makes `!send` work **when no card is ever raised**, which is the miss this whole
-    /// feature is allowed to have because a person can still answer.
+    /// The operator's own command has started, and it has a stdin. This is what makes `!send`
+    /// work when no card is ever raised, which is the miss the feature is allowed to have because
+    /// a person can still answer.
     ///
-    /// **A new run replaces the old one**, and a card left up for the old one is settled
-    /// first. A session runs one operator command at a time, so reaching here with a run
-    /// already held means the previous one's `Ended` did not arrive — a path this does not
-    /// know about, or a panic — and a stale handle behind a live card is the worst state this
-    /// object can be in: a line typed for `apt` written into whatever started next.
+    /// A new run replaces the old one, and a card left up for the old one is settled first: a
+    /// session runs one operator command at a time, so a run already held means the previous
+    /// one's `Ended` did not arrive, and a stale handle behind a live card is the worst state
+    /// this object can be in - a line typed for `apt` written into whatever started next.
     pub fn opened(&self, job: &str, command: &str, stdin: Stdin) {
         let stale = {
             let mut g = self.lock();
@@ -171,13 +107,12 @@ impl Prompts {
         });
     }
 
-    /// **Mint a request and publish the card** — the one place a card is raised, so that the
-    /// reading-backed card and the offer cannot drift apart in what they carry.
+    /// Mint a request and publish the card - the one place a card is raised, so the reading-backed
+    /// card and the offer cannot drift apart in what they carry.
     ///
-    /// `reading` is which of the two facts the card is raised on
-    /// ([`PromptReading`]); `question` is the program's own last line when there is one to
-    /// show, and `None` on [`PromptReading::Unreadable`] — there the card's own words are the
-    /// honest sentence, drawn by the head from the reading alone.
+    /// `reading` is which of the two facts the card is raised on; `question` is the program's own
+    /// last line when there is one to show, and `None` on [`PromptReading::Unreadable`], where the
+    /// card's own words are the honest sentence.
     fn offer(&self, job: &str, question: Option<&str>, reading: PromptReading) {
         let (req_id, command) = {
             let mut g = self.lock();
@@ -206,81 +141,33 @@ impl Prompts {
         });
     }
 
-    /// **The run looks like it is waiting for an answer**, by `letibot_tools::exec::ask`'s
-    /// reading of the process — never of its words.
+    /// The run looks like it is waiting for an answer, by `letibot_tools::exec::ask`'s reading of
+    /// the process - never of its words.
     ///
-    /// `question` is the last line the program wrote, carried to be **shown**. It is
-    /// `Option` because a program blocked before its first byte is a real case (`! cat`), and
-    /// *nothing to show* is a different thing from an empty line.
+    /// `question` is the last line the program wrote, carried to be shown; `None` because a
+    /// program blocked before its first byte is a real case (`! cat`).
     ///
-    /// **One card per run at a time.** The tool already refuses to report the same question
-    /// twice, and this refuses independently: a run that is blocked stays blocked, and a
-    /// second card for it would be a second field on the screen for one question.
+    /// One card per run at a time: the tool already refuses to report the same question twice, and
+    /// this refuses independently - a run that is blocked stays blocked, and a second card would
+    /// be a second field on the screen for one question.
     pub fn asking(&self, job: &str, question: Option<&str>) {
         self.offer(job, question, PromptReading::Blocked);
     }
 
-    /// **This daemon cannot tell whether the run is waiting for a line**, and it says so —
-    /// **and offers the way in as a card that does not claim the program asked.**
+    /// This daemon cannot tell whether the run is waiting for a line, and it says so - and offers
+    /// the way in as a card that does not claim the program asked.
     ///
-    /// # The ruling this card is raised under, and the correction that changed it
+    /// The card is raised on a fact this object holds - a run of the operator's own is in flight
+    /// - and not on a guess about the process, which `ask` cannot read when one of the run's
+    ///   processes belongs to another uid. Raising no card at all left the person typing `y` at the
+    ///   composer, where it reached the model while their own command died at its deadline. The
+    ///   sentence stays beside the card, because `!send` is the floor under every miss this
+    ///   heuristic has; both are said once per run, since a condition reported per beat is a red
+    ///   block nobody reads.
     ///
-    /// The card used to be raised only on a **reading of the process** —
-    /// `letibot_tools::exec::ask` — and the whole reason it is a reading rather than a guess
-    /// is the operator's own correction: *"i think `Continue?` is an overfit"*
-    /// ([`OperatorRun::Unreadable`] is the third answer, *"I could not look"*: one process of
-    /// the run belongs to a uid this daemon is not, which is every `! sudo …` that reaches a
-    /// program running as root). A card whose TEXT claimed the run was asking would still be
-    /// that guess, and is still not raised.
-    ///
-    /// But raising **no card at all** was measured to a dead command, 2026-10-09: `! sudo
-    /// apt install mc`, the password taken through the askpass card, `apt` waiting at
-    /// `Continue? [Y/n]` as root — the sentence landed, no card did, and the person typed `y`
-    /// at the composer, where it became a prompt and reached the MODEL while their own
-    /// command waited and its deadline killed it. The operator's correction, verbatim: *"sudo
-    /// can get input from here so can others"*. So the card's **raise reason** stops being *the
-    /// run is blocked reading its terminal* and becomes **a run of the operator's own is in
-    /// flight** — a fact this object holds (the run, its stdin) and not a guess about the
-    /// process — and the card's own text says which of the two is known:
-    /// [`PromptReading::Blocked`] carries the program's last line under a headline that says
-    /// it is asking, and [`PromptReading::Unreadable`] carries the honest sentence (*this
-    /// daemon could not look at the run, so it cannot say whether it is asking; a line you
-    /// send goes into it either way*). The line a card takes goes into the run the same way
-    /// `!send`'s does, so an answered offer can only ever do what the verb would have.
-    ///
-    /// # What the person was owed besides the card
-    ///
-    /// The sentence, still. The operator's first report — *"after entering the sudo password,
-    /// the command appears queued and the daemon hangs"* — is exactly this state with nothing
-    /// said about it. So the daemon says the one thing that is true and the one thing that
-    /// helps: it cannot tell, and **`!send` is the way in** — the verb that needs no signal,
-    /// which the card's own docs already name as the floor under every miss the heuristic
-    /// has. The card is the offer ADDED to that floor, not a replacement for it. The command
-    /// is named because the person typed it, and the job is named because `job_output` reads
-    /// it.
-    ///
-    /// **Both once per run.** A condition, not an event: the run stays unreadable for as
-    /// long as it lasts, and one sentence per beat would be a red block nobody reads.
-    ///
-    /// # And the sentence says WHICH of the two facts it is
-    ///
-    /// `quiet` is the beat the run had — or had not — when the tool reported. The two facts are
-    /// different things to a person, and one sentence for both would be the defect the askpass
-    /// deadline's own line carries (*"no head answered before the deadline, or the person
-    /// refused"*, one sentence for two facts and wrong for one of them):
-    ///
-    /// * **quiet** — the run has written nothing for a beat, so it may well be *waiting*, and
-    ///   the sentence says so;
-    /// * **still writing** — the run is producing output, so it is either working or blocked
-    ///   with something still drawing, and **this daemon cannot tell the two apart**. That is
-    ///   the case the operator's second report is about: `! sudo apt install mc` on a fresh
-    ///   daemon, where `apt` streamed its progress and nothing was said to them at all.
-    ///
-    /// The second sentence has to do more work than the first, and the extra is the fact the
-    /// person cannot get anywhere else: **a `!` line's own output does not land until the run
-    /// ends**, so a command that is working and a command that is hung look exactly the same on
-    /// their screen. Saying *still writing* is what makes the difference legible, and saying
-    /// nothing — which is what the beat used to do — leaves them to guess.
+    /// `quiet` is the beat the run had, or had not. A quiet run may well be waiting; a run that is
+    /// still writing is either working or blocked with something drawing, and the daemon cannot
+    /// tell those apart - worth saying, because a `!` line's output does not land until it ends.
     pub fn unreadable(&self, job: &str, quiet: bool) {
         let command = {
             let mut g = self.lock();
@@ -293,17 +180,14 @@ impl Prompts {
                 return;
             }
             run.unreadable_said = true;
-            // **The condition itself**, kept apart from the once-per-run sentence: it is what
-            // re-offers the card after an answer in [`Prompts::send`], because `apt` asks
-            // more than one question and the tool reports `Unreadable` only once per run.
+            // The condition itself, kept apart from the once-per-run sentence: it is what
+            // re-offers the card after an answer in [`Prompts::send`].
             run.unreadable = true;
             run.command.clone()
         };
-        // **The two facts, in two sentences.** The first clause is the whole of what differs:
-        // a run that has been quiet may be waiting, and a run that is still writing is either
-        // working or blocked with something drawing. Everything after it — that `/proc` refuses,
-        // that `!send` is the way in, that the run keeps its thread until it ends — is true of
-        // both and is said once.
+        // The two facts, in two sentences: a run that has been quiet may be waiting, and a run
+        // that is still writing is either working or blocked with something drawing. Everything
+        // after the first clause is true of both and is said once.
         let lead = if quiet {
             format!(
                 "`{command}` has been quiet for a beat and this daemon cannot tell whether it is \
@@ -334,18 +218,16 @@ impl Prompts {
 
             compaction: None,
         });
-        // **And the offer, beside the sentence** — after it, because the disclosure is what
-        // the offer stands on: *I cannot tell, and here is the way in anyway*. `offer` itself
-        // declines if a card is already up (a run that was readable long enough to ask once
-        // and then went behind `sudo`), so this cannot double-card a run.
+        // And the offer, beside the sentence - after it, because the disclosure is what the offer
+        // stands on. `offer` declines if a card is already up, so this cannot double-card a run.
         self.offer(job, None, PromptReading::Unreadable);
     }
 
-    /// **The run is over.** The card comes down, and the handle is forgotten.
+    /// The run is over. The card comes down, and the handle is forgotten.
     ///
-    /// `sent: false` with a sentence in `by` rather than an identity: nothing was sent and
-    /// nobody is being named for it — the command ended, which is the ordinary ending of
-    /// every run that was never answered.
+    /// `sent: false` with a sentence in `by` rather than an identity: nothing was sent and nobody
+    /// is being named for it - the command ended, which is the ordinary ending of every run that
+    /// was never answered.
     pub fn ended(&self, job: &str) {
         let settled = {
             let mut g = self.lock();
@@ -357,8 +239,8 @@ impl Prompts {
                 }
                 // A report about a job that is not the run in flight: an old run's `Ended`
                 // arriving after a new one started, or a job this daemon never tracked. Doing
-                // nothing is right in both cases, and taking the run anyway would be this
-                // object clearing a live handle on a stale message.
+                // nothing is right in both cases, and taking the run anyway would clear a live
+                // handle on a stale message.
                 _ => None,
             }
         };
@@ -373,8 +255,8 @@ impl Prompts {
 }
 
 impl PromptDriver for Prompts {
-    /// **Write one line to this session's own running command.** See the trait for the two
-    /// shapes of `req` and for why nothing here may block.
+    /// Write one line to this session's own running command. See the trait for the two shapes of
+    /// `req` and for why nothing here may block.
     fn send(
         &self,
         session_id: &str,
@@ -388,10 +270,10 @@ impl PromptDriver for Prompts {
                 self.session
             ));
         }
-        // **The lock is released before the write.** `send_line` is a blocking syscall on the
-        // run's input, and the run's own wait loop wants this lock to report the next question — so
-        // holding it across the write would let one unread line stall the very loop that
-        // raises the card.
+        // The lock is released before the write: `send_line` is a blocking syscall on the run's
+        // input, and the run's own wait loop wants this lock to report the next question - so
+        // holding it across the write would let one unread line stall the loop that raises the
+        // card.
         let (stdin, settled) = {
             let g = self.lock();
             let Some(run) = g.as_ref() else {
@@ -414,19 +296,13 @@ impl PromptDriver for Prompts {
             (run.stdin.clone(), run.req.clone())
         };
         stdin.send_line(line)?;
-        // The card comes down, if it is still the one this answered. Re-locked rather than
-        // held: see above.
+        // The card comes down, if it is still the one this answered. Re-locked rather than held
+        // see above.
         //
-        // **And on a run this daemon cannot read, the offer comes straight back.** The tool
-        // reports `Unreadable` once per run, so nothing else will re-raise it — and `apt` asks
-        // more than one question: the measured run died at its deadline with the first answer
-        // sent and no card for the second. The run is still in flight and still unlookable,
-        // which is the whole of the card's raise reason, so the offer is honest the moment it
-        // is re-made. Only when the answer came as a CARD's (`req` was `Some`, which is
-        // `PromptAnswer`): a `!send` reaches here as `None` even when it happens to settle a
-        // card that was up, and it is the act of somebody who has already chosen the verb —
-        // giving them a card afterwards would be the daemon second-guessing the door they
-        // picked.
+        // And on a run this daemon cannot read, the offer comes straight back: the tool reports
+        // `Unreadable` once per run, so nothing else will re-raise it, and `apt` asks more than
+        // one question. Only when the answer came as a CARD's - a `!send` reaches here as `None`
+        // and it is the act of somebody who has already chosen the verb.
         let reoffered = {
             let mut g = self.lock();
             let mut again = None;
@@ -458,9 +334,9 @@ impl PromptDriver for Prompts {
         Ok(settled)
     }
 
-    /// **The run in flight, for the stop that is about to end it.** The host's ender names the
-    /// jobs it ends; this is the operator's own command, which the same stop kills and which no
-    /// other table knows is the person's. See the trait's own docs.
+    /// The run in flight, for the stop that is about to end it. The host's ender names the jobs it
+    /// ends; this is the operator's own command, which the same stop kills and which no other
+    /// table knows is the person's.
     fn in_flight(&self) -> Option<(String, String)> {
         self.lock()
             .as_ref()
@@ -469,8 +345,8 @@ impl PromptDriver for Prompts {
 }
 
 impl std::fmt::Debug for Prompts {
-    /// By what it is holding, and **never the line or the command**: a driver that printed
-    /// its state would be a second place a person's answer could reach.
+    /// By what it is holding, and never the line or the command: a driver that printed its state
+    /// would be a second place a person's answer could reach.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let g = self.lock();
         f.debug_struct("Prompts")
@@ -501,11 +377,11 @@ mod tests {
         hub.retained().into_iter().map(|e| e.event).collect()
     }
 
-    /// **A card is raised once per run, and it names the operator's own command.**
+    /// A card is raised once per run, and it names the operator's own command.
     ///
-    /// The second `asking` for the same run is refused here as well as in the tool, and the
-    /// reason is the same in both places: a run that is blocked stays blocked, so a card per
-    /// tick would be a hundred fields on the screen for one question.
+    /// The second `asking` for the same run is refused here as well as in the tool: a run that is
+    /// blocked stays blocked, so a card per tick would be a hundred fields on the screen for one
+    /// question.
     #[test]
     fn a_card_is_raised_once_for_a_run_and_names_the_operators_command() {
         let hub = a_hub();
@@ -537,30 +413,17 @@ mod tests {
         );
     }
 
-    /// **A run this daemon cannot look at is said out loud, once — and says WHICH fact it is.**
+    /// A run this daemon cannot look at is said out loud, once - and says which fact it is.
     ///
-    /// The operator's report, as an assertion: `! sudo apt install mc`, the password given,
-    /// and then *nothing* — `apt` waits at `Continue? [Y/n]` as root, `/proc/<pid>/fd/0` is
-    /// `EACCES` for the daemon, and the run holds its thread until its deadline. The sentence
-    /// has to name the way in: **`!send`**, the verb that needs no signal at all.
+    /// `! sudo apt install mc`, the password given, and then nothing: `apt` waits at
+    /// `Continue? [Y/n]` as root, `/proc/<pid>/fd/0` is `EACCES` for the daemon, and the run holds
+    /// its thread until its deadline. The sentence has to name the way in, which is `!send`.
     ///
-    /// **And beside the sentence, the offer** — a card raised on the run being in flight
-    /// rather than on a reading, which is the correction of 2026-10-09 (*"sudo can get input
-    /// from here so can others"*; the person typed `y` at the composer and it reached the
-    /// model). See [`Prompts::unreadable`] for the ruling, and the separate test below for
-    /// what the card carries.
+    /// Beside it, the offer: a card raised on the run being in flight rather than on a reading.
+    /// Both once per run, because a condition reported per beat is a red block nobody reads.
     ///
-    /// **Once per run**, and that is the assertion this test exists for beside the wording: a
-    /// condition reported per beat is a red block nobody reads, which is the failure mode the
-    /// warning register is written against.
-    ///
-    /// **And the two facts are two sentences.** The operator's second report is a fresh daemon
-    /// where `apt` *streamed its progress* and nothing was said at all, because the report was
-    /// gated behind the beat the card needs and a streaming run never has one. So the report is
-    /// made either way now, and the sentence has to say which of the two it is: a run that has
-    /// gone quiet may well be waiting, and a run that is still writing is either working or
-    /// blocked with something drawing. One sentence for both would be the defect the askpass
-    /// deadline's line has — *"no head answered before the deadline, or the person refused"*.
+    /// And the two facts are two sentences: a run that has gone quiet may well be waiting, and a
+    /// run that is still writing is either working or blocked with something drawing.
     #[test]
     fn a_run_this_daemon_cannot_look_at_is_said_once_and_names_the_way_in() {
         let hub = a_hub();
@@ -579,10 +442,10 @@ mod tests {
         p.unreadable("j1", true);
         p.unreadable("j1", true);
         p.unreadable("j1", true);
-        // **And now the card, raised on the fact that the run is in flight.** Its `reading`
-        // says the daemon could not look, and it carries no question line — there is no
-        // reading to quote from, and a card that showed the program's last line under a
-        // headline claiming it asked would be the guess this whole design refuses.
+        // And now the card, raised on the fact that the run is in flight. Its `reading` says the
+        // daemon could not look, and it carries no question line: a card that showed the
+        // program's last line under a headline claiming it asked would be the guess this design
+        // refuses.
         let cards: Vec<(Option<String>, letibot_sessionlog::PromptReading)> = events(&hub)
             .into_iter()
             .filter_map(|e| match e {
@@ -621,11 +484,8 @@ mod tests {
             said[0].contains("!send"),
             "and the way in, which needs no card: {said:?}"
         );
-        // **The ruling this block used to carry — "no card" — is the half that changed.** A
-        // card whose TEXT claims the run is asking would still be a guess, and the assertions
-        // above are the ones that keep that true: the card carries no question and says it
-        // was raised without a reading. What it offers is the way in, which is the same line
-        // `!send` writes — so the offer can only ever do what the verb would have.
+        // The card carries no question and says it was raised without a reading, so the offer can
+        // only ever do what `!send` would have.
         //
         // A report about a job that is not this run's is about something else, and a new run
         // starts its own once.
@@ -638,10 +498,9 @@ mod tests {
             1
         );
         p.opened("j2", "sudo apt install mc", Stdin::none());
-        // **The other fact, in the other sentence.** The run is still writing, so the sentence
-        // may not claim the beat it never earned — and it has to say the one thing the person
-        // cannot get from their own screen, which is that the command is still producing
-        // something, because a `!` line's output does not land until the run ends.
+        // The other fact, in the other sentence: the run is still writing, so the sentence may
+        // not claim the beat it never earned - and it has to say the one thing the person cannot
+        // get from their own screen, because a `!` line's output does not land until the run ends.
         p.unreadable("j2", false);
         let all: Vec<String> = events(&hub)
             .into_iter()
@@ -665,18 +524,12 @@ mod tests {
         );
     }
 
-    /// **An unreadable run offers the card as well as the sentence.**
+    /// An unreadable run offers the card as well as the sentence.
     ///
-    /// The operator's correction this branch answers, 2026-10-09: *"sudo can get input
-    /// from here so can others"* — the run they measured (`! sudo apt install mc`, the
-    /// password taken, `apt` at `Continue? [Y/n]` under root) got the sentence and no card,
-    /// typed `y` at the composer, and the line went to the MODEL while their own command
-    /// waited and died at its deadline. The card's raise reason therefore stops being *the
-    /// run is blocked reading its terminal* — a reading — and becomes **a run of the
-    /// operator's own is in flight**, which is a fact this object holds and not a guess
-    /// about the process; the card's own text is what says which of the two it is raised
-    /// on. The sentence stays beside it: `!send` is the floor, and the offer is added to
-    /// the floor rather than in place of it.
+    /// The card's raise reason is not *the run is blocked reading its terminal* - a reading - but
+    /// *a run of the operator's own is in flight*, which is a fact this object holds. The sentence
+    /// stays beside it: `!send` is the floor, and the offer is added to the floor rather than in
+    /// place of it.
     #[test]
     fn an_unreadable_run_offers_the_card_beside_the_sentence() {
         let hub = a_hub();
@@ -699,14 +552,13 @@ mod tests {
         );
     }
 
-    /// **Answering the offer brings it back, because the run is still in flight and still
-    /// unlookable — and `apt` asks more than one question.**
+    /// Answering the offer brings it back, because the run is still in flight and still
+    /// unlookable - and `apt` asks more than one question.
     ///
-    /// The tool reports `Unreadable` once per run, so the re-offer is the daemon's own act in
-    /// [`Prompts::send`], made only when what was answered was a CARD: a `!send` is the act of
-    /// somebody who has already chosen the verb, and a card appearing afterwards would be the
-    /// daemon second-guessing the door they picked. The stdin is a real pipe to a real `cat`,
-    /// because the re-offer only happens after a write that succeeded.
+    /// The tool reports `Unreadable` once per run, so the re-offer is the daemon's own act, made
+    /// only when what was answered was a card: a `!send` is the act of somebody who has already
+    /// chosen the verb. The stdin is a real pipe to a real `cat`, because the re-offer only
+    /// happens after a write that succeeded.
     #[test]
     fn answering_the_offer_brings_it_back_and_a_send_does_not() {
         use std::process::{Command, Stdio};
@@ -727,9 +579,8 @@ mod tests {
                 .collect::<Vec<String>>()
         };
 
-        // **Run one: a `!send` answers the offer and raises nothing.** The manual verb keeps
-        // the screen it chose — it settles the card that was up, because every head must see
-        // the card come down, and it does not bring one back.
+        // Run one: a `!send` answers the offer and raises nothing. The manual verb keeps the
+        // screen it chose - it settles the card that was up, and does not bring one back.
         let hub = a_hub();
         let p = Prompts::new("p-1", hub.clone());
         p.opened("j1", "sudo apt install mc", stdin.clone());
@@ -744,8 +595,8 @@ mod tests {
         );
         p.ended("j1");
 
-        // **Run two: a CARD's answer settles that card and offers the next one immediately**
-        // — a different `req_id`, so a stale answer for the first cannot reach the second.
+        // Run two: a card's answer settles that card and offers the next one immediately - a
+        // different `req_id`, so a stale answer for the first cannot reach the second.
         p.opened("j2", "sudo apt install mc", stdin);
         p.unreadable("j2", true);
         let first = offers(&hub).last().cloned().expect("the offer was raised");
@@ -762,8 +613,8 @@ mod tests {
             .expect_err("the answered card is spent");
         assert!(refused.contains("nothing was waiting"), "{refused}");
 
-        // **And the run ending takes the re-offered card down**, so nobody types into a
-        // program that has exited.
+        // And the run ending takes the re-offered card down, so nobody types into a program that
+        // has exited.
         p.ended("j2");
         let settled = events(&hub)
             .into_iter()
@@ -780,10 +631,8 @@ mod tests {
         let _ = cat.wait();
     }
 
-    /// **A run that ends takes its card down**, and the settlement says nobody answered it.
-    ///
-    /// Without this the card would outlive the command it was about: a person would type an
-    /// answer into a program that had already exited.
+    /// A run that ends takes its card down, and the settlement says nobody answered it - without
+    /// which a person would type an answer into a program that had already exited.
     #[test]
     fn the_run_ending_takes_the_card_down() {
         let hub = a_hub();
@@ -821,13 +670,13 @@ mod tests {
         assert_eq!(settlements, 1);
     }
 
-    /// **A stale card cannot answer a later command**, and it is refused in a sentence
-    /// rather than silently.
+    /// A stale card cannot answer a later command, and it is refused in a sentence rather than
+    /// silently.
     ///
-    /// The whole of why the card carries a `req_id`: a card raised for `apt` and answered
-    /// after `apt` died, while something else runs, is a line written into the wrong
-    /// program's stdin. The manual `!send` is the shape that *does* mean *whatever is
-    /// running*, which is why it passes `None` — and it is refused too when nothing is.
+    /// The whole of why the card carries a `req_id`: a card raised for `apt` and answered after
+    /// `apt` died, while something else runs, is a line written into the wrong program's stdin.
+    /// The manual `!send` is the shape that does mean *whatever is running*, which is why it
+    /// passes `None` - and it is refused too when nothing is.
     #[test]
     fn a_card_for_a_run_that_is_gone_cannot_answer_the_next_one() {
         let hub = a_hub();
@@ -863,12 +712,12 @@ mod tests {
         assert!(wrong.contains("p-2"), "{wrong}");
     }
 
-    /// **`opened` replaces a run, and settles the card the old one left up.**
+    /// `opened` replaces a run, and settles the card the old one left up.
     ///
-    /// A session runs one operator command at a time, so reaching `opened` with a run already
-    /// held means the previous one's `Ended` never arrived. A stale handle behind a live card
-    /// is the worst state this object can be in: a line typed for `apt` written into whatever
-    /// started next.
+    /// A session runs one operator command at a time, so reaching `opened` with a run already held
+    /// means the previous one's `Ended` never arrived. A stale handle behind a live card is the
+    /// worst state this object can be in: a line typed for `apt` written into whatever started
+    /// next.
     #[test]
     fn a_second_run_settles_the_first_ones_card() {
         let hub = a_hub();
