@@ -61,6 +61,63 @@ fn claim(owner: &str) -> LeaseClaim {
     }
 }
 
+/// **A wake reads the rows it still has business with, not the whole table.** Nothing in this tree
+/// deletes a review row, so a reading that selects every row ever and filters in Rust grows with the
+/// box's history - which is what `queue_notices` and `handover_notices` did (TODO.md R74 item 3).
+#[test]
+fn only_the_states_asked_for_are_read_and_an_old_row_never_comes_back() {
+    let d = TempDir::new("live");
+    let s = Store::open(&d.db()).unwrap();
+    for (id, repo) in [
+        ("r1", "/repo"),
+        ("r2", "/repo"),
+        ("r3", "/repo"),
+        ("r4", "/repo"),
+        ("r5", "/repo"),
+        ("elsewhere", "/other"),
+    ] {
+        let mut n = review(id, repo);
+        n.session_id = format!("s-{id}");
+        assert!(s.enqueue_review(&n, "test", 10).unwrap());
+    }
+    let mv = |said: &'static str| Move::new("test", said);
+    for (id, to) in [
+        ("r2", ReviewState::Reviewing),
+        ("r3", ReviewState::Rejected),
+        ("r4", ReviewState::Withdrawn),
+        ("r5", ReviewState::Blocked),
+    ] {
+        assert!(
+            s.move_review(id, ReviewState::Waiting, to, &mv("moved"), 20)
+                .unwrap(),
+            "{id} to {to:?}"
+        );
+    }
+
+    let ids = |rows: Vec<ReviewRow>| -> Vec<String> { rows.into_iter().map(|r| r.id).collect() };
+    assert_eq!(
+        ids(s.review_rows_in(Some("/repo"), &ReviewState::QUEUED).unwrap()),
+        vec!["r1".to_string(), "r2".to_string(), "r5".to_string()],
+        "the live rows of this repository, and neither a rejected nor a withdrawn one"
+    );
+    assert_eq!(
+        ids(s.review_rows_in(None, &[ReviewState::Blocked]).unwrap()),
+        vec!["r5".to_string()],
+        "one state, across every repository"
+    );
+    assert_eq!(
+        ids(s.review_rows_in(Some("/other"), &ReviewState::QUEUED).unwrap()),
+        vec!["elsewhere".to_string()],
+        "a repository is read on its own"
+    );
+    assert!(
+        s.review_rows_in(None, &[]).unwrap().is_empty(),
+        "no state asked for is no row read"
+    );
+    // The unfiltered reading is unchanged: the same six rows, every state.
+    assert_eq!(s.review_rows(None).unwrap().len(), 6);
+}
+
 /// **A move is conditional on the state it expects, and every move that happened is history.**
 /// On v23 `put_merge_entry` overwrote the whole row from a snapshot, so a second writer's stale
 /// view silently undid the first's move and no record said either had happened.

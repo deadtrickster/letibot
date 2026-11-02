@@ -2988,10 +2988,11 @@ impl Harness {
         };
         let healths = store.target_healths().unwrap_or_default();
         let mut out = Vec::new();
-        for r in store.review_rows(None).unwrap_or_default() {
-            if !(r.state.is_open() || r.state == letibot_tokencore::store::ReviewState::Approved)
-                || crate::mergequeue::root_session(store, &r.session_id) != me
-            {
+        let live = store
+            .review_rows_in(None, &letibot_tokencore::store::ReviewState::QUEUED)
+            .unwrap_or_default();
+        for r in live {
+            if crate::mergequeue::root_session(store, &r.session_id) != me {
                 continue;
             }
             let Some(h) = healths.iter().find(|h| {
@@ -3050,16 +3051,16 @@ impl Harness {
             .filter(crate::mergequeue::serve::emergency_health)
             .collect();
         let parked: Vec<_> = store
-            .review_rows(None)
+            .review_rows_in(
+                None,
+                &[
+                    letibot_tokencore::store::ReviewState::Blocked,
+                    letibot_tokencore::store::ReviewState::CannotDecide,
+                ],
+            )
             .unwrap_or_default()
             .into_iter()
-            .filter(|r| {
-                matches!(
-                    r.state,
-                    letibot_tokencore::store::ReviewState::Blocked
-                        | letibot_tokencore::store::ReviewState::CannotDecide
-                ) && !r.evidence.starts_with(crate::mergequeue::HANDED_TO_PROJECT)
-            })
+            .filter(|r| !r.evidence.starts_with(crate::mergequeue::HANDED_TO_PROJECT))
             .collect();
         // The repository this session is the project of - read only when there is news.
         // Every repository of the workspace - one, or each of a one-org project folder's.
@@ -3138,9 +3139,11 @@ impl Harness {
             return Vec::new();
         };
         let mut out = Vec::new();
-        for r in store.review_rows(None).unwrap_or_default() {
-            if r.state != letibot_tokencore::store::ReviewState::Blocked
-                || !r.evidence.starts_with(crate::mergequeue::HANDED_TO_PROJECT)
+        let blocked = store
+            .review_rows_in(None, &[letibot_tokencore::store::ReviewState::Blocked])
+            .unwrap_or_default();
+        for r in blocked {
+            if !r.evidence.starts_with(crate::mergequeue::HANDED_TO_PROJECT)
                 || crate::mergequeue::root_session(store, &r.session_id) != me
                 || !told_once(&mut self.gate_told, store, &me, format!("handed:{}", r.id))
             {

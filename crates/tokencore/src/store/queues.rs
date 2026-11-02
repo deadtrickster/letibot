@@ -213,6 +213,15 @@ impl ReviewState {
             ReviewState::Waiting | ReviewState::Reviewing | ReviewState::Blocked
         )
     }
+    /// **The rows a wake still has business with**: [`Self::is_open`] plus `Approved`, whose branch
+    /// is waiting for its landing. One list, because three wake paths read it and a fourth copy of
+    /// it would drift from `is_open`'s meaning.
+    pub const QUEUED: [ReviewState; 4] = [
+        ReviewState::Waiting,
+        ReviewState::Reviewing,
+        ReviewState::Blocked,
+        ReviewState::Approved,
+    ];
 }
 
 /// **Where a landing is** - the merge queue's closed set. No model touches it.
@@ -811,6 +820,45 @@ impl Store {
                 .query_map([], review_from_row)?
                 .collect::<rusqlite::Result<_>>()?,
         };
+        rows.into_iter().collect()
+    }
+
+    /// **The rows of `states` only** - `review_rows` reads every row ever, which is the whole of the
+    /// box's history for a reading taken on every wake. `states` empty is NO row, not every row: a
+    /// caller with no filter has [`Self::review_rows`].
+    pub fn review_rows_in(
+        &self,
+        repository: Option<&str>,
+        states: &[ReviewState],
+    ) -> Result<Vec<ReviewRow>> {
+        if states.is_empty() {
+            return Ok(Vec::new());
+        }
+        // The names are this build's own words, so the only parameter in this statement that came
+        // from outside is the repository.
+        let names = vec!["?"; states.len()].join(", ");
+        let sql = match repository {
+            Some(_) => format!(
+                "SELECT {REVIEW_COLUMNS} FROM review_queue WHERE state IN ({names}) \
+                 AND repository = ? ORDER BY created_ms, id"
+            ),
+            None => format!(
+                "SELECT {REVIEW_COLUMNS} FROM review_queue WHERE state IN ({names}) \
+                 ORDER BY created_ms, id"
+            ),
+        };
+        let mut values: Vec<Value> = states
+            .iter()
+            .map(|s| Value::Text(s.as_str().to_string()))
+            .collect();
+        if let Some(r) = repository {
+            values.push(Value::Text(r.to_string()));
+        }
+        let conn = self.conn();
+        let mut st = conn.prepare(&sql)?;
+        let rows: Vec<Result<ReviewRow>> = st
+            .query_map(rusqlite::params_from_iter(values), review_from_row)?
+            .collect::<rusqlite::Result<_>>()?;
         rows.into_iter().collect()
     }
 
