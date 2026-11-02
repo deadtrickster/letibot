@@ -1,16 +1,6 @@
-//! **The queue pane, drawn by a plugin** — `plugins/builtin/queue`, through the head's own host.
-//!
-//! Three claims, and each one is a seam that can be silently dead:
-//!
-//! | the claim | the test |
-//! |---|---|
-//! | the built-in `queue` layer loads and draws the pane | `the_builtin_queue_layer_draws_the_pane` |
-//! | a row's act names ITS entry, not the host's cursor | `a_rows_verb_acts_on_the_entry_the_row_names` |
-//! | an act the manifest does not declare is refused | `a_layer_that_uses_an_undeclared_verb_is_refused_and_said` |
-//!
-//! **Nothing is faked except the answer** where it can be avoided: `RanoLoader` compiles the real
-//! module `crates/builtins` embedded, `letibot_builtins::install` is the function the head calls,
-//! and the pane is drawn through `App::screen` — so a test that passes here is a head that draws it.
+//! The queue pane drawn by a plugin (`plugins/builtin/queue`) through the head's own host, over three
+//! seams that can each be silently dead: the built-in layer loads and draws the pane, a row's act
+//! names ITS entry rather than the host's cursor, and an act the manifest does not declare is refused.
 
 use super::*;
 use letibot_plugins::{Capability, Loader, Module, Stack};
@@ -202,11 +192,9 @@ fn the_plugins_view_draws_at_both_widths_without_a_refusal() {
     }
 }
 
-/// **A row's verb acts on the entry the ROW names** — the seam `Act::Verb` exists for.
-///
-/// The host's own cursor is on the first row; the plugin's view is written so the row it draws
-/// carries `approve` for a *different* entry. Pressing `a` must send the row's entry, and that is
-/// the whole difference between this and the pane it replaces.
+/// A row's verb acts on the entry the ROW names - the seam `Act::Verb` exists for. The host's cursor
+/// is on the first row and the plugin's view carries `approve` for a different entry, so pressing `a`
+/// must send the row's entry.
 #[test]
 fn a_rows_verb_acts_on_the_entry_the_row_names() {
     let seen = Seen::default();
@@ -397,14 +385,9 @@ fn the_builtin_escape_says_there_is_none() {
     );
 }
 
-/// **Enter on the history row opens the fold, and the next frame draws it** — the key the row says,
-/// not the map written by hand.
-///
-/// The first cut of this test asserted the fold's RENDERING by inserting `finished: true` itself, so
-/// it proved that a view with the fold open draws the history and nothing about the key that is
-/// supposed to open it — while `App::queue_folds` was written by no production path at all, and
-/// every finished row (the `failed` landings the operator asked to restart, the `rejected` reviews)
-/// was unreachable behind a row saying `enter opens it`.
+/// Enter on the history row opens the fold, and the next frame draws it - the key the row says, not a
+/// map written by hand. A test that inserts the fold state itself proves the rendering and nothing
+/// about the key, which is how every finished row stayed unreachable behind `enter opens it`.
 #[test]
 fn enter_on_the_history_row_opens_the_fold_and_the_next_frame_draws_it() {
     let mut a = a_head_with_a_queue();
@@ -624,11 +607,9 @@ fn re_asking_the_layer_keeps_the_scope_the_person_set() {
     );
 }
 
-/// **The layer is asked once a second, not once a frame** — the host's cache is keyed by the input,
-/// and the feed's clock is quantised for exactly this.
-///
-/// Measured through a scripted layer that records every input it is handed: two frames inside one
-/// second are ONE call, and the frame after the second ticks is the second.
+/// The layer is asked once a second, not once a frame - the host's cache is keyed by the input and the
+/// feed's clock is quantised for exactly this. A scripted layer records every input it is handed: two
+/// frames inside one second are ONE call, and the frame after the second ticks is the second.
 #[test]
 fn the_layer_is_asked_once_a_second_and_not_once_a_frame() {
     let seen = Seen::default();
@@ -683,17 +664,9 @@ fn the_layer_is_asked_once_a_second_and_not_once_a_frame() {
     std::fs::remove_dir_all(&project).ok();
 }
 
-/// **The live loop, measured**: a `plugin.wasm` rebuilt in the session's own plugin directory is a
-/// pane that redraws — no rebuild of `harnessd`, no rebuild of `letibot-tui`, no restart.
-///
-/// This is the whole reason the pane is a plugin. It is also the one thing a test has to be careful
-/// about: the module here is the REAL built-in one (this binary's own `queue` layer, written to the
-/// session scope), so what reloads is a module the engine actually compiles and runs — not a fake.
-///
-/// The two answers differ in a way only the module can produce: the copy in the session scope is
-/// the built-in's bytes under a DIFFERENT manifest name, so a pane drawn after the reload is drawn
-/// by a layer whose id is the session's, not `b-queue`. The view is the same because the bytes are;
-/// what is asserted is that the layer the head is asking CHANGED without anybody restarting it.
+/// The live loop: a `plugin.wasm` rebuilt in the session's own plugin directory is a pane that
+/// redraws, with no rebuild and no restart - the whole reason the pane is a plugin. The module is the
+/// real built-in's bytes under the session's own manifest, so a drawn frame names the session's layer.
 #[test]
 fn a_rebuilt_layer_in_the_sessions_plugin_directory_redraws_the_pane() {
     // **A session-scope `queue` layer, written the way `plugin build` leaves it.**
@@ -758,10 +731,9 @@ fn a_rebuilt_layer_in_the_sessions_plugin_directory_redraws_the_pane() {
     // loop's own guarantee is that a REBUILT module is a different file.
     let wasm = layer.join("plugin.wasm");
     let mut bytes = std::fs::read(&wasm).expect("the module");
-    // **A custom section is what a rebuild changes that a module can carry and still be valid** —
-    // `0x00`, a length, a name and a payload, which every engine ignores. A trailing byte would be
-    // a module the loader refuses, and a reload test whose new module does not load measures the
-    // refusal rather than the loop.
+    // A custom section is what a rebuild changes that a module can carry and still be valid - `0x00`,
+    // a length, a name and a payload, which every engine ignores. A trailing byte would be a module
+    // the loader refuses, and a reload test whose module does not load measures the refusal.
     bytes.extend_from_slice(&[0x00, 0x04, 0x01, 0x61, 0x00, 0x00]);
     std::fs::write(&wasm, &bytes).expect("the rewritten module");
 
@@ -798,11 +770,9 @@ fn a_rebuilt_layer_in_the_sessions_plugin_directory_redraws_the_pane() {
     std::fs::remove_dir_all(&data).ok();
 }
 
-/// **The pane, printed** — a probe that writes what the layer draws at the two widths, so the
-/// answer can quote a frame rather than describe one. `#[ignore]` because it asserts nothing: the
-/// two-width test above is the one that fails a build.
-///
-/// `cargo test -p letibot-tui --lib -- --ignored --nocapture probe_render_the_pane`.
+/// The pane, printed - a probe that writes what the layer draws at the two widths, so an answer can
+/// quote a frame rather than describe one. `#[ignore]` because it asserts nothing: the two-width test
+/// above is the one that fails a build.
 #[test]
 #[ignore]
 fn probe_render_the_pane() {
@@ -848,14 +818,9 @@ fn probe_render_the_pane() {
     }
 }
 
-/// **A `gating` landing is a stop, and a click on it OPENS it** — the operator's own report, in his
-/// words: *"i go to /queue and cant click or enter that merge job"*.
-///
-/// Two things had to be true. The stop RECORD and the cursor's stop COUNT are two counts, and the
-/// drawing recorded one for every item — the lease line above the rows is drawn but is not a stop,
-/// so every stop below it was numbered one too high, a click on the landing selected a stop that did
-/// not exist, and Enter on it opened nothing. And a click only moved the mark; the row's detail was
-/// behind a key the person had already pressed.
+/// A `gating` landing is a stop, and a click on it OPENS it. Two counts had to agree first: the stop
+/// record is written per STOP while the cursor walks stops, so a chrome line drawn above the rows must
+/// not be recorded; and a click must open the row, not only move the mark.
 #[test]
 fn a_click_on_a_gating_landing_opens_it() {
     let mut a = a_head_with_a_queue();
@@ -1085,15 +1050,9 @@ fn a_queued_landing_shows_the_step_of_the_gate_it_waits_on() {
     );
 }
 
-/// **The detail asks for a fresh snapshot on the pane's own clock** — the reviewer's blocking
-/// finding, as a test.
-///
-/// `Surface::QueueEntry` is a surface of its own and `main_area` draws exactly one surface, so the
-/// ask inside `queue_lines` never ran while a row was open. The consequence was worse than a still
-/// picture: `track_gate_tails` runs only on a `Queues` frame, so its stamp froze while `queue_now()`
-/// went on advancing, and after `GATE_QUIET_MS` the screen built to answer *is it stuck?* said
-/// *may be stuck* about a gate that was writing. Nothing here applies a frame: the assertion is
-/// that the DETAIL asked.
+/// The detail asks for a fresh snapshot on the pane's own clock: `Surface::QueueEntry` is a surface of
+/// its own and `main_area` draws exactly one, so the ask inside `queue_lines` never ran while a row was
+/// open, and `track_gate_tails` only runs on a `Queues` frame - so its stamp froze.
 #[test]
 fn the_detail_asks_for_a_snapshot_on_the_panes_clock() {
     let mut a = app();
@@ -1169,10 +1128,9 @@ fn a_growing_tail_is_not_called_stuck_on_the_detail() {
     assert!(!second.contains("may be stuck"), "{second}");
 }
 
-/// **No answer is said as no answer, never as *stuck*** — twenty minutes on the detail with nothing
-/// arriving (a daemon that died, an ask that was dropped). The head is reading its own clock and not
-/// the gate's, so the one thing it must not do is turn its own silence into the verdict the screen
-/// exists to establish.
+/// No answer is said as no answer, never as *stuck*: the head is reading its own clock and not the
+/// gate's, so the one thing it must not do is turn its own silence into the verdict the screen exists
+/// to establish.
 #[test]
 fn a_detail_with_no_answer_does_not_call_the_gate_stuck() {
     let mut a = app();

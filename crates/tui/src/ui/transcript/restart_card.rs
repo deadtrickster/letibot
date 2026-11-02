@@ -1,12 +1,5 @@
-//! **A daemon restart, drawn as ONE line** — and the whole of what the daemon said one click
-//! away, in the popup the job card opens.
-//!
-//! The operator, pasting what pg-noop's head drew after its daemon came back on a new build — a
-//! `restart_restored` note that wrapped into a paragraph, and the session's `[restart] …` notice
-//! to the model under it with the job's whole command and its explanation: *"these gray walls
-//! are hilarious … make them the usual one liners"*.
-//!
-//! # The lines
+//! A daemon restart drawn as ONE line, with what the daemon said one click away in the popup the
+//! job card opens. The shapes it folds:
 //!
 //! ```text
 //! restarted · down 4m12s · restored: 2 subagents, 1 monitor · reminded: 1 job · click for details
@@ -16,26 +9,9 @@
 //! session · restarted · down 4m12s · restored: 2 subagents, 1 monitor · reminded: 1 job · click for details
 //! ```
 //!
-//! **The fourth is a restart with nothing to restore** (`restart_nothing`): the daemon came back
-//! and says when, and there is no list under it. The operator, 2026-10-30: *"mb always tell agent
-//! about restart? with the current time lol"* — so that sentence is its own opening
-//! (`[restart] the daemon came back at … (down 1s, stopped at …): nothing was running`) and the
-//! line it draws has no counts in it.
-//!
-//! The hub warning (`restart_restored` / `restart_reminded`, `restart::warning_detail` in
-//! harnessd) is a header line and one `  - KIND NAME: VERDICT` line per thing; the session notice
-//! (`restart::notice`) is the same header and one line per thing in the model's words. Both are
-//! read for the same counts: what was brought back (a subagent resumed or delivered, a monitor
-//! re-armed), what was only reminded (every job, and everything past the threshold), and what
-//! could NOT be brought back. `~` marks a down time estimated from a heartbeat; a stop no record
-//! dates is said as unknown — and so is the older daemons' *"down for 0s … estimated from
-//! nothing"*, which meant the same and said it wrong.
-//!
-//! # Only what this head can read is folded
-//!
-//! The header must be one of the daemon's two openings with a duration (or the unknown stop) in
-//! it; anything else is `None` and the row is drawn as before. A line the reader does not
-//! recognise is left to the popup — the line is a summary, and the popup is the text verbatim.
+//! The counts come from the hub warning or the session notice, whichever opened the row; a line
+//! this reader cannot recognise is `None`, so the row is drawn as before and the popup keeps the
+//! text.
 
 use rano::style::Role;
 
@@ -275,11 +251,9 @@ pub(crate) fn notice_restart(text: &str) -> Option<Restart> {
     Some(r)
 }
 
-/// **The restart notice in the card registry** (`line_cards`). It is one paragraph (its lines
-/// are joined by single newlines), so it ends at the first full stop or colon a blank line and
-/// another notice follow — **except the `[task]` groups it carries**: the children a restart
-/// handed over are counted on its line (`restored: 12 subagents`), not drawn as a fold under it
-/// (pg-noop, 2026-10-14: twelve `Agent …` lines under a card that already said it).
+/// The restart notice in the card registry (`line_cards`). Its lines are joined by single newlines,
+/// so it ends at the first full stop or colon a blank line and another notice follow - except the
+/// `[task]` groups it carries, whose children are counted on the line, not drawn as a fold under it.
 pub(crate) const SESSION: SessionKind = SessionKind {
     opens: opens_notice,
     ends: &[".", ":"],

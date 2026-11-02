@@ -1,16 +1,6 @@
-//! **Every notice is ONE line**, and the whole of it one click away — the fallback behind the
-//! card readers, so no notice is drawn as a wall (R89).
-//!
-//! The operator's standing rule, said of every wall they met: *"make them the usual one liners"*,
-//! *"one line + popup"*. The card readers (`red_card`, `review_card`, `asked_card`,
-//! `restart_card`, `stale_card`) each read one notice the daemon writes; this module is what
-//! draws EVERYTHING ELSE — a session row no reader and no fold accounts for, a hub warning with no
-//! card, a System row. It reads the notices it knows well enough to say something better than
-//! their first words (a length cap, a plan check, a parent's message, …) and falls back to
-//! `<lead> · <first clause> · click for details` for the rest, so a shape nobody has taught this
-//! head yet is still one line.
-//!
-//! # The line
+//! Every notice is ONE line with the whole of it one click away: the fallback behind the card
+//! readers, so a session row or hub warning no reader accounts for still draws as a line. The
+//! shapes it knows:
 //!
 //! ```text
 //! length cap · 6902 calls not executed (bash ×6901, read ×1) · click for details
@@ -22,9 +12,9 @@
 //! ! ledger_chain_mismatch · row 41's head is not the one that was stored · click for details
 //! ```
 //!
-//! **Nothing is lost.** The line is a summary; the popup is the text verbatim, and the model
-//! reads every word of it as before. A reader that does not recognise a shape answers `None` and
-//! the generic line is drawn — never a guess about which half of a text is the fact.
+//! A shape it has not been taught falls back to a lead, the first clause and `click for details`.
+//! Nothing is lost: the popup is the text verbatim, and a reader that does not recognise a shape
+//! answers `None` rather than guessing which half of a text is the fact.
 
 use rano::style::Role;
 
@@ -260,17 +250,9 @@ fn todo_check(text: &str) -> Option<Card> {
     Some(card("todo", Role::Attention, parts, title))
 }
 
-/// `message from your parent session `ID`: …` — a parent wrote to its child — and
-/// `message from session `ID`: …` — any other session did (a child answering its parent, a peer,
-/// the session hosting a review).
-///
-/// **Two openings, one card, because the two are one act.** The sender is named either way and the
-/// words are the same words; what differs is the relation, and the lead is where that is said: a
-/// parent is `parent <id>` (the tree's own word for the edge) and everything else is `agent <id>`
-/// (a session speaking in its own right). MEASURED 2026-10-29, the day the upward edge landed: a
-/// child's answer drew as `session · notice · message from session `s-…`…` — the generic card, its
-/// words clipped — while its parent's message drew as a one-line card. Both directions are chat, so
-/// both get the same line.
+/// `message from your parent session `ID`: ...` and `message from session `ID`: ...` - a parent
+/// wrote to its child, or any other session did. Two openings and one card, because both are chat:
+/// the words are the same and only the relation differs, so the lead says it (`parent` / `agent`).
 fn message_from_a_session(text: &str) -> Option<Card> {
     let (lead_word, rest) = text
         .strip_prefix("message from your parent session `")
@@ -549,10 +531,9 @@ pub(crate) fn system_notice(text: &str, bootstrap: bool) -> Card {
     )
 }
 
-/// **A hub warning's one line** when no card reads it: `<mark> <code> · <first clause>`, the mark
-/// and the code in the code's register (rano's marks: `×` refused, `!` failure — which survive a
-/// pipe and a light theme where colour does not — and the routine `·`, which is the frame's own)
-/// — and a compaction's figures read rather than its sentence repeated.
+/// A hub warning's one line when no card reads it: `<mark> <code> - <first clause>`, the mark and
+/// the code in the code's register - rano's marks survive a pipe and a light theme where colour
+/// does not - and a compaction's figures read rather than its sentence repeated.
 pub(crate) fn warning_notice(code: &str, detail: &str, mark: &str, role: Role) -> Card {
     // **The code once.** A detail that opens with its own code (`compacted: 958397 → …`) would
     // say it twice on a line that leads with it.

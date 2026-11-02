@@ -10,19 +10,9 @@ use letibot_ui::text::without_control_lines;
 use rano::agent::subagents::{SubagentOutput, SubagentRow, SubagentsPane};
 
 impl App {
-    /// The subagent tree: the subagents this session spawned, their state and their
-    /// prompt. A subagent is also a session, so `enter` goes to it and the last line says
-    /// so — along with `p` (read it without moving) and `esc` (up to the parent).
-    ///
-    /// **One enumeration, two groups.** The rows come from [`App::subagent_stops`] — the same
-    /// list the arrows, Enter and `p` read — so the drawn `▸` and the key that acts cannot
-    /// disagree about which row is selected, which is the defect leticl's `todos-stops`
-    /// docstring names. The children still going are drawn first; the finished ones live under
-    /// a `finished (N)` row that stays folded unless the operator unfolded it.
-    ///
-    /// **The pane records where each stop landed**, in [`App::subagents_stop_rows`], which is
-    /// what the arrows scroll to: a list longer than the screen can be walked without the cursor
-    /// leaving it. Takes `&mut self` for that record alone — the sibling of [`App::todos_lines`].
+    /// The subagent tree: the children this session spawned, drawn from [`App::subagent_stops`] -
+    /// the list the arrows, Enter and `p` read - so the drawn mark and the key that acts cannot
+    /// disagree; `&mut self` records those rows, which is what the arrows scroll to.
     pub(crate) fn subagents_lines(&mut self, w: usize) -> Vec<String> {
         let content = self.subagents_view().content(w);
         self.subagents_stop_rows = content.stop_rows;
@@ -55,28 +45,9 @@ impl App {
         }
     }
 
-    /// **A peeked session's rows, drawn by the renderer every other row goes through** — the
-    /// deletion this whole change exists for.
-    ///
-    /// # What it replaces, and it was not the renderer's fault
-    ///
-    /// A child's output used to be built as plain strings by hand (`subagent_out_lines`), so it had
-    /// none of the markdown, none of the air rule and none of the tool cards a parent's rows have —
-    /// **in both heads**, leticl having inherited the shape faithfully. The defect was in the WIRE:
-    /// `Peeked` answered with events *"for reading, not for folding into the head's state"*, which
-    /// left a head nothing to do with them but draw them by hand. `Peeked::snapshot` is that fixed
-    /// and this is the renderer half: `item_lines`, once, with the walk's own separator rule.
-    ///
-    /// # Two decisions worth stating
-    ///
-    /// * **Rendered once, when the rows land; not per frame.** The pane is a static list of a
-    ///   finished read, and `App::screen` runs tens of times a second — see its own note on the cost
-    ///   of a frame. The width is the frame's at the moment of the peek, which is the same width the
-    ///   pane's own `trim_to` then clamps against.
-    /// * **`targets` is seeded from the snapshot's own turn**, because that is where a row's display
-    ///   target lives: an assistant row carries the arguments its calls were proposed with, and a
-    ///   child's snapshot carries that turn. Rows whose calls are not in it render their correlation
-    ///   id instead of a file name, which is `card::Phase::Replayed`'s rule — absent, not invented.
+    /// A peeked session's rows, drawn by the renderer every other row goes through - markdown, the
+    /// air rule and tool cards included - from `Peeked::snapshot`'s items, once when they land
+    /// rather than per frame. `targets` is seeded from the snapshot's own turn; absent, not invented.
     pub(crate) fn sub_out_from_rows(&self, items: &[SnapshotItem]) -> Vec<String> {
         let cfg = self.cfg.clone();
         let mut targets: std::collections::HashMap<String, String> =
@@ -178,27 +149,9 @@ impl App {
     }
 }
 
-/// The output pane's lines from a peeked scrollback: one block per tool result,
-/// in order, the payload verbatim — that payload is the stdout and stderr the
-/// tool produced, as the model received it. A `ToolFinished`'s spill locator is
-/// the full output on disk when the inline payload was bounded; those paths are
-/// named at the end, because *"there is more"* without a *where* is a dead end.
-/// **What a subagent did, and what it SAID.**
-///
-/// This used to render tool results and nothing else, which is right for a
-/// subagent that goes and does something and wrong for one whose whole product
-/// is prose. A `digest` subagent is handed a slice of transcript in its prompt
-/// and answers in text: it calls no tools by design, so the pane found nothing
-/// to show and said "no tool output in this subagent's scrollback" — throwing
-/// away the entire point of having run it.
-///
-/// Measured in the operator's store, 2026-09-20. Six subagents spawned to scout
-/// a transcript: one user item, one reasoning item, one assistant item each, and
-/// ZERO tool results. Their words: *"i see them and i see their output but when
-/// i enter - no output"*. The output was there; this function did not look at it.
-///
-/// Reasoning is still left out — it is the model thinking, not its answer, and
-/// that is the same line `compaction::harvest` draws for the same reason.
+/// A subagent's output: its tool results and its own prose, in the order they were given - a
+/// `digest` child answers in text and calls no tools, so tool results alone showed nothing. Control
+/// lines are stripped here, at the one builder, and the spill paths are named at the end.
 pub(crate) fn subagent_out_lines(events: &[Envelope]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut spills: Vec<String> = Vec::new();
@@ -212,11 +165,9 @@ pub(crate) fn subagent_out_lines(events: &[Envelope]) -> Vec<String> {
                     ..
                 } => {
                     out.push(format!("· {name} — {}", outcome_word(outcome)));
-                    // **§3.1: a subagent's scrollback is content this head did not
-                    // author** — it is another session's tool payloads and prose, read
-                    // back over a `Peek` and drawn into this head's frame. Sanitised
-                    // here, at the one builder, rather than in `sub_out_lines`, so the
-                    // spill file gets the same text the pane draws.
+                    // A subagent's scrollback is content this head did not author, so it is
+                    // sanitised here at the one builder rather than in `sub_out_lines`, and the spill
+                    // file gets the same text the pane draws.
                     for line in without_control_lines(payload).lines() {
                         out.push(format!("  {line}"));
                     }
