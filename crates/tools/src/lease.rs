@@ -1,15 +1,12 @@
-//! Resource leases on shared hosts, and the teardown that removes exactly what a session
-//! made.
+//! Resource leases on shared hosts, and the teardown that removes exactly what a session made.
 //!
-//! Ports come from a block nobody else has: taken inside the store's `BEGIN IMMEDIATE` so
-//! two daemons cannot pick the same one, and outside the host's ephemeral range, where the
-//! kernel hands a port to somebody else's outgoing connection. What a session creates is
-//! named under a [`Lease::prefix`], and a teardown removes only that prefix's things - the
+//! Ports come from a block nobody else has: taken inside the store's `BEGIN IMMEDIATE` so two daemons
+//! cannot pick the same one, and outside the host's ephemeral range, where the kernel hands a port to
+//! somebody else's outgoing connection. A teardown removes only names under the lease's prefix, and the
 //! never-touch list wins, because the operator's own workloads live beside every agent's.
 //!
-//! A lease is a record, not a reservation: no other session took it, nothing was listening
-//! when it was taken, and a program that binds one of those ports without asking is not
-//! stopped here.
+//! A lease is a record, not a reservation: nothing is stopped if a program binds one of those ports
+//! without asking.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -26,16 +23,13 @@ use crate::remote::{Host, Hosts, Paths, Ssh};
 /// re-taken because it ran out is a second allocation on a shared machine.
 pub const PORTS: u16 = 8;
 
-/// The prefix every name of a lease starts with. `letibot-` first, so a person reading
-/// `docker ps` on the operator's machine can tell an agent's container from anything
-/// else there - and so a teardown's own query is a prefix and never a pattern nothing
-/// bounds.
+/// The prefix every name of a lease starts with. `letibot-` first, so a person reading `docker ps` on the
+/// operator's machine can tell an agent's container from anything else there.
 pub const PREFIX_HEAD: &str = "letibot";
 
-/// The store, as this module needs it. A seam rather than a `Store`: this crate is
-/// below the daemon and a tool has no store path. The daemon registers a book bound
-/// to its own store and session; everywhere else [`NoLeases`] answers, which is the
-/// truth for a run with no daemon behind it.
+/// The store, as this module needs it. A seam rather than a `Store`, since this crate is below the daemon
+/// and a tool has no store path; everywhere else [`NoLeases`] answers, which is the truth for a run with
+/// no daemon behind it.
 pub trait Leases: Send + Sync {
     /// Take a block, atomically against every other caller in every process on the
     /// box.
@@ -76,11 +70,9 @@ pub struct Census {
     pub listening: BTreeSet<u16>,
 }
 
-/// The script a census runs. It only reads: two files or two `sysctl`s, and whatever
-/// the machine's own `ss` or `netstat` says about listening sockets.
-///
-/// `ephemeral=` first and the addresses after it, because the parser on this side
-/// then has no opinions about the far side's locale.
+/// The script a census runs. It only reads two files or two `sysctl`s and whatever the machine's own `ss`
+/// or `netstat` says. `ephemeral=` comes first and the addresses after it, so the parser here has no
+/// opinions about the far side's locale.
 fn census_script() -> String {
     r#"set +e
 if [ -r /proc/sys/net/ipv4/ip_local_port_range ]; then
@@ -106,12 +98,9 @@ exit 0
     .to_string()
 }
 
-/// The port out of a socket's local address, whichever spelling the machine printed.
-///
-/// Four shapes and no more: `127.0.0.1:5432` (`ss`), `127.0.0.1.5432` (a BSD
-/// `netstat`), `[::]:22` and `*:5432`. The port is after the last `:` or `.`, so one
-/// split answers all four - and a tail that is not a number is nothing rather than a
-/// zero, because zero would read as port 0 is busy.
+/// The port out of a socket's local address, whichever spelling the machine printed: `127.0.0.1:5432`,
+/// `127.0.0.1.5432`, `[::]:22` and `*:5432` all answer to a split at the last `:` or `.`. A tail that is
+/// not a number is nothing rather than zero, because zero would read as port 0 is busy.
 fn port_of(address: &str) -> Option<u16> {
     let tail = address.rsplit([':', '.']).next()?.trim();
     tail.parse::<u16>().ok().filter(|p| *p > 0)
@@ -142,11 +131,8 @@ fn read_census(said: &str) -> Census {
     }
 }
 
-/// The lease engine for one session: a `hosts.toml`, an ssh policy, and the store
-/// behind it.
-///
-/// One per session, built by the daemon beside the process book, and given to
-/// `scenario` and `fanout`; a test builds one over the fake-ssh rig.
+/// The lease engine for one session: a `hosts.toml`, an ssh policy and the store behind it, built by the
+/// daemon beside the process book.
 pub struct Blocks {
     hosts: Hosts,
     paths: Paths,
@@ -246,13 +232,9 @@ impl Blocks {
             .ok_or_else(|| format!("{} Nothing was leased.", self.hosts.refusal(name)))
     }
 
-    /// The prefix a lease's names start with - `letibot-<session>-<n>`, where the
-    /// session is cut down to what a compose project name and a container name both
-    /// accept.
-    ///
-    /// The number is the lease's own id, so two blocks on one host from one session
-    /// cannot share a prefix: the teardown of one would otherwise take the other's
-    /// containers with it.
+    /// The prefix a lease's names start with, `letibot-<session>-<n>`, with the session cut down to what a
+    /// compose project and a container name both accept. The number is the lease's own id, so two blocks on
+    /// one host from one session cannot share a prefix.
     pub fn prefix(host: Option<&str>, session: &str, id: i64) -> String {
         let mut who: String = session
             .chars()
@@ -279,12 +261,8 @@ impl Blocks {
         }
     }
 
-    /// What a host says about its own ports - one read-only round trip, or one local `sh`
-    /// for [`LOCAL`].
-    ///
-    /// A host that did not answer its ephemeral range is a refusal rather than a guess:
-    /// allocating below a range this side invented would hand out ports the kernel is
-    /// free to reassign.
+    /// What a host says about its own ports, in one read-only round trip. A host that did not answer its
+    /// ephemeral range is a refusal rather than a guess, which would hand out ports the kernel can reassign.
     pub fn census(&self, host: &str) -> Result<Census, String> {
         let script = census_script();
         let said = if host == LOCAL {
@@ -342,14 +320,9 @@ impl Blocks {
         })
     }
 
-    /// Give a block back and remove exactly what it created - the one teardown, called
-    /// by a scenario's end, a fanout's end, a session's close and the reaper.
-    ///
-    /// The order is the rule: what was removed is decided first, and the record is
-    /// released second. A release first would leave a lease nobody holds whose
-    /// containers are still up, and the next session's block could collide with them.
-    ///
-    /// Returns what was said, one line per host, so a caller can put it in a row.
+    /// Give a block back and remove exactly what it created, called by a scenario's end, a fanout's end, a
+    /// session's close and the reaper. What was removed is decided first and the record released second: a
+    /// release first would leave a lease nobody holds whose containers are up.
     pub fn release(&self, lease: &Lease, by: &str) -> Vec<String> {
         let mut said = Vec::new();
         let host = lease.host.as_deref().unwrap_or(LOCAL);
@@ -373,15 +346,9 @@ impl Blocks {
         said
     }
 
-    /// Remove exactly what `prefix` created on `host`, and nothing else.
-    ///
-    /// Two round trips and no more: what is there (one `docker ps` and one `docker
-    /// compose ls`), then the removals. A host with no `docker` is a no-op with a
-    /// sentence, because a machine that runs no containers is an ordinary machine.
-    ///
-    /// Every name is checked against the never-touch list before anything is removed,
-    /// and a name that matches is left alone and reported with the pattern. The prefix
-    /// says what is mine, the list says what is not, and the operator's list wins.
+    /// Remove exactly what `prefix` created on `host`, in two round trips: what is there, then the
+    /// removals. A host with no `docker` is a no-op with a sentence. Every name is checked against the
+    /// never-touch list, and a name that matches is left alone and reported with the pattern.
     pub fn teardown(&self, host: &str, prefix: &str) -> Result<Vec<String>, String> {
         let named = if host == LOCAL {
             None
@@ -473,11 +440,9 @@ impl Blocks {
     }
 }
 
-/// What is on a host's docker, by name - and nothing about what is not.
-///
-/// `command -v docker` first: a machine with no docker is an ordinary machine, and
-/// running a missing program is a 127 that reads like a fault. `no-docker` is printed
-/// as a word rather than as an error so the caller can say it in a sentence.
+/// What is on a host's docker, by name, and nothing about what is not. `command -v docker` comes first,
+/// because running a missing program is a 127 that reads like a fault; `no-docker` is printed as a word so
+/// the caller can say it in a sentence.
 fn list_script() -> String {
     r#"set +e
 if ! command -v docker >/dev/null 2>&1; then echo no-docker; exit 0; fi
