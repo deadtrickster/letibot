@@ -1389,12 +1389,119 @@ and that row carries the four facts a reader needs.
 
 ---
 
-## R74 — What the 2026-10-11 landings left open — **OPEN, the consolidated list**
+## R74 — What the 2026-10-11 landings left open — **AUDITED 2026-11: nine fixed, seven already done, six not a session's to settle, the rest named below**
 
 Everything merged on 2026-10-11 (main `cf47e65`: R61, R64, R65, R66 instrumentation, R67, R68, R69,
 R71, R72 + follow-up, R73, the no-llama build), and the gaps each landing reported or a check
 found. One place to read them; each line names the item that owns it, whose own "left" list has
 the detail.
+
+**Audited 2026-11: where each item stands.** The list below is the record as it was written; this
+block is the answer, item by item, after a pass that re-read every one against the tree and fixed the
+ones that were code. `FIXED` names the code; `DONE` is an item the tree had already closed without
+the list being updated; `OPERATOR` and `DESIGN` are not a session's to settle; `CHORE` is work with
+nothing to design.
+
+- 1 **FIXED** — `mergequeue::review::deliver_refusal` writes the undelivered refusal down
+  (`refusal:<head>:<row>` in the store's `queue_told`) and `redeliver_refusals` hands it to the first
+  session that opens, once, for a day, while the verdict stands. `Served.redelivered`.
+- 2 **OPERATOR** — `RepoQueue::health` gates `[queue] target` every pass, including a daemon start
+  with nothing queued (~7 minutes). Skipping it until a landing needs it trades a stale *main is
+  green* line for that cost; half the waste is already gone (`regate_at_start` re-gates only a red,
+  blocked or timed-out tip).
+- 3 **FIXED** — `Store::review_rows_in` and `ReviewState::QUEUED`; the three wake paths read the live
+  rows instead of the table and filtering in Rust.
+- 4 **PARTLY** — a model can re-gate (`queue` tool `action: "regate"` → `QueueDesk::regate` →
+  `verbs::regate`), and a restarting daemon re-gates a bad tip. A PERSON at a head cannot: no
+  `ClientFrame` carries a queue verb and `/queue` in the TUI only opens the pane, while the daemon's
+  own warnings say `/queue regate`, `/queue restart`, `/queue approve` and `/queue rm` — and
+  `verbs::approve` has no caller at all. Either the frames and verbs get built or the sentences stop
+  naming them.
+- 5 **DONE** — `sessionlog::gatekeeper_session(workspace)`: one queue session per workspace's
+  daemon, not one per box.
+- 6 **FIXED** — `mergequeue::snapshot` keeps each LIVE row's own last `RECENT_MOVES_PER_ROW` moves
+  beside the queue-wide window, so a busy queue no longer pushes a row's history out.
+- 7 **FIXED** — `tools::gatekeeper::{wake, Reviewer, NoReviewer}` deleted; nothing stood on them.
+- 8 **NOT CODE** — a `perf` measurement on an idle worker.
+- 9 **OPERATOR** — three rulings (`[queue]` in `leticode.toml` exists): withdraw vs delete for
+  `/queue rm` and `clean`; `red_target`'s default; `git branch -D` after landing.
+- 10 **DESIGN** — the mechanism is built (`tools::spill::Spiller`) and wired to every call, but
+  `SpillPolicy::Unset` → `NoBudget`, so nothing is capped by default. A default budget derived from
+  the window is a policy the operator has not made.
+- 11 **OPEN** — `sent_since` (`harness/wall.rs`) still drops `Reasoning` and `SegmentMark` while the
+  request builder echoes reasoning on a tool chain, so the count is short by a round's thought. The
+  fix is to thread the same `echo_reasoning` fact into the count; the test that pins today's answer
+  pins the assumption.
+- 12 **OPEN** — a fork that is not verbatim clears the stored count/ledger pair on purpose, so a
+  restart before any round falls back to the raw ledger count. The fix is to carry the RATIO across
+  the fork.
+- 13 **NOT CODE** — `e834316`'s six tests are all in the tree; what is left is the operator's live
+  tmux replay of the real session.
+- 14 **DESIGN** — 16 of 79 calibration excuses still score under the floor and there is no second
+  tier. A second scorer is a slice of its own.
+- 15 **NOT CODE** — the floor is a literal with a measured provenance; re-tuning needs the operator's
+  `.letibot/context-claims.jsonl`, which no checkout has.
+- 16 **OPEN** — no harness-level test of the round that calls a TOOL and carries a context excuse (the
+  step-boundary queue). Every test drives a plain answer; the door exists and a canned tool-call
+  reply would reach it.
+- 17 **DONE**, with a residue — all three decisions are in (park at 10 min, reopen on a message or a
+  head, a message earns the plan-check back, failures are `TurnFailed`). `wake_failed` and
+  `todo_check_failed` survive in `sessionlog::warning`'s table with no emitter anywhere.
+- 18 **OPERATOR** — roots are never closed automatically, and an idle root holding a monitor pins the
+  daemon until it stops (`court_refusal`'s monitor arm). Not a defect in the close path; a policy.
+- 19 **FIXED** — `RECORD_LIMIT` and `bound_records` in `exec/host.rs`: `reaps`, `promotions` and
+  `Deadlines.fired` drop the oldest instead of growing for the life of the daemon.
+- 20 **OPEN** — the single `report(session, code, detail)` sink is still not built: 84 inline
+  `SessionEvent::Warning` sites in `harnessd` against two private helpers, and `warning.rs` is a
+  table a head draws, not a sink. A refactor across `harnessd`, not a one-function change.
+- 21 **DONE** — the gatekeeper retry exists and cannot storm: one attempt per 30 s pass, one warning
+  per distinct reason.
+- 22 **DONE** on `r60-term` — `letibot_vt::Screen::mouse` and the pane's own translation.
+- 23 **PARTLY** — all six modal cards have key tables (`app/keys/cards.rs`); none is on the surface
+  stack (`Drawn` has no card arm and `focused_surface()` still answers a surface under a card).
+  TUI work.
+- 24 **FIXED** (`a4384ed5`) — the flake was one fixture directory shared by two tests, one deleted by
+  the other's `Drop`; one directory per call now. Residual: `settle` gives up after 10 s of ticks.
+- 25 **OPEN (verification)** — the card's path is complete and a fake adjudicator answers it; no test
+  drives a real head answering `grant_memory`, and on Darwin the card is unreachable (`Meminfo` is
+  `/proc/meminfo`).
+- 26 **DESIGN** — no box-wide ledger: two sessions can each be granted half of what is free at the
+  moment of the ask. The single-daemon half (subtract the caps live jobs were promised) is three
+  lines in `bash::memory_for`; the cross-daemon half needs the `flock` the proposal describes.
+- 27 **NOT CODE** — a runner's `~/.actrc`; `act` appears nowhere in the tree and the fleet gate is
+  R62's unfinished done-when.
+- 28 **NOT CODE (deliberate)** — linear over the whole transcript on purpose, per its own doc. A
+  cheaper index (`asked`/`answered`/`scanned` beside the session) is written out in the audit if it
+  ever matters.
+- 29 **NOT CODE** — the slow polls are documented as left on purpose and the reasons still hold.
+- 30 **DONE** on `r60-term` — `TermPane::held` keeps a report the read ended inside.
+- 31 **FIXED** — a real child's hub now refuses a `Compact` and the `child_door_refused` warning is
+  read back off it (`tests/child_nag.rs`), which is the half the pure-function test could not show.
+- 32 **NOT CODE** — settled in R67's own entry: a review mark names the head the reviewer judged and
+  a landing mark the rebased commit, by design.
+- 33 **NOT CODE for the tree's rule**, with three holes named — a key-less box's `children.rs` test and
+  two `bridge` tests that `remove_var("LETIBOT_REQUIRE_APPARATUS")` still skip green under the gate's
+  prefix.
+- 34 **FIXED** — the two wall-clock assertions in `tests/stop_force.rs` are gone (a span that began
+  before the fixture attached, compared against the app's own deadline); the ordering claims stay and
+  `reconnect`'s clocks were already injected.
+- 35 **FIXED** — a file-level mutex around the one process-wide variable in `tests/confine.rs`, held
+  for the whole body, which is what makes its SAFETY note true.
+- 36 **FIXED** — every live target is `#[ignore]`d (`*_live.rs` ×7, plus `sessionlog/tests/live_e2e.rs`,
+  `turn/tests/live_qwen.rs`, `flowy/tests/live.rs`), so a workspace run cannot dial the box; a person
+  runs one by name with `--ignored`. `sudo_ask_live`'s re-exec spawn says `--ignored` with it.
+- 37 **CHORE** — run the workspace clippy step; the four exemptions live only in the gate line and CI
+  is deliberately weaker, so there is no drift to fix.
+- 38 **DONE** — R63: `sessions::Court`, one thread per session, armed by `Daemon::run`;
+  `tests/thread_per_session.rs` is its done-when.
+- 39 **PARTLY** — R62's seam is built and tested against a fake ssh (`GateRunner`/`HostGate`,
+  `mergequeue/gate_host.rs`); its done-when — a landing gated on lubuntu1/2 with the row naming the
+  host — is a live run, and the fleet's `~/.actrc` is item 27's.
+- 40 **CHORE** — R70 is partly done (`harness.rs`, `adjudicate.rs`, `todo.rs` and `sessions/` moved
+  their blocks out). Nine inline blocks are still over ~800 lines; `harnessd/src/plugins.rs` is the
+  largest at 3 320 lines and the one to move first.
+- 41 **DONE** — R60's three: scrollback (`vt::Screen::HISTORY_ROWS`/`view`), panes numbered on the
+  wire, and a confined pane (`wrap_terminal`, no `--new-session`), each with a test.
 
 **R61 — the queues**
 1. A rejection whose root session is not open in any daemon is only raised (`refusal_undelivered`)
