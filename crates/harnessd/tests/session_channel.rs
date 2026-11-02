@@ -44,7 +44,7 @@ const TO_THE_TASK: &str = "the work is done, waiting";
 const TO_THE_PEER: &str = "understood, I am on it";
 const REFUSAL: &str = "the change never touches the file the brief names";
 
-/// A review row, claimed by this daemon's queue - an entry `waiting` put up for review,
+/// A review row, claimed by this daemon's queue - an entry `waiting` put up for review
 /// moved to `reviewing` with this process's lease identity as its owner, the way the
 /// queue's own thread claims one.
 #[allow(clippy::too_many_arguments)]
@@ -426,7 +426,7 @@ impl Stub {
 
     /// The same, and the answers are chosen by WHO is asking - a `(marker, script)` pair
     /// matched against the detokenized prompt before the positional script is consulted. Three
-    /// sessions talk to this one listener from three threads and two of them RACE:
+    /// sessions talk to this one listener from three threads and two of them RACE
     fn answering_by(
         scripts: Vec<Vec<Frame>>,
         requests: usize,
@@ -569,8 +569,8 @@ impl Drop for Stub {
 }
 
 /// Whether this request's prompt holds `marker` - the body's token ids detokenized with the
-/// vocabulary the session tokenized with. `false` for a body that will not decode,
-/// deliberately:
+/// vocabulary the session tokenized with. `false` for a body that will not decode
+/// deliberately
 fn prompt_holds(body: &str, vocab: &Vocab, marker: &str) -> bool {
     let Ok(json) = serde_json::from_str::<serde_json::Value>(body) else {
         return false;
@@ -867,7 +867,7 @@ fn a_peers_message_to_a_busy_worker_owned_session_lands_at_the_round_boundary() 
 
 /// A message to a session that does not exist is refused by name, and nothing is sent. The
 /// refusal narrowed to the one case that is a refusal. A live session - a subagent this
-/// session started, or a peer - is delivered to;
+/// session started, or a peer - is delivered to
 #[test]
 fn a_message_to_a_session_that_does_not_exist_is_refused_by_name() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -910,7 +910,7 @@ fn a_message_to_a_session_that_does_not_exist_is_refused_by_name() {
 // ---------------------------------------------------------------------------
 
 /// A session may send a peer it names - the child-only refusal does not fire for a session
-/// that is not the caller's child. The recipient is a ROOT session, in the same daemon,
+/// that is not the caller's child. The recipient is a ROOT session, in the same daemon
 /// that this session did not start and has no tree edge to.
 #[test]
 fn a_session_may_send_a_peer_it_names() {
@@ -962,7 +962,7 @@ fn a_session_may_send_a_peer_it_names() {
 // ---------------------------------------------------------------------------
 
 /// A refusing verdict goes back to the child that did the work, through the same channel.
-/// The refusing half, end to end and with no socket:
+/// The refusing half, end to end and with no socket
 #[test]
 fn a_refusing_verdict_goes_back_to_the_child_that_did_the_work() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {

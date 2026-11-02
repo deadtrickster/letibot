@@ -128,7 +128,7 @@ impl Terminals {
 
 /// Where a pane's bytes go: the hub, and the daemon's copy of the screen. One socket needs
 /// one ordering, so a frame of its own would interleave into an event batch. The log is
-/// filled here for the same reason:
+/// filled here for the same reason
 struct Sink {
     hub: Arc<Hub>,
     log: Arc<Mutex<Vec<u8>>>,
@@ -160,7 +160,7 @@ impl TermSink for Sink {
 
 /// Keep the tail of what a program drew, and start it where a parser can read it. A cut
 /// usually lands inside an escape sequence, and a head parses the tail from ground state so
-/// `[2J` would be painted as three characters. A tail with no `ESC` in it is left alone:
+/// `[2J` would be painted as three characters. A tail with no `ESC` in it is left alone
 fn trim(log: &mut Vec<u8>) {
     if log.len() <= SCREEN_LOG {
         return;

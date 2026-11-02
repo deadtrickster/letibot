@@ -1,4 +1,4 @@
-//! The daemon's half of answering the operator's own command: who holds the run's input,
+//! The daemon's half of answering the operator's own command: who holds the run's input
 //! and how a line gets into it. [`letibot_sessionlog::PromptDriver`] is the seam and
 //! [`Prompts`] implements it. The mechanism is [`letibot_tools::exec::Stdin`] - a handle on
 //! the run's input, its terminal on the ordinary path - and the detection is
@@ -93,7 +93,7 @@ impl Prompts {
 
     /// Mint a request and publish the card - the one place a card is raised, so the
     /// reading-backed card and the offer cannot drift apart in what they carry. `reading` is
-    /// which of the two facts the card is raised on;
+    /// which of the two facts the card is raised on
     fn offer(&self, job: &str, question: Option<&str>, reading: PromptReading) {
         let (req_id, command) = {
             let mut g = self.lock();
@@ -123,8 +123,8 @@ impl Prompts {
     }
 
     /// The run looks like it is waiting for an answer, by `letibot_tools::exec::ask`'s reading
-    /// of the process - never of its words. `question` is the last line the program wrote,
-    /// carried to be shown;
+    /// of the process - never of its words. `question` is the last line the program wrote
+    /// carried to be shown
     pub fn asking(&self, job: &str, question: Option<&str>) {
         self.offer(job, question, PromptReading::Blocked);
     }
@@ -187,7 +187,7 @@ impl Prompts {
     }
 
     /// The run is over. The card comes down, and the handle is forgotten. `sent: false` with a
-    /// sentence in `by` rather than an identity:
+    /// sentence in `by` rather than an identity
     pub fn ended(&self, job: &str) {
         let settled = {
             let mut g = self.lock();
@@ -229,7 +229,7 @@ impl PromptDriver for Prompts {
                 self.session
             ));
         }
-        // The lock is released before the write:
+        // The lock is released before the write
         let (stdin, settled) = {
             let g = self.lock();
             let Some(run) = g.as_ref() else {
@@ -253,7 +253,7 @@ impl PromptDriver for Prompts {
         };
         stdin.send_line(line)?;
         // The card comes down, if it is still the one this answered. Re-locked rather than held
-        // see above. And on a run this daemon cannot read, the offer comes straight back:
+        // see above. And on a run this daemon cannot read, the offer comes straight back
         let reoffered = {
             let mut g = self.lock();
             let mut again = None;
@@ -329,7 +329,7 @@ mod tests {
     }
 
     /// A card is raised once per run, and it names the operator's own command. The second
-    /// `asking` for the same run is refused here as well as in the tool:
+    /// `asking` for the same run is refused here as well as in the tool
     #[test]
     fn a_card_is_raised_once_for_a_run_and_names_the_operators_command() {
         let hub = a_hub();
@@ -362,7 +362,7 @@ mod tests {
     }
 
     /// A run this daemon cannot look at is said out loud, once - and says which fact it is. `!
-    /// sudo apt install mc`, the password given, and then nothing:
+    /// sudo apt install mc`, the password given, and then nothing
     #[test]
     fn a_run_this_daemon_cannot_look_at_is_said_once_and_names_the_way_in() {
         let hub = a_hub();
@@ -462,7 +462,7 @@ mod tests {
 
     /// An unreadable run offers the card as well as the sentence. The card's raise reason is
     /// not *the run is blocked reading its terminal* - a reading - but *a run of the operator's
-    /// own is in flight*, which is a fact this object holds. The sentence stays beside it:
+    /// own is in flight*, which is a fact this object holds. The sentence stays beside it
     #[test]
     fn an_unreadable_run_offers_the_card_beside_the_sentence() {
         let hub = a_hub();
@@ -599,7 +599,7 @@ mod tests {
     }
 
     /// A stale card cannot answer a later command, and it is refused in a sentence rather than
-    /// silently. The whole of why the card carries a `req_id`:
+    /// silently. The whole of why the card carries a `req_id`
     #[test]
     fn a_card_for_a_run_that_is_gone_cannot_answer_the_next_one() {
         let hub = a_hub();

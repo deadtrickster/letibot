@@ -356,7 +356,7 @@ fn a_cleared_session_keeps_its_board_its_job_and_its_child() {
 
     // (3) and (4): both settlements reach the NEW conversation. A routine result is HELD -
     // nothing on this board waits on the job or the child - so it rides in with the next turn
-    // the model takes anyway, as one `[meanwhile]` batch:
+    // the model takes anyway, as one `[meanwhile]` batch
     let began = Instant::now();
     let mut prompted = false;
     loop {
@@ -496,7 +496,7 @@ fn a_childs_clear_is_answered_by_its_own_thread() {
 
 /// A model that answers on a gate, and keeps every request it was asked. `canned::Canned`
 /// answers too fast to stand in a mid-flight turn, so a request is read recorded and held
-/// until the test releases it:
+/// until the test releases it
 struct Stub {
     endpoint: Endpoint,
     shared: Arc<Gate>,

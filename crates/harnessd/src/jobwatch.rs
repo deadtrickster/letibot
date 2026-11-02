@@ -1,4 +1,4 @@
-//! A background job's end, published the moment it is true. The start needs no watcher:
+//! A background job's end, published the moment it is true. The start needs no watcher
 //! `bash --background` finishes as `ToolOutcome::Backgrounded` and every head sees it. The
 //! end does - a session-scoped job outlives its turn, and between turns nobody asks the
 //! runtime about it. Blocked, not polling (§18.1-I12): one thread per watched job, blocked
@@ -211,7 +211,7 @@ pub struct JobWatchers {
     /// session below handed up because it can no longer be told ([`JobWatchers::stop`]). Per
     /// session, not per tree : a shared queue delivered a child's job as the main session's.
     completions: Arc<Settlements>,
-    /// The queue of the set this one was built from, and whose session owns it - the parent's,
+    /// The queue of the set this one was built from, and whose session owns it - the parent's
     /// for a child.
     parent: Option<(Arc<Settlements>, String)>,
     /// A settlement left this queue to be said, and the turn that says it has not begun -
@@ -446,7 +446,7 @@ impl JobWatchers {
 
     /// Take every settlement this session has not been told yet - one drain per turn, and
     /// taking it is what stops a settlement being delivered twice. What comes back is this
-    /// session's own, plus what a stopped session below handed up ([`JobWatchers::stop`]);
+    /// session's own, plus what a stopped session below handed up ([`JobWatchers::stop`])
     pub fn take_completions(&self) -> Vec<JobCompletion> {
         self.completions.drain()
     }
@@ -463,7 +463,7 @@ impl JobWatchers {
 
     /// Queue a settlement as a watcher would, without the ring - the door a settlement that
     /// outlived its session comes back through, and the one the delivery tests stand in a
-    /// watcher's place with. No ring:
+    /// watcher's place with. No ring
     pub fn queue(&self, c: JobCompletion) {
         self.completions.push(c);
     }
@@ -563,7 +563,7 @@ impl JobWatchers {
 
     /// A turn of this session has ended - counted after its rounds have run, whatever they came
     /// to, by the harness's two doors into `run_rounds`. And a turn that ends with results held
-    /// rings this session's own wake :
+    /// rings this session's own wake
     pub fn turn_ended(&self) {
         {
             let mut r = self.read.lock().expect("read record");
@@ -585,7 +585,7 @@ impl JobWatchers {
 
     /// How much of an ended job's or child's grace is left, or `None` when it has none - the
     /// fact the end-of-turn plan check stays quiet on (`waits_on_an_undigested_ending`).
-    /// Graced:
+    /// Graced
     pub fn grace_left(&self, handle: &str, cap: Duration, now: SystemTime) -> Option<Duration> {
         let left = |ended: SystemTime| {
             cap.checked_sub(now.duration_since(ended).unwrap_or(Duration::ZERO))
@@ -745,14 +745,14 @@ impl JobWatchers {
     }
 
     /// The session at the top of this tree - the ROOT, which is where a subagent's ask belongs
-    /// a child has no head, and the one session in the tree that has one is the daemon's,
+    /// a child has no head, and the one session in the tree that has one is the daemon's
     /// inherited through [`JobWatchers::shares_tree`].
     pub fn tree_root(&self) -> &str {
         &self.root
     }
 
     /// Is this job's completion already on its way to the model? True while a watcher thread is
-    /// blocked on the job:
+    /// blocked on the job
     pub fn delivering(&self, job: &str) -> bool {
         self.watching.lock().expect("job watchers").contains(job)
     }
@@ -889,7 +889,7 @@ impl JobWatchers {
 
 /// Where a watcher's settlement goes, and the one place that decides it. Carried by the
 /// watcher thread rather than passed as six arguments, because the decision is not the
-/// watcher's:
+/// watcher's
 struct SettlementQueue {
     /// The queue of the session that started it.
     own: Arc<Settlements>,
@@ -912,7 +912,7 @@ struct SettlementQueue {
 
 impl SettlementQueue {
     /// Queue one settlement where its session can still be told, and ring. The `stopped` read
-    /// is inside the `own` lock on purpose:
+    /// is inside the `own` lock on purpose
     fn push(&self, c: JobCompletion) {
         // The record goes down where the settlement is first known, not where it is read
         // a job's fate does not depend on which session's queue it lands in, and writing after
@@ -946,7 +946,7 @@ impl SettlementQueue {
 }
 
 /// The one thing a settlement needs to leave a record of itself - a path and a session id.
-/// Not a `Store`:
+/// Not a `Store`
 #[derive(Clone)]
 pub struct JobRecorder {
     path: std::path::PathBuf,
@@ -1088,7 +1088,7 @@ impl JobRecorder {
     }
 
     /// And this job's PROCESS, which outlives the record above - the supervisor's row. Written
-    /// here because this is where the live view still exists: command, name, directory, pid,
+    /// here because this is where the live view still exists: command, name, directory, pid
     /// scope.
     pub(crate) fn process(&self, view: &letibot_tools::exec::JobView) {
         // A job of jobs has no process to write down. Its `pid` is 0 and its branches are
@@ -1316,7 +1316,7 @@ fn watch_one(
 
 /// The same settlement, waited on the way a subagent settles. `watch_one`'s shape is kept
 /// exactly - a chunked wait whose chunk is the shutdown re-check, a queue push, a bell -
-/// and only what is being waited on changes:
+/// and only what is being waited on changes
 fn watch_task(
     runner: Arc<dyn TaskRunner>,
     hub: Weak<Hub>,
@@ -1353,7 +1353,7 @@ fn watch_task(
                 break;
             }
             // Still working, or a handle this runner never minted. `Unknown` ends the wait and
-            // `Running` does not end on `stop`:
+            // `Running` does not end on `stop`
             TaskStatus::Running { .. } => {}
             TaskStatus::Unknown => break,
         }

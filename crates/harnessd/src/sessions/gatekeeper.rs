@@ -1,5 +1,5 @@
 //! The review queue's own SESSION - one, hardcoded, started by the daemon, whose todo board
-//! is the queue. The daemon is the administration: it fills the queue, keeps the worktrees,
+//! is the queue. The daemon is the administration: it fills the queue, keeps the worktrees
 //! runs the gates and lands. The teacher is this session, and each review is a `task` child
 //! of it. The rows are a VIEW: the fourth half (`TodoBy::Queue`) is replaced from the store
 //! on every pass. The STATES stay in the store and this module writes none of them - what
@@ -14,7 +14,7 @@ use letibot_tokencore::store::{
 use letibot_tools::builtins::task::Placement;
 
 /// The review-queue session id of the daemon serving `workspace` - `s-gatekeeper-<key>`. It
-/// is derived rather than minted because four things are decided by it:
+/// is derived rather than minted because four things are decided by it
 pub fn session(workspace: &std::path::Path) -> String {
     letibot_sessionlog::gatekeeper_session(workspace)
 }
@@ -52,7 +52,7 @@ pub enum ReviewerPlacement {
 
 impl ReviewerPlacement {
     /// The `task` placement this state means - what [`Harness::serve_reviews`] puts on the
-    /// review child's [`letibot_tools::builtins::task::TaskSpec`]. [`Harness::serve_reviews`]:
+    /// review child's [`letibot_tools::builtins::task::TaskSpec`]. [`Harness::serve_reviews`]
     /// crate::harness::Harness::serve_reviews
     pub fn placement(&self) -> Placement {
         match self {
@@ -106,7 +106,7 @@ The operator's remedy is a `firecode` on the daemon's PATH (or `$FIRECODE_BIN`) 
 }
 
 /// Where the reviewers of a review-queue session run: this machine - the DEFAULT, and what
-/// a project that says `[queue] reviewers = "host"` or nothing gets - or a firecode VM,
+/// a project that says `[queue] reviewers = "host"` or nothing gets - or a firecode VM
 /// which a project asks for by name and this box can only give where it can boot one.
 pub fn reviewer_placement(
     may_use_vm: bool,
@@ -126,7 +126,7 @@ pub fn reviewer_placement(
 
 /// What the review queue's own session is TOLD, in its own system prompt - the operator's
 /// *"it managed via its prompt and so on"*, read as an instruction. Appended to the
-/// composed prompt at open and frozen with the prefix;
+/// composed prompt at open and frozen with the prefix
 pub const PROMPT: &str = "\
 \n\
 You are the review queue. This session is the merge queue's own: the rows on your board marked \
@@ -171,7 +171,7 @@ come first on the board, and the idle check asks about them before it asks about
 
 /// The paragraph the review queue's session opens with, for the placement its reviewers
 /// have. [`PROMPT`] is the constant half and the placement is this box's answer, appended
-/// last. One function, two callers:
+/// last. One function, two callers
 pub fn prompt(placement: &ReviewerPlacement) -> String {
     format!("{PROMPT}{}", placement.said())
 }

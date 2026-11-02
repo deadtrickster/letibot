@@ -1,7 +1,7 @@
 //! A reviewer's refusal reaches a LIVE session - the child that wrote the branch, or the
 //! session that enqueued it. The queue puts a refusal where the work is (the row is
 //! `rejected` with the verdict on it), while the child that did the work may be dead by
-//! then and the session that ran `task_start` only sees a `!` line on the head's screen,
+//! then and the session that ran `task_start` only sees a `!` line on the head's screen
 //! which is not something a model can act on. The door is [`deliver_refusal`], reached the
 //! one way a refusal is reached: a reviewer hands `reject` in at the desk and [`serve`]
 //! moves the row.
@@ -71,7 +71,7 @@ fn seated(store: &Store, id: &str, parent: Option<&str>, workspace: &str) {
 
 /// The queue as the daemon leaves it when a branch is put up for review: a child under the
 /// root that ran the `task_start`, a review row whose `session_id` is the CHILD, and a
-/// stranger that shares the store. The child's row names its parent on purpose:
+/// stranger that shares the store. The child's row names its parent on purpose
 fn the_queue(tag: &str) -> (TempDir, Store) {
     the_queue_with(tag, true)
 }
@@ -176,7 +176,7 @@ fn a_tree(tag: &str) -> TempDir {
 
 /// One reviewer's verdict, handed in and served - the row claimed by this daemon with the
 /// reviewer on it, the desk opened for that reviewer, the submission at the desk, and then
-/// `passes` passes of [`serve`]:
+/// `passes` passes of [`serve`]
 #[allow(clippy::too_many_arguments)]
 fn judge(
     store: &Store,
@@ -309,7 +309,7 @@ fn the_queue_in_a_repository(tag: &str) -> (TempDir, Store, String) {
 
 /// The child that wrote the branch is told, and nobody else is - as a message to that live
 /// session carrying the reviewer's reasons WHOLE, the branch, the head it judged and the
-/// worktree. The negative half is asserted in the same test on purpose:
+/// worktree. The negative half is asserted in the same test on purpose
 #[test]
 fn the_child_that_wrote_the_branch_is_told_the_reviewers_own_words() {
     let (_dir, store) = the_queue("the-child");
@@ -422,7 +422,7 @@ fn the_session_that_enqueued_it_is_told_when_the_child_is_gone() {
 
 /// A refusal NOBODY can take is raised, and the sentence is TRUE about why - it quotes both
 /// attempts in their own words rather than asserting that a session is gone. The two
-/// failures are deliberately different kinds:
+/// failures are deliberately different kinds
 #[test]
 fn a_refusal_nobody_can_take_is_raised_with_both_attempts() {
     let (_dir, store) = the_queue("nobody");
@@ -612,7 +612,7 @@ fn a_refusal_reaches_the_live_session_of_the_workspace_when_the_branchs_tree_is_
 
 /// One refusal is one message: the first party that takes it is the only one told - with
 /// the root and a live session of the workspace both able to take it, the root is told and
-/// the workspace's session is not asked at all. The negative half is the point:
+/// the workspace's session is not asked at all. The negative half is the point
 #[test]
 fn the_first_party_that_takes_it_is_the_only_one_told() {
     let (_dir, store, key) = the_queue_in_a_repository("first-wins");
@@ -641,7 +641,7 @@ fn the_first_party_that_takes_it_is_the_only_one_told() {
 
 /// A refusal nothing can take names every party it tried - the child, the root, and the
 /// fact that no live session of the branch's workspace was left. The session row of this
-/// workspace that no daemon holds is never even messaged:
+/// workspace that no daemon holds is never even messaged
 #[test]
 fn a_refusal_nobody_anywhere_can_take_names_every_party_it_tried() {
     let (_dir, store, key) = the_queue_in_a_repository("nobody-at-all");
@@ -1295,7 +1295,7 @@ fn a_project_that_asks_for_vms_gets_its_reviewer_placed_in_one() {
 
 /// A clone nobody is on any more is removed by the next pass, and a live row's is kept -
 /// the assertion that would have caught hundreds of megabytes of never-removed clones (see
-/// [`sweep_clones`]). The row that matters most is the WITHDRAWN one:
+/// [`sweep_clones`]). The row that matters most is the WITHDRAWN one
 #[test]
 fn a_clone_no_row_is_on_is_removed_and_a_live_rows_is_kept() {
     let dir = TempDir::new("review-sweep");

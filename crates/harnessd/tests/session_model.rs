@@ -3,7 +3,7 @@
 //! GGUF renders the prompt and whose ids the ledger counts, and the launcher passes it on
 //! every start; `Config::prompt_model_name` is who answers. `Sessions::wiring` and the
 //! `model_id` a session's row keeps were both written from the BINDING, so a session
-//! started on the operator's default provider was described as a local one in the header,
+//! started on the operator's default provider was described as a local one in the header
 //! the picker and `letibot --sessions` - while its turns went to deepseek. The `model`
 //! settings row was already right, which is what made it visible: one session, two names.
 

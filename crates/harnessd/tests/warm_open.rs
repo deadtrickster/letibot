@@ -3,7 +3,7 @@
 //! conversation while the head drew an empty transcript with the right title and the echo
 //! of the prompt said `queued` - so something between the daemon's restore and the head's
 //! screen was missing. `leticode --session ID` with a daemon up runs `letibot-tui --resume
-//! ID`, and the head then takes five frames:
+//! ID`, and the head then takes five frames
 
 use std::io::{Read, Write};
 use std::net::TcpStream;

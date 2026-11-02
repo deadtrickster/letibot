@@ -510,7 +510,7 @@ impl Drop for Stub {
 
 /// Answer with the first frame, wait, then send the rest and drop the socket - the shape of
 /// a generation that dies mid-stream. Two details make it the state the test needs rather
-/// than merely a failure:
+/// than merely a failure
 fn write_frames_then_drop(
     mut stream: TcpStream,
     frames: &[Frame],
@@ -933,7 +933,7 @@ fn a_second_message_does_not_start_a_second_turn_for_the_first() {
 // ---------------------------------------------------------------------------
 
 /// A genuine failure is still refused by name, and never claims to have queued. Three
-/// different facts: a handle no session in this daemon answers to;
+/// different facts: a handle no session in this daemon answers to
 #[test]
 fn a_message_to_a_child_that_is_gone_is_refused_by_name() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -1149,7 +1149,7 @@ impl Drop for DrainOnDrop<'_, '_> {
 
 /// The daemon's exit waits for a child that is mid-turn, and gives up on a bound rather
 /// than hanging - `Sessions::drain_subagents`, which is what `cli.rs` calls before the
-/// process exits. The child is inside its model call, the one state a stop cannot reach:
+/// process exits. The child is inside its model call, the one state a stop cannot reach
 #[test]
 fn the_daemons_exit_waits_for_a_child_and_gives_up_on_a_bound() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -1309,7 +1309,7 @@ fn task_message_call(to: &str, text: &str) -> String {
 }
 
 /// A child can answer the session that started it, by the reserved handle `parent`.
-/// `task_message` has always taken any live session's id, so the door was there;
+/// `task_message` has always taken any live session's id, so the door was there
 #[test]
 fn a_child_answers_its_parent_by_the_reserved_handle() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {

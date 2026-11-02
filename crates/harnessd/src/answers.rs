@@ -3,7 +3,7 @@
 //! and for a daemon in a foreground terminal, and not for the shape people run - a daemon
 //! in the background with a head attached. The head already renders the question; there was
 //! no path back, so `write` and `exec` were a foreground thing. The answer cannot come in
-//! on the command queue: the daemon has one worker, a gated call happens inside its turn,
+//! on the command queue: the daemon has one worker, a gated call happens inside its turn
 //! and the thread that would drain the queue is the thread waiting for the answer.
 
 use std::collections::HashMap;
@@ -42,7 +42,7 @@ enum Slot {
 
 /// The rendezvous: one slot per open request, and the condvar the tool thread sleeps on.
 /// Owned by the session and shared with the hub as its [`AnswerSink`]. It has no `&mut
-/// self` method on purpose:
+/// self` method on purpose
 pub struct Answers {
     slots: Mutex<HashMap<String, Slot>>,
     cv: Condvar,
@@ -188,7 +188,7 @@ impl Answers {
                 latency_ms,
             },
         };
-        // The open decision is closed on every path, including the ones nobody answered:
+        // The open decision is closed on every path, including the ones nobody answered
         hub.publish(close(req, &decision));
         decision
     }
@@ -207,7 +207,7 @@ enum Waited {
 impl Answers {
     /// Post a question to the heads and wait for one of them to answer it. The rendezvous is
     /// [`Answers::ask`]'s, because the deadlock is the same one. What differs is the payload
-    /// each way: the card is posed with `kind:
+    /// each way: the card is posed with `kind
     pub fn ask_question(
         &self,
         hub: &Arc<Hub>,
@@ -319,7 +319,7 @@ impl Answers {
     }
 }
 
-/// The wire's answer, as the tool's own shape. A field-by-field copy and not a `From`:
+/// The wire's answer, as the tool's own shape. A field-by-field copy and not a `From`
 /// neither crate may learn about the other, and the daemon is the place they meet.
 fn to_tool_answer(a: &letibot_sessionlog::question::QuestionAnswer) -> QuestionAnswer {
     QuestionAnswer {
@@ -330,7 +330,7 @@ fn to_tool_answer(a: &letibot_sessionlog::question::QuestionAnswer) -> QuestionA
     }
 }
 
-/// The `DecisionRequested` a question is posed as. `choices` and not `options`:
+/// The `DecisionRequested` a question is posed as. `choices` and not `options`
 fn pose_question(req_id: &str, q: &Question, deadline_ms: u64) -> SessionEvent {
     SessionEvent::DecisionRequested {
         write_targets: Vec::new(),
@@ -390,7 +390,7 @@ fn close_question(req_id: &str, outcome: WireOutcome, by: Decider, basis: String
 
 /// Why nobody could be asked, in the words a question needs rather than a gate's.
 /// [`no_head`] says the gate fails closed - nothing ran and nothing changed. A question
-/// never had anything to run, so what a model needs told is the other half:
+/// never had anything to run, so what a model needs told is the other half
 fn no_head_for_a_question() -> String {
     "no head that can answer is attached to this session, so NOBODY was asked and nobody \
      answered. This is not a refusal and it is not permission to proceed on an \
@@ -430,7 +430,7 @@ pub struct Asked {
 pub type AskLog = Arc<Mutex<Option<Asked>>>;
 
 /// The questioner a session with a head is given. It posts the question to the head and
-/// waits on the answer frame the head already had, and holds nothing of its own:
+/// waits on the answer frame the head already had, and holds nothing of its own
 pub struct HeadQuestioner {
     hub: Arc<Hub>,
     answers: Arc<Answers>,
@@ -626,7 +626,7 @@ pub fn auto_decision(
 }
 
 /// The questioner the intent wiring is given, whose head arrives with the gate. The order
-/// is forced:
+/// is forced
 pub struct SlotQuestioner(pub Arc<Mutex<Option<Arc<dyn Questioner>>>>);
 
 impl Questioner for SlotQuestioner {
@@ -738,7 +738,7 @@ fn settle(
 }
 
 /// The sentence a gate gets when nobody at the head can answer. A fact, not a policy - and
-/// for a subagent a different fact, told differently:
+/// for a subagent a different fact, told differently
 fn no_head(subagent: Option<&SubagentAsk>) -> String {
     let Some(s) = subagent else {
         return "no head that can answer is attached to this session, so nothing was \
@@ -851,7 +851,7 @@ fn close(req: &AdjudicationRequest, d: &AdjudicationDecision) -> SessionEvent {
     SessionEvent::DecisionAnswered {
         req_id: req.id.clone(),
         outcome,
-        // The decider says who it is and this does not guess: `d.by` is already `kind:identity`,
+        // The decider says who it is and this does not guess: `d.by` is already `kind:identity`
         // so it is split rather than re-derived.
         by: split_decider(&d.by),
         basis: d.basis.clone(),
@@ -896,7 +896,7 @@ fn unix_millis() -> u64 {
 }
 
 /// The adjudicator that asks whoever is looking at the session. It holds the call the way
-/// `ConsoleAdjudicator` does - a pending decision is a visible row not a held connection:
+/// `ConsoleAdjudicator` does - a pending decision is a visible row not a held connection
 pub struct HeadAdjudicator {
     hub: Arc<Hub>,
     answers: Arc<Answers>,
@@ -926,7 +926,7 @@ impl HeadAdjudicator {
         self
     }
 
-    /// The ask itself, with the caller's own attribution. `None` is this session's own call;
+    /// The ask itself, with the caller's own attribution. `None` is this session's own call
     /// `Some` is a subagent's, posted to the session whose head this is.
     pub fn decide_as(
         &self,
@@ -993,7 +993,7 @@ impl SubagentAdjudicator {
         SubagentAdjudicator { child, head }
     }
 
-    /// No head-wired adjudicator in this tree, said as the fact it is. `by` is `gate:no-head`,
+    /// No head-wired adjudicator in this tree, said as the fact it is. `by` is `gate:no-head`
     /// the word the root's own no-head refusal uses, because it is the same fact one level
     /// over.
     fn no_path(&self) -> String {
@@ -1044,7 +1044,7 @@ impl Adjudicator for SubagentAdjudicator {
 
 /// The model decides; when it cannot, the person does. This forwards to the model and, when
 /// the answer means nobody decided - `Timeout` or `Unavailable` - asks the person instead.
-/// A `Cancelled` decision is not forwarded:
+/// A `Cancelled` decision is not forwarded
 pub struct EscalateOnTimeout {
     inner: Arc<dyn Adjudicator>,
     human: Arc<dyn Adjudicator>,

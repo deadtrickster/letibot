@@ -4,7 +4,7 @@
 //! test would fail without the room among `HubSteering::try_next`'s arms: a room event
 //! became a sentence read by `Harness::wake`, a door that only opens BETWEEN turns, so a
 //! message posted while a session was mid-turn reached it after the work it would have
-//! changed. The second would fail on a `claim` that sent one frame and returned:
+//! changed. The second would fail on a `claim` that sent one frame and returned
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -94,7 +94,7 @@ impl Drop for Scratch {
 
 /// Rule 3 - acknowledge before acting. The claim and the word *seen, doing X* are on the
 /// room by the time `claim` returns, so nothing a model does next can be the first thing
-/// the queue hears. What the test measures is the ORDER the rule is about:
+/// the queue hears. What the test measures is the ORDER the rule is about
 #[test]
 fn a_claim_is_acknowledged_on_the_room_before_any_work_begins() {
     let scratch = Scratch::new("ack");
@@ -167,7 +167,7 @@ fn a_claim_is_acknowledged_on_the_room_before_any_work_begins() {
     };
     assert_eq!(claim.by, "s-worker", "and by the session that claimed it");
     // `said`, not `waits_on` - the two are opposite facts and the room keeps them apart. The
-    // acknowledgement is what the holder is DOING;
+    // acknowledgement is what the holder is DOING
     let said = claim
         .said
         .as_ref()
@@ -222,7 +222,7 @@ fn a_claim_is_acknowledged_on_the_room_before_any_work_begins() {
 
 /// Rule 2 at the daemon's door - a reconnect is told what it missed, in words, once.
 /// `crates/room/tests/bell.rs` proves the room COUNTS a gap and hands the count over with
-/// the `Welcome`. The count is not the rule;
+/// the `Welcome`. The count is not the rule
 #[test]
 fn a_reconnect_is_told_what_it_missed_once_and_in_words() {
     let scratch = Scratch::new("gap-line");

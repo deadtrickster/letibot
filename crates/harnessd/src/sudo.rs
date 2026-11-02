@@ -1,28 +1,11 @@
-//! `sudo` inside a session: the password is asked of the head, never of a tty.
-//!
-//! Forty `sudo` attempts by agents on this box in 22 days, none of which could
-//! succeed — every one died on *a terminal is required to authenticate*, and two
-//! tried to fake the terminal (`SUDO_USE.md`). The operator's ask, 2026-09-14:
-//! *"if model wants a sudo i must be able to enter password safely and let it
-//! run"*.
-//!
-//! # The shape
-//!
-//! 1. Every command of a host session runs with `SUDO_ASKPASS` pointing at
-//!    `letibot-askpass` (beside this binary) and a `sudo` **shim** ahead of
-//!    `PATH` that execs the real sudo with `-A`, so sudo uses the helper rather
-//!    than looking for a terminal it does not have. `sudo -n` is untouched: a
-//!    probe still answers *no*, honestly.
-//! 2. The command itself has already passed the gate — `sudo` is on the
-//!    always-ask list, so the operator saw *"sudo apt install x"* and admitted
-//!    it before any password is asked.
-//! 3. The helper attaches to the daemon as a head of kind `askpass` and sends
-//!    one frame; the daemon shows every attached head a card with the command
-//!    and a masked field; the answer travels head → daemon → helper → sudo's
-//!    stdin and nowhere else. Not logged, not stored, not in the transcript,
-//!    never seen by the model. Two minutes, then sudo is told no password came.
-//!
-//! The shim and the helper are the two files this module writes and finds.
+//! `sudo` inside a session: the password is asked of the head, never of a tty. A session
+//! has no controlling terminal, so every `sudo` it runs dies on *a terminal is required to
+//! authenticate*. Three pieces make one work 1. Every command of a host session runs with
+//! `SUDO_ASKPASS` pointing at `letibot-askpass` (beside this binary) and a `sudo` shim
+//! ahead of `PATH` that execs the real sudo with `-A`, so sudo uses the helper rather than
+//! looking for a terminal it has not got. `sudo -n` is untouched: a probe still answers no,
+//! honestly. 2. The command has already passed the gate: `sudo` is on the always-ask list
+//! so the operator admitted it before any password is asked. 3.
 
 use std::path::{Path, PathBuf};
 
@@ -43,7 +26,8 @@ fn real_sudo() -> Option<PathBuf> {
         .find(|p| p.is_file())
 }
 
-/// The shim directory: `$XDG_RUNTIME_DIR/letibot/shims` (or `/tmp/letibot-<uid>/shims`).
+/// The shim directory: `$XDG_RUNTIME_DIR/letibot/shims`, or `letibot-shims`
+/// under the temp dir.
 fn shim_dir() -> PathBuf {
     match std::env::var_os("XDG_RUNTIME_DIR") {
         Some(d) => PathBuf::from(d).join("letibot").join("shims"),
@@ -104,18 +88,9 @@ fn write_shim(path: &Path, real: &Path) -> Result<(), String> {
     wait_until_executable(path)
 }
 
-/// **Do not return until `path` can be exec'd**, because "written, chmod'd and renamed into
-/// place" is not the same thing.
-///
-/// `execve` answers `ETXTBSY` for a file **any process holds open for writing**, and the holder
-/// is not hypothetical: a thread forked while the write descriptor was open keeps it until its
-/// own `exec`, and this daemon forks constantly. It is a fact about the INODE, so the rename
-/// above does not help — `deny_write_access` is asked of the inode, not of the name. Only an
-/// exec that succeeds proves nobody holds a writer, and nobody can get one afterwards.
-///
-/// The probe is `sudo --version`, which is the one sudo invocation that answers without a
-/// password, a terminal or a question for the head; its output goes nowhere.
-/// `letibot_tools::testing::write_stub` is the same probe for a fixture's stub.
+/// Do not return until `path` can be exec'd: "written, chmod'd and renamed into place" is
+/// not the same thing, because `execve` answers `ETXTBSY` for a file any process holds open
+/// for writing, and this daemon forks constantly.
 fn wait_until_executable(path: &Path) -> Result<(), String> {
     for _ in 0..100 {
         match std::process::Command::new(path)
@@ -139,11 +114,9 @@ fn wait_until_executable(path: &Path) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    /// **A script this test just wrote, exec'd with no retry of its own.**
-    ///
-    /// `write_shim` does not return until the file can be exec'd (see `wait_until_executable`),
-    /// so a `Text file busy` here would be that guarantee broken rather than the test being
-    /// early — which is why this is not the retry loop it used to be.
+    /// A script this test just wrote, exec'd with no retry of its own
+    /// `write_shim` does not return until the file can be exec'd, so a `Text file
+    /// busy` here would be that guarantee broken rather than the test being early.
     fn run(cmd: &Path, args: &[&str]) -> std::process::Output {
         std::process::Command::new(cmd)
             .args(args)

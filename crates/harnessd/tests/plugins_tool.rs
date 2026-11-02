@@ -1008,7 +1008,7 @@ fn copy_the_nick_list(dir: &Path) {
     .expect("a manifest the session's directory can build");
 }
 
-/// The live loop, for the nick list: `plugin build` → `plugin load` → the pane redrawn,
+/// The live loop, for the nick list: `plugin build` → `plugin load` → the pane redrawn
 /// with nothing of the host rebuilt in between.
 #[test]
 fn the_nick_list_builds_loads_and_is_drawn_without_rebuilding_the_host() {

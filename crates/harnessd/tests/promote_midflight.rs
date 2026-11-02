@@ -21,12 +21,12 @@ use letibot_transcript::{Backgrounding, ToolOutcome, TranscriptItem};
 mod support;
 
 /// How long the run sleeps if nothing intervenes. Long enough that a promote sent about a
-/// second in is unambiguously mid-flight;
+/// second in is unambiguously mid-flight
 const RUN_SLEEP: u64 = 20;
 
 /// How long after Ctrl+O the run's row may take to settle. A promotion ends the wait the
 /// moment the wait loop polls the flag (half a second), so anything near this bound means
-/// nobody took the request;
+/// nobody took the request
 const PROMOTE_BUDGET: Duration = Duration::from_secs(8);
 
 fn repo() -> std::path::PathBuf {
@@ -120,7 +120,7 @@ fn refusing_model_stub() -> u16 {
 }
 
 /// What one driver saw. The promote's own announcement is recorded so a failure can name
-/// which half of the two-halves design arrived;
+/// which half of the two-halves design arrived
 #[derive(Default)]
 struct Record {
     /// The `!` run's result row, and when it settled relative to the promote.
@@ -171,7 +171,7 @@ fn watch(rx: &Receiver<Inbound>, sent: &Instant, rec: &mut Record) {
 }
 
 /// Ctrl+O's frame, mid-run, moves the run the operator is looking at. A `! sleep` runs on
-/// its own thread;
+/// its own thread
 #[test]
 fn a_ctrl_o_promotes_the_operators_run_in_flight() {
     let Some(_) = letibot_tokencore::apparatus::present(

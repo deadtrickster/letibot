@@ -61,7 +61,7 @@ fn scratch(tag: &str) -> PathBuf {
 }
 
 /// The daemon, its stderr going to `log`. `HOME` is a temp directory and the endpoint is a
-/// dead port, on purpose:
+/// dead port, on purpose
 fn start_daemon(dir: &Path, log: &Path, socket: &Path, store: &Path, session: &str) -> Child {
     let out = std::fs::File::create(log).expect("the log file");
     let err = out.try_clone().expect("a second handle on the log");
@@ -499,7 +499,7 @@ fn a_run_still_writing_is_still_a_run_this_daemon_cannot_look_at() {
 }
 
 /// The operator's own run has no deadline - not even the 120 s one. The 120 s default is
-/// for a command the MODEL did not ask to run longer;
+/// for a command the MODEL did not ask to run longer
 #[test]
 fn the_operators_own_run_outlives_the_models_deadline() {
     if std::env::var("LETIBOT_DEADLINE_LIVE").as_deref() != Ok("1") {

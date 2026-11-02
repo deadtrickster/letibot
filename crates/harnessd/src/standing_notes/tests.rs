@@ -442,7 +442,7 @@ fn the_envelope_splits_authorship_and_carries_the_historical_caveat() {
 
 /// The pane's rows: one per note, in the section's order, carrying the index's own fields.
 /// This is the one consumer a PERSON reads, so what it asserts is what the pane would draw
-/// and nothing more:
+/// and nothing more
 #[test]
 fn the_panes_rows_are_the_indexes_own_fields() {
     let ws = dir("rows");

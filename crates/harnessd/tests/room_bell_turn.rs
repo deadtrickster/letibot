@@ -157,7 +157,7 @@ fn wait_for_sentences(session: &str, at_least: usize) {
 
 /// A room event starts a turn in a session nobody typed into. A real `Harness` opened the
 /// way a daemon opens one, with a canned model behind it; another session's `post` is the
-/// bell. Asserted in the order the chain runs:
+/// bell. Asserted in the order the chain runs
 #[test]
 fn a_room_event_starts_a_turn_in_a_session_nobody_typed_into() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -323,7 +323,7 @@ fn a_room_event_starts_a_turn_in_a_session_nobody_typed_into() {
 
 /// The two clients with no room connection say so in their manifest, and the table says so
 /// in words. The head (`letibot-tui`) and the bridge (`letibot-bridge`) are clients of the
-/// DAEMON, not of the room:
+/// DAEMON, not of the room
 #[test]
 fn the_clients_that_cannot_hear_a_room_event_say_so_where_a_person_looks() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

@@ -5,7 +5,7 @@
 //! history says a model did it. One is not: setting `[queue] target` is the operator's
 //! decision, so `propose_target` raises it on every hub, names the exact `leticode.toml`
 //! line, records the proposal in the target's history, and writes no file. `status` is
-//! scoped and bounded:
+//! scoped and bounded
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -200,7 +200,7 @@ const SHOWN_EVIDENCE: usize = 200;
 
 /// How recently a step's log must have grown for the line to say `tail moving` - a build
 /// prints between crates and a test run prints between binaries, so a minute of silence is
-/// not a stall;
+/// not a stall
 const TAIL_MOVING_MS: u64 = 60_000;
 
 /// How long a step's log may stand still before the line says it may be stuck - the same ten minutes
@@ -275,7 +275,7 @@ fn scope(
 }
 
 /// The repository this session is in - the workspace itself when git says it is in one, the
-/// same-named child (`~/Projects/letibot` → `letibot`), or its only repository child;
+/// same-named child (`~/Projects/letibot` → `letibot`), or its only repository child
 fn current(workspace: &Path) -> Option<String> {
     git::repo_of_workspace(workspace)
         .and_then(|r| git::repo_of_worktree(&r))
@@ -584,7 +584,7 @@ pub fn status(store: &Store, repository: Option<&str>) -> Result<String, String>
 
 /// A repository's target, and the gate that failed on it - the whole tail in the full shape
 /// (`None`) the last [`SHOWN_TAIL`] lines of it in a bounded one, with the count of what
-/// was cut. A target whose gate is running says what it is doing, on its own line:
+/// was cut. A target whose gate is running says what it is doing, on its own line
 fn targets(healths: &[TargetHealth], tail: Option<usize>) -> String {
     let now = now_ms();
     let mut out = String::new();

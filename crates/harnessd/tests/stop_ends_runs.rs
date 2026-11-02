@@ -105,7 +105,7 @@ fn stop(child: &mut Child) {
 
 /// The daemon this test spawned, dead whatever happens to the test. Every failure here is a
 /// PANIC, and a plain `Child` left the daemon running on the box's temp space with its
-/// socket bound. A `Drop` is what makes *whatever happens* true:
+/// socket bound. A `Drop` is what makes *whatever happens* true
 struct Daemon(Child);
 
 impl std::ops::Deref for Daemon {
@@ -175,7 +175,7 @@ fn a_stop_ends_the_run_that_holds_the_worker() {
 
     // ---- The run, and it must be one that CANNOT end on its own: a process blocked reading
     // the terminal the daemon holds for it, which is `/bin/cat` on every box and inside every
-    // boundary. `su -c true` was the earlier fixture and it was the defect:
+    // boundary. `su -c true` was the earlier fixture and it was the defect
     head.operator_shell(0, "! /bin/cat")
         .expect("the line is submitted");
 

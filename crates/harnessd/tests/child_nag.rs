@@ -3,7 +3,7 @@
 //! `run_to_completion` opens it, its first turn run, then parked in `serve_child_under` on
 //! its own thread, and a parent's write through the real resolver
 //! (`ParentTodos::upsert_child`). The test waits for the child's own log holding the `[todo
-//! check]` item as `Speaker::Agent`. The clock is driven, not slept through:
+//! check]` item as `Speaker::Agent`. The clock is driven, not slept through
 //! `serve_child_under` takes it as a parameter, so this file injects a 300 ms window.
 
 use std::time::{Duration, Instant};

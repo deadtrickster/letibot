@@ -5,7 +5,7 @@
 //! arrives while the session is idle is delivered at once as an ordinary completion, and a
 //! prompt that gets there before the turn-end wake still carries the batch. The settlement
 //! is put on the session's queue the way its watcher thread would
-//! ([`letibot_harnessd::jobwatch::JobWatchers::queue_for_test`]);
+//! ([`letibot_harnessd::jobwatch::JobWatchers::queue_for_test`])
 
 use std::sync::Arc;
 use std::time::{Instant, SystemTime};

@@ -1,25 +1,20 @@
-//! **A pull request the session opened is watched without being asked** — the operator: *"somehow
-//! model and harness already knows pr is created and watched. maybe intercept gh tool calls?"*.
-//!
-//! When a `bash` call that ran `gh pr create` succeeds and its output names the pull request
-//! (`https://github.com/OWNER/REPO/pull/N`, which is what `gh pr create` prints), the harness arms
-//! the watches a person would want on it — its checks, its reviews, CodeRabbit's review, new
-//! comments, and its merging or closing — as ordinary monitors owned by the session, through the
-//! same door the operator's own calls use, and says so in that call's result, so the model reads
-//! what is being watched at the moment it opened the pull request. Each firing wakes the session;
-//! `monitor` with `action: "retire"` ends one.
-//!
-//! Read off the call and its RESULT, never guessed from a command alone: a `gh pr create` that
-//! failed opened nothing, and one that succeeded printed the URL.
+//! A pull request the session opened is watched without being asked. When a `bash` call
+//! that ran `gh pr create` succeeds and its output names the pull request, the harness arms
+//! the watches a person would want on it (its checks, reviews, CodeRabbit's review, new
+//! comments, and its merging or closing) as ordinary monitors owned by the session, through
+//! the same door the operator's own calls use, and says so in that call's result. Each
+//! firing wakes the session; `monitor` with `action: "retire"` ends one. Read off the call
+//! and its RESULT, never guessed from a command alone: a `gh pr create` that failed opened
+//! nothing, and one that succeeded printed the URL.
 
 use letibot_transcript::ToolCall;
 
-/// **What a pull request is watched for** — one watch, one `gh` look a time for all of them
-/// (the operator: *"we can coalesce monitors sets like these"*, of the five it used to be).
+/// What a pull request is watched for: one watch, one `gh` look a time for all
+/// of them, because they are one question about one pull request.
 pub const WATCHED: &[&str] = &["checks", "review", "coderabbit", "comment", "closed"];
 
-/// **The pull request a successful `gh pr create` opened**, as `(url, number)` — `None` for any
-/// other call, and for one whose output names no pull request.
+/// The pull request a successful `gh pr create` opened, as `(url, number)`
+/// `None` for any other call, and for one whose output names none.
 pub fn opened(call: &ToolCall, payload: &str) -> Option<(String, u64)> {
     if call.name != "bash" {
         return None;
@@ -29,9 +24,9 @@ pub fn opened(call: &ToolCall, payload: &str) -> Option<(String, u64)> {
     if !(command.contains("gh pr create") || command.contains("gh pr new")) {
         return None;
     }
-    // **The LAST pull request URL in the output**, not the first GitHub URL: a command that pushes
-    // before it creates prints git's `set up to track 'https://github.com/o/r.git/…'` first, and
-    // stopping there missed stroppy-io/stroppy#212. `gh pr create` prints the pull request last.
+    // The LAST pull request URL in the output, not the first GitHub URL: a
+    // command that pushes before it creates prints git's tracking line first
+    // and `gh pr create` prints the pull request last.
     payload
         .match_indices("https://github.com/")
         .filter_map(|(at, _)| {
@@ -45,8 +40,8 @@ pub fn opened(call: &ToolCall, payload: &str) -> Option<(String, u64)> {
         .last()
 }
 
-/// **The `monitor` call that watches pull request `n` at `url`** — named `pr-N`, repeating until
-/// its day is out or the pull request is closed.
+/// The `monitor` call that watches pull request `n` at `url`, named `pr-N` and
+/// repeating until its day is out or the pull request is closed.
 pub fn watch_calls(url: &str, n: u64) -> Vec<(String, ToolCall)> {
     let name = format!("pr-{n}");
     let args = serde_json::json!({
@@ -64,8 +59,8 @@ pub fn watch_calls(url: &str, n: u64) -> Vec<(String, ToolCall)> {
     )]
 }
 
-/// **What the model reads, appended to the `gh pr create` result** — what is now watched, and
-/// what could not be.
+/// What the model reads, appended to the `gh pr create` result: what is now
+/// watched, and what could not be.
 pub fn told(url: &str, armed: &[String], refused: &[(String, String)]) -> String {
     let mut out = String::new();
     if !armed.is_empty() {
@@ -107,8 +102,8 @@ mod tests {
             Some(("https://github.com/o/r/pull/412".into(), 412))
         );
         assert_eq!(opened(&bash("gh pr view 412"), out), None, "not a create");
-        // **stroppy-io/stroppy#212, as it was created**: a push first, whose tracking line names
-        // the repository's URL before the pull request's.
+        // A push first, whose tracking line names the repository's URL before
+        // the pull request's.
         let pushed = " * [new branch]      fix/x -> fix/x\nbranch 'fix/x' set up to track \
                       'https://github.com/stroppy-io/stroppy.git/fix/x'.\n\
                       https://github.com/stroppy-io/stroppy/pull/212\n";

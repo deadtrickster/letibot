@@ -4,7 +4,7 @@
 //! conversation and `queued · pull` and nothing else, because the re-ingest's fork wrote
 //! the carried rows one autocommit `INSERT` at a time while a dozen daemons shared the
 //! file's single write lock. So this pins, on a long conversation, a head attached BEFORE
-//! the harness opens and a prompt queued while the re-seat runs:
+//! the harness opens and a prompt queued while the re-seat runs
 
 use letibot_harnessd::config::Config;
 use letibot_harnessd::harness::{ForkTail, Harness};

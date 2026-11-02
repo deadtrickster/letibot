@@ -2,10 +2,10 @@
 //! `Harness::run_after_operator_shell`, one of the two call sites that run a turn. The two
 //! call sites differ in what they put in front of the model, and that difference is this
 //! file's assertion: `Harness::submit_item` appends the row its turn is about, and
-//! `Harness::run_after_operator_shell` appends nothing - the rows are already on the log,
+//! `Harness::run_after_operator_shell` appends nothing - the rows are already on the log
 //! so all it adds is the turn, and it opens the turn itself. So the `!` line is on the log
 //! exactly once and the second prompt carries a head the first never had. It drives the
-//! daemon's own arm rather than a unit on the harness:
+//! daemon's own arm rather than a unit on the harness
 
 use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
@@ -79,7 +79,7 @@ fn wiring(cfg: &Config) -> SessionWiring {
 // ---------------------------------------------------------------------------
 
 /// A model that answers the turn, and keeps the request it was asked. One frame list per
-/// turn, answered as soon as the request has been read - and the body recorded first,
+/// turn, answered as soon as the request has been read - and the body recorded first
 /// because the prompt is what this file has to read.
 struct Stub {
     endpoint: Endpoint,
@@ -241,8 +241,8 @@ impl Drop for TempDir {
 // ---------------------------------------------------------------------------
 
 /// The `!` line's turn reaches the model with the operator's line and their command's
-/// output in it, and the answer lands - and the two call sites differ in exactly one way,
-/// which this asserts. The daemon arm is the real one:
+/// output in it, and the answer lands - and the two call sites differ in exactly one way
+/// which this asserts. The daemon arm is the real one
 #[test]
 fn the_turn_after_an_operator_shell_reads_the_line_and_the_output() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -274,7 +274,7 @@ fn the_turn_after_an_operator_shell_reads_the_line_and_the_output() {
 
     // ---- The call site this file exists for ------------------------------------ The
     // operator's run comes back as the command the worker dispatches - the same frame
-    // `start_operator_run`'s settle path sends, through the same door (`Hub::submit_daemon`,
+    // `start_operator_run`'s settle path sends, through the same door (`Hub::submit_daemon`
     let hub = registry.get(id).expect("the session's hub");
     let queued = hub.submit_daemon(
         "dead",
@@ -304,7 +304,7 @@ fn the_turn_after_an_operator_shell_reads_the_line_and_the_output() {
     );
 
     // ---- What the model was handed --------------------------------------------- The prompt
-    // is the assertion, and it is why the stub records requests:
+    // is the assertion, and it is why the stub records requests
     assert_eq!(
         stub.turns(),
         2,

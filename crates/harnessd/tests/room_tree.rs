@@ -4,7 +4,7 @@
 //! naming an id; a subagent at depth 2 is a member of that same room, though it never
 //! connects (the door refuses it); and a session in another project gets another room and
 //! never hears the first - where before, project B's `ram` was refused `Busy` by project
-//! A's claim. Nothing on the box: a `Server` on a socket in a directory of the test's own,
+//! A's claim. Nothing on the box: a `Server` on a socket in a directory of the test's own
 //! and `SessionRoom::connect` - the same two objects a daemon uses.
 
 use std::sync::Arc;
@@ -25,7 +25,7 @@ fn scratch(what: &str) -> std::path::PathBuf {
 
 /// The key is the tree's own - the twelve hex characters `scripts/letibot` cuts
 /// `letibot_sessionlog::workspace_key` computes and `s-gatekeeper-<key>` is spelled from.
-/// This is the pin that lets the room crate keep its own copy of the rule:
+/// This is the pin that lets the room crate keep its own copy of the rule
 #[test]
 fn the_project_key_is_the_workspace_key_the_rest_of_the_tree_uses() {
     let dir = scratch("key");

@@ -1,11 +1,11 @@
 //! `/models local.glm` from a daemon started on other weights - a switch replaces the
 //! vocabulary, the dialect and the address of a live session instead of needing a daemon
-//! restarted on those weights. Three tiers, because the parts fail for different reasons:
+//! restarted on those weights. Three tiers, because the parts fail for different reasons
 //! the decision (`local_switch_decision`) against a stub `/props` is pure and needs no
-//! GGUF; the session switch (`Harness::set_local_model`) needs the daemon's own vocabulary;
+//! GGUF; the session switch (`Harness::set_local_model`) needs the daemon's own vocabulary
 //! and the full cross-weights switch needs both GGUFs, being the one run that proves a
 //! second `Vocab::load` in one process. The stub answers `/props` and nothing else - never
-//! `/completion` - so nothing in this file can put load on a model server:
+//! `/completion` - so nothing in this file can put load on a model server
 
 use std::io::{Read, Write};
 use std::net::TcpListener;

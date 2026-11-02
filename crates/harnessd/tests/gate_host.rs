@@ -1,5 +1,5 @@
 //! The gate on a declared host, end to end, against a fake ssh - the second implementation
-//! of `GateRunner` run through the real transport: a real `rsync`, a real `git bundle`,
+//! of `GateRunner` run through the real transport: a real `rsync`, a real `git bundle`
 //! real `git worktree`, real `ssh` argv and the real bounded runner. The "host" is a
 //! directory on this box: `$LETIBOT_SSH` skips ssh's own flags and runs what is left with
 //! `HOME` pointing at the rig, so `root = "~/letibot-remote"` lands under the fixture and
@@ -353,7 +353,7 @@ fn a_step_that_fails_on_the_host_is_red_and_the_next_one_never_runs() {
 
 /// A step still running at the deadline is killed on the host and the row is `timed_out` -
 /// and nothing is left running there. "At the deadline, not at the far side's end" is a
-/// fact about the STEP, not a stopwatch over the box:
+/// fact about the STEP, not a stopwatch over the box
 #[test]
 fn a_step_that_outlives_the_deadline_is_killed_on_the_host() {
     let _only = only_rig();
@@ -558,7 +558,7 @@ fn an_unreachable_host_is_unjudged_with_a_sentence() {
 
 /// The second gate of one repository on one host reuses everything the first one made - the
 /// same directory, the same worktree and the same build cache - and sends only what is new.
-/// The first run's bundle carries the whole history;
+/// The first run's bundle carries the whole history
 #[test]
 fn the_second_run_of_one_repository_is_warm() {
     let _only = only_rig();
@@ -592,12 +592,12 @@ fn the_second_run_of_one_repository_is_warm() {
 }
 
 // -------------------------------------------------------------------------------------------
-// The demand a step makes of the MACHINE `LETIBOT_REQUIRE_APPARATUS=1` is the project's,
+// The demand a step makes of the MACHINE `LETIBOT_REQUIRE_APPARATUS=1` is the project's
 // and it is right: a test that skips must not read as a pass.
 
 /// A machine that cannot meet the demand runs the step without it, and the row says so. The
 /// prefix comes off that ONE step and nothing else about it moves, and the evidence a
-/// person reads leads with the fact:
+/// person reads leads with the fact
 #[test]
 fn a_machine_that_cannot_meet_the_demand_runs_the_step_without_it_and_says_so() {
     let _only = only_rig();
@@ -668,7 +668,7 @@ fn a_machine_with_the_apparatus_runs_the_demand_as_the_project_wrote_it() {
 
 /// A machine that has no cgroup of its own to give, but can make a delegated scope, gets
 /// the demand MET - the step is started inside `systemd-run --user --scope -p Delegate=yes`
-/// and the prefix stays where the project put it:
+/// and the prefix stays where the project put it
 #[test]
 fn a_machine_that_can_make_a_delegated_scope_keeps_the_demand_and_gets_one() {
     let _only = only_rig();

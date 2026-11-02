@@ -1,4 +1,4 @@
-//! A session's model choice survives a restart. It did not: `set_provider` was in-memory,
+//! A session's model choice survives a restart. It did not: `set_provider` was in-memory
 //! the session row had no column for a choice, and a switched session came back on the
 //! daemon's CLI default with its first turn quietly going to a model nobody chose for that
 //! conversation. Three halves, each pinned here: the switch writes the row in the same

@@ -1,22 +1,11 @@
-//! The subagent (task) journal: live state of every subagent this daemon has
-//! spawned, written to a JSON file that `leticode-dash` reads.
-//!
-//! # It is a file, not a socket
-//!
-//! The dashboard is a *view* and the daemon is the *record* (the leticode design
-//! notes under `docs/`).
-//! The record here is a small JSON file the daemon rewrites on every subagent
-//! spawn and finish, which a head polling it can read without owning a socket or
-//! speaking the session protocol. The alternative — a query over the socket — would
-//! make the dashboard a second head with a state machine to keep in step; a file is
-//! a `read(2)` and done.
-//!
-//! # It is rewritten atomically
-//!
-//! The file is written to a sibling and renamed into place, because a reader that
-//! polls every few seconds must never see a half-written frame. A torn JSON blob
-//! would read as a missing state, which a dashboard shows as "nothing is running"
-//! — the wrong answer at the exact moment it matters.
+//! The subagent (task) journal: live state of every subagent this daemon has spawned,
+//! written to a JSON file that `leticode-dash` reads. It is a file, not a socket. The
+//! daemon rewrites it on every subagent spawn and finish, so a head polling it reads the
+//! record without owning a socket or speaking the session protocol; a query over the socket
+//! would make the dashboard a second head with a state machine to keep in step. It is
+//! rewritten atomically, to a sibling renamed into place, because a reader that polls must
+//! never see a half-written frame: a torn JSON blob reads as a missing state, which a
+//! dashboard shows as "nothing is running".
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -51,11 +40,9 @@ struct StateFile {
     skills: Vec<serde_json::Value>,
 }
 
-/// A shared, file-backed list of subagent states.
-///
-/// Held in [`crate::harness::Parts`] and cloned into the subagent runner, so every
-/// spawn and finish lands here however many sessions or subagents are running. The
-/// `Mutex` is the write path only; a dashboard never locks it.
+/// A shared, file-backed list of subagent states. Cloned into the subagent runner, so every
+/// spawn and finish lands here however many sessions are running. The `Mutex` is the write
+/// path only.
 #[derive(Debug)]
 pub struct TaskJournal {
     entries: Mutex<Vec<TaskEntry>>,
@@ -169,8 +156,8 @@ fn installed(program: &str) -> bool {
 }
 
 /// Where the state file lives: `$XDG_RUNTIME_DIR/leticode-state.json`, falling back
-/// to the temp directory. `None` when neither resolves — a bare test environment,
-/// where the journal still works in memory.
+/// to the temp directory. `None` when neither resolves, as in a bare test
+/// environment, where the journal still works in memory.
 pub fn default_state_path() -> Option<PathBuf> {
     if let Ok(run) = std::env::var("XDG_RUNTIME_DIR") {
         return Some(PathBuf::from(run).join("leticode-state.json"));

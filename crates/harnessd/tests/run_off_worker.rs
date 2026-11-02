@@ -1,5 +1,5 @@
 //! The operator's `!` run does not hold the daemon's worker - the proof, plus the two
-//! behaviours the handoff has to keep. `CommandKind::OperatorShell` runs off the worker:
+//! behaviours the handoff has to keep. `CommandKind::OperatorShell` runs off the worker
 //! the wait inside it would otherwise hold the daemon for as long as the command does, so
 //! nothing else runs while a run is in flight and a second `!` line only queues.
 
@@ -36,7 +36,7 @@ fn repo() -> std::path::PathBuf {
 
 fn config(session: &str, socket: &std::path::Path, model_port: u16) -> Config {
     let mut cfg = Config::for_this_box(repo());
-    // Not this box's configuration, and not this box's model:
+    // Not this box's configuration, and not this box's model
     cfg.web_search = None;
     cfg.permission = Vec::new();
     cfg.dialect = Dialect::Qwen;
@@ -121,7 +121,7 @@ fn refusing_model_stub() -> u16 {
 }
 
 /// A daemon, a seated head, and the handles a driver needs. The threads are in their real
-/// places:
+/// places
 struct Setup {
     daemon: Daemon,
     client: HeadClient,

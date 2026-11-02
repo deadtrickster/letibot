@@ -4,8 +4,8 @@
 //! this is it. # What is replayed, and against what The gate has been writing the rows for
 //! this all along: `asked = 1` is a call a person was put in front of and answered - the
 //! ground truth. Each call is rebuilt from the row's INPUT (the tool its arguments, the
-//! mode, the trail) and run back through the live gate, not from `action` or `baseline`,
-//! which are layer A's *reading*:
+//! mode, the trail) and run back through the live gate, not from `action` or `baseline`
+//! which are layer A's *reading*
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -40,7 +40,7 @@ pub struct Replayed {
     pub brief: Option<String>,
     /// Why an `Unsure` was unsure, when it was one - and `None` for a verdict and for a row
     /// where no model spoke. Carried so a replay can answer *how often does the guard run out
-    /// of room* by counting rather than by reading prose:
+    /// of room* by counting rather than by reading prose
     pub unsure: Option<letibot_tools::authorise::UnsureKind>,
 }
 
@@ -97,7 +97,7 @@ impl Report {
     }
 
     /// The furthest scope the evidence earns, floored at the project and capped at
-    /// `host_other`. Two rules. The cap:
+    /// `host_other`. Two rules. The cap
     fn earned_reach(&self) -> EffectScope {
         use EffectScope::*;
         // Nearest-first; `external` is not a candidate a replay can choose.
@@ -210,7 +210,7 @@ pub const ARMS: &[Arm] = &[
 
 /// Replay up to `limit` operator-answered rows from `store` against `cfg`'s guard. The
 /// guard is asked with an UNRESTRICTED scope, which is the only way to measure what it
-/// should be trusted with:
+/// should be trusted with
 pub fn replay(cfg: &Config, store: &Path, limit: usize) -> Result<Report, String> {
     // The arm that SHIPS, so a calibration measures the guard as it runs.
     replay_arm(cfg, store, limit, ARMS[3])
@@ -316,7 +316,7 @@ pub fn replay_rows(
 
         // The surroundings a real session declares. Without them the shell is
         // `ShellTrust::Unknown`, under which a bare command name does not resolve - and an
-        // unresolved reading is a worse measurement:
+        // unresolved reading is a worse measurement
         let sur = letibot_tools::Surroundings::from_env(workspace.clone()).with_pinned_shell(
             "replaying a command that already ran in a session whose exec backend spawns /bin/sh -c with the environment cleared and PATH fixed at seat time",
         );
@@ -418,7 +418,7 @@ pub fn replay_rows(
     Ok(report)
 }
 
-/// The agent's own prose for the round a decision came from. The corpus does not store it,
+/// The agent's own prose for the round a decision came from. The corpus does not store it
 /// so it is read back out of the transcript: the newest assistant item written before the
 /// decision. Bounded like an utterance, for the same reason.
 fn claim_before(db: &Store, session_id: &str, before_ms: i64) -> Option<String> {

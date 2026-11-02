@@ -5,7 +5,7 @@
 //! result. Under a profile that does not draw tool rows that is nothing at all; and because
 //! the answer was not a `User` row it was not in the authorisation trail either, so a *yes*
 //! given through that card could not be cited as authorisation while a *yes* typed in the
-//! composer could. The whole chain and nothing stubbed between the call and the row:
+//! composer could. The whole chain and nothing stubbed between the call and the row
 
 use std::sync::Arc;
 
@@ -335,7 +335,7 @@ fn the_answer_is_the_operators_own_row_and_the_trail_can_cite_it() {
 }
 
 /// A typed answer is a first-class answer, and it lands as the person's row. The fourth
-/// shape the tool takes (`QuestionAnswer::free`):
+/// shape the tool takes (`QuestionAnswer::free`)
 #[test]
 fn a_typed_answer_lands_as_the_operators_own_words() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {

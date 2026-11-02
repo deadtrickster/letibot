@@ -5,7 +5,7 @@
 //! half is checked against its own instrument rather than the two being added together.
 //! What it proves: the census's gauges equal a fresh walk of the rows, including after a
 //! fork; a turn costs the same late as early (a per-turn copy of the conversation would
-//! grow); the heap is the SUM over sessions, within the tolerance stated below;
+//! grow); the heap is the SUM over sessions, within the tolerance stated below
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -365,7 +365,7 @@ fn the_heap_plateaus_at_what_the_sessions_hold() {
     );
     // The token regions are real memory, just not heap: `RssShmem` grew with them, and by less
     // than the mapping, because a doubling's tail is capacity nobody has written yet. On a box
-    // with no `/proc` this half says nothing rather than failing:
+    // with no `/proc` this half says nothing rather than failing
     let shmem_grew = shmem_end.saturating_sub(shmem0);
     let region_total = (footprint_total - held_total) as u64;
     if shmem_end == 0 {

@@ -5,7 +5,7 @@
 //! attached to could make the worker build a SECOND `Harness` for a live child: two writers
 //! on one transcript. * no end - nothing ever removed a session from the registry, closed a
 //! finished child's hub or dropped its harness, so a finished subagent kept its threads and
-//! its memory for ever. The real chain and nothing stubbed:
+//! its memory for ever. The real chain and nothing stubbed
 
 use std::net::TcpListener;
 use std::path::Path;
@@ -42,7 +42,7 @@ fn config(session_id: &str, endpoint: Endpoint, store: &Path) -> Config {
     let mut cfg = Config::for_this_box("/tmp");
     cfg.dialect = Dialect::Qwen;
     // `leticode`, the unconfined seat with the delegation trio (`task`, `task_result`
-    // `task_message`) - and not `coder`, which has the trio but is a CONFINED seat:
+    // `task_message`) - and not `coder`, which has the trio but is a CONFINED seat
     cfg.seat = Seat::Leticode;
     cfg.endpoint = endpoint;
     cfg.http_retries = 0;
@@ -504,7 +504,7 @@ fn fifty_finished_subagents_leave_no_thread_and_no_registry_entry() {
 
 /// A stopped child is gone, and a wake or a message to it is answered as gone - not
 /// `HandedOn` into a hub nobody reads. Before the guard, a child that left `serve_child` on
-/// a stop kept its hub registered:
+/// a stop kept its hub registered
 #[test]
 fn a_wake_or_a_message_to_a_closed_child_is_answered_gone() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {

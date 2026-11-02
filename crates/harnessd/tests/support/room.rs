@@ -19,9 +19,9 @@
 /// the kernel does not have to honour - the hard limit is the ceiling.
 const WANT: libc::rlim_t = 4_096;
 
-/// Raise this process's soft open-file limit to `need`: `Some()` when the process may open
+/// Raise this process's soft open-file limit to `need`: `Some` when the process may open
 /// that many, `None` after announcing why not (and a failure under
-/// `LETIBOT_REQUIRE_APPARATUS`). `what` names the demand in a person's words;
+/// `LETIBOT_REQUIRE_APPARATUS`). `what` names the demand in a person's words
 pub fn room_for(what: &str, need: u64) -> Option<()> {
     let mut lim = libc::rlimit {
         rlim_cur: 0,

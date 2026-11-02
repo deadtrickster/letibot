@@ -2,7 +2,7 @@
 //! case: a todo conditioned on a job's end, then a restart of the head and the daemon -
 //! once the server is back it should fire, because the job is gone. The DECISION is already
 //! tested elsewhere: `harness::fate_of` reads a handle this daemon never ran as
-//! `JobFate::Unknown`, and `Unknown` MEETS the condition. What was missing is the DELIVERY,
+//! `JobFate::Unknown`, and `Unknown` MEETS the condition. What was missing is the DELIVERY
 //! and the hole is one sentence long: every door that turns a stored fact into a turn is a
 //! bell, and a bell is rung by something that was running before the restart.
 
@@ -253,7 +253,7 @@ fn wait_for_the_firing(hub: &Hub) -> Option<(String, Duration)> {
 }
 
 /// The daemon after a restart seats the firing by itself - no head, no command, and nothing
-/// ringing. The session is the store's: the board is on disk, the job's ending is on disk,
+/// ringing. The session is the store's: the board is on disk, the job's ending is on disk
 /// and the daemon that comes up against them has never seen either.
 #[test]
 fn a_restart_fires_the_row_whose_job_is_gone() {

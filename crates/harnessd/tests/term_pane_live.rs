@@ -1,9 +1,9 @@
 //! `!term` end to end: the daemon's own driver, a real pty, and a real program in it. The
-//! pty is asserted without a daemon and the frame path against a driver that runs nothing,
+//! pty is asserted without a daemon and the frame path against a driver that runs nothing
 //! so nothing joined the two - which is exactly where a defect would live. This installs
 //! `letibot_harnessd::term::Terminals` (the driver `cli.rs` installs at startup, not a
 //! double) on a registry, attaches a head over a real socket, and drives it with the frames
-//! a head sends. What it cannot answer: whether `nano` is *usable* - the right rectangle,
+//! a head sends. What it cannot answer: whether `nano` is *usable* - the right rectangle
 //! the right chords. That needs a person on a real terminal.
 
 use std::path::PathBuf;
@@ -47,7 +47,7 @@ fn workspace(tag: &str) -> PathBuf {
 }
 
 /// The daemon's registry, with the daemon's own driver on it. The line
-/// `crates/harnessd/src/cli.rs` runs at startup, with the same `Weak`:
+/// `crates/harnessd/src/cli.rs` runs at startup, with the same `Weak`
 fn daemon(session: &str, workspace: &std::path::Path) -> Arc<Registry> {
     let registry = Registry::new();
     registry
@@ -154,7 +154,7 @@ fn read_until(r: &mut FrameReader<UnixStream>, needle: &str) -> Vec<u8> {
 }
 
 /// The pane's program gets the console's environment, and not the daemon's own. The control
-/// is the first assertion, and it is what makes the absence mean anything:
+/// is the first assertion, and it is what makes the absence mean anything
 #[test]
 fn the_panes_program_gets_the_consoles_environment_and_not_the_daemons_own() {
     let _serial = serial();
@@ -209,7 +209,7 @@ fn the_panes_program_gets_the_consoles_environment_and_not_the_daemons_own() {
 
 /// A pane whose program exited frees its slot, and the next `!term` is not refused. The
 /// daemon kept the slot while the head had lost the rectangle, because the question it
-/// asked was `closed` (has anybody ended this pane) and nobody had:
+/// asked was `closed` (has anybody ended this pane) and nobody had
 #[test]
 fn a_pane_whose_program_exited_frees_its_slot() {
     let _serial = serial();
@@ -277,7 +277,7 @@ fn until_status(r: &mut FrameReader<UnixStream>) -> Option<String> {
 
 /// A bare `!term` gives a head back the screen the daemon holds - and a live pane. Who
 /// holds the screen is the decision underneath, and it is the daemon. It is deliberately a
-/// second head, and the proof is the replay:
+/// second head, and the proof is the replay
 #[test]
 fn a_bare_term_line_attaches_to_the_screen_the_daemon_holds() {
     let _serial = serial();
@@ -430,7 +430,7 @@ fn the_pane_runs_in_the_sessions_workspace_and_not_the_daemons() {
 }
 
 /// The operator's bytes reach the program verbatim, and it is the program that answers. `tr
-/// a-z A-Z` and not `cat`, for a reason that is the whole point:
+/// a-z A-Z` and not `cat`, for a reason that is the whole point
 #[test]
 fn the_operators_bytes_reach_the_program() {
     let _serial = serial();
@@ -596,7 +596,7 @@ fn closing_is_the_daemons_act_and_names_the_operator() {
 }
 
 /// The daemon answers *what is this session's pane running*, and a detach is invisible to
-/// it. `None` is an answer and not a failure:
+/// it. `None` is an answer and not a failure
 #[test]
 fn the_status_read_answers_what_is_running_and_a_detach_is_invisible_to_it() {
     let _serial = serial();

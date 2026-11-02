@@ -1,10 +1,10 @@
-//! One turn tail for every door - `TODO.md`. A turn reaches a session through eight doors:
+//! One turn tail for every door - `TODO.md`. A turn reaches a session through eight doors
 //! a head's prompt, a peer's or parent's message, a wake, the idle plan-check, the
 //! operator's `!` line, a subagent's task, the continuation after a wall, and the
 //! continuation after a FALLBACK. Each used to carry its own copy of what happens around a
 //! turn, and the copies had drifted: no waiter armed by a wake, a child's `turn_failed`
 //! with no reason in it, a refused-compaction latch shared with nobody. So the sequence
-//! lives here, once, and both owners call it:
+//! lives here, once, and both owners call it
 
 use std::sync::Arc;
 
@@ -30,7 +30,7 @@ pub enum Door {
     /// again every window).
     Nag(Option<String>),
     /// The queue's stuck-row census, as a turn - the clock's second subject, and it carries
-    /// nothing: its identity is the DELIVERY (`TodoNagClock::census_said`), not the words,
+    /// nothing: its identity is the DELIVERY (`TodoNagClock::census_said`), not the words
     /// because the sentence names the AGE of the oldest row and so changes at every delivery.
     Census,
     /// The turn after the operator's own `!` line.
@@ -39,7 +39,7 @@ pub enum Door {
     Reseat,
     /// The turn the daemon owes after it moved the session off a model that was out - the
     /// operator's ruling, 2026-10-12: *"when it finally applied the turn didnt continue"*. The
-    /// model that refused has already been replaced;
+    /// model that refused has already been replaced
     Fallback,
 }
 
@@ -98,7 +98,7 @@ impl TurnOwner for Bare {
 
 /// Run one turn through DOOR, and everything around it. `turn` is the door's own act
 /// `Ok(None)` is a door that found nothing to say, and then no turn ran and nothing is
-/// tidied. And the turn a fallback owes:
+/// tidied. And the turn a fallback owes
 pub fn run_turn(
     h: &mut Harness,
     owner: &mut dyn TurnOwner,
@@ -166,7 +166,7 @@ fn one_turn(
     let mut compacted = h.transcript_id() != before;
     // A wall that compacted is not the end of the prompt. Each continuation is a whole turn
     // with this same settle. Room is MEASURED, not read off a flag (the no-progress guard
-    // turns `auto_compact` off without freeing anything);
+    // turns `auto_compact` off without freeing anything)
     let mut walls = 0;
     while is_wall(&out) {
         h.measure_resident();
@@ -262,7 +262,7 @@ fn settle(
     }
     // The wall is the one failure that must still compact, and the two outcomes take two
     // DIFFERENT doors: a success takes the pre-emptive door (would the next turn fit?), which
-    // the no-progress guard stands down;
+    // the no-progress guard stands down
     let wall = is_wall(&out);
     let attempted = if out.is_ok() {
         h.compact_if_at_the_wall()
@@ -296,7 +296,7 @@ fn settle(
 
 /// Announce a failed turn on the session's own log, as a terminal event. It used to publish
 /// a `Warning` and nothing else, so a head's `TurnState` stayed `Running` for the rest of
-/// the session and its spinner span at a dead turn. Both frames go out:
+/// the session and its spinner span at a dead turn. Both frames go out
 pub(crate) fn publish_failure(hub: &Arc<Hub>, turn_id: &str, e: &HarnessError) {
     hub.publish(SessionEvent::TurnFailed {
         turn_id: turn_id.to_string(),

@@ -5,7 +5,7 @@
 //! closes - so closing a session's four connections returned none of them. "Close it
 //! properly" was therefore never the fix; fewer connections is, and `Store::open` now hands
 //! every caller in the process the same connection per store file. `/dev/fd` on Darwin and
-//! `/proc/self/fd` on Linux:
+//! `/proc/self/fd` on Linux
 
 use std::path::Path;
 

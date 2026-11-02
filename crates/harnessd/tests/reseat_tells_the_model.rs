@@ -84,7 +84,7 @@ fn wiring(cfg: &Config) -> SessionWiring {
 }
 
 /// The model is told it was re-seated, and answers - and the stale notice is gone. Asserted
-/// on the conversation itself:
+/// on the conversation itself
 #[test]
 fn a_reseat_tells_the_model_and_starts_its_turn() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {

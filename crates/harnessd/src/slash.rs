@@ -78,7 +78,7 @@ pub enum Slash {
     Tools,
     Models,
     /// Switch what answers THIS conversation. The standing choice belongs to
-    /// [`Slash::DefaultModel`]:
+    /// [`Slash::DefaultModel`]
     ModelsSet {
         provider: String,
         model: Option<String>,
@@ -92,7 +92,7 @@ pub enum Slash {
     Gate(GateVerb),
     /// The merge queue's own verb, for the one act on an entry that is a person's. `/queue`
     /// alone is the head's - it opens the pane and never reaches here. What does is the
-    /// sub-verb, because restarting a review is a daemon act:
+    /// sub-verb, because restarting a review is a daemon act
     Queue(QueueVerb),
     /// A queue verb with its scope named - `/queue all VERB …` acts across every repository
     /// `/queue /PATH VERB …` in that one. A bare [`Slash::Queue`] is [`QueueScope::Here`].
@@ -121,7 +121,7 @@ pub enum Slash {
 
 /// What the operator is asking of the merge queue. A person's verdict on what the review
 /// said, and a person's decision to stop holding the entry at all. `veto` carries the
-/// person's own words because the message the child receives is built from them:
+/// person's own words because the message the child receives is built from them
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QueueVerb {
     /// Re-attempt one entry's review. `entry` is the id the pane's row carries.
@@ -141,7 +141,7 @@ pub enum QueueVerb {
     /// worktree stay; the row and its verdict go.
     Clean { entry: Option<String> },
     /// Gate the target's tip again, even when it was already judged. `target` is the project's
-    /// `[queue] target` when none is named;
+    /// `[queue] target` when none is named
     Regate {
         repository: Option<String>,
         target: Option<String>,
@@ -180,7 +180,7 @@ pub enum GateVerb {
 
 /// `PROVIDER[/MODEL]`, split - the one spelling of a model name in this tree. A function
 /// rather than two `split_once('/')`s because the two callers must not disagree about what
-/// `deepseek/deepseek-flash` means:
+/// `deepseek/deepseek-flash` means
 pub fn split_model_name(spec: &str) -> (String, Option<String>) {
     match spec.split_once('/') {
         Some((p, m)) => (p.to_string(), Some(m.to_string())),
@@ -663,7 +663,7 @@ pub fn models_listing(current: &str) -> Vec<String> {
 
 /// What `/models NAME` resolved to. Three kinds, because there are three: a metered
 /// provider, the daemon's own server, and a model this fleet declares. Two of the three are
-/// local, and that is the axis this tree already turns on:
+/// local, and that is the axis this tree already turns on
 #[derive(Debug, Clone, PartialEq)]
 pub enum ModelChoice {
     /// `/models local` - this daemon's own server, exactly as it was started.
@@ -762,7 +762,7 @@ pub fn fleet_model_named(provider: &str, file: Option<&std::path::Path>) -> bool
 
 /// Can a RUNNING TURN take this `/models` line up at all? A metered switch is a backend
 /// built and put in place, so the turn may take the line. `local` is yes only when the
-/// session is not on another model's weights:
+/// session is not on another model's weights
 pub fn mid_turn_switch_ok(line: &str, on_foreign_weights: bool) -> bool {
     match Slash::parse(line) {
         Slash::ModelsSet { provider, .. } => {
@@ -1308,7 +1308,7 @@ mod tests {
 }
 
 /// The supervised-labelling loop, served from the store. Deliberately not routed through
-/// the live gate, for the deadlock `answers` is shaped around:
+/// the live gate, for the deadlock `answers` is shaped around
 pub fn gate(store_path: Option<&std::path::Path>, verb: &GateVerb) -> SlashReply {
     let Some(path) = store_path else {
         return SlashReply {
@@ -1350,7 +1350,7 @@ pub fn gate(store_path: Option<&std::path::Path>, verb: &GateVerb) -> SlashReply
                         "  {} decided by a rule or a mode with nobody asked",
                         c.total.saturating_sub(c.decided_by_operator)
                     ),
-                    // The two columns nothing writes, named here rather than left for a reader to discover:
+                    // The two columns nothing writes, named here rather than left for a reader to discover
                     // `p_allow` has no producer because the oracle answers with a hard label, and
                     // `oracle_model` is empty because the model is already named in full on `verdict_by`.
                     "  p_allow and oracle_model are NULL on every row: neither has a \
@@ -1492,7 +1492,7 @@ mod the_verb_table_is_the_parser {
             })
         );
         // `reset` and `clean` take an id or nothing, and nothing is the whole queue. Both
-        // spellings are asserted:
+        // spellings are asserted
         assert_eq!(
             Slash::parse("queue reset"),
             Slash::Queue(QueueVerb::Reset { entry: None })
@@ -1620,7 +1620,7 @@ mod the_verb_table_is_the_parser {
 
     /// Every arm's first word is in [`VERBS`], and every name there has an arm. The list is
     /// what a head offers and the `match` is what runs, and the failure mode of the two
-    /// drifting apart is not a crash:
+    /// drifting apart is not a crash
     #[test]
     fn the_table_and_the_parser_agree() {
         let src = include_str!("slash.rs");

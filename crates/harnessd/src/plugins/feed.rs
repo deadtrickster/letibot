@@ -5,7 +5,7 @@
 //! and a declaration the host does not honour is worse than none. Only `sessions` is fed
 //! today. A layer declaring `monitors`, `jobs`, `todos` or `git` is handed no key at all
 //! rather than an empty list: `[]` would say *there are none*, which is a different fact
-//! from *this host cannot answer that yet*. Three fields only a host can fill:
+//! from *this host cannot answer that yet*. Three fields only a host can fill
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

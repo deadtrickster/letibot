@@ -5,7 +5,7 @@
 //! `LETIBOT_MODEL_ALIAS`. The server is in production use with five shared slots, so this
 //! file is two short generations under one process-wide lock; the long measurement lives in
 //! `letibot-m1`, a binary you run. What is asserted: a prompt that needs a file produces a
-//! tool call, the call runs, its result is appended and the model answers from it;
+//! tool call, the call runs, its result is appended and the model answers from it
 
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
@@ -26,7 +26,7 @@ fn serial() -> MutexGuard<'static, ()> {
 }
 
 /// The models this box can be serving, by the path `/props` reports: the alias, the dialect
-/// that pairs with it, and the GGUF its vocabulary comes from. A table rather than a guess:
+/// that pairs with it, and the GGUF its vocabulary comes from. A table rather than a guess
 fn known_local_model(served: &str) -> Option<(&'static str, Dialect, &'static str)> {
     const KNOWN: &[(&str, &str, Dialect, &str)] = &[
         (
@@ -92,7 +92,7 @@ fn config() -> Option<Config> {
             .unwrap_or_else(|| panic!("LETIBOT_MODEL_ALIAS={m} names no dialect this build knows"));
         cfg.model = m;
     }
-    // What is actually behind the endpoint, asked before anything is tokenised for it:
+    // What is actually behind the endpoint, asked before anything is tokenised for it
     if std::env::var("LETIBOT_MODEL_ALIAS").is_err()
         && let Ok(served) = letibot_turn::serving::served_model(&cfg.endpoint)
         && !letibot_turn::serving::matches(&served, &cfg.model)
@@ -409,7 +409,7 @@ fn a_message_already_waiting_joins_this_round_rather_than_costing_another() {
 }
 
 /// A message that arrives WHILE the model is generating is answered in the next round. The
-/// greedy poll takes what is waiting when the round BEGINS;
+/// greedy poll takes what is waiting when the round BEGINS
 #[test]
 fn a_message_that_arrives_mid_turn_is_answered_in_the_next_round() {
     use std::sync::Arc;

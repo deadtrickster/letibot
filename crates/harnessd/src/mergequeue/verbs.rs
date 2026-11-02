@@ -351,7 +351,7 @@ pub fn veto(
             })
         }
         Found::Merge(m) => {
-            // A running gate is taken out by `rm`, not by `veto` - `veto` is *rejected in your words,
+            // A running gate is taken out by `rm`, not by `veto` - `veto` is *rejected in your words
             // sent back to the child*, and a landing has no child left to send it to.
             if m.state == MergeState::Gating {
                 return Err(format!(

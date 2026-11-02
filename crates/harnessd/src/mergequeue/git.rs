@@ -341,7 +341,7 @@ pub fn repo_of_workspace(workspace: &Path) -> Option<PathBuf> {
     }
 }
 
-/// The repositories a workspace is a session of: the one [`repo_of_workspace`] reads it as,
+/// The repositories a workspace is a session of: the one [`repo_of_workspace`] reads it as
 /// or every child of a folder that is ONE PROJECT - two or more children whose `origin`
 /// remotes share one host and owner.
 pub fn repos_of_workspace(workspace: &Path) -> Vec<PathBuf> {
@@ -599,7 +599,7 @@ pub fn rebase_in(
     git(worktree, &["checkout", "--detach", "--force", head]).map_err(RebaseError::Conflict)?;
     // When every non-merge commit in `fork..head` is one of the branch's own, the branch is
     // linear over its base and `--onto` replays exactly that list. A branch that merged the
-    // old target into itself is not linear:
+    // old target into itself is not linear
     let in_range = commits_in(worktree, &fork, head, false)?;
     if in_range.len() == own.len() {
         if let Err(e) = git(worktree, &["rebase", "--onto", onto, &fork]) {
@@ -628,7 +628,7 @@ pub fn rebase_in(
 }
 
 /// The commit the branch was cut from - the newest base somebody remembers, on the branch's
-/// own first-parent spine:
+/// own first-parent spine
 fn fork_point(
     repo: &Path,
     head: &str,
@@ -886,7 +886,7 @@ fn failed_said(e: &str, plan: &PushPlan) -> String {
 
 /// Push `sha` to `origin`'s `target` - a fast-forward or a refusal, never a force. Every
 /// GitHub remote is pushed on `gh`'s credential by name, both spellings of the remote and
-/// an https one included, whenever `gh` is logged in:
+/// an https one included, whenever `gh` is logged in
 pub fn push(repo: &Path, target: &str, sha: &str) -> Pushed {
     let Ok(url) = git(repo, &["remote", "get-url", "origin"]) else {
         return Pushed::NoRemote;
@@ -1063,7 +1063,7 @@ fn linked_gitdir(wt: &Path) -> Option<PathBuf> {
 
 /// Whether `path` is a linked worktree of `repo`, and never the repository itself - the
 /// rail under every removal the queues make. A row's `worktree` column is text somebody
-/// wrote, and this is the only thing standing between a sweep and `rm -rf` of a checkout:
+/// wrote, and this is the only thing standing between a sweep and `rm -rf` of a checkout
 pub fn is_worktree_of(path: &Path, repo: &Path) -> bool {
     let Some(linked) = linked_gitdir(path) else {
         return false;
@@ -1113,7 +1113,7 @@ pub fn remove_worktree(repo: &Path, wt: &Path, branch: &str) -> Result<(), Strin
 
 /// Delete one branch of `repo`, and treat "there is no such branch" as done - a sweep runs
 /// on every pass, and the second pass must not fail where the first one succeeded. The
-/// caller must already have taken the proof ([`ref_proof`] or [`commit_proof`]):
+/// caller must already have taken the proof ([`ref_proof`] or [`commit_proof`])
 pub fn delete_branch(repo: &Path, branch: &str) -> Result<(), String> {
     if branch_head(repo, branch).is_none() {
         return Ok(());
@@ -1123,7 +1123,7 @@ pub fn delete_branch(repo: &Path, branch: &str) -> Result<(), String> {
 
 /// Remove a branch's own worktree and the branch, after a landing - only when the tree
 /// holds nothing uncommitted (the daemon's own leftover logs are not the tree's work).
-/// `Err` says what was kept and why. A landing is a proof, and it is the caller's:
+/// `Err` says what was kept and why. A landing is a proof, and it is the caller's
 pub fn retire_branch(repo: &Path, branch: &str, worktree: Option<&str>) -> Result<(), String> {
     if let Some(wt) = worktree {
         remove_worktree(repo, Path::new(wt), branch)?;

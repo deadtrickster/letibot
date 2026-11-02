@@ -1,7 +1,7 @@
 //! `--host NAME` seats a root session whose tools run on that machine, measured through the
 //! real opener - a real `Harness::open`, the real backend construction, the real gate
 //! wiring - with a fake `ssh` that runs each command against a temporary directory, so
-//! nothing reaches a network. What it pins: the placement is `Remote(name)` and not a VM,
+//! nothing reaches a network. What it pins: the placement is `Remote(name)` and not a VM
 //! the backend says so in a sentence the repository's HEAD arrives as a checkout on that
 //! machine and becomes the session's workspace and its commits come back as
 //! `remote/<host>/<short id>` when it ends.

@@ -1439,7 +1439,7 @@ fn a_judged_tip_is_gated_again_on_request_and_when_a_daemon_takes_the_queue() {
 
 /// A red target puts its sentence on a session, not only on a bell - the operator's report
 /// of 2026-10-30: *"those red states must reach top session agent or a gatekeeper"*. A ring
-/// wakes a project's roots and leaves what happened to the store;
+/// wakes a project's roots and leaves what happened to the store
 #[test]
 fn a_red_target_is_told_to_a_session_not_only_rung() {
     let w = World::new("redwords");
@@ -1887,7 +1887,7 @@ fn served(store: &Store, desk: &ReviewDesk, me: &str) -> crate::mergequeue::revi
 
 /// A reviewer has started on `id` and handed its verdict in at the desk - the two acts that
 /// belong to the child, and the state the queue's worker then has to read correctly. `tree`
-/// is load-bearing, not decoration:
+/// is load-bearing, not decoration
 fn a_reviewer_has_judged(
     store: &Store,
     desk: &ReviewDesk,
@@ -3005,7 +3005,7 @@ fn a_daemon_above_a_repository_neither_takes_its_lease_nor_shows_its_red() {
 
 /// `--no-queue`: a daemon seated in a package's worktree serves no queue - it claims no
 /// lease and gates nothing, and the flag is the whole of the difference. The defect
-/// (`docs/claude-code-bridge.md` 2026-10-26):
+/// 
 #[test]
 fn a_daemon_started_with_no_queue_on_a_worktree_never_takes_the_lease() {
     use letibot_sessionlog::registry::Registry;
@@ -3153,7 +3153,7 @@ fn repo_with_agents(under: &Path, name: &str, agents: Option<&str>) -> PathBuf {
 
 /// How long a supervisor fixture waits for the pass that writes the fact it is about - a
 /// hang detector, not a budget: these tests need under a second on an idle box and minutes
-/// on the merge gate's. It is ONE clock:
+/// on the merge gate's. It is ONE clock
 pub(crate) const SERVE_BUDGET: Duration = Duration::from_secs(120);
 
 /// Run a supervisor until `until` says so of the store, and SAY SO when it never does. `what` is the
@@ -3199,7 +3199,7 @@ fn serve_until(
 
 /// Serve `workspace` for a few passes, and record every lease held at any observation - a
 /// lease is given up when the service stops, so *was it ever claimed* is answered by what
-/// was seen while it ran. The stop condition is the caller's fact and nothing else:
+/// was seen while it ran. The stop condition is the caller's fact and nothing else
 fn leases_seen_over(
     workspace: &Path,
     db: &Path,
@@ -3880,7 +3880,7 @@ fn a_dirty_tree_is_kept_and_says_why() {
 }
 
 /// A terminal landing whose branch carries work the target does not have keeps both, and says why - the branch is the only copy of that work, so the tree it was worked in goes with it. This is the
-///   half of the sweep a merge row answers to.
+/// half of the sweep a merge row answers to.
 #[test]
 fn a_failed_landings_branch_and_tree_are_kept_and_said() {
     let w = World::new("release-failed");
@@ -4061,7 +4061,7 @@ fn a_queue_holds_its_daemon_up_only_while_it_has_work_in_line() {
 
 // ===== What the daemon's log says, in one line ===== The daemon started in the foreground
 // writes its log to the operator's terminal, so these lines are read interleaved with the
-// banner. MEASURED 2026-10-26:
+// banner. MEASURED 2026-10-26
 
 /// The not-a-target line is the folder's, not the repository's, and it is said once.
 /// `not_targets_to_say` is the state machine: the first pass answers a line, the same set
@@ -4162,7 +4162,7 @@ fn the_leases_a_pass_gave_up_are_said_in_one_line() {
 }
 
 /// The startup line is the supervisor's own list - the contradiction the operator read on
-/// 2026-10-26: *"queues:
+/// 2026-10-26: *"queues
 #[test]
 fn the_serving_line_names_what_the_supervisor_will_actually_examine() {
     // One project of several - the operator's `~/Projects/stroppy-io`, in miniature.
@@ -4499,8 +4499,8 @@ fn a_tree_whose_own_head_is_not_on_the_target_is_kept_and_says_so() {
 }
 
 /// A landing the target was rewritten past keeps the branch - the second ref-deleting path
-/// `landed`, proved too. `landed_sha` IS the proof - while that sha is still on the target,
-/// and the window is not zero:
+/// `landed`, proved too. `landed_sha` IS the proof - while that sha is still on the target
+/// and the window is not zero
 #[test]
 fn a_landing_the_target_was_rewritten_past_keeps_the_branch() {
     /// Green, and it puts the target back while the landing's INSTALL step runs.
@@ -4693,7 +4693,7 @@ impl GateRunner for Counting {
 
 /// One gate for three branches, and the target moves once per landing. The operator's
 /// decision of 2026-10-30 - *"we can batch merges at this point"* - on the numbers that
-/// made it:
+/// made it
 #[test]
 fn a_train_of_three_green_branches_lands_three_commits_with_one_gate() {
     let w = World::new("train-green");

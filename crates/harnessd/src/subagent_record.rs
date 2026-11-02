@@ -1,6 +1,6 @@
 //! Subagents survive a daemon restart: recorded when started, brought back when the parent
 //! is opened again - the operator: *"we should record them (session persist anyway) and
-//! restart automatically"*. Before this a child was a thread of the daemon that started it,
+//! restart automatically"*. Before this a child was a thread of the daemon that started it
 //! so a restart to pick up a new build lost every running one. # What is recorded, and
 //! where One `subagent_run` row per child (`letibot_tokencore::store::subagents`, schema
 //! 26), written by `HarnessTaskRunner::start` before the child's thread exists: the child's
@@ -25,7 +25,7 @@ pub const RESUME_LIMIT: u32 = 3;
 
 /// The spawn's own description, as it is written down - every field of [`TaskSpec`], so a
 /// resumed child is spawned with exactly the configuration it started with. A struct of its
-/// own rather than a `Serialize` on `TaskSpec`:
+/// own rather than a `Serialize` on `TaskSpec`
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecordedSpec {
     pub role: String,
@@ -68,7 +68,7 @@ pub fn is_helper(run: &SubagentRun) -> bool {
 
 /// Every recorded child's name, unique among its parent's children, in the store's order. A
 /// name the record CARRIES is kept - it was made unique when the child was spawned. A name
-/// DERIVED for an older record is made unique the way a fresh spawn's is (`-2`, `-3`, …):
+/// DERIVED for an older record is made unique the way a fresh spawn's is (`-2`, `-3`, …)
 pub fn recorded_slugs(runs: &[SubagentRun]) -> Vec<String> {
     let carried: Vec<Option<String>> = runs
         .iter()
@@ -98,7 +98,7 @@ pub fn recorded_slugs(runs: &[SubagentRun]) -> Vec<String> {
 }
 
 /// The name a recorded child answers to: the slug its record carries, or - for an older record - the one its spawn would have been given: the slug its worktree branch `agent/<slug>` was cut
-///   from, else [`slug_from_prompt`]. A record that does not parse is named from its prompt alone.
+/// from, else [`slug_from_prompt`]. A record that does not parse is named from its prompt alone.
 pub fn recorded_slug(run: &SubagentRun) -> String {
     use letibot_tools::builtins::task::slug_from_prompt;
     let spec = RecordedSpec::from_json(&run.spec_json).unwrap_or_default();
@@ -272,7 +272,7 @@ impl SubagentRecord {
 
     /// A later turn of this child begins - a parent's `task_message`, a later prompt, a wake.
     /// The row goes back to `running` for the length of the turn, so a daemon that stops
-    /// mid-turn leaves a child the next one resumes;
+    /// mid-turn leaves a child the next one resumes
     pub fn later_turn_began(&self) -> Option<String> {
         self.ensure_written();
         match self.store.with(|s| {
@@ -505,7 +505,7 @@ pub fn recorded_status(run: &SubagentRun, instance: &str) -> TaskStatus {
 
 /// Why the store holds no row for a child, in the words a model is given - and the two
 /// classes are the point of the window: one is a write that went missing, the other a store
-/// that was not writing yet, and only one of them went wrong. MEASURED 2026-11-01:
+/// that was not writing yet, and only one of them went wrong. MEASURED 2026-11-01
 pub fn no_record_cause(why: letibot_tokencore::store::NoRecord) -> &'static str {
     use letibot_tokencore::store::NoRecord;
     match why {
@@ -561,7 +561,7 @@ fn its_answer(last: Option<&TranscriptItem>) -> Option<&str> {
 
 /// How a child with no record got on, as a value - one judgement with two renderings: the
 /// single-handle door writes a paragraph and can afford to be exact ([`Self::said`]), a
-/// list row gets a few words ([`Self::brief`]). MEASURED 2026-11-01:
+/// list row gets a few words ([`Self::brief`]). MEASURED 2026-11-01
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EndedIn {
     /// It wrote no row of its own at all.
@@ -637,7 +637,7 @@ impl EndedIn {
 
 /// How far a child with no record got, as the two doors carry it - one function rather than
 /// two matches, because *did it answer?* is the whole difference between the two readings
-/// and two copies of it would drift:
+/// and two copies of it would drift
 pub fn how_far(
     child: &letibot_tokencore::store::UnrecordedChild,
 ) -> letibot_tools::builtins::task::LostChild {
@@ -651,7 +651,7 @@ pub fn how_far(
 
 /// Whether `task_resume` may bring this child back - the explicit, one-call door (the
 /// operator *"this is what you wre running and how to restart that"*). `Ok` is its spec.
-/// Refused by name:
+/// Refused by name
 pub fn resumable(
     run: &SubagentRun,
     instance: &str,
@@ -822,7 +822,7 @@ mod tests {
 
     /// A spawn whose row the store refused still leaves a record when the child settles. A
     /// `database is locked` at the spawn used to print and be dropped, leaving the child with
-    /// no record at all;
+    /// no record at all
     #[test]
     fn a_row_the_spawn_could_not_write_is_written_when_the_child_settles() {
         let path = std::env::temp_dir().join(format!(
@@ -1212,7 +1212,7 @@ mod tests {
 
     /// A child with no record reads two ways, and the difference is its last row - an answer is
     /// returned as an answer, and anything else is said to be gone rather than dressed up as
-    /// one. The state is not hypothetical:
+    /// one. The state is not hypothetical
     #[test]
     fn a_child_with_no_record_reads_its_own_last_row() {
         let child = |why, last: Option<TranscriptItem>| letibot_tokencore::store::UnrecordedChild {
@@ -1277,7 +1277,7 @@ mod tests {
 
     /// How far a child with no record got, in the two sizes the two doors need - both from ONE
     /// judgement, because a child whose text [`a_child_with_no_record`] returns as an ANSWER
-    /// must be the child [`how_far`] calls `Answered`. The defect this closes:
+    /// must be the child [`how_far`] calls `Answered`. The defect this closes
     #[test]
     fn how_far_says_where_a_child_with_no_record_stopped() {
         use letibot_tools::builtins::task::{LostChild, TaskStatus};
@@ -1397,7 +1397,7 @@ mod tests {
     }
 
     /// A child older than the store's first record is not told a write was refused - the class
-    /// the window exists for, and the sentence a model reads about it. MEASURED 2026-11-01:
+    /// the window exists for, and the sentence a model reads about it. MEASURED 2026-11-01
     #[test]
     fn a_child_from_before_the_record_is_told_that_and_not_a_refused_write() {
         let old = letibot_tokencore::store::UnrecordedChild {

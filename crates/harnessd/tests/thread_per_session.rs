@@ -1,9 +1,9 @@
 //! One thread per session, and the turn that used to hold the daemon. Every session the
-//! daemon held used to be served by ONE worker, one command at a time across all of them,
+//! daemon held used to be served by ONE worker, one command at a time across all of them
 //! so a prompt to one session sat behind an unrelated session's turn. The three properties
 //! asked of the replacement: a held turn in one session does not delay another; a session's
-//! own commands stay ordered; and a stop with both sessions busy ends inside its bound,
-//! naming what it could not wait for. One test function, on purpose:
+//! own commands stay ordered; and a stop with both sessions busy ends inside its bound
+//! naming what it could not wait for. One test function, on purpose
 
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime};
@@ -309,7 +309,7 @@ enum Hold {
 }
 
 /// A fake provider on a loopback port that answers every request except the ones this test
-/// holds. One thread per connection, and that is load-bearing rather than tidy:
+/// holds. One thread per connection, and that is load-bearing rather than tidy
 struct Fake {
     url: String,
     state: Arc<State>,

@@ -72,7 +72,7 @@ pub const BEAT: Duration = Duration::from_secs(30);
 pub const RESTORE_WITHIN: Duration = Duration::from_secs(3600);
 
 /// This daemon's life, written down - the start, a heartbeat every [`BEAT`], and the stop.
-/// The stop goes through a connection opened at the START, never a fresh one:
+/// The stop goes through a connection opened at the START, never a fresh one
 pub struct Lifeline {
     store: Option<Store>,
     registry: Arc<Registry>,
@@ -396,7 +396,7 @@ pub fn mid_turn(last: Option<&TranscriptItem>) -> bool {
 
 /// What a session still owes when its daemon comes back - the reason an empty restart is a
 /// TURN and not a row. Every arm is a fact in the store or on the board. None of them is
-/// prose:
+/// prose
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Owed {
     /// A turn was in flight when the rows stopped - [`mid_turn`].
@@ -704,7 +704,7 @@ pub fn job_line(
 }
 
 /// One background job that had ENDED at the stop and whose ending never reached the model - held under while a turn ran, or queued, when the daemon went down. The row's own
-///   record is all that is left.
+/// record is all that is left.
 pub fn settled_job_line(job: &JobRecord, slug: Option<&str>) -> String {
     let mut line = format!("- job `{}`", job.handle);
     if let Some(s) = slug {

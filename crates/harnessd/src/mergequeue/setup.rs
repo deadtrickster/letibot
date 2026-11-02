@@ -5,7 +5,7 @@
 //! tests passed, either by step (every step before the failing one passed, one of them
 //! built or tested and the failing one is neither) or by its own words (one wrapper step
 //! whose output shows a build or a test passing, no compile error, failed test, panic or
-//! format diff, and ends naming something missing). Both are deliberately narrow:
+//! format diff, and ends naming something missing). Both are deliberately narrow
 
 use letibot_tokencore::store::{HealthState, MergeGateOutcome, MergeGateStep, TargetHealth};
 
@@ -54,7 +54,7 @@ pub fn builds_or_tests(command: &str) -> bool {
 }
 
 /// The step's own words, with the gate's own notes dropped. A row's `output` ends with
-/// lines the GATE wrote - `[gate memory: …]`, `[step:
+/// lines the GATE wrote - `[gate memory: …]`, `[step
 pub(crate) fn step_words(out: &str) -> impl Iterator<Item = &str> {
     out.lines().filter(|l| {
         let t = l.trim_start();
@@ -83,7 +83,7 @@ pub(crate) fn shows_code_failing(out: &str) -> bool {
             || t.contains("panicked at")
             || t.starts_with("Diff in ")
             || t.starts_with("failures:")
-            // Cargo's own verdict on failing test TARGETS, `error:
+            // Cargo's own verdict on failing test TARGETS, `error
             || (t.starts_with("error: ") && t.contains("target") && t.contains("failed"))
     })
 }
@@ -224,7 +224,7 @@ mod tests {
 
     /// A RED step was reported as the gate's own setup, and nothing could land on a tip nothing
     /// was wrong with. The step is the workspace's tests under the gate - two failing targets -
-    /// and the gate appends its own `[gate memory:
+    /// and the gate appends its own `[gate memory
     #[test]
     fn a_red_step_is_red_even_behind_the_gates_own_memory_note() {
         let out = "running 0 tests\n\n\

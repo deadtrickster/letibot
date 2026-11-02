@@ -3,8 +3,8 @@
 //! fanouts"*. `[queue] gate_host = "<name>"` in `leticode.toml`, or `--gate-host <name>` on
 //! the daemon, moves the merge gate's steps to a machine the operator declared in
 //! `hosts.toml`. Empty - the default - is [`super::gate::run_with_memory`] and nothing
-//! else: this machine, byte for byte. # What crosses the wire The landing tree goes over,
-//! and the merge stays here:
+//! else: this machine, byte for byte. # What crosses the wire The landing tree goes over
+//! and the merge stays here
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -20,7 +20,7 @@ use super::gate::{
 };
 use super::git;
 
-/// How long one poll may take - and this is the HEALTH question, not the step's deadline:
+/// How long one poll may take - and this is the HEALTH question, not the step's deadline
 pub const POLL_BOUND: Duration = Duration::from_secs(30);
 
 /// How often a running step is asked how it is - one ssh round trip, a few milliseconds over the
@@ -149,7 +149,7 @@ pub fn plan_step<'a>(step: &'a str, apparatus: &Apparatus) -> Planned<'a> {
 }
 
 /// The apparatus question, as one shell script - the whole of what a host is asked before
-/// its steps run. It is an EXPERIMENT and not an inspection, which is the point:
+/// its steps run. It is an EXPERIMENT and not an inspection, which is the point
 pub fn apparatus_probe() -> String {
     // A marker a fixture can recognise: `crates/harnessd/tests/gate_host.rs`'s fake ssh answers on
     // it instead of running a probe about the box the test happens to run on.
@@ -210,8 +210,8 @@ pub fn run_on_host(name: &str, worktree: &Path, steps: &[String], ctl: &GateCont
     if let Err(why) = remote.prepare(ctl, &mut cost) {
         return infra(steps, format!("{why}{}", cost.said(&remote, ctl.budget)));
     }
-    // The demand the step makes of the MACHINE is asked of the machine, once, before it runs:
-    // where it can be met the gate meets it (a delegated scope of its own);
+    // The demand the step makes of the MACHINE is asked of the machine, once, before it runs
+    // where it can be met the gate meets it (a delegated scope of its own)
     let apparatus = remote.apparatus(steps);
     let mut done: Vec<Done> = Vec::with_capacity(steps.len());
     let mut dropped: Vec<String> = Vec::new();
@@ -624,7 +624,7 @@ impl Remote {
 
     /// What this machine can do about the apparatus a step demands - one call, and only when a
     /// step carries the prefix, so a project whose gate demands nothing pays nothing. A probe
-    /// that cannot answer changes NOTHING:
+    /// that cannot answer changes NOTHING
     fn apparatus(&self, steps: &[String]) -> Apparatus {
         if !steps.iter().any(|s| apparatus_prefix(s).is_some()) {
             return Apparatus::default();
@@ -775,7 +775,7 @@ impl Remote {
 
     /// How the step is, and whatever it has written since `offset` - one round trip, so a
     /// step's progress and its state cannot disagree about which moment they describe. `within`
-    /// is [`POLL_BOUND`] or what is left of the gate, whichever is less;
+    /// is [`POLL_BOUND`] or what is left of the gate, whichever is less
     fn poll(&self, n: usize, offset: u64, within: Duration) -> Result<Poll, Missed> {
         let tag = self.tag(n);
         let script = poll_script(
@@ -817,7 +817,7 @@ impl Remote {
 
     /// `SIGTERM` to the far side's group, five seconds, then `SIGKILL` - the local gate's own
     /// discipline, one machine over. `kill -TERM -<pid>` is the group because the launcher is
-    /// `setsid`'d;
+    /// `setsid`'d
     fn kill(&self, n: usize) {
         let script = kill_script(&self.pid_path(n));
         let _ = self.call(
@@ -924,7 +924,7 @@ fn free_words(kb: Option<u64>) -> String {
 
 /// The step's tail, and what the gate was doing when its deadline came - a verdict has to
 /// say that the last minutes of it were spent asking a question nobody answered. `bound` is
-/// the bound the LAST poll was given:
+/// the bound the LAST poll was given
 fn said_with_misses(tail: String, missed: u32, last: &str, bound: Duration) -> String {
     if missed == 0 {
         return tail;
@@ -959,7 +959,7 @@ fn ended(code: i32, tail: String) -> StepEnd {
 
 /// The launcher - one file per step, so the step's own text needs no quoting: it is written
 /// into a file this box sends over the connection's stdin, never spliced into an argv. `( …
-/// )` is a subshell and not `{ … }`, which is 's measured trap:
+/// )` is a subshell and not `{ … }`, which is 's measured trap
 pub fn launcher_script(
     step: &str,
     tree: &str,
@@ -971,7 +971,7 @@ pub fn launcher_script(
 ) -> String {
     // A step that needs a cgroup of its own gets one from systemd, not from this daemon: a
     // transient delegated scope is the one shape that is the step's alone. The subshell stays
-    // a subshell and the step stays the project's own text, quoted once:
+    // a subshell and the step stays the project's own text, quoted once
     let run = if own_scope {
         format!(
             "exec systemd-run --user --scope -p Delegate=yes --quiet -- bash -c {}",
@@ -1031,7 +1031,7 @@ pub fn kill_script(pid: &str) -> String {
 
 /// Put the host's worktree at `head` - the same three commands the local landing worktree
 /// gets (`checkout --detach --force`, `reset --hard`, `clean -fd`), so a gate never judges
-/// a file the previous one left behind. `-e`, not `-d`:
+/// a file the previous one left behind. `-e`, not `-d`
 pub fn worktree_script(src: &str, tree: &str, head: &str) -> String {
     format!(
         "if [ -e '{tree}/.git' ]; then \
@@ -1164,7 +1164,7 @@ impl Answer {
 }
 
 /// One bounded call through the breaker - the discipline `docs/remote-hosts.md` states for
-/// every call this box makes to a declared host:
+/// every call this box makes to a declared host
 fn run(
     what: &str,
     host: &str,

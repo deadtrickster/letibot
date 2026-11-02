@@ -5,7 +5,7 @@
 //! before the compaction are asked for after it; a summary that lost them would be a base
 //! that looks small and answers wrong. 3. The first turn on the fork pays the cold prefill
 //! `docs/compaction.md` §3 says is unavoidable - disclosed as a number, not denied. Never
-//! start a second model server to make a test pass:
+//! start a second model server to make a test pass
 
 use std::sync::OnceLock;
 
@@ -28,7 +28,7 @@ fn config(store: &std::path::Path, session_id: &str) -> Config {
 }
 
 /// Is the box actually serving the model this test renders for? A vocabulary on disk is not
-/// a model on the endpoint:
+/// a model on the endpoint
 fn glm_is_served() -> bool {
     static OK: OnceLock<bool> = OnceLock::new();
     *OK.get_or_init(|| {
@@ -103,7 +103,7 @@ fn a_live_compaction_carries_the_prefix_and_the_summary_carries_the_facts() {
     let before = h.ledger_len();
     let report = h.compact().expect("the compaction");
     // EVERY ROW THE SUMMARY TURN ANNOUNCED CARRIES ITS BODY. The instruction and the answer
-    // are appended to this session through a capturing sink, which announces them;
+    // are appended to this session through a capturing sink, which announces them
     let snap = hub.snapshot();
     let unfilled: Vec<&str> = snap
         .items
@@ -131,7 +131,7 @@ fn a_live_compaction_carries_the_prefix_and_the_summary_carries_the_facts() {
     );
     // The structural claim: there WAS a previous request to carry, and the server said it
     // carried it. `reusable` is ours (the prefix invariant proves the prompts identical over
-    // the span);
+    // the span)
     assert!(sum.reusable > 0, "nothing to carry after two turns");
     assert!(
         sum.cached_tokens > 0,

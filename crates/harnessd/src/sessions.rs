@@ -94,7 +94,7 @@ pub(crate) const NAG_REPEAT_CAP: Duration = Duration::from_secs(30 * 60);
 const STUCK_REPEAT: Duration = Duration::from_millis(crate::mergequeue::stuck::STUCK_REPEAT_MS);
 
 /// Whether a row is work the idle plan-check may speak about. A `Completed`, `Postponed` or
-/// `Cancelled` row owes nothing;
+/// `Cancelled` row owes nothing
 pub(crate) fn the_check_may_ask_about(
     row: &TodoItem,
     children: &ChildSessions,
@@ -150,7 +150,7 @@ pub(crate) fn child_sessions(
         }
         // The journal's `running` IS the daemon's record that a turn is in flight - written just
         // before the child's first prompt is submitted and replaced at the turn's end. It fills
-        // `working`, NOT `SessionStatus::running`:
+        // `working`, NOT `SessionStatus::running`
         let turn_started = entry.state == "running";
         out = out.running(
             entry.name.clone(),
@@ -160,7 +160,7 @@ pub(crate) fn child_sessions(
     out
 }
 
-/// One live child, as the daemon can see it - the ONE place a [`RunningChild`] is filled,
+/// One live child, as the daemon can see it - the ONE place a [`RunningChild`] is filled
 /// so the idle check's snapshot and `task_result` cannot come to different answers about
 /// one child.
 pub(crate) fn child_reading(
@@ -192,7 +192,7 @@ pub(crate) fn child_reading(
 }
 
 /// The plan as the idle check reads it - every row, minus the ones it may not speak about.
-/// This is where a plan is narrowed, and deliberately the only place:
+/// This is where a plan is narrowed, and deliberately the only place
 pub(crate) fn the_plan_as_checked(
     rows: &[TodoItem],
     children: &ChildSessions,
@@ -206,7 +206,7 @@ pub(crate) fn the_plan_as_checked(
 
 /// Should the idle check be armed for a plan of these ROWS, given what it was last NAGGED
 /// with? The `moved` half of the schedule, as one predicate, so the rule can be tested
-/// without a daemon:
+/// without a daemon
 fn nag_should_arm(
     todos: &[TodoItem],
     nagged: Option<&str>,
@@ -244,7 +244,7 @@ impl QueueNews {
 }
 
 /// One session's idle clock: the plan's deadline, the queue's deadline, and the ladder that
-/// paces the plan's repeats. A session the daemon holds runs its clock in `Sessions`;
+/// paces the plan's repeats. A session the daemon holds runs its clock in `Sessions`
 pub struct TodoNagClock {
     /// How long after the last turn or board move the check comes due.
     window: Duration,
@@ -276,7 +276,7 @@ pub struct TodoNagClock {
     repeat: Duration,
     /// When the census is next due, or `None` when nothing is stuck - a deadline of its own
     /// beside the plan's. A notice whose text carries a GROWING NUMBER cannot be paced by
-    /// comparing texts (it would be new at every delivery) nor by the plan's ladder;
+    /// comparing texts (it would be new at every delivery) nor by the plan's ladder
     census_due: Option<Instant>,
     /// When the census was last delivered - the anchor its repeat is measured from.
     census_said_at: Option<Instant>,
@@ -284,7 +284,7 @@ pub struct TodoNagClock {
 
 /// Is the operator holding this session's plan-check, and until when - the clock's copy of
 /// the session's `/nag pause`. `Paused { until: None }` arms nothing at all; `Paused {
-/// until:
+/// until
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum NagHold {
     #[default]
@@ -321,7 +321,7 @@ impl TodoNagClock {
 
     /// The session's pause, as of this arming - set by the owner before every [`Self::rearm`]
     /// and [`Self::operator_added`], from the harness (`Harness::nag_hold`), so the clock
-    /// cannot hold a pause the session no longer has. It arms nothing by itself;
+    /// cannot hold a pause the session no longer has. It arms nothing by itself
     pub fn hold(&mut self, hold: NagHold) {
         self.hold = hold;
     }
@@ -335,7 +335,7 @@ impl TodoNagClock {
 
     /// Start (or stand down) the check, as of `now` - the body of [`Sessions::rearm_todo_nag`]
     /// and of `serve_child`'s re-arm, so the two owners cannot drift. Six answers: nothing to
-    /// ask about (no deadline at all); the plan moved (one base window from `now`);
+    /// ask about (no deadline at all); the plan moved (one base window from `now`)
     pub fn rearm(
         &mut self,
         todos: &[TodoItem],
@@ -379,7 +379,7 @@ impl TodoNagClock {
     }
 
     /// Arm the queue's census, as of `now` - the clock's second subject, on its own deadline. A
-    /// pause arms nothing (a census is a nag);
+    /// pause arms nothing (a census is a nag)
     fn arm_census(&mut self, now: Instant) {
         // A queue with nothing stuck ENDS that census, so the next set of rows starts its own
         // clock: without this, the anchor of a census whose rows are gone would pace the first
@@ -439,14 +439,14 @@ impl TodoNagClock {
 
     /// The operator has spoken: a new idle period, and the check may be made again. Whatever
     /// they said may have changed what the plan should be, so the once-per-saying is earned
-    /// back. And the backoff goes with the notice:
+    /// back. And the backoff goes with the notice
     pub fn prompt_arrived(&mut self) {
         self.nagged = None;
         self.nagged_at = None;
         self.repeats = 0;
     }
 
-    /// The operator ADDED a row to the board:
+    /// The operator ADDED a row to the board
     pub fn operator_added(
         &mut self,
         todos: &[TodoItem],
@@ -500,7 +500,7 @@ impl TodoNagClock {
 
     /// Change the window of a clock that already exists - the door [`Sessions::set_nag_window`]
     /// goes through, for a test that must drive a delivery on a session `open_first` already
-    /// armed at the production window. The deadline already armed is left alone;
+    /// armed at the production window. The deadline already armed is left alone
     pub fn set_window(&mut self, window: Duration) {
         self.window = window;
     }
@@ -584,7 +584,7 @@ enum Follow {
 
 /// One session, on its own thread - the reader that serves it, the shape a subagent already
 /// had (`harness::serve_child`). Before this every session was served by ONE worker, one
-/// command at a time across all of them - MEASURED 2026-10-26:
+/// command at a time across all of them - MEASURED 2026-10-26
 struct Court {
     /// The nudge. A job sent here does not wake the thread by itself: it is blocked in the hub's
     /// condvar, so [`Court::ask`] rings that too.
@@ -713,10 +713,10 @@ pub struct Sessions<'a> {
     idle_exit_at: Option<Instant>,
     /// The last instant this worker saw the daemon busy - a head attached, a turn, a job. The
     /// idle window counts from the later of this and the newest event, because a head that
-    /// detaches may say nothing:
+    /// detaches may say nothing
     busy_seen: Instant,
     /// The operator's run, per session: whether one is in flight on its own thread and the
-    /// lines queued behind it. See [`crate::bangrun::State`] - this map only holds the handle;
+    /// lines queued behind it. See [`crate::bangrun::State`] - this map only holds the handle
     bangs: HashMap<String, Arc<crate::bangrun::State>>,
     /// The last reason the review queue's session did not open, as said on a hub - so
     /// [`Sessions::ensure_gatekeeper`], which runs every review pass, says a standing failure
@@ -753,13 +753,13 @@ struct OwnSession {
 }
 
 /// Which sessions attach to the seat, and how the attachment is wired. Root sessions only.
-/// A subagent spawned by `task` hears the room through its parent and speaks through it:
+/// A subagent spawned by `task` hears the room through its parent and speaks through it
 /// one name, one mind under it at a time.
 fn is_root(registry: &Registry, session_id: &str) -> bool {
     registry.parent_of(session_id).is_none()
 }
 
-/// What the daemon can do with a wake for a session - and which of the three it is. Pure,
+/// What the daemon can do with a wake for a session - and which of the three it is. Pure
 /// so the routing decision is assertable without a daemon, a socket or a model: *"think
 /// about it like it is an erlang supervision tree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -842,7 +842,7 @@ fn stop_children_of(harness: &Harness, patience: std::time::Duration) -> (bool, 
 }
 
 /// The loop of a session served on its own thread - the shape a subagent already has. Three
-/// things and no more:
+/// things and no more
 fn court_main(
     mut s: Sessions<'static>,
     hub: Arc<letibot_sessionlog::hub::Hub>,
@@ -939,7 +939,7 @@ fn court_main(
     }
 }
 
-/// Wait for the given threads to leave, bounded and shared - one deadline for all of them,
+/// Wait for the given threads to leave, bounded and shared - one deadline for all of them
 /// so a second session cannot double the wait.
 fn wait_for_threads(threads: &[std::thread::JoinHandle<()>], patience: Duration) -> usize {
     let began = Instant::now();
@@ -1053,7 +1053,7 @@ impl<'a> Sessions<'a> {
             Harness::open_with_registry(parts, cfg, hub, None, tool, registry.clone())?;
         // And who this daemon's own first session is for, written now that its row exists
         // (`Harness::open` writes the row and this is the first moment there is one to write on).
-        // Two answers and no others:
+        // Two answers and no others
         registry.record_origin(
             &id,
             if sessions.base.one_shot {
@@ -1064,7 +1064,7 @@ impl<'a> Sessions<'a> {
         );
         sessions.fabric_opened(&id, &harness);
         // A `--continue` resumes the session on the model it was switched to. The first session is
-        // the common resume:
+        // the common resume
         harness.restore_provider_choice();
         // And on the compaction the no-progress guard stood down, for the same reason - a resumed
         // session coming back with the pre-emptive door re-armed is the guard's finding silently
@@ -1080,7 +1080,7 @@ impl<'a> Sessions<'a> {
             .or_insert_with(crate::bangrun::State::new)
             .clone();
         harness.set_bang_state(bang);
-        // And what the last daemon left running comes back with it, or is reminded - the operator:
+        // And what the last daemon left running comes back with it, or is reminded - the operator
         // *"we should bring subagents back - i cant afford to wait till they finish"*. Before the
         // ring below, so the wake it causes carries the `[restart]` notice. See `crate::restart`.
         harness.restore_after_restart();
@@ -1090,7 +1090,7 @@ impl<'a> Sessions<'a> {
         sessions.rearm_todo_nag(&id);
         // And the same rule one line down, because THIS is the session a restart restores. A
         // `--continue` comes back to a board, a queue and a set of job handles that the process
-        // before it left behind;
+        // before it left behind
         sessions.put_a_restored_session_to_work(&id);
         // And the plugin layers this session has, found last so nothing above it waits for a
         // wasm compile: a session with no layers costs three `read_dir`s on directories that do
@@ -1128,7 +1128,7 @@ impl<'a> Sessions<'a> {
 
     /// What this session is holding the daemon up for - the per-harness half of
     /// [`Sessions::idle_exit_refusal`]. Its own function so the two readers answer with one
-    /// body:
+    /// body
     fn court_refusal(&self, session_id: &str) -> Option<String> {
         let h = self.open.get(session_id)?;
         if let Some(why) = h.park_refusal() {
@@ -1324,7 +1324,7 @@ impl<'a> Sessions<'a> {
         slot: &letibot_flowy::tool::SeatSlot,
     ) -> Arc<letibot_flowy::InboxCondition> {
         // The title is the session's short address on the fabric - `@seat/title` beside `@seat/id`
-        // - so agents on one project can name each other. From the entry :
+        // - so agents on one project can name each other. From the entry
         let title = self.registry.title_of(session_id).unwrap_or_default();
         let cond = seat.attach_as(session_id, &title, letibot_flowy::Attention::default());
         *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(letibot_flowy::tool::Attachment {
@@ -1401,9 +1401,9 @@ impl<'a> Sessions<'a> {
                         ok: false,
                     };
                 };
-                // Scoped to this session's repository unless the line names another . `regate` resolves
+                // Scoped to this session's repository unless the line names another. `regate` resolves
                 // its own repository (it was already the session's by default); a named scope stands in
-                // for its `/REPO`. A session of a one-org project folder acts in each of its repositories:
+                // for its `/REPO`. A session of a one-org project folder acts in each of its repositories
                 let scopes = match (&verb, &scope) {
                     (QueueVerb::Regate { .. }, _) => vec![None],
                     _ => match h.queue_scopes(&scope) {
@@ -1569,7 +1569,7 @@ impl<'a> Sessions<'a> {
                     },
                 }
             }
-            // The pause is the harness's (its config, its row, its hub);
+            // The pause is the harness's (its config, its row, its hub)
             Slash::Nag(verb) => {
                 let Some(h) = self.open.get_mut(session_id) else {
                     return SlashReply {
@@ -1733,7 +1733,7 @@ impl<'a> Sessions<'a> {
                     return SlashReply { lines, ok: false };
                 };
                 // The act itself is the harness's - `Harness::apply_model_choice` which is now the ONE
-                // implementation of this verb. It has a second caller as of 2026-10-12:
+                // implementation of this verb. It has a second caller as of 2026-10-12
                 h.apply_model_choice(choice, lines)
             }
         }
@@ -1972,7 +1972,7 @@ impl<'a> Sessions<'a> {
 
     /// What a session is attached to, from the daemon's own command line - and the `model` here
     /// is WHO ANSWERS, not what the vocabulary binds. `cfg.model` is the local BINDING (the
-    /// alias whose tokenizer renders the prompt);
+    /// alias whose tokenizer renders the prompt)
     pub fn wiring(cfg: &Config) -> SessionWiring {
         SessionWiring {
             model: cfg.prompt_model_name(),
@@ -1987,14 +1987,14 @@ impl<'a> Sessions<'a> {
     }
 
     /// Open a session now, rather than on its first prompt. This is what a `ResumeSession`
-    /// turns into:
+    /// turns into
     pub fn open(&mut self, session_id: &str) -> Result<bool, HarnessError> {
         self.open_as(session_id, None)
     }
 
     /// One session this daemon holds, by id - for a test that has to ask a session something no
     /// door of the daemon's exposes. `#[cfg(test)]` and `pub(crate)` for the reason
-    /// [`Harness::set_subagents_for_test`] is:
+    /// [`Harness::set_subagents_for_test`] is
     #[cfg(test)]
     pub(crate) fn held(&mut self, session_id: &str) -> Option<&mut Harness> {
         self.open.get_mut(session_id)
@@ -2044,7 +2044,7 @@ impl<'a> Sessions<'a> {
                     }
                 }
                 self.publish_title(session_id);
-                // And who this session is for - written now that its row exists. Three answers:
+                // And who this session is for - written now that its row exists. Three answers
                 self.registry.record_origin(
                     session_id,
                     if own_session {
@@ -2055,7 +2055,7 @@ impl<'a> Sessions<'a> {
                         self.registry.origin_of(session_id)
                     },
                 );
-                // A RESUMED SESSION ARMS ITS OWN CLOCK, because nothing else will:
+                // A RESUMED SESSION ARMS ITS OWN CLOCK, because nothing else will
                 self.rearm_todo_nag(session_id);
                 if self.registry.parent_of(session_id).is_some() {
                     self.arm_park();
@@ -2134,7 +2134,7 @@ impl<'a> Sessions<'a> {
                 HarnessError::Setup(format!("no session {session_id} in this daemon"))
             })?;
             // A session live under another owner is not the worker's to open. A subagent's harness
-            // lives on the thread its parent spawned it on;
+            // lives on the thread its parent spawned it on
             if hub.owner() == Owner::OwnThread {
                 return Err(HarnessError::Setup(format!(
                     "session {session_id} is a subagent served by its own thread, so the \
@@ -2161,7 +2161,7 @@ impl<'a> Sessions<'a> {
                 ..self.base.clone()
             };
             // And the two facts of a session the DAEMON owns, when the caller named one. Set on the
-            // SESSION's config and never on `self.base`:
+            // SESSION's config and never on `self.base`
             let mut prompt = None;
             if let Some(own) = own {
                 cfg.seat = own.seat;
@@ -2236,7 +2236,7 @@ impl<'a> Sessions<'a> {
     }
 
     /// The plugin layers `session_id` has, discovered once, when it opens. At open rather than
-    /// on the first pane because of C4's own shape:
+    /// on the first pane because of C4's own shape
     fn open_plugins(&mut self, session_id: &str) {
         if self.plugins.contains_key(session_id) {
             return;
@@ -2253,7 +2253,7 @@ impl<'a> Sessions<'a> {
         };
         // The daemon's session list, handed to the host - a pane on disk that declares the
         // `sessions` feed is drawn from it (`docs/plugins-plan.md` §4.9). The registry is the one
-        // holder of *every* session, live and on disk, so it is the whole source;
+        // holder of *every* session, live and on disk, so it is the whole source
         let host =
             crate::plugins::PluginHost::production(session_id, &workspace).with_sessions(Arc::new(
                 crate::plugins::feed::RegistryFeed::new(self.registry.clone()),
@@ -2319,7 +2319,7 @@ impl<'a> Sessions<'a> {
     }
 
     /// Close every held session's backend, and say what each one delivered - the one-shot's
-    /// last act. A session's placement hands its work back only when its backend closes:
+    /// last act. A session's placement hands its work back only when its backend closes
     pub fn close_backends(&self) -> Vec<String> {
         // The daemon is going, so everything it supervises goes too - the same rule a session's
         // own close keeps, applied to every session this daemon holds. `--stop` reaches here; a
@@ -2344,7 +2344,7 @@ impl<'a> Sessions<'a> {
 
     /// Stop every session's subagents and wait for their threads to leave - the daemon's exit
     /// path, and the door the process's own exit needs before it runs `_dl_fini`. A child's
-    /// thread is spawned detached, so nothing can be joined to it:
+    /// thread is spawned detached, so nothing can be joined to it
     pub fn drain_subagents(&self, timeout: std::time::Duration) -> SubagentExit {
         let began = std::time::Instant::now();
         let mut told = 0;
@@ -2453,7 +2453,7 @@ impl<'a> Sessions<'a> {
             return Err(e);
         }
         // Everything around the turn is the shared tail's : the plan-check earned back the wall
-        // checked BEFORE the send , the clock, the failure, the compaction, the continuation past
+        // checked BEFORE the send, the clock, the failure, the compaction, the continuation past
         // the wall, the title, and the wake.
         self.turn(session_id, Door::Prompt, |h| {
             h.submit_attached(text, attachments).map(Some)
@@ -2524,7 +2524,7 @@ impl<'a> Sessions<'a> {
     }
 
     /// Start (or stand down) the idle plan-check for SESSION, as of NOW. An unfinished plan is
-    /// always armed: a notice not yet sent comes due one window after the turn that armed it,
+    /// always armed: a notice not yet sent comes due one window after the turn that armed it
     /// and one already sent at the doubled interval [`TodoNagClock::rearm`] keeps.
     fn rearm_todo_nag(&mut self, session_id: &str) {
         let (rows, jobs, hold, news) = match self.open.get(session_id) {
@@ -2621,7 +2621,7 @@ impl<'a> Sessions<'a> {
 
     /// When the next check comes due, for the worker's blocking wait - `None` when no session
     /// has one armed, which is what lets the worker sleep until there is real work. The sweep
-    /// needs its own deadline and cannot rely on a nag:
+    /// needs its own deadline and cannot rely on a nag
     pub fn next_nag_at(&self) -> Option<Instant> {
         let nags = self
             .nags
@@ -2638,7 +2638,7 @@ impl<'a> Sessions<'a> {
 
     /// When the worker must next wake with nothing to do - the earliest of the plan-check, the
     /// abandoned-call sweep and the store read for the reviews this daemon's sessions are owed.
-    /// The review clock is armed from open and never stands down, by design:
+    /// The review clock is armed from open and never stands down, by design
     pub fn next_idle_at(&self) -> Option<Instant> {
         [
             self.next_nag_at(),
@@ -2731,7 +2731,7 @@ impl<'a> Sessions<'a> {
     }
 
     /// The review queue's own session, started once - the daemon's hardcoded gatekeeper session
-    /// whose board is the queue. `Ok(true)` is the pass that started it. Once, by two checks:
+    /// whose board is the queue. `Ok(true)` is the pass that started it. Once, by two checks
     pub fn ensure_gatekeeper(&mut self) -> Result<bool, HarnessError> {
         let out = self.open_the_gatekeeper();
         match &out {
@@ -2796,7 +2796,7 @@ impl<'a> Sessions<'a> {
             );
         }
         // Already in the registry - a head opened it, or a previous pass did - so the name is the
-        // one it already carries. From the registry's entry, not `list` :
+        // one it already carries. From the registry's entry, not `list`
         let title = self
             .registry
             .title_of(&queue)
@@ -2902,7 +2902,7 @@ impl<'a> Sessions<'a> {
     }
 
     /// Sweep every session for a tool call nothing will ever answer. Called from the daemon's
-    /// own idle arm, and that placement is the whole liveness test:
+    /// own idle arm, and that placement is the whole liveness test
     pub fn sweep_abandoned_calls(&mut self) -> usize {
         // The sweep is the thread that owns the harness's to run, and that placement is the
         // liveness test: a round in flight holds the thread, so a sweep that runs at all is a
@@ -2990,7 +2990,7 @@ impl<'a> Sessions<'a> {
 
     /// Park every subagent this worker holds that has been idle for the window - 's idle-child
     /// policy (`Config::child_park_after`), on the worker's side. The thread-side half is
-    /// `harness::serve_child`;
+    /// `harness::serve_child`
     pub fn park_idle_children(&mut self) -> usize {
         let mut parked = self.ask_courts(|s| s.park_idle_children());
         let Some(window) = self.base.child_park_after else {
@@ -3049,7 +3049,7 @@ impl<'a> Sessions<'a> {
 
     /// What keeps this daemon up, or `None` when nothing does - the idle exit's test, asked of
     /// each fact's owner rather than remembered: no head attached and no turn in flight in any
-    /// session;
+    /// session
     pub fn idle_exit_refusal(&self) -> Option<String> {
         if self.seat.is_some() {
             return Some("it holds a flowy seat".into());
@@ -3096,7 +3096,7 @@ impl<'a> Sessions<'a> {
 
     /// Whether the daemon has been idle for its whole window - and so should exit - spending
     /// the deadline as [`Sessions::reviews_due`] does. `false` before the deadline, and `false`
-    /// with the clock re-armed whenever something still holds it:
+    /// with the clock re-armed whenever something still holds it
     pub fn idle_exit_due(&mut self) -> bool {
         let Some(window) = self.base.idle_exit_after else {
             self.idle_exit_at = None;
@@ -3130,9 +3130,9 @@ impl<'a> Sessions<'a> {
         }
     }
 
-    /// Send every check whose deadline has passed, and answer how many ran. A check is a TURN,
+    /// Send every check whose deadline has passed, and answer how many ran. A check is a TURN
     /// so it goes through the same tail every other turn does. And it arms what the other two
-    /// doors arm :
+    /// doors arm
     pub fn deliver_due_nags(&mut self) -> usize {
         let mut ran = self.ask_courts(|s| s.deliver_due_nags());
         let now = Instant::now();
@@ -3186,7 +3186,7 @@ impl<'a> Sessions<'a> {
 
     /// Say the queue's census to every project session whose clock has come due - as a TURN
     /// which is what makes it a bell rather than a note. It was a transcript row and cost no
-    /// model call;
+    /// model call
     pub fn deliver_due_censuses(&mut self) -> usize {
         let mut ran = self.ask_courts(|s| s.deliver_due_censuses());
         let now = Instant::now();
@@ -3267,7 +3267,7 @@ impl<'a> Sessions<'a> {
     }
 
     /// Arm the monitor wake for a session that has declared one - T24's *"wakes the loop when
-    /// it fires"*, which had no caller. A thread and not a poll:
+    /// it fires"*, which had no caller. A thread and not a poll
     pub fn arm_wake(&mut self, session_id: &str) {
         let Some(mut h) = self.open.remove(session_id) else {
             return;
@@ -3304,7 +3304,7 @@ impl<'a> Sessions<'a> {
     }
 
     /// Something fired while nothing was running. The worker's half of the wake.
-    /// `Outcome::Ignored` is the honest answer to a wake that raced a mid-turn pickup:
+    /// `Outcome::Ignored` is the honest answer to a wake that raced a mid-turn pickup
     pub fn wake(&mut self, session_id: &str) -> Outcome {
         // A session on its own thread is woken THERE: `open` does not hold it, so `wake_route`
         // already answers `ItsOwnReader` - this is only the spawn, for a session that is open here and
@@ -3347,7 +3347,7 @@ impl<'a> Sessions<'a> {
     // worker's hands on the state it owns.
 
     /// A failure on the session's own log - the hub every attached head draws - for the arms
-    /// whose only other witness is the daemon's stderr. :
+    /// whose only other witness is the daemon's stderr.
     fn warn(&self, session_id: &str, code: &str, detail: String) {
         if let Some(hub) = self.registry.get(session_id) {
             hub.publish(SessionEvent::Warning {
@@ -3462,7 +3462,7 @@ impl<'a> Sessions<'a> {
 
     /// The old arm, kept for the case that cannot hand off: the thread could not be started, so
     /// the run happens here, on the worker, exactly as it always did - the rows, then the turn
-    /// its rows are for. This is the behaviour whose cost the whole change exists to end;
+    /// its rows are for. This is the behaviour whose cost the whole change exists to end
     fn run_operator_shell_here(&mut self, session_id: &str, line: &str, who: &str) -> Outcome {
         let ran = match self.open.get_mut(session_id) {
             Some(h) => h.run_operator_shell(line, who),
@@ -3905,7 +3905,7 @@ impl<'a> Sessions<'a> {
                 let _ = n;
                 // ARMING HERE IS THE WHOLE POINT OF A ROW THE OPERATOR ADDS. The clock used to start in
                 // one place only - the end of a turn - so a row added to an IDLE session was never
-                // checked. It is the same arm the turn end makes, and an ADD is more than a moved board :
+                // checked. It is the same arm the turn end makes, and an ADD is more than a moved board
                 let after = self
                     .open
                     .get(session_id)
@@ -4037,14 +4037,14 @@ impl<'a> Sessions<'a> {
                 }
                 // One operator run per session at a time - `Prompts` holds ONE input handle, so a second
                 // concurrent run would steal the first's card and `!send`. A line typed while one is in
-                // flight waits HERE and starts when it settles;
+                // flight waits HERE and starts when it settles
                 if self.bang_run_in_flight(session_id) {
                     self.queue_bang_line(session_id, line, who);
                     return Outcome::HandedOn;
                 }
                 match self.start_operator_run(session_id, &line, &who) {
                     Ok(()) => Outcome::HandedOn,
-                    // The thread could not be started. The command is not refused for that: it runs HERE,
+                    // The thread could not be started. The command is not refused for that: it runs HERE
                     // synchronously, exactly as this arm always did - the old behaviour, with the reason on
                     // the log rather than a silent loss of the operator's line.
                     Err(why) => {
@@ -4077,7 +4077,7 @@ impl<'a> Sessions<'a> {
                     None => Err(self.not_open(session_id, &format!("the rows of `{line}`"))),
                 };
                 // The run is over, whether or not its rows could be written - so the flag comes down
-                // FIRST, before anything here can return. :
+                // FIRST, before anything here can return.
                 self.clear_bang_in_flight(session_id);
                 if let Err(e) = &settled {
                     self.warn(
@@ -4112,7 +4112,7 @@ impl<'a> Sessions<'a> {
                 }
                 // And the turn its rows are for - the operator's correction, in their words: *"my commands
                 // should start a turn and should be printed to me"*. The rows above are the printing; this
-                // is the turn. `Ignored` here was the whole defect:
+                // is the turn. `Ignored` here was the whole defect
                 if !self.open.contains_key(session_id) {
                     return Outcome::Failed(
                         self.not_open(session_id, "the turn after your `!` line"),
@@ -4166,14 +4166,14 @@ impl<'a> Sessions<'a> {
             }
             // A message for a session the daemon does not hold belongs to the thread that owns it -
             // the same rule, and the same door, as the interrupt arm above. Since the between-turns
-            // fix a message to a child is no longer *"a turn in flight or nothing"*:
+            // fix a message to a child is no longer *"a turn in flight or nothing"*
             CommandKind::Message { from, text } => {
                 if self.hand_back_to_the_owner(session_id, &hub, cmd) {
                     return Outcome::HandedOn;
                 }
                 // The session the WORKER owns: a row the agent reads, and the turn it makes. The
                 // operator's ruling for their own lines is the rule here too - *"my commands should start
-                // a turn and should be printed to me"* - and a message is that pair of acts:
+                // a turn and should be printed to me"* - and a message is that pair of acts
                 if !self.open.contains_key(session_id)
                     && hub
                         .as_ref()
@@ -4308,7 +4308,7 @@ impl<'a> Sessions<'a> {
                     Outcome::Failed(format!("/{line} was refused"))
                 }
             }
-            // A read of a job's output, for the pane that asked. The same read `/job ID` does,
+            // A read of a job's output, for the pane that asked. The same read `/job ID` does
             // answered with the offsets beside the text instead of folded into a footer sentence - the
             // jobs pane draws its own header and its own paging.
             CommandKind::ReadJobOutput { job, offset } => {
@@ -4336,7 +4336,7 @@ impl<'a> Sessions<'a> {
             }
             // A head ASKS for the point that needs a person (`PROTOCOL_VERSION` 54, B8), and a person
             // ANSWERS it. Two arms rather than one because they come from different heads and mean
-            // different things:
+            // different things
             CommandKind::ModeConfirm { name } => {
                 let said = match self.harness(session_id) {
                     Ok(h) => h.ask_mode_confirm(
@@ -4417,7 +4417,7 @@ impl<'a> Sessions<'a> {
                     harness.workspace().to_path_buf()
                 };
                 // A consented `allow-all` IS written now - with the answer that opens it. It used to be
-                // left out of the row, and for a good reason:
+                // left out of the row, and for a good reason
                 let consented_here =
                     *consented && mode.name == letibot_tools::mode::Mode::ALLOW_ALL.name;
                 // The row, and then the answer - in that order, through one lock, so a reader of the file
@@ -4445,7 +4445,7 @@ impl<'a> Sessions<'a> {
                     return Outcome::Failed(format!("persisting mode: {e}"));
                 }
                 // And this session moves too. The row above is the project's point for every session that
-                // opens later;
+                // opens later
                 let moved = match self.open.get_mut(session_id) {
                     // The operator's answer travels with the command, and only this call reads it: the project
                     // row above is written from the NAME, which stays `allow-all` and stays refused for the
@@ -4457,7 +4457,7 @@ impl<'a> Sessions<'a> {
                 };
                 // And the session remembers where it was put - its own row, so a restart or a reseat
                 // brings it back here whatever the project's row says by then. The requested point's NAME
-                // with the answer beside it, as the project row is written:
+                // with the answer beside it, as the project row is written
                 if moved.is_ok() {
                     let when = consented_here.then(letibot_flowy::seat::rfc3339_now);
                     let store = self.parts.mode_store.read().unwrap();
@@ -4569,8 +4569,8 @@ impl TurnOwner for DaemonTurn<'_, '_, '_> {
             match door {
                 Door::Nag(notice) => clock.said(notice.clone(), Instant::now()),
                 // The census is recorded by its DELIVERY, not by its words - the sentence names the age of
-                // the oldest row, so a text identity would read every delivery as new. Before the re-arm,
-                // which reads the anchor:
+                // the oldest row, so a text identity would read every delivery as new. Before the re-arm
+                // which reads the anchor
                 Door::Census => clock.census_said(Instant::now()),
                 _ => {}
             }
@@ -4658,7 +4658,7 @@ fn shown_tokens(scale: Option<(u64, u64)>) -> impl Fn(usize) -> u64 {
 }
 
 /// The two pairs a compaction's numbers convert through - the history's, and the new
-/// base's. One pair used to convert both, and it was the HISTORY's:
+/// base's. One pair used to convert both, and it was the HISTORY's
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Scales {
     pub before: Option<(u64, u64)>,
@@ -4681,7 +4681,7 @@ impl From<Option<(u64, u64)>> for Scales {
     }
 }
 
-/// How the summary turn was paid for, said only with what was measured .
+/// How the summary turn was paid for, said only with what was measured.
 pub(crate) fn summary_turn_reuse(o: &letibot_turn::CompactionOutcome) -> String {
     match (o.cached_tokens, o.reusable) {
         (cached, reusable) if reusable > 0 => {
@@ -4751,7 +4751,7 @@ pub(crate) fn compaction_said(
     }
     // And WHICH zero, when there is no tail. This comment two paragraphs up claims the
     // non-zero count is *"evidence of which path ran rather than a restatement of the policy
-    // "* - and that was true in one direction only:
+    // "* - and that was true in one direction only
     if r.fork.tail_items == 0
         && let Some(line) = r.fork.tail_why.as_ref().and_then(|t| t.why_line())
     {
@@ -4770,7 +4770,7 @@ pub(crate) fn compaction_said(
 
 /// The structure behind the sentence - 's `warning.compaction`. The `detail` sentence stays
 /// exactly as it was, because it is the fallback every reader that cannot use this lands
-/// on;
+/// on
 pub(crate) fn compaction_wire(
     r: &crate::harness::CompactReport,
     kind: &str,
@@ -4818,7 +4818,7 @@ impl SessionSource for StoreSessions {
     }
 
     /// Make it durable who this session is for - see `letibot_sessionlog::SessionOrigin`.
-    /// Called twice for a session a head created:
+    /// Called twice for a session a head created
     fn set_origin(&self, session_id: &str, origin: letibot_sessionlog::SessionOrigin) {
         let g = self.store.lock().unwrap_or_else(|e| e.into_inner());
         let _ = g.set_session_origin(session_id, origin.as_str());
@@ -4946,7 +4946,7 @@ fn stored_end(last: &letibot_transcript::TranscriptItem) -> letibot_sessionlog::
 
 /// How much of the idle window is left - `None` when it has all passed. The daemon has been
 /// quiet for the shorter of the time since the newest event and the time since a look last
-/// found it busy:
+/// found it busy
 fn idle_left(window: Duration, since_event: Duration, since_busy: Duration) -> Option<Duration> {
     let quiet = since_event.min(since_busy);
     (quiet < window).then(|| window - quiet)
@@ -5088,7 +5088,7 @@ mod the_wake_route {
 mod the_wire_report {
     //! 's `warning.compaction`, built and read back. The builder is private to this module and
     //! takes a `CompactReport`, so this is where it can be exercised without a store, a model
-    //! or a turn:
+    //! or a turn
 
     use super::*;
     use crate::harness::{CompactReport, ForkReport};
@@ -5214,7 +5214,7 @@ mod the_wire_report {
     }
 
     /// A local compaction carries the template and an empty tail, and that is not an absent
-    /// field. The ruled split says a local model gets no verbatim turns;
+    /// field. The ruled split says a local model gets no verbatim turns
     #[test]
     fn a_local_compaction_carries_an_empty_tail_and_still_says_why() {
         let r = report("## Objective\n\n- ship it", Vec::new(), 0, "local_model");
@@ -5373,7 +5373,7 @@ mod the_subagent_exit_wait {
 #[cfg(test)]
 mod a_childs_state_is_read_from_the_right_facts {
     //! The two facts `working` is filled from, and the one it is NOT. The defect these hold
-    //! shut, measured:
+    //! shut, measured
     use super::{child_reading, child_sessions};
     use crate::tasks::{TaskEntry, TaskJournal};
     use letibot_sessionlog::SessionEvent;
@@ -5430,7 +5430,7 @@ mod a_childs_state_is_read_from_the_right_facts {
 
     /// A child in its tool calls is WORKING, and the round-level flag says it is not. This is
     /// the case that made the check send its reader to `job_kill` about a child that was
-    /// building, and the two assertions are the two halves of the fix:
+    /// building, and the two assertions are the two halves of the fix
     #[test]
     fn a_child_executing_a_tool_call_is_working_though_no_round_is_generating() {
         let (r, hub) = registry_with("s-1-sub-1");

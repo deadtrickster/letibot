@@ -133,7 +133,7 @@ pub fn target_timed_out(h: &TargetHealth, key: &str) -> String {
     )
 }
 
-/// `target_unjudged`: the gate could not be read, the landing tree could not be made ready,
+/// `target_unjudged`: the gate could not be read, the landing tree could not be made ready
 /// or a step could not run - nothing about the code was judged. Two causes, and the
 /// sentence has to say which.
 pub fn target_unjudged(h: &TargetHealth, key: &str) -> String {
@@ -412,7 +412,7 @@ pub fn refusal_undelivered(r: &ReviewRow, tried: &str) -> String {
 }
 
 /// `queue_needs_human`: the reviewer could not decide (`review::verdict`). The sentence
-/// names the head the sentence the verdict turned on (`decisive`:
+/// names the head the sentence the verdict turned on (`decisive`
 pub fn needs_human(r: &ReviewRow, by: &str, decisive: &str, heads: &[String]) -> String {
     let short = |s: &str| s.chars().take(7).collect::<String>();
     let decisive = if decisive.is_empty() {
@@ -460,7 +460,7 @@ pub fn needs_human(r: &ReviewRow, by: &str, decisive: &str, heads: &[String]) ->
 
 /// Why a review's attempts ran out, in one sentence a person can act on - the row's
 /// `failure` and the heart of [`blocked_after`]: every counted attempt at this head by its
-/// gist (`capacity::gist` firecode's `error:` sentence, not its banner), oldest first;
+/// gist (`capacity::gist` firecode's `error:` sentence, not its banner), oldest first
 pub fn attempts_spent(attempts: u32, head: &str, gists: &[String], placement: bool) -> String {
     let listed = gists
         .iter()
@@ -732,7 +732,7 @@ mod tests {
     }
 
     /// The review the operator pasted - `agent/panic-groupingsets-join`, whose reviewer could
-    /// not decide, parked for a person. The reasons are the reviewer's as the paste shows them,
+    /// not decide, parked for a person. The reasons are the reviewer's as the paste shows them
     /// completed.
     #[test]
     fn a_handover_names_its_exception_to_the_queue_rule() {
@@ -792,11 +792,11 @@ mod tests {
     }
 
     /// The TUI's review-card fixtures are what the queue writes - one per shape a review's
-    /// outcome reaches a session or a hub in:
+    /// outcome reaches a session or a hub in
     #[test]
     fn the_tuis_review_card_fixtures_are_what_the_queue_writes() {
         use crate::sessions::gatekeeper;
-        // The review queue's session, as one daemon spells it. A fixture rather than a derived id:
+        // The review queue's session, as one daemon spells it. A fixture rather than a derived id
         // the id is per workspace now (`s-gatekeeper-<key>`), and a fixture that hashed a temp
         // path would embed a number no reader can check.
         let host = gatekeeper::session_for_fixture();

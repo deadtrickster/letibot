@@ -250,7 +250,7 @@ impl Step {
     }
 }
 
-/// The scripted session (§18.2: *"a fixed 30-turn conversation with a fixed tool script,
+/// The scripted session (§18.2: *"a fixed 30-turn conversation with a fixed tool script
 /// replayed identically against any client"*).
 fn script(turns: usize) -> Vec<Step> {
     let ask = |s: &str| Step::Ask(s.to_string());
@@ -350,7 +350,7 @@ fn judge(
 
     // ---- C3: the generation-inclusive prefix invariant -------------------- Read off
     // `PrefixCheck`, which the engine computed at the moment it had the evidence, rather than
-    // recomputed from `prompt + predicted`:
+    // recomputed from `prompt + predicted`
     let mut c3_held = 0;
     let mut c3_short: Vec<String> = Vec::new();
     // Every shortfall is compared against the previous submission's generation, because one shape
@@ -425,7 +425,7 @@ fn judge(
         )
     });
 
-    // ---- C4: the f_keep distribution -------------------------------------- D11:
+    // ---- C4: the f_keep distribution -------------------------------------- D11
     let mut keeps: Vec<f64> = rows.iter().filter_map(|r| r.m.f_keep()).collect();
     keeps.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let mut repre: Vec<f64> = rows.iter().map(|r| r.m.reprefill() as f64).collect();
@@ -502,7 +502,7 @@ fn judge(
     }
 
     // `f_sim` - the OLD C4 - reported beside it so the two can be told apart. Its denominator
-    // is the whole new prompt, so its ceiling on any submission is `1 - new_tokens/prompt`:
+    // is the whole new prompt, so its ceiling on any submission is `1 - new_tokens/prompt`
     let mut sims: Vec<f64> = rows.iter().filter_map(|r| r.m.f_sim()).collect();
     sims.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let ceilings: Vec<f64> = rows

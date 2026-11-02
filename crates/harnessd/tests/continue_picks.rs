@@ -168,7 +168,7 @@ fn listing(store: &Path) -> String {
 }
 
 /// The rows a listing puts in one group - the ids under that group's header, in the order
-/// they were drawn. The listing is grouped (`cli.rs`'s `Query::List`):
+/// they were drawn. The listing is grouped (`cli.rs`'s `Query::List`)
 fn group_of_rows(listed: &str, group: &str) -> Vec<String> {
     const GROUPS: [&str; 5] = ["mine", "subagents", "review queue", "packages", "one-shots"];
     let header = |l: &str| {
@@ -240,7 +240,7 @@ fn the_line_on_stdout_is_the_conversation_and_not_the_reviewer() {
 
     // And the listing agrees with the resolution. `--sessions` offers the conversation and no
     // reviewer, so the row `--continue` picks is one of them: two queries, one store, one
-    // answer. The group a reviewer lands in is the point:
+    // answer. The group a reviewer lands in is the point
     let listed = listing(&path);
     assert_eq!(
         group_of_rows(&listed, "mine"),

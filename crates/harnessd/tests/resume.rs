@@ -1,11 +1,11 @@
 //! Opening a session that is already in the store: the daemon's half of resume.
 //! `letibot-turn`'s `restore.rs` asserts the chain reproduces. This asserts the four things
 //! the *daemon* has to get right around it, none of which the ledger knows about 1. A head
-//! sees the conversation. The harness holds the restored transcript and the hub does not,
+//! sees the conversation. The harness holds the restored transcript and the hub does not
 //! so without a republish a head attaching to a resumed session is told it has joined an
 //! empty one. A perfect ledger restore would not save it. 2. The tools are confined to the
 //! session's own tree. A conversation resumed by a daemon started somewhere else must not
-//! be seated there:
+//! be seated there
 
 use std::path::{Path, PathBuf};
 
@@ -232,7 +232,7 @@ fn a_resumed_session_is_put_back_on_the_log_where_a_head_can_see_it() {
     );
     // Ids come off the ledger rows, which is what pairs an announcement with its body. A
     // second minting rule here would go stale against `append_items`. And the session's own
-    // rows are the TAIL of the snapshot:
+    // rows are the TAIL of the snapshot
     let ids = h.row_ids();
     for (row, ledger) in snap.items[snap.items.len() - ids.len()..].iter().zip(&ids) {
         assert_eq!(
@@ -289,7 +289,7 @@ fn a_session_recorded_under_another_dialect_is_re_rendered_not_refused() {
     );
     // The fork is a NEW transcript; the old one is untouched, which is what makes this safe to
     // do without asking. Asserted in the store rather than by comparing two ids that could
-    // never be equal:
+    // never be equal
     assert_ne!(
         report.transcript_id, f.current,
         "the re-render lands in a fork, not on top of the recorded tokens"

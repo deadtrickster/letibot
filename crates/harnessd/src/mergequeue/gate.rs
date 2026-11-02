@@ -1,11 +1,11 @@
 //! The gate: the target's own `## Merge gate`, run with a deadline, in a process group, and
 //! killable - each step `sh -c <step>` in a new process group writing to a file, killed on
-//! the deadline, the daemon's stop, or a lost lease. Each step runs in a cgroup of its own,
+//! the deadline, the daemon's stop, or a lost lease. Each step runs in a cgroup of its own
 //! a sibling of the daemon's leaf under the delegated scope, capped by `[memory] gate`, so
 //! a heavy build cannot throttle the sessions the daemon serves; with no delegated scope it
 //! runs uncapped and the row says so. The step is also told what it may use - `TMPDIR` on
 //! the box's real disk, `CARGO_BUILD_JOBS` from its own cap. [`GateRunner`] has two
-//! implementations:
+//! implementations
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -1485,7 +1485,7 @@ fn same_test(a: &str, b: &str) -> bool {
 
 /// `thread 'worker::a_test' (472254183) panicked at crates/…:12:5:` → `worker::a_test`.
 /// libtest runs a test on a thread named after it, which is what ties a panic printed in
-/// the run to its test. The name ends at the closing quote, not at the end of the head:
+/// the run to its test. The name ends at the closing quote, not at the end of the head
 fn panic_thread(s: &str) -> Option<&str> {
     let at = s.find("panicked at")?;
     let rest = s[..at].trim().strip_prefix("thread '")?;
@@ -1550,7 +1550,7 @@ fn evidence(seg: &[&str], test: &str) -> Vec<String> {
 
 /// One failing target, read out of its OWN segment of the output - the first test that
 /// segment reported FAILED and the panic it printed. `clause` is cargo's name for the
-/// target, empty when nothing named it;
+/// target, empty when nothing named it
 fn failing_target(seg: &[&str], clause: &str, descriptor: &str) -> Option<FailingTarget> {
     let names = failed_names(seg);
     let cargo_said = !clause.is_empty();
@@ -1591,7 +1591,7 @@ fn failing_target(seg: &[&str], clause: &str, descriptor: &str) -> Option<Failin
 
 /// Read a step's whole output once, for what it says about the code. The stream is cut into
 /// ONE SEGMENT PER TARGET at the line cargo prints before running it, because a cut per
-/// `error:
+/// `error
 fn failures(text: &str) -> Failures {
     let lines: Vec<&str> = text.lines().collect();
     let mut f = Failures::default();
@@ -1784,7 +1784,7 @@ pub fn gate_target_dir(worktree: &Path) -> PathBuf {
 
 /// This run's scratch directory, absolute - [`GATE_TMP_ROOT`]`/<the tree's name, at most
 /// [`GATE_TMP_NAME_CHARS`]>-<this process's run number>`. The name is per RUN, not per
-/// tree:
+/// tree
 pub fn gate_tmp_dir(worktree: &Path) -> PathBuf {
     gate_tmp_dir_in(Path::new(GATE_TMP_ROOT), worktree)
 }
@@ -3006,7 +3006,7 @@ exit 101
         );
     }
 
-    /// The arithmetic, on a real cargo stream - MEASURED 2026-10-30 on this box:
+    /// The arithmetic, on a real cargo stream - MEASURED 2026-10-30 on this box
     #[test]
     fn a_real_workspace_stream_is_cut_into_targets_and_only_the_failing_one_is_quoted() {
         let text = r#"   Compiling probe-a v0.1.0 (/w/a)

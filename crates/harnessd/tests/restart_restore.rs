@@ -1,7 +1,7 @@
-//! A daemon restart brings back what a session was running - or, past the threshold,
+//! A daemon restart brings back what a session was running - or, past the threshold
 //! reminds the model of it. Under the threshold a restart restores the children, monitors
 //! and jobs; past it, it says how long the daemon was down and what was running, and
-//! nothing comes back on its own. And a restart that had nothing to restore is said anyway,
+//! nothing comes back on its own. And a restart that had nothing to restore is said anyway
 //! because the time is the one fact only the daemon has. That sentence is a NOTICE and not
 //! a turn (`restart::nothing_running`) while a restore keeps the turn it has always had. #
 //! How a restart is staged here A daemon is a [`Registry`] (its instance id is what every
@@ -719,7 +719,7 @@ fn a_later_turn_that_ends_on_its_own_leaves_the_row_settled() {
 
 /// A tool's helpers are never the model's news, and a recorded child reads one way through
 /// every door - twelve part readers, settled and never marked delivered (their tool read
-/// them), all derived the one name;
+/// them), all derived the one name
 #[test]
 fn helpers_are_not_restored_and_a_recorded_child_reads_one_way() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -890,7 +890,7 @@ fn a_child_whose_record_was_never_written_is_still_listed_and_readable() {
     let cfg = config(&dir.repo(), &dir.store(), stub.endpoint.clone());
     // One recorded child, so the store has a window - it began recording children a minute ago
     // and a reader that ignored the window would list every child this store ever had. The
-    // daemon that loses it, and then a restart:
+    // daemon that loses it, and then a restart
     let one = a_daemon(&parts, &cfg);
     one.stop(None);
     let store = Store::open(&dir.store()).unwrap();
@@ -1340,7 +1340,7 @@ fn job_state(store: &Store, handle: &str) -> String {
 
 /// A relic draws no REMINDER - a job row left by a build before `job_context`, naming no
 /// daemon so `Stopped::latest` over no daemon is unknown. Such a row is closed quietly and
-/// named to nobody. The restart itself is still said:
+/// named to nobody. The restart itself is still said
 #[test]
 fn relics_alone_draw_no_reminder_and_are_closed_quietly() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -1697,7 +1697,7 @@ fn a_grandchild_comes_back_when_its_parent_does() {
     d.stop(None);
 }
 
-/// The edge cases a restore must not get wrong, each named in the notice:
+/// The edge cases a restore must not get wrong, each named in the notice
 #[test]
 fn what_must_not_be_respawned_is_reported_or_delivered() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -1996,7 +1996,7 @@ fn an_empty_restart_is_said_once_and_starts_no_turn() {
 
 /// A session restored with a plan it still owes is WOKEN, and its first turn carries the
 /// restart sentence - a restart notice that arrives with the person's own `continue` is not
-/// a restart. The whole chain, through production doors only:
+/// a restart. The whole chain, through production doors only
 #[test]
 fn a_restored_session_with_an_open_todo_row_is_woken_and_its_turn_carries_the_restart() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -2393,7 +2393,7 @@ fn a_session_reopened_by_the_daemon_that_wrote_its_records_restores_nothing() {
     assert!(d.parent.restore_after_restart().is_none());
     // A SECOND harness for one session is REFUSED, by name - the writer claim. The daemon's
     // own door never builds one (`Sessions::open_as` answers a `/resume` or a head's attach
-    // with the harness it already has);
+    // with the harness it already has)
     let hub2 = Hub::new(PARENT);
     let second = Harness::open_with_registry(
         &parts,
@@ -2645,7 +2645,7 @@ fn the_old_daemons(store: &Store, handle: &str) {
 }
 
 /// A job whose ending was held when the daemon stopped is said by the next one, once.
-/// Restore used to collect only `running` rows:
+/// Restore used to collect only `running` rows
 #[test]
 fn a_job_that_ended_untold_before_the_stop_is_said_after_it_once() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -2742,7 +2742,7 @@ fn a_job_handle_minted_after_a_restart_is_above_every_one_the_store_holds() {
 
 /// A job still running when a VM child's backend is closed is named, and its row settled. A
 /// VM child's backend is closed after its first turn and its background jobs die with the
-/// guest;
+/// guest
 #[test]
 fn the_jobs_a_closing_backend_takes_with_it_are_named_and_their_rows_settled() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {

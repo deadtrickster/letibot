@@ -4,7 +4,7 @@
 //! description and schema, and a call asks the stack for `tool_claude_transcript` with the
 //! arguments and feeds. Which layers count is [`crate::plugins::declared_tools`]'s answer -
 //! the three disk scopes - so a built-in's block is the text a person installs, not a tool
-//! every session is handed. A hook does no I/O, so a tool asks for it:
+//! every session is handed. A hook does no I/O, so a tool asks for it
 
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};

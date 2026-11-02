@@ -5,7 +5,7 @@
 //! notified. One counting rule: the landing rows `desk::status` counts as parked, minus the
 //! ones still the queue's own business (`is_open`), built by the same `desk::counts_of`
 //! over the same `desk::parked_merge` - a sub-line of `status`'s own line, and a test holds
-//! the two together. The review queue is deliberately NOT counted:
+//! the two together. The review queue is deliberately NOT counted
 
 use letibot_tokencore::store::{MergeRow, MergeState, Store};
 
@@ -17,7 +17,7 @@ use super::desk;
 pub const STUCK_AFTER_MS: u64 = 15 * 60 * 1000;
 
 /// How often the census is said again while the rows stay stuck - the rate this notice has
-/// of its own. Two hours, in the queue's own units:
+/// of its own. Two hours, in the queue's own units
 pub const STUCK_REPEAT_MS: u64 = 2 * 60 * 60 * 1000;
 
 /// A landing row that is stuck: nobody is on it and no pass will move it. The non-open half of

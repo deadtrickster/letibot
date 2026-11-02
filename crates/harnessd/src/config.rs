@@ -48,7 +48,7 @@ pub enum Seat {
     #[default]
     Orchestrator,
     /// D9's plan mode: read, search, the intent list, and the two things that make a plan a plan - `write_plan` (scoped to plan documents by taking a *name*, not a path) and `say`. Needs
-    ///   a writable backend and an adjudicator.
+    /// a writable backend and an adjudicator.
     Planner,
     /// §8.4's `researcher` with the web instead of `search_corpus`. Four of its
     /// seven seats refuse today for want of a backend; the two network ones still

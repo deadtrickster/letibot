@@ -135,7 +135,7 @@ fn a_turn_of_ten_reads(vocab: &letibot_tokencore::Vocab, rel: &str) -> Vec<canne
     round0
 }
 
-/// The file the ten reads read: 260 numbered lines, ~3950 tokens as `read` renders them,
+/// The file the ten reads read: 260 numbered lines, ~3950 tokens as `read` renders them
 /// and [`ten_reads_of`] measures that rather than trusting this number.
 fn write_the_big_file(dir: &TempDir, cfg: &mut Config) -> String {
     let big = dir.path().join("big.txt");
@@ -245,7 +245,7 @@ fn at(warnings: &[(String, String)], code: &str, text: &str) -> usize {
 
 /// THE CHAIN, through the daemon's own door, with the guard already fired - and released by
 /// the first measured count. The no-progress finding is restored from the store the way a
-/// restarted daemon restores it, and `Stuck` is not for good:
+/// restarted daemon restores it, and `Stuck` is not for good
 #[test]
 fn a_stuck_session_is_released_by_a_measured_count_and_then_compacts_at_the_wall() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -614,7 +614,7 @@ fn a_refused_prompt_through_a_childs_seam_compacts_and_finishes() {
 }
 
 /// A 400 that is not about context length stays a backend error. The matcher's narrowness
-/// is the whole of its safety:
+/// is the whole of its safety
 #[test]
 fn a_non_context_400_stays_a_backend_error() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {

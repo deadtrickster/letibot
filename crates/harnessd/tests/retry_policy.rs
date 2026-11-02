@@ -371,7 +371,7 @@ fn what_is_retryable_and_what_the_operator_is_told() {
 
     // ── A. A transport failure is retried, and the turn survives ─────────────────────────
     // The stub hangs up on the first call and answers on the second. This is the class a DNS
-    // lookup failure lands in, and the assertion that matters is the stub's own count:
+    // lookup failure lands in, and the assertion that matters is the stub's own count
     endpoint.refuse(1, Refusal::HangUp);
     let before = endpoint.seen();
     let cfg = config(&scratch, "transport", 1);

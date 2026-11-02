@@ -191,7 +191,7 @@ impl ParentTodos {
 
     /// Resolve the target to one brief: an exact id, a child's name, else the short `…tail`
     /// form [`short_id`] spells - the one the subagent pane and `task_result` show. Ambiguity
-    /// is refused with the candidates named:
+    /// is refused with the candidates named
     fn resolve(&self, target: &str) -> Result<letibot_sessionlog::registry::SessionBrief, String> {
         let all = self.registry.list();
         if let Some(exact) = all.iter().find(|b| b.session_id == target) {
@@ -298,7 +298,7 @@ impl ChildTodos for ParentTodos {
                 });
                 // AND THE CHILD'S OWN READER IS WOKEN, because a session's board move arms its idle
                 // plan-check - *"childs being just a session should get nags"*. A parked child is blocked
-                // in `Hub::take_own_work_until` and a publish alone does not open that door:
+                // in `Hub::take_own_work_until` and a publish alone does not open that door
                 hub.wake_its_own_reader();
             }
         }
@@ -705,7 +705,7 @@ mod tests {
         );
     }
 
-    /// A child still booting its VM is a child - the operator's stroppy session, 2026-10-14:
+    /// A child still booting its VM is a child - the operator's stroppy session, 2026-10-14
     #[test]
     fn a_child_still_booting_its_vm_can_be_waited_on_by_id_or_name() {
         let dir = letibot_sessionlog::testing::scratch_root().join(format!(

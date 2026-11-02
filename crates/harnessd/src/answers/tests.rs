@@ -134,7 +134,7 @@ fn a_question() -> Question {
 
 /// `ask_user_question` reaching a person, end to end inside the daemon: the question is
 /// posed as a card with its choices, the head answers it, and the tool thread wakes with
-/// the answer and who gave it. The attribution is not a formality:
+/// the answer and who gave it. The attribution is not a formality
 #[test]
 fn a_head_answers_a_question_and_the_answer_carries_who_gave_it() {
     let hub = Hub::new("s");
@@ -918,7 +918,7 @@ fn an_oracle_that_selected_is_not_reported_as_a_human() {
     }
 }
 
-/// An answer that arrives before the wait starts is not lost. `ask` creates the slot,
+/// An answer that arrives before the wait starts is not lost. `ask` creates the slot
 /// publishes the question, and only then calls `wait`.
 #[test]
 fn an_answer_that_lands_before_the_wait_begins_is_still_the_answer() {
@@ -937,7 +937,7 @@ fn an_answer_that_lands_before_the_wait_begins_is_still_the_answer() {
     ));
     // And now the wait begins. It must find the answer, not overwrite it. No clock: nobody
     // else can answer `adj-race`, so `Answered` here can only be the answer placed above, read
-    // without waiting;
+    // without waiting
     match answers.wait("adj-race", Duration::from_secs(10)) {
         Waited::Answered { reply, by } => {
             assert_eq!(by, "deadtrickster");

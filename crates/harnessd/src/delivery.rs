@@ -5,7 +5,7 @@
 //! asked for it, or `wake: "now"`. Holding lasts only as long as the turn. When the turn
 //! ends, what is held arrives as one `[meanwhile]` note in a turn of its own
 //! ([`Rule::TurnEnd`]); if another turn starts first the batch rides that turn's start
-//! ([`Rule::Batch`]);
+//! ([`Rule::Batch`])
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -167,7 +167,7 @@ pub fn failed(c: &JobCompletion) -> bool {
 
 /// The one spelling of "a row names this job", for its two callers: the delivery decision
 /// here and the activity ([`crate::activity::awaited`]). The slug is part of it because a
-/// model may name its job (`bash(slug:
+/// model may name its job (`bash(slug
 pub fn named(handle: &str, job: &str, slug: Option<&str>) -> bool {
     handle == job || slug == Some(handle)
 }
@@ -179,7 +179,7 @@ fn open(row: &TodoItem) -> bool {
 
 /// What the session's open plan says about one running thing: the two facts the activity
 /// and the delivery decision both need, from one reading of the board. `when_row` is a row
-/// whose `when:
+/// whose `when
 pub fn plan_says(
     rows: &[TodoItem],
     handle: &str,
@@ -281,7 +281,7 @@ impl Rule {
 
 /// The `[meanwhile]` note's first line. The `[job]` / `[task]` groups under it are
 /// `completion_notices`' own, so the head's compact job rows read them as they always did.
-/// It says what the results are and not which rule delivered them:
+/// It says what the results are and not which rule delivered them
 pub fn meanwhile_heading(_n: usize, _rule: Rule, _cap: Duration) -> String {
     "[meanwhile] Finished while you were working:".to_string()
 }

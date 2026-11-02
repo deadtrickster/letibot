@@ -174,7 +174,7 @@ fn a_reseat_refused_over_the_window_writes_no_prompt_row() {
 
 /// A fork whose rows the store refused is not what a restart opens, and the re-seat is not
 /// reported as "Nothing was changed". The store refuses by having `transcript_item` moved
-/// away through a second connection while the carry is written;
+/// away through a second connection while the carry is written
 #[test]
 fn a_fork_the_store_refused_is_not_what_a_restart_opens() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -228,7 +228,7 @@ fn a_fork_the_store_refused_is_not_what_a_restart_opens() {
         "a fork with none of its rows stored is what a restart would open"
     );
     // A restart now resumes the parent, whole - and the restart is READ FROM THE STORE here
-    // rather than run: a second harness for one session is refused by name (the writer claim),
+    // rather than run: a second harness for one session is refused by name (the writer claim)
     // because the first one still holds the fork this test is about.
     let refusal = {
         let hub = Hub::new(&seated.session_id);

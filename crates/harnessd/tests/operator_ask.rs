@@ -4,7 +4,7 @@
 //! with the reply on it; the model told at once; and the question surviving a restart. The
 //! operator asked for three things: the heads show loud notification that they are waited
 //! on, a question comes with a choice list and room for free text, and submitting it
-//! unblocks the todo with the reply attached. It needs the vocabulary GGUF and not a model:
+//! unblocks the todo with the reply attached. It needs the vocabulary GGUF and not a model
 //! the endpoint is a port nothing listens on.
 
 use letibot_harnessd::config::Config;
@@ -181,7 +181,7 @@ fn needs_of(path: &std::path::Path, id: &str, content: &str) -> Vec<TodoNeed> {
 }
 
 /// The heads are told loudly, and the four answers each unblock their row. The settings row
-/// and the picker's brief say how many questions wait;
+/// and the picker's brief say how many questions wait
 #[test]
 fn every_answer_shape_unblocks_its_row_and_tells_the_model() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -299,7 +299,7 @@ fn every_answer_shape_unblocks_its_row_and_tells_the_model() {
 
 /// A question asked from here on is announced; a refused answer is said; a restart keeps
 /// the waiting row. The operator's own row gets a question through the head's push (the
-/// same door the pane echoes edges through), which publishes `waiting_on_operator`;
+/// same door the pane echoes edges through), which publishes `waiting_on_operator`
 #[test]
 fn a_waiting_row_is_announced_survives_a_refusal_and_a_restart() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {

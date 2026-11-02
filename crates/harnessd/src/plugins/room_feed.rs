@@ -5,7 +5,7 @@
 //! handed. A row carries its tag, state, claimant (and whether that is this session), the
 //! age of its beat and its abandonment count: a tag is a lock, so the queue is the unit of
 //! contention, and `claimable` is the predicate rather than `state == open`, because an
-//! abandoned item is claimable and does not say open. Two things only the host can answer:
+//! abandoned item is claimable and does not say open. Two things only the host can answer
 
 use std::collections::BTreeMap;
 

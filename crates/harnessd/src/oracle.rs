@@ -16,7 +16,7 @@ use letibot_tools::{
 use letibot_turn::http::{self, Endpoint};
 
 /// What came back, and whether it was cut off. Two facts in one struct, because the second
-/// cannot be recovered from the first:
+/// cannot be recovered from the first
 struct Said {
     text: String,
     /// The server said `finish_reason: length`. See [`HttpOracle::ask`].
@@ -47,7 +47,7 @@ pub struct HttpOracle {
     scope: OracleScope,
     question: Question,
     /// The bytes that came back on the last call, verbatim, for the corpus row. The exchange
-    /// exists for one HTTP call and is otherwise gone:
+    /// exists for one HTTP call and is otherwise gone
     last_reply: Mutex<Option<String>>,
 }
 
@@ -127,9 +127,9 @@ impl HttpOracle {
     /// caller treats as an unsure answer, because a transport failure must never read as
     /// authorisation.
     fn ask(&self, prompt: &str) -> Option<Said> {
-        // The chat endpoint, and `enable_thinking: false`. `/completion` applies no chat template,
+        // The chat endpoint, and `enable_thinking: false`. `/completion` applies no chat template
         // so the flag is inert there and the model spends tens of seconds in a `<think>` block on
-        // exactly the calls worth judging;
+        // exactly the calls worth judging
         let body = serde_json::json!({
             "model": "guard",
             "messages": [{ "role": "user", "content": prompt }],
@@ -400,7 +400,7 @@ impl AuthorisationOracle for HttpOracle {
         let Some(said) = self.ask(&prompt) else {
             // Nothing came back, so the cell keeps the `None` the clear above set, which is what the
             // corpus records - "asked and silent" and "replied with nothing" are different facts. It
-            // is not `OutOfRoom` either:
+            // is not `OutOfRoom` either
             return OracleAnswer::Unsure {
                 why: format!("{} did not answer", self.id),
                 kind: UnsureKind::Unreadable,
@@ -586,8 +586,8 @@ impl HttpOracle {
         OracleAnswer::Unsure { why, kind }
     }
 
-    /// The sentence for a reply that was cut off by its own ceiling. It names the budget,
-    /// because that is the fact the operator acts on:
+    /// The sentence for a reply that was cut off by its own ceiling. It names the budget
+    /// because that is the fact the operator acts on
     fn out_of_room_why(&self) -> String {
         format!(
             "{} ran out of room: the reply stopped at its {} output-token ceiling before \
@@ -727,7 +727,7 @@ mod tests {
     }
 
     /// A reply cut at the ceiling that did carry a verdict is an answer. The ceiling explains a
-    /// *failure* to parse and nothing else:
+    /// *failure* to parse and nothing else
     #[test]
     fn the_ceiling_explains_a_failure_and_never_overrides_a_verdict() {
         let o = HttpOracle::new(

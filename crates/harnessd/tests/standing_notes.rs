@@ -3,7 +3,7 @@
 //! path was removed on the operator's ruling, so a note edited between rebuilds lands at
 //! the next one, not on the next turn. The assembly itself - the sources, the order, the
 //! budget, the digest - is asserted as unit tests on `standing_notes`, which needs no
-//! harness. What needs one is the re-read at a base rebuild:
+//! harness. What needs one is the re-read at a base rebuild
 
 use letibot_harnessd::config::Config;
 use letibot_harnessd::standing_notes;
@@ -46,7 +46,7 @@ fn no_box(scratch: &std::path::Path) -> letibot_harnessd::leticode_config::BoxDi
 
 /// A session over a workspace with a nonce in its `AGENTS.md`, composed the way `Sessions`
 /// composes one: `seat_prompt` set, so the harness composes the prompt at open for its
-/// seated tools, notes included. The store's directory comes back with the harness:
+/// seated tools, notes included. The store's directory comes back with the harness
 fn opened(workspace: &std::path::Path, nonce: &str) -> (Harness, TempDir) {
     opened_over(
         workspace,
@@ -87,7 +87,7 @@ fn opened_over(
 
 /// The box a session reads is the one its config names, and an unconfigured one reads
 /// nothing of the machine it runs on. A fixture's prompt has to be a function of its own
-/// files:
+/// files
 #[test]
 fn the_box_a_session_reads_is_the_one_its_config_names() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -174,7 +174,7 @@ fn an_edited_agents_md_lands_in_the_next_base() {
         !next.system.contains("note-rebuild-one"),
         "the old generation is gone"
     );
-    // And nothing else moved. Strip the section from both and the prompts are byte-identical:
+    // And nothing else moved. Strip the section from both and the prompts are byte-identical
     // the sections, `system_extra`, the budget arithmetic - the whole frozen-input rule
     // `compose_for_seat` set keeps its side of the bargain and only the notes moved.
     assert_eq!(

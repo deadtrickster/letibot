@@ -5,7 +5,7 @@
 //! of them can prove is the chain: a real model, told to plan actually calling `todo_write`
 //! through the gated runtime, the harness flushing at the round boundary, and a head
 //! attaching afterwards finding both the store row and the event in its backlog. Never
-//! start a second model server to make a test pass:
+//! start a second model server to make a test pass
 
 use std::sync::OnceLock;
 
@@ -115,7 +115,7 @@ fn a_live_todo_write_reaches_the_store_and_the_log() {
 }
 
 /// Is the box actually serving the model this test renders for? A vocabulary FILE existing
-/// is a different question from a server being up:
+/// is a different question from a server being up
 fn glm_is_served() -> bool {
     static OK: OnceLock<bool> = OnceLock::new();
     *OK.get_or_init(|| {

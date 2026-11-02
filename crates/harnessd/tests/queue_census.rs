@@ -4,7 +4,7 @@
 //! is a TURN and not a notice, and that is the whole point: a notice is a mailbox the model
 //! reads at its next turn, and a session with nothing to do has none - so a census written
 //! that way reaches nobody. A bell must be able to inject a turn. This file's central
-//! assertion is therefore not "a row was written" but "the model was handed the sentence":
+//! assertion is therefore not "a row was written" but "the model was handed the sentence"
 
 use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
@@ -308,8 +308,8 @@ fn answers(hub: &Hub) -> Vec<String> {
 // ---------------------------------------------------------------------------
 
 /// Eight stuck rows WOKE THE MODEL with the count and the age - once, then once an interval
-/// later then not at all once the queue recovered. FAILS on a census written as a notice,
-/// and fails in the way that matters:
+/// later then not at all once the queue recovered. FAILS on a census written as a notice
+/// and fails in the way that matters
 #[test]
 fn a_stuck_row_wakes_the_model_and_a_recovered_queue_runs_no_turn() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -363,7 +363,7 @@ fn a_stuck_row_wakes_the_model_and_a_recovered_queue_runs_no_turn() {
 
     // One delivery, and it is a TURN - the model was asked, and what it was asked is the
     // sentence: the count, the age and the verbs. The sweep is spent first, so "this door
-    // armed it" is a measurement and not a leftover:
+    // armed it" is a measurement and not a leftover
     sessions.sweep_abandoned_calls();
     assert!(sessions.sweep_due_at().is_none(), "the fixture spent it");
     assert_eq!(sessions.deliver_due_censuses(), 1, "one session is told");
@@ -579,7 +579,7 @@ fn a_census_and_a_plan_check_do_not_postpone_each_other() {
 
 /// A subagent is not told. The census is the PROJECT's - a child told *eight rows are stuck
 /// in `main`* has been handed somebody else's work, and the root-session rule is what keeps
-/// it out. It runs no turn either:
+/// it out. It runs no turn either
 #[test]
 fn a_child_session_gets_no_census() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {

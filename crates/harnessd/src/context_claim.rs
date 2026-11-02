@@ -75,7 +75,7 @@ pub const ANCHORS: &[&str] = &["context", "room"];
 pub const SELF: &str = "myself";
 
 /// The words that make a window a claim about the speaker's OWN context: first person, what
-/// *remains* of it, or wanting a *fresh* one. Measured:
+/// *remains* of it, or wanting a *fresh* one. Measured
 pub const OWNERS: &[&str] = &[SELF, "remaining", "fresh"];
 
 /// The file each claim is appended to, under the workspace.
@@ -116,7 +116,7 @@ pub const EXEMPLARS: &[&str] = &[
     "It is too big for my context, so I'm dispatching it with the sites named.",
     // The capacity claim used to RATION work, in reasoning - pg-noop's reasoning, where it
     // appeared 295 times in one transcript generation: *"Hmm - my context 49% → one call"*.
-    // Nothing stops, so none of the families above match;
+    // Nothing stops, so none of the families above match
     "My context is at 49%, so one call.",
     "My context is long, so keep the reply tight.",
     "My context is at 90%, so one call and a tight reply.",
@@ -171,7 +171,7 @@ pub const BACKGROUND: &[&str] = &[
 ];
 
 /// The words of a text, as this check counts them. `similarity::terms`'s rule - lowercased
-/// runs of letters and digits, at least [`MIN_TERM`] long - with one difference: `I`, `my`,
+/// runs of letters and digits, at least [`MIN_TERM`] long - with one difference: `I`, `my`
 /// `me` `mine` and `myself` become [`SELF`], and `let me` becomes `letme`.
 pub fn words(text: &str) -> Vec<String> {
     let raw: Vec<String> = text
@@ -669,7 +669,7 @@ mod tests {
 
     /// Having something in context is not a claim about running out of it - *"I have it in
     /// context."* scored 0.313 and was slapped at 888,887 of 1,000,000. Both it and *"the task
-    /// is intricate and I have the context"* are short, first person and about the context;
+    /// is intricate and I have the context"* are short, first person and about the context
     #[test]
     fn having_it_in_context_is_not_a_claim() {
         for s in [

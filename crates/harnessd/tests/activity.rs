@@ -4,7 +4,7 @@
 //! that the two are wired to the things that move: a round, the calls a round leaves, a
 //! card, a settlement queued for the model, a child the plan waits on - and that a value
 //! that has not moved is not published again. The tests drive the hub directly, the way the
-//! daemon's own threads do:
+//! daemon's own threads do
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
@@ -278,7 +278,7 @@ fn the_activity_follows_a_session_through_a_turn_a_card_and_a_settlement() {
 
 /// A running child is an entry, and the one the model PARKED is not, through the real
 /// watcher set, whose thread really is blocked on the runner. The plan does not decide
-/// this:
+/// this
 #[test]
 fn a_running_child_is_an_entry_and_one_the_model_parked_is_not() {
     let hub = Hub::new("s-activity-child");
@@ -343,7 +343,7 @@ fn a_warning(code: &str) -> SessionEvent {
 
 /// A publish returns while a session's settlement queue is held. The merge queue publishes
 /// from inside its own state machine, so anything the activity reads is a lock the queue's
-/// thread holds while it holds the queue:
+/// thread holds while it holds the queue
 #[test]
 fn a_publish_returns_while_the_settlement_queue_is_held() {
     let hub = Hub::new("s-held-queue");
@@ -478,7 +478,7 @@ impl TaskRunner for AnswersWhenTold {
 }
 
 /// The line is right while a watcher lives and after it has gone - the two states a `wait`
-/// reads differently. A live child the plan waits on is `Child`;
+/// reads differently. A live child the plan waits on is `Child`
 #[test]
 fn the_line_is_right_while_a_watcher_lives_and_after_it_has_gone() {
     let hub = Hub::new("s-child-gone");

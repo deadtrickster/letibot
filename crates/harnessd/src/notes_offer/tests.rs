@@ -98,7 +98,7 @@ const UNRELATED: &str = "the sourdough starter wants equal weights of flour and 
                          warm place for a day";
 
 /// The corpus a fixture workspace has: the note under test, and enough others that `idf`
-/// has something to be computed over. A corpus of one note makes every term equally rare,
+/// has something to be computed over. A corpus of one note makes every term equally rare
 /// and no floor discriminates there.
 fn corpus(f: &Fixture) -> PathBuf {
     f.note(
@@ -498,7 +498,7 @@ fn a_note_offered_in_an_earlier_turn_is_not_offered_again() {
 
 /// A note this session wrote is not offered back to it. Its author composed every word, so
 /// the offer is a fetch of the model's own output, and it wins its round for a structural
-/// reason:
+/// reason
 #[test]
 fn a_note_this_session_wrote_is_not_offered_back() {
     let f = Fixture::new("written");

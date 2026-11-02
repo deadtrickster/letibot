@@ -4,7 +4,7 @@
 //! neither the sweep nor the wake; a subagent ran a second copy of the tail whose `Answer`
 //! arm dropped its error, so a child's failed turn published a `turn_failed` with no reason
 //! and no `TurnFailed` at all. Every door now runs `turn_tail::run_turn`. What this file
-//! asserts is what that buys, door by door with ONE list ([`the_tail_ran`]):
+//! asserts is what that buys, door by door with ONE list ([`the_tail_ran`])
 
 use std::time::Duration;
 

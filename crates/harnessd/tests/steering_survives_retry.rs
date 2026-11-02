@@ -4,7 +4,7 @@
 //! pass of the HTTP retry loop - so what was handed back went with the value the next pass
 //! replaced, and the retried round's prompt never carried it. The operator's words were
 //! already in the authorisation trail and nowhere else. Measured here against a loopback
-//! stub, through the daemon's own socket:
+//! stub, through the daemon's own socket
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};

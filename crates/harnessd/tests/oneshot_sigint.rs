@@ -3,7 +3,7 @@
 //! it is in the terminal's foreground process group - and that leaves two defects 1.
 //! Nothing said anything. The daemon's first word about a signal was its last, so a stop
 //! that was working and a stop that was ignored looked exactly alike. 2. The turn did not
-//! end. `Registry::close` interrupts a session only when it reads as *a turn is in flight*,
+//! end. `Registry::close` interrupts a session only when it reads as *a turn is in flight*
 //! and it asked `SessionStatus::running` - the ROUND-level flag, which is `false` for the
 //! whole of a round's tool calls.
 
@@ -22,11 +22,11 @@ const PATIENCE: Duration = Duration::from_secs(60);
 
 /// How long the first Ctrl-C may take to end the daemon. Well under the run's own two
 /// minutes - that is the whole point - and above everything the daemon's own stop is
-/// allowed to spend:
+/// allowed to spend
 const CTRL_C_BUDGET: Duration = Duration::from_secs(15);
 
 /// The file the in-flight command writes as its first act. The signal has to land on a turn
-/// whose command is *running*, and nothing the provider can see says that:
+/// whose command is *running*, and nothing the provider can see says that
 const MARKER: &str = "the-command-started";
 
 struct TempDir {
@@ -212,7 +212,7 @@ impl OneShot {
         .expect("providers.toml");
         // The preapproved list, so the long command is admitted with no head to ask: a one-shot
         // has nobody attached, and an ask would be `gate:no-head` before the command ever ran. Two
-        // segments, because the command is two:
+        // segments, because the command is two
         std::fs::write(
             config.join("permission.json"),
             "{\"bash\": {\"touch*\": \"allow\", \"sleep*\": \"allow\"}}\n",

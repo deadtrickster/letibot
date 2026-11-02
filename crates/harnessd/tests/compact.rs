@@ -1,5 +1,5 @@
 //! Compaction's fork: the daemon's half of turning a summary into the new base.
-//! `letibot-turn`'s `compaction.rs` asserts the summary turn itself - the cached prefix,
+//! `letibot-turn`'s `compaction.rs` asserts the summary turn itself - the cached prefix
 //! the instruction, the outcome's numbers. This file asserts what the *harness* does with
 //! that outcome none of which the turn crate can see 1. The fork is a store row, not a
 //! truncation - a new transcript with the session's own stable prefix, linked back to the
@@ -339,7 +339,7 @@ fn a_compaction_that_exhausts_the_salvage_still_publishes_auto_compact_failed() 
     let parts = load_parts(&cfg);
     let vocab = &parts.vocab;
 
-    // One answered prompt turn, then unfinished compaction turns for as long as anybody asks:
+    // One answered prompt turn, then unfinished compaction turns for as long as anybody asks
     let scripts = vec![
         a_plain_answer_turn(vocab, "counting", "the answer was forty-two", 20),
         an_unfinished_reasoning_turn(vocab, "mid-summary, never closed", 30),
@@ -395,7 +395,7 @@ fn a_compaction_that_exhausts_the_salvage_still_publishes_auto_compact_failed() 
     );
     // What it names has been both things, so read this before changing it. This fixture is a
     // 2719-token PROMPT in a 512-token window - hopeless before any turn runs - so the failure
-    // names the cause rather than a spent budget. The test is not about either message:
+    // names the cause rather than a spent budget. The test is not about either message
     assert!(
         detail.contains("PROMPT is") && detail.contains("token window"),
         "the failure names the prompt against the window, which is the cause here: {detail}"
@@ -436,7 +436,7 @@ fn a_compaction_that_exhausts_the_salvage_still_publishes_auto_compact_failed() 
 
 /// A compaction re-seats, so `/compact` then `/reseat` is no longer two summaries. Asking
 /// for a summary of a transcript that is already nothing but a summary has nothing to
-/// summarise:
+/// summarise
 #[test]
 fn a_compaction_forks_onto_the_prompt_the_daemon_seats_now() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -697,7 +697,7 @@ fn a_fork_with_no_tail_claims_nothing_about_a_tail() {
 
 /// The door's call is a DEPOSIT: it lands in the transcript and nothing replies to it. The
 /// three facts that make it a deposit rather than a request: the row is in `items`, so the
-/// next turn reads it and no turn was started to produce it; it carries `origin:
+/// next turn reads it and no turn was started to produce it; it carries `origin
 #[test]
 fn a_door_call_lands_as_a_deposit_with_its_origin_and_its_size() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -1112,7 +1112,7 @@ fn a_child_session_compacts_on_a_tool_result_overrun_and_finishes() {
     });
 
     // The compaction's two half-summaries (a local overrun arm summarises BOTH halves, over a
-    // scratch transcript), then the continuation's answer:
+    // scratch transcript), then the continuation's answer
     let half = a_plain_answer_turn(
         vocab,
         "summarising",
@@ -1245,7 +1245,7 @@ fn a_fork_replaces_the_rows_the_hub_holds_rather_than_adding_to_them() {
         "the note and two carried rows"
     );
 
-    // The order, and what it is for. The statement comes AFTER the rows it is about;
+    // The order, and what it is for. The statement comes AFTER the rows it is about
     let events: Vec<letibot_sessionlog::SessionEvent> =
         hub.retained().iter().map(|e| e.event.clone()).collect();
     let said = events

@@ -105,7 +105,7 @@ fn seed(h: &mut Harness) {
 }
 
 /// The unchanged case says nothing, and the changed one names the remedy. Both halves in
-/// one test on purpose:
+/// one test on purpose
 #[test]
 fn an_unchanged_prompt_is_silent_and_a_changed_one_names_reseat() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -137,7 +137,7 @@ fn an_unchanged_prompt_is_silent_and_a_changed_one_names_reseat() {
     );
 
     // (2) The instructions change - the `--system` case. The harness above goes first, and
-    // that is a rule rather than tidiness:
+    // that is a rule rather than tidiness
     drop(h);
     drop(registry);
     let mut changed = cfg.clone();
@@ -202,7 +202,7 @@ fn an_unchanged_prompt_is_silent_and_a_changed_one_names_reseat() {
 }
 
 /// A tool schema that changed is named as a schema, and a tool that merely ARRIVED is named
-/// as added. `--bash` is the lever because seating it is a flag and nothing else:
+/// as added. `--bash` is the lever because seating it is a flag and nothing else
 #[test]
 fn a_tool_that_arrived_is_named_in_the_sentence() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -272,7 +272,7 @@ fn a_tool_that_arrived_is_named_in_the_sentence() {
 }
 
 /// A note written between two opens is not a stale prefix. The frozen/live split, asserted
-/// at the seam that makes it necessary:
+/// at the seam that makes it necessary
 #[test]
 fn a_note_written_between_two_opens_is_not_a_stale_prefix() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {

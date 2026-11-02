@@ -35,7 +35,7 @@ const TOOL_CALL_CLOSE: u32 = 248059;
 /// What the parent says to start the turn. A marker, so a failure can name the turn it was in.
 const PROMPT: &str = "start the child and carry on";
 
-/// The subtask the model hands the child - the string the `task` call carries. Two lines,
+/// The subtask the model hands the child - the string the `task` call carries. Two lines
 /// and the second one is a MARKER: only the child is handed the subtask, so the marker is
 /// in the child's prompt and nowhere in the parent's.
 const SUBTASK: &str = "count the files and report\nmarker: this child is the one";
@@ -89,7 +89,7 @@ impl Drop for TempDir {
 
 /// A session's own config, with the operator's own `providers.toml` and `permission.json`
 /// out of the way - a key on the developer's laptop must not decide what a test seats. The
-/// workspace is the test's own directory and the seeded session row names the same one:
+/// workspace is the test's own directory and the seeded session row names the same one
 fn config(
     session_id: &str,
     endpoint: Endpoint,
@@ -194,7 +194,7 @@ impl Parent {
 
     /// Close the session the way the daemon does - the backend (which stops the watcher set)
     /// then the registry entry (which closes the hub, so a ring for this session has nothing to
-    /// wake). What that leaves is exactly the hole:
+    /// wake). What that leaves is exactly the hole
     fn close(&mut self) {
         if let Some(h) = &self.harness {
             h.close_backend();
@@ -328,7 +328,7 @@ impl Stub {
                     }
                     let n = seen.fetch_add(1, Ordering::SeqCst);
                     // The child's request, told from the parent's by whose words it holds. The marker alone is
-                    // not enough:
+                    // not enough
                     let asked = prompt_of(&vocab, &body);
                     if asked.contains(CHILD_MARKER) && !asked.contains(PROMPT) {
                         let (lock, cv) = &*gate;
@@ -471,7 +471,7 @@ fn user_rows(items: &[TranscriptItem]) -> Vec<(Speaker, String)> {
 
 /// A parent spawns a child, the child answers, and the parent is RUNG - with nobody asking.
 /// The ring (`Work::Woken`), the wake (`Harness::wake` returns a turn, not `Ok(None)`), and
-/// the sentence: one `User { speaker:
+/// the sentence: one `User { speaker
 #[test]
 fn a_childs_answer_wakes_its_parent_with_nobody_asking() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -564,7 +564,7 @@ fn a_childs_answer_wakes_its_parent_with_nobody_asking() {
 
 /// A child that answers into a session this daemon is not holding is still delivered at
 /// that session's next open. `JobWatchers` is built per open, so such a settlement has
-/// nowhere to go;
+/// nowhere to go
 #[test]
 fn a_settlement_for_a_session_between_opens_is_delivered_at_its_next_open() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -618,7 +618,7 @@ fn a_settlement_for_a_session_between_opens_is_delivered_at_its_next_open() {
 
     // The tree is let go, and it MUST be - a session is claimed for writing at open, and a
     // second open of one a live harness holds is refused by name. `wait_for_children` is
-    // deliberately NOT the barrier:
+    // deliberately NOT the barrier
     parent.forget();
 
     // The next open.

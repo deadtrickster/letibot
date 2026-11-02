@@ -2,7 +2,7 @@
 //! whose wire half is `letibot-sessionlog`'s `operator_shell.rs`. Three properties: no
 //! permission decision is made anywhere (the adjudicator here counts its calls and would
 //! answer *nobody decided*); the output lands as a `User` row in the operator's own voice
-//! and then a `ToolResult` named `bash` with `origin: Operator`; and `sudo` can ask,
+//! and then a `ToolResult` named `bash` with `origin: Operator`; and `sudo` can ask
 //! because the command inherits the standing environment that lets `letibot-askpass` raise
 //! a card. Needs a real exec host and the vocabulary GGUF, not a model: nothing here
 //! generates.
@@ -60,7 +60,7 @@ fn parts(cfg: &Config) -> Parts {
 
 /// An adjudicator that counts its calls and would answer *nobody decided*. It exists so
 /// that "the gate was not consulted" is a measurement rather than an inference from the
-/// call having succeeded:
+/// call having succeeded
 struct NeverAsked(Arc<AtomicUsize>);
 
 impl Adjudicator for NeverAsked {
@@ -327,7 +327,7 @@ fn a_command_that_cannot_start_lands_as_a_failed_row() {
 // ---------------------------------------------------------------------------
 
 /// The `!` path's command can ask the head for a password. The link this test adds: the
-/// command runs with the standing environment (`LETIBOT_SOCKET` `LETIBOT_SESSION`,
+/// command runs with the standing environment (`LETIBOT_SOCKET` `LETIBOT_SESSION`
 /// `SUDO_ASKPASS`) and the `sudo` shim first on `PATH`, wired at open.
 #[test]
 fn a_sudo_inside_a_bang_line_asks_the_head_for_the_password_and_gets_it() {
@@ -504,7 +504,7 @@ fn item_payloads(snap: &letibot_sessionlog::Snapshot) -> Vec<String> {
 
 /// The whole thing, end to end, through the real path. The daemon holds a pipe on the run's
 /// stdin; the run is blocked reading it, which `exec::ask` reads out of `/proc` - the
-/// process, not its words - and which is what raises the card;
+/// process, not its words - and which is what raises the card
 #[test]
 fn a_bang_line_that_asks_is_answered_and_finishes() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -683,7 +683,7 @@ fn the_manual_send_reaches_a_running_commands_stdin() {
     });
     // No card is waited for. The verb is the way in whether or not anything looked like a
     // question, which is the whole point of it being a verb. Sent until it is read, not once
-    // after a fixed sleep:
+    // after a fixed sleep
     let deadline = std::time::Instant::now() + Duration::from_secs(60);
     while !runner.is_finished() {
         assert!(
@@ -708,7 +708,7 @@ fn the_manual_send_reaches_a_running_commands_stdin() {
 }
 
 /// A program that prints a question and EXITS raises no card. The control, and the one that
-/// would have failed before the detection was corrected:
+/// would have failed before the detection was corrected
 #[test]
 fn a_program_that_prints_a_question_and_exits_raises_no_card() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {

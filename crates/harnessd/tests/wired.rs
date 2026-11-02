@@ -26,7 +26,7 @@ fn config(seat: Seat) -> Config {
         .to_path_buf();
     let mut cfg = Config::for_this_box(repo);
     // These tests assert what an UNCONFIGURED session seats, so the fixture supplies nothing
-    // to configure:
+    // to configure
     cfg.web_search = None;
     cfg.permission = Vec::new();
     cfg.dialect = Dialect::Qwen;
@@ -58,7 +58,7 @@ fn seat_config(seat: Seat) -> Config {
 }
 
 /// An adjudicator that would admit anything, and never gets the chance to. It exists so a
-/// *seating* test does not need a human at a terminal:
+/// *seating* test does not need a human at a terminal
 struct Attached;
 
 impl Adjudicator for Attached {
@@ -205,7 +205,7 @@ fn a_layer_in_force_seats_its_tool_and_no_layer_seats_none() {
     );
     // And it is the only difference - a layer's tool adds a tool and changes nothing else
     // about what the seat can reach. It reads a tree outside the workspace, which is `Read`
-    // and not a write or a shell:
+    // and not a write or a shell
     assert_eq!(
         with.seated.len(),
         none.seated.len() + 1,
@@ -252,7 +252,7 @@ fn a_registered_tool_the_role_does_not_name_is_not_in_the_prompt() {
 // ---------------------------------------------------------------------------
 
 /// A write seat with nobody to decide does not open. The inverse of a gate that says
-/// allowed because nothing is wired, and it costs the same way:
+/// allowed because nothing is wired, and it costs the same way
 #[test]
 fn a_write_seat_with_no_adjudicator_refuses_to_start_and_says_what_to_attach() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -333,7 +333,7 @@ fn a_write_seat_with_an_adjudicator_opens_fully_wired() {
 // ---------------------------------------------------------------------------
 
 /// The runner seats eight of its nine tools, and the ninth needs its own flag. If this box
-/// cannot build a confined backend the test says so and stops rather than passing:
+/// cannot build a confined backend the test says so and stops rather than passing
 #[test]
 fn the_runner_role_does_not_seat_bash_without_its_own_flag() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -412,8 +412,8 @@ fn the_runner_role_does_not_seat_bash_without_its_own_flag() {
 }
 
 /// The same for `coder`, which is the seat an operator actually sits in. The daemon strips
-/// `bash` back off unless `--bash` is passed, exactly as it does for the runner. Two seats,
-/// one rule, asserted twice because the strip is written per-seat:
+/// `bash` back off unless `--bash` is passed, exactly as it does for the runner. Two seats
+/// one rule, asserted twice because the strip is written per-seat
 #[test]
 fn the_coder_role_does_not_seat_bash_without_its_own_flag_and_grants_reach_the_view() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -494,7 +494,7 @@ fn the_coder_role_does_not_seat_bash_without_its_own_flag_and_grants_reach_the_v
 // ---------------------------------------------------------------------------
 
 /// D9's plan mode, and the two tools that make a plan a plan. The interesting assertion is
-/// the negative one:
+/// the negative one
 #[test]
 fn the_planner_seat_can_write_its_plan_and_not_the_work() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -552,7 +552,7 @@ fn the_researcher_seat_carries_seams_that_refuse_by_name() {
 // ---------------------------------------------------------------------------
 
 /// §4b, end to end through the parts that will actually carry it. The chain the requirement
-/// exists for:
+/// exists for
 #[test]
 fn a_refusal_reaches_the_operators_log_at_the_moment_it_is_decided() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -749,7 +749,7 @@ fn consenting_to_allow_all_admits_a_shell_command_unasked() {
 
 /// A leticode session can ask the person a question, and the answer reaches the model. End
 /// to end and not a seating assertion. The tool is invoked through the session's own
-/// runtime with the session's own registry and its own gate;
+/// runtime with the session's own registry and its own gate
 #[test]
 fn a_leticode_session_asks_the_person_and_the_answer_reaches_the_model() {
     use letibot_sessionlog::protocol::Caps;
@@ -876,7 +876,7 @@ fn a_custom_system_prompt_is_what_the_session_opens_under() {
 
 /// A compaction forks onto the prefix, so the base prompt comes back in front of the
 /// summary. `fork_to_summary` opens the new transcript under this session's own
-/// `StablePrefix`, and this pins that without needing a model:
+/// `StablePrefix`, and this pins that without needing a model
 #[test]
 fn a_fork_puts_the_base_prompt_in_front_of_the_summary() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -934,7 +934,7 @@ fn a_fork_puts_the_base_prompt_in_front_of_the_summary() {
 }
 
 /// Re-seating without summarising runs no summary turn and keeps the history. A tool's
-/// schema lives in the stable prefix, so a schema change needs a fork;
+/// schema lives in the stable prefix, so a schema change needs a fork
 #[test]
 fn reingest_writes_no_summary_and_says_so_in_the_note() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {

@@ -1,11 +1,11 @@
 //! The review queue's reviewers - the half that runs on the queue's own SESSION: a reviewer
 //! is a `task` child of the gatekeeper session. The queue's thread claims a review
-//! (`waiting → reviewing`, owner = this daemon, with a deadline) and rings the session;
+//! (`waiting → reviewing`, owner = this daemon, with a deadline) and rings the session
 //! [`serve`] starts a reviewer for every claimed row this daemon owns, reads the verdict
 //! the reviewer HANDS IN (`review_verdict`, the daemon's desk), and moves the row
 //! conditionally on its state and owner, so a deadline or a person that moved the row first
 //! wins and the reviewer is killed rather than heard. The verdict is bound to the head it
-//! judged:
+//! judged
 
 use std::path::{Path, PathBuf};
 
@@ -124,7 +124,7 @@ impl Pool<'_> {
     }
 
     /// Why a review is blocked, in one sentence a person can act on - every counted attempt at
-    /// this head, by its own gist (firecode's `error:` line, not its banner), oldest first;
+    /// this head, by its own gist (firecode's `error:` line, not its banner), oldest first
     fn blocked_sentence(&self, r: &ReviewRow, attempts: u32, last: &str) -> String {
         let history = self.store.transitions("review", &r.id).unwrap_or_default();
         // The counted failures are the moves from `reviewing` back to `waiting` that were not a
@@ -216,7 +216,7 @@ impl Pool<'_> {
     }
 
     /// The reviewer's tree could not be MADE - the clone failed, or the finished clone could
-    /// not be put at its name. Not an attempt, and not a block:
+    /// not be put at its name. Not an attempt, and not a block
     fn wait_for_tree(&self, r: &ReviewRow, why: String) -> Result<bool, StoreError> {
         let nth = self.tree_waits(r) + 1;
         // The clause leads, because that is what the queue's claim reads (`capacity::held_until`)
@@ -435,7 +435,7 @@ pub fn serve(p: &Pool) -> Result<Served, StoreError> {
 }
 
 /// The directory a review's clone lives in, under the temp dir - one per review, named
-/// `review-<row id>` ([`start_reviewer`]). A `const` because two places spell it:
+/// `review-<row id>` ([`start_reviewer`]). A `const` because two places spell it
 pub const CLONES_DIR: &str = "letibot-review-clones";
 
 /// The clause a review waiting for its TREE leads its move (and `failure`) with - what the queue's
@@ -516,7 +516,7 @@ fn age_of(path: &Path) -> Option<std::time::Duration> {
 
 /// Start one reviewer: where it runs, on what tree, with which prompt. Both placements get
 /// a tree of their own, made here once - a detached clone of the entry's repository at the
-/// head the row names. What differs is what is done with it:
+/// head the row names. What differs is what is done with it
 fn start_reviewer(p: &Pool, r: &ReviewRow) -> Result<(String, ReviewRequest), CouldNotStart> {
     let repo = PathBuf::from(&r.repository);
     let mut spec = TaskSpec {
@@ -589,9 +589,9 @@ fn start_reviewer(p: &Pool, r: &ReviewRow) -> Result<(String, ReviewRequest), Co
     Ok((handle, req))
 }
 
-/// Why a reviewer could not be started - and the two arms are different KINDS of fact,
+/// Why a reviewer could not be started - and the two arms are different KINDS of fact
 /// which is the whole of it: one is a machine that answered, the other a judgement about
-/// the branch. A [`CouldNotStart::Tree`] waits ([`Pool::wait_for_tree`]);
+/// the branch. A [`CouldNotStart::Tree`] waits ([`Pool::wait_for_tree`])
 enum CouldNotStart {
     /// The tree could not be MADE - a clone that failed, or a finished clone that could not be put
     /// at its name: a busy disk, a filesystem, another daemon cloning the same row.
@@ -632,7 +632,7 @@ fn verdict(
 ) -> Result<(), StoreError> {
     // A verdict about a tree that is not there is not a verdict about the branch. A reviewer
     // whose clone was removed under it reads a fraction of the artifact, knows it, and answers
-    // `cannot_decide`;
+    // `cannot_decide`
     let tree = Path::new(&req_cwd);
     let there = tree.is_dir()
         && std::fs::read_dir(tree)

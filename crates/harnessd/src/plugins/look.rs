@@ -4,7 +4,7 @@
 //! means something: here, against the layer that answered. Everything that can go wrong is
 //! a look RESULT (`exit 1` with the reason in `stderr`) and not an `Err`: the plugin is the
 //! half that knows how to draw a refusal, and a raised error would reach the pane as a
-//! failure with no plugin involved - the same screen with less said on it. Confinement:
+//! failure with no plugin involved - the same screen with less said on it. Confinement
 
 use std::io::Read;
 use std::path::Path;

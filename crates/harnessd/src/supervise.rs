@@ -4,7 +4,7 @@
 //! and one session: a thread blocked in `wait_job`, woken by a child the daemon itself
 //! spawned. That works only while the daemon is the process that started the job - it
 //! answers nothing for a job on another machine (a pid over there, no `Child`) and nothing
-//! at all after a restart. So the supervisor asks the record instead of a child handle:
+//! at all after a restart. So the supervisor asks the record instead of a child handle
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -70,7 +70,7 @@ impl Checked {
 }
 
 /// What the supervisor can ask of the world - the seam, so a test is a state machine and
-/// not a farm of sleeping processes. One implementation serves every host:
+/// not a farm of sleeping processes. One implementation serves every host
 pub trait Probe: Send + Sync {
     /// Every open process of ONE host, in one call. See the module header for why this is the
     /// unit rather than the job.
@@ -334,7 +334,7 @@ impl Supervisor {
 
     /// The leases whose owner nobody serves, after the grace. See `crate::leases::due` for the
     /// rule and `leases::GRACE_MS` for why a restart is not an owner being gone. The decision
-    /// is taken under the locks and the releasing is not:
+    /// is taken under the locks and the releasing is not
     fn reap_leases(&self, report: &mut Tick) {
         let Some(owner) = &self.owner else {
             return;
@@ -607,7 +607,7 @@ impl SshProbe {
         SshProbe { run }
     }
 
-    /// The script that answers for every job of one host, in one pass. Per job:
+    /// The script that answers for every job of one host, in one pass. Per job
     pub fn script(wants: &[Want]) -> String {
         let mut s = String::from("set +e\n");
         for w in wants {

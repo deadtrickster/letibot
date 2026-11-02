@@ -277,7 +277,7 @@ fn an_unfinished_plan_is_armed_once() {
 
 /// A STUCK PLAN STILL ARMS THE CHECK - every row left waits on another, so the ready set is
 /// EMPTY and there is no row to name. That is exactly the state the agent has to act on, so
-/// silence would be the check failing when it matters:
+/// silence would be the check failing when it matters
 #[test]
 fn a_stuck_plan_arms_the_check_and_is_not_a_metronome() {
     let plan = [
@@ -1208,8 +1208,8 @@ fn an_operators_message_does_not_postpone_or_repeat_the_census() {
 }
 
 /// A SECOND incident in one daemon's life gets its own clock - the reason the young-row arm
-/// is asked first. Every arming while a new row is still young is `says: false, matures_in:
-/// Some(..)` so an arm that read the LAST CENSUS'S ANCHOR first answered *nothing*:
+/// is asked first. Every arming while a new row is still young is `says: false, matures_in
+/// Some(..)` so an arm that read the LAST CENSUS'S ANCHOR first answered *nothing*
 #[test]
 fn a_second_incident_after_a_recovery_is_armed_for_its_own_crossing() {
     use std::time::{Duration, Instant};

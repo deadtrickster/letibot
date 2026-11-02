@@ -1,5 +1,5 @@
 //! The todo tool's harness half: the board is restored from the store at open. The tool's
-//! own behaviour is tested in `letibot-tools` (`todo_write` replaces the whole list,
+//! own behaviour is tested in `letibot-tools` (`todo_write` replaces the whole list
 //! refuses by name, moves the board's version). The store's round-trip is tested in
 //! `letibot-tokencore`. What only *this* crate can assert is the seam between them: a
 //! harness opened over a session whose model wrote todos comes back with those todos on its
@@ -149,7 +149,7 @@ impl Drop for TempDir {
     }
 }
 
-// ===================================================================== The idle clock:
+// ===================================================================== The idle clock
 // who starts it, and the two paths that did not.
 
 use letibot_harnessd::Sessions;
@@ -356,7 +356,7 @@ fn a_row_the_operator_adds_arms_the_check_sooner_than_the_idle_window() {
 }
 
 /// THE OPERATOR'S VERB REACHES A ROW THE MODEL WROTE - end to end, through the daemon. A
-/// row the model wrote that waits on a person's hand could not be silenced at all:
+/// row the model wrote that waits on a person's hand could not be silenced at all
 #[test]
 fn the_operators_verb_sets_aside_a_row_the_model_wrote() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
