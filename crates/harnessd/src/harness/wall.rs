@@ -314,17 +314,20 @@ impl Harness {
     /// A re-seat is a worker command, so it never runs inside a turn, and this is the next boundary.
     pub fn run_after_reseat(&mut self, text: &str) -> Result<Reply, HarnessError> {
         let mut text = text.to_string();
-        if let Some(meanwhile) = self.deliveries().and_then(|d| d.at_turn_start()) {
+        let (riding, told) = self.batch_riding_in();
+        if let Some(meanwhile) = riding {
             text.push_str("\n\n");
             text.push_str(&meanwhile);
         }
         self.compact_if_at_the_wall();
         self.trail.begin_turn();
         self.trail.say(Speaker::Agent, &text, Some(Instant::now()));
-        self.submit_item(TranscriptItem::User {
+        let out = self.submit_item(TranscriptItem::User {
             speaker: letibot_transcript::Speaker::Agent,
             parts: vec![UserPart::Text { text }],
-        })
+        });
+        self.the_batch_arrived(told, out.is_ok());
+        out
     }
 
     /// The turn after the wall, without a human typing continue. A wall stop ends the turn half-done and the
@@ -337,16 +340,19 @@ impl Harness {
         let mut text =
             "Continue from the summary above; don't redo what it records as done.".to_string();
         // A continuation is a turn the model takes anyway, so the held batch rides in.
-        if let Some(meanwhile) = self.deliveries().and_then(|d| d.at_turn_start()) {
+        let (riding, told) = self.batch_riding_in();
+        if let Some(meanwhile) = riding {
             text.push_str("\n\n");
             text.push_str(&meanwhile);
         }
         self.trail.begin_turn();
         self.trail.say(Speaker::Agent, &text, Some(Instant::now()));
-        self.submit_item(TranscriptItem::User {
+        let out = self.submit_item(TranscriptItem::User {
             speaker: letibot_transcript::Speaker::Agent,
             parts: vec![UserPart::Text { text }],
-        })
+        });
+        self.the_batch_arrived(told, out.is_ok());
+        out
     }
 
     /// The same contract from the side that owns the harness: compact when the next turn would not fit,

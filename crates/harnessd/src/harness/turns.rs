@@ -129,7 +129,8 @@ impl Harness {
         // own row, BEFORE the words that started the turn, so what the operator (or a parent)
         // said is still the last thing the model reads.
         let mut items = Vec::new();
-        if let Some(meanwhile) = self.deliveries().and_then(|d| d.at_turn_start()) {
+        let (riding, told) = self.batch_riding_in();
+        if let Some(meanwhile) = riding {
             self.trail
                 .say(Speaker::Agent, &meanwhile, Some(Instant::now()));
             items.push(TranscriptItem::User {
@@ -154,7 +155,9 @@ impl Harness {
                 parts
             },
         });
-        self.submit_items(items)
+        let out = self.submit_items(items);
+        self.the_batch_arrived(told, out.is_ok());
+        out
     }
 
     /// The shared tail has taken a turn on this harness, once per door and before the door's own act. It says
@@ -452,16 +455,19 @@ impl Harness {
     pub fn continue_after_restart(&mut self, notice: &str) -> Result<Reply, HarnessError> {
         let mut parts = vec![notice.to_string()];
         parts.append(&mut self.restart_notices);
-        if let Some(meanwhile) = self.deliveries().and_then(|d| d.at_turn_start()) {
+        let (riding, told) = self.batch_riding_in();
+        if let Some(meanwhile) = riding {
             parts.push(meanwhile);
         }
         let text = parts.join("\n\n");
         self.trail.begin_turn();
         self.trail.say(Speaker::Agent, &text, Some(Instant::now()));
-        self.submit_item(TranscriptItem::User {
+        let out = self.submit_item(TranscriptItem::User {
             speaker: letibot_transcript::Speaker::Agent,
             parts: vec![UserPart::Text { text }],
-        })
+        });
+        self.the_batch_arrived(told, out.is_ok());
+        out
     }
 
     /// A settlement this daemon queued for a session that was not open is not lost: `JobWatchers` is built
@@ -978,7 +984,8 @@ impl Harness {
     /// model that took over. The held batch rides in, since this is a turn the model takes anyway.
     pub fn continue_after_fallback(&mut self, notice: String) -> Result<Reply, HarnessError> {
         let mut text = notice;
-        if let Some(meanwhile) = self.deliveries().and_then(|d| d.at_turn_start()) {
+        let (riding, told) = self.batch_riding_in();
+        if let Some(meanwhile) = riding {
             text.push_str("\n\n");
             text.push_str(&meanwhile);
         }
@@ -988,10 +995,12 @@ impl Harness {
         self.compact_if_at_the_wall();
         self.trail.begin_turn();
         self.trail.say(Speaker::Agent, &text, Some(Instant::now()));
-        self.submit_item(TranscriptItem::User {
+        let out = self.submit_item(TranscriptItem::User {
             speaker: letibot_transcript::Speaker::Agent,
             parts: vec![UserPart::Text { text }],
-        })
+        });
+        self.the_batch_arrived(told, out.is_ok());
+        out
     }
 
     /// The continuation turn a fallback owed, taken at most once and never over a stop. Empty when the turn

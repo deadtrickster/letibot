@@ -1265,8 +1265,8 @@ pub(crate) struct Deliveries {
     me: String,
 }
 
-/// What [`Deliveries::between_turns`] hands a turn's start: the notices said now (immediates and
-/// idle arrivals, in `completion_notices`' words) and the `[meanwhile]` batch, apart so a wake can
+/// What a between-turns read hands a turn's start: the notices said now (immediates and idle
+/// arrivals, in `completion_notices`' words) and the `[meanwhile]` batch, apart so a wake can
 /// keep the batch last.
 pub(crate) struct BetweenTurns {
     pub(crate) now: Vec<String>,
@@ -1351,6 +1351,9 @@ impl Deliveries {
 
     /// A turn the model is taking anyway: whatever is immediate, what arrived while the session was
     /// idle, and the batch held while the last turn ran (under `Rule::Batch`, which rides this turn).
+    /// Test-only: every door that opens a turn uses [`Deliveries::at_turn_start_unread`], because a
+    /// door's row can still fail (R91.11).
+    #[cfg(test)]
     pub(crate) fn at_turn_start(&self) -> Option<String> {
         let b = self.between_turns(|_| false, crate::delivery::Rule::Batch);
         let mut parts = b.now;
@@ -1358,9 +1361,20 @@ impl Deliveries {
         (!parts.is_empty()).then(|| parts.join("\n\n"))
     }
 
+    /// [`Deliveries::at_turn_start`] for a door whose submit can still fail: the words, and the
+    /// results they say, for a caller that marks them only once its row is in (R91.11).
+    pub(crate) fn at_turn_start_unread(&self) -> (Option<String>, Vec<JobCompletion>) {
+        let (b, told) = self.between_turns_unread(|_| false, crate::delivery::Rule::Batch);
+        let mut parts = b.now;
+        parts.extend(b.batch);
+        ((!parts.is_empty()).then(|| parts.join("\n\n")), told)
+    }
+
     /// Everything owed to a session between turns: holding exists only so a running turn is not
     /// interrupted, so nothing stays held. What arrived while the model was working is the batch under
     /// `held_rule`; what arrived while it was idle is an ordinary completion, recorded as `Rule::Idle`.
+    /// Test-only, for [`Deliveries::at_turn_start`]'s reason: a door waits until its row is in (R91.11).
+    #[cfg(test)]
     pub(crate) fn between_turns(
         &self,
         skip: impl Fn(&JobCompletion) -> bool,
@@ -2602,6 +2616,32 @@ impl Harness {
             detail,
             compaction: None,
         });
+    }
+
+    /// **The batch a turn about to open carries** (R79), taken and NOT yet called delivered: the
+    /// door marks it once its row is in the transcript, or hands it back with
+    /// [`Harness::the_batch_arrived`] (R91.11).
+    pub(crate) fn batch_riding_in(&self) -> (Option<String>, Vec<JobCompletion>) {
+        match self.deliveries() {
+            Some(d) => d.at_turn_start_unread(),
+            None => (None, Vec::new()),
+        }
+    }
+
+    /// **That batch reached the model, or it did not**: `opened` is whether the door's row went in.
+    /// A row that never went in leaves the results owed, so the next break says them.
+    pub(crate) fn the_batch_arrived(&self, told: Vec<JobCompletion>, opened: bool) {
+        if told.is_empty() {
+            return;
+        }
+        let Some(d) = self.deliveries() else {
+            return;
+        };
+        if opened {
+            d.read(&told);
+        } else {
+            d.put_back(told);
+        }
     }
 
     /// **R79's delivery for this session** - see [`Deliveries`]. `None` for a session with no

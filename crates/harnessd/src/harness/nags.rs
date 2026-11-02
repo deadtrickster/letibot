@@ -189,7 +189,8 @@ impl Harness {
         self.meter_nag(named.as_deref());
         // A plan-check is a turn the model takes anyway, so it carries the held batch, which is
         // what reaches a session that has a plan and nobody typing.
-        if let Some(meanwhile) = self.deliveries().and_then(|d| d.at_turn_start()) {
+        let (riding, told) = self.batch_riding_in();
+        if let Some(meanwhile) = riding {
             text.push_str("\n\n");
             text.push_str(&meanwhile);
         }
@@ -208,11 +209,12 @@ impl Harness {
         self.compact_if_at_the_wall();
         self.trail.begin_turn();
         self.trail.say(Speaker::Agent, &text, Some(Instant::now()));
-        self.submit_item(TranscriptItem::User {
+        let out = self.submit_item(TranscriptItem::User {
             speaker: letibot_transcript::Speaker::Agent,
             parts: vec![UserPart::Text { text }],
-        })
-        .map(Some)
+        });
+        self.the_batch_arrived(told, out.is_ok());
+        out.map(Some)
     }
 
     /// A board row's status by its words, as a word, for a nag's follow-up row: the turn a check

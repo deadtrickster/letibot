@@ -153,3 +153,52 @@ fn a_mode_set_mid_turn_survives_a_restart() {
         "and the project's"
     );
 }
+
+/// A settlement a door took for a turn whose row the store refused is still owed (R91.11): the
+/// door used to mark it delivered before it knew its row went in, so a refusal lost it.
+#[test]
+fn a_settlement_a_refused_door_never_said_is_still_owed() {
+    use crate::jobwatch::{BackgroundKind, JobCompletion};
+    let dir = Scratch::new("r91-11-door");
+    let Some((mut h, path)) = harness_on_a_store(&dir, "r91-11-door") else {
+        return;
+    };
+    let watch = h.job_watch.clone().expect("a session's watcher set");
+    watch.queue_for_test(JobCompletion {
+        memory: None,
+        kind: BackgroundKind::Job,
+        owner: "r91-11-door".into(),
+        job: "j1".into(),
+        command: "cargo test".into(),
+        slug: None,
+        state: "exited 0".into(),
+        produced: 12,
+        elapsed_ms: 1500,
+        detail: String::new(),
+        arrived: std::time::SystemTime::now(),
+    });
+
+    // The row the door writes has nowhere to go, and not for a busy store's reason, so the door
+    // answers at once rather than waiting the store out.
+    let other = Store::open_private(&path).expect("a connection of its own");
+    other
+        .connection()
+        .execute_batch("ALTER TABLE transcript_item RENAME TO transcript_item_away")
+        .expect("the table moves away");
+    assert!(
+        h.run_after_reseat("the prompt moved").is_err(),
+        "the store refused the door's own row"
+    );
+    assert_eq!(
+        watch.held_count(),
+        1,
+        "the settlement was taken and marked delivered for a turn that never opened"
+    );
+
+    // And the store takes rows again: the next door carries it, which is how the session gets it.
+    other
+        .connection()
+        .execute_batch("ALTER TABLE transcript_item_away RENAME TO transcript_item")
+        .expect("the table comes back");
+    assert_eq!(watch.held_count(), 1, "still owed until a turn carries it");
+}
