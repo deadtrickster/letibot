@@ -1338,7 +1338,7 @@ impl Ssh {
         let command = format!("bash -lc {}", quote(&self.host.with_path(script)));
         let within = self.bound.min(STEP_BOUND);
         let said = match self.raw("asking the host for its firecode", &command, within) {
-            Some(Ok(Call::Answered(said, _, exit))) if exit == 0 => said,
+            Some(Ok(Call::Answered(said, _, 0))) => said,
             _ => return None,
         };
         let mut program = String::new();
