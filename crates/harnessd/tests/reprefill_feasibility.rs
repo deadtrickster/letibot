@@ -1,10 +1,6 @@
 //! Can a session recorded under one dialect be re-rendered under another? The resume path
 //! refuses a dialect change because it replays stored TOKENS, and two renderers' bytes in
-//! one prompt is a prompt no model saw. But `transcript_item` stores `item_json` beside
-//! `tokens`, and `item_json` is dialect-neutral - a tool call is `{name, arguments}`, not
-//! markup - so the tokens are a cache of one rendering and the items are the record. The
-//! conversation can be rebuilt rather than refused; the refusal is a property of the fast
-//! path, not of the data. This measures that on the operator's own store
+//! one prompt is a prompt no model saw.
 
 use letibot_tokencore::control::{resolve, tokenize_spans};
 use letibot_tokencore::store::live_view::LiveView;

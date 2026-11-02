@@ -1,10 +1,6 @@
 //! The bell, per client - the two halves that are the client's own act: a note read at the
 //! round boundary a running turn actually reaches (*listen before you work*), and a claim
-//! that says what it is doing before it does it (*acknowledge before you act*). The first
-//! test would fail without the room among `HubSteering::try_next`'s arms: a room event
-//! became a sentence read by `Harness::wake`, a door that only opens BETWEEN turns, so a
-//! message posted while a session was mid-turn reached it after the work it would have
-//! changed. The second would fail on a `claim` that sent one frame and returned
+//! that says what it is doing before it does it (*acknowledge before you act*).
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};

@@ -55,8 +55,7 @@
 //! 1. `the_password_ask_is_served_while_the_operators_run_is_blocked` — the ask is answered
 //!    while the run waits, and the run's *own* wait raises no card it did not earn. `sudo -A`'s
 //!    process shape (`pw=$(helper)`: a pipe on the child's stdout, blocked reading it, fd 0
-//!    left alone) must not read as a question.
-//! 2. `a_run_this_daemon_may_not_read_is_said_out_loud_and_can_still_be_answered` — the
+//!    left alone) must not read as a question. 2. `a_run_this_daemon_may_not_read_is_said_out_loud_and_can_still_be_answered` — the
 //!    operator's case, end to end, without a real `sudo`: a run whose process makes itself as
 //!    unreadable as a root `apt` is, waiting on the terminal the daemon holds. The daemon says so, names
 //!    the way in, and **`!send` reaches it** — which is the whole of what a person was owed.

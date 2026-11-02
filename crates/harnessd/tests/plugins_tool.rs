@@ -1,11 +1,6 @@
 //! The `plugin` tool, from the model's side - every action, through the real desk, the real
 //! plugin host and the real stack. The `Loader`/`Builder` seams (`docs/plugins-slice1.md`
-//! C2) are what most of this file replaces: a layer answers from files beside it and a
-//! build writes its own module, so a refusal One test runs the whole loop for real
-//! (`the_whole_loop_writes_a_pane_that_a_head_can_draw`) skipping through
-//! `apparatus::present` when the wasm target or the SDK is not on this machine. Nothing
-//! here talks to a model or a daemon: the hub, the stack and the runtime are real, and the
-//! gate admits - so a refusal here is the plugin tooling's own and never the boundary's.
+//! C2) are what most of this file replaces:
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};

@@ -1,11 +1,5 @@
-//! A daemon restart brings back what a session was running - or, past the threshold
-//! reminds the model of it. Under the threshold a restart restores the children, monitors
-//! and jobs; past it, it says how long the daemon was down and what was running, and
-//! nothing comes back on its own. And a restart that had nothing to restore is said anyway
-//! because the time is the one fact only the daemon has. That sentence is a NOTICE and not
-//! a turn (`restart::nothing_running`) while a restore keeps the turn it has always had. #
-//! How a restart is staged here A daemon is a [`Registry`] (its instance id is what every
-//! record is stamped with) and a store file.
+//! A daemon restart brings back what a session was running - or, past the threshold reminds
+//! the model of it. Under the threshold a restart restores the children, monitors and jobs;
 
 use std::io::Write;
 use std::net::{TcpListener, TcpStream};

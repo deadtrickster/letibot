@@ -1,9 +1,5 @@
 //! Standing notes against a real harness: the moments the head of the prompt may move -
-//! session open, and every base rebuild. Nothing delivers a note mid-conversation; that
-//! path was removed on the operator's ruling, so a note edited between rebuilds lands at
-//! the next one, not on the next turn. The assembly itself - the sources, the order, the
-//! budget, the digest - is asserted as unit tests on `standing_notes`, which needs no
-//! harness. What needs one is the re-read at a base rebuild
+//! session open, and every base rebuild. Nothing delivers a note mid-conversation;
 
 use letibot_harnessd::config::Config;
 use letibot_harnessd::standing_notes;

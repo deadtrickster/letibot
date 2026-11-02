@@ -1,11 +1,5 @@
 //! The operator's own shell line (`!`), run by the daemon - the run half of the feature
-//! whose wire half is `letibot-sessionlog`'s `operator_shell.rs`. Three properties: no
-//! permission decision is made anywhere (the adjudicator here counts its calls and would
-//! answer *nobody decided*); the output lands as a `User` row in the operator's own voice
-//! and then a `ToolResult` named `bash` with `origin: Operator`; and `sudo` can ask
-//! because the command inherits the standing environment that lets `letibot-askpass` raise
-//! a card. Needs a real exec host and the vocabulary GGUF, not a model: nothing here
-//! generates.
+//! whose wire half is `letibot-sessionlog`'s `operator_shell.rs`. Three properties:
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};

@@ -1,11 +1,6 @@
 //! Does a daemon's heap plateau at `sessions × (what one session's harness holds)`, or grow
 //! past it? The instrument is `memwatch::Counting` installed as this binary's allocator, so
 //! `memwatch::heap` is this process's live heap and nothing else's, plus `RssShmem` from
-//! `/proc/self/status` - a token region is a memfd, so its pages are never heap, and each
-//! half is checked against its own instrument rather than the two being added together.
-//! What it proves: the census's gauges equal a fresh walk of the rows, including after a
-//! fork; a turn costs the same late as early (a per-turn copy of the conversation would
-//! grow); the heap is the SUM over sessions, within the tolerance stated below
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};

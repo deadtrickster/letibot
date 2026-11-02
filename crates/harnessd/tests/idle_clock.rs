@@ -1,11 +1,6 @@
 //! A wake arms the clock that closes out a call nothing answered. The worker's wait is
 //! `next_work_until(deadline)`, and the deadline is the earliest of the per-session idle
-//! plan-check and the abandoned-call sweep (`Sessions::next_nag_at`). Two arms on the
-//! worker's own thread run a turn, and a turn dispatches tool calls - so both must arm the
-//! sweep, the only thing that looks at a call whose executor vanished
-//! (`Sessions::sweep_abandoned_calls`, run from the idle arm). The command arm has always
-//! armed it; the wake arm did not, and a wake is a turn: a child's settlement, a background
-//! job's completion, a merge-queue ring.
+//! plan-check and the abandoned-call sweep (`Sessions::next_nag_at`).
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};

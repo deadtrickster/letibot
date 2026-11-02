@@ -1,11 +1,5 @@
 //! The todo path, end to end, against the live server: the model writes the plan, the store
-//! holds it, the log announces it. The offline files prove every link separately - the
-//! tool's behaviour (`letibot-tools`), the store round-trip (`letibot-tokencore`), the
-//! restore at open (`todos.rs`), the event's wire shape (`letibot-sessionlog`). What none
-//! of them can prove is the chain: a real model, told to plan actually calling `todo_write`
-//! through the gated runtime, the harness flushing at the round boundary, and a head
-//! attaching afterwards finding both the store row and the event in its backlog. Never
-//! start a second model server to make a test pass
+//! holds it, the log announces it.
 
 use std::sync::OnceLock;
 

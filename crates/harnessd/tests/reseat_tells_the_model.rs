@@ -1,9 +1,6 @@
 //! A `/reseat` reaches the model, in a turn of its own. The operator's report after
 //! re-seating a session: the nag reached the model and it started nagging them, so the
-//! re-seat's own result has to reach the model too, and start the turn. The stale-prompt
-//! notice tells the model to keep asking for `/reseat` until the person acts; when they
-//! did, the act reached only the head (the `reseated` warning) and a system row at the top
-//! of a forked transcript that no turn ran to read - so the model went on asking.
+//! re-seat's own result has to reach the model too, and start the turn.
 
 use letibot_harnessd::config::Config;
 use letibot_harnessd::harness::{ForkTail, Harness};

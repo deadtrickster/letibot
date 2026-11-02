@@ -1,10 +1,6 @@
 //! Bakes the same rpath `letibot-tokencore` bakes, for this crate's own binaries.
-//!
 //! `cargo:rustc-link-arg` reaches the emitting package's targets and nothing downstream, so
-//! tokencore's rpath does not help a `harnessd` that links `libllama`: it links fine and then
-//! fails at exec with `cannot open shared object file`, which reads as a missing library. The
-//! alternative, an `LD_LIBRARY_PATH` every developer and CI job must remember, fails the moment
-//! the daemon is started another way.
+//! tokencore's rpath does not help a `harnessd` that links `libllama`:
 
 include!("../llama/build-support.rs");
 

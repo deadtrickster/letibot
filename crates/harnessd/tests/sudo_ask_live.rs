@@ -1,10 +1,5 @@
-//! A live `harnessd` on this box, its stderr to a file, and an operator `!` run whose waiting
-//! process it may not look at. The daemon must say so on the session log, name `!send` as the
-//! way in, and keep its stderr free of it - that file is why the operator's own capture was empty.
-//!
-//! A real `sudo` is not used: the box's sudo policy is not this file's subject, and the password
-//! path is covered by `sudo_ask.rs`. `PR_SET_DUMPABLE 0` stands in for a setuid exec - the flag
-//! that makes `/proc/<pid>/fd/0` `EACCES` for a reader without `CAP_SYS_PTRACE`.
+//! A live `harnessd` on this box, its stderr to a file, and an operator `!` run whose
+//! waiting process it may not look at.
 
 // `PR_SET_DUMPABLE` is how these tests make a process this uid may not inspect, and it is
 // `<linux/prctl.h>`: there is no macOS spelling of the same shape.

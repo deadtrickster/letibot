@@ -1,11 +1,5 @@
 //! A session says who ANSWERS, not what the vocabulary binds. Two models are in play in
-//! every daemon and they are different facts: `Config::model` is the local binding, whose
-//! GGUF renders the prompt and whose ids the ledger counts, and the launcher passes it on
-//! every start; `Config::prompt_model_name` is who answers. `Sessions::wiring` and the
-//! `model_id` a session's row keeps were both written from the BINDING, so a session
-//! started on the operator's default provider was described as a local one in the header
-//! the picker and `letibot --sessions` - while its turns went to deepseek. The `model`
-//! settings row was already right, which is what made it visible: one session, two names.
+//! every daemon and they are different facts:
 
 use std::path::PathBuf;
 

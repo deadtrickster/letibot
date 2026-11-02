@@ -1,10 +1,6 @@
 //! What is retryable, and for how long - measured through a real daemon, a real head and a
 //! loopback stub, because the question is *how many times the provider was asked* and
-//! nothing short of counting the stub's connections can say. A DNS blip used to end a turn
-//! with `FAILED - http io: …` and no word on whether the daemon tried once or six times; a
-//! `429` was retried six times, presenting a permanent refusal as a transient one. Both are
-//! one missing decision, and it is `letibot_http::retry`'s: three classes, one bounded
-//! ladder, and a sentence for each ending.
+//! nothing short of counting the stub's connections can say.
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};

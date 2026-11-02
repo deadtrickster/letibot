@@ -1,9 +1,5 @@
 //! The wall as the provider speaks it: a context-length refusal is the wall, and every door
-//! that starts a turn recovers from it. The wedge this file is the regression guard for: a
-//! provider's refusal landed as a BACKEND error while every recovery was gated on
-//! `HarnessError::ContextWall`, so the no-progress guard stood automatic compaction down in
-//! memory and thirty requests in a row went out over the window and came back refused -
-//! from an automatic wake, from the plan nag, and from the operator's own turns.
+//! that starts a turn recovers from it. The wedge this file is the regression guard for:
 
 use letibot_harnessd::Sessions;
 use letibot_harnessd::config::Config;

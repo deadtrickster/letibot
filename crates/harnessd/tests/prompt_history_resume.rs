@@ -1,10 +1,6 @@
-//! A restarted daemon gives a head the session's earlier prompts, bodies and all - the fact the
-//! composer's Up history is now derived from.
-//!
-//! The operator sent thirty prompts, restarted, sent two, and arrow-up saw only the last two. The
-//! head now builds its history from the session's operator rows, which is only as good as what a
-//! fresh attach to a RESUMED session carries. This runs the real `harnessd` twice over one store -
-//! three prompts, a kill, a resume - and reads the second daemon's `Hello` snapshot.
+//! A restarted daemon gives a head the session's earlier prompts, bodies and all - the fact
+//! the composer's Up history is now derived from. The operator sent thirty prompts,
+//! restarted, sent two, and arrow-up saw only the last two.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;

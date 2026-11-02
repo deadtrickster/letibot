@@ -1,11 +1,4 @@
-//! A child's answer wakes its parent, with nobody asking. The chain is one queue and one bell
-//! `task` returns `Backgrounded`, `JobWatchSink` arms a watcher for it, `watch_task` waits on the
-//! runner, the settlement is queued on the session that started it and rings its bell, and
-//! `Harness::wake` submits one `User { speaker: Agent }` item. Every link but the last has a unit
-//! test; a unit test of a link is not a measurement of a chain, so this drives all of them.
-//!
-//! Needs the vocabulary GGUF and not a model: the turns are answered by the stub below. The
-//! seat is `leticode`, which names the delegation trio `task` needs.
+//! A child's answer wakes its parent, with nobody asking.
 
 use std::net::TcpListener;
 use std::sync::atomic::{AtomicUsize, Ordering};

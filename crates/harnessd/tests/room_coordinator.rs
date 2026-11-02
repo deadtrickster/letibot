@@ -1,11 +1,6 @@
 //! The arbiter can rule - a `--room` coordinator's own session, opened for real, with the
 //! `room` tool on its seat and a raised item reaching a ruling through it. The defect this
-//! file exists for: `configure` seats `Seat::Orchestrator`, `base_role_for_seat` resolves
-//! that to `roles::m1_orchestrator`, and `Registry::resolve_role` keeps only the tools a
-//! role names. The `room` tool was named by `roles::orchestrator` - §8.4's table, which
-//! nothing seats - so the coordinator's own registry had no `room` in it. The tie-breaker
-//! was woken, told to *"answer with the `room` tool: verb `rule`"*, and had no such tool: a
-//! raised item stayed frozen for ever.
+//! file exists for:
 
 use std::sync::Arc;
 

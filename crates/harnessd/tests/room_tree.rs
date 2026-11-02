@@ -1,11 +1,6 @@
 //! A room is a project's, and its membership is the tree - the operator's hierarchy
 //! `<project>/<top-sessions>/<subagents>*|system/`, as the room holds it. Three facts, each
-//! false while there was one room per BOX: a session reaches its project's room without
-//! naming an id; a subagent at depth 2 is a member of that same room, though it never
-//! connects (the door refuses it); and a session in another project gets another room and
-//! never hears the first - where before, project B's `ram` was refused `Busy` by project
-//! A's claim. Nothing on the box: a `Server` on a socket in a directory of the test's own
-//! and `SessionRoom::connect` - the same two objects a daemon uses.
+//! false while there was one room per BOX:
 
 use std::sync::Arc;
 

@@ -1,9 +1,6 @@
 //! The layers this binary carries - `docs/plugins-plan.md` §7 step 10: the `builtin` scope
 //! is a table of modules compiled into the executable, not a directory beside it. Four
-//! things are asserted, each a way the mechanism can be silently wrong: the table is not
-//! empty (a build whose script found no layer would ship a binary whose bottom layer is
-//! nothing); a built-in loads through the real engine and answers; a project layer of the
-//! same name masks it and a layer that asks below reaches it. The modules are real
+//! things are asserted, each a way the mechanism can be silently wrong:
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

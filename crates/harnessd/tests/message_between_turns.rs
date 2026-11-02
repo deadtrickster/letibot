@@ -1,11 +1,4 @@
-//! A message to a child between turns starts a turn for it: the message goes on the child's
-//! queue, the child's own serving thread is woken, and the loop that drains that queue
-//! answers a `Message` by RUNNING THE TURN that reads it (`serve_child`'s
-//! `ChildCommand::Hear` → `Harness::submit_a_parents_message`). Without that, a submission
-//! against a parked child answered `Accepted` and sat there, so a parent believed it had
-//! corrected a child that never heard a word. The chain proved here is the real one: a
-//! parent [`Harness`] with the REAL runner, `task` and `task_message` invoked through that
-//! session's own tool runtime.
+//! A message to a child between turns starts a turn for it:
 
 use std::io::Write;
 use std::net::{TcpListener, TcpStream};

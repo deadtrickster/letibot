@@ -1,10 +1,5 @@
 //! A nag turn arms the clock that closes out a call nothing answered - the third door.
-//! `idle_clock.rs` is this file's sibling and carries the argument: a turn dispatches tool
-//! calls, a call whose executor vanished is closed out only by
-//! `Sessions::sweep_abandoned_calls`, and the sweep runs only when the worker's wait has a
-//! deadline - so every door that runs a turn on the worker must arm it. The command arm
-//! always did, and the wake arm was fixed after a nine-hour silence. The third door is the
-//! idle plan-check, `Sessions::deliver_due_nags`, and it is the worst placed of the three
+//! `idle_clock.rs` is this file's sibling and carries the argument:
 
 use std::time::Duration;
 

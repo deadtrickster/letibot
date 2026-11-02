@@ -1,8 +1,6 @@
-//! `/flowy` and `/models` over the socket: a head sends the line, the daemon answers on the session
-//! log, and the answer says what to type next.
-//!
-//! Needs the GLM vocabulary on this box to open a session (no model server - nothing here runs a
-//! turn); skips loudly without it.
+//! `/flowy` and `/models` over the socket: a head sends the line, the daemon answers on the
+//! session log, and the answer says what to type next. Needs the GLM vocabulary on this box
+//! to open a session (no model server - nothing here runs a turn); skips loudly without it.
 
 use std::time::{Duration, Instant};
 

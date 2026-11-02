@@ -1,11 +1,6 @@
 //! `--continue` opens a conversation - and a reviewer is not one. The launcher defines
 //! `--continue` as *reopen the newest session in THIS workspace*, and the merge queue
-//! spawns its reviewers as sessions - subagents of the session that enqueued the entry. Ten
-//! of them for one workspace's entries is enough to make the newest row a reviewer. The
-//! resolution is a pure rule and its unit tests are beside it (`cli.rs`); what is asserted
-//! HERE is the interface a person and a script meet: the one line on stdout, which must be
-//! the conversation's id and nothing else, and the sentence on stderr for a workspace that
-//! holds nothing but children.
+//! spawns its reviewers as sessions - subagents of the session that enqueued the entry.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

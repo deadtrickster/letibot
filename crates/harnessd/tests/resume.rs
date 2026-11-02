@@ -1,11 +1,6 @@
 //! Opening a session that is already in the store: the daemon's half of resume.
 //! `letibot-turn`'s `restore.rs` asserts the chain reproduces. This asserts the four things
-//! the *daemon* has to get right around it, none of which the ledger knows about 1. A head
-//! sees the conversation. The harness holds the restored transcript and the hub does not
-//! so without a republish a head attaching to a resumed session is told it has joined an
-//! empty one. A perfect ledger restore would not save it. 2. The tools are confined to the
-//! session's own tree. A conversation resumed by a daemon started somewhere else must not
-//! be seated there
+//! the *daemon* has to get right around it, none of which the ledger knows about 1.
 
 use std::path::{Path, PathBuf};
 

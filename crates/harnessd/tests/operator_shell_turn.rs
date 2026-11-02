@@ -1,11 +1,5 @@
 //! The turn an operator's `!` line starts - the end-to-end test of
-//! `Harness::run_after_operator_shell`, one of the two call sites that run a turn. The two
-//! call sites differ in what they put in front of the model, and that difference is this
-//! file's assertion: `Harness::submit_item` appends the row its turn is about, and
-//! `Harness::run_after_operator_shell` appends nothing - the rows are already on the log
-//! so all it adds is the turn, and it opens the turn itself. So the `!` line is on the log
-//! exactly once and the second prompt carries a head the first never had. It drives the
-//! daemon's own arm rather than a unit on the harness
+//! `Harness::run_after_operator_shell`, one of the two call sites that run a turn.
 
 use std::net::TcpListener;
 use std::sync::{Arc, Mutex};

@@ -1,11 +1,5 @@
 //! A plugin pane, end to end, through the REAL wasm - W4 of `docs/plugins-slice1.md`. Every
-//! step is the real one: a daemon serving one session, a head's `ClientFrame::PaneOpen` on
-//! a real socket, the daemon's `PaneDriver`, `Stack` resolving `pane_dashboard`, the rano
-//! `Loader` compiling the example's `plugin.wasm`, the pane's two answers, and
-//! `SessionEvent::PluginPane` back up the same socket. Nothing here is a stub but the
-//! model, and the model is never asked anything: the session opens on the byte vocabulary
-//! with a provider that is named and never called, so this runs on a box with no GGUF, no
-//! server and no key.
+//! step is the real one:
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;

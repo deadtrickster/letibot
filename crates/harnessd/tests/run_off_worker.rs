@@ -1,7 +1,5 @@
 //! The operator's `!` run does not hold the daemon's worker - the proof, plus the two
-//! behaviours the handoff has to keep. `CommandKind::OperatorShell` runs off the worker
-//! the wait inside it would otherwise hold the daemon for as long as the command does, so
-//! nothing else runs while a run is in flight and a second `!` line only queues.
+//! behaviours the handoff has to keep.
 
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};

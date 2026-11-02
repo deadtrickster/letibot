@@ -1,11 +1,5 @@
-//! A daemon for a cloud provider needs no GGUF - and one with neither opens, and refuses the turn by
-//! name.
-//!
-//! Before this, `Parts::load` read a GGUF on every start and the engine checked the dialect's control
-//! tokens against it, so a box with only a key could not start a session at all - and none of
-//! llama.cpp's bundled vocabularies passed that check.
-//!
-//! These need no model file, no server and no key: the provider is named, never called.
+//! A daemon for a cloud provider needs no GGUF - and one with neither opens, and refuses
+//! the turn by name.
 
 use letibot_harnessd::config::{Config, ProviderConfig};
 use letibot_harnessd::dialect::Dialect;

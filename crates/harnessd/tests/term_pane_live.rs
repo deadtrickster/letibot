@@ -1,10 +1,6 @@
 //! `!term` end to end: the daemon's own driver, a real pty, and a real program in it. The
 //! pty is asserted without a daemon and the frame path against a driver that runs nothing
-//! so nothing joined the two - which is exactly where a defect would live. This installs
-//! `letibot_harnessd::term::Terminals` (the driver `cli.rs` installs at startup, not a
-//! double) on a registry, attaches a head over a real socket, and drives it with the frames
-//! a head sends. What it cannot answer: whether `nano` is *usable* - the right rectangle
-//! the right chords. That needs a person on a real terminal.
+//! so nothing joined the two - which is exactly where a defect would live.
 
 use std::path::PathBuf;
 use std::sync::Arc;

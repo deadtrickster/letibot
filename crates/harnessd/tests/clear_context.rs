@@ -1,11 +1,6 @@
-//! `/clear`: the conversation starts over and the session does not.
-//!
-//! A cleared session keeps its board, its job and its child; a job or a child that settles after
-//! the clear lands in the NEW transcript, and the old one stays whole in the store. A subagent's
-//! own `/clear` is answered by the thread that owns it.
-//!
-//! Needs the vocabulary GGUF and a process-lifetime tree for the background job. No model: a stub
-//! answers on `canned` frames, held on a gate so the child is mid-turn at the clear.
+//! `/clear`: the conversation starts over and the session does not. A cleared session keeps
+//! its board, its job and its child; a job or a child that settles after the clear lands in
+//! the NEW transcript, and the old one stays whole in the store.
 
 use std::net::TcpListener;
 use std::path::Path;

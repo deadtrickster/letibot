@@ -1,11 +1,6 @@
 //! A copy of a session that lives somewhere else is refused, and the listing says where.
 //! `letibot --migrate SESSION --to HOST` moves a session's whole daemon to a host and marks
-//! the copy it leaves behind (`session.lives_on`). Two surfaces have to follow that marker
-//! `--sessions` says *lives on lab2x1* beside the row instead of offering it as a
-//! conversation this box is appending to, and `Harness::open` refuses it by name - a marked
-//! copy is not being written to, and a turn in it would be work typed into a conversation
-//! nobody else will ever see. The session opens on the byte vocabulary with a provider, so
-//! this runs on a machine with no model file at all, and no request leaves the box
+//! the copy it leaves behind (`session.lives_on`).
 
 use std::process::Command;
 

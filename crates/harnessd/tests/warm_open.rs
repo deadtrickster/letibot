@@ -1,9 +1,5 @@
 //! A stored session a head asks a running daemon for, end to end - the warm half of resume.
-//! The report: the daemon restored the rows and the model answered about an hour-old
-//! conversation while the head drew an empty transcript with the right title and the echo
-//! of the prompt said `queued` - so something between the daemon's restore and the head's
-//! screen was missing. `leticode --session ID` with a daemon up runs `letibot-tui --resume
-//! ID`, and the head then takes five frames
+//! The report:
 
 use std::io::{Read, Write};
 use std::net::TcpStream;

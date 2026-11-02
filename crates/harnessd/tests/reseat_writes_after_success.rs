@@ -1,11 +1,5 @@
 //! A re-seat writes nothing it has not earned, and a fork is the session's only once its
-//! rows are stored. `reseat_target` used to write a `stable_prefix` row (and move
-//! `cfg.system`) before `reingest`'s fit check, so a carry refused as over the window left
-//! an orphan prompt row on every attempt. And `fork_onto` registered the new transcript
-//! (the newest, so what a resume opens) before writing a row of it: a store that failed
-//! mid-carry left a resume onto a partial conversation, and an error after the swap
-//! returned through `reingest`'s refusal path before `self.prefix = next` - so the operator
-//! was told "Nothing was changed".
+//! rows are stored.
 
 use letibot_harnessd::config::Config;
 use letibot_harnessd::harness::{ForkTail, Harness};

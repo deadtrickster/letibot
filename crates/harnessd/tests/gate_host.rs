@@ -1,9 +1,6 @@
 //! The gate on a declared host, end to end, against a fake ssh - the second implementation
-//! of `GateRunner` run through the real transport: a real `rsync`, a real `git bundle`
-//! real `git worktree`, real `ssh` argv and the real bounded runner. The "host" is a
-//! directory on this box: `$LETIBOT_SSH` skips ssh's own flags and runs what is left with
-//! `HOME` pointing at the rig, so `root = "~/letibot-remote"` lands under the fixture and
-//! nothing here reaches a network or the operator's own directory.
+//! of `GateRunner` run through the real transport: a real `rsync`, a real `git bundle` real
+//! `git worktree`, real `ssh` argv and the real bounded runner.
 
 use std::path::{Path, PathBuf};
 

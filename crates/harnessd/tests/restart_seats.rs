@@ -1,10 +1,6 @@
 //! A restart restores a session to a WORKING state, not to a waking one. The acceptance
 //! case: a todo conditioned on a job's end, then a restart of the head and the daemon -
-//! once the server is back it should fire, because the job is gone. The DECISION is already
-//! tested elsewhere: `harness::fate_of` reads a handle this daemon never ran as
-//! `JobFate::Unknown`, and `Unknown` MEETS the condition. What was missing is the DELIVERY
-//! and the hole is one sentence long: every door that turns a stored fact into a turn is a
-//! bell, and a bell is rung by something that was running before the restart.
+//! once the server is back it should fire, because the job is gone.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};

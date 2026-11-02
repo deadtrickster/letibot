@@ -1,11 +1,5 @@
 //! Compaction against the live server: the numbers the claim rests on, measured on the box
 //! with the model it actually serves. 1. The summary turn is carried, not re-prefilled.
-//! `cached_tokens` against `reusable` on the summary turn is the measured cache hit - the
-//! whole point of the cached strategy. 2. The summary carries the facts. Numbers given
-//! before the compaction are asked for after it; a summary that lost them would be a base
-//! that looks small and answers wrong. 3. The first turn on the fork pays the cold prefill
-//! `docs/compaction.md` §3 says is unavoidable - disclosed as a number, not denied. Never
-//! start a second model server to make a test pass
 
 use std::sync::OnceLock;
 

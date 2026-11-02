@@ -1,10 +1,6 @@
 //! The stuck-queue census, end to end: the model is WOKEN and handed the sentence. Every
 //! queue transition is notified once as it happens; what nothing said was the TOTAL and the
-//! AGE, so `mergequeue::stuck` counts them and `Sessions::deliver_due_censuses` says so. It
-//! is a TURN and not a notice, and that is the whole point: a notice is a mailbox the model
-//! reads at its next turn, and a session with nothing to do has none - so a census written
-//! that way reaches nobody. A bell must be able to inject a turn. This file's central
-//! assertion is therefore not "a row was written" but "the model was handed the sentence"
+//! AGE, so `mergequeue::stuck` counts them and `Sessions::deliver_due_censuses` says so.
 
 use std::net::TcpListener;
 use std::sync::{Arc, Mutex};

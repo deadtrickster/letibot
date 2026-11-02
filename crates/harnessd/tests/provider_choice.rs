@@ -1,10 +1,4 @@
-//! A session's model choice survives a restart. It did not: `set_provider` was in-memory
-//! the session row had no column for a choice, and a switched session came back on the
-//! daemon's CLI default with its first turn quietly going to a model nobody chose for that
-//! conversation. Three halves, each pinned here: the switch writes the row in the same
-//! breath as `publish_settings`; the restore reads it at both open paths; and the restore
-//! goes through the same door the switch did (`models_choice`), so a preset this build no
-//! longer knows fails SAID with the row left alone for a build that does know it.
+//! A session's model choice survives a restart. It did not:
 
 use letibot_harnessd::config::Config;
 use letibot_harnessd::{Dialect, Harness, Parts};

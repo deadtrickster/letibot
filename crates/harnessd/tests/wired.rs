@@ -1,11 +1,5 @@
 //! What a session can actually reach, and what it says about it. Everything under test here
-//! was built, tested and unreachable before this file existed: the exec tools, the write
-//! tools, the intent group, the namespace boundary, the authorisation trail, the denial
-//! sink and the monitor wake all had passing unit tests and no constructor. This proves an
-//! invocation can get to them - and, more importantly, that one which passes no flag still
-//! cannot. # What it needs, and what it does not The vocabulary GGUF, because
-//! `Harness::open` renders the stable prefix. Not the model server nothing here generates -
-//! seating, confining, refusing and disclosing are all decided before a token is produced.
+//! was built, tested and unreachable before this file existed:
 
 use letibot_harnessd::config::{Config, Seat};
 use letibot_harnessd::harness::ForkTail;

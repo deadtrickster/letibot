@@ -1,11 +1,6 @@
 //! A pane is handed the feeds it declared - `docs/plugins-plan.md` §4.9, from the daemon's
 //! side. The head has built the `sessions` feed for its own in-process session list since
-//! feeds landed. The daemon did not: its C3 input carried `v`, `state`, `look`, `event` and
-//! `size`, so a layer on disk declaring `feeds = ["sessions"]` was handed nothing and drew
-//! an empty pane - which on a screen reads as a broken plugin rather than as a host that
-//! never had the feature. These tests are the daemon's half, through the public seams and
-//! nothing else: a `PluginHost` with a `SessionFeed` of its own, a `Loader` that records
-//! the input it was called with, and a `PaneDriver::open`.
+//! feeds landed. The daemon did not:
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};

@@ -1,10 +1,5 @@
 //! A turn with two rounds, and the whole published history of what the session was waiting
-//! on. `Turn` is the PROMPT and not a round: a round that ended with tool calls is always
-//! followed by another round of the same prompt, so a `Turn` read off
-//! `TurnStarted`/`TurnFinished` says *quiet* at every round boundary - a session reported
-//! done in the middle of its own work. That is why `Waiting::Turn` comes from
-//! `Harness::prompt_in_flight`, the span `begin_turn_clock` brackets with the hub's
-//! round-level state only as the fallback for a hub nobody runs turns on.
+//! on. `Turn` is the PROMPT and not a round:
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};

@@ -1,11 +1,5 @@
 //! Ctrl+O during a run in flight must move that run to the background - the frame the head
-//! sends, through the daemon, to the run the operator is looking at. The request travels as
-//! a flag on the hub (shared with the exec backend, so the `bash` wait loop can take it
-//! without the worker delivering anything) and as a queued command that announces it. For a
-//! run the worker is itself holding, the queued command cannot be dispatched until the run
-//! ends, so the flag is the request, and the wait loop takes it. An operator `!` run does
-//! not hold the worker - it runs on a thread of its own (`crate::bangrun`), exactly so
-//! everything else keeps working.
+//! sends, through the daemon, to the run the operator is looking at.
 
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::time::{Duration, Instant};

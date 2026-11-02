@@ -1,11 +1,6 @@
 //! Ctrl-C in a one-shot: the first one interrupts the turn, and the process goes in
 //! seconds. The signal does reach the daemon - the launcher `exec`s it for a one-shot, so
 //! it is in the terminal's foreground process group - and that leaves two defects 1.
-//! Nothing said anything. The daemon's first word about a signal was its last, so a stop
-//! that was working and a stop that was ignored looked exactly alike. 2. The turn did not
-//! end. `Registry::close` interrupts a session only when it reads as *a turn is in flight*
-//! and it asked `SessionStatus::running` - the ROUND-level flag, which is `false` for the
-//! whole of a round's tool calls.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};

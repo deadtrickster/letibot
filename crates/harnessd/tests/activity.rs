@@ -1,10 +1,6 @@
 //! What the daemon publishes as a session moves - `PROTOCOL_VERSION` 52, end to end through
 //! the machinery that publishes it. `crates/sessionlog/src/activity.rs` carries the
-//! argument and `crates/harnessd/src/activity.rs` the composition; what is asserted here is
-//! that the two are wired to the things that move: a round, the calls a round leaves, a
-//! card, a settlement queued for the model, a child the plan waits on - and that a value
-//! that has not moved is not published again. The tests drive the hub directly, the way the
-//! daemon's own threads do
+//! argument and `crates/harnessd/src/activity.rs` the composition;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize};

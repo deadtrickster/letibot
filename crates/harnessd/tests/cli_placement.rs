@@ -1,11 +1,6 @@
 //! `--host NAME` and `--vm` are two asks, and the pair is one placement - a VM there.
 //! `--vm` is the LAUNCHER's word for `--where firecode`, so the two orders that reach this
-//! door are `--host lab2x1 --where firecode` and its reverse; both are tried through
-//! `cli::run`, because argument order was the whole of the original defect: both flags
-//! wrote ONE field (`cfg.placement`), so the flag that came last won and the other was
-//! dropped without a word - a VM booted on this box while the operator had said the work is
-//! on `lab2x1`, or the tools run there with no VM at all. Neither is a refusal and neither
-//! says anything: the session starts and looks healthy in both cases.
+//! door are `--host lab2x1 --where firecode` and its reverse;
 
 use std::path::PathBuf;
 

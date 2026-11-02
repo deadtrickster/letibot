@@ -1,10 +1,6 @@
-//! Two sessions in one daemon, and only one of them may ever read as busy: `turn` is published for
-//! a turn that runs and for nothing else, so an empty wake cannot answer another session's wait.
-//!
-//! `Hub::retained` is the instrument rather than a sampler, because the value an empty wake used
-//! to publish lived for a millisecond. The sessions open on the byte vocabulary with a fake
-//! provider on loopback, so no model file is needed and nothing leaves 127.0.0.1 - and the fake's
-//! URL has to come from `set_var`, which is why this is a file of its own.
+//! Two sessions in one daemon, and only one of them may ever read as busy: `turn` is
+//! published for a turn that runs and for nothing else, so an empty wake cannot answer
+//! another session's wait.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};

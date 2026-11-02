@@ -1,7 +1,5 @@
-//! `decisions` against a real corpus: the SQL the unit tests, which use a fake source, cannot reach.
-//! `by=oracle` reaches `oracle:glm` through a prefix match, `asked` is not the same question as "who
-//! decided", and the miss report's "values present" come from the SCOPE rather than from the empty
-//! result set - the bug a naive implementation has, which turns a helpful miss into "no rows".
+//! `decisions` against a real corpus: the SQL the unit tests, which use a fake source,
+//! cannot reach.
 
 use std::sync::Arc;
 

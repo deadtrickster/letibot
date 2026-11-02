@@ -1,11 +1,6 @@
 //! A todo row that waits on the OPERATOR, end to end through the daemon's own door - the
 //! loud state on the hub, the settings row and the picker's brief; the answer as a head
-//! sends it (`CommandKind::AnswerTodo`) in every shape the card offers; the row unblocked
-//! with the reply on it; the model told at once; and the question surviving a restart. The
-//! operator asked for three things: the heads show loud notification that they are waited
-//! on, a question comes with a choice list and room for free text, and submitting it
-//! unblocks the todo with the reply attached. It needs the vocabulary GGUF and not a model
-//! the endpoint is a port nothing listens on.
+//! sends it (`CommandKind::AnswerTodo`) in every shape the card offers;
 
 use letibot_harnessd::config::Config;
 use letibot_harnessd::sessions::StoreSessions;

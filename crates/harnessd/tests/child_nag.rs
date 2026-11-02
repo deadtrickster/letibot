@@ -1,10 +1,5 @@
 //! A child is a session, so it gets the idle plan-check - with a live child harness and a
-//! store row behind it. The chain is the real one: a child `Harness` opened as
-//! `run_to_completion` opens it, its first turn run, then parked in `serve_child_under` on
-//! its own thread, and a parent's write through the real resolver
-//! (`ParentTodos::upsert_child`). The test waits for the child's own log holding the `[todo
-//! check]` item as `Speaker::Agent`. The clock is driven, not slept through
-//! `serve_child_under` takes it as a parameter, so this file injects a 300 ms window.
+//! store row behind it. The chain is the real one:
 
 use std::time::{Duration, Instant};
 

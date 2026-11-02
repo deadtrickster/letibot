@@ -1,11 +1,4 @@
-//! One owner per session, and one lifecycle with an explicit close. A subagent's hub had
-//! two readers and no end * two readers - the child's own thread
-//! (`Hub::take_own_work_until`, from `harness::serve_child`) and the daemon's worker
-//! (`Hub::try_command`, which popped anything). A head prompting the subagent it was
-//! attached to could make the worker build a SECOND `Harness` for a live child: two writers
-//! on one transcript. * no end - nothing ever removed a session from the registry, closed a
-//! finished child's hub or dropped its harness, so a finished subagent kept its threads and
-//! its memory for ever. The real chain and nothing stubbed
+//! One owner per session, and one lifecycle with an explicit close.
 
 use std::net::TcpListener;
 use std::path::Path;

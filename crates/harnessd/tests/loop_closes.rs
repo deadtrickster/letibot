@@ -1,11 +1,6 @@
 //! The loop, closed against the model server that is running on this box. These are live
 //! tests: not skipped when the server is absent, because a test that quietly passes when
-//! the thing it tests is missing reports the health of a `TcpStream::connect`. If this box
-//! is not yours, set `LETIBOT_COMPLETION_URL`, `LETIBOT_VOCAB_GGUF` and
-//! `LETIBOT_MODEL_ALIAS`. The server is in production use with five shared slots, so this
-//! file is two short generations under one process-wide lock; the long measurement lives in
-//! `letibot-m1`, a binary you run. What is asserted: a prompt that needs a file produces a
-//! tool call, the call runs, its result is appended and the model answers from it
+//! the thing it tests is missing reports the health of a `TcpStream::connect`.
 
 use std::sync::{Mutex, MutexGuard, OnceLock};
 

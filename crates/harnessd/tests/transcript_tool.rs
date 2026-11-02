@@ -1,10 +1,5 @@
-//! `transcript` against a real store with a real fork chain. The unit tests in `letibot-tools` use
-//! a fake source, which proves the tool's reporting; this proves the thing it exists for - a row a
-//! compaction moved into a parent transcript is still found, and is labelled as history rather than
-//! presented as current context.
-//!
-//! The store is built the way a compaction builds one: a first transcript, then a fork of it at a
-//! seq, with the fork carrying only what compaction kept. Nothing here reaches through to SQL.
+//! `transcript` against a real store with a real fork chain. The unit tests in
+//! `letibot-tools` use a fake source, which proves the tool's reporting;
 
 use std::sync::Arc;
 

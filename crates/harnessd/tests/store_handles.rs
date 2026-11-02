@@ -1,11 +1,5 @@
 //! A session that closes gives its descriptors back - the measurement the operator's
-//! `EMFILE` is answered with. `Harness::open` used to open the store four times per
-//! session, each a `rusqlite` connection to a WAL file, and `sqlite3` keeps a descriptor
-//! per file in the inode's own record until the process's last connection to that file
-//! closes - so closing a session's four connections returned none of them. "Close it
-//! properly" was therefore never the fix; fewer connections is, and `Store::open` now hands
-//! every caller in the process the same connection per store file. `/dev/fd` on Darwin and
-//! `/proc/self/fd` on Linux
+//! `EMFILE` is answered with.
 
 use std::path::Path;
 

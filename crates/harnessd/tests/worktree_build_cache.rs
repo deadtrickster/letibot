@@ -1,11 +1,5 @@
 //! A `task_start` worktree is handed over exactly as its branch is, and the build cache is
-//! shared through the child's environment. The bug this pins: `start_worktree` wrote
-//! `<worktree>/.cargo/config.toml` and "hid" it by appending to `$(git rev-parse
-//! --git-dir)/info/exclude` - which in a worktree is `.git/worktrees/<name>/info/exclude`
-//! a file git does not read. So every worktree showed `??.cargo/`, a child's `git add -A`
-//! committed it, and a repository that TRACKS its own `.cargo/config.toml` had that file
-//! overwritten in the child's tree. What is required now: the worktree has an empty `git
-//! status --porcelain` and no `.cargo/` is written into it
+//! shared through the child's environment. The bug this pins:
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

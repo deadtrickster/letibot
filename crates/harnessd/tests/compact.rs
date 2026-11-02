@@ -1,10 +1,6 @@
 //! Compaction's fork: the daemon's half of turning a summary into the new base.
-//! `letibot-turn`'s `compaction.rs` asserts the summary turn itself - the cached prefix
-//! the instruction, the outcome's numbers. This file asserts what the *harness* does with
-//! that outcome none of which the turn crate can see 1. The fork is a store row, not a
-//! truncation - a new transcript with the session's own stable prefix, linked back to the
-//! parent with the session log's seq, the old transcript kept whole because compaction
-//! never deletes anything, it stops carrying it. 2.
+//! `letibot-turn`'s `compaction.rs` asserts the summary turn itself - the cached prefix the
+//! instruction, the outcome's numbers.
 
 use letibot_harnessd::config::{Config, WallBasis};
 use letibot_harnessd::harness::ForkTail;

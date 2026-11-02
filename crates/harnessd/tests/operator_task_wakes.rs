@@ -1,10 +1,5 @@
 //! A `task` the OPERATOR runs arms a watcher, so its child's settlement rings the session
-//! that ran it. A `task` call made by a model inside a turn settles like this, and every
-//! hop is asserted `run_rounds` invokes the tool with a `JobWatchSink` → `emit` sees the
-//! `Backgrounded` outcome and calls `JobWatchers::watch` → `watch_task` → `settled_here` →
-//! the session's bell → `Work::Woken` → `Sessions::wake` → `Harness::wake` →
-//! `completion_notices` → one `User { speaker: Agent }` row. The sink is what arms the
-//! watcher, and the sink is per call site.
+//! that ran it.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};

@@ -1,11 +1,6 @@
 //! An answered question leaves the operator's answer in the conversation as THEIRS. A
 //! question rides the permission-card machinery - `Answers::ask_question` publishes a
-//! `DecisionRequested { kind: "question", … }` and the answer closes it - so the selector
-//! is a live overlay, and the answer's only durable trace was the `ask_user_question` tool
-//! result. Under a profile that does not draw tool rows that is nothing at all; and because
-//! the answer was not a `User` row it was not in the authorisation trail either, so a *yes*
-//! given through that card could not be cited as authorisation while a *yes* typed in the
-//! composer could. The whole chain and nothing stubbed between the call and the row
+//! `DecisionRequested { kind:
 
 use std::sync::Arc;
 

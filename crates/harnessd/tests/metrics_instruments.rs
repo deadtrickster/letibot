@@ -1,10 +1,4 @@
-//! The metrics instruments on a real turn: the canned server plays the model, the turn runs through
-//! the production turn tail, and what is asserted is the rows the instruments emitted on this thread
-//! (`letibot_metrics::capture`) - one `turn.start` and one `turn.end` keyed by the first round's id
-//! a `round` per request with its time to first token, a `tool.call` with its duration, outcome and
-//! bytes, and a context claim carrying the REAL window.
-//!
-//! Needs the vocabulary GGUF and no model; no `metrics.db` is opened - the capture is the sink.
+//! The metrics instruments on a real turn:
 
 use letibot_harnessd::Parts;
 use letibot_harnessd::config::Config;

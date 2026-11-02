@@ -1,11 +1,6 @@
 //! between turns: nothing stays held once a turn has ended. The operator's ruling, on a
 //! result that reached an idle model only when they next spoke: jobs were run for a reason
-//! and held for a reason, so once a turn ends there is no reason to hold. A result held
-//! while a turn ran is delivered as a turn of its own the moment that turn ends, one that
-//! arrives while the session is idle is delivered at once as an ordinary completion, and a
-//! prompt that gets there before the turn-end wake still carries the batch. The settlement
-//! is put on the session's queue the way its watcher thread would
-//! ([`letibot_harnessd::jobwatch::JobWatchers::queue_for_test`])
+//! and held for a reason, so once a turn ends there is no reason to hold.
 
 use std::sync::Arc;
 use std::time::{Instant, SystemTime};

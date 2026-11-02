@@ -1,10 +1,4 @@
 //! The four hook kinds, through rano's real engine - `docs/plugins-plan.md` §7 step 2.
-//! Every earlier test of the four patch points answered through a table of closures, which
-//! measures precedence, the markers and the contracts but cannot say that a module written
-//! in the ABI answers: that `rano_abi` is 1, that a hook returns an 8-byte result block and
-//! not a pointer, that the JSON a guest hands back is the JSON the contract parses. Here
-//! the host is the real one, the loader is `RanoLoader`, and the module is bytes compiled
-//! from wasm rather than faked.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};

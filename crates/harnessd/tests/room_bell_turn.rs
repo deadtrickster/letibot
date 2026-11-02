@@ -1,11 +1,6 @@
 //! Rule 4 - a bell must be able to inject a turn, proved on a live session rather than
 //! assumed from the wiring. `crates/room/tests/bell.rs` proves what a CLIENT hears on the
-//! socket; what is asserted here is the hop after it: a frame that arrived on a socket, in
-//! a session nobody typed into, becomes a TURN. The second test is the other half of
-//! *verified per client* - the two clients with no room connection say so in their manifest
-//! and in `docs/room.md`'s table. A `Harness` renders its stable prefix at open, so the
-//! vocabulary GGUF is needed and the run is gated on it; no model and no key are, because
-//! the turn is answered by the canned server.
+//! socket; what is asserted here is the hop after it:
 
 use std::path::PathBuf;
 use std::sync::Arc;

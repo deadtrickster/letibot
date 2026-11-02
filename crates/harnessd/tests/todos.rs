@@ -1,11 +1,6 @@
 //! The todo tool's harness half: the board is restored from the store at open. The tool's
-//! own behaviour is tested in `letibot-tools` (`todo_write` replaces the whole list
-//! refuses by name, moves the board's version). The store's round-trip is tested in
-//! `letibot-tokencore`. What only *this* crate can assert is the seam between them: a
-//! harness opened over a session whose model wrote todos comes back with those todos on its
-//! board - a resume that opened on an empty plan would send the model back to re-deriving
-//! work it had already organised, which is the exact waste the list exists to prevent. It
-//! needs the vocabulary GGUF and not the model server.
+//! own behaviour is tested in `letibot-tools` (`todo_write` replaces the whole list refuses
+//! by name, moves the board's version).
 
 use letibot_harnessd::config::Config;
 use letibot_harnessd::{Dialect, Harness, Parts};

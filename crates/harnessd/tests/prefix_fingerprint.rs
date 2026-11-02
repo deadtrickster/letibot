@@ -1,9 +1,5 @@
 //! A session's message 0 is frozen, and a daemon that would now compose a different one has
-//! something to say about it. The tool schemas live in the stable prefix and a session's
-//! prefix is fixed when it is created so a build that has since changed the system
-//! instructions, the tool schemas or the seat hands a session a prompt it will never speak - and until this existed nothing said so on any screen. This file asserts the daemon's
-//! half - the comparison, and the sentence it leaves behind - and three things the feature
-//! is worthless without 1. A session whose prefix is unchanged says NOTHING.
+//! something to say about it.
 
 use std::sync::Arc;
 
