@@ -51,11 +51,9 @@ use std::fmt;
 
 use rano::syntax::{Lang, Node, Stream};
 
-/// The languages with a grammar compiled in.
-///
-/// Six, and the list is short on purpose: each one is a C grammar and a `cc`
-/// build. Adding a seventh is a one-line change in [`Language::ALL`] plus its
-/// kind table — see [`classify`].
+/// The languages with a grammar compiled in: six, and short on purpose, since each is
+/// a C grammar and a `cc` build. A seventh is a line in [`Language::ALL`] plus its kind
+/// table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Language {
     Rust,
@@ -87,12 +85,9 @@ impl Language {
         }
     }
 
-    /// The extensions that select this grammar, without the dot.
-    ///
-    /// `.h` is claimed for C. It is also C++ about half the time, and a C parser
-    /// on a C++ header produces a partial tree rather than nothing — which
-    /// [`Outline::partial`] reports, so the answer is "here is what parsed and
-    /// the file did not parse cleanly" rather than a confident short list.
+    /// The extensions that select this grammar, without the dot. `.h` is claimed for C,
+    /// which it is only half the time; a C parser on a C++ header produces a partial tree,
+    /// which [`Outline::partial`] reports.
     pub fn extensions(self) -> &'static [&'static str] {
         match self {
             Language::Rust => &["rs"],
@@ -110,16 +105,13 @@ impl Language {
         Language::ALL.iter().copied().find(|l| l.name() == n)
     }
 
-    /// Pick a grammar from a path, or say why none applies.
-    ///
-    /// The error is the point. A tool that answered "no definitions" for a
-    /// `.tf` file would be making a claim about Terraform it has no parser for.
+    /// Pick a grammar from a path, or say why none applies. The error is the point: "no
+    /// definitions" for a `.tf` file would be a claim about a parser this tree has not got.
     pub fn of_path(path: &str) -> Result<Language, UnknownLanguage> {
         let name = path.rsplit('/').next().unwrap_or(path);
-        // Extension-less scripts are real: `configure`, `bootstrap`. A shebang is
-        // the only honest way to know, and the caller does not have the bytes
-        // here, so those come back as unknown with `extension: None` and the
-        // caller can offer `language` explicitly.
+        // Extension-less scripts are real (`configure`, `bootstrap`) and a shebang is the
+        // only honest way to know, but the bytes are not here, so those come back unknown
+        // with the caller free to offer `language` explicitly.
         let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase());
         match &ext {
             Some(e) => Language::ALL
@@ -137,14 +129,9 @@ impl Language {
         }
     }
 
-    /// The rano language this outline knows how to walk.
-    ///
-    /// Outline's list is a real **subset** of rano's: `Language` here means
-    /// "languages whose definitions this module knows how to name", which is a
-    /// different question from "languages rano can parse". Rano has 28; naming the
-    /// definitions in all of them is work, and doing it badly would print a symbol
-    /// table that is quietly wrong, so the six stay six until each is checked
-    /// against `examples/dump.rs`.
+    /// The rano language this outline walks. A real subset of rano's: naming definitions
+    /// badly would print a symbol table that is quietly wrong, so the six stay six until
+    /// each is checked.
     pub fn lang(self) -> Lang {
         match self {
             Language::Rust => Lang::Rust,
@@ -163,10 +150,8 @@ impl fmt::Display for Language {
     }
 }
 
-/// No grammar covers this path.
-///
-/// Carries the extension so the caller can name it, rather than saying "that file
-/// type" and leaving the model to guess which part of the path was the problem.
+/// No grammar covers this path. It carries the extension so the caller can name it rather
+/// than leaving the reader to guess which part of the path was the problem.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnknownLanguage {
     pub path: String,
@@ -201,10 +186,9 @@ pub struct Symbol {
     /// `interface`, `var`, `prototype`, `key`. Stable enough to filter on.
     pub kind: &'static str,
     pub name: String,
-    /// The enclosing definition's name, when there is one: `Editor` for a method
-    /// in `impl Editor`, the class for a Python method, the object key path for
-    /// JSON. `impl Editor { fn insert }` is what the model asked for; `fn insert`
-    /// on its own sends it looking for a free function that does not exist.
+    /// The enclosing definition's name, when there is one: `Editor` for a method in `impl
+    /// Editor`. `fn insert` alone sends the model looking for a free function that is not
+    /// there.
     pub container: Option<String>,
     /// The declaration as written, collapsed to one line and cut at the body.
     /// `pub fn insert(&mut self, c: char) -> bool` — enough to call it without a
@@ -235,25 +219,16 @@ pub struct Outline {
     /// Lines in the file, so a caller can say "61 definitions over 2114 lines"
     /// rather than a count with no denominator.
     pub lines: usize,
-    /// The parse contained an ERROR node.
-    ///
-    /// Not fatal — tree-sitter recovers and the definitions it did find are
-    /// real — but it must be said, because a short outline of a broken file and
-    /// a short outline of a small file look identical otherwise. The usual
-    /// causes are a genuine syntax error, a `.h` that is actually C++, and a
-    /// macro-heavy file.
+    /// The parse contained an ERROR node. Not fatal, since the definitions found are real,
+    /// but a short outline of a broken file looks exactly like a short outline of a small
+    /// one.
     pub partial: bool,
 }
 
 /// Parse `source` and list what it defines, in source order.
 ///
-/// # What is deliberately not descended into
-///
-/// The body of a function. A closure, a helper defined inside a function, and a
-/// struct declared inside a method are all real definitions and none of them is
-/// what "what is the structure of this file" is asking for. Items that live
-/// beside functions — Rust's `#[cfg(test)] mod tests`, a Python class at module
-/// level — are unaffected, because they are not inside a function body.
+/// Function bodies are deliberately not descended into: a closure or a helper inside one
+/// is a definition, and none of them answers "what is the structure of this file".
 pub fn outline(source: &str, language: Language) -> Outline {
     let lines = source.lines().count();
     let mut stream = Stream::new(language.lang());
@@ -281,10 +256,8 @@ pub fn outline(source: &str, language: Language) -> Outline {
 struct Def {
     kind: &'static str,
     name: String,
-    /// This symbol's OWN container, when the language states it on the
-    /// definition rather than by nesting. Go is the case: a method names its
-    /// receiver and there is no enclosing block to inherit from. `None` means
-    /// inherit whatever the enclosing definition put on the stack.
+    /// This symbol's own container, when the language states it on the definition rather
+    /// than by nesting (Go names its receiver). `None` inherits the enclosing definition's.
     container: Option<String>,
     /// What this contributes to its CHILDREN's container. `None` means children
     /// keep the container they already had — a free function does not want its
@@ -341,11 +314,8 @@ fn text(node: &Node, src: &str) -> String {
         .to_string()
 }
 
-/// The child in field `name`.
-///
-/// By **field**, not by kind or position, which is what rano's `Node::field` exists
-/// for: a grammar states which child is a definition's name, and matching kinds in
-/// the order they happen to appear is guessing at a fact the grammar already has.
+/// The child in field `name`, by field rather than by kind or position: the grammar states
+/// which child is a definition's name, and matching kinds in order is guessing.
 fn child<'a>(node: &'a Node, name: &str) -> Option<&'a Node> {
     node.children
         .iter()
@@ -356,11 +326,8 @@ fn field(node: &Node, name: &str, src: &str) -> Option<String> {
     child(node, name).map(|n| text(n, src))
 }
 
-/// Is this node a definition, and what kind?
-///
-/// The tables are written from the grammars rather than from memory — see
-/// `examples/dump.rs`, which prints the named-node skeleton with field names for
-/// one sample per language and is how every kind string below was chosen.
+/// Is this node a definition, and what kind? The tables are written from the grammars
+/// rather than from memory; `examples/dump.rs` is how every kind string was chosen.
 fn classify(node: &Node, src: &str, lang: Language) -> Option<Def> {
     let k = node.kind.as_str();
     // A leaf definition: it has a name and nothing inside it is worth listing.
@@ -557,11 +524,8 @@ fn receiver_type(list: &Node, src: &str) -> Option<String> {
     None
 }
 
-/// The declaration as written, up to where the body starts.
-///
-/// Cut at the `body` field so a 200-line function contributes one line, and
-/// collapsed so a signature broken across five lines — which is most of them, in
-/// this workspace — still reads as one.
+/// The declaration as written, up to where the body starts: a 200-line function
+/// contributes one line, and a signature broken across five lines still reads as one.
 const SIGNATURE_CAP: usize = 160;
 
 fn signature(node: &Node, src: &str) -> String {
@@ -579,10 +543,8 @@ fn signature(node: &Node, src: &str) -> String {
             space = !out.is_empty();
             continue;
         }
-        // A signature broken across five lines -- which is most of them in this
-        // workspace -- must read as one, and `fn f( &mut self, x: u8, )` is not
-        // one. Whitespace that only existed because of the line break is
-        // dropped rather than collapsed.
+        // A signature broken across five lines must read as one, so whitespace that only
+        // existed because of the break is dropped rather than collapsed.
         let opens = out.ends_with(['(', '[', '<', '&', '!']);
         let closes = matches!(c, ')' | ']' | ',' | ';' | '>');
         if space && !opens && !closes {
