@@ -3005,7 +3005,7 @@ fn a_daemon_above_a_repository_neither_takes_its_lease_nor_shows_its_red() {
 
 /// `--no-queue`: a daemon seated in a package's worktree serves no queue - it claims no
 /// lease and gates nothing, and the flag is the whole of the difference. The defect
-/// 
+///
 #[test]
 fn a_daemon_started_with_no_queue_on_a_worktree_never_takes_the_lease() {
     use letibot_sessionlog::registry::Registry;
