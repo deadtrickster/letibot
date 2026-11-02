@@ -22,10 +22,9 @@ fn with_a_subagent() -> App {
     a
 }
 
-/// **Two panes open, and the keys reach the one on the screen** — the review's worst head
-/// finding, from the other side. `ctrl-g` then `ctrl-t`: the todos pane was drawn (draw order
-/// todos > subagents) while ↑↓ and Enter went to the subagents list (key order subagents >
-/// todos), and **Enter switched session into a row nobody saw**.
+/// Two panes open, and the keys reach the one on the screen: draw order was todos > subagents
+/// while key order was subagents > todos, so Enter switched session into a row nobody saw. The
+/// surface stack is the one answer to which surface is in front.
 #[test]
 fn with_two_panes_open_the_keys_reach_the_one_drawn() {
     let mut a = with_a_subagent();

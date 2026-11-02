@@ -55,10 +55,9 @@ impl App {
                     return Disposition::Rendered;
                 }
                 self.open.retain(|d| d.req_id != req_id);
-                // **The highlight is NOT reset here** (R90.4): the card goes to the BACK, and the
-                // one on screen keeps the row the operator moved to. A fresh question still
-                // starts at the top of its ladder — when it reaches the front — because
-                // `App::sync_front` resets the highlight exactly when the front card changes.
+                // The highlight is NOT reset here: the card goes to the BACK, and the one on
+                // screen keeps the row the operator moved to. `App::sync_front` resets it when
+                // the front card changes, so a fresh question still starts at the top.
                 self.open.push(OpenDecision {
                     req_id,
                     write_targets,
@@ -108,14 +107,9 @@ impl App {
                     let a = self.answering.remove(i);
                     self.open.push(a.decision);
                 }
-                // Three things are read off the open decision **before** it is
-                // removed, because the answer event carries only the `req_id`: the
-                // summary, the call to put the outcome on, and the oracle's advice.
-                // The last is the one the answer event can never carry — its `basis`
-                // is the DECIDER's, and under `/supervise` the decider is usually the
-                // operator. And which KIND it was, which the live arm needs for the
-                // same reason the view keeps it: a question has no ladder, so its
-                // ending travels as `Cancelled` with the answer in the basis.
+                // Read off the open decision BEFORE it is removed: the answer event carries
+                // only the `req_id`, and the oracle's `advice` can never ride it - its `basis`
+                // is the DECIDER's. `kind` too: a question's ending travels as `Cancelled`.
                 let (summary, call_id, kind, advice) = self
                     .open
                     .iter()
@@ -141,10 +135,9 @@ impl App {
                     advice,
                     late,
                 };
-                // A permission settles on the call it gated: the approval is a fact
-                // about the call, so it rides the call's card in the dim register
-                // rather than as a standalone note. A question — or a log recorded
-                // before the field existed — has no call to ride, and stays a note.
+                // A permission settles on the call it gated, so it rides that call's card in
+                // the dim register. A question has no call to ride and stays a note - as does
+                // a log recorded before the field existed.
                 if let Some(call_id) = &call_id
                     && let Some(t) = self.turn.as_mut()
                     && let Some(c) = t.calls.iter_mut().find(|c| &c.call_id == call_id)
@@ -211,14 +204,9 @@ impl App {
                 }));
                 Disposition::Rendered
             }
-            // **A command of the operator's own is waiting for an answer.** The card is up
-            // for as long as the run is blocked, and the keyboard belongs to it while it
-            // is — see the `Key` arm and [`App::prompt_lines`].
-            //
-            // **The text is NOT masked**, and that is the difference from the arm above
-            // rather than an oversight: what this card carries is a line for a program's
-            // stdin, drawn in the open. A password has its own path and its own card, and
-            // the two must not be one.
+            // A command of the operator's own is waiting for an answer: the card is up for as
+            // long as the run is blocked and owns the keyboard while it is. Its text is NOT
+            // masked - this is a line for a program's stdin; a password has its own card.
             SessionEvent::PromptRequested {
                 req_id,
                 job,
@@ -226,15 +214,9 @@ impl App {
                 question,
                 reading,
             } => {
-                // **A question from a RUNNING PROGRAM outranks the question about killing one.**
-                // The two cards are mutually exclusive by construction everywhere else (the
-                // confirmation is raised from the composer, and the prompt card owns the
-                // composer while it is up) — but a prompt can arrive *while* the confirmation
-                // is standing, and then one keystroke would have two meanings: `y` is this
-                // card's yes and that card's text. The operator's rule is that neither may be
-                // answerable by the other's keystroke, so the confirmation yields, with a
-                // sentence — the program has asked something and must not be killable by the
-                // answer to it.
+                // A question from a RUNNING PROGRAM outranks the question about killing one:
+                // a prompt can arrive while the confirmation stands, and then `y` would be both
+                // this card's yes and that card's text. The confirmation yields, and says so.
                 if let Some(ask) = self.term_ask.take() {
                     self.say(&format!(
                         "{} is still running — your command's question came first, so nothing \
@@ -250,10 +232,9 @@ impl App {
                     reading,
                 });
                 self.prompt_buf.clear();
-                // **A card that arrives takes the screen**, including one re-offered after an
-                // answer on a run this daemon cannot read: the offer is the daemon's, and a
-                // head that kept its own *put away* across it would swallow the second
-                // question `apt` asks. See [`Prompts::send`] on the daemon's side.
+                // A card that arrives takes the screen, even one re-offered after an answer on
+                // a run this daemon cannot read: a head that kept its own "put away" across it
+                // would swallow the second question `apt` asks.
                 self.prompt_away = false;
                 self.redraw = true;
                 Disposition::Rendered
@@ -280,21 +261,9 @@ impl App {
             }
             // §6's plan is a document; the transcript is not where it goes.
             SessionEvent::Explain { .. } => Disposition::Filtered,
-            // **Always rendered, at every verbosity.**
-            //
-            // `docs/boundary-and-adjudication.md` §4b: a denial the operator cannot
-            // see manufactures the workaround, so there is no verbosity at which
-            // hiding this is correct — it is a decision taken on their behalf and
-            // only they can lift it. It goes into the transcript, in the place it
-            // happened, beside the tool call it refused.
-            //
-            // This reuses `Note::Warned` rather than growing a note kind of its own:
-            // making a denial *look* different from a warning is presentation, this
-            // head is somebody else's this session, and a placeholder that rendered
-            // nothing would be the invisible denial again with a different cause.
-            // The `code` carries the distinction a reader needs, and
-            // `repeat_count`/`breaker_open` are on the event for a head that later
-            // wants to collapse repeats.
+            // Always rendered, at every verbosity: a denial the operator cannot see
+            // manufactures the workaround, so it goes into the transcript beside the call it
+            // refused. It reuses `Note::Warned`; `code` carries what a reader needs.
             SessionEvent::DenialRaised {
                 request_id,
                 tool,
@@ -317,29 +286,13 @@ impl App {
                 } else {
                     String::new()
                 };
-                // **A refusal the harness made is not a question for the operator.**
-                //
-                // `boundary:` signs the deterministic ones — the normaliser could not
-                // read the command, the host boundary refused it. Nobody was asked,
-                // no grant lifts it, and the whole explanation is already on the
-                // screen as the tool's own result one row above. Rendering it again
-                // in red, in full, is the same wall twice: measured at 20 lines for
-                // one shell one-liner, and the operator's answer to it was *"it just
-                // throws up on my chat"*.
-                //
-                // A refusal somebody DECIDED still gets the loud register and the
-                // request id, because granting it is a thing the operator can do.
+                // A refusal the harness made is not a question for the operator: nobody was
+                // asked, no grant lifts it, and the tool's own result row one above already
+                // explains it. A refusal somebody DECIDED keeps the loud register.
                 if by.starts_with("boundary:") {
-                    // **And only when it has something the row does not.**
-                    //
-                    // The refused call is already a row in the transcript, one line
-                    // below this, carrying the same first sentence — so on a single
-                    // refusal this note is the same words twice, which is the noise
-                    // it was just cut down from. What the row cannot say is that
-                    // this is the SECOND attempt at the same direction, or that the
-                    // breaker has closed the direction for the session: that is a
-                    // fact about the shape of the session and not about one call,
-                    // and it is the one an operator wants to be told.
+                    // Only when it has something the row does not: on a single refusal this
+                    // note would say the row's own words twice. What the row cannot say is that
+                    // this is a repeat, or that the breaker has closed the direction.
                     if !repeat.is_empty() {
                         self.note(Note::NotRun(Warned {
                             code: format!("denied:{request_id}"),

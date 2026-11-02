@@ -136,12 +136,9 @@ mod tests {
         );
     }
 
-    /// **The reply that found the defect**: prose, the one-liner alone on its line, prose — the
-    /// daemon cites it now, so the head must fill it.
-    ///
-    /// Asserted by its parts rather than byte for byte, because the label is an ABSOLUTE path and
-    /// this box may well have that file: when it does and the lines differ, the label grows
-    /// [`DRIFTED`], which is `a_citation_the_file_no_longer_matches_is_marked`'s subject.
+    /// The reply that found the defect: prose, the one-liner alone on its line, prose - the daemon
+    /// cites it now, so the head must fill it. Asserted by its parts rather than byte for byte,
+    /// because the label is an ABSOLUTE path this box may well have: then it grows `DRIFTED`.
     #[test]
     fn a_citation_written_on_one_line_is_filled() {
         const LABEL: &str = "/Users/dead/Projects/firecode/firecode/scripts/vsock-exec.py:60-97";

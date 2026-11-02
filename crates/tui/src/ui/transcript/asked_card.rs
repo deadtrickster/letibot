@@ -41,10 +41,9 @@ const OPTIONS_LIST: &str = "\noptions offered:\n";
 /// What each option of the list shape opens with.
 const ITEM: &str = "- ";
 
-/// **A question row, read**: the question, and the options it offered.
-///
-/// The list shape is read first, and only when EVERY line after its head is an item — so an
-/// option holding ` | ` is one option (R90.24). A row from before it still splits on ` | `.
+/// A question row, read: the question, and the options it offered. The list shape is read first,
+/// and only when EVERY line after its head is an item, so an option holding ` | ` is one option. A
+/// row from before the list shape still splits on ` | `.
 pub(crate) fn question_of(text: &str) -> Option<(&str, Vec<&str>)> {
     let rest = text.strip_prefix(ASKED)?;
     let listed = rest.rsplit_once(OPTIONS_LIST).and_then(|(q, o)| {
@@ -130,17 +129,9 @@ pub(crate) struct Exchange {
     pub(crate) answered: Option<Answered>,
 }
 
-/// **Read a question row and, when there is one, the answer row the session wrote right after
-/// it.**
-///
-/// The answer row is the operator's verbatim words, so what they did is read back from its
-/// shape (`operator_answer_text`): an option's own text on the first line, then their note on
-/// the lines after it; anything else they typed; or the one word `abstain`.
-///
-/// **The ` | ` between options is not escaped** — the session joins them with it and an option
-/// may hold one. So the split is a guess, and the answer corrects it where it can: a chosen
-/// option that the split cut in two is matched against the answer's first line and put back
-/// together. An option nobody chose that holds ` | ` is still drawn as two.
+/// Read a question row and, when there is one, the answer row right after it: the operator's
+/// verbatim words, read back from their shape (option text then a note, free words, or `abstain`).
+/// The ` | ` between options is not escaped, so the answer corrects the split where it can.
 pub(crate) fn exchange(question_row: &str, answer: Option<&str>) -> Option<Exchange> {
     let (question, pieces) = question_of(question_row)?;
     let mut options: Vec<String> = pieces.iter().map(|p| p.to_string()).collect();
