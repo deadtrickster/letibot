@@ -189,11 +189,6 @@ replaces: the landing after this one is the first that installs.)*
   write literal spellings chained with `;`. Inline `git -c` config angers the operator.
 - `origin/main` runs stale; pushes need the credential-helper ask.
 
-Two branches are parked rather than merged: `role-switch` (d42c04c, the `SetRole` protocol
-machinery, with no command wired to type it) and `adjudication/answer-path-and-grants` (fac3909).
-A merge of the second meets its own overlap in `adjudicate.rs`; reconcile semantically, not
-textually.
-
 ## Patterns that recur
 
 A test asserts what it can prove on the machine it is running on. A test that panics because the
