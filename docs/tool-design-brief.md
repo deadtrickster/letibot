@@ -1,8 +1,7 @@
 # Building a tool for this harness
 
 For an agent adding to the tool set. Read `docs/tool-survey.md` for the prior art and
-`crates/tools/src/lib.rs` for the runtime's own rules. Every rule here is one this repo has
-already paid for.
+`crates/tools/src/lib.rs` for the runtime's own rules. Every rule here is one this repo paid for.
 
 ## 1. The frame: a closed-loop stepper
 
