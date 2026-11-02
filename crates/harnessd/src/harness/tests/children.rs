@@ -338,8 +338,11 @@ fn a_failed_child_leaves_no_worktree_and_keeps_its_branch() {
     std::fs::write(root.join("a.txt"), "one\n").expect("write");
     git(&["add", "-A"]);
     git(&["commit", "-qm", "first"]);
+    // Beside the repository rather than where `worktree_path` would put them: the layout rule keeps
+    // the trees of a repository under its PARENT, which for a temp repository is shared by every run.
     let slug = "reap-me";
-    let path = letibot_tools::builtins::task::worktree_path(root.to_str().unwrap(), slug);
+    let path = root.join(format!("wt-{slug}"));
+    let path = path.to_str().expect("utf-8 path").to_string();
     let branch = letibot_tools::builtins::task::worktree_branch(slug);
     super::git_in(
         root.to_str().unwrap(),
@@ -380,7 +383,8 @@ fn a_failed_child_leaves_no_worktree_and_keeps_its_branch() {
     );
 
     // And a tree that still holds uncommitted work is kept: that is what makes reaping safe.
-    let path2 = letibot_tools::builtins::task::worktree_path(root.to_str().unwrap(), "keep-me");
+    let path2 = root.join("wt-keep-me");
+    let path2 = path2.to_str().expect("utf-8 path").to_string();
     let branch2 = letibot_tools::builtins::task::worktree_branch("keep-me");
     super::git_in(
         root.to_str().unwrap(),
