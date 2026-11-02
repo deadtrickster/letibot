@@ -1,48 +1,36 @@
-//! **`on_tool_call` — the tool call, before the gate** (`docs/plugins-plan.md` §4.1).
+//! The `on_tool_call` hook: the call the model proposed, before the gate.
 //!
-//! The operator's original motivation: *"the model armed nine monitors for three PRs"*, and a
-//! session that could patch it the same afternoon. A layer here sees the call the model proposed,
-//! and may narrow it, rewrite it, refuse it, or answer it without letting it run at all.
+//! A layer sees the call and may narrow it, rewrite it, refuse it, or answer it without letting it
+//! run.
 //!
-//! # It can never admit anything
+//! It can never admit anything. The hook runs before the gate and the rewritten call is the call the
+//! gate then adjudicates, so a rewrite that needs permission still asks and one that reaches further
+//! meets the same rules the original would. `refuse` and `answer` run nothing, and the model reads
+//! the layer's words as the call's result.
 //!
-//! The hook runs **before the gate**, and the rewritten call is the call the gate then
-//! adjudicates. So every route through this kind ends at the same boundary:
+//! There is no field for *admitted*: the class of the call, the mode, the adjudicator, the session's
+//! boundary and the operator's own card are decided in Rust after this returns. What a layer can do
+//! is make a call smaller, which is the whole point of the hook.
 //!
-//! | the layer says | what happens |
-//! |---|---|
-//! | nothing, or `{"pass": true}` | the model's call runs, gated as it always is |
-//! | `{"arguments": …}` | the **rewritten** call is gated — a rewrite that needs permission still asks, and one that reaches further than the original is refused by the same rules the original would meet |
-//! | `{"refuse": "…"}` | nothing runs; the model reads the sentence as the call's result |
-//! | `{"answer": "…"}` | nothing runs; the model reads that text as the call's result |
-//!
-//! A layer cannot answer *admitted*, because there is no field for it: the class of the call, the
-//! mode, the adjudicator, the session's boundary and the operator's own card are decided in Rust
-//! after this returns (§1 principle 3). What a layer can do is make a call smaller — and that is
-//! the whole point of the hook.
-//!
-//! # One hook for the kind, not per plugin
-//!
-//! Every layer that wants to intercept calls exports `on_tool_call`. Layers stack: the top layer
-//! answers, and it may `{"below": …}` to see what the layer beneath would have said and edit it —
-//! the usual shape of *change one field of a lower answer*. That is how two fixes coexist instead
-//! of the newer one silently replacing the older.
+//! One hook for the kind, not per plugin. Layers stack, and the top one may ask `{"below": …}` to
+//! see what the layer beneath would have said and edit it, which is how two fixes coexist instead of
+//! the newer one silently replacing the older.
 
 use serde::Deserialize;
 use serde_json::Value;
 
 /// The export name. One name for the kind: the call is the subject, and every layer sees the same
-/// subject (`crate`'s header on the two spellings).
+/// subject.
 pub const HOOK: &str = "on_tool_call";
 
-/// **The session the call is being made in**, so a layer can be narrower than *always*: the mode
-/// is the gate's own word for how much this session may do without asking.
+/// The session the call is being made in, so a layer can be narrower than *always*: the mode is
+/// the gate's own word for how much this session may do without asking.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Session {
     /// The session's id, as the store names it.
     pub session: String,
-    /// The mode in force — `read-only`, `writes-allowed`, `allow-edits`, `allow-all`: the words
-    /// the gate and the status line already use.
+    /// The mode in force: `read-only`, `writes-allowed`, `allow-edits`, `allow-all`, the words the
+    /// gate and the status line already use.
     pub mode: String,
     /// Where the session's tree is, so a layer can be about one project.
     pub workspace: String,
@@ -72,9 +60,8 @@ impl ToolCallIn {
         }
     }
 
-    /// The synthetic input `plugin test` and the shadow gate use when a session has none
-    /// recorded: the plan's own example, the third monitor on a pull request that is already
-    /// watched.
+    /// The synthetic input `plugin test` and the shadow gate use when a session has none recorded:
+    /// a third monitor on a pull request that is already watched.
     pub fn synthetic() -> ToolCallIn {
         ToolCallIn::new(
             crate::Call::new(
@@ -99,7 +86,7 @@ impl ToolCallIn {
 pub enum Verdict<'a> {
     /// Run it exactly as the model proposed.
     Pass,
-    /// Run it with these arguments instead — **through the gate**.
+    /// Run it with these arguments instead, through the gate.
     Rewrite(&'a Value),
     /// Do not run it; the model reads this sentence as the result.
     Refuse(&'a str),
@@ -108,7 +95,7 @@ pub enum Verdict<'a> {
 }
 
 /// The answer. Absent fields are absent on the wire, so *this layer said nothing* and *this layer
-/// said nothing with these fields* are one thing and the stack's `pass` marker is another.
+/// said nothing with these fields* are one thing, and the stack's `pass` marker is another.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ToolCallOut {
     /// Run it as it is. The plainest way to say *not my business*, and the same meaning as
@@ -117,9 +104,8 @@ pub struct ToolCallOut {
     pub pass: bool,
     /// The arguments to run it with instead.
     ///
-    /// **`null` here is a rewrite, not silence** — see [`present`]: a layer narrowing a call to
-    /// no arguments at all is narrowing it, and serde's usual reading of `null` as *absent*
-    /// would let the model's call through unchanged instead.
+    /// `null` here is a rewrite, not silence: a layer narrowing a call to no arguments is narrowing
+    /// it, and serde's usual reading of `null` as absent would let the model's call through.
     #[serde(
         default,
         deserialize_with = "present",
@@ -128,8 +114,8 @@ pub struct ToolCallOut {
     pub arguments: Option<Value>,
     /// Do not run it, and tell the model this.
     ///
-    /// A layer that means this must write the sentence: `null` is *said nothing* and lets the
-    /// call run, because a refusal nobody can act on is not a refusal.
+    /// A layer that means this must write the sentence: `null` is *said nothing* and lets the call
+    /// run, because a refusal nobody can act on is not a refusal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refuse: Option<String>,
     /// Do not run it, and answer the model with this. As with `refuse`, `null` is silence.
@@ -141,8 +127,8 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
-/// Any JSON value, present or null, as `Some` — so `{"arguments": null}` and `{}` are two
-/// different answers. Absence is `#[serde(default)]`'s `None` and nothing else is.
+/// Any JSON value, present or null, as `Some`, so `{"arguments": null}` and `{}` are two different
+/// answers. Absence is `#[serde(default)]`'s `None` and nothing else is.
 fn present<'de, D>(d: D) -> Result<Option<Value>, D::Error>
 where
     D: serde::Deserializer<'de>,

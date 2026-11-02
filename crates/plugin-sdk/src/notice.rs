@@ -1,42 +1,28 @@
-//! **`notice` — what the harness is about to say to the model**, and how a layer may say it
-//! better (`docs/plugins-plan.md` §4.3).
+//! The `notice` hook: what the harness is about to say to the model, and how a layer may say it
+//! better.
 //!
-//! Every sentence the harness injects — a monitor firing, a job settling, a reminder, a reseat
-//! card, the merge queue's verdict on a branch — is composed from structured facts and, before it
-//! becomes a transcript row, offered to this hook with those facts beside it. A layer can fix a
-//! misleading wording or add what the model was not told (*the pull request is in conflict*);
-//! that is the whole of the kind, and it is the cheapest of the four patch points because it
-//! changes no decision, only what a decision reads like.
+//! Every sentence the harness injects is composed from structured facts and, before it becomes a
+//! transcript row, offered to this hook with those facts beside it. A layer can fix a misleading
+//! wording or add what the model was not told; that changes no decision, only what a decision reads
+//! like, which makes this the cheapest of the patch points.
 //!
-//! # The name after `notice_` is the notice's KIND
+//! The name after `notice_` is the notice's kind, so a layer that patches one firing's wording does
+//! not become the answerer for every notice in the session.
 //!
-//! `notice_monitor` answers monitor firings and nothing else; `notice_job` answers settlements.
-//! Resolving per kind rather than per plugin is what makes a fix small: a layer that patches the
-//! wording of one firing does not become the answerer for every notice in the session, and the
-//! stack still decides which layer's `notice_monitor` is in force.
+//! [`MUST_SEE`] is the host's list: a job settlement, a due todo, a reseat, a queue verdict and the
+//! workspace's own state are facts the model is owed, so their hooks may reword and may not delete.
+//! A drop for one of those is refused, and the refusal is reported so the model learns why its layer
+//! did nothing.
 //!
-//! # A notice the operator must see cannot be dropped
-//!
-//! [`MUST_SEE`] is the host's list, and it is not the plugin's: a job settlement, a due todo, a
-//! reseat, a queue verdict and the workspace's own state are facts the model is owed, so their
-//! hooks may reword and may not delete. The two a project legitimately never wants —
-//! [`MONITOR`](KINDS) firings, which are the plan's own example, and the harness's nudges — are
-//! droppable. A layer that answers `{"drop": true}` for one of the others is refused, and the
-//! refusal is reported so the model learns why its layer did nothing.
-//!
-//! # Facts are for reading, not for trusting
-//!
-//! `facts` is whatever the composing site knows: a monitor's name and why it fired, a job's
-//! handle and its fate. A layer that rewords a notice can build a sentence out of them instead of
-//! parsing English. Nothing a layer answers from `facts` is trusted for a decision — a decision
-//! reads the same facts directly, in Rust.
+//! `facts` is whatever the composing site knows, and it is for reading rather than trusting: a
+//! decision reads the same facts directly, in Rust.
 
 use serde_json::{Value, json};
 
 /// The name a notice hook is exported under: `notice_<kind>`.
 pub const PREFIX: &str = "notice_";
 
-/// A monitor firing or expiry — the plan's own example of a sentence worth patching.
+/// A monitor firing or expiry: a sentence worth patching.
 pub const MONITOR: &str = "monitor";
 /// A background job settling.
 pub const JOB: &str = "job";
@@ -52,17 +38,18 @@ pub const MERGE_QUEUE: &str = "merge_queue";
 pub const PLUGIN: &str = "plugin";
 /// The session's workspace, or another fact about the ground it stands on.
 pub const WORKSPACE: &str = "workspace";
-/// **A call the gate admitted without asking anybody** (D16) — the sentence that makes a mode
-/// which stopped asking visible in the transcript rather than only in the audit rows. A kind of
-/// its own because a layer that rewords one is rewording a disclosure, and the merge queue's
-/// sentences are not the place to put it.
+/// A call the gate admitted without asking anybody: the sentence that makes a mode which stopped
+/// asking visible in the transcript rather than only in the audit rows.
+///
+/// A kind of its own because a layer that rewords one is rewording a disclosure.
 pub const GATE: &str = "gate";
-/// A turn that produced no answer being salvaged (§5.7).
+/// A turn that produced no answer being salvaged.
 pub const SALVAGE: &str = "salvage";
-/// **The host's room** — a tagged queue somebody else posted to, claimed, finished or lost a
-/// claimant on, and the questions a raised item puts to the arbiter. A kind of its own because it
-/// is news about *other sessions on this box* rather than about this session's own work, and a
-/// layer that rewords one is rewording a disclosure about a neighbour.
+/// The host's room: a tagged queue somebody else posted to, claimed, finished or lost a claimant
+/// on, and the questions a raised item puts to the arbiter.
+///
+/// A kind of its own because it is news about other sessions on this box rather than about this
+/// session's own work.
 pub const ROOM: &str = "room";
 
 /// Every kind the host composes. A hook name outside this list is one nothing ever asks for, and
@@ -81,8 +68,7 @@ pub const KINDS: &[&str] = &[
     ROOM,
 ];
 
-/// **The kinds whose notice may not be dropped**, only reworded — the host's set, not the
-/// plugin's (`docs/plugins-plan.md` §4.3).
+/// The kinds whose notice may not be dropped, only reworded: the host's set, not the plugin's.
 pub const MUST_SEE: &[&str] = &[
     JOB,
     TODO,
@@ -111,16 +97,15 @@ pub fn droppable(kind: &str) -> bool {
     known(kind) && !MUST_SEE.contains(&kind)
 }
 
-/// **The input**: one notice, with the facts it was composed from.
+/// The input: one notice, with the facts it was composed from.
 ///
-/// Every field is present on the wire — `facts` is `{}` rather than absent when a site has none —
-/// because a guest deserialises this into a struct and a missing key is a plugin that cannot tell
-/// *nothing to say about it* from *the host forgot*.
+/// Every field is present on the wire, `facts` being `{}` rather than absent when a site has none: a
+/// missing key is a plugin that cannot tell *nothing to say about it* from *the host forgot*.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Notice {
     /// [`V`](crate::V).
     pub v: u32,
-    /// The notice's kind — [`KINDS`] — and the same word the hook's own name ends in.
+    /// The notice's kind ([`KINDS`]) and the same word the hook's own name ends in.
     pub kind: String,
     /// The sentence as the harness composed it, which is what the model reads if this hook
     /// answers nothing.
@@ -128,8 +113,8 @@ pub struct Notice {
     /// What the sentence was built from. Shape is the site's: nobody but that site reads it.
     #[serde(default)]
     pub facts: Value,
-    /// Whether this kind may be dropped at all — [`droppable`]'s answer, carried so that a layer
-    /// can see the rule it is under instead of discovering it from a refusal.
+    /// Whether this kind may be dropped at all: [`droppable`]'s answer, carried so a layer can see
+    /// the rule it is under instead of discovering it from a refusal.
     pub must_see: bool,
     /// The lower layer's answer, when this call is the second half of a `{"below": …}`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -149,8 +134,7 @@ impl Notice {
         }
     }
 
-    /// The synthetic input `plugin test` and the shadow gate use when a session has none
-    /// recorded: the plan's own example, a monitor firing.
+    /// The synthetic input `plugin test` and the shadow gate use when a session has none recorded.
     pub fn synthetic() -> Notice {
         Notice::new(
             MONITOR,
@@ -160,11 +144,11 @@ impl Notice {
     }
 }
 
-/// **The answer**: the sentence, reworded — or nothing at all.
+/// The answer: the sentence, reworded, or nothing at all.
 ///
-/// Absent fields are absent on the wire (never `null`), so *this layer said nothing about the
-/// text* and *this layer said the text is null* cannot be confused. `{"pass": true}` and
-/// `{"mask": true}` are the stack's and never appear here.
+/// Absent fields are absent on the wire rather than `null`, so *this layer said nothing about the
+/// text* cannot be confused with *this layer said the text is null*. `pass` and `mask` are the
+/// stack's and never appear here.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct NoticeOut {
     /// The sentence to record instead of the harness's.
@@ -182,7 +166,7 @@ pub enum Said<'a> {
     Unchanged,
     /// Say this instead.
     Text(&'a str),
-    /// Do not say it — only for a kind that may be dropped.
+    /// Do not say it, only for a kind that may be dropped.
     Drop,
 }
 
@@ -195,7 +179,7 @@ impl NoticeOut {
         }
     }
 
-    /// The notice, dropped — a request the host honours only for a droppable kind.
+    /// The notice, dropped: a request the host honours only for a droppable kind.
     pub fn dropped() -> NoticeOut {
         NoticeOut {
             text: None,
@@ -203,9 +187,9 @@ impl NoticeOut {
         }
     }
 
-    /// **What this answer means**, in the one order the host applies it: a drop, then a rewording,
-    /// then the harness's own sentence. A drop is the stronger statement, so an answer that says
-    /// both drops.
+    /// What this answer means, in the one order the host applies it: a drop, then a rewording, then
+    /// the harness's own sentence. A drop is the stronger statement, so an answer that says both
+    /// drops.
     pub fn said(&self) -> Said<'_> {
         if self.drop == Some(true) {
             return Said::Drop;
@@ -221,8 +205,8 @@ impl NoticeOut {
 mod tests {
     use super::*;
 
-    /// The three markers the stack owns are absent from this contract, so a layer cannot spell
-    /// one of them by accident into an answer that also says something.
+    /// The three markers the stack owns are absent from this contract, so a layer cannot spell one
+    /// of them by accident into an answer that also says something.
     #[test]
     fn the_layer_markers_are_not_part_of_a_notices_answer() {
         let out = serde_json::to_value(NoticeOut::reworded("x")).expect("serialises");

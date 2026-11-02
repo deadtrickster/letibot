@@ -1,57 +1,38 @@
-//! **The `pane` hook's input, and the vocabulary a host and a plugin share** — C3 of
-//! `docs/plugins-slice1.md`, §4.9 of `docs/plugins-plan.md`.
+//! The `pane` hook's input, and the vocabulary a host and a plugin share.
 //!
-//! The pane's *answer* (a `View`) lives in `letibot_sessionlog::pane`, because the host that
-//! validates and draws it is the head and that crate is where the panes' document belongs. What
-//! lives here is the other direction and the words both directions use: the input a host builds,
-//! the **feeds** it carries, and the small vocabulary a row is made of — a cell, a fold, and the
-//! act a key performs.
+//! The pane's answer (a `View`) lives in `letibot_sessionlog::pane`, because the host that validates
+//! and draws it is the head. What lives here is the other direction and the words both directions
+//! use: the input a host builds, the feeds it carries, and the small vocabulary a row is made of.
 //!
-//! # Feeds
-//!
-//! A pane never runs anything to get its data (§1, principle 1). What it needs, the host already
-//! has: the daemon's session list, this session's monitors, its jobs, its todos, the repository's
-//! state — read-only facts, nothing adjudicated, nothing to grant. A layer **declares** which of
-//! them it reads in its `plugin.toml`:
+//! A pane never runs anything to get its data. What it needs the host already has, and a layer
+//! declares which of it it reads in its `plugin.toml`:
 //!
 //! ```toml
 //! feeds = ["sessions"]
 //! ```
 //!
-//! and the host hands it exactly those, under their names, in `Input::feeds`. A layer that reads
-//! a feed it did not declare is not handed one — the field is absent, because the host built the
-//! map from the manifest and not from the answer. That is the whole of the sandbox on this side:
-//! the declarations are what a reviewer reads, and what a host can honestly promise.
+//! The host hands it exactly those, and a layer that reads a feed it did not declare is handed none:
+//! the field is absent, because the host built the map from the manifest and not from the answer.
+//! The declarations are what a reviewer reads and what a host can honestly promise.
 //!
-//! `sessions` and `queue` are fed today (`plugins/builtin/sessions` and `plugins/builtin/queue`
-//! are their readers), and so is `room` (`plugins/builtin/room`). `monitors`, `jobs`, `todos` and
-//! `git` are named here — one more feed each, no format change — because the next panes want them
-//! and a vocabulary that grows one word at a time grows faster than one that has to be designed
-//! twice.
+//! `monitors`, `jobs`, `todos` and `git` are named in [`Feed`] before anything feeds them, because a
+//! vocabulary that grows one word at a time grows faster than one designed twice.
 //!
-//! # Acts
-//!
-//! A row may carry an **act** the person performs with Enter: `switch` to that session, `fold`
-//! it, or call the pane again with an `event`. The act is performed by the **host**, never by the
-//! plugin, for the same reason a look is: a plugin answers data, and data that said *switch to
-//! s-3* is a request the head carries out where the head knows what switching costs.
-//!
-//! An act is **declared too** (`actions = ["switch"]`), so a layer cannot ask the host for a verb
-//! nobody reviewed — and so that the next verb (`disarm` a monitor, `fire` one now) is one more
-//! word rather than a new mechanism.
+//! A row may carry an act the person performs with Enter, and the host performs it, never the
+//! plugin: a plugin answers data, and data that said *switch to s-3* is a request the head carries
+//! out where the head knows what switching costs. Acts are declared too (`actions = ["switch"]`), so
+//! a layer cannot ask for a verb nobody reviewed.
 
-/// The contract version every pane input carries. **Version 2** added `feeds`, `folded` and the
-/// row's `enter`: three things a version-1 pane never saw and cannot want, so a plugin that reads
-/// `v` and refuses anything but 1 keeps working: it simply never asks.
+/// The contract version every pane input carries.
 ///
-/// **Version 3** moved `feeds.sessions` and the session list's answer: a session now carries
-/// `project` and `system` instead of the marks the groups were worked out from, and the answer a
-/// `pane_sessions` layer gives is a project's tree rather than five groups. Both shapes are rows,
-/// so the wire cannot tell them apart and a layer has to say which one it draws: see
-/// `letibot_plugins::MOVED` and the manifest's `[contracts]`.
+/// Version 2 added `feeds`, `folded` and the row's `enter`, which a version-1 pane never saw and
+/// cannot want, so a plugin that refuses anything but 1 keeps working by never asking. Version 3
+/// moved `feeds.sessions` and the session list's answer: a session now carries `project` and
+/// `system`, and the answer is a project's tree rather than five groups. Both shapes are rows, so
+/// the wire cannot tell them apart and a layer says which one it draws: see `letibot_plugins::MOVED`
+/// and the manifest's `[contracts]`.
 ///
-/// The manifest's `contract` (in `crates/plugins`) is a different number and stays 1: an added
-/// *field* is not a version there (`docs/plugins-plan.md` §1, principle 6).
+/// The manifest's `contract` is a different number and stays 1: an added field is not a version.
 pub const V: u32 = 3;
 
 /// The export name a pane answers under: `pane_<name>`.
