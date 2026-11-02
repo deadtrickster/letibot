@@ -65,6 +65,39 @@ would fail to parse with no shim available. Neither of our two templates uses it
 
 ---
 
+## T2 — Revise the `Dialect` contract — **SETTLED 2026-11-03: split by 8ca0d4b3, all eight defects closed**
+
+Checked against the tree rather than against the score, because the score was written
+before the work and four of its eight rows had already moved. Where each defect stands:
+
+| # | defect | on main | the pin |
+|---|---|---|---|
+| 1 | `render_incremental` cannot be pure | gone from the contract: `crates/dialect` has no render trait at all, only `DialectSpec` (template, sha, tokens, stops, quirks) | `render_incremental_agrees_with_render` and friends, glm `tests/invariants.rs`; `render_incremental_equals_render_at_every_prefix`, qwen |
+| 3 | no home for the generation prompt | gone: an inherent function per dialect, outside `DialectSpec`, so it never has to be part of a render | `generation_prompt_is_the_head_of_the_next_assistant_turn` (glm), `the_generation_prompt_keeps_the_newline_after_think` (qwen) |
+| 5 | resolution must key on literal | `ControlTokens::by_literal` is the lookup and `all_with_role` returns an iterator, so "this role has three literals" cannot be missed | `lookup_is_by_literal_and_a_role_may_own_several` (contract), `lookup_is_by_literal` (glm) |
+| 4 | `ControlRole` closed and too small | `SequenceStart`, `ArgKeyOpen/Close`, `ArgValueOpen/Close`, `ImageOpen`/`Image`/`ImageClose`, `Other` | `every_glm_token_has_a_real_role`; `the_image_triplet_has_three_roles_and_media_reads_them` and `im_start_is_other_on_purpose` (qwen) |
+| 2 | `parse(&[u32])` unimplementable | `Parser::parse` takes `&dyn TokenDecoder`; `letibot-tokencore`'s `VocabDecoder` is the one implementation that has a vocabulary | the `TableDecoder` round trips: `parse_round_trips_reasoning_and_two_tool_calls` (glm), `parse_after_render_recovers_the_call_it_rendered` (qwen) |
+| 6 | `stop_tokens()` returns bare literals | `StopToken { literal, role }`, and `resolve_stops` reports a failure by role through `ControlFailure` | `every_stop_token_is_a_declared_control_token`, in both crates |
+| 7 | `ControlTokens` forces `&'static str` | `Cow<'static, str>` on the literal, `Cow<'static, [ControlToken]>` on the table | `a_spec_can_be_built_entirely_at_runtime`, `an_owned_table_answers_exactly_as_a_borrowed_one_does` |
+| 8 | `ControlRole` has no `Ord` | derived, and `tokencore::control::sorted` orders failures by it | `roles_sort_so_a_listing_can_be_deterministic` |
+
+**The one thing that needed deciding is decided.** `server-bug-compatible` is dropped:
+`letibot-render` rejects the profile by name, `tests/fidelity/run_gate.py` says why in
+its header, and `docs/chat-templates.md` records that there is one profile.
+
+**What the split does not include, said plainly.** Rendering is still hand-written in
+`crates/dialect-glm/src/render.rs` and `crates/dialect-qwen/src/render.rs`, so "rendering
+is data" holds in the contract and not yet in the shipped path. That is T1's remaining
+wiring, not T2's: a `DialectSpec` already carries the template and its sha, and nothing
+here blocks it. The fidelity gate is green on the hand-written pair - **139/139 cases
+byte-identical to CPython Jinja2** - which is the baseline the template renderer must
+match.
+
+**There is no deepseek dialect to update.** Deepseek is a provider in `providers.toml`
+that renders server-side as chat messages; the dialect crates are glm and qwen.
+
+---
+
 ## T7 — Falsifier B — **RUN 2026-09-09. The lazy-compaction assumption SURVIVES.**
 
 Full write-up `experiments/falsifier-b/RESULTS.md`, raw per-sample data in

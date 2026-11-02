@@ -6307,7 +6307,13 @@ named pytest`).
 
 ---
 
-## T2 — Revise the `Dialect` contract — **UNBLOCKED by T1, re-scored**
+## T2 — Revise the `Dialect` contract — **SETTLED 2026-11-03, see `TODO-settled.md`**
+
+> The scope this section was handed turned out to be four defects that no longer existed:
+> `parse` takes a decoder, `StopToken` carries its role, the token table is `Cow`, and
+> `ControlRole` has the arg and image entries. Three pins were missing and were added -
+> qwen's stop tokens, the image triplet's roles, and the owned table `Cow` promises - and
+> none of them touched rendering. The settled entry names a test for every row below.
 
 Under the template-driven design, four of the eight defects stop existing or move.
 Re-scored by the T1 experiment:
