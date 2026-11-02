@@ -44,24 +44,14 @@ pub fn hf_tojson(value: &Value) -> String {
     String::from_utf8(buf).expect("serde_json emits UTF-8")
 }
 
-/// One line of Qwen's `<tools>` block, from an OpenAI-shaped tool schema.
-///
-/// The object as given, keys in their given order, nothing unwrapped and nothing normalised. Key
-/// order is preserved because it is prompt bytes: reordering `name` and `description` re-prefills
-/// the whole conversation.
-///
-/// It lives here rather than in the daemon because `StablePrefix.tools_json` holds finished text,
-/// and there should be one implementation of that text.
+/// One line of Qwen's `<tools>` block: the object as given, keys in their given order, because it is
+/// prompt bytes and reordering `name` and `description` re-prefills the conversation.
 pub fn qwen_tool_json(tool: &Value) -> String {
     hf_tojson(tool)
 }
 
-/// One `<parameter=…>` body.
-///
-/// `{{ args_value | string if args_value is string else args_value | tojson }}` — a
-/// string argument is emitted **raw**, everything else as JSON. So
-/// `{"path": "a.txt"}` renders `a.txt`, not `"a.txt"`, and `{"limit": 40}` renders
-/// `40`.
+/// One `<parameter=…>` body: a string argument is emitted raw and everything else as JSON, so
+/// `{"path": "a.txt"}` renders `a.txt` and `{"limit": 40}` renders `40`.
 pub fn parameter_value_text(v: &Value) -> String {
     match v {
         Value::String(s) => s.clone(),

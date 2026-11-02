@@ -71,16 +71,11 @@ pub use render::{
 /// `python3 tests/fidelity/extract_template.py <model-00001-of-00006.gguf>`.
 pub const TEMPLATE: &str = include_str!("../template/qwen3.8-flash-next.jinja");
 
-/// The name this dialect is known by, in the gate and in the store.
-///
-/// The *dialect* name, not a model name: `qwen-3.8-flash-next` and `qwen3.8-27b`
-/// are two models that share it.
+/// The dialect's name in the gate and in the store, not a model name: two Qwen models share it.
 pub const NAME: &str = "qwen3.8";
 
-/// The literal spelling of every Qwen token this dialect emits.
-///
-/// Each is a **single vocab entry**. That is why they are `RenderSpan::Control` and
-/// never text.
+/// The literal spelling of every Qwen token this dialect emits, each a single vocab entry, which is
+/// why they are `RenderSpan::Control` and never text.
 pub mod tokens {
     use letibot_dialect::{ControlRole, ControlToken};
 
@@ -88,10 +83,8 @@ pub mod tokens {
         ControlToken::borrowed(role, literal)
     }
 
-    /// Qwen writes the role as *text* after this token (`<|im_start|>user\n`), so
-    /// there is no per-role turn-start token to declare. `Other` says that honestly
-    /// instead of picking one of the `TurnStart*` roles and being wrong for the
-    /// other three.
+    /// Qwen writes the role as text after this token, so there is no per-role turn-start token to
+    /// declare. `Other` says that honestly rather than picking one `TurnStart` role and being wrong.
     pub const IM_START: ControlToken = t(ControlRole::Other, "<|im_start|>");
     pub const IM_END: ControlToken = t(ControlRole::TurnEnd, "<|im_end|>");
     pub const ENDOFTEXT: ControlToken = t(ControlRole::EndOfTurn, "<|endoftext|>");
@@ -123,20 +116,15 @@ pub const QWEN_TOKENS: &[ControlToken] = &[
     tokens::VISION_END,
 ];
 
-/// What ends a turn.
-///
-/// `<|im_end|>` is the one the model actually emits; `<|endoftext|>` is the vocab's EOG and is
-/// declared so the engine knows the server will halt on it. Both are EOG, so the engine enforces
-/// neither itself: stopping an EOG client-side throws away the terminal frame and its cache numbers.
+/// What ends a turn: `<|im_end|>` is what the model emits and `<|endoftext|>` the vocab's EOG. Both
+/// are EOG, so the engine enforces neither itself and keeps the terminal frame's cache numbers.
 pub const QWEN_STOP_TOKENS: &[StopToken] = &[
     StopToken::borrowed(ControlRole::TurnEnd, "<|im_end|>"),
     StopToken::borrowed(ControlRole::EndOfTurn, "<|endoftext|>"),
 ];
 
-/// The declared mitigations for this model.
-///
-/// Deliberately loose: a guard that fires on ordinary prose measures the guard, and long thinking
-/// is fine. Silent non-termination is not.
+/// The declared mitigations, deliberately loose: a guard that fires on ordinary prose measures the
+/// guard, and long thinking is fine. Silent non-termination is not.
 pub const QWEN_GUARDS: &[Guard] = &[
     Guard::RepetitionRun { run: 96 },
     Guard::RepetitionNgram {
@@ -176,11 +164,9 @@ pub fn qwen_spec() -> DialectSpec {
     }
 }
 
-/// How much the template tells the model to think.
-///
-/// Prompt bytes near the head of the prefix, so this is a property of the session rather than of a
-/// request. `high` is an alias the template folds into `xhigh` and is not offered here: two
-/// spellings of one value invite a switch that pays a full re-prefill for nothing.
+/// How much the template tells the model to think. Prompt bytes near the head, so this belongs to
+/// the session; `high` is folded into `xhigh` and not offered, since two spellings of one value
+/// invite a switch that pays a re-prefill.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ReasoningEffort {
     /// The template's own default when `reasoning_effort` is unset.
@@ -229,13 +215,9 @@ impl ReasoningEffort {
     }
 }
 
-/// The system update, in the only form this template can render.
-///
-/// A `System { origin: Update }` item is unrenderable on Qwen, so a daemon changing the system
-/// prompt mid-session appends this instead: a user item carrying a fixed envelope. Still an append
-/// and still prefix-stable, at the cost of the model reading it as user text.
-///
-/// The sequence number is in the envelope so a reader can tell a second update from a repeat.
+/// The system update in the only form this template can render: a user item carrying a fixed
+/// envelope, since a `System { origin: Update }` item raises. Still an append and still
+/// prefix-stable, at the cost of the model reading it as user text.
 pub fn system_update_item(seq: u64, text: &str) -> TranscriptItem {
     TranscriptItem::User {
         speaker: Default::default(),
@@ -245,10 +227,7 @@ pub fn system_update_item(seq: u64, text: &str) -> TranscriptItem {
     }
 }
 
-/// Whether an item is a system update in the above form.
-///
-/// A system change must be visible as such rather than indistinguishable from something a user
-/// typed.
+/// Whether an item is a system update in the above form: a system change must be visible as such.
 pub fn is_system_update(item: &TranscriptItem) -> bool {
     match item {
         TranscriptItem::System { origin, .. } => *origin == SystemOrigin::Update,

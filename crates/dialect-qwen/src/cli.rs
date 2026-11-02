@@ -40,10 +40,8 @@ struct Fixture {
     prefix: FixturePrefix,
     #[serde(default)]
     items: Vec<TranscriptItem>,
-    /// Places this renderer is known to differ from the shipped template. The driver reports a
-    /// declared divergence that stopped reproducing just as loudly as an undeclared one: a
-    /// divergence that quietly went away is a divergence
-    /// somebody may have "fixed" by changing the wrong thing.
+    /// Places this renderer is known to differ from the shipped template. A declared divergence
+    /// that stopped reproducing is reported just as loudly as an undeclared one.
     #[serde(default)]
     divergences: Vec<String>,
 }
@@ -80,11 +78,8 @@ pub fn run(args: &[String]) -> i32 {
     0
 }
 
-/// One fixture becomes every prefix of itself, with and without a generation prompt.
-///
-/// The most valuable thing the corpus does: a renderer that is right about a whole
-/// conversation and wrong about its third prefix is a renderer whose cache never
-/// hits, and every prefix here is one the harness will actually submit.
+/// One fixture becomes every prefix of itself, with and without a generation prompt: a renderer
+/// right about a whole conversation and wrong about its third prefix is one whose cache never hits.
 fn expand(fx: &Fixture) -> Vec<Value> {
     let effort = fx
         .reasoning_effort
@@ -101,24 +96,9 @@ fn expand(fx: &Fixture) -> Vec<Value> {
     for k in 0..=fx.items.len() {
         let items = &fx.items[..k];
         let spans = renderer.render(&prefix, items);
-        // A prefix that ends inside an assistant turn has **no oracle**, and this is
-        // not a Qwen quirk being excused — it is a limit of the comparison. The
-        // oracle is handed a message list, and a message list cannot express "this
-        // assistant message is not finished": `apply_chat_template` closes every
-        // message it renders, so it emits an `<|im_end|>` we must not emit yet. GLM
-        // never hit this because its template has no explicit turn-end token, so the
-        // open and closed renders are the same bytes there.
-        //
-        // Reported rather than dropped: the driver prints how many cases had no
-        // oracle, so "87 of 87" cannot quietly become "87 of 40".
-        //
-        // The other no-oracle case is an **empty message list**, which this
-        // template refuses outright (`raise_exception('No messages provided.')`).
-        // It is reachable: `TurnEngine::open` renders `(prefix, [])` to seed the
-        // ledger, and with an empty system prompt that is zero messages. What we
-        // emit there — the bare reasoning-effort system turn — is the same bytes the
-        // template emits for the same prefix once any message exists, which the
-        // `no-system[1]` case does check.
+        // A prefix that ends inside an assistant turn has no oracle: the template closes every
+        // message it renders, so it emits a turn end we must not emit yet. Reported rather than
+        // dropped, so a case count cannot quietly shrink.
         let mid_turn = ends_mid_turn(items);
         let reason = if items.is_empty() && fx.prefix.system.is_empty() {
             "empty-messages"
@@ -137,10 +117,8 @@ fn expand(fx: &Fixture) -> Vec<Value> {
     out
 }
 
-/// Eight arguments, and a struct would be worse: every one is a fact about this
-/// case that the JSON must carry, and bundling them would mean a builder with an
-/// `Option` per field — an invitation to leave one out of a corpus that exists to
-/// catch exactly that kind of omission.
+/// Eight arguments, and a struct would be worse: every one is a fact this case must carry, and an
+/// `Option` per field invites leaving one out of a corpus that exists to catch exactly that.
 #[allow(clippy::too_many_arguments)]
 fn case(
     fx: &Fixture,
@@ -183,21 +161,9 @@ fn span_json(s: &RenderSpan) -> Value {
     }
 }
 
-/// The same conversation in the shape `apply_chat_template` expects.
-///
-/// Deliberately dumb: it re-groups items into messages and copies text. It never
-/// renders. A mapping bug therefore shows up as a mismatch — the oracle rendering a
-/// conversation we did not render — rather than as mutual agreement on the wrong
-/// thing.
-///
-/// Two Qwen-specific facts live here and nowhere else:
-///
-/// * **`tool_calls[].function.arguments` must be an object.** The template raises on
-///   a JSON *string*, in as many words. `TranscriptItem` keeps arguments as raw text
-///   because those bytes are what gets replayed, so this is where they are parsed.
-/// * **`reasoning_content` is the field**, even though this model replays its
-///   thinking inline. The template reads `message.reasoning_content` and emits it
-///   between `<think>` and `</think>` itself.
+/// The same conversation in the shape `apply_chat_template` expects: deliberately dumb, since a
+/// mapping bug should show up as a mismatch. `tool_calls[].function.arguments` must be an object
+/// here, and `reasoning_content` is the field even though the thinking is replayed inline.
 fn to_openai_messages(prefix: &StablePrefix, items: &[TranscriptItem]) -> Value {
     let mut msgs: Vec<Value> = Vec::new();
     if !prefix.system.is_empty() {
