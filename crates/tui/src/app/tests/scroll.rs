@@ -2,10 +2,8 @@
 
 use super::*;
 
-/// **A line that names nothing is still the mid-typing courtesy.** The refusal above
-/// must not swallow the case it was built beside: a permission that arrives under
-/// somebody's half-thought holds their words and answers the marked row, so their
-/// Enter is not a keystroke thrown away.
+/// A line that names nothing is still the mid-typing courtesy: a permission that arrives under
+/// somebody's half-thought holds their words and answers the marked row, so their Enter is not wasted.
 #[test]
 fn a_line_that_names_nothing_holds_the_words_and_answers_the_marked_row() {
     use letibot_sessionlog::event::OptionKind;
@@ -43,30 +41,15 @@ fn up_with_a_half_typed_line_still_belongs_to_the_editor() {
     a.key(Key::Enter);
     typed(&mut a, "half a thought");
     assert_eq!(a.key(Key::Up), None, "the editor keeps its own Up");
-    // What the editor does with it is the editor's own readline semantics,
-    // unchanged here: Up at the top row walks its submitted-line history,
-    // which replaces the half-typed line — same as main, same as any shell.
-    // The queue's part in this is only the negative one: no take-back rode
-    // along, and the mirror still holds what the daemon still holds.
+    // What the editor does with it is readline's own semantics, unchanged: Up at the top row walks its
+    // submitted-line history. The queue's part is only the negative one, so no take-back rides along.
     assert_eq!(a.input(), "queued one");
     assert_eq!(a.pending_prompts.len(), 1, "the queue is untouched");
 }
 
-/// **R36: a scrolled viewport holds while the transcript grows under it.**
-///
-/// The operator: *"scroll must be preserved - if i scrolled i want my view to hold,
-/// regardless of the new stuff below."* And the case that matters, which the row does not
-/// say and the operator added: **they scroll to read something WHILE a turn is running.**
-/// A scroll that holds on a still transcript and creeps on a live one is the bug they
-/// will actually meet, so there is a running turn throughout — rows arriving above and
-/// below, a tool row growing as its output lands, and an elision changing a row's height
-/// under the viewport.
-///
-/// **What is asserted is the frame**, not a line count: R36's whole point is that a count
-/// is derived and anything above changing height invalidates it, so a test that pinned
-/// the count would be pinning the defect. The one line excluded is the banner that says
-/// how much is below the reader — that number is *supposed* to change, and it is the
-/// disclosure rather than the view.
+/// A scrolled viewport holds while the transcript grows under it, and the case that matters is a reader
+/// who scrolls to read something WHILE a turn runs: rows arrive above and below and a row's height
+/// changes under the viewport. What is asserted is the frame, since a line count is the derived thing.
 #[test]
 fn a_scrolled_viewport_holds_while_the_transcript_grows() {
     fn visible(a: &mut App) -> Vec<String> {
@@ -97,10 +80,8 @@ fn a_scrolled_viewport_holds_while_the_transcript_grows() {
     a.apply(ServerFrame::Event(env(200, testing::turn_started("t1"))));
     a.screen(100, 30);
 
-    // **Six notches, not a page.** A page is the whole window here — the fixture is 84
-    // body lines and the window is 25 — so a page up reaches the top and leaves no row
-    // above the anchor to grow. The requirement's case is a reader who scrolled to read
-    // *something*, not one who scrolled to the beginning.
+    // Six notches, not a page: the window is 25 body lines here, so a page up reaches the top and leaves
+    // no row above the anchor to grow. The requirement's case is a reader who scrolled to read something.
     for _ in 0..6 {
         a.key(Key::WheelUp);
         a.screen(100, 30);
@@ -234,21 +215,9 @@ fn a_scrolled_viewport_holds_while_the_transcript_grows() {
     );
 }
 
-/// **R36 across the replacements**: a resync, a snapshot on `hello`, a compaction — and the
-/// rule a fork added: **a bare offset must never cross a transcript boundary.**
-///
-/// This is where the row said it *would* break — *"a `resync`, a snapshot on `hello`, and
-/// a compaction all replace the rows wholesale. If the anchored row survives, the view
-/// holds. If it was summarised away, SAY SO rather than jumping."*
-///
-/// Both halves, because they are different obligations: a replacement that **carries**
-/// the row has to hold the view, and one that **takes it away** has to say so. What the
-/// second half is not allowed to do is land the reader on "the nearest surviving row":
-/// that row is chosen by an index, the index was measured in the transcript that just
-/// went, and the same integer names a different place in the one that arrived. The tail is
-/// where a reader goes when their row is not there, and the sentence says so — see
-/// [`App::repair_anchor`], and `a_carry_that_drops_the_row_follows_the_tail_and_says_so`
-/// for the same rule across a fork's new ids.
+/// A replacement that carries the row holds the view, and one that takes it away says so: the nearest
+/// surviving row is chosen by an index measured in the transcript that just went, so the tail is where a
+/// reader goes.
 #[test]
 fn a_replacement_holds_the_view_or_says_the_row_is_gone() {
     /// A snapshot holding `ids`, as the daemon sends one on `hello` or a resync.
@@ -327,12 +296,9 @@ fn a_replacement_holds_the_view_or_says_the_row_is_gone() {
     // ---- the row is GONE, and it is said ----
     let mut b = scrolled();
     let lost = b.anchor.clone().expect("a held row");
-    // A replacement that carries the LAST twenty rows: the reader's row is gone and the
-    // transcript is still long enough to be holding a place in, which is the shape a
-    // compaction leaves behind — a summary in place of the old head, the recent tail
-    // carried as itself. **The place is not held by index**: twenty rows in is a place in
-    // this transcript and not the one the reader was at, which is the whole of what the
-    // tail rule refuses.
+    // A replacement that carries the last twenty rows: the reader's row is gone and the transcript is
+    // still long enough to hold a place in, which is what a compaction leaves behind. The place is not
+    // held by index, which is the whole of what the tail rule refuses.
     let tail: Vec<String> = (20..40).map(|i| format!("s.{i}")).collect();
     let tail: Vec<&str> = tail.iter().map(String::as_str).collect();
     b.apply(hello(
@@ -357,10 +323,9 @@ fn a_replacement_holds_the_view_or_says_the_row_is_gone() {
         said.contains("follows the tail again"),
         "and says where the reader is now, which is the whole of what it can say: {said}"
     );
-    // **And it reaches the reader where they are looking.** The note lives at the seam
-    // at the end of the replacement, which is *below* a reader who is holding a row near
-    // the top — so the transient line above the composer carries it too, and that is the
-    // one this asserts. A disclosure the reader cannot see is not a disclosure.
+    // It reaches the reader where they are looking: the note lives at the seam below a reader holding a
+    // row near the top, so the transient line above the composer carries it too. A disclosure nobody sees
+    // is not one.
     assert!(
         b.notice
             .as_deref()
@@ -369,12 +334,9 @@ fn a_replacement_holds_the_view_or_says_the_row_is_gone() {
         b.notice
     );
     let _ = frame;
-    // **It goes to the TAIL, and not to the nearest surviving row.** The row at the
-    // reader's old ordinal is chosen by an index measured in the transcript that just went;
-    // this replacement is shorter, so that integer names a different place — which is how
-    // the operator was shown *"thousands of lines below"* the row they were reading. The
-    // tail is the only place in the new transcript that is true of the whole of it, and it
-    // is where a reader whose row is not there goes.
+    // It goes to the tail, not to the nearest surviving row: the row at the old ordinal is chosen by an
+    // index measured in the transcript that just went, and a shorter replacement makes that integer a
+    // different place.
     assert!(
         b.anchor.is_none(),
         "the reader was landed on a row by index rather than sent to the tail: {:?}",
@@ -386,15 +348,9 @@ fn a_replacement_holds_the_view_or_says_the_row_is_gone() {
     );
 }
 
-/// **R56: while the view is held, the head writes NOTHING** — so a mouse selection survives
-/// a streaming turn, which is the whole of why the hold exists.
-///
-/// The contract has three clauses and this drives all three: the frame is composed once
-/// (with the marker on it, the single write the freeze owes), every later call returns it
-/// **byte for byte** while a turn streams and rows land, and the release says what arrived.
-/// The zero-bytes claim is asserted the only way a frame test can: `screen` is what the
-/// terminal diffs against the glass, so a frame that does not change is a frame that writes
-/// no bytes at all.
+/// While the view is held the head writes nothing, so a mouse selection survives a streaming turn: the
+/// frame is composed once, every later call returns it byte for byte while rows land, and the release
+/// says what arrived. A frame that does not change is a frame that writes no bytes.
 #[test]
 fn a_held_view_draws_the_same_frame_while_the_turn_streams() {
     let mut a = app();
@@ -476,10 +432,8 @@ fn a_held_view_draws_the_same_frame_while_the_turn_streams() {
     );
 }
 
-/// **THE ARROWS BRING THE CURSOR'S ROW INTO VIEW** — the operator's *"subagents panel doesnt
-/// scroll"*. A pane longer than the screen was walkable only by PageDown or the wheel: the
-/// arrows moved a cursor that then left the window, so a child below the fold looked
-/// unreachable, which is how the running one stayed hidden even once it was the last row.
+/// The arrows bring the cursor's row into view: a pane longer than the screen was walkable only by
+/// PageDown or the wheel, so a child below the fold looked unreachable.
 #[test]
 fn the_arrows_scroll_the_subagent_cursor_into_view() {
     let mut a = app();
@@ -544,12 +498,9 @@ fn arrows_walk_the_subagent_output_back_to_its_beginning() {
     assert!(screen.contains("line 0"), "{screen}");
 }
 
-/// **A pane longer than the terminal was a pane whose tail could not be
-/// read.** Every pane drew `rows.truncate(room)` and the scroll keys were
-/// swallowed while one was open — right about not moving the view
-/// underneath, and it left the pane itself unable to move at all.
-/// `leticl`'s TODO.md renders 98 rows; on a 40-row terminal more than half
-/// of it was unreachable.
+/// A pane longer than the terminal was a pane whose tail could not be read: every pane drew
+/// `rows.truncate(room)` and the scroll keys were swallowed while one was open, so most of a 98-row
+/// TODO could not be reached.
 #[test]
 fn a_pane_taller_than_the_screen_scrolls_to_its_end() {
     let dir = std::env::temp_dir().join(format!(
@@ -638,26 +589,16 @@ fn the_cursor_scrolls_itself_into_view() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The arrows belong to the decision only while the composer is empty.
-///
-/// A half-typed line still edits, so nothing was taken away from the person
-/// who prefers typing — including `/command`, which shares Enter. Enter does
-/// NOT send the line while an ask is open: the ask arrived while the line
-/// was being typed, and Enter on a card means "answer this" (the operator,
-/// 2026-09-17: *"when i hit enter my unfinished prompt gets sent first"*).
-/// The line is held and the next Enter, with the ask settled, sends it.
+/// The arrows belong to the decision only while the composer is empty. A half-typed line still edits, and
+/// Enter does not send it while an ask is open: the line is held and the next Enter, with the ask
+/// settled, sends it.
 #[test]
 fn enter_on_an_ask_answers_it_and_holds_the_half_typed_line() {
     let mut a = app();
     a.apply(ServerFrame::Event(env(1, testing::requested("r1", "rm"))));
     typed(&mut a, "some prose");
-    // **The arrows reach the ladder even mid-line, and the line is untouched.**
-    //
-    // They used to belong to the composer here, so that "the ladder cursor does
-    // not move under the operator's feet" — which sounded right and meant that
-    // the only way to choose an option while typing was to empty the composer
-    // first. The operator, 2026-09-20: *"until i press down arrow I wont get
-    // into the permissions menu, by which time my prompt is erased and gone"*.
+    // The arrows reach the ladder even mid-line, and the line is untouched. They used to belong to the
+    // composer, so choosing an option while typing meant emptying it first.
     a.key(Key::Down);
     assert_eq!(a.sel, 1, "the ladder moved");
     assert_eq!(a.input(), "some prose", "and the line is still there");
@@ -681,17 +622,9 @@ fn enter_on_an_ask_answers_it_and_holds_the_half_typed_line() {
     assert_eq!(a.key(Key::Enter), Some(Action::Prompt("some prose".into())));
 }
 
-/// **Parked in the scrollback, the arrows are the scrollback's, and `↓` is the bottom.**
-///
-/// The operator, 2026-09-27, after hours in one head: *"on this letibot head scrolll is
-/// broken - no way to scroll back to the bottom, stuck at holding"*. Measured in their
-/// window: three presses of `↓` moved the banner's count by nothing while the stream added
-/// lines underneath, and one press of `↑` put an old prompt — *"on this letibot head
-/// scrolll is broken…"* — into the composer.
-///
-/// So this test has **history in the editor**, because history is what ate the keys: without
-/// it the defect does not reproduce, which is why it survived to a head that had been up for
-/// hours and not one that had just started.
+/// Parked in the scrollback the arrows are the scrollback's, and `↓` is the bottom: three presses of it
+/// moved the banner's count by nothing while the stream added lines, and one `↑` put an old prompt into
+/// the composer. The fixture has editor history, because history is what ate the keys.
 #[test]
 fn parked_in_the_scrollback_the_arrows_are_the_scrollbacks_and_down_is_the_bottom() {
     let mut a = app();
@@ -752,10 +685,8 @@ fn parked_in_the_scrollback_the_arrows_are_the_scrollbacks_and_down_is_the_botto
         "the banner is still up after ↓: {screen:#?}"
     );
 
-    // **And with the reader following, ↑ is not this arm's at all** — the arm is about the
-    // parked STATE and not about the key, so everything the head already did with ↑ still
-    // happens. Here that is the take-back two arms above: the prompts this test submitted are
-    // still queued, and ↑ hands them back for editing rather than scrolling anything.
+    // With the reader following, `↑` is not this arm's at all: it is the take-back two arms above, so the
+    // queued prompts come back for editing rather than scrolling anything.
     a.key(Key::Up);
     assert_eq!(
         a.editor.text(),
@@ -764,22 +695,9 @@ fn parked_in_the_scrollback_the_arrows_are_the_scrollbacks_and_down_is_the_botto
     );
 }
 
-/// **§6: a key that scrolls a pane moves THAT pane, and the two overlays are
-/// tail-origin.**
-///
-/// Two defects of one shape — *the key moved something other than what the footer
-/// under it promised* — and both are what leticl's tail-origin note is about:
-///
-/// * **The page keys and the wheel reached the transcript** while the job-output
-///   overlay was open. The subagent view had been fixed for exactly this (`"a wheel
-///   in the subagent output view scrolled the conversation underneath it"`), and the
-///   job overlay — the same overlay, one arm down, opened by the same kind of Enter —
-///   was left out of the arm. So a wheel over a job's output moved the conversation
-///   behind it and Esc came back to a transcript parked somewhere else.
-/// * **The slash listing's arrows were inverted.** `pane_scroll` counts rows hidden
-///   **above the top** — `pane_window` is literally `skip(self.pane_scroll)` — so
-///   adding to it walks *down* the document, and the arms added on Up. `↑` scrolled
-///   a `/notes` listing toward its end while the footer said `up/down scrolls`.
+/// A key that scrolls a pane moves that pane, and the two overlays are tail-origin: the page keys and the
+/// wheel reached the transcript while the job-output overlay was open, and the slash listing's arms were
+/// inverted, since `pane_scroll` counts rows hidden above the top.
 #[test]
 fn a_key_that_scrolls_a_pane_moves_that_pane_and_not_the_transcript_behind_it() {
     // ---- the job-output overlay: tail-origin, and it must take the page keys ----
@@ -868,10 +786,8 @@ fn a_key_that_scrolls_a_pane_moves_that_pane_and_not_the_transcript_behind_it() 
     assert_eq!(b.pane_scroll, 2);
     b.key(Key::Up);
     assert_eq!(b.pane_scroll, 1, "Up did not come back");
-    // **And what the reader sees follows**, because the offset is `skip(n)`. Three
-    // rows in — the title, the blank and `row 0` — `row 1` is the first thing on
-    // screen. Asserted on the text rather than on the number, because the number is
-    // only interesting for what it does to the glass.
+    // And what the reader sees follows, because the offset is `skip(n)`. Asserted on the text rather than
+    // the number, since the number is only interesting for what it does to the glass.
     b.pane_scroll = 3;
     let shown = b.screen(80, 24).join("\n");
     assert!(!shown.contains("row 0"), "row 0 was skipped: {shown}");
@@ -900,10 +816,8 @@ fn a_key_that_scrolls_a_pane_moves_that_pane_and_not_the_transcript_behind_it() 
     );
 }
 
-/// **The window and the conversation scroll as one** — the operator: *"say i scrolled to
-/// the bottom of the ctrl-v view port it should keep scrolling the main convo"*. At the
-/// window's first line an Up scrolls the conversation up to the rows above it; at its
-/// last line a Down scrolls the conversation down, back to following.
+/// The window and the conversation scroll as one: at the window's first line an Up scrolls the
+/// conversation up, and at its last line a Down scrolls it back to following.
 #[test]
 fn an_open_window_hands_scrolling_on_to_the_conversation_at_its_edges() {
     let mut a = app();
@@ -987,13 +901,9 @@ fn an_open_window_hands_scrolling_on_to_the_conversation_at_its_edges() {
     );
 }
 
-/// **An open result window reaches its last line, comes back at once, and fits.**
-///
-/// The operator: *"i hit ctrl-v to read full command output and couldnt scroll bottom
-/// anymore - only esc worked"*. Three faults, measured on a 300-line output at 80x24:
-/// Down was unclamped, so the offset ran to 400 while the screen stood still and Up
-/// then had to unwind it; the last page clamped to one line; and the window was the
-/// budget's forty rows, so on a 24-row screen its first lines were above the top.
+/// An open result window reaches its last line, comes back at once, and fits. Down was unclamped, so the
+/// offset ran past the screen and Up had to unwind it; the last page clamped to one line; and the window
+/// was the budget's forty rows, so on a 24-row screen its head was above the top.
 #[test]
 fn an_open_result_window_reaches_its_end_comes_back_at_once_and_fits() {
     let mut a = app();
@@ -1072,11 +982,8 @@ fn an_open_result_window_reaches_its_end_comes_back_at_once_and_fits() {
     );
 }
 
-/// **Folding tools must not cost the ability to scroll.**
-///
-/// The operator: *"when i expand tools with Ct scroll stops working, even
-/// after collapsing back. i have to switch byobu windows back and forth"* —
-/// a window switch is a resize, which forces the frame this was waiting for.
+/// Folding tools must not cost the ability to scroll: with tools expanded the scroll keys stopped working
+/// until a resize forced the frame.
 #[test]
 fn scroll_still_works_after_ctrl_t() {
     let mut a = app();
@@ -1122,10 +1029,8 @@ fn scroll_still_works_after_ctrl_t() {
     let before = a.scroll;
     assert!(before > 0, "scroll did not move at all to begin with");
 
-    // Expand the window on the newest long result. **This does not unfold the
-    // conversation** (R10 moved that to `/t`), so the arrows now page the newest
-    // payload rather than moving the transcript — which is the intended contract
-    // and is asserted below rather than assumed.
+    // Expand the window on the newest long result. This does not unfold the conversation, so the arrows
+    // page the newest payload rather than moving the transcript, which is asserted below.
     a.key(Key::CtrlV);
     a.screen(80, 24);
     assert!(
@@ -1134,17 +1039,12 @@ fn scroll_still_works_after_ctrl_t() {
     );
 
     let at_refold = a.anchor.clone();
-    // **One press, inside the window.** Five used to be pressed here; a Down past the
-    // window's last line now carries on into the conversation (the operator: *"say i
-    // scrolled to the bottom of the ctrl-v view port it should keep scrolling the main
-    // convo"*), so pressing past a 30-line payload would move the transcript by design.
+    // One press, inside the window: a Down past its last line carries on into the conversation, so
+    // pressing past a 30-line payload would move the transcript by design.
     a.key(Key::Down);
     a.screen(80, 24);
-    // **The reader's PLACE, not a line count** (R36). The old assertion was
-    // `a.scroll == at_refold`, and it passes only while a count is the whole truth:
-    // paging the payload changes that row's height, so `total` moves and the count
-    // with it — while the row under the reader's eye has not moved at all. That is the
-    // defect the requirement is about, and asserting the count was asserting it.
+    // The reader's place, not a line count: paging the payload changes that row's height, so `total` moves
+    // while the row under the reader's eye has not.
     assert_eq!(
         a.anchor, at_refold,
         "the transcript moved while a payload view held the arrows"
@@ -1155,10 +1055,8 @@ fn scroll_still_works_after_ctrl_t() {
         a.payload_page
     );
 
-    // **Esc gives the arrows back**, and that is what this test is for: the
-    // original bug was that expanding tools cost the ability to scroll at all.
-    // A view that held the arrows for ever would be the same defect with a new
-    // cause, so the escape hatch is part of the contract.
+    // Esc gives the arrows back, and that is what this test is for: a view that held them for ever would
+    // be the same defect with a new cause.
     a.key(Key::Esc);
     a.screen(80, 24);
     assert_eq!(a.payload_sel, None, "esc did not close the payload view");
@@ -1194,20 +1092,9 @@ fn scroll_still_works_after_ctrl_t() {
     );
 }
 
-/// **The waiting frame: a cat dead centre, walking in place.**
-///
-/// Four properties, each of which an obvious implementation gets wrong:
-///
-/// - the cat is **horizontally centred**, measured on the cat's own row, so
-///   "centred" is a statement about the cat rather than about whatever else is on
-///   the line;
-/// - it does not **slide**: the frames are different widths, so each is padded to
-///   the widest before centring — otherwise the cat jitters sideways as it changes
-///   expression, which reads as a drawing bug rather than a walk;
-/// - it **moves**, from the clock, so the frame is a function of elapsed time and
-///   not of a render-loop counter;
-/// - it is **not at the top** — the middle of the conversation, not the row under
-///   the header.
+/// The waiting frame: a cat dead centre, walking in place. It is centred on its own row, padded to the
+/// widest frame so it does not jitter sideways, moved from the clock rather than a render counter, and
+/// drawn in the middle of the conversation rather than under the header.
 #[test]
 fn the_waiting_frame_is_a_centred_cat_that_walks_in_place() {
     let mut a = app();
@@ -1259,16 +1146,9 @@ fn the_waiting_frame_is_a_centred_cat_that_walks_in_place() {
     }
 }
 
-/// **The wait becomes impatient, and says so.**
-///
-/// The operator, on a daemon that accepted the connection and never answered:
-/// *"stuck waiting for daemon and no way to exit"*. The screen said
-/// `asking the daemon for this session` for three minutes and the hint bar under it
-/// named `ctrl+c exit` — which did nothing, because the wait loop read no keys.
-///
-/// The keys are live now (`main`), and this is the other half: past
-/// [`ATTACH_IMPATIENT`] the frame itself says how to get out, so the operator is not
-/// left to discover that a wait can be abandoned.
+/// The wait becomes impatient and says so: the screen said `asking the daemon for this session` for three
+/// minutes with `ctrl+c exit` under it that did nothing. The keys are live now, and past
+/// [`ATTACH_IMPATIENT`] the frame itself says how to get out.
 #[test]
 fn the_waiting_frame_names_the_way_out_once_it_has_gone_on() {
     let mut a = app();
@@ -1295,15 +1175,9 @@ fn the_waiting_frame_names_the_way_out_once_it_has_gone_on() {
     assert!(late.contains("ctrl-c"), "and how to get out: {late:?}");
 }
 
-/// **The tail frame is the full walk's frame.**
-///
-/// This is the whole licence for rendering only the end of a conversation, and it
-/// is asserted against the other implementation rather than against a fixture: the
-/// same rows, rendered from row 0 and rendered backward from the end, must produce
-/// the same screen. A fixture would pin today's answer; this pins the agreement.
-///
-/// The forward walk is forced by raising `walk_limit` — see its doc for why that is
-/// a field.
+/// The tail frame is the full walk's frame, which is the whole licence for rendering only the end of a
+/// conversation: the same rows rendered from row 0 and backward from the end must produce the same screen.
+/// The forward walk is forced by raising `walk_limit`.
 #[test]
 fn a_tail_frame_equals_the_full_walks_frame() {
     let mut tail = app();
@@ -1350,11 +1224,8 @@ fn a_tail_frame_equals_the_full_walks_frame() {
     assert_eq!(t, f, "the tail frame is not the full walk's frame");
 }
 
-/// **The cost is what this exists for**: a tail frame does not render the rows above
-/// the window.
-///
-/// Counted, not timed — `hist_renders` is the number of rows put through
-/// `item_lines`, so it is the measurement and not a proxy for one.
+/// The cost is what this exists for: a tail frame does not render the rows above the window. Counted and
+/// not timed, since `hist_renders` is the measurement and not a proxy for one.
 #[test]
 fn a_tail_frame_does_not_render_the_whole_conversation() {
     let mut a = app();
@@ -1419,16 +1290,9 @@ fn a_tail_frame_says_there_is_more_above() {
     );
 }
 
-/// **Scrolling up reaches the beginning.**
-///
-/// The operator: *"i want scroll back work"*. Two things made it crawl: `PageUp` moved a
-/// constant ten lines on a 40-row terminal, and the back-fill happened on the frame
-/// *after* the key — so the scroll was clamped against the rows rendered so far and a
-/// press could never express "further up than I have drawn". Measured before the fix:
-/// twelve rounds of eight PageUps reached message 143 of 400.
-///
-/// This asserts the end state a reader expects: page up enough and the first row of the
-/// conversation is on screen.
+/// Scrolling up reaches the beginning: `PageUp` moved a constant ten lines on a 40-row terminal and the
+/// back-fill happened a frame after the key, so a press could never express "further up than I have drawn".
+/// Page up enough and the first row is on screen.
 #[test]
 fn scrolling_up_reaches_the_beginning() {
     let mut a = app();
@@ -1471,12 +1335,8 @@ fn scrolling_up_reaches_the_beginning() {
     );
 }
 
-/// **Scrolling up renders more, on demand.**
-///
-/// The operator's *"then some scroll up buffer if needed"*. A tail frame deliberately
-/// does not render the rows above the window, so scrolling up has to fetch them —
-/// and it has to be *able* to: the window clamp is computed from what is rendered, so
-/// without the back-fill there would be nothing above the tail to scroll into.
+/// Scrolling up renders more, on demand: a tail frame does not render the rows above the window, and the
+/// clamp is computed from what is rendered, so without the back-fill there is nothing to scroll into.
 #[test]
 fn scrolling_up_back_fills() {
     let mut a = app();
@@ -1528,13 +1388,8 @@ fn scrolling_up_back_fills() {
     );
 }
 
-/// **A change above the window is not left stale.**
-///
-/// A tail walk leaves no `hist_marks` — it does not pass the rows it skips — and
-/// `invalidate_history_from` used "no mark" to mean "nothing to do". In tail mode
-/// that would keep drawing a row that had *changed* as it was. The fix is the only
-/// correct one available without marks: throw the history away and render the tail
-/// again.
+/// A change above the window is not left stale: a tail walk leaves no `hist_marks`, and "no mark" used to
+/// mean "nothing to do", so the only correct answer is to throw the history away and render the tail again.
 #[test]
 fn a_change_above_the_window_is_not_left_stale() {
     let mut a = app();
@@ -1653,15 +1508,9 @@ fn a_big_attach_costs_the_walk() {
     }
 }
 
-/// **The live `!` row walks the history once, not once a frame.**
-///
-/// `completions_line` runs on every frame and the live `!` row draws the candidates
-/// out of it, so building them per frame meant walking the view and parsing every
-/// `bash` call's arguments per frame. **Measured at 14.2 ms a frame** on a 2,000-row
-/// session before the memo and 0.10 ms above the frame's own baseline after it, which
-/// is the difference between a typing aid and a stall. `shell_walks` is the encoder —
-/// a wall time is not something a test can assert on and a count is, the same rule
-/// `hist_renders` follows.
+/// The live `!` row walks the history once, not once a frame: `completions_line` runs every frame, and
+/// building the candidates walks the view and parses every `bash` call. `shell_walks` is the encoder,
+/// since a wall time is not something a test can assert on and a count is.
 #[test]
 fn the_bang_row_walks_the_history_once_not_once_a_frame() {
     let mut a = app();
@@ -1696,11 +1545,9 @@ fn the_bang_row_walks_the_history_once_not_once_a_frame() {
 
 #[test]
 fn a_row_without_a_body_draws_nothing_and_renders_its_body_when_it_lands() {
-    // **A body-less row is not evidence of anything.** It used to draw a progress
-    // line claiming the conversation was being carried onto a new prompt — which
-    // every ordinary turn produces, so the line appeared over ordinary replies. The
-    // bar is now the daemon's (`Filling`); a row with no body draws nothing and the
-    // row renders once its body lands.
+    // A body-less row is not evidence of anything: it drew a progress line claiming the conversation was
+    // being carried, which every ordinary turn produces. The bar is the daemon's; a row with no body draws
+    // nothing and renders once its body lands.
     let mut a = app();
     a.apply(ServerFrame::Event(env(1, testing::appended("s.0", "user"))));
     let waiting = a.screen(80, 12).join("\n");
@@ -1721,25 +1568,13 @@ fn a_row_without_a_body_draws_nothing_and_renders_its_body_when_it_lands() {
     assert!(!screen.contains("waiting for the body"), "{screen}");
 }
 
-/// **Nothing on the line may move sideways except the bar's own edge.**
-///
-/// The operator: *"move cat to the right most position or thngs jump
-/// around"*. Two fields change width as the carry runs — the animation (the
-/// cat once, the status row's spinner now), and the numerator, which grows
-/// from `0` to its denominator. Either one shifts whatever is drawn to its right, and a
-/// progress indicator that shuffles reads as a fault.
-///
-/// Rendered width is the assertion, not the byte length: these rows are
-/// painted, and `width::width` is what skips the escapes.
+/// Nothing on the line may move sideways except the bar's own edge: the animation and the numerator both
+/// change width as the carry runs, and whatever is drawn to their right shifts. Rendered width is the
+/// assertion, not the byte length.
 #[test]
 fn the_fork_line_keeps_its_width_as_the_cat_and_the_count_change() {
-    // **The premise**: something on this line has to actually change across
-    // the sample, or a constant width below proves nothing at all.
-    //
-    // The line's animation is the status row's spinner now (the cat stayed on the attach
-    // screen), one column in every frame. What is asserted here is that the sample really
-    // does walk the animation, and that the NUMERATOR changes width, which is the variable
-    // field this line has to hold still around.
+    // The premise: something on this line has to change across the sample, or a constant width proves
+    // nothing. The animation is the spinner, and the numerator's width is the field the line holds still.
     let ticks: Vec<u64> = (0..8).map(|t| t * 120).collect();
     let mut frames: Vec<char> = ticks
         .iter()
@@ -1781,14 +1616,9 @@ fn the_fork_line_keeps_its_width_as_the_cat_and_the_count_change() {
     );
 }
 
-/// **A replaced item vector cannot invert the count.**
-///
-/// The shape this replaces kept a high-water mark of how many rows lacked a body and
-/// reported `peak - pending`. A snapshot **replaces** `items` wholesale, so after a
-/// larger carry was replaced by a smaller one the peak was stale and the line said
-/// **`97 of 4 rows`** — a numerator larger than its own denominator. The count is now
-/// how many have ARRIVED out of how many there are, both off one walk of the current
-/// `items`, so it cannot.
+/// A replaced item vector cannot invert the count: a high-water mark of rows lacking a body reported
+/// `peak - pending`, and after a larger carry was replaced by a smaller one the line said `97 of 4 rows`.
+/// The count is now how many have arrived out of how many there are, off one walk of `items`.
 #[test]
 fn a_replaced_item_vector_cannot_invert_the_count() {
     let mut a = app();
@@ -1811,13 +1641,8 @@ fn a_replaced_item_vector_cannot_invert_the_count() {
     );
 }
 
-/// **A fork is one line, however many rows it carries** — and it is the daemon's
-/// line, drawn from `Filling`, not a bar the head assembled out of body-less rows.
-///
-/// `/reseat` and `/compact` announce the whole conversation; drawn one-per-row that
-/// was a screen of identical placeholders, and the instruction was to reuse the cat
-/// and the prefill bar. The count is asserted, not just the word, because a test that
-/// only looked for "carrying" would pass a screen that also had 300 grey rows under it.
+/// A fork is one line however many rows it carries, drawn from the daemon's `Filling`: announced per row
+/// it was a screen of identical placeholders. The count is asserted, not just the word.
 #[test]
 fn a_fork_announces_three_hundred_rows_and_draws_one_progress_line() {
     let mut a = app();
@@ -1933,10 +1758,8 @@ fn the_wheel_in_the_subagent_view_does_not_move_the_conversation_underneath() {
     a.push_surface(Surface::SubOut);
     a.key(Key::WheelUp);
     a.key(Key::PageUp);
-    // **A page is a screen here too.** The constant was ten, so this read `13`; a pager's
-    // PageUp moves a page, and the subagent view is a pager. Asserted as the sum rather
-    // than a literal so the two keys stay distinguishable — a PageUp that moved nothing
-    // would still make this check meaningful.
+    // A page is a screen here too: the constant was ten, so this read 13, and the subagent view is a pager.
+    // Asserted as the sum so the two keys stay distinguishable.
     let page = a.screen_rows;
     assert!(
         page > 10,
@@ -1960,22 +1783,18 @@ fn the_wheel_in_the_subagent_view_does_not_move_the_conversation_underneath() {
     assert!(a.following(), "a pane on top swallowed the wheel");
     a.close_surface(Surface::Todos);
     a.key(Key::WheelUp);
-    // **R36 made this the assertion**: the wheel takes the viewport OFF the stream, and
-    // `following` is where that state lives. It used to be `scroll == 3` — a count, and
-    // the count is exactly what the requirement stops trusting: it is derived by the
-    // frame, so between a key and a paint it is the previous frame's number.
+    // The wheel takes the viewport off the stream, and `following` is where that state lives. It used to be
+    // `scroll == 3`, and a count is what the requirement stops trusting: between a key and a paint it is
+    // the previous frame's number.
     assert!(
         !a.following(),
         "with nothing on top the wheel moves the conversation"
     );
 }
 
-/// **The window scrolls, and the choices never leave** (R20).
-///
-/// The ruling asks for a viewport that shrinks *and scrolls*, so the whole diff or
-/// message can still be read without the options going anywhere. `pgup`/`pgdn` are the
-/// keys — the ones an open card can take without stealing Up/Down from the ladder, and
-/// the seam names them.
+/// The window scrolls and the choices never leave: the viewport shrinks and scrolls so the whole diff or
+/// message can be read with the options still there. `pgup`/`pgdn` are the keys, since an open card must
+/// not steal Up/Down from the ladder, and the seam names them.
 #[test]
 fn the_card_body_scrolls_without_the_ladder_moving() {
     let mut a = tall_card(true);
@@ -2028,12 +1847,8 @@ fn the_card_body_scrolls_without_the_ladder_moving() {
     assert_eq!(home, first, "pgup did not come back to where it started");
 }
 
-/// **A card that fits is exactly the card it always was**, and the transcript keeps
-/// its own scroll.
-///
-/// The two halves are joined in the same order for the whole card, so nothing about a
-/// short card changes — and `pgdn` on one still scrolls the conversation behind it,
-/// because a card being up must not cost the transcript a key it has always had.
+/// A card that fits is exactly the card it always was, and the transcript keeps its own scroll: `pgdn` on a
+/// short card still scrolls the conversation behind it, because a card up must not cost the transcript a key.
 #[test]
 fn a_card_that_fits_is_whole_and_leaves_the_transcript_its_scroll() {
     let mut a = tall_card(false);
@@ -2300,17 +2115,9 @@ fn the_claiming_walk_keeps_the_entries_the_rows_are_not_drawing() {
     );
 }
 
-/// **The marker joins the prose even when the tail walk rendered it first** — the case
-/// the operator met on a real screen.
-///
-/// `fill_backward` renders the NEWEST rows first and stops on a line budget, and a run's
-/// marker is drawn at the run's FIRST row — so the walk reached the marker, satisfied its
-/// budget and broke, and **the narration line above it was never built**. The marker was
-/// therefore emitted as a row of its own, on a screen the operator was reading, with the
-/// colon of the sentence above it left dangling.
-///
-/// Asserted through the tail path on purpose: `hist_floor` non-zero is a transcript too
-/// big to walk, which is every long session and is where this was found.
+/// The marker joins the prose even when the tail walk rendered it first: `fill_backward` renders the newest
+/// rows first and stops on a line budget, so it reached the marker, broke, and never built the narration
+/// above it — which was drawn as a row of its own with the colon dangling. Asserted through the tail path.
 #[test]
 fn the_marker_joins_the_prose_the_tail_walk_rendered_before_it() {
     let mut a = app();
@@ -2385,17 +2192,12 @@ fn the_marker_joins_the_prose_the_tail_walk_rendered_before_it() {
         )));
     }
     a.visibility = Visibility::of(Profile::CONVERSATION);
-    // **The tail path, and the fill's budget already satisfied.** `walk_limit` is the
-    // head's own threshold for "too big to walk from the beginning"; `fill_backward(1)`
-    // is the fill the head makes for a reader one line short of the window, and it is
-    // what makes the budget bite: the walk stops the moment it has a line, which is the
-    // marker's own — so the narration above it is never built unless something insists.
+    // The tail path, with the fill's budget already satisfied: `fill_backward(1)` is the fill made for a
+    // reader one line short, so the walk stops the moment it has a line, which is the marker's own.
     a.walk_limit = 1;
     let _ = a.screen(120, 24);
-    // **The reader-one-line-short state, set exactly.** That is what a scroll produces:
-    // the floor is up at the end of the session, the buffer is empty, and the fill is
-    // asked for one line — so the walk stops the moment it has one, which is the marker's
-    // own, and the narration above it is never built unless something insists.
+    // The reader-one-line-short state, set exactly: the floor is up at the end of the session, the buffer
+    // is empty, and the fill is asked for one line.
     a.hist_floor = a.items.len();
     a.hist_upto = a.items.len();
     a.hist_lines.clear();
@@ -2420,11 +2222,9 @@ fn a_turn_starting_does_not_shove_the_transcript_up_a_row() {
         vec![brief("s", "one", false)],
         Hub::new("s").snapshot(),
     ));
-    // **Enough rows to FILL the screen, which is what makes the shove visible.** The transcript
-    // is bottom-anchored once it overflows: a chrome row appearing takes its space from the
-    // transcript, every content row slides up by one, and that is the move the reader feels.
-    // The first version of this test used three rows, they sat at the top, and it passed against
-    // the reverted fix — the fixture could not express the defect.
+    // Enough rows to fill the screen, which is what makes the shove visible: once the transcript is
+    // bottom-anchored, a chrome row takes its space and every content row slides up by one. Three rows sat
+    // at the top and passed against the reverted fix.
     for i in 0..30u64 {
         let (seq, id, text) = (
             i * 2 + 1,
@@ -2520,27 +2320,9 @@ fn the_wheel_scrolls_and_wheeling_back_follows_the_stream() {
     );
 }
 
-/// **A wheel notch DOWN walks three lines, and a RUN of them is what reaches the tail.**
-///
-/// **What was true before, and why it changed.** The operator, 2026-10-05: *"I cant scroll back
-/// to bottom with a mouse wheel - have to press escape"*. A notch walks three lines and
-/// `following()` only comes back when the window REACHES the bottom, so against a live session —
-/// which keeps adding rows — a notch is a step toward a target that runs away from it. The
-/// answer then was to make ONE notch clear the anchor outright, and this test asserted that:
-/// `a_wheel_notch_down_is_the_tail_even_when_the_stream_grew_under_the_reader`.
-///
-/// **The cure cost more than the complaint.** With a mouse, so it is not a touchpad artefact,
-/// the operator: *"one simple stroke gets me to the bottom immediately — effectively like
-/// Esc"* — the reader could not walk *down* through a conversation at all, because the first
-/// notch left the conversation behind them. Both reports are one coin, and this is the
-/// reconciliation: a notch down walks like a notch up, and *arriving* at the tail is what
-/// resumes following. A run of notches still returns the reader to the bottom, which answers
-/// October's need without the one-notch jump — and the deliberate act keeps its own meaning,
-/// because Esc and the parked `↓` still mean "follow again" in one press.
-///
-/// The test above passes either way, because its transcript is STATIC. **The fixture is why
-/// this survived**, so this one adds rows between the notches, thirty of them against three the
-/// notch walks — the case that made 2026-10-05 look like a cure.
+/// A wheel notch down walks three lines, and a run of them is what reaches the tail: one notch clearing the
+/// anchor outright made the conversation between the two positions unreachable, so a notch walks like a
+/// notch up and arriving at the tail resumes following. Esc and the parked `↓` still mean it in one press.
 #[test]
 fn a_wheel_notch_down_walks_and_a_run_of_notches_is_what_reaches_the_tail() {
     let mut a = app();
@@ -2619,17 +2401,8 @@ fn a_wheel_notch_down_walks_and_a_run_of_notches_is_what_reaches_the_tail() {
     );
 }
 
-/// **Three notches down walk three lines each, and only the one that ARRIVES follows.**
-///
-/// The measurement the 2026-10-05 change stood in for. A notch is three lines, so a reader
-/// walking down has to *see* three lines of conversation per notch, and the parked state has to
-/// survive every notch that has not reached the bottom — otherwise a notch is a jump and the
-/// conversation between the two positions is unreachable, which is the report this reverses.
-/// Asserted on `view_top` rather than on `scroll`, because the line is what is on the glass.
-///
-/// **And the scroll path still does not ask for a repaint**, which is the flicker fix this
-/// must not undo: `redraw` is not "rebuild the frame", it is *throw the glass away*, and a
-/// window that slid is a diff.
+/// Three notches down walk three lines each, and only the one that arrives follows: the parked state
+/// survives every notch short of the bottom, so nothing between the two positions is unreachable.
 #[test]
 fn three_notches_down_walk_three_lines_each_and_only_arriving_follows() {
     let mut a = app();
@@ -2692,10 +2465,8 @@ fn three_notches_down_walk_three_lines_each_and_only_arriving_follows() {
 
 #[test]
 fn scrolling_to_the_top_leaves_a_full_screen_rather_than_a_blank_one() {
-    // Found by pressing PageUp six times under tmux. The scroll was clamped to
-    // `total - 1`, so the top of the history was a one-line window — and since
-    // the scrollback banner overwrites the last line of the window, the whole
-    // screen went blank with the banner alone on it.
+    // Found by pressing PageUp six times under tmux: the scroll was clamped to `total - 1`, so the top of
+    // the history was a one-line window, and the banner that overwrites the last line left the screen blank.
     let mut a = app();
     for i in 0..40u64 {
         a.apply(ServerFrame::Event(env(
@@ -2728,37 +2499,8 @@ fn scrolling_to_the_top_leaves_a_full_screen_rather_than_a_blank_one() {
     );
 }
 
-/// **A park far up, on a stream that keeps arriving: the wheel still gets you back.**
-///
-/// The operator, 2026-10-09: *"there is scrolling problem - i restarted pg-noop scrolled up
-/// and couldnt scroll back with mouse - stuck at 190 lines lol. Esc worked"* — and the
-/// narrowing: *"to trigger conversation must be scrolled up far enough that is the point"*.
-/// The wedged session (s-1789919514688401228, resumed at t2 with 1447 rows and 1.85M
-/// tokens) is far over [`SELF_WALK_LIMIT`], so this fixture takes the tail path the way
-/// `walk_limit = 1` always does in this file, parks by wheel until the banner counts 190
-/// lines, and then wheels down **while the automatic turns keep appending rows** — the
-/// session's monitor woke in a loop that ran to 121 rounds, two rows a notch is that pace.
-///
-/// **Why the shallow tests could not see it.** Two mechanisms, and depth is what
-/// exposes both. In tail mode every arriving row invalidates the rendered history
-/// wholesale (a tail walk leaves no marks to rewind to), so a notch landing between an
-/// arrival and the next frame finds the span table EMPTY: `held_line` falls back to a
-/// stale `view_top`, `span_at_line` answers `None`, and the notch moves **nothing**.
-/// Measured on this fixture before the fix: thirty-two notches down and the window never
-/// moved a line — parked 191 up, ended 319 up — because the stream grew underneath a
-/// reader the wheel could no longer move at all. And with the spans live, three lines a
-/// notch is still outrun by two arriving rows: the notch moves, the count grows, and at
-/// 190 lines up the walk needs sixty-four clean notches it never gets. `esc` worked
-/// because it clears the anchor outright and never asks the spans anything.
-///
-/// **What gets the reader back is a notch that renders before it steps** —
-/// [`App::render_held`], the mirror of `fill_backward` — **and, against a stream that is
-/// still arriving, a RUN of notches** that gathers speed: several notches inside one read
-/// — one flick of the wheel — double their step, so the bottom is reachable in a bounded
-/// number of them however fast it recedes. A still transcript is walked three lines a
-/// notch, every notch (the tests around this pin that); the first notch of a run is three
-/// lines either way, so one stroke is never the tail — the reconciliation October 9th
-/// drew is untouched.
+/// A park far up on a stream that keeps arriving, and the wheel still gets the reader back: a notch down
+/// walks three lines and arriving at the tail resumes following.
 #[test]
 fn a_deep_park_on_a_living_stream_is_reachable_from_the_wheel() {
     let mut a = app();
@@ -2795,10 +2537,8 @@ fn a_deep_park_on_a_living_stream_is_reachable_from_the_wheel() {
         "the wheel-up walk never got 190 lines up: {parked}"
     );
 
-    // **The stream keeps arriving while the reader wheels down** — two rows a notch,
-    // the monitor's round pace. A flick is several notches inside one read, so the
-    // driver hands one tick a burst of them; four a burst, a fifth of a second between
-    // bursts, eight bursts — bounded, or this fails rather than loops.
+    // The stream keeps arriving while the reader wheels down, two rows a notch at a monitor's pace; four
+    // notches a burst, eight bursts, bounded so a failure fails rather than loops.
     let mut notches = 0usize;
     for _ in 0..8 {
         for _ in 0..4 {
@@ -2821,14 +2561,9 @@ fn a_deep_park_on_a_living_stream_is_reachable_from_the_wheel() {
     );
 }
 
-/// **Scrolled back, the prompt of the turn on screen stays pinned at the top** — one line.
-///
-/// The operator, 2026-10-09: *"when im scrolling back i want my latest prompt (truncated to one
-/// line) to stay pinned on top, otherwise i forget wtf is going on. prompt for the segment /
-/// turn of course"*. So the pinned line is the operator's prompt that opened the turn the top
-/// of the window is in — not the newest prompt of the session — drawn as their row is drawn,
-/// cut to one line; and it is there only while the view is held and the prompt itself has
-/// scrolled off the top.
+/// Scrolled back, the prompt of the turn on screen stays pinned at the top, one line: it is the person's
+/// prompt that opened the turn the window's top is in, cut to one line, and only while the view is held and
+/// the prompt has scrolled off.
 #[test]
 fn scrolled_back_the_turns_prompt_is_pinned_on_top() {
     use letibot_transcript::{TranscriptItem, UserPart};
@@ -2918,20 +2653,10 @@ fn scrolled_back_the_turns_prompt_is_pinned_on_top() {
     assert_eq!(screen.matches("PROMPT-0").count(), 1, "{screen}");
 }
 
-// ─────────────────── a carry: the rows are replaced, the place is not ───────────────────
+// A carry: the rows are replaced and the place is not. A re-seat forks the transcript, so every row arrives
+// under a new id and a viewport named by an id has nothing to hold; what both sides agree on is the words.
 //
-// **The reader's place across a carry** — R36's other boundary.
-//
-// The operator, on the first live `/reseat`: *"it also broke my scroll - i was scrolled up
-// and it showed me thousands of lines 'below'"*. A re-seat forks the transcript and carries
-// the conversation across, so every row arrives under a **new id**
-// (`{transcript_id}.{n}`, `engine.rs`) — and a viewport named by an id is a viewport with
-// nothing to hold. What both sides of the fork agree on is the row's own **words**, which
-// is the wall `retire_pending` met and answered the same way.
-//
-// **The rule these pin: a bare offset must never cross a transcript boundary.** Neither the
-// viewport's ordinal nor the count in `scroll` was measured against the transcript that
-// arrives, so neither may place the view in it — see `App::repair_anchor` and `App::carry`.
+// The rule these pin: a bare offset must never cross a transcript boundary.
 
 /// The conversation the fixtures scroll in: `n` rows, each saying `row {i} says a thing`.
 fn forty_rows(a: &mut App, n: u64) {
@@ -2966,10 +2691,8 @@ fn scrolled_up(n: u64) -> App {
     a
 }
 
-/// A snapshot of the rows a carry delivers: `ids` in order, each body from `text(i)`.
-///
-/// The ids are the fixture's whole point: a carry's rows arrive under the **new**
-/// transcript's, so the ones the head was holding are not in here at all.
+/// A snapshot of the rows a carry delivers: `ids` in order, each body from `text(i)`. The ids are the
+/// fixture's point, since a carry's rows arrive under the new transcript's.
 fn carried_snapshot(ids: &[String], text: impl Fn(usize) -> String) -> Snapshot {
     let mut snap = Hub::new("s").snapshot();
     snap.seq = 999;
@@ -3001,13 +2724,8 @@ fn words_at(a: &App, row: usize) -> String {
         .unwrap_or_else(|| panic!("no words at row {row}"))
 }
 
-/// **A carry that lengthens the transcript leaves the reader on their ROW, not on their
-/// index.**
-///
-/// The fixture shifts the conversation: the fork's own note goes in front of the rows it
-/// carried, so the row the reader was reading is two rows further down than it was, and the
-/// integer the viewport was holding names a different row. That is the defect, and it is
-/// asserted as such below — the old index is checked to say something else.
+/// A carry that lengthens the transcript leaves the reader on their row, not their index: the fork's note
+/// goes in front of the rows it carried, so the integer the viewport held names a different row.
 #[test]
 fn a_carry_that_lengthens_the_transcript_leaves_the_reader_on_their_row() {
     let mut a = scrolled_up(40);
@@ -3072,15 +2790,9 @@ fn a_carry_that_lengthens_the_transcript_leaves_the_reader_on_their_row() {
     );
 }
 
-/// **A row's words are what the carry matches it by**, and the two readers are one rule.
-///
-/// [`row_words`] builds the string the boundary takes; [`row_says`] compares a row against
-/// it without building anything, because that one runs per row as the carry lands. They are
-/// checked against each other rather than described, and the `User` row is the shape worth
-/// checking: the engine merges consecutive prompts into ONE item
-/// (`SteeringMessage::to_item`), so a row is often several parts — and a match that read
-/// only the first would lose every row that had been merged, which is the same
-/// first-part-versus-every-part drift `retire_pending` was fixed for.
+/// A row's words are what the carry matches it by, and the two readers are one rule: [`row_words`] builds
+/// the string and [`row_says`] compares against it per row. A `User` row is often several parts, and a match
+/// reading only the first would lose every merged row.
 #[test]
 fn a_rows_words_are_what_the_carry_matches_it_by() {
     fn row(item: Option<TranscriptItem>, kind: &str) -> SnapshotItem {
@@ -3146,21 +2858,9 @@ fn a_rows_words_are_what_the_carry_matches_it_by() {
     assert!(!row_says(&blank, ""));
 }
 
-/// **A fork that arrives as appends is NOT a transcript boundary**, and the head says nothing
-/// about it.
-///
-/// The live path is not the snapshot path. A `/reseat` on a session a head is attached to
-/// publishes every carried row as `TranscriptAppended` under the new transcript's ids
-/// (`harness.rs`'s `republish_after`), and **nothing in this head drops the rows it already
-/// holds** — so the reader's own row is still here, under its own id, and the boundary rule
-/// has nothing to fire on. That is worth pinning, because it is the difference between the
-/// rule and the defect: the live path's own defect is the conversation arriving a SECOND
-/// time — measured: a 40-row conversation plus a 60-row carried republish leaves this head
-/// holding 100 rows, every one of them drawn — and a conversation drawn twice is not a place
-/// crossing a boundary.
-///
-/// What is deliberately not asserted here: how many rows the head holds afterwards. That
-/// number *is* the doubling, and a test that pinned it would be a test pinning the defect.
+/// A fork that arrives as appends is not a transcript boundary, and the head says nothing about it: the
+/// rows the head already holds are still there under their own ids, so the boundary rule has nothing to fire
+/// on. How many rows it holds afterwards is deliberately not asserted, since that number is the doubling.
 #[test]
 fn a_fork_that_arrives_as_appends_leaves_the_view_where_it_was_and_says_nothing() {
     let mut a = scrolled_up(40);
@@ -3217,15 +2917,8 @@ fn a_fork_that_arrives_as_appends_leaves_the_view_where_it_was_and_says_nothing(
     );
 }
 
-/// **A carry that does not carry the row goes to the TAIL, and SAYS so.**
-///
-/// The row is looked for by its own words and it is not there — the shape a compaction
-/// leaves: a summary in place of the old head, the recent tail carried as itself, every row
-/// under a new id. What the head must not do is keep the reader's place by counting: the
-/// ordinal it holds was measured in the transcript that went, and the reader would be
-/// silently moved to whatever row happens to sit at that integer now. The tail is the one
-/// place in the new transcript that is true of the whole of it, and **the sentence is part
-/// of the contract** — a reader who was reading is never moved in silence.
+/// A carry that does not carry the row goes to the tail and says so: the ordinal was measured in the
+/// transcript that went, and a reader who was reading is never moved in silence.
 #[test]
 fn a_carry_that_drops_the_row_follows_the_tail_and_says_so() {
     let mut a = scrolled_up(40);
@@ -3305,20 +2998,8 @@ fn a_carry_that_drops_the_row_follows_the_tail_and_says_so() {
     );
 }
 
-/// **A carry that has not finished arriving has not lost the row.**
-///
-/// A fork announces every row before a single body follows, so a snapshot taken mid-carry
-/// holds rows with **no words to match** — and a row that cannot be matched *yet* is not a
-/// row that is gone. The anchor waits, the window holds the line it was on, and the row is
-/// placed the moment its body lands.
-///
-/// **The line is the whole of what this pins, and the fixture is built so it can be seen.**
-/// The bodies land from BELOW the reader's row first, which is what a republish can leave
-/// behind: the buffer grows under a window that has nothing to hold. A count from the bottom
-/// walks the reader down it — the tail of a conversation arriving a screen at a time, which
-/// is the operator's *"thousands of lines 'below'"* — while the line the reader was at stays
-/// where it was, because the transcript that arrives is the same conversation in the same
-/// order and only the ids changed.
+/// A carry that has not finished arriving has not lost the row: a fork announces every row before a body
+/// follows, so a row that cannot be matched yet is not gone, and the window holds its line until it lands.
 #[test]
 fn a_carry_whose_bodies_are_still_coming_holds_the_window_and_then_the_row() {
     let mut a = scrolled_up(40);
@@ -3414,24 +3095,11 @@ fn a_carry_whose_bodies_are_still_coming_holds_the_window_and_then_the_row() {
     );
 }
 
-// ─────────────── a LIVE fork: the rows are replaced under an ATTACHED head ───────────────
+// A live fork: the rows are replaced under an attached head. A `/reseat` on a live session sends no
+// snapshot — the carried rows arrive as appends and the boundary is stated after them — so a carry taken
+// only in `load` is one a live fork never takes, and the ordinal fallback lands the reader one row off.
 //
-// **The snapshot path is not the live path, and the difference is a door.**
-//
-// A `/reseat` on a session a head is attached to sends no snapshot: the daemon forks the
-// transcript, publishes the carried rows as `TranscriptAppended` under the new transcript's
-// ids, and *then* states the boundary (`harness.rs`'s `republish_after`: `append_items`, then
-// `TranscriptForked`). So `App::load` never runs — and a carry taken only there is a carry a
-// live fork never takes. What is left is main's ordinal fallback: the row the reader was on is
-// gone, the integer they held was measured in the transcript that just went, and a re-seat's
-// carry puts the note that says what happened in FRONT of the conversation it carried — so that
-// integer names a different row here. The fixture below uses two preamble rows, so the reader's
-// row sits two places further down and the fallback would land them **one row off, with a
-// sentence**, which is the operator's report exactly.
-//
-// What these pin is the live door: the row is found by its own words, or the tail is where the
-// reader goes and the sentence says so. Underneath both is the rule the snapshot tests above
-// already state — **a bare offset must never cross a transcript boundary.**
+// What these pin: the row is found by its words, or the tail is where the reader goes and the sentence says so.
 
 /// The carried rows, published the way the daemon publishes them: an announcement, and then
 /// its body, under the **new** transcript's ids.
@@ -3472,14 +3140,8 @@ fn fork_live(
     )));
 }
 
-/// **A LIVE fork leaves the reader on the ROW they were on**, not on their index.
-///
-/// The row survives the carry — it is the same conversation, carried across — so the only
-/// question is how the head finds it again. Its id is gone (the new transcript numbers its
-/// rows its own way), its ordinal names a different row (the re-seat's note is in front of the
-/// conversation), and the two things left are its **own words**, which is what a carry takes
-/// and what this places it by. The old fallback held the ordinal: an offset measured in the
-/// transcript that just went, landing the reader one row off, with a sentence.
+/// A live fork leaves the reader on the row they were on: its id is gone and its ordinal names a different
+/// row, so the two things left are its own words, which is what a carry takes.
 #[test]
 fn a_live_fork_leaves_the_reader_on_the_row_they_were_on() {
     let mut a = scrolled_up(40);
@@ -3540,13 +3202,8 @@ fn a_live_fork_leaves_the_reader_on_the_row_they_were_on() {
     );
 }
 
-/// **A LIVE fork that does NOT carry the row goes to the TAIL, and SAYS so.**
-///
-/// A compaction's shape: a note in place of the old head, the newest rows carried as
-/// themselves, every row under a new id — and the reader's row in the part that was
-/// summarised, so it is nowhere in what arrives. The head must not keep the reader's place by
-/// counting, and it must not move them in silence: a reader who was reading is told, and the
-/// tail is the one place in the new transcript that is true of the whole of it.
+/// A live fork that does not carry the row goes to the tail and says so: a compaction's shape leaves the
+/// reader's row in the part that was summarised, and the head must neither count nor move them in silence.
 #[test]
 fn a_live_fork_that_does_not_carry_the_row_follows_the_tail_and_says_so() {
     let mut a = scrolled_up(40);
@@ -3624,13 +3281,9 @@ fn a_live_fork_that_does_not_carry_the_row_follows_the_tail_and_says_so() {
     );
 }
 
-/// **A fork STATED BEFORE ITS ROWS has not lost the reader's row, and does not say it has.**
-///
-/// The wire allows both orders and a head does not choose one: a snapshot's rows come with it,
-/// a fork's follow the statement, and a head that hears the statement first has **nothing to
-/// match and no announcement to be complete against**. Saying *the row is gone* there would be
-/// a sentence about a row that has not arrived — the same lie the ordinal fallback told, one
-/// step earlier — so such a carry waits, and the row is placed the moment its body lands.
+/// A fork stated before its rows has not lost the reader's row, and does not say it has: a head that hears
+/// the statement first has nothing to match, and saying the row is gone would be a sentence about a row that
+/// has not arrived.
 #[test]
 fn a_fork_stated_before_its_rows_waits_rather_than_calling_the_row_gone() {
     let mut a = scrolled_up(40);
@@ -3701,11 +3354,8 @@ fn below(a: &mut App) -> Option<String> {
         .map(|s| s.split(' ').next().unwrap_or("").to_string())
 }
 
-/// **A held view still moves for the reader's own keys** — the operator: *"i think held counter
-/// might also be off, at least never decremented?"*. Under ctrl-p's hold the frame was frozen
-/// whole, so the wheel moved the view and nothing on the screen did: the scrollback count stayed
-/// where the hold began, up or down. The hold is against the STREAM moving the view; the reader's
-/// key draws the view once, held again.
+/// A held view still moves for the reader's own keys: the hold is against the STREAM moving the view, so a
+/// key draws it once, held again. Otherwise the wheel moves the view and nothing on the screen does.
 #[test]
 fn a_held_view_moves_for_the_readers_keys_and_not_for_the_stream() {
     let mut a = app();
@@ -3812,13 +3462,9 @@ fn at(frame: &str, words: &str) -> usize {
         .unwrap_or_else(|| panic!("`{words}` is not on the frame:\n{frame}"))
 }
 
-/// **A reply streamed while the operator's own prompt lands mid-stream is drawn once, below it.**
-///
-/// The photographed order, driven live: round 1 answers the first prompt and lands as a row;
-/// round 2 starts streaming; the operator types; their row lands; the round's row and body land.
-/// The reply's sentence is on the frame exactly once, under the question, and the rows above it
-/// are byte-identical to what they were before the question arrived — a head that re-flowed
-/// history to make room would pass a "once" assertion and still be wrong.
+/// A reply streamed while the person's own prompt lands mid-stream is drawn once, below it: the rows above
+/// are byte-identical to what they were, since a head that re-flowed history to make room would pass a
+/// "once" assertion and still be wrong.
 #[test]
 fn a_reply_streamed_while_a_prompt_lands_is_drawn_once_below_it() {
     let mut a = app();
@@ -3918,11 +3564,8 @@ fn a_reply_streamed_while_a_prompt_lands_is_drawn_once_below_it() {
             > at(&frame, "also maybe we have docker on this host now?"),
         "the reply is drawn above the question that prompted it:\n{frame}"
     );
-    // **And the rows above it did not move.** Everything up to and including the first answer's
-    // row is the same on both frames — a head that folded or re-flowed history to make room for
-    // the streaming copy would satisfy the count above and still be wrong. Cut at that row rather
-    // than at the question, because the pane's own copy of the streaming text sits between them
-    // on the first frame and below them on the second, and that difference is the subject.
+    // And the rows above it did not move: everything up to the first answer's row is the same on both
+    // frames. Cut there rather than at the question, because the pane's copy sits between them on one frame.
     let kept = |f: &str| -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
         for l in f.lines() {
@@ -3945,17 +3588,9 @@ fn a_reply_streamed_while_a_prompt_lands_is_drawn_once_below_it() {
     );
 }
 
-/// **A head that re-attaches mid-turn does not draw the reply it already has a row for.**
-///
-/// The photographed frame exactly: a snapshot taken while a turn runs, whose rows are the round's
-/// answer (body and all) and then the operator's prompt — the state a head lands in when it
-/// re-attaches, resyncs, or switches back to a session in the middle of a turn. The pane is handed
-/// the turn's accumulated text beside those rows, and nothing later in the stream will take that
-/// text away, because the event that would have (the row's body) happened before this head
-/// existed.
-///
-/// Before the fix this frame read the paragraph twice — the row above the question and the pane's
-/// copy under it — which is the operator's screenshot.
+/// A head that re-attaches mid-turn does not draw the reply it already has a row for: the snapshot carries
+/// the turn's accumulated text beside the rows that hold it, and the body that would have taken it away
+/// happened before this head existed.
 #[test]
 fn a_reattach_mid_turn_does_not_draw_the_reply_twice() {
     // The daemon's own log, folded into a snapshot: the answer to the first prompt has landed, and
@@ -4033,10 +3668,8 @@ fn a_reattach_mid_turn_does_not_draw_the_reply_twice() {
     );
 }
 
-/// **Two complete turns in a row draw each reply once** — the control case.
-///
-/// If this ever fails, the cause is the item list rather than the live buffer: a duplicate here
-/// means a row was announced twice, or the pane's prose survived a round boundary.
+/// Two complete turns in a row draw each reply once, the control case: a duplicate here means a row was
+/// announced twice or the pane's prose survived a round boundary.
 #[test]
 fn two_complete_turns_draw_each_reply_once() {
     let mut a = app();
@@ -4117,21 +3750,9 @@ fn two_complete_turns_draw_each_reply_once() {
     }
 }
 
-/// **A re-attach mid-round does not count the working it already has rows for** — the same door,
-/// the other two buffers.
-///
-/// The pane's prose was the paragraph the operator photographed; the WORKING has the same shape
-/// and the same door. `settled_calls` is the mark that says *the transcript has this much of the
-/// working*, and the reasoning buffer is emptied as its rows land
-/// (`TurnPane::hand_over_reasoning`); the live path advances both when a row's BODY lands
-/// (`App::record_item`). A snapshot carries neither, so a head that re-attaches mid-round started
-/// both at zero and counted — and, on a rung that shows the working, drew — a call and a block of
-/// thinking that were already rows above it.
-///
-/// Measured on this fixture before the marks were seeded: `[2 tool calls, 2 thinking lines]` for
-/// one call and one thinking line. The number is the same defect the operator caught going the
-/// other way (*"lol, just saw how thinking lines count went from 22 to 15"*): a count of work
-/// done moving because the head was not watching.
+/// A re-attach mid-round does not count the working it already has rows for: `settled_calls` and the
+/// reasoning handover are the marks a snapshot does not carry, so a head that re-attached started both at
+/// zero and counted a call and a block of thinking that were rows above it.
 #[test]
 fn a_reattach_mid_round_does_not_count_the_working_it_has_rows_for() {
     let hub = Hub::new("s");
@@ -4199,20 +3820,12 @@ fn a_reattach_mid_round_does_not_count_the_working_it_has_rows_for() {
     );
 }
 
-// **And with the fold OPEN the thinking itself was the second copy.**
-//
-// The reply's handover is above; the thinking had the same two buffers and only half a rule —
-// `reasoned_upto` trimmed the COUNT and nothing trimmed the text, so with `ctrl-r` open a landed
-// thought was drawn twice: once as its row, and again inside the live pane, which was still
-// holding the whole round's reasoning. The operator saw it independently (*"yeah when reasoning is
-// open wiered things happen, saw it too"*). The pane's buffer is now the thinking no row holds —
-// `TurnPane::hand_over_reasoning`, called at the row's BODY and again at the snapshot — so the row
-// is the only copy, and the count and the fold read one string.
+// And with the fold open the thinking itself was the second copy: `reasoned_upto` trimmed the count and
+// nothing trimmed the text, so a landed thought was drawn as its row and again in the pane. The pane's
+// buffer is now the thinking no row holds.
 
-/// **The state `ctrl-r` leaves a `loud` head in**: the thinking switch OPEN and the fold open.
-///
-/// Written as the two fields `App::set_verbosity` writes rather than by pressing the chord, because
-/// the chord also writes the preference file — the one side effect a test does not want.
+/// The state `ctrl-r` leaves a `loud` head in: the thinking switch open and the fold open. Written as the
+/// two fields `set_verbosity` writes, since the chord also writes the preference file.
 fn thinking_open(a: &mut App) {
     a.visibility = Visibility::of(Profile::LOUD).with(Show::Thinking, Level::Open);
     a.reasoning = Fold::Open;
@@ -4237,12 +3850,8 @@ fn thinking_count(frame: &str) -> Option<usize> {
     })
 }
 
-/// **A thought that has landed as a row is drawn ONCE, and the pane draws none of it.**
-///
-/// With the fold open the pane used to draw the whole round's reasoning — the row above it and the
-/// same words again under every row that landed after — and the count beside it described only the
-/// unlanded half. The mid-stream half is asserted first, so a fix that simply stopped drawing the
-/// pane's thinking would fail here rather than pass.
+/// A thought that has landed as a row is drawn once, and the pane draws none of it: the mid-stream half is
+/// asserted first, so a fix that stopped drawing the pane's thinking would fail here rather than pass.
 #[test]
 fn landed_thinking_is_drawn_once_when_the_fold_is_open() {
     const THOUGHT: &str = "THINK-ALPHA one short thought";
@@ -4310,14 +3919,9 @@ fn landed_thinking_is_drawn_once_when_the_fold_is_open() {
     );
 }
 
-/// **The number and the text it is a number about agree** — in both states, on one frame.
-///
-/// This is the rung where a reader sees BOTH: the working hidden, the marker clicked open
-/// (`live_open`), so `[N thinking lines]` and the thinking itself are on the screen together. The
-/// count used to be taken over a different string than the fold drew — the unlanded slice against
-/// the whole buffer — and then over a different WIDTH: `reasoning_display_lines` wrapped at the
-/// frame's width while the body is drawn four columns narrower (the step and the `┃` rail), so a
-/// wrapped thought read one line short of what opening it costs.
+/// The number and the text it is a number about agree, in both states on one frame: the count used to be
+/// taken over a different string than the fold drew, and then over a different width, since the body is
+/// drawn four columns narrower.
 #[test]
 fn the_thinking_count_equals_what_the_fold_draws() {
     let mut a = app();
@@ -4366,17 +3970,9 @@ fn the_thinking_count_equals_what_the_fold_draws() {
     );
 }
 
-/// **A re-attach mid-thought does not redraw the part that landed before it.**
-///
-/// The snapshot door, with the thinking half in: a row holds the first block, the round's second
-/// block has streamed and not landed, and the snapshot's `TurnView::reasoning` carries **both** —
-/// the daemon never trims it when a row lands. So the pane has to spend what the rows hold and
-/// draw the rest, which is a PREFIX walk (`TurnPane::hand_over_reasoning`) and not an equality:
-/// a round that thought, spoke and thought again has more than one row, and their texts
-/// concatenate to a prefix of the buffer rather than to the whole of it.
-///
-/// Before this the pane drew the landed block twice — once as its row, once from the snapshot's
-/// copy — which is the same defect the prose had, one buffer over.
+/// A re-attach mid-thought does not redraw the part that landed before it: the snapshot carries both
+/// blocks, so the pane spends what the rows hold and draws the rest, which is a prefix walk and not an
+/// equality.
 #[test]
 fn a_reattach_mid_thinking_draws_it_once() {
     const LANDED: &str = "THINK-ONE landed as a row";
@@ -4429,14 +4025,9 @@ fn a_reattach_mid_thinking_draws_it_once() {
     }
 }
 
-/// **A round that thinks in two blocks hands each one over as its row lands.**
-///
-/// One round can produce `[Reasoning, Assistant, Reasoning]` — the model thought, spoke, thought
-/// again — and the daemon appends all three at the round's end, so a head watching sees two
-/// reasoning BODIES land in a row. The handover walks the round's rows in order and remembers how
-/// far it got (`TurnPane::reasoned_rows`); without that cursor the second landing would compare the
-/// FIRST row's text against a buffer that already had it spent, find no prefix, and leave the
-/// second block on the screen twice.
+/// A round that thinks in two blocks hands each one over as its row lands: the handover walks the round's
+/// rows in order and remembers how far it got, or the second landing finds no prefix and leaves the second
+/// block on the screen twice.
 #[test]
 fn a_round_that_thinks_in_two_blocks_hands_each_over() {
     const FIRST: &str = "THINK-FIRST before the words";
