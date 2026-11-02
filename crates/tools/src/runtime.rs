@@ -1398,6 +1398,14 @@ struct Rewritten {
     note: String,
 }
 
+/// What the miss for `bash` adds on a seat that writes: the test it just wrote has no runner
+/// here, and the way out is the operator. No cause is claimed, because an unknown name,
+/// `--bash` off and plan mode all arrive at this arm alike.
+const NO_SHELL_HERE: &str = "`bash` is a tool this build has, and this session does not seat it; \
+nothing was run. This seat starts no process, so a test written here cannot be run from here. \
+Put the command on your board with `todo` - `cargo test --offline <the test>` - and the operator \
+runs it and answers with what it said.";
+
 impl ToolRuntime {
     pub fn new(registry: Registry, backend: Box<dyn ExecBackend>) -> Self {
         ToolRuntime {
@@ -1684,6 +1692,12 @@ impl ToolRuntime {
             let mut payload = format!("this session has these tools: {}", names.join(", "));
             if let Some(n) = near {
                 payload.push_str(&format!("\nthe nearest to `{}` is `{n}`", call.name));
+            }
+            // A writing seat with no shell is the coder: it writes a test and has nothing here
+            // to run it, so the miss says where the command goes instead of stopping at the list.
+            if call.name == "bash" && self.registry.get("write").is_some() {
+                payload.push_str("\n\n");
+                payload.push_str(NO_SHELL_HERE);
             }
             let r = ToolResult::new(
                 call.id.clone(),

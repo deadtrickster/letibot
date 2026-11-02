@@ -451,6 +451,56 @@ fn a_session_whose_backend_cannot_exec_refuses_at_the_backend_naming_which() {
 }
 
 #[test]
+fn a_coder_asking_for_bash_is_told_how_its_test_gets_run() {
+    // The coder seat writes and cannot start a process, so the miss for `bash` is the
+    // moment a model learns its test has no runner here. The refusal has to say how the
+    // test does get run, and must not name a cause it cannot see.
+    let mut h = letibot_tools::testing::writable_harness();
+    let r = h.call(
+        "bash",
+        &serde_json::json!({"command": "cargo test --offline"}).to_string(),
+    );
+    let payload = r.payload.clone();
+    assert!(
+        payload.contains("does not seat it"),
+        "the miss must say the seat lacks it: {payload}"
+    );
+    assert!(
+        payload.contains("nothing was run"),
+        "the miss must say nothing ran: {payload}"
+    );
+    assert!(
+        payload.contains("starts no process"),
+        "the miss must say this seat cannot run one: {payload}"
+    );
+    assert!(
+        payload.contains("on your board with `todo`"),
+        "the miss must name the tool that carries the command: {payload}"
+    );
+    assert!(
+        payload.contains("cargo test --offline"),
+        "the miss must show the command's shape: {payload}"
+    );
+    // No cause: an unknown name, `--bash` off and plan mode all land in this arm, so the
+    // text must not claim which one this is.
+    assert!(
+        !payload.contains("--bash"),
+        "the miss must not claim a cause it cannot see: {payload}"
+    );
+
+    // A name nothing knows gets the list and no runner advice: there is no test to run.
+    let unknown = h.call("not_a_tool", "{}");
+    let other = unknown.payload.clone();
+    assert!(other.contains("this session has these tools"), "{other}");
+    for phrase in ["does not seat it", "starts no process", "nothing was run"] {
+        assert!(
+            !other.contains(phrase),
+            "`not_a_tool` must get no exec guidance, but it says {phrase:?}: {other}"
+        );
+    }
+}
+
+#[test]
 fn the_exec_surface_of_each_role_is_exactly_what_was_decided() {
     use letibot_tools::runtime::roles;
     let reg = letibot_tools::runner_tools(std::sync::Arc::new(
