@@ -113,7 +113,7 @@ impl Host {
     }
 }
 
-/// **The operator's hosts**, from `~/.config/letibot/hosts.toml`.
+/// The operator's hosts, from `~/.config/letibot/hosts.toml`.
 ///
 /// ```toml
 /// [host.lab2x1]
@@ -131,44 +131,34 @@ impl Host {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Hosts {
     hosts: BTreeMap<String, Host>,
-    /// **What the operator said about THIS box** — the `[local]` table.
+    /// What the operator said about THIS box: the `[local]` table.
     ///
-    /// A section of its own rather than a `[host.local]`, because this box is not a placement: a
-    /// `[host.…]` block names a machine ssh reaches, and `local` is the one that needs no ssh at
-    /// all. What it holds is the one declaration a process on this box can be checked against, and
-    /// it is the same list, matched the same way, as [`Host::never_touch`] — a `process` record
-    /// with no host was the hole RH9 left open, and this is the sentence that closes it.
+    /// A section of its own rather than a `[host.local]`, because this box is not a placement, and
+    /// what it holds is the one declaration a process on this box can be checked against. It is the
+    /// same list, matched the same way, as [`Host::never_touch`].
     local: LocalBox,
 }
 
-/// **The `[local]` table** — what this box's owner keeps for themselves.
+/// The `[local]` table: what this box's owner keeps for themselves.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LocalBox {
-    /// **What letibot must never signal, stop or remove on this machine.** One key, because it is
-    /// the only question a process-record check can ask about a box that is not a placement: a
-    /// `reserve` or a `root` here would be a placement decision about a machine nobody places on.
+    /// What letibot must never signal, stop or remove on this machine. One key, because it is the
+    /// only question a process-record check can ask about a box that is not a placement: a `reserve`
+    /// or a `root` here would be a placement decision about a machine nobody places on.
     pub never_touch: Vec<String>,
 }
 
 impl LocalBox {
-    /// See [`never_touch_hit`] — one list, one rule, one spelling of the match.
+    /// See [`never_touch_hit`]: one list, one rule, one spelling of the match.
     pub fn never_touch_hit(&self, what: &str) -> Option<&str> {
         never_touch_hit(&self.never_touch, what)
     }
 }
 
-/// **The pattern on a never-touch list that matches `what`**, if one does — the ONE copy of the
-/// rule, because three lists read it ([`Host::never_touch`], [`LocalBox::never_touch`] and the
-/// leases) and two copies of one rule is how they start to disagree.
-///
-/// The match is **a case-insensitive substring**, and that is the safe direction rather than the
-/// lazy one. A name is a process's command line, a compose project or a container — `etcd-fuzz`,
-/// `/usr/local/bin/pgfuzz -t 3600`, `flowy-dogfood-pg-1` — and the operator declared the workload,
-/// not its spelling. A rule that missed `etcd-fuzz-0` because it was written `etcd` would be the
-/// one failure this list exists to prevent, and it would be silent: the thing is stopped, and
-/// nobody is told. A rule that is too broad refuses a teardown the session could have had, and
-/// **says which pattern refused it** — a failure a person can act on with one word of
-/// `hosts.toml`.
+/// The pattern on a never-touch list that matches `what`, if one does: the one copy of the rule,
+/// because three lists read it. The match is a case-insensitive substring, so `etcd` covers
+/// `etcd-fuzz-0` - a rule too narrow would stop the wrong thing silently, and a rule too broad
+/// refuses a teardown and names the pattern that refused it.
 pub fn never_touch_hit<'a>(list: &'a [String], what: &str) -> Option<&'a str> {
     let lower = what.to_lowercase();
     list.iter()
@@ -251,7 +241,7 @@ impl Hosts {
         let mut hosts = BTreeMap::new();
         let mut local = LocalBox::default();
         for (sec, kv) in sections {
-            // `[local]` is this box, read before `[host.…]` because it is not a placement. One
+            // `[local]` is this box, read before `[host.<name>]` because it is not a placement. One
             // key, refused by name: a `never_tuch` typo would leave the operator's own workload
             // unprotected and silent.
             if sec == "local" {
@@ -436,7 +426,7 @@ const HOST_KEYS: &[&str] = &[
     "never_touch",
 ];
 
-/// `["a", "b"]` → the strings, with the quotes and spaces off, and an empty list for `[]`.
+/// `["a", "b"]` gives the strings, with the quotes and spaces off, and an empty list for `[]`.
 ///
 /// A tiny reader rather than a TOML one: this is the only value that is not a plain string, and
 /// what it refuses it refuses by name ([`Hosts::parse`]) rather than reading half of it.
@@ -470,7 +460,7 @@ fn expand_tilde(p: &Path) -> PathBuf {
 // `letibot --migrate`) spell their flags from this one place. Neither passes `-F` and neither
 // trusts a host key unchecked, and a copy of these rules would drift from them.
 
-/// letibot's own known-hosts file, inside [`Paths::config`] — and not the operator's: a host key
+/// letibot's own known-hosts file, inside [`Paths::config`], and not the operator's: a host key
 /// accepted for letibot is not a host key accepted for their own `git push`.
 pub const KNOWN_HOSTS_FILE: &str = "known_hosts";
 
@@ -508,8 +498,8 @@ impl Paths {
         Paths { home, config }
     }
 
-    /// A test's own, with the config directory somewhere other than under the home — the shape a
-    /// box with `XDG_CONFIG_HOME` set has.
+    /// A test's own, with the config directory somewhere other than under the home: the shape a box
+    /// with `XDG_CONFIG_HOME` set has.
     pub fn with_config(mut self, config: impl Into<PathBuf>) -> Paths {
         self.config = config.into();
         self
@@ -531,8 +521,7 @@ impl Paths {
         self.config.join(KEYS_DIR)
     }
 
-    /// `keys/<host>` under the config directory — **the key a host uses when the file says
-    /// nothing**.
+    /// `keys/<host>` under the config directory: the key a host uses when the file says nothing.
     pub fn default_key(&self, host: &str) -> PathBuf {
         self.keys().join(sanitise(host))
     }
@@ -558,8 +547,8 @@ fn sanitise(name: &str) -> String {
         .collect()
 }
 
-/// `~/x` → `<home>/x`. A `~` left unexpanded would name a directory called `~`, and a path that
-/// does not exist is not one any rule can be asked about.
+/// `~/x` becomes `<home>/x`. A `~` left unexpanded would name a directory called `~`, and a path
+/// that does not exist is not one any rule can be asked about.
 pub fn expand(path: &Path, home: &Path) -> PathBuf {
     let s = path.to_string_lossy();
     if let Some(rest) = s.strip_prefix("~/") {
@@ -787,11 +776,10 @@ pub fn rundir() -> PathBuf {
 
 /// The `ControlMaster` socket for one host and one daemon, under [`rundir`].
 ///
-/// The pid is in the name because one socket per host is one OpenSSH connection with ten
-/// `MaxSessions` slots, and several daemons asking at once get the eleventh refused by the server
-/// or lost by the client, and a write refused halfway is how a file ends at zero bytes. A socket
-/// per daemon leaves [`rpc::MAX_SESSIONS_PER_HOST`] as the only bound that matters, at the cost of
-/// one dial per daemon per host. A unix path is capped, so a long one falls back to `/tmp`.
+/// The pid is in the name because one socket per host is one connection with ten `MaxSessions`
+/// slots, and several daemons asking at once get the eleventh refused or lost. A socket per daemon
+/// leaves [`rpc::MAX_SESSIONS_PER_HOST`] as the only bound that matters, at one dial per daemon.
+/// A unix path is capped, so a long one falls back to `/tmp`.
 pub fn control_path(host: &str, pid: u32) -> PathBuf {
     control_path_for(host, pid, "call")
 }
@@ -890,10 +878,7 @@ impl Host {
 ///
 /// A command's deadline is the tool's own; this is the other kind - a read, a write chunk, a
 /// listing, a poll, a probe - which is no work the operator asked for, so a call past this bound
-/// has its local ssh killed and fails, naming the host and the step.
-///
-/// 20 s is the point past which nothing this side can still call waiting, given the keepalive and
-/// connect bounds beside it.
+/// has its local ssh killed and fails. 20 s is where nothing this side can still call waiting.
 pub const STEP_BOUND: Duration = Duration::from_secs(20);
 
 /// The bound on one status poll ([`RemoteProcesses::refresh`]). Shorter than [`STEP_BOUND`]
@@ -907,7 +892,7 @@ const POLL_BOUND: Duration = Duration::from_secs(5);
 const MASTER_BOUND: Duration = Duration::from_secs(3);
 
 /// The bound on the local `git` work a placement does: `bundle create`, the `fetch` back. Generous
-/// because it is real work on a real repository — the number only has to be below "for ever".
+/// because it is real work on a real repository, and the number only has to be below "for ever".
 pub const GIT_BOUND: Duration = Duration::from_secs(300);
 
 /// What a caller may do when a call does not answer at all. Retrying follows idempotency: a `read`
@@ -939,8 +924,8 @@ enum Call {
     Answered(String, Vec<u8>, i32),
     /// The bound passed with nothing to show for it. The local ssh was killed.
     TimedOut(Duration),
-    /// ssh failed before the command could say anything — exit 255 with nothing on stdout: the
-    /// connection dropped, the name does not resolve.
+    /// ssh failed before the command could say anything: exit 255 with nothing on stdout, so the
+    /// connection dropped or the name does not resolve.
     Dropped(Vec<u8>),
     /// The far side said no and meant it - `Permission denied (publickey)`, a host key that does
     /// not verify. Definite, never retried, and its sentence names the fix ([`Ssh::denied`]).
@@ -1167,15 +1152,15 @@ pub struct Ssh {
     program: PathBuf,
     /// The identity file ssh is given, resolved and checked once, at [`Ssh::connect`].
     key: PathBuf,
-    /// This daemon's master for its own RPC calls — [`control_path`], and the socket
+    /// This daemon's master for its own RPC calls: [`control_path`], and the socket
     /// [`rpc::MAX_SESSIONS_PER_HOST`] is a promise about.
     control: PathBuf,
     /// This daemon's master for git's ssh, which this process does not run and therefore cannot
     /// count against that bound ([`git_control_path`]).
     git_control: PathBuf,
     paths: Paths,
-    /// The wall clock on every call that is *not* a command — [`STEP_BOUND`] unless a caller (a
-    /// test, mostly) names another.
+    /// The wall clock on every call that is not a command: [`STEP_BOUND`] unless a caller (a test,
+    /// mostly) names another.
     bound: Duration,
     /// Where the remote command's work is, absolute on that machine: the checkout once a placement
     /// has made one, the host's `root` before that. It is `mise exec -C <dir>`'s argument, since a
@@ -1200,9 +1185,9 @@ impl Ssh {
         }
         let control = control_path(&host.name, std::process::id());
         let git_control = git_control_path(&host.name, std::process::id());
-        // The socket's directory has to exist or ssh cannot make the master — and a missing
-        // master is not an error, it is a handshake per command, which nobody asked for. A
-        // failure here is not fatal: ssh says so on its own stderr.
+        // The socket's directory has to exist or ssh cannot make the master, and a missing master
+        // is not an error: it is a handshake per command, which nobody asked for. A failure here is
+        // not fatal, because ssh says so on its own stderr.
         for socket in [&control, &git_control] {
             if let Some(dir) = socket.parent() {
                 let _ = std::fs::create_dir_all(dir);
@@ -1221,22 +1206,19 @@ impl Ssh {
         })
     }
 
-    /// **Tell the connection which tree the work is in**, once a placement knows: the remote
-    /// checkout, absolute. It is `mise exec -C`'s argument, so it decides which `mise.toml` a
-    /// remote command's toolchain is read from.
+    /// Tell the connection which tree the work is in, once a placement knows: the remote checkout,
+    /// absolute. It is `mise exec -C`'s argument, so it decides which `mise.toml` a remote
+    /// command's toolchain is read from.
     pub fn with_dir(mut self, dir: impl Into<String>) -> Ssh {
         self.dir = Some(dir.into());
         self
     }
 
-    /// The directory a wrapped command is run in — `-C`'s argument.
+    /// The directory a wrapped command is run in: `-C`'s argument.
     ///
-    /// **`one_entry`, not `quote`.** This is a path on the *remote*, so a `~` in it must be
-    /// expanded **there**, exactly as `path`'s entries are: `quote` would hand mise a literal
-    /// `~`, which mise resolves against the directory it happens to be in, not against that
-    /// machine's home. Measured on a host with a real mise (2026-10-26): the wrapper is the one
-    /// thing between a session and *every* remote command, so a misspelling here is a shape that
-    /// fails on all four of the operator's machines and on none of this box's tests.
+    /// `one_entry`, not `quote`: this is a path on the remote, so a `~` in it must be expanded there,
+    /// exactly as `path`'s entries are. `quote` would hand mise a literal `~`, which mise resolves
+    /// against the directory it happens to be in and not against that machine's home.
     fn dir_arg(&self) -> String {
         match &self.dir {
             Some(d) => one_entry(d),
@@ -1244,10 +1226,9 @@ impl Ssh {
         }
     }
 
-    /// **The wall clock this connection's own work is given.** A test that wants a fake ssh's
-    /// silence to be measured in a second rather than in [`STEP_BOUND`] says so here; production
-    /// never calls it, which is why the default is the constant and not a field a caller has to
-    /// fill in.
+    /// The wall clock this connection's own work is given. A test that wants a fake ssh's silence to
+    /// be measured in a second rather than in [`STEP_BOUND`] says so here; production never calls it,
+    /// which is why the default is the constant and not a field a caller has to fill in.
     pub fn with_bound(mut self, within: Duration) -> Ssh {
         self.bound = within;
         self
@@ -1297,14 +1278,14 @@ impl Ssh {
         self.host.destination()
     }
 
-    /// The identity file this connection was opened with — resolved, existing, and outside the
+    /// The identity file this connection was opened with: resolved, existing, and outside the
     /// operator's ssh directory.
     pub fn key(&self) -> &Path {
         &self.key
     }
 
-    /// The flags, and nothing else — what `git` needs for `core.sshCommand`, where the
-    /// destination and the command are git's to append.
+    /// The flags and nothing else: what `git` needs for `core.sshCommand`, where the destination and
+    /// the command are git's to append.
     pub fn flags(&self) -> Vec<String> {
         flags(&self.key, &self.control, &self.paths)
     }
@@ -1317,15 +1298,14 @@ impl Ssh {
         flags(&self.key, &self.git_control, &self.paths)
     }
 
-    /// The socket this connection's own calls multiplex over — a test asks this, production does
-    /// not: it is the one fact that says *one master per daemon*.
+    /// The socket this connection's own calls multiplex over. A test asks this and production does
+    /// not: it is the one fact that says one master per daemon.
     pub fn control_socket(&self) -> &Path {
         &self.control
     }
 
-    /// The argv that runs `command` on the remote: flags, destination, command — the
-    /// whole of the ssh policy in one place, and the one thing a test's fake has to
-    /// tolerate.
+    /// The argv that runs `command` on the remote: flags, destination, command. The whole of the ssh
+    /// policy in one place, and the one thing a test's fake has to tolerate.
     pub fn argv(&self, command: &str) -> Vec<String> {
         let mut v = self.flags();
         v.push(self.destination());
@@ -1337,12 +1317,9 @@ impl Ssh {
     ///
     /// Three things are put around a script: `bash -lc`, because a login shell reads the remote's
     /// profiles; the host's `path` list inside that shell, since a profile that sets `PATH` would
-    /// otherwise undo a prefix applied before it; and `mise exec -C <dir> --` around the lot, which
-    /// is what makes `cargo` mean the pinned one. Every door goes through here, so the three cannot
-    /// drift apart.
-    ///
-    /// The stderr is the ssh client's own and never the remote command's: ssh does not carry two
-    /// channels apart into two pipes.
+    /// otherwise undo a prefix applied before it; and `mise exec -C <dir> --` around the lot. Every
+    /// door goes through here, so the three cannot drift apart. The stderr is the ssh client's own:
+    /// ssh does not carry two channels apart into two pipes.
     pub fn remote_command(&self, script: &str) -> String {
         // A VM is the boundary a command runs inside, so the script is not the host's command any
         // more: `firecode in` hands it to the guest's `bash -lc`. The login shell around it is what
@@ -1631,7 +1608,7 @@ impl Ssh {
         self.sh_step_within(step, script, self.bound)
     }
 
-    /// [`Ssh::sh_step`] with a bound of its own — a status poll is shorter than a write.
+    /// [`Ssh::sh_step`] with a bound of its own: a status poll is shorter than a write.
     fn sh_step_within(
         &self,
         step: &str,
@@ -1655,7 +1632,7 @@ impl Ssh {
         self.sh_once_within(step, script, self.bound)
     }
 
-    /// [`Ssh::sh_once`] with a bound of its own — a status poll is shorter than a write.
+    /// [`Ssh::sh_once`] with a bound of its own: a status poll is shorter than a write.
     fn sh_once_within(
         &self,
         step: &str,
@@ -1762,8 +1739,8 @@ impl Ssh {
         };
         if again {
             // The master may be what died, and a second attempt through the same dead socket would
-            // fail the same way — `attempt` has already dropped a socket it was refused on. This
-            // one is not a probe: the cooldown's one call was already spent.
+            // fail the same way - `attempt` has already dropped a socket it was refused on. This one
+            // is not a probe: the cooldown's one call was already spent.
             let second = self.attempt(step, script, within, reported, fed);
             return match second {
                 Ok(call) => {
@@ -2089,11 +2066,10 @@ impl Ssh {
 
     /// Drop the socket of a master that has just failed us, without speaking to it.
     ///
-    /// `-O exit` is the polite way to end a master ([`Ssh::exit_master`] does it at the end of a
-    /// session) and it is the wrong move here: this is the path a call takes when the connection
-    /// stopped answering, so asking it to shut down cleanly waits out another `MASTER_BOUND`.
-    /// Removing the socket is what stops the next call multiplexing through it, and a master left
-    /// behind expires on its own `ControlPersist`.
+    /// `-O exit` is the polite way to end a master and it is the wrong move here: this is the path a
+    /// call takes when the connection stopped answering, so asking it to shut down cleanly waits out
+    /// another `MASTER_BOUND`. Removing the socket is what stops the next call multiplexing through
+    /// it, and a master left behind expires on its own `ControlPersist`.
     fn drop_socket(&self) {
         let _ = std::fs::remove_file(&self.control);
     }
@@ -2244,9 +2220,9 @@ impl Ssh {
         Ok(out)
     }
 
-    /// Drop the ControlMaster, if one was made. Best effort: an ssh that says it has no
-    /// master is not a failure of anything — and it is bounded, because a master that has
-    /// stopped answering is exactly the case this is called in.
+    /// Drop the ControlMaster, if one was made. Best effort: an ssh that says it has no master is
+    /// not a failure of anything, and it is bounded because a master that has stopped answering is
+    /// exactly the case this is called in.
     pub fn exit_master(&self) {
         let _ = self.master("exit");
     }
@@ -2306,8 +2282,8 @@ pub struct Facts {
     pub uname: String,
     /// `nproc`, or the portable `getconf` fallback. 0 means neither answered.
     pub cores: u64,
-    /// The three load averages as the machine printed them — a string because that is the shape
-    /// the two platforms agree on, and a model reads it directly.
+    /// The three load averages as the machine printed them: a string because that is the shape the
+    /// two platforms agree on, and a model reads it directly.
     pub load: String,
     pub mem_total_kb: Option<u64>,
     pub mem_avail_kb: Option<u64>,
@@ -2315,8 +2291,8 @@ pub struct Facts {
     /// been made yet.
     pub disk_path: String,
     pub disk_free_kb: Option<u64>,
-    /// Where `git` is, when the host's own `PATH` — with its `path` list in front — finds it. This
-    /// is one of the two facts that decide whether a session can work there at all.
+    /// Where `git` is, when the host's own `PATH`, with its `path` list in front, finds it. One of
+    /// the two facts that decide whether a session can work there at all.
     pub git: Option<String>,
     /// Where `cargo` is on `PATH`. Reported only as a fallback: on a host with mise the toolchain
     /// is whatever mise pins, and `cargo` on a non-login `PATH` is not the question.
@@ -2380,11 +2356,9 @@ fi
 /// Ask one host what it is doing, and never write there.
 ///
 /// The connection is [`Ssh::connect`]'s, so its two refusals arrive as sentences the caller can
-/// show before anything is asked; then one bounded call, and the facts are parsed out of it. A
-/// host that does not answer within `within` costs one bound, not four, when four are probed.
-///
-/// The answer carries what this process's calls to the host have been doing, and so does a
-/// refusal: a host that cannot be reached is the one whose history the reader most needs.
+/// show before anything is asked; then one bounded call, and the facts are parsed out of it. The
+/// answer carries what this process's calls to the host have been doing, and so does a refusal: a
+/// host that cannot be reached is the one whose history the reader most needs.
 pub fn probe(
     host: &Host,
     program: Option<PathBuf>,
@@ -2478,10 +2452,8 @@ fn confined_here(host: &str) -> Option<String> {
 ///
 /// One function for both spawns, because two spellings of it is how the group-kill half gets lost:
 /// the session is [`crate::exec::Session::Kept`] in both, so everything the helper starts stays in
-/// the process group the remote side recorded.
-///
-/// The refusal is returned and not swallowed: the alternatives are refuse the command or run it
-/// unconfined, and the second is the boundary quietly not being there.
+/// the process group the remote side recorded. The refusal is returned and not swallowed, since the
+/// alternative is the boundary quietly not being there.
 fn wrap_confined(
     confine: &crate::exec::Bwrap,
     cwd: &str,
@@ -2504,12 +2476,10 @@ fn wrap_confined(
 /// One session's view on a host, and the boundary measured for it - or the reason there is none.
 ///
 /// The view is the policy a local confined session gets, spelled for the far machine: the checkout
-/// read-write at its own path, the system roots read-only, the toolchain read-only from what the
-/// probe found, a `$HOME` that is letibot's own directory there, and the session's egress rule.
-///
-/// Two views, one boundary: the probe runs with the provisional view, because its own argv needs
-/// binds and the toolchain list is what it is there to discover. The measurement is about the
-/// namespaces and the two seals, which no bind can change, so the grants are added afterwards.
+/// read-write at its own path, the system roots and the toolchain read-only, a `$HOME` that is
+/// letibot's own directory there, and the session's egress rule. The probe runs with the provisional
+/// view, because its own argv needs binds and the toolchain list is what it is there to discover;
+/// the measurement is about the namespaces, which no bind can change.
 fn confine_a_checkout(
     ssh: &Ssh,
     home: &str,
@@ -2697,21 +2667,19 @@ pub struct SshSpec {
     /// is [`STEP_BOUND`]. A test's door: a fake ssh that never answers should be measured in a
     /// second rather than in twenty.
     pub bound: Option<Duration>,
-    /// The session's network rule, as the confined view expresses it. A boundary denies the
-    /// network by default; a point that seats network passes [`crate::exec::Egress::Host`] with the
-    /// sentence that decided it, and the boundary shares that machine's network instead.
+    /// The session's network rule, as the confined view expresses it. A boundary denies the network
+    /// by default; a point that seats network passes [`crate::exec::Egress::Host`] with the sentence
+    /// that decided it, and the boundary shares that machine's network instead.
     ///
-    /// A field of the spec rather than a constant because the two answers are a decision somebody
-    /// makes above this file: a session whose mode admits `web_fetch` must not have its `curl` fail
-    /// at the socket after the gate said yes, and one whose mode does not must not reach out.
+    /// A field rather than a constant because the two answers are a decision somebody makes above
+    /// this file: a mode that admits `web_fetch` must not have its `curl` fail at the socket.
     pub egress: crate::exec::Egress,
     /// Whether to ask this host whether it can confine. `None` (production) asks, and is the only
     /// value a real caller passes.
     ///
-    /// `Some(false)` is a fixture's door: the probe runs on the machine behind the fake, which is
-    /// the machine running the test, so the same test would take two paths on two boxes.
-    /// `Some(true)` is the other half: a test that means this host confines says so, and the probe
-    /// still has to answer.
+    /// `Some(false)` is a fixture's door: the probe runs on the machine behind the fake, which is the
+    /// machine running the test, so the same test would take two paths on two boxes. `Some(true)`
+    /// says this host confines, and the probe still has to answer.
     pub confine: Option<bool>,
     /// Boot a firecode VM on the host and run every command of this session inside it
     /// (`--host NAME --vm`). The guest is the boundary, so no `bwrap` is probed for.
@@ -2725,9 +2693,9 @@ pub struct SshBackend {
     host: String,
     /// The resolved remote root, absolute.
     root: String,
-    /// `<root>/<repo>.git` — the bare mirror, created on first use.
+    /// `<root>/<repo>.git`: the bare mirror, created on first use.
     mirror: String,
-    /// `<root>/<repo>/<short id>` — the checkout the session works in.
+    /// `<root>/<repo>/<short id>`: the checkout the session works in.
     worktree: String,
     /// `remote/<short id>`, the branch the remote commits to.
     branch: String,
@@ -2906,17 +2874,14 @@ impl SshBackend {
         )
         .map_err(place)?;
 
-        // The tree itself, as a bundle, written into the mirror where the remote `git` can read
-        // it. `git bundle` fails on a repository with no commits, and that is worth its own
-        // sentence: an empty repository is a real answer.
+        // The tree itself, as a bundle, written into the mirror where the remote `git` can read it.
+        // `git bundle` fails on a repository with no commits, and that is worth its own sentence: an
+        // empty repository is a real answer.
         //
-        // The staging file is unique per call - pid, a per-process counter, a timestamp - because
-        // two sessions placing at once would otherwise write one bundle and meet each other's
-        // `.lock`; the counter is what guarantees it, since a clock alone can repeat.
-        //
-        // The same counter names the copy that goes over: a name per mirror meant two placements
-        // wrote and fetched through one file, and the second fetch read the first one's bytes, so
-        // the session was handed somebody else's commit with nothing failing.
+        // Both names carry a per-call counter - pid, counter, timestamp - because two sessions
+        // placing at once would otherwise write one bundle and meet each other's `.lock`, and a
+        // name per MIRROR for the far-side copy meant the second fetch read the first one's bytes,
+        // handing a session somebody else's commit with nothing failing.
         static PLACED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let run = PLACED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let staging = std::env::temp_dir().join(format!(
@@ -3284,11 +3249,10 @@ impl SshBackend {
         }
     }
 
-    /// **The boundary this session's commands run inside**, when there is one.
+    /// The boundary this session's commands run inside, when there is one.
     ///
     /// The measured view, so a caller can answer *is this path inside it* and *what is the
-    /// disclosure* from the same fact that produced the argv — rather than from a second
-    /// opinion about what the confinement is.
+    /// disclosure* from the same fact that produced the argv, not from a second opinion.
     pub fn confinement(&self) -> Option<crate::exec::Boundary> {
         self.confine
             .as_ref()
@@ -3296,8 +3260,8 @@ impl SshBackend {
             .cloned()
     }
 
-    /// **Why a command on this host is not confined**, when it is not: the probe's own reason,
-    /// with the host in it.
+    /// Why a command on this host is not confined, when it is not: the probe's own reason, with the
+    /// host in it.
     pub fn unconfined_reason(&self) -> Option<&str> {
         self.unconfined.as_deref()
     }
@@ -3309,12 +3273,11 @@ impl SshBackend {
         self.confine.is_some()
     }
 
-    /// **The script a command becomes**, confined where there is a boundary: the helper's argv,
-    /// then `--`, then the command's own `argv`.
+    /// The script a command becomes, confined where there is a boundary: the helper's argv, then
+    /// `--`, then the command's own `argv`.
     ///
     /// The argv is spliced rather than wrapped in another shell: `Command::argv` is already the
-    /// shell the caller chose (`/bin/sh -c …`), so a second one would change what `$0` and the
-    /// quoting mean.
+    /// shell the caller chose, so a second one would change what `$0` and the quoting mean.
     fn confined_script(
         &self,
         cwd: &str,
@@ -3353,24 +3316,19 @@ impl SshBackend {
         &self.back_branch
     }
 
-    /// **What the placement had to say** — the worktree, the branch that comes back, and
-    /// the local edits that were left behind. Printed by the opener, not by the session.
+    /// What the placement had to say: the worktree, the branch that comes back, and the local
+    /// edits that were left behind. Printed by the opener, not by the session.
     pub fn placement_notes(&self) -> &[String] {
         &self.notes
     }
 
-    /// **Is this path in the view at all?** — the question a command's own sandbox answers, asked
-    /// by the file tools.
+    /// Is this path in the view at all? The question a command's own sandbox answers, asked by the
+    /// file tools.
     ///
-    /// `Ok(abs)` when there is no view (nothing was confined, so nothing is claimed) or when the
-    /// path is inside it; [`BackendError::Outside`] when it is not. **This is what makes RH5's
-    /// refusal hold on a placed session**: that rule resolves a path on *this* box, so a path on
-    /// the far machine — the operator's `~/.ssh` over there — resolves to nothing here and would
-    /// pass it. A view has no such trouble: that directory is not in it, so it is not there.
-    ///
-    /// It is the VIEW's rule, not the checkout's: `/etc/passwd` is bound read-only into a command's
-    /// view, so `read` reaches it too — what a command can see, the tools see, which is one answer
-    /// to one question rather than two.
+    /// `Ok(abs)` when there is no view or the path is inside it, [`BackendError::Outside`] when it
+    /// is not. This is what makes the never-write rule hold on a placed session: that rule resolves
+    /// a path on this box, so the operator's `~/.ssh` over there would resolve to nothing here, and
+    /// a view has no such trouble because that directory is not in it.
     fn in_view(&self, path: &str) -> Result<String, BackendError> {
         let abs = self.abs(path);
         match &self.view {
@@ -3393,8 +3351,8 @@ impl SshBackend {
         format!("{}/{}", self.worktree, p)
     }
 
-    /// **Bring the branch back**, and say what came with it. Idempotent and safe to call
-    /// twice: the second call reports what the first found.
+    /// Bring the branch back, and say what came with it. Idempotent and safe to call twice: the
+    /// second call reports what the first found.
     fn bring_back(&self) -> String {
         if let Some(said) = self
             .brought_back
@@ -3407,19 +3365,18 @@ impl SshBackend {
         let url = format!(
             "{}:{}",
             self.ssh.destination(),
-            // **A VM placement's checkout is a CLONE, so the branch is in the checkout.** Every
-            // other placement's is a linked worktree of the mirror, and the mirror has it.
+            // A VM placement's checkout is a CLONE, so the branch is in the checkout. Every other
+            // placement's is a linked worktree of the mirror, and the mirror has it.
             match self.vm {
                 Some(_) => &self.worktree,
                 None => &self.mirror,
             }
         );
         let refspec = format!("+{}:refs/heads/{}", self.branch, self.back_branch);
-        // `git fetch` over ssh, with **this backend's ssh**: the same flags, and the **git**
-        // ControlMaster — not the one the calls are multiplexed on. git starts that ssh itself, so
-        // it takes no slot in the gate that keeps a daemon's calls under `MaxSessions`; giving it a
-        // socket of its own is what stops a fetch being the ninth session on a master whose eighth
-        // was promised to a call ([`Ssh::git_flags`]).
+        // `git fetch` over ssh, with this backend's ssh: the same flags, and the git ControlMaster
+        // rather than the one the calls are multiplexed on. git starts that ssh itself, so it takes
+        // no slot in the gate that keeps a daemon's calls under `MaxSessions`, and giving it a
+        // socket of its own stops a fetch being the ninth session on a master.
         let ssh_command = std::iter::once(self.ssh.program().display().to_string())
             .chain(self.ssh.git_flags())
             .map(|a| quote(&a))
@@ -3434,21 +3391,20 @@ impl SshBackend {
                 "fetch".into(),
                 "--no-tags".into(),
             ];
-            // **The far side's `git-upload-pack` is a remote command**, and ssh runs it as
-            // `<this> '<path>'` — a login shell does not read a profile for it, so a host whose
-            // `git` is not on the default `PATH` needs the prefix here too, and a host whose
-            // toolchain is pinned by mise needs the same wrapper every other remote command gets
-            // ([`Ssh::upload_pack_prefix`]). `--upload-pack` is the only door git gives for it,
-            // and its argument is spliced into the remote command line, so it is a **prefix
-            // assignment** rather than an `export`.
+            // The far side's `git-upload-pack` is a remote command, and ssh runs it as
+            // `<this> '<path>'` - no login shell, so no profile - which means a host whose `git` is
+            // not on the default `PATH` needs the prefix here too, and a host with mise needs the
+            // same wrapper every other remote command gets ([`Ssh::upload_pack_prefix`]).
+            // `--upload-pack` splices its argument into the remote command line, so it is a prefix
+            // assignment and not an `export`.
             if let Some(prefix) = self.ssh.upload_pack_prefix() {
                 argv.push("--upload-pack".into());
                 argv.push(format!("{prefix} git-upload-pack"));
             }
             argv.push(url.clone());
             argv.push(refspec.clone());
-            // **Bounded, because this fetch's transport is an ssh connection** ([`GIT_BOUND`]):
-            // a close that waits for ever on a dead host is the same defect as a `read` that does.
+            // Bounded, because this fetch's transport is an ssh connection ([`GIT_BOUND`]): a
+            // close that waits for ever on a dead host is the same defect as a `read` that does.
             run_bounded(Path::new("git"), &argv, GIT_BOUND)
         };
         let mut said = match fetched {
@@ -3499,15 +3455,13 @@ impl SshBackend {
                 url
             ),
         };
-        // **What was left uncommitted is not in that branch.** A session that ends with a
-        // dirty tree has work the branch does not hold, and a report that named only the
-        // branch would be a false "it is all here".
+        // What was left uncommitted is not in that branch: a session that ends with a dirty tree has
+        // work the branch does not hold, and a report that named only the branch would be a false
+        // "it is all here".
         //
-        // **`.letibot-remote/` is not the session's work.** It is this backend's own job
-        // directory — a launcher, its output, its pid, its exit status — and a close that counted
-        // it as an uncommitted change told the operator to go and review files nothing typed. The
-        // checkout's exclude file makes `git status` leave it out ([`SshBackend::place`]); this
-        // filter is the belt beside it, for a checkout made by a build that predates that.
+        // `.letibot-remote/` is not the session's work - it is this backend's own job directory, and
+        // counting it as an uncommitted change told the operator to review files nothing typed. The
+        // exclude file makes `git status` leave it out; this filter is the belt beside it.
         if let Ok((dirty, _, 0)) = self.ssh.sh_step(
             "listing what is still uncommitted there",
             &format!("cd {} && git status --porcelain", quote(&self.worktree)),
@@ -3552,9 +3506,8 @@ fn ssh_program_default() -> PathBuf {
 
 /// The last eight usable characters of a session id, as a branch and directory name.
 ///
-/// Alphanumerics only: a session id is a time and a random tail (`s-1793abcd-ef01-…`), the
-/// tail is what tells two of them apart, and a `-` in the middle of eight characters buys
-/// nothing but a branch name with a seam in it.
+/// Alphanumerics only: the tail is what tells two session ids apart, and a `-` in the middle of
+/// eight characters buys nothing but a branch name with a seam in it.
 fn short_branch_id(id: &str) -> String {
     let cleaned: String = id.chars().filter(char::is_ascii_alphanumeric).collect();
     let tail: String = cleaned
@@ -3578,12 +3531,11 @@ fn git(repo: &Path, args: &[&str]) -> Result<String, BackendError> {
     git_within(repo, args, GIT_BOUND)
 }
 
-/// **One local `git` call with a wall clock on it**, for the steps that can reach another machine:
+/// One local `git` call with a wall clock on it, for the steps that can reach another machine:
 /// `bundle create` on a large repository, and the `fetch` whose transport is ssh.
 ///
-/// A `git` left waiting on a dead connection holds the op that asked for it — the placement, or the
-/// session's close — so it is killed at the deadline like everything else here, and the sentence
-/// says which step it was.
+/// A `git` left waiting on a dead connection holds the op that asked for it, so it is killed at
+/// the deadline like everything else here, and the sentence says which step it was.
 fn git_within(repo: &Path, args: &[&str], within: Duration) -> Result<String, BackendError> {
     let mut argv: Vec<String> = vec!["-C".into(), repo.display().to_string()];
     argv.extend(args.iter().map(|a| a.to_string()));
@@ -3605,11 +3557,11 @@ fn git_within(repo: &Path, args: &[&str], within: Duration) -> Result<String, Ba
     }
 }
 
-/// **Boot a firecode guest on the host for this session**, or say which step refused.
+/// Boot a firecode guest on the host for this session, or say which step refused.
 ///
 /// The host is asked once per process what it has ([`Ssh::probe_firecode`]), because a machine
-/// without `firecode` or without `/dev/kvm` is a refusal a caller can act on rather than a boot
-/// that fails minutes later in a log nobody reads.
+/// without `firecode` or `/dev/kvm` is a refusal a caller can act on rather than a boot that fails
+/// minutes later in a log nobody reads.
 fn vm_up(plain: &Ssh, host: &str, project: &str, found: VmHost) -> Result<RemoteVm, BackendError> {
     let vm = RemoteVm {
         firecode: found.firecode,
@@ -3627,9 +3579,9 @@ fn vm_up(plain: &Ssh, host: &str, project: &str, found: VmHost) -> Result<Remote
     Ok(vm)
 }
 
-/// **A file into the guest**, which is not the host: `firecode in` does not carry the caller's
-/// stdin, so a small file travels inside the command and a large one is staged on the host and
-/// carried across by `firecode cp` (the split the local VM backend makes for the same reason).
+/// A file into the guest, which is not the host: `firecode in` does not carry the caller's stdin,
+/// so a small file travels inside the command and a large one is staged on the host and carried
+/// across by `firecode cp` (the split the local VM backend makes for the same reason).
 fn write_into_guest(
     ssh: &Ssh,
     vm: &RemoteVm,
@@ -3698,9 +3650,9 @@ fn write_into_guest(
     .map(|_| ())
 }
 
-/// **Every guest this process booted and nothing has brought down yet**, with the plain
-/// connection that can reach its host: `down` is a verb of the host's own `firecode` client and
-/// is never wrapped in `in`.
+/// Every guest this process booted and nothing has brought down yet, with the plain connection that
+/// can reach its host: `down` is a verb of the host's own `firecode` client and is never wrapped in
+/// `in`.
 static GUESTS: std::sync::LazyLock<Mutex<Vec<(Ssh, RemoteVm)>>> =
     std::sync::LazyLock::new(|| Mutex::new(Vec::new()));
 
@@ -3730,9 +3682,9 @@ fn forget_guest(host: &str, vm: &RemoteVm) {
         .retain(|(s, g)| !(s.host.name == host && g.project == vm.project));
 }
 
-/// **Bring down every guest this process booted and no session closed**, and say where each
-/// one's copy came out. A forced exit closes no backend at all, so without this a VM outlives the
-/// daemon with whatever calls were stuck in it. All at once, and bounded.
+/// Bring down every guest this process booted and no session closed, and say where each one's copy
+/// came out. A forced exit closes no backend at all, so without this a VM outlives the daemon with
+/// whatever calls were stuck in it. All at once, and bounded.
 pub fn guests_down() -> Vec<String> {
     let guests = std::mem::take(&mut *GUESTS.lock().unwrap_or_else(|e| e.into_inner()));
     let running: Vec<_> = guests
@@ -3834,27 +3786,25 @@ impl ExecBackend for SshBackend {
             .map(|(k, v)| format!("{}={} ", quote(k), quote(v)))
             .collect::<String>();
         let cwd = self.abs(&cmd.cwd);
-        // **Rule 6: the command's remote process group is recorded as it starts**, in this
-        // session's own directory on that machine, so a command that has to be abandoned can be
-        // ended *there* rather than only by closing the local ssh. The name carries this
-        // process's id and a counter, so two runs cannot overwrite each other's group — a stale id
-        // is a kill pointed at whatever now owns it.
+        // The command's remote process group is recorded as it starts, in this session's own
+        // directory on that machine, so a command that has to be abandoned can be ended there rather
+        // than only by closing the local ssh. The name carries this process's id and a counter, so
+        // two runs cannot overwrite each other's group - a stale id is a kill pointed at whatever
+        // now owns it.
         let pgid = format!(
             "{}/.letibot-remote/run-{}-{}.pgid",
             self.worktree,
             std::process::id(),
             RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         );
-        // **`run` is the one call that keeps the tool's deadline and nothing else.** The command
-        // may be a build, and this file has no idea how long that takes; what this file does know
-        // is that a command which loses its connection is not a failure — it may be running still
-        // — so it is reported as an unknown outcome and never re-sent.
+        // `run` is the one call that keeps the tool's deadline and nothing else: the command may be a
+        // build and this file has no idea how long that takes. What it does know is that a command
+        // which loses its connection is not a failure - it may be running still - so it is reported
+        // as an unknown outcome and never re-sent.
         //
-        // **RH3: the command runs inside the boundary**, in the same view the probe measured — the
-        // checkout writable, the toolchain read-only, the rest of that machine absent. The
-        // `cd`/`ENV=` shape is what an unconfined command keeps, and it is not an alternative to
-        // the confined one: a boundary's `--chdir` is the `cd`, and its `--clearenv`/`--setenv` is
-        // the environment, so splicing both would set the variables twice in two places.
+        // The command runs inside the boundary, in the view the probe measured. The `cd`/`ENV=` shape
+        // is what an unconfined command keeps and not an alternative: a boundary's `--chdir` is the
+        // `cd` and its `--clearenv` is the environment, so splicing both would set them twice.
         let script = match &self.confine {
             Some(_) => self
                 .confined_script(&cwd, &cmd.env, &cmd.argv)
@@ -3864,7 +3814,7 @@ impl ExecBackend for SshBackend {
         let (out, _stderr, exit) = self.ssh.sh_run("this command ran", &script, Some(&pgid))?;
         Ok(Output {
             stdout: out.into_bytes(),
-            // Merged by ssh itself — see `Ssh::remote_command`.
+            // Merged by ssh itself - see `Ssh::remote_command`.
             stderr: Vec::new(),
             exit,
         })
@@ -3898,20 +3848,13 @@ impl ExecBackend for SshBackend {
         self.writable
     }
 
-    /// **What this backend will call the root of the boundary** — the checkout, when a boundary
-    /// was measured, and nothing when it was not.
+    /// What this backend will call the root of the boundary: the checkout, when a boundary was
+    /// measured, and nothing when it was not.
     ///
-    /// Two different questions meet here and the docs of both are worth keeping apart.
-    /// `root_path` answers *is this path inside the boundary*, and for a substrate that only knows
-    /// a root the honest answer is the writable one. **The narrower truth is
-    /// [`Self::in_view`]**: the view holds the system roots and the toolchain read-only as well,
-    /// so the file tools admit more than this path and refuse what the view does not contain. This
-    /// method is what a caller that has only one path to print gets.
-    ///
-    /// Unconfined it is `None`, because inventing `/home/dead/letibot-remote` here would make the
-    /// gate answer confidently about a filesystem it is not looking at.
-    /// [`Self::workspace_path`] is the other question — *which directory is this session working
-    /// in* — and that one has an answer either way.
+    /// For a substrate that only knows a root, the honest answer to *is this path inside* is the
+    /// writable one; the narrower truth is [`Self::in_view`], which holds the read-only roots too.
+    /// Unconfined it is `None`, since inventing a path would make the gate answer confidently about
+    /// a filesystem it is not looking at.
     fn root_path(&self) -> Option<String> {
         if self.vm.is_some() {
             return Some(self.worktree.clone());
@@ -3923,10 +3866,9 @@ impl ExecBackend for SshBackend {
         Some(self.worktree.clone())
     }
 
-    /// **The machine the tools run on**, for the gate's own sentence. A card that said
-    /// only `/home/dead/letibot-remote/letibot/1a2b3c4d` would name a path nobody could
-    /// tell apart from one on this box — and an operator deciding a `bash` call here is
-    /// deciding about another machine.
+    /// The machine the tools run on, for the gate's own sentence. A card that said only
+    /// `/home/dead/letibot-remote/...` would name a path nobody could tell apart from one on this
+    /// box, and an operator deciding a `bash` call here is deciding about another machine.
     fn host_label(&self) -> Option<String> {
         Some(match self.vm {
             Some(_) => format!("{} in a firecode VM", self.host),
@@ -4039,10 +3981,10 @@ impl ExecBackend for SshBackend {
     }
 
     fn describe(&self) -> String {
-        // **What the boundary IS, or why there is none** — never a fixed sentence. `NOT CONFINED`
-        // was true until RH3 and is now one of two answers, and the old constant is exactly the
-        // shape `Boundary::describe`'s own doc warns about: a banner that asserts what it did not
-        // measure. `bwrap` was measured on the host, so the first arm prints the view that runs.
+        // What the boundary IS, or why there is none, and never a fixed sentence: a constant that
+        // asserted `NOT CONFINED` is exactly the shape `Boundary::describe`'s own doc warns about,
+        // a banner claiming what it did not measure. `bwrap` was measured on the host, so the first
+        // arm prints the view that runs.
         let boundary = match (&self.confine, &self.unconfined) {
             // A VM is a boundary by construction rather than by measurement, so the sentence
             // says which it is instead of borrowing `bwrap`'s.
@@ -4093,18 +4035,14 @@ impl ExecBackend for SshBackend {
     }
 }
 
-/// A depth-first walk, printed as `<d|f>\t<size>\t<path>` — the same shape firecode's
-/// `find -printf` produces, so [`crate::firecode::tree_in_walk_order`] rebuilds the
-/// breadth-first order the trait's default loop would have produced.
+/// A depth-first walk, printed as `<d|f>\t<size>\t<path>`: the same shape firecode's `find
+/// -printf` produces, so [`crate::firecode::tree_in_walk_order`] rebuilds the breadth-first order
+/// the trait's default loop would have produced.
 ///
-/// A shell function and not `find -printf`: `-printf` is GNU's, and the machine on the
-/// other end of an ssh connection is not always Linux.
-///
-/// **The definition only — the call is the caller's**, with its directory as the argument.
-/// This ended in a bare `walk` line once, and a caller that appended a path got `walk` on
-/// one line and `/path` on the next: `walk` then ran with no argument and the walk covered
-/// the whole filesystem from `/`, which is a hang rather than an error and was measured as
-/// one (two tests sat in it). A constant a caller has to *finish* is the safe shape.
+/// A shell function and not `find -printf`, because `-printf` is GNU's and the far side of an ssh
+/// connection is not always Linux. The definition only, and the call is the caller's: a constant
+/// that ended in a bare `walk` line made a caller's appended path a second command, and `walk` with
+/// no argument covered the whole filesystem from `/`.
 const TREE_WALK: &str = r#"
 walk() {
   [ -n "$1" ] && [ -d "$1" ] || return 0
@@ -4124,25 +4062,15 @@ walk() {
 // Processes on the remote
 // ---------------------------------------------------------------------------
 
-/// **The process host of a remote session**: its jobs live in files on that machine.
+/// The process host of a remote session: its jobs live in files on that machine.
 ///
-/// A foreground `bash` call does not have to be a local process at all — it is started
-/// the same way a background one is, under `setsid`, and waited on by polling its exit
-/// file. That is what makes *"a job outlives the ssh connection"* true of every run
-/// rather than of the ones that asked: there is no ssh call left to outlive once the
-/// launch returns, and the daemon's own death does not reach it either.
+/// A foreground `bash` call is started the way a background one is, under `setsid`, and waited on by
+/// polling its exit file, so no ssh call is left to outlive and a job outlives the connection.
 ///
-/// The record of a job is four files under `<worktree>/.letibot-remote/jobs/`:
-///
-/// | file | is |
-/// |---|---|
-/// | `<id>.sh` | the launcher: `cd`, the environment, the command, the exit status |
-/// | `<id>.pid` | the shell's pid, written before the command runs |
-/// | `<id>.out` | its stdout and stderr, merged, which is what `job_output` reads |
-/// | `<id>.exit` | its status, written last — **its existence is the settlement** |
-///
-/// so a daemon that restarted can find a job it lost track of, and `job_kill` has a pid
-/// it can signal remotely.
+/// A job's record is four files under `<worktree>/.letibot-remote/jobs/`: `<id>.sh` (the launcher),
+/// `<id>.pid` written before the command runs, `<id>.out` with stdout and stderr merged, and
+/// `<id>.exit` written last - whose existence is the settlement. So a restarted daemon can find a
+/// job it lost track of, and `job_kill` has a pid it can signal remotely.
 pub struct RemoteProcesses {
     ssh: Ssh,
     host: String,
@@ -4153,7 +4081,7 @@ pub struct RemoteProcesses {
     reaps: Mutex<Vec<Reaping>>,
     session_scope: Mutex<Option<ScopeId>>,
     turn_scope: Mutex<Option<ScopeId>>,
-    /// The boundary this session's jobs start inside — the same one its commands use.
+    /// The boundary this session's jobs start inside: the same one its commands use.
     confine: Option<crate::exec::Bwrap>,
     /// The toolchain environment a confined job carries. See [`toolchain_env`].
     confined_env: Vec<(String, String)>,
@@ -4176,9 +4104,9 @@ struct RemoteJob {
     out: String,
     pid_path: String,
     exit: String,
-    /// **Who is expected to end it**, when somebody besides the command itself is: the
-    /// deadline. Read when the pid goes away with no status file, so the settlement says
-    /// *its deadline passed* rather than *something on that machine ended it*.
+    /// Who is expected to end it, when somebody besides the command itself is: the deadline. Read
+    /// when the pid goes away with no status file, so the settlement says *its deadline passed*
+    /// rather than *something on that machine ended it*.
     armed_kill: Mutex<Option<String>>,
 }
 
@@ -4234,13 +4162,11 @@ impl RemoteProcesses {
         }
     }
 
-    /// **Put every job of this session inside the session's own boundary**, and give it the same
-    /// environment a command of the model's gets — the operator's toolchain at its read-only
-    /// grants.
+    /// Put every job of this session inside the session's own boundary, and give it the same
+    /// environment a command of the model's gets: the operator's toolchain at its read-only grants.
     ///
-    /// A job and a foreground command are the same spawn here: both go through
-    /// [`wrap_confined`], so a job cannot be the door that runs unconfined in a session whose
-    /// commands are confined.
+    /// A job and a foreground command are the same spawn here, both through [`wrap_confined`], so a
+    /// job cannot be the door that runs unconfined in a session whose commands are confined.
     pub fn confined(
         mut self,
         confine: Option<crate::exec::Bwrap>,
@@ -4275,15 +4201,14 @@ impl RemoteProcesses {
             .cloned()
     }
 
-    /// **Ask the files what happened**, and record it. One round trip per job: the exit
-    /// status if there is one, whether the pid is still alive, and how much output there
-    /// is.
+    /// Ask the files what happened, and record it. One round trip per job: the exit status if there
+    /// is one, whether the pid is still alive, and how much output there is.
     fn refresh(&self, job: &RemoteJob) {
         self.refresh_within(job, self.ssh.poll_bound());
     }
 
-    /// [`RemoteProcesses::refresh`] with the caller's remaining time — so a `job_wait` honours
-    /// its own deadline even when the host has stopped answering.
+    /// [`RemoteProcesses::refresh`] with the caller's remaining time, so a `job_wait` honours its
+    /// own deadline even when the host has stopped answering.
     fn refresh_within(&self, job: &RemoteJob, within: Duration) {
         if !job.is_running() {
             return;
@@ -4297,20 +4222,18 @@ impl RemoteProcesses {
             pid = quote(&job.pid_path),
             out = quote(&job.out),
         );
-        // **A poll, so [`POLL_BOUND`] and one attempt**: a status question whose answer arrives
-        // after the next tick has already been superseded, and asking it twice holds the caller's
-        // deadline open for twice as long as it should.
+        // A poll, so [`POLL_BOUND`] and one attempt: a status question whose answer arrives after
+        // the next tick has already been superseded, and asking it twice holds the caller's deadline
+        // open for twice as long as it should.
         let Ok((line, _, 0)) = self
             .ssh
             .sh_poll_within("asking about a job", &script, within)
         else {
             return;
         };
-        // **`trim_end`, not `trim`.** The fields are tab-separated and the first one is
-        // EMPTY whenever the job has not written its exit status yet — `trim()` ate that
-        // leading tab, the three fields became two, and every running job read as "no pid,
-        // no output, no exit" for its whole life. Measured: a live `sleep 300` reported
-        // pid 0 fifty times while its pid file said otherwise.
+        // `trim_end`, not `trim`: the fields are tab-separated and the first is EMPTY until the job
+        // writes its exit status, so `trim()` ate the leading tab, the three fields became two, and
+        // every running job read as "no pid, no output, no exit" for its whole life.
         let mut parts = line.trim_end_matches(['\n', '\r']).split('\t');
         let (Some(code), Some(alive), Some(produced)) = (parts.next(), parts.next(), parts.next())
         else {
@@ -4330,20 +4253,11 @@ impl RemoteProcesses {
                 code: code.parse().unwrap_or(-1),
             });
         } else if alive.trim() == "0" && job.pid() != 0 {
-            // **A second look at the status file, before this is called a kill.** The poll asked
-            // the exit file first and the pid second, and between the two there is a fork (the
-            // `cat`) and a round trip — so a job that finished while the question was in flight
-            // answers *status empty* at the first read and *pid gone* at the second, which reads
-            // exactly like a job something killed. Measured 2026-10-27 on the Mac at `bb66c6b1`,
-            // `cargo test -p letibot-tools --test scenario`: the `client` role of
-            // `after_orders_the_starts_and_a_roles_facts_resolve` finished (its 19 bytes of
-            // output were there, and its own `.exit` file says `0`) and the row still read
-            // *killed by something on the remote ended it and it wrote no exit status* — one run
-            // in six with its siblings beside it, never alone.
-            //
-            // The launcher writes the status BEFORE it exits, so a pid that is gone cannot be
-            // about to write one: an empty answer here is the whole truth, and a status found
-            // here is the job's own ending.
+            // A second look at the status file, before this is called a kill. The poll reads the exit
+            // file first and the pid second with a fork and a round trip between them, so a job that
+            // finished while the question was in flight answers *status empty* then *pid gone* -
+            // which reads exactly like a job something killed. The launcher writes the status before
+            // it exits, so an empty answer here is the whole truth.
             let again = self.ssh.sh_step_within(
                 "reading the exit status one more time",
                 &format!("cat {} 2>/dev/null || true", quote(&job.exit)),
@@ -4397,11 +4311,11 @@ impl RemoteProcesses {
             state,
             produced: job.produced(),
             since_last_output: None,
-            // **The output of a job here is already a file, and it is on the other machine.**
-            // [`crate::exec::OutputFile`] is a path a reader on THIS box can open — `read`,
-            // `tail` — so a remote job's `ssh://host:/…/j7.out` in this field would be a locator
-            // that fails the one call it suggests. The promotion's own note names it instead, and
-            // `job_output` reads it over the connection.
+            // The output of a job here is already a file, and it is on the other machine.
+            // [`crate::exec::OutputFile`] is a path a reader on this box can open, so a remote
+            // `ssh://host:/.../j7.out` here would be a locator that fails the one call it suggests.
+            // The promotion's own note names it instead, and `job_output` reads it over the
+            // connection.
             output_file: None,
         }
     }
@@ -4410,8 +4324,8 @@ impl RemoteProcesses {
         ScopeId {
             kind,
             name: name.to_string(),
-            // **Not a cgroup, and spelled so it cannot be mistaken for one.** Nothing on
-            // this machine owns these processes; the remote's own session does.
+            // Not a cgroup, and spelled so it cannot be mistaken for one. Nothing on this machine
+            // owns these processes; the remote's own session does.
             path: PathBuf::from(format!("ssh://{}/{}", self.host, self.jobs_dir)),
         }
     }
@@ -4430,13 +4344,11 @@ impl RemoteProcesses {
         s
     }
 
-    /// **Start a job under `setsid`**, so it survives this ssh call and this Mac.
+    /// Start a job under `setsid`, so it survives this ssh call and this Mac.
     ///
     /// The launcher is written first and run in the background with all three streams on
-    /// `/dev/null`: ssh stays connected until every stream the command inherited is
-    /// closed, so a background job that kept stdout would hold the launch call open for
-    /// as long as it ran — the failure mode that makes "background" mean "foreground
-    /// with an id".
+    /// `/dev/null`: ssh stays connected until every stream the command inherited is closed, so a
+    /// background job that kept stdout would hold the launch call open for as long as it ran.
     fn launch(&self, req: &SpawnRequest) -> Result<JobId, ExecError> {
         let id = JobId::next();
         let n = id.0.trim_start_matches('j').to_string();
@@ -4460,16 +4372,14 @@ impl RemoteProcesses {
         for (k, v) in &req.env {
             launcher.push_str(&format!("export {}={}\n", quote(k), quote(v)));
         }
-        // **A SUBSHELL, not a brace group.** `{ …; }` runs in the launcher's own shell, so a
-        // command containing `exit` — `bash -c 'exit 7'`, or a plain `exit 1` — ended the
-        // launcher before it could write the status, and the job was then read as "died
-        // without writing one". Measured with `exit 7`: pid written, output written, no exit
-        // file. `( … )` is a child shell, so its `exit` is the status and not the end.
+        // A SUBSHELL, not a brace group: `{ ...; }` runs in the launcher's own shell, so a command
+        // containing `exit` - `bash -c 'exit 7'`, or a plain `exit 1` - ended the launcher before it
+        // could write the status, and the job was then read as "died without writing one". `( ... )`
+        // is a child shell, so its `exit` is the status and not the end.
         //
-        // **RH3: inside the boundary when there is one**, and still a child of this launcher —
-        // which is `setsid`'d, so the sandbox is in the job's process group and `job_kill`'s
-        // group kill reaches it. The command is handed to `/bin/sh -c` exactly as before, so a
-        // job means what it meant; only the shell it runs in is the sandbox's.
+        // Inside the boundary when there is one, and still a child of this launcher, which is
+        // `setsid`'d, so the sandbox is in the job's process group and `job_kill`'s group kill reaches
+        // it. The command is handed to `/bin/sh -c` as before; only its shell is the sandbox's.
         let command = match &self.confine {
             Some(_) => self
                 .confined_line(
@@ -4500,10 +4410,9 @@ impl RemoteProcesses {
                 ))
             })?;
 
-        // `setsid` where the host has it: the job leads its own process group, so
-        // `job_kill` reaches everything it forked. Where it does not, the job still
-        // outlives the connection — it is only the group kill that is weaker, and
-        // [`RemoteProcesses::kill`] checks which of the two it has.
+        // `setsid` where the host has it: the job leads its own process group, so `job_kill` reaches
+        // everything it forked. Where it does not, the job still outlives the connection; only the
+        // group kill is weaker, and [`RemoteProcesses::kill`] checks which of the two it has.
         let launch = format!(
             "cd {jobs} && rm -f {exit} && \
              if command -v setsid >/dev/null 2>&1; then setsid bash {s} </dev/null >/dev/null 2>&1 & \
@@ -4518,10 +4427,10 @@ impl RemoteProcesses {
                 &format!("mkdir -p {}", quote(&jobs)),
             )
             .map_err(|e| ExecError::Spawn(format!("making {} on {}: {e}", jobs, self.host)))?;
-        // **A job's start is not idempotent, so it is asked exactly once.** The launcher has
-        // already been written; a start that loses its connection may have started the job, and
-        // running it again would be a second copy of the operator's work. The sentence the failure
-        // carries says so ([`Ssh::unknown`]).
+        // A job's start is not idempotent, so it is asked exactly once. The launcher has already
+        // been written; a start that loses its connection may have started the job, and running it
+        // again would be a second copy of the operator's work. The sentence the failure carries says
+        // so ([`Ssh::unknown`]).
         let (said, stderr, code) = self
             .ssh
             .sh_run("the job was starting", &launch, None)
@@ -4555,10 +4464,9 @@ impl RemoteProcesses {
             exit,
             armed_kill: Mutex::new(None),
         });
-        // **The pid is the evidence it started.** Polled rather than assumed: a launcher
-        // that could not `cd` writes its pid and then exits 97, so no pid after two
-        // seconds is a job that never began — and saying so here is better than a
-        // `job_output` that reads an empty file for ever.
+        // The pid is the evidence it started. Polled rather than assumed: a launcher that could not
+        // `cd` writes its pid and then exits 97, so no pid after two seconds is a job that never
+        // began - and saying so here is better than a `job_output` that reads an empty file for ever.
         let mut seen = 0;
         for _ in 0..50 {
             self.refresh(&job);
@@ -4572,9 +4480,9 @@ impl RemoteProcesses {
             job.settle(JobState::Killed {
                 by: "the remote wrote no pid, so the command never started".into(),
             });
-            // **What the launcher said**, when it said anything: a job that never wrote its
-            // pid is either a launcher that could not run or one that died between the two
-            // writes, and the difference is in this file.
+            // What the launcher said, when it said anything: a job that never wrote its pid is
+            // either a launcher that could not run or one that died between the two writes, and the
+            // difference is in this file.
             let said = self
                 .ssh
                 .sh_step(
@@ -4602,8 +4510,8 @@ impl RemoteProcesses {
         Ok(id)
     }
 
-    /// End one job by killing **its process group on the remote**, and record what was
-    /// there before and after — the same falsifier the local reaper keeps.
+    /// End one job by killing its process group on the remote, and record what was there before and
+    /// after: the same falsifier the local reaper keeps.
     fn kill(&self, job: &RemoteJob, by: &str) -> Result<Reaping, ExecError> {
         let pid = job.pid();
         let mut reaping = Reaping {
@@ -4627,7 +4535,7 @@ impl RemoteProcesses {
             job.settle(JobState::Killed { by: by.into() });
             return Ok(reaping);
         }
-        // **What is there before the kill**, so a zero is falsifiable.
+        // What is there before the kill, so a zero is falsifiable.
         if let Ok((said, _, 0)) = self.ssh.sh_step(
             &format!("looking at pid {pid} before the kill"),
             &format!("ps -p {pid} -o pid=,comm= 2>/dev/null || true"),
@@ -4641,10 +4549,10 @@ impl RemoteProcesses {
                 cmdline: job.command.clone(),
             });
         }
-        // **A group kill only when the pid really leads a group.** `kill -TERM -<pid>`
-        // on a pid that is not a process-group leader signals *this* shell's group, and
-        // that is the one mistake here that could take out something the operator cares
-        // about. `ps -o pgid=` answers it, on the remote, before the signal.
+        // A group kill only when the pid really leads a group. `kill -TERM -<pid>` on a pid that is
+        // not a process-group leader signals this shell's group, and that is the one mistake here
+        // that could take out something the operator cares about. `ps -o pgid=` answers it, on the
+        // remote, before the signal.
         let pgid = self
             .ssh
             .sh_step(
@@ -4664,16 +4572,14 @@ impl RemoteProcesses {
             pid.to_string()
         };
         let started = Instant::now();
-        // **Who is ending it, recorded before the signal** — the field's own purpose (it is how a
-        // deadline kill is said as one), asked here of an explicit kill too. The settle loop below
-        // takes a poll while the signal lands, and without this a `job_kill` this daemon sent is
-        // recorded as *something on the remote ended it*: a mystery where the truth is the
-        // caller's own sentence.
+        // Who is ending it, recorded before the signal - it is how a deadline kill is said as one,
+        // and an explicit kill needs it too: the settle loop below takes a poll while the signal
+        // lands, and without this a `job_kill` this daemon sent is recorded as *something on the
+        // remote ended it*.
         *job.armed_kill.lock().unwrap_or_else(|e| e.into_inner()) = Some(by.to_string());
-        // **A signal is not idempotent here in the sense that matters** — sending `kill -TERM`
-        // twice to a group is harmless, but a second one after a timeout could reach a pid the
-        // first one ended and something else reused. Asked once, and a failure is reported by the
-        // read-back below rather than papered over.
+        // A second signal after a timeout could reach a pid the first one ended and something else
+        // reused, so this is asked once, and a failure is reported by the read-back below rather
+        // than papered over.
         let _ = self.ssh.sh_once(
             &format!("ending pid {target}"),
             &format!("kill -TERM {target} 2>/dev/null || true"),
@@ -4697,16 +4603,16 @@ impl RemoteProcesses {
         }
         reaping.waited = started.elapsed();
         job.settle(JobState::Killed { by: by.into() });
-        // **Who is left**, read back the way it was read before. And when the read-back does not
-        // come, that is said rather than counted as a clean kill: `removed` means *this daemon
-        // looked and found nothing*, and a host that never answered has not been looked at.
+        // Who is left, read back the way it was read before. And when the read-back does not come,
+        // that is said rather than counted as a clean kill: `removed` means this daemon looked and
+        // found nothing, and a host that never answered has not been looked at.
         match self.ssh.sh_step(
             &format!("reading back whether pid {pid} is gone"),
             &format!("kill -0 {pid} 2>/dev/null && echo alive"),
         ) {
             Ok((said, _, _)) => {
                 // The script's own protocol: it says `alive` when `kill -0` succeeded, and exits
-                // non-zero when it did not — so an exit status here is *still an answer*.
+                // non-zero when it did not, so an exit status here is still an answer.
                 if said.contains("alive") {
                     reaping.survivors.push(pid);
                 }
@@ -4758,14 +4664,12 @@ impl ProcessHost for RemoteProcesses {
         self.launch(req)
     }
 
-    /// **The deadline is armed on the machine that runs the command**, not on this one.
+    /// The deadline is armed on the machine that runs the command, not on this one.
     ///
-    /// The local host arms a thread for a reason worth keeping: the loop enforcing a
-    /// deadline must not be the loop being guarded. Here there is a second reason and it
-    /// is stronger — a thread here dies with this daemon, and the process it would have
-    /// ended does not: a job on the remote outlives this Mac sleeping, so its deadline
-    /// has to as well. So a detached `sleep … kill` is started over the same connection,
-    /// and [`RemoteProcesses::refresh`] settles the job as a deadline kill when its pid
+    /// The local host arms a thread because the loop enforcing a deadline must not be the loop being
+    /// guarded; here there is a stronger reason: a thread here dies with this daemon and the process
+    /// it would have ended does not. So a detached `sleep ... kill` is started over the same
+    /// connection, and [`RemoteProcesses::refresh`] settles the job as a deadline kill when its pid
     /// goes away without writing a status.
     fn arm_deadline(&self, job: &JobId, after: Duration) {
         let Some(job) = self.find(job) else {
@@ -4778,8 +4682,8 @@ impl ProcessHost for RemoteProcesses {
         *job.armed_kill.lock().unwrap_or_else(|e| e.into_inner()) =
             Some(crate::exec::jobs::DEADLINE_KILL.to_string());
         let secs = after.as_secs_f64().max(1.0);
-        // The group only when the pid really leads one — `kill -TERM -<pid>` on a pid that
-        // does not signals *this shell's* group instead. Same test `kill` makes.
+        // The group only when the pid really leads one: `kill -TERM -<pid>` on a pid that does not
+        // signals this shell's group instead. Same test `kill` makes.
         let script = format!(
             "sleep {secs}\n\
              g=$(ps -p {pid} -o pgid= 2>/dev/null | tr -d ' ')\n\
@@ -4885,16 +4789,15 @@ impl ProcessHost for RemoteProcesses {
         all.iter().map(|j| self.view(j)).collect()
     }
 
-    /// **Where the whole of a job's output is on that machine** — the job directory's `<n>.out`,
-    /// which is the path the supervisor reads and the exit file's name is derived from. This box
-    /// cannot open it, which is why it is not [`JobView::output_file`].
+    /// Where the whole of a job's output is on that machine: the job directory's `<n>.out`, which is
+    /// the path the supervisor reads and the exit file's name is derived from. This box cannot open
+    /// it, which is why it is not [`JobView::output_file`].
     fn job_log(&self, job: &JobId) -> Option<String> {
         self.find(job).map(|j| j.out.clone())
     }
 
-    /// **The output is a file on the remote**, so a read is `tail -c` from where the
-    /// caller stopped — one round trip, and the bytes it asks for rather than the whole
-    /// file every time.
+    /// The output is a file on the remote, so a read is `tail -c` from where the caller stopped: one
+    /// round trip, and the bytes it asks for rather than the whole file every time.
     fn output(&self, job: &JobId, from: u64, limit: usize) -> Result<OutputSlice, ExecError> {
         let job = self
             .find(job)
@@ -4922,9 +4825,9 @@ impl ProcessHost for RemoteProcesses {
         if limit != usize::MAX && bytes.len() > limit {
             bytes.truncate(limit);
         }
-        // **Nothing is dropped**: the file on that machine keeps everything, so a reader
-        // that stops early can ask again from where it stopped and get the bytes it missed.
-        // `produced` is the file's size, and `to` is where this slice ends in it.
+        // Nothing is dropped: the file on that machine keeps everything, so a reader that stops
+        // early can ask again from where it stopped and get the bytes it missed. `produced` is the
+        // file's size, and `to` is where this slice ends in it.
         let to = from + bytes.len() as u64;
         let produced = job.produced().max(to);
         Ok(OutputSlice {
@@ -4976,15 +4879,13 @@ impl ProcessHost for RemoteProcesses {
         Ok(reaping)
     }
 
-    /// **Nothing is moved, because nothing needed moving.** A job on this host is
-    /// started detached from the ssh call that made it, so it already outlives the turn;
-    /// the record says that rather than claiming a migration that did not happen.
+    /// Nothing is moved, because nothing needed moving: a job on this host is started detached from
+    /// the ssh call that made it, so it already outlives the turn, and the record says that rather
+    /// than claiming a migration that did not happen.
     ///
-    /// **And its output was never only in memory, which is the other half of the promise.**
-    /// [`RemoteProcesses::launch`] redirects the command into `{jobs}/{n}.out` on the host
-    /// before it starts, so everything a promoted run prints is already in a file there — the
-    /// note names it, and `job_output` reads it back over the connection (a `tail -c` from the
-    /// offset the caller asked for). There is nothing for this method to start doing.
+    /// Its output was never only in memory either: [`RemoteProcesses::launch`] redirects the command
+    /// into `{jobs}/{n}.out` before it starts, so everything a promoted run prints is already in a
+    /// file there and `job_output` reads it back over the connection.
     fn promote(
         &self,
         job: &JobId,
@@ -5036,10 +4937,9 @@ impl ProcessHost for RemoteProcesses {
         self.reaps.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
-    /// **Empty, and it is a fact rather than a gap.** Every pid this machine's harness
-    /// manages is *here*, and a command on the remote cannot signal it — there is no
-    /// process namespace shared with that machine. A pattern that matched one of them is
-    /// a pattern about a different box.
+    /// Empty, and it is a fact rather than a gap: every pid this machine's harness manages is here,
+    /// and a command on the remote cannot signal it, since no process namespace is shared with that
+    /// machine. A pattern that matched one of them is a pattern about a different box.
     fn protected(&self) -> Vec<Protected> {
         Vec::new()
     }
@@ -5056,8 +4956,8 @@ impl ProcessHost for RemoteProcesses {
         ))
     }
 
-    /// The checkout, on the **remote's** filesystem. Nothing local joins a path to it:
-    /// `monitors` is `None` here, and it is the one caller that would.
+    /// The checkout, on the remote's filesystem. Nothing local joins a path to it: `monitors` is
+    /// `None` here, and it is the one caller that would.
     fn workspace(&self) -> Option<&Path> {
         Some(Path::new(&self.worktree))
     }
@@ -5082,7 +4982,7 @@ user     = "root"
 "#;
 
     /// A test's own home and config directory, with a key for `host` and its host key already
-    /// accepted — the two facts [`Ssh::connect`] refuses without.
+    /// accepted: the two facts [`Ssh::connect`] refuses without.
     fn paths_for(tag: &str, host: &str, hostname: &str) -> (PathBuf, Paths) {
         let dir = std::env::temp_dir().join(format!(
             "letibot-policy-{tag}-{}-{}",
@@ -5161,12 +5061,11 @@ user     = "root"
         assert_eq!(quote(""), "''");
     }
 
-    /// **A `~` in the wrapped directory is expanded on the REMOTE, and never left quoted.**
+    /// A `~` in the wrapped directory is expanded on the REMOTE, and never left quoted.
     ///
-    /// `mise exec -C` resolves a literal `~` against the directory it happens to be in, so a
-    /// quoted tilde is a `-C` that names the wrong tree — or none. The same rule `path`'s entries
-    /// already follow ([`one_entry`]), asked of `-C`; measured 2026-10-26 after a gate run on a
-    /// host with a real mise.
+    /// `mise exec -C` resolves a literal `~` against the directory it happens to be in, so a quoted
+    /// tilde is a `-C` that names the wrong tree, or none. The same rule `path`'s entries follow
+    /// ([`one_entry`]), asked of `-C`.
     #[test]
     fn a_tilde_directory_is_expanded_on_the_remote() {
         let h = Hosts::parse(FILE).expect("it parses");
@@ -5204,16 +5103,12 @@ user     = "root"
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// **A refused mux session is read as transport, and nothing else is.**
+    /// A refused mux session is read as transport, and nothing else is.
     ///
-    /// Four sentences were taken from OpenSSH's own source and its bug reports, and each one has to
-    /// be recognised for what it is: *the connection is up and this call did not get a channel*. The
-    /// negative half matters as much — `Permission denied` is a definite refusal (`auth_refusal`
-    /// takes it first) and `Could not resolve hostname` is a host that is not there, and neither may
-    /// be retried under *nothing ran*.
-    ///
-    /// Measured 2026-10-27: `mm_send_fd: sendmsg(1): Message too long` is the sentence an `edit`
-    /// through the git placement died of, and it arrived at the model as *lost the connection*.
+    /// Each sentence has to be recognised for what it is: *the connection is up and this call did not
+    /// get a channel*. The negative half matters as much: `Permission denied` is a definite refusal
+    /// (`auth_refusal` takes it first) and `Could not resolve hostname` is a host that is not there,
+    /// and neither may be retried under *nothing ran*.
     #[test]
     fn the_four_ways_a_mux_loses_a_session_are_read_as_transport() {
         for (said, want) in [
@@ -5249,12 +5144,12 @@ user     = "root"
         }
     }
 
-    /// **Every daemon gets its own master, and the socket fits.**
+    /// Every daemon gets its own master, and the socket fits.
     ///
-    /// R99: the name used to be the host's alone, so every daemon on the box multiplexed over one
-    /// connection and `MaxSessions` was divided among all of them. The pid in the name is the fix;
-    /// git's socket beside it is what keeps a `git fetch` — an ssh this process never starts and so
-    /// cannot count — off the master the calls are bounded on.
+    /// The name carries the daemon's pid, so two daemons on one box do not multiplex over one
+    /// connection and divide `MaxSessions` between them. git's socket beside it keeps a `git fetch`,
+    /// an ssh this process never starts and so cannot count, off the master the calls are bounded
+    /// on.
     #[test]
     fn one_daemon_has_one_master_and_git_has_a_second() {
         let mine = control_path("lab2x1", 4242);
@@ -5284,9 +5179,9 @@ user     = "root"
         );
     }
 
-    /// **The ssh argv is the policy's, and nothing in it names the operator's ssh material.**
-    /// The assertions about what is *missing* are the point: a list with `-i` and no
-    /// `IdentitiesOnly` looks complete.
+    /// The ssh argv is the policy's, and nothing in it names the operator's ssh material. The
+    /// assertions about what is missing are the point: a list with `-i` and no `IdentitiesOnly`
+    /// looks complete.
     #[test]
     fn the_ssh_argv_is_the_contract_flags_then_dest_then_command() {
         let h = Hosts::parse(FILE).expect("it parses");
@@ -5324,7 +5219,7 @@ user     = "root"
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// **Two refusals, before anything is arranged**: a key that is not there (or is inside the
+    /// Two refusals, before anything is arranged: a key that is not there (or is inside the
     /// operator's own ssh directory), and a host key nobody has accepted here.
     #[test]
     fn a_host_is_refused_by_name_before_anything_is_placed() {
@@ -5361,10 +5256,9 @@ user     = "root"
 
         // A host key nobody has accepted: the refusal carries the command that adds it.
         std::fs::write(paths.known_hosts(), "").expect("an empty known_hosts");
-        // **The key left to its default**, which `paths_for` made in this test's own home: the
-        // fixture's `~/…` key is expanded against the REAL `$HOME` when the file is parsed, so
-        // this check passed only on a box where that real key happened to exist (the operator's
-        // Mac) and failed on lab2x1, the first Linux gate to run it (2026-10-26).
+        // The key left to its default, which `paths_for` made in this test's own home: the
+        // fixture's `~/...` key is expanded against the real `$HOME` when the file is parsed, so
+        // asking for the default is what keeps this test off the operator's own key.
         let why = Ssh::connect(Host { key: None, ..host }, None, paths.clone())
             .expect_err("an unknown host key");
         assert!(why.contains("ssh-keyscan -t ed25519"), "{why}");
@@ -5372,7 +5266,7 @@ user     = "root"
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// **A host's `path` list is in front of every remote command**, and a host without one runs
+    /// A host's `path` list is in front of every remote command, and a host without one runs
     /// exactly the command it always did.
     #[test]
     fn a_hosts_path_list_is_a_prefix_on_every_remote_command() {
@@ -5420,8 +5314,8 @@ user     = "root"
         }
     }
 
-    /// **The file's refusals**: a key it does not have, a key stated twice, a `path` that is not
-    /// a list, and a host that omits `key` getting the dedicated default.
+    /// The file's refusals: a key it does not have, a key stated twice, a `path` that is not a list,
+    /// and a host that omits `key` getting the dedicated default.
     #[test]
     fn hosts_toml_refuses_what_it_does_not_understand() {
         let why =
@@ -5441,16 +5335,16 @@ user     = "root"
         );
         assert!(a.path.is_empty());
         assert_eq!(a.root, "~/letibot-remote");
-        // **The three keys a shared host needs default to *nothing held back*** — which is the
-        // safe direction: a host nobody declared anything for behaves exactly as it did before
-        // this package, and only a file that says otherwise changes a teardown's reach.
+        // The three keys a shared host needs default to nothing held back, which is the safe
+        // direction: a host nobody declared anything for behaves exactly as it did before, and only
+        // a file that says otherwise changes a teardown's reach.
         assert_eq!(a.reserve, 0);
         assert!(a.flags.is_empty());
         assert!(a.never_touch.is_empty());
     }
 
-    /// **`reserve`, `flags` and `never_touch`** (RH9) — what the operator says about sharing a
-    /// machine, read strictly like every other key: a number, two lists, and nothing guessed.
+    /// `reserve`, `flags` and `never_touch`: what the operator says about sharing a machine, read
+    /// strictly like every other key - a number, two lists, and nothing guessed.
     #[test]
     fn hosts_toml_reads_the_three_sharing_keys() {
         let h = Hosts::parse(
@@ -5463,12 +5357,12 @@ user     = "root"
         assert_eq!(a.flags, vec!["heavy", "tmpfs"]);
         assert_eq!(a.never_touch, vec!["pgfuzz", "etcd"]);
         assert!(a.has_flag("TMPFS"), "a flag is a word a person types");
-        // **A substring, case-insensitively** — the operator declared the workload and not its
-        // spelling, and matching less than they meant is the failure this list exists to prevent.
+        // A substring, case-insensitively: the operator declared the workload and not its spelling,
+        // and matching less than they meant is the failure this list exists to prevent.
         assert_eq!(a.never_touch_hit("pgfuzz -t 3600"), Some("pgfuzz"));
         assert_eq!(a.never_touch_hit("/usr/bin/ETCD-fuzz"), Some("etcd"));
         assert_eq!(a.never_touch_hit("cargo test --offline"), None);
-        // **`cores − load − reserve`**, and a negative is reported rather than clamped.
+        // `cores - load - reserve`, and a negative is reported rather than clamped.
         assert_eq!(a.spare_cores(32, "4.00 2.00 1.00"), Some(24.0));
         assert_eq!(a.spare_cores(8, "12.00 3.00 1.00"), Some(-8.0));
         assert_eq!(a.spare_cores(0, "1.00"), None);
@@ -5485,8 +5379,8 @@ user     = "root"
         assert!(why.contains("never_touch"), "{why}");
     }
 
-    /// **A link into the ssh directory is the ssh directory**, after every symlink and for a
-    /// path that does not exist yet — the rule is about the bytes, not the spelling.
+    /// A link into the ssh directory is the ssh directory, after every symlink and for a path that
+    /// does not exist yet: the rule is about the bytes, not the spelling.
     #[test]
     fn a_path_that_resolves_into_the_ssh_directory_is_refused_by_name() {
         let dir = std::env::temp_dir().join(format!(
@@ -5523,9 +5417,9 @@ user     = "root"
 
     #[test]
     fn the_walk_prints_what_tree_in_walk_order_parses() {
-        // The format is firecode's `find -printf '%y\t%s\t%p'` by another hand, so the
-        // one parser serves both substrates — and the walk runs on the far side of an
-        // ssh, where GNU's `find` may not be.
+        // The format is firecode's `find -printf '%y\t%s\t%p'` by another hand, so the one parser
+        // serves both substrates - and the walk runs on the far side of an ssh, where GNU's `find`
+        // may not be.
         let dir = std::env::temp_dir().join(format!(
             "letibot-walk-{}-{}",
             std::process::id(),
@@ -5600,10 +5494,10 @@ user     = "root"
             rig
         }
 
-        /// **The ssh, answering three commands and running everything else here.** The poll is
-        /// answered from [`PollRig::gone`], the status from [`PollRig::status`], and the launch is
-        /// acknowledged without starting anything — a real launcher would write files of its own
-        /// and there would be nothing left for the answers to be about.
+        /// The ssh, answering three commands and running everything else here. The poll is answered
+        /// from [`PollRig::gone`], the status from [`PollRig::status`], and the launch is
+        /// acknowledged without starting anything: a real launcher would write files of its own and
+        /// there would be nothing left for the answers to be about.
         fn written(self) -> PollRig {
             let script = format!(
                 "#!/bin/bash\n\
@@ -5634,7 +5528,7 @@ user     = "root"
                 .collect()
         }
 
-        /// **A host wired to this rig**, and the job table over it.
+        /// A host wired to this rig, and the job table over it.
         fn host(&self, tag: &str) -> RemoteProcesses {
             let (_, paths) = paths_for(tag, "fake", "fake.invalid");
             let host = Host {
@@ -5653,8 +5547,8 @@ user     = "root"
         }
     }
 
-    /// **A job whose pid is gone, as a view of it** — started (so it has a pid), then the pid is
-    /// reported gone, then asked. The status file is whatever the rig was built with.
+    /// A job whose pid is gone, as a view of it: started (so it has a pid), then the pid is reported
+    /// gone, then asked. The status file is whatever the rig was built with.
     fn started_then_gone(rig: &PollRig, tag: &str) -> JobView {
         let host = rig.host(tag);
         let job = host
@@ -5670,25 +5564,19 @@ user     = "root"
                 memory: None,
             })
             .expect("the job starts");
-        // **The finish the poll used to read as a kill**: the status file is already written and
-        // the pid is gone by the time the next question is asked.
+        // The finish a poll must not read as a kill: the status file is already written and the pid
+        // is gone by the time the next question is asked.
         std::fs::write(&rig.gone, b"").expect("the pid is gone");
         host.job(&job).expect("the job")
     }
 
-    /// **A poll that comes back *no status and the pid gone* reads the status file once more**,
-    /// and the window is forced here rather than raced.
+    /// A poll that comes back *no status and the pid gone* reads the status file once more, and the
+    /// window is forced here rather than raced.
     ///
-    /// The two answers the poll gives are read in one round trip, and between them sits a fork (the
-    /// `cat`) — so a job that finishes while the question is in flight answers *no status* at the
-    /// first read and *pid gone* at the second, which is exactly what a job something killed answers
-    /// too. Measured 2026-10-27 on the Mac at `bb66c6b1` in `cargo test -p letibot-tools --test
-    /// scenario`: one run in six, the `client` role of
-    /// `after_orders_the_starts_and_a_roles_facts_resolve` was reported as *killed by something on
-    /// the remote ended it and it wrote no exit status* with its own `.exit` file saying `0`.
-    ///
-    /// The launcher writes the status BEFORE it exits, so a pid that is gone cannot be about to
-    /// write one: the second look is the whole difference between a finished job and a killed one.
+    /// The two answers are read in one round trip with a fork between them, so a job that finishes
+    /// while the question is in flight answers *no status* then *pid gone* - exactly what a job
+    /// something killed answers too. The launcher writes the status before it exits, so a pid that is
+    /// gone cannot be about to write one.
     #[test]
     fn a_poll_that_finds_the_pid_gone_looks_at_the_status_file_again() {
         let exited = PollRig::new("status", "0\n").written();
@@ -5708,8 +5596,8 @@ user     = "root"
         );
         std::fs::remove_dir_all(&exited.dir).ok();
 
-        // **And an empty status file is still a killing**: the second look must not turn every
-        // dead pid into a graceful exit.
+        // And an empty status file is still a killing: the second look must not turn every dead pid
+        // into a graceful exit.
         let nothing = PollRig::new("nothing", "").written();
         let view = started_then_gone(&nothing, "poll-nothing");
         assert!(
