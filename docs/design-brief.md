@@ -1,7 +1,7 @@
 # Design brief - local-first agent harness
 
 The theses a plan for this harness is written against, the decisions they force, and what a reader
-must hold. **[operator]** marks the operator's own position; everything else is inference. The long
+must hold. **[operator]** marks the operator's own position; the rest is inference, and the long
 arguments live in the companion documents this brief points at.
 
 ## 1. The thesis
@@ -23,10 +23,10 @@ Every failure measured has a name in data systems:
 | three misdiagnoses in one session | no EXPLAIN, no per-stage metrics |
 
 Two are more than analogy. **Multi-head compaction with different decay rates is leveled
-compaction**: recent data fine-grained in small levels, older merged into coarser ones in the
-background, which does not make the stall faster - it removes the category, at the usual price of
-fidelity lost to repeated re-summarisation. **Per-stage observability is EXPLAIN**: "why did this
-prefill 144,436 tokens with zero cache hits?" is a query-plan question.
+compaction** - recent data fine-grained in small levels, older merged into coarser ones in the
+background - which does not make the stall faster, it removes the category, at the usual price of
+fidelity lost to re-summarisation. **Per-stage observability is EXPLAIN**: "why did this prefill
+144,436 tokens with zero cache hits?" is a query-plan question.
 
 Where the analogy stops: attention is position-dependent through RoPE, so KV "pages" are not freely
 relocatable the way database pages are.
@@ -37,9 +37,8 @@ From a harness built on OpenAI-shaped requests against GLM-5.3-Flash on llama.cp
 not replayed**, so every turn diverged from its own cache entry and entries grew without bound -
 replaying it moved `f_keep` p10 from **0.000 to 0.999**, all of the gain in the tail; **compaction
 cold-prefilled by construction** at 144,436 tokens, cache hit 0, about 13 minutes to the first
-summary token; **the output cap was silent**, so a subagent that spent its budget thinking returned
-an empty result recorded as success; and **the renderer was quadratic**, re-parsing markdown on every
-delta.
+summary token; **the output cap was silent**, so a subagent that spent its budget thinking returned an
+empty result recorded as success; and **the renderer was quadratic**, re-parsing markdown per delta.
 
 Nobody surveyed has warm compaction on the default path; only one enforces prefix stability with a
 test.
@@ -78,9 +77,9 @@ to isolate the agent and spare me hitting enter."*
 
 A **run** is one microVM and everything created for it; lifetime is a cgroup subtree, not a process
 tree, "because a process tree cannot express what a run owns" - `cgroup.kill` ends it and every VM
-started on its behalf. Root is overlayfs layers, so nothing is copied per run; two hypervisors
-behind one guest image; the guest is untrusted by construction, with paths from host config,
-parentage from the connection, and no host-side seed script.
+started on its behalf. Root is overlayfs layers, so nothing is copied per run; the guest is untrusted
+by construction, with paths from host config, parentage from the connection, and no host-side seed
+script.
 
 **The harness must not reinvent any of this**, and it must say how it composes: session to run?
 subagent to child run? who owns lifetime? firecode is the operator's own repo and changes to it are
@@ -225,9 +224,8 @@ array**:
 1. **The harness renders the chat template itself** - it already owns the per-model dialects - and
    sends tokens.
 2. **Byte-exact control of the token sequence**, which dissolves a class of bug: no wondering whether
-   the server reconstructs the reasoning block, no template-version surprises, no reasoning-preserve
-   probing. Prefix stability stops being something the harness *hopes* the renderer preserves and
-   becomes something it constructs.
+   the server reconstructs the reasoning block, no template-version surprises. Prefix stability stops
+   being something the harness *hopes* the renderer preserves and becomes something it constructs.
 3. **`POST /apply-template` becomes the verification oracle rather than the mechanism**: run the
    server's renderer, diff against ours, and a divergence fails CI instead of leaking cache. A
    **required** check, because rendering locally means tracking template changes.
