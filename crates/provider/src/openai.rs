@@ -27,12 +27,9 @@ pub struct OpenAiProvider {
     /// The catalogue this provider looks a model up in: the box's by default, and a
     /// caller's own when a test must not read the machine's files.
     catalogue: std::sync::Arc<crate::catalogue::Catalogue>,
-    /// **Where a fact the operator must read is said** — the daemon's hub, one crate up.
-    ///
-    /// A closure rather than a hub because this crate is below `letibot-sessionlog` and
-    /// stays there: what the provider knows is "this model refused a picture", and who
-    /// needs to hear it is the caller's business. `None` in a test or a one-off — the mark
-    /// is still recorded and still said on stderr.
+    /// Where a fact the operator must read is said: the daemon's hub, one crate up. A closure
+    /// rather than a hub, because this crate stays below the session log and who hears it is the
+    /// caller's business.
     notes: Option<Notes>,
 }
 
@@ -87,15 +84,9 @@ impl OpenAiProvider {
         self
     }
 
-    /// **What this model gets pictures as.** Three sources, in the order that decides:
-    ///
-    /// 1. **a provider already refused one** ([`crate::messages::known_text_only`]) — a
-    ///    measurement, and it outranks a table;
-    /// 2. **the catalogue's `modalities.input`** — `Some(false)` is the only thing that
-    ///    turns pictures off without being told twice;
-    /// 3. **otherwise the pictures are SENT** ([`crate::messages::Eyes::Unknown`]). A model
-    ///    nobody knows about gets the image and describes it; the alternative is a harness
-    ///    that quietly turns every attached chart into a sentence about a chart.
+    /// What this model gets pictures as: a provider that already refused one (a measurement, and
+    /// it outranks a table), then the catalogue's `modalities.input`, and otherwise the pictures are
+    /// SENT, because withholding them turns every chart into a sentence about a chart.
     fn eyes(&self) -> crate::messages::Eyes<'_> {
         if crate::messages::known_text_only(self.preset.name, &self.model) {
             return crate::messages::Eyes::TextOnly(&self.model);
@@ -115,30 +106,18 @@ impl OpenAiProvider {
         self.body_for(req, self.eyes(), crate::messages::Withheld::nothing())
     }
 
-    /// The same body, with what the model gets pictures as given rather than decided —
-    /// the retry after a refusal is the one caller, and it must not have to re-ask a
-    /// question it has just answered. `withheld` is the other half of that: the pictures a
-    /// retry is trying without, which are not recorded until it answers.
+    /// The same body, with what the model gets pictures as given rather than decided: the retry
+    /// after a refusal is the one caller, and it must not re-ask a question it has just answered.
+    /// `withheld` is the other half, the pictures a retry tries without and does not record.
     fn body_for(
         &self,
         req: &TurnRequest<'_>,
         eyes: crate::messages::Eyes<'_>,
         withheld: crate::messages::Withheld<'_>,
     ) -> Result<Value, BackendError> {
-        // **`tools` is built first because it is part of the request — NOT because it
-        // decides whether the reasoning echo is required.** This comment asserted the
-        // opposite for a day, on the strength of the vendor's guide, and the guide is
-        // not the API: five permutations measured against the live API 2026-10-02 all
-        // answered 200, including `tools` with no `reasoning_content` and no tools with
-        // none either. `crate::messages`' module header carries the table.
-        //
-        // So `carries_tools` is **our switch for how much to send**, not a rule being
-        // obeyed. It is still worth having — it keeps a large reasoning history off a
-        // request that does not need it — and it is NOT what causes the
-        // `reasoning_content … must be passed back` refusal: the echo is off for a
-        // no-tools request, and a compaction carrying no tools was refused with exactly
-        // that message. That trigger is unexplained, and a refusal now logs this
-        // request's shape so the next one can be read rather than guessed at.
+        // `tools` is built first because it is part of the request, NOT because it decides whether
+        // the reasoning echo is required: `carries_tools` is our switch for how much to send, not a
+        // rule being obeyed. A no-tools request is refused the echo for another reason entirely.
         let tools = crate::messages::tools(req.tools_json).map_err(BackendError::Malformed)?;
         let carries_tools = !tools.is_empty();
         let mut body = json!({
@@ -174,37 +153,9 @@ impl OpenAiProvider {
     }
 }
 
-/// **The SHAPE of a request that was refused: roles in order, which fields each
-/// message carries, and how long they are. Never the content.**
-///
-/// Written for a refusal nobody can explain from documentation — two readings of
-/// `The reasoning_content in the thinking mode must be passed back to the API` have
-/// been disproven by measurement, and the module header of [`crate::messages`] carries
-/// both. What a third attempt needs is the actual request, and this is that request
-/// with the conversation left out.
-///
-/// The distinctions below are the ones a theory can turn on and a summary would lose:
-///
-///   * **`size`, in bytes**, because the refusal this was written for has only ever
-///     been seen on requests whose conversation was far past the model's window, and
-///     the largest request this harness ever sends is a compaction of a session it
-///     has already lost. A shape that cannot say how big it is cannot show that.
-///   * **`absent` versus `null`.** `"content": null` is what these APIs EMIT for an
-///     assistant message that only made tool calls, and a `reasoning_content` that is
-///     present-and-null is a different message from one with no such key at all. If
-///     the trigger is a field being the wrong KIND of empty, only this distinction
-///     shows it.
-///   * **Lengths**, so a message that is present-and-empty is never mistaken for one
-///     that is present-and-large.
-///   * **Call ids, truncated to 8 chars**, so a `tool` result can be matched to the
-///     `tool_calls` entry that asked for it. A result nothing asked for is a shape
-///     these APIs reject, and one whose id differs by a digit is a different shape.
-///   * **Role order**, which is what "how many turns are echoed back, and which"
-///     actually means.
-///
-/// Content is deliberately not here. A refusal log that quoted the conversation would
-/// be a second copy of the transcript in a text file, and every diagnosis this is for
-/// is answerable from the shape.
+/// The SHAPE of a request that was refused: roles in order, which fields each message carries, and
+/// how long they are. Never the content, because a log that quoted the conversation would be a
+/// second copy of the transcript and every diagnosis this is for is answerable from the shape.
 fn shape(body: &Value, bytes: usize) -> String {
     let mut out = String::new();
     let n_tools = body
@@ -285,12 +236,9 @@ impl MessagesBackend for OpenAiProvider {
         &self.model
     }
 
-    /// **The host the request is posted to, derived from `self.url` itself.**
-    ///
-    /// `self.url` is `creds.url` when the operator's key file overrode it, else the
-    /// preset's — and it is the very string `.post(&self.url)` uses, so this cannot name
-    /// a host the request did not go to. No URL crate: every producer of this string
-    /// (the preset table and the key file) writes `scheme://host[:port]/path`.
+    /// The host the request goes to, derived from `self.url` itself, which is the very string
+    /// the post uses, so this cannot name a host the request did not reach. No URL crate: every
+    /// producer of this string writes `scheme://host[:port]/path`.
     fn authority(&self) -> String {
         self.url
             .split_once("://")
@@ -309,15 +257,9 @@ impl MessagesBackend for OpenAiProvider {
     ) -> Result<Completion, BackendError> {
         let eyes = self.eyes();
         let first = self.round(req, on_delta, eyes, crate::messages::Withheld::nothing());
-        // **A refusal is read off the wire, never assumed.** Both arms below hang off this one
-        // binding: the status is a 400, and the request ACTUALLY carried a picture. Two different
-        // refusals can answer that shape, and they are two different facts — see
-        // `crate::messages::text_only_refusal` and [`crate::messages::picture_refusal`], whose docs
-        // quote the measured bodies.
-        //
-        // **The compaction takes these paths too**, which is the reason they exist: the summary
-        // turn carries the same history, so the request that failed at the wall is the one they
-        // make succeed.
+        // A refusal is read off the wire, never assumed: the status is 400 and the request ACTUALLY
+        // carried a picture. Two different refusals answer that shape and they are two different
+        // facts. The compaction takes these paths too, which is why they exist.
         let Err(BackendError::Refused {
             status: 400,
             body: why,
@@ -329,12 +271,9 @@ impl MessagesBackend for OpenAiProvider {
         if !eyes.takes_images() || !carried {
             return first;
         }
-        // **The first refusal: the MODEL takes text only.** The model is marked for the rest of
-        // this daemon's life, the operator is told once, and the SAME request goes again with
-        // placeholders instead of pictures. One retry, never a ladder: if the second attempt is
-        // refused too, that refusal is the answer. MEASURED 2026-10-25, `glm-5.3`:
-        // `http 400: messages.content.type is invalid, allowed values: ['text']`, to the round and
-        // then to the compaction that would have made room.
+        // The first refusal: the MODEL takes text only. The model is marked for the rest of this
+        // daemon, the operator is told once, and the same request goes again with placeholders.
+        // One retry, never a ladder: a second refusal is the answer.
         if crate::messages::text_only_refusal(why) {
             if crate::messages::mark_text_only(self.preset.name, &self.model) {
                 let said = format!(
@@ -357,20 +296,9 @@ impl MessagesBackend for OpenAiProvider {
                 crate::messages::Withheld::nothing(),
             );
         }
-        // **The second refusal, and a different fact: the PICTURE is what it would not take.**
-        //
-        // MEASURED 2026-10-30 — `.messages[1861].image[0]: You have uploaded an unsupported
-        // image…` — on a request carrying a 33-byte PNG header `read` had called a picture. It
-        // is not `text_only_refusal`: that sentence says *these bytes are not an image*, not
-        // *this model takes text*, and answering it with [`mark_text_only`] would withhold every
-        // picture this model was ever sent, for a fault one file had. So the marks go against
-        // the pictures, the model keeps its eyes, and the retry is the same request with those
-        // pictures named instead of sent.
-        //
-        // **Nothing is recorded until the retry answers.** A second refusal proves nothing about
-        // the pictures — it may be about the context, a tool pairing, anything — and a mark that
-        // outlived it would withhold the operator's pictures for a reason that was never theirs.
-        // So the retry is given them as a PARAMETER, and only a success commits the lesson.
+        // The second refusal is a different fact: the PICTURE is what it would not take. Answering
+        // it with a text-only mark would withhold every picture this model was sent, so the marks go
+        // against the pictures and nothing is recorded until the retry answers.
         if !crate::messages::picture_refusal(why) {
             return first;
         }
@@ -394,12 +322,9 @@ impl MessagesBackend for OpenAiProvider {
         );
         let said = match &second {
             Ok(_) => {
-                // **Learned.** Every picture the refused request carried is recorded against its
-                // own bytes, so no later turn — and no later `read` of the same file — earns this
-                // 400 again. The unit of the lesson is the request, because the provider's index
-                // into it (`.messages[1861]`) is not a place this tree can map back to a row: a
-                // good picture beside a bad one is withheld with it, which is the smaller loss
-                // than a session that cannot speak.
+                // Learned: every picture the refused request carried is recorded against its own
+                // bytes, so no later turn earns this 400 again. The unit is the request, because a
+                // good picture beside a bad one is withheld with it, which is the smaller loss.
                 let mut fresh = 0;
                 for d in &pictures {
                     if crate::messages::mark_bad_picture(d, why) {
@@ -443,12 +368,9 @@ impl MessagesBackend for OpenAiProvider {
 }
 
 impl OpenAiProvider {
-    /// **One attempt at the wire**: build the body for `eyes`, post it, stream the answer.
-    ///
-    /// Split out of [`MessagesBackend::complete`] because the refusal path takes the round
-    /// again, and "the same request, one substitution" should not be a second copy of the
-    /// send/stream/accumulate half. A non-2xx status returns before a single byte of the
-    /// body is read as a stream, which is what makes re-taking the round safe.
+    /// One attempt at the wire: build the body for `eyes`, post it, stream the answer. Split out
+    /// because the refusal path takes the round again, and a non-2xx status returns before a byte
+    /// of the body is read as a stream, which is what makes the retry safe.
     fn round(
         &self,
         req: &TurnRequest<'_>,
@@ -488,21 +410,9 @@ impl OpenAiProvider {
                         })
                 })
                 .unwrap_or_else(|| text.clone());
-            // **The provider's own CODE, kept beside its message.**
-            //
-            // A refusal arrives as JSON — `{"error":{"code":"insufficient_quota",
-            // "message":"You exceeded your current quota…"}}` — and taking only the message
-            // threw away the one machine-readable word in it. MEASURED 2026-10-31 through this
-            // file's own fixture: a `429` whose code is `insufficient_quota` reached the retry
-            // policy as *"You exceeded your current quota"*, matched nothing in the money list
-            // (`letibot_http::retry::Policy::states_a_refusal`), and was taken six times
-            // against an account that could not pay — the exact case the list exists for,
-            // invisible because the word that named it had been dropped one layer above.
-            //
-            // Appended rather than replacing the message, because the message is what a person
-            // reads and the code is what a classifier and a bug report want: `http 429: You
-            // exceeded your current quota, please check your plan and billing details
-            // (insufficient_quota)`.
+            // The provider's own CODE, kept beside its message: taking only the message throws away
+            // the one machine-readable word in the refusal, so a 429 whose code names an unpaid
+            // account reaches the retry policy as prose that matches nothing in its money list.
             let message = match parsed.as_ref().and_then(|v| {
                 v.get("error")
                     .and_then(|e| e.get("code"))
@@ -511,12 +421,9 @@ impl OpenAiProvider {
                 Some(code) if !message.contains(code) => format!("{message} ({code})"),
                 _ => message,
             };
-            // **What was SENT, when what was sent was refused** — the shape of it and
-            // never the content. This exists because two explanations of the
-            // `reasoning_content … must be passed back` refusal have already been
-            // disproven by measurement (see [`crate::messages`]' module header), and a
-            // third guess would be worth no more than they were. The next occurrence
-            // is read off this.
+            // What was SENT, when what was sent was refused: the shape of it and never the
+            // content, so the next unexplained refusal is read off this record rather than guessed
+            // at from documentation.
             eprintln!("  refused request shape:\n{}", shape(&body, payload.len()));
             return Err(BackendError::Refused {
                 status,
@@ -569,23 +476,18 @@ struct Accumulator {
     calls: Vec<(String, String, String)>, // (id, name, arguments) by index
     finish: Option<Finish>,
     usage: Option<Value>,
-    /// **The model the provider says it used**, read off the stream.
-    ///
-    /// Not the model we asked for, and the difference is the whole reason this field
-    /// exists. MEASURED 2026-10-02, this account:
+    /// The model the provider says it used, read off the stream. Not the model we asked for, and
+    /// the difference is why this field exists: several names are accepted and some are aliases,
+    /// so the request name is a wish and this is the fact. Cost computed from the wish reports the
+    /// wrong rates for the turn that really ran.
     ///
     /// ```text
     /// asked deepseek-chat    -> every chunk says  "model": "deepseek-flash"
     /// asked deepseek-flash   -> every chunk says  "model": "deepseek-flash"
     /// ```
     ///
-    /// Six names are accepted and four are aliases, so the request name is a *wish*
-    /// and this is the fact. Cost was computed from the wish: `providers.toml` prices
-    /// `deepseek-chat` at 0.28/0.028/0.42 while the model actually serving it is
-    /// `deepseek-flash` at 0.15/0.003/0.6 — so a session on the retired alias reported
-    /// roughly twice the input rate and five times the cache rate of the turn it
-    /// really ran. `None` when the provider sends no `model` field at all, and then the
-    /// requested name is the only thing there is to price by.
+    /// `None` when the provider sends no `model` field at all, and then the requested name is the
+    /// only thing there is to price by.
     model: Option<String>,
 }
 
@@ -593,10 +495,9 @@ impl Accumulator {
     /// One SSE chunk → the deltas it carries, in order.
     fn absorb(&mut self, chunk: &Value) -> Vec<Delta> {
         let mut out = Vec::new();
-        // **Before the `choices` check below, deliberately.** The served model rides on
-        // every chunk including the usage-only one that carries no choices, and a
-        // version that read it after that `return` would miss exactly the chunks that
-        // matter least and the field that matters most.
+        // Before the `choices` check below, deliberately: the served model rides on every chunk,
+        // including the usage-only one that carries no choices, so reading it after that `return`
+        // would miss exactly the chunk that matters most.
         if let Some(m) = chunk.get("model").and_then(|v| v.as_str())
             && !m.is_empty()
         {
@@ -621,9 +522,7 @@ impl Accumulator {
                 continue;
             };
             // One `let` chain rather than `if let` inside `if`: edition 2024 allows it, and the
-            // nested shape is `clippy::collapsible_if` — the lint the merge queue's log tail
-            // showed on 2026-10-26 while the step's real failure (a build script's panic) sat in
-            // the middle of the output. See the Merge gate section of `AGENTS.md`.
+            // nested shape is `clippy::collapsible_if`, which would fail the gate.
             if let Some(t) = delta.get("reasoning_content").and_then(|v| v.as_str())
                 && !t.is_empty()
             {
@@ -701,29 +600,9 @@ impl Accumulator {
                     .and_then(|v| v.as_u64())
             })
             .unwrap_or(0);
-        // **The operator's file first, then the catalogue — and the SERVER's name, not
-        // ours.**
-        //
-        // `providers.toml` prices `deepseek-chat`, which is a model DeepSeek has
-        // retired — so every turn on `deepseek-flash` reported `cost unpriced`,
-        // and the operator watching a metered conversation: *"also no money
-        // meter"*. A hand-maintained table goes stale exactly where a default
-        // model does, and for the same reason.
-        //
-        // The file still wins where it has an entry, because that is the
-        // operator's own number and they may be on a contract price. Absent one,
-        // models.dev has the published rate, which is a better answer than
-        // "unpriced" — and "unpriced" stays the answer when NEITHER has it, since
-        // unpriced and free are different.
-        //
-        // **And the key is the served model, because the requested one is a wish.**
-        // MEASURED 2026-10-02: asking for `deepseek-chat` is answered by a stream whose
-        // every chunk says `"model": "deepseek-flash"`. Pricing the wish billed the
-        // retired alias's rate — 0.28/0.028/0.42 — for a turn the live model served at
-        // 0.15/0.003/0.6. When the provider sends no name, the requested one is all
-        // there is and is used; when it sends one that neither the file nor the
-        // catalogue prices, the turn is **unpriced**, which is the honest answer and
-        // the one this tree already prefers to a wrong number.
+        // The operator's file first, then the catalogue, and the key is the SERVER's name: asking
+        // for one model can be answered by another, so pricing the request bills the wrong rates.
+        // Unpriced stays the answer when neither has it, since unpriced and free are different.
         let billed = self.model.as_deref().unwrap_or(model);
         let micros_usd = creds
             .prices
@@ -772,19 +651,9 @@ impl Accumulator {
 mod tests {
     use super::*;
 
-    /// **The refused-request dump says what a diagnosis needs and leaks nothing.**
-    ///
-    /// This is the record two disproven theories are handed over to — see
-    /// `crate::messages`' module header for the five live-API permutations that killed
-    /// the second one. Because it exists to END a guessing game, the test is about the
-    /// two ways it could mislead rather than about its formatting:
-    ///
-    ///   * it must carry the distinctions a theory turns on — a field that is ABSENT
-    ///     against one that is present-and-null, a count of characters for each part,
-    ///     the role order, and the truncated call ids that pair a result to its call;
-    ///   * and it must not carry the conversation. A refusal log that quoted the model
-    ///     and the operator's own words would be a second copy of the transcript in a
-    ///     plain text file, and every diagnosis this is for is answerable without it.
+    /// The refused-request dump says what a diagnosis needs and leaks nothing: the distinctions a
+    /// theory turns on (absent against present-and-null, character counts, role order, truncated
+    /// call ids) and never the conversation.
     #[test]
     fn the_refused_request_shape_says_what_is_needed_and_leaks_nothing() {
         let body = json!({
@@ -820,10 +689,9 @@ mod tests {
             );
         }
 
-        // **Absent, null, and an exact length — three different answers**, and the
-        // difference is the whole reason this is not a summary. The figures are counted
-        // from the literals above rather than guessed at: a length assertion that is
-        // loose enough to pass for the wrong string is not an assertion.
+        // Absent, null and an exact length are three different answers, and the difference is why
+        // this is not a summary. The figures are counted from the literals above rather than
+        // guessed: a length assertion loose enough to pass for the wrong string is not one.
         assert!(dump.contains("content=null"), "a null content: {dump}");
         assert!(
             dump.contains("reasoning_content=absent"),
@@ -905,7 +773,7 @@ mod tests {
         assert_eq!(done.finish, Finish::ToolCalls);
         assert_eq!(done.cost.prompt_tokens, 100);
         assert_eq!(done.cost.cached_tokens, 60);
-        // 40*1 + 60*0.1 + 7*2 = 60 per million → 60 micro-USD
+        // 40*1 + 60*0.1 + 7*2 = 60 micro-USD.
         assert_eq!(done.cost.micros_usd, Some(60));
         // Unpriced is None, not zero.
         let creds2 = Credentials {
@@ -929,14 +797,9 @@ mod tests {
         );
     }
 
-    /// **The authority is the host the request actually goes to, including when the
-    /// operator's key file moved it.**
-    ///
-    /// This exists because a warning about a failed round named the daemon's LOCAL
-    /// endpoint on a cloud turn; see `MessagesBackend::authority`. The override case is
-    /// the one that matters: `creds.url` wins over the preset, so the reported host has
-    /// to follow the URL — a version that read `preset.url` would name DeepSeek while the
-    /// request went to a proxy.
+    /// The authority is the host the request actually goes to, including when the operator's key
+    /// file moved it: `creds.url` wins over the preset, so a version that read the preset would
+    /// name DeepSeek while the request went to a proxy.
     #[test]
     fn the_authority_is_the_host_the_request_goes_to() {
         let plain = Credentials {
@@ -959,18 +822,9 @@ mod tests {
         assert_eq!(p.authority(), "10.0.0.7:8443");
     }
 
-    /// **The provider's own `model` field is what gets billed, not the name we asked
-    /// for.**
-    ///
-    /// MEASURED 2026-10-02 against this account: `POST` with `model: deepseek-chat` is
-    /// answered by a stream in which every chunk says `"model": "deepseek-flash"`.
-    /// Cost was computed from the request, so a turn the live model served at
-    /// 0.15/0.003/0.6 was billed at the retired alias's 0.28/0.028/0.42 — and nothing
-    /// failed, because an alias is *supposed* to resolve.
-    ///
-    /// The two rates here are an order of magnitude apart so the assertion cannot pass
-    /// by arithmetic accident: 1000 prompt of which 600 cached and 100 out is 660
-    /// micro-USD at the served rate and 6600 at the requested one.
+    /// The provider's own `model` field is what gets billed, not the name we asked for: a request
+    /// for one model can be answered by a stream naming another, and nothing fails because an alias
+    /// is supposed to resolve.
     #[test]
     fn the_served_model_is_what_gets_priced_not_the_requested_one() {
         let mut creds = Credentials {
@@ -1037,13 +891,8 @@ mod tests {
         );
     }
 
-    /// **The request the API actually receives carries the reasoning back, because
-    /// `body` is where the `tools`/reasoning coupling is decided.**
-    ///
-    /// This is the assertion that was missing end to end. `convert`'s own tests say
-    /// what the SHAPE is when told to echo; this says that the request carrying tools
-    /// is the one that gets told — which is the half a provider-name guess would have
-    /// got wrong, since both DeepSeek models disagree behind one name.
+    /// The request the API receives carries the reasoning back, because `body` is where the
+    /// tools/reasoning coupling is decided: the end-to-end half `convert`'s own tests cannot see.
     #[test]
     fn a_request_with_tools_passes_the_reasoning_back_and_one_without_does_not() {
         use letibot_transcript::{ReasoningField, SystemOrigin, TranscriptItem, UserPart};
