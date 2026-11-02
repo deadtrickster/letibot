@@ -999,6 +999,43 @@ fn the_diff_popup_names_its_file_once() {
     );
 }
 
+/// **The diff's style is discoverable where the diff is drawn.** `/diff` switches split and
+/// unified, and the popup's own edge is the only thing a reader looking at a change sees; nothing
+/// there named it, which is the operator asking *"how to switch diff style?"*.
+#[test]
+fn the_diff_popup_names_the_switch_that_draws_it_two_ways() {
+    let ws = workspace("popstyle");
+    let mut a = edited(&ws);
+    a.screen(100, 40);
+    let (y, _) = a.file_rows[0].clone();
+    a.key(Key::Click { x: 10, y: y as u16 });
+    let screen = a.screen(120, 40);
+    let edge = screen
+        .iter()
+        .find(|l| l.contains('╰'))
+        .expect("the popup's bottom edge");
+    // The whole edge, as the reader sees it: every key it takes, and then the switch.
+    assert!(
+        edge.contains("esc closes · ↑↓ pgup/pgdn home/end · ctrl-] edits it · /diff split|unified"),
+        "{edge:?}"
+    );
+
+    // And the switch is a button, like every other hint: a click on it asks for that picker.
+    let col = crate::app::keyhints::cells(edge)
+        .windows("/diff".chars().count())
+        .position(|w| w.iter().collect::<String>() == "/diff")
+        .expect("the hint's column");
+    let y = screen
+        .iter()
+        .position(|l| l.contains('╰'))
+        .expect("the edge's row");
+    a.key(Key::Click {
+        x: col as u16,
+        y: y as u16,
+    });
+    assert_eq!(a.take_injected(), b"/diff\r", "the hint types the verb");
+}
+
 /// **The popup closes by a click on its own `esc closes`** - the operator, 2026-10-11: *"i open
 /// diff popup by clicking - i cant close it by clicking … all keymap items anywhere must be
 /// clickable"*. The hint is a button that types its key, by the route a keypress takes.

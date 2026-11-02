@@ -81,11 +81,17 @@ impl App {
                     ),
                     Span::raw(format!(" · the change at line {}", file.line)),
                 ]),
-                if deciding {
-                    "esc closes · pgup/pgdn · ctrl-] edits it"
-                } else {
-                    "esc closes · ↑↓ pgup/pgdn home/end · ctrl-] edits it"
-                },
+                // **The switch belongs where a change is read.** `/diff` is the verb, and naming
+                // both ways it draws is what a reader had to be told from another screen; the hint
+                // is a button, so it opens that picker where the change is.
+                format!(
+                    "{} · /diff split|unified",
+                    if deciding {
+                        "esc closes · pgup/pgdn · ctrl-] edits it"
+                    } else {
+                        "esc closes · ↑↓ pgup/pgdn home/end · ctrl-] edits it"
+                    }
+                ),
             ),
             // A notice names its jobs on the edge, the way a change names its file; a card names
             // what it is about - a red target's the target and the tip in the alarm's register, a
@@ -106,9 +112,9 @@ impl App {
                 (
                     Line::new(vec![Span::styled(title, Style::of(role))]),
                     if deciding {
-                        "esc closes · pgup/pgdn"
+                        "esc closes · pgup/pgdn".to_string()
                     } else {
-                        "esc closes · ↑↓ pgup/pgdn home/end"
+                        "esc closes · ↑↓ pgup/pgdn home/end".to_string()
                     },
                 )
             }
@@ -128,9 +134,9 @@ impl App {
                     }),
                 ]),
                 if deciding {
-                    "esc closes · pgup/pgdn"
+                    "esc closes · pgup/pgdn".to_string()
                 } else {
-                    "esc closes · ↑↓ pgup/pgdn home/end"
+                    "esc closes · ↑↓ pgup/pgdn home/end".to_string()
                 },
             ),
             // **A picture names itself**: what it is, how big it is in pixels and in cells.
@@ -150,9 +156,9 @@ impl App {
                         Span::raw(format!(" · {size}")),
                     ]),
                     if deciding {
-                        "esc closes · pgup/pgdn"
+                        "esc closes · pgup/pgdn".to_string()
                     } else {
-                        "esc closes · ↑↓ pgup/pgdn home/end"
+                        "esc closes · ↑↓ pgup/pgdn home/end".to_string()
                     },
                 )
             }
