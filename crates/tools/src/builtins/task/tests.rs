@@ -1155,6 +1155,125 @@ fn the_main_tree_is_named_as_the_exception() {
     );
 }
 
+/// **A VM child works on a COPY, so a worktree `task_start` arranged for it would be a branch
+/// nothing ever commits to.** Refused at the call, before a tree or a child exists; `main_tree`
+/// stays allowed because it promises no branch.
+#[test]
+fn a_task_start_in_a_vm_is_refused_before_anything_is_arranged() {
+    use crate::runtime::{Registry, ToolRuntime};
+    use letibot_transcript::ToolCall;
+
+    /// A runner that counts the worktrees it was asked to arrange.
+    struct CountingRunner {
+        arranged: Arc<std::sync::atomic::AtomicUsize>,
+    }
+    impl TaskRunner for CountingRunner {
+        fn start(&self, _p: &str, _s: &TaskSpec) -> Result<String, String> {
+            Ok("sub-1".into())
+        }
+        fn collect(&self, _h: &str, _t: std::time::Duration) -> TaskStatus {
+            TaskStatus::Unknown
+        }
+        fn start_worktree(
+            &self,
+            _p: &str,
+            _s: &TaskSpec,
+            w: &WorktreeSpec,
+        ) -> Result<WorktreeHandle, String> {
+            self.arranged
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(WorktreeHandle {
+                handle: "sub-1".into(),
+                placement: WorktreePlacement {
+                    path: "/repo".into(),
+                    branch: if w.main_tree {
+                        "main".into()
+                    } else {
+                        worktree_branch(&w.slug)
+                    },
+                    base_sha: "cafe0000".into(),
+                    main_tree: w.main_tree,
+                },
+            })
+        }
+    }
+
+    // The firecode CLI is named to the tool, not put in `$FIRECODE_BIN`, which every other
+    // reader of it in this binary would see.
+    let stub = std::env::temp_dir().join(format!(
+        "letibot-firecode-stub-task-start-{}",
+        std::process::id()
+    ));
+    crate::testing::write_stub(&stub, "#!/bin/sh\n");
+    let hosts = crate::remote::Hosts::parse(
+        "[host.lab2x1]\nhostname = \"lab2x1\"\nuser = \"dead\"\nroot = \"~/letibot-remote\"\n",
+    )
+    .expect("it parses");
+    let arranged = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let runner: Arc<dyn TaskRunner> = Arc::new(CountingRunner {
+        arranged: arranged.clone(),
+    });
+    let mut reg = Registry::new();
+    reg.register(Box::new(
+        TaskStartTool::new(runner)
+            .with_firecode_bin(&stub)
+            .with_hosts(hosts),
+    ))
+    .unwrap();
+    let d = crate::backend::tempdir::TempDir::new();
+    let backend = crate::backend::HostBackend::new(d.path()).unwrap();
+    let rt = ToolRuntime::new(reg, Box::new(backend));
+    let mut sink = crate::NullToolSink;
+    let mut call = |args: &str| {
+        rt.invoke(
+            "t1",
+            &ToolCall {
+                id: "c1".into(),
+                name: "task_start".into(),
+                arguments: args.into(),
+            },
+            &mut sink,
+        )
+    };
+    // Both spellings of a VM: this box's `firecode`, and a guest on a declared host.
+    for args in [
+        r#"{"prompt": "do the work", "where": "firecode"}"#,
+        r#"{"prompt": "do the work", "where": "host:lab2x1:vm"}"#,
+    ] {
+        let r = call(args);
+        assert!(
+            matches!(r.outcome, letibot_transcript::ToolOutcome::Failed { .. }),
+            "{args}: {:?}",
+            r.outcome
+        );
+        // `task` is the way on: it says where the copy's work comes back.
+        assert!(r.payload.contains("Use `task`"), "{}", r.payload);
+        assert!(
+            r.payload
+                .contains("Nothing was arranged and nothing was spawned"),
+            "{}",
+            r.payload
+        );
+        assert_eq!(
+            arranged.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "{args}: the runner was asked to arrange a worktree for a child in a VM"
+        );
+    }
+    // The exception survives: the main tree promises no branch, so a VM child may have it.
+    let main = call(r#"{"prompt": "do the work", "where": "firecode", "main_tree": true}"#);
+    let _ = std::fs::remove_file(&stub);
+    assert!(
+        matches!(
+            main.outcome,
+            letibot_transcript::ToolOutcome::Backgrounded { .. }
+        ),
+        "{:?}",
+        main.outcome
+    );
+    assert_eq!(arranged.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
 /// **R93.F21/F22: the schemas take what the tools read.** `task` read `model` with no property
 /// for it, and `task_start` promised a delivery `wake` decides with no `wake` to pass.
 #[test]

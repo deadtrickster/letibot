@@ -1189,6 +1189,9 @@ fn first_line(prompt: &str) -> String {
 /// and only then does the child start in the tree just made.
 pub struct TaskStartTool {
     runner: Arc<dyn TaskRunner>,
+    /// The firecode CLI a `where: firecode` call is checked against - see
+    /// [`TaskTool::with_firecode_bin`].
+    firecode_bin: Option<std::path::PathBuf>,
     /// The machines `where: "host:NAME"` may name - see [`TaskTool::with_hosts`].
     hosts: Option<crate::remote::Hosts>,
     /// The skills corpus a call's `skills` names are checked against - see
@@ -1200,9 +1203,16 @@ impl TaskStartTool {
     pub fn new(runner: Arc<dyn TaskRunner>) -> Self {
         TaskStartTool {
             runner,
+            firecode_bin: None,
             hosts: None,
             skills: None,
         }
+    }
+
+    /// Check `where: firecode` against `bin` rather than the host's `$FIRECODE_BIN`/PATH.
+    pub fn with_firecode_bin(mut self, bin: impl Into<std::path::PathBuf>) -> Self {
+        self.firecode_bin = Some(bin.into());
+        self
     }
 
     /// Read a call's `skills` against `skills` rather than refusing the argument outright.
@@ -1286,7 +1296,8 @@ impl Tool for TaskStartTool {
             },
         };
         // Checked before the worktree is arranged: a refusal here leaves nothing behind.
-        let placement = match placement_arg(args, None, &hosts_of(&self.hosts)) {
+        let firecode = self.firecode_bin.as_deref();
+        let placement = match placement_arg(args, firecode, &hosts_of(&self.hosts)) {
             Ok(p) => p,
             Err(refused) => return refused,
         };
@@ -1324,6 +1335,19 @@ impl Tool for TaskStartTool {
             .and_then(|v| v.as_str())
             .map(|r| r.trim().trim_end_matches('/').to_string())
             .filter(|r| !r.is_empty() && r != ".");
+
+        // A VM child works on a COPY of the tree, so the commits it is told to make land there
+        // and the host branch stays at its base, with nothing to enqueue. `main_tree` promises
+        // no branch, so it is not this case.
+        if placement.is_vm() && !main_tree {
+            return Invocation::failed(
+                "task_start cannot arrange a worktree for a child in a VM",
+                "a VM works on a copy of this tree, so the child's commits stay in the copy and \
+                 the branch `agent/<slug>` never leaves its base, with nothing to enqueue for \
+                 review. Use `task` with the same `where`, whose completion says where the copy's \
+                 work comes back. Nothing was arranged and nothing was spawned.",
+            );
+        }
 
         // The slug, derived from the prompt when the caller did not name one: the derivation is the
         // default, not a lock, so a caller wanting another name for the same work passes `slug`. A
