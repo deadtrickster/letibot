@@ -2,15 +2,13 @@
 
 use super::*;
 
-/// **A condition is met by a job that is GONE — including one this daemon never knew** — the
-/// operator's restart case, as the words the model is handed.
+/// A condition is met by a job that is GONE, including one this daemon never knew: the restart
+/// case, as the words the model is handed.
 ///
-/// Three fates, three sentences, and the split is the operator's own: a handle that ended here
-/// can be read with `job_output`, and one this daemon has never heard of cannot — so that line
-/// says the result is not here rather than leaving the reader to find out by asking. His
-/// words, which are the whole reason the fate is carried and not just the boolean:
-/// *"you either follow the job result up manually (which is more robust) if next steps depend
-/// on it or just do your things if it was just a timeline"*.
+/// Three fates and three sentences, and the split is the operator's own: a handle that ended here
+/// can be read with `job_output`, and one this daemon has never heard of cannot, so that line says
+/// the result is not here rather than leaving the reader to find out by asking. That is why the
+/// fate is carried rather than a boolean.
 #[test]
 fn a_conditions_sentence_says_which_kind_of_gone_it_was() {
     assert_eq!(
@@ -33,27 +31,24 @@ fn a_conditions_sentence_says_which_kind_of_gone_it_was() {
         "and say what the reader can do about it, since following it up is the robust half: \
              {unknown}"
     );
-    // **A running job is not due, and the sentence exists anyway.** A function that panics on
-    // the arm nobody reaches is a function whose contract is a rumour — and this one is
-    // reachable the moment anything but `due_todo_lines` asks.
+    // A running job is not due, and the sentence exists anyway: a function that panics on the arm
+    // nobody reaches is a function whose contract is a rumour, and this one is reachable the moment
+    // anything but `due_todo_lines` asks.
     assert!(
         fate_line("j7", &JobFate::Running).contains("still running"),
         "the running arm must answer rather than be unreachable"
     );
 }
 
-/// **THE EVALUATOR: what the world says about a handle, and which rows that makes due.**
+/// The evaluator: what the world says about a handle, and which rows that makes due.
 ///
-/// The decision a conditioned row turns on, and it had **no assertion at all** before this:
-/// reaching it through a `Harness` needs a backend, a registry, a gate and a store, so the only
-/// thing pinned was [`fate_line`]'s wording — the sentence, and not the choice that picks it.
+/// Reaching this through a `Harness` needs a backend, a registry, a gate and a store, so before it
+/// was a free function the only thing pinned was [`fate_line`]'s wording, the sentence and not the
+/// choice that picks it.
 ///
-/// The operator's acceptance case is the one that decides the design: *"a todo conditioned on
-/// job end, and then i restart head and harnessd. once server is back it should fire - job is
-/// gone"*. After that restart the process table is empty and the handle is a job this daemon
-/// never ran, so **`Unknown` must meet the condition** — a decision that read *no row, no fate,
-/// skip it* would leave the row waiting for ever on work that is already done, which is the one
-/// failure this whole mechanism exists to prevent.
+/// `Unknown` must meet the condition, because after a restart the process table is empty and the
+/// handle is a job this daemon never ran. A decision that read no row, no fate, skip it would leave
+/// the row waiting for ever on work that is already done.
 #[test]
 fn the_evaluator_fires_a_row_whose_handle_is_gone() {
     use letibot_tokencore::store::{TodoBy, TodoCondition, TodoItem, TodoStatus};
@@ -82,24 +77,22 @@ fn the_evaluator_fires_a_row_whose_handle_is_gone() {
             handle: handle.into(),
         })
     };
-    // **The same row, set aside.** Nothing else about it changes — the words, the author and
-    // the handle are `row`'s — so what the filter below is being asked about is the STATE and
-    // not some other difference between two fixtures.
+    // The same row, set aside. Nothing else about it changes, so what the filter below is asked
+    // about is the STATE and not some other difference between two fixtures.
     let set_aside = |content: &str, when: Option<TodoCondition>| TodoItem {
         status: TodoStatus::Postponed,
         ..row(content, when)
     };
-    // **The same row again, finished.** The fourth skip below, and it is the one this change
-    // widens rather than adds — see `due_rows`: the predicate is the idle check's, and a row
-    // that is already done is not work it may speak about.
+    // The same row again, finished: the fourth skip, and the one `due_rows` widens rather than
+    // adds, because the predicate is the idle check's and a row already done is not work it may
+    // speak about.
     let finished = |content: &str, when: Option<TodoCondition>| TodoItem {
         status: TodoStatus::Completed,
         ..row(content, when)
     };
 
-    // **The order of the two looks, which is the whole of the honesty.** The live table answers
-    // first: only the process host can say a job runs *now*, so a record saying `running` — a
-    // job the daemon was watching when it died — must not override a host that says otherwise.
+    // The order of the two looks, which is the whole of the honesty: only the process host can say
+    // a job runs NOW, so a record saying `running` must not override a host that says otherwise.
     assert_eq!(
         fate_of(
             Some(letibot_tools::exec::JobState::Running),
@@ -118,8 +111,8 @@ fn the_evaluator_fires_a_row_whose_handle_is_gone() {
         },
         "the host's own word for it, and not the stale row's"
     );
-    // **The restart, which is why the record is the second look**: no process table at all, and
-    // the ending this daemon wrote down before it went away.
+    // The restart, which is why the record is the second look: no process table at all, and the
+    // ending this daemon wrote down before it went away.
     assert_eq!(
         fate_of(None, Some(&record("j121", "exited 3"))),
         JobFate::Ended {
@@ -135,25 +128,22 @@ fn the_evaluator_fires_a_row_whose_handle_is_gone() {
         "a job this daemon never heard of has ended; that is what a restart looks like"
     );
 
-    // **The filter, over a board the world answers for.** Four skips — a row with no
-    // condition, a running job, a row the operator has set aside, and a row already done — and
-    // two firings, one of each kind of gone.
+    // The filter, over a board the world answers for. Four skips, a row with no condition, a running
+    // job, a row the operator set aside and a row already done, and two firings, one of each kind of
+    // gone.
     let rows = vec![
         row("ship the parity row", None),
         row("push once CI lands", waiting_on("j121")),
         row("wait for the build", waiting_on("j7")),
         row("after the restart", waiting_on("j900")),
-        // **A POSTPONED row does not fire, and it keeps its handle.** The handle is the same
-        // `j121` the row above is due on, so a firing here could only come from the state —
-        // and the absence of one is the whole of what *"persists but without nag"* means for
-        // a conditioned row. Nothing in `due_rows` clears the condition: lifting the
-        // postponement puts the row back in front of this same filter, which is what makes
-        // the state reversible rather than a quiet way to drop a firing.
+        // A POSTPONED row does not fire, and it keeps its handle. The handle is the same one the
+        // row above is due on, so a firing here could only come from the state. Nothing in
+        // `due_rows` clears the condition, so lifting the postponement puts the row back in front of
+        // this same filter, which is what makes the state reversible rather than a way to drop a
+        // firing.
         set_aside("push once CI lands", waiting_on("j121")),
-        // **And a FINISHED row does not fire either**, again on `j121`, which is the same
-        // handle the open row above is due on: a firing here could only come from the state.
-        // The condition is not cleared by any of this, so the row keeps its handle — what the
-        // skip buys is silence about work that is over.
+        // And a FINISHED row does not fire either, on the same handle: the condition is not
+        // cleared, so the row keeps it, and the skip buys silence about work that is over.
         finished("push once CI lands", waiting_on("j121")),
     ];
     let due = due_rows(
@@ -190,14 +180,11 @@ fn the_evaluator_fires_a_row_whose_handle_is_gone() {
     );
 }
 
-/// **A subagent's ask is addressed to the tree's ROOT, never to its parent** — R58's ask
-/// route, and the one sentence in the spawn that has to be right for a card to reach a
-/// head at all.
+/// A subagent's ask is addressed to the tree's ROOT, never to its parent: the sentence in the spawn
+/// that has to be right for a card to reach a head at all.
 ///
-/// The GRANDCHILD case is what decides it: at depth ≥ 1 the parent is itself a child, so
-/// addressing the parent would post the card on a session no head can be attached to and
-/// no worker drives — a card nobody would ever see, which is the defect this whole change
-/// is against. The fixture is therefore a root, a child and a grandchild, built the way
+/// The grandchild case decides it: at depth 1 and beyond the parent is itself a child, so addressing
+/// the parent would post the card on a session no head can be attached to and no worker drives. The fixture is therefore a root, a child and a grandchild, built the way
 /// `jobwatch`'s settlement test builds them.
 #[test]
 fn a_subagents_ask_is_addressed_to_the_tree_root_and_not_to_its_parent() {
