@@ -126,13 +126,9 @@ fn each_transcript(max_len: usize, mut f: impl FnMut(&[TranscriptItem])) {
     rec(&alpha, &mut items, max_len, &mut f);
 }
 
-/// §7.1, invariant one. Rendering `0..k+1` from scratch equals rendering `0..k` and
-/// appending item `k+1` — for **every** transcript over the 9-symbol alphabet up to
-/// length 5. 73,810 transcripts, 323,847 append points. The renderer is a pure
-/// function, so this is exhaustive rather than sampled.
-///
-/// It used to run twice, once per quirk profile. The `server-bug-compatible` profile
-/// is gone (T2), so there is one renderer and one run.
+/// Rendering `0..k+1` from scratch equals rendering `0..k` and appending item `k+1`, for every transcript
+/// over the 9-symbol alphabet up to length 5. The renderer is a pure function, so this is exhaustive
+/// rather than sampled.
 #[test]
 fn render_incremental_agrees_with_render() {
     let r = GlmRenderer::new();
@@ -206,11 +202,8 @@ fn merge_text(spans: &[RenderSpan]) -> Vec<RenderSpan> {
     out
 }
 
-/// The generation prompt is the head of the next turn, exactly.
-///
-/// This is what lets the turn engine append `generation_prompt()` before sampling and
-/// then append the turn's own spans without re-sending `<|assistant|><think>`: the
-/// two spans it sent are the first two the next assistant item would have produced.
+/// The generation prompt is the head of the next turn, exactly: the engine can append it before sampling
+/// and then append the turn's own spans without re-sending them.
 #[test]
 fn generation_prompt_is_the_head_of_the_next_assistant_turn() {
     let r = GlmRenderer::new();
@@ -319,11 +312,8 @@ fn argument_key_order_is_preserved_through_the_round_trip() {
     assert_eq!(arguments, r#"{"z":1,"a":2,"m":3}"#);
 }
 
-/// The one corner where the round trip is lossy, pinned rather than papered over.
-///
-/// GLM's `<arg_value>` carries no type: a string argument is emitted raw, so a string
-/// whose text is itself valid JSON comes back as the JSON value. The format simply
-/// does not distinguish them.
+/// The one corner where the round trip is lossy, pinned rather than papered over: `<arg_value>` carries
+/// no type, so a string whose text is valid JSON comes back as the JSON value.
 #[test]
 fn a_string_argument_that_looks_like_json_does_not_round_trip() {
     let turn = vec![TranscriptItem::Assistant {

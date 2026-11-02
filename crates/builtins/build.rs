@@ -74,10 +74,8 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
 }
 
-/// Whether the guest target is installed on this toolchain.
-///
-/// Asked of `rustc`'s own sysroot rather than of `rustup`, because a toolchain need not come from
-/// rustup. A `rustc` that cannot answer counts as not installed, and the build stops there.
+/// Whether the guest target is installed. Asked of `rustc`'s own sysroot rather than of `rustup`,
+/// because a toolchain need not come from rustup; a `rustc` that cannot answer counts as not installed.
 fn wasm_target_installed() -> bool {
     let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string());
     let out = match Command::new(rustc).args(["--print", "sysroot"]).output() {
@@ -112,10 +110,8 @@ fn guests(root: &Path) -> Vec<(String, PathBuf)> {
     found
 }
 
-/// Build one guest and answer where the module is.
-///
-/// The host's build environment is stripped from the child, and its target directory is its own
-/// under `OUT_DIR`, so no host build can be waiting on that directory's lock.
+/// Build one guest and answer where the module is. The host's build environment is stripped from the
+/// child and its target directory is its own under `OUT_DIR`, so no host build waits on that lock.
 fn build(name: &str, dir: &Path, out: &Path) -> PathBuf {
     let target = out.join("target").join(name);
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());

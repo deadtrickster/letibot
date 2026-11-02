@@ -272,9 +272,9 @@ pub struct DialectSpec {
 pub trait Parser: Send + Sync {
     /// Takes `u32` to keep this crate free of the FFI, and the decoder because it must.
     ///
-    /// `reasoning_open` is the channel the model speaks on before the first token: a generation
-    /// prompt commonly leaves the reasoning block open, and a stateless parse would promote a
-    /// cut-off deliberation to visible content.
+    /// `reasoning_open` is the channel the model speaks on before the first token: a generation prompt
+    /// commonly leaves the reasoning block open, and a stateless parse would promote a cut-off
+    /// deliberation to visible content. The caller owns the lead, so the caller owns that fact.
     fn parse(
         &self,
         tokens: &[u32],
@@ -296,11 +296,8 @@ pub fn spans_to_string(spans: &[RenderSpan]) -> String {
     s
 }
 
-/// The same spans as the string a server tokenizes itself, for a prompt carrying media.
-///
-/// Images travel only as a `prompt_string`, which the server tokenizes and marks per process. That
-/// is safe for the cache while control tokens stay atomic, which is this file's job to keep. One
-/// image is one marker: the opening role places it and the other two are swallowed.
+/// The same spans as the string a server tokenizes itself, for a prompt carrying media: images travel
+/// only as a `prompt_string`, and one image is one marker, placed by the opening role.
 pub fn spans_to_string_with_media(spans: &[RenderSpan], marker: &str) -> String {
     let mut s = String::new();
     for span in spans {

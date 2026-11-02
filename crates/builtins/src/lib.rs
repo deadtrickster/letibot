@@ -14,11 +14,9 @@
 
 use letibot_plugins::Stack;
 
-/// One layer the binary carries: its name (the directory), its manifest's text, and its module.
-///
-/// The manifest is text rather than a parsed [`Manifest`](letibot_plugins::Manifest) because the
-/// stack parses it through the same door a layer on disk goes through, so a malformed built-in
-/// fails discovery with a failure naming it instead of failing at compile time.
+/// One layer the binary carries: its name, its manifest's text, and its module. The manifest is text so
+/// the stack parses it through the same door a layer on disk goes through, and a malformed built-in
+/// fails discovery with a failure naming it.
 pub struct Builtin {
     /// The directory's name, which is the layer's name: `sessions`.
     pub name: &'static str,
@@ -30,11 +28,9 @@ pub struct Builtin {
 
 include!(concat!(env!("OUT_DIR"), "/table.rs"));
 
-/// Put every built-in at the bottom of `stack`.
-///
-/// Failures come back as sentences rather than being swallowed: a built-in that will not load is a
-/// defect in this repository, and the caller that puts it in front of a person is the one that can
-/// say so.
+/// Put every built-in at the bottom of `stack`. Failures come back as sentences rather than being
+/// swallowed: a built-in that will not load is a defect in this repository, and the caller that puts it
+/// in front of a person can say so.
 pub fn install(stack: &mut Stack) -> Vec<String> {
     let mut failed = Vec::new();
     for b in table() {
