@@ -107,16 +107,31 @@ impl ScopeTree for PlainDirectories {
         Ok(id)
     }
 
-    fn members(&self, _scope: &ScopeId) -> Result<Vec<u32>, ExecError> {
-        Ok(Vec::new())
+    /// What the kernel would answer: the pids the join script wrote into this scope's
+    /// `cgroup.procs`. A tree that answered `empty` would fail every spawn that outlives the
+    /// five-second membership check, which is the check that makes an unowned process impossible.
+    fn members(&self, scope: &ScopeId) -> Result<Vec<u32>, ExecError> {
+        let body = std::fs::read_to_string(scope.path.join("cgroup.procs")).unwrap_or_default();
+        Ok(body.lines().filter_map(|l| l.trim().parse().ok()).collect())
     }
 
     fn end(&self, scope: &ScopeId) -> Reaping {
+        let observed = self
+            .members(scope)
+            .unwrap_or_default()
+            .into_iter()
+            .map(letibot_tools::exec::scope::Reaped::observe)
+            .collect();
+        // A scope that ended is gone from a listing, as a removed cgroup directory is.
+        self.open
+            .lock()
+            .expect("open scopes")
+            .retain(|s| s.path != scope.path);
         Reaping {
             scope: scope.clone(),
             at: SystemTime::now(),
             mechanism: "nothing to kill",
-            observed: Vec::new(),
+            observed,
             survivors: Vec::new(),
             waited: Duration::ZERO,
             removed: true,
@@ -173,6 +188,7 @@ fn table(host: &HostProcesses) -> (usize, usize) {
 /// Three hundred tiny jobs, and what the host keeps of them afterwards.
 #[test]
 fn a_job_row_outlives_its_job_and_the_captures_do_not() {
+    let _serial = serial();
     let dir = TempDir::new("harnessd-r66-jobs");
     let host = a_host(&dir);
     let (live0, _, _) = memwatch::heap();
@@ -206,6 +222,15 @@ fn a_job_row_outlives_its_job_and_the_captures_do_not() {
         held <= 64 * 1024 * 1024,
         "the settled captures are over the budget: {held} bytes held"
     );
+    // And the scopes: one per job, and a job that ended by itself is never `end`ed, so on a real
+    // cgroup tree each of these is a directory until the session's own scope goes.
+    let scopes = host.scopes().len();
+    println!("  {scopes} scope(s) open for {rows} row(s)");
+    assert_eq!(
+        scopes,
+        JOBS + 1,
+        "one session scope and one per job, and nothing removed a job's"
+    );
     // And what one publish of that table costs. `Harness::publish_jobs` runs several times a turn
     // and calls `jobs()`, which clones every view - so a session's per-turn allocation grows with
     // the number of commands it has EVER run, whatever it is doing now.
@@ -228,6 +253,7 @@ fn a_job_row_outlives_its_job_and_the_captures_do_not() {
 /// host holds a budget of it rather than a window per job.
 #[test]
 fn a_hundred_big_jobs_hold_the_capture_budget_and_not_a_window_each() {
+    let _serial = serial();
     const BIG: usize = 100;
     const EACH: usize = 1 << 20;
     let dir = TempDir::new("harnessd-r66-big");
@@ -245,14 +271,15 @@ fn a_hundred_big_jobs_hold_the_capture_budget_and_not_a_window_each() {
     let (rows, held) = table(&host);
     println!(
         "{BIG} jobs of {EACH} bytes each: {rows} row(s), {held} capture byte(s) held - a per-job \
-         window would be {} ",
+         window would be {}",
         BIG * EACH
     );
     assert_eq!(rows, BIG, "every job keeps its row");
+    // The budget is applied at the NEXT spawn, so the host may hold it plus the last job's window.
     assert!(
-        held <= 64 * 1024 * 1024,
-        "the settled captures held {held} bytes, over the 64 MiB budget - the estimate of a \
-         window per job would be {}",
+        held <= 64 * 1024 * 1024 + EACH,
+        "the settled captures held {held} bytes, over the 64 MiB budget and one job's window - the \
+         estimate of a window per job would be {}",
         BIG * EACH
     );
     // And a released capture still says what the job wrote: the counts are the record's, and only
@@ -276,25 +303,31 @@ fn a_hundred_big_jobs_hold_the_capture_budget_and_not_a_window_each() {
 /// A watcher set, and the two maps a session's backgrounded work leaves in it.
 #[test]
 fn the_settled_set_is_bounded_and_still_refuses_a_repeat_watch() {
+    let _serial = serial();
+    // Past the bound on purpose: a guard that was never asked to evict is not a guard.
+    const WATCHED: usize = 1200;
     let dir = TempDir::new("harnessd-r66-watch");
     let host: Arc<dyn ProcessHost> = a_host(&dir);
     let hub = Hub::new("s-r66-watch");
     let watch = JobWatchers::new(&host, &hub, None);
     let (live0, _, _) = memwatch::heap();
     let mut handles: Vec<String> = Vec::new();
-    for i in 0..JOBS {
-        let id = spawn(host.as_ref(), &format!("echo watched {i}"));
-        watch.watch(id.0.clone());
-        handles.push(id.0);
-    }
-    let until = Instant::now() + Duration::from_secs(120);
-    while watch.retained().settled < handles.len() && Instant::now() < until {
-        std::thread::sleep(Duration::from_millis(20));
+    // In rounds, so the fixture is not a thousand watcher threads at once.
+    for round in 0..(WATCHED / 200) {
+        for i in 0..200 {
+            let id = spawn(host.as_ref(), &format!("echo watched {round}.{i}"));
+            watch.watch(id.0.clone());
+            handles.push(id.0);
+        }
+        let until = Instant::now() + Duration::from_secs(120);
+        while watch.retained().watching > 0 && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
     let kept = watch.retained();
     let (live1, _, _) = memwatch::heap();
     println!(
-        "{JOBS} watched jobs: retained {kept:?}, heap live {} -> {} (+{}), {} settlement(s) queued",
+        "{WATCHED} watched jobs: retained {kept:?}, heap live {} -> {} (+{}), {} settlement(s) queued",
         mb(live0 as f64),
         mb(live1 as f64),
         mb(live1.saturating_sub(live0) as f64),
@@ -308,9 +341,10 @@ fn the_settled_set_is_bounded_and_still_refuses_a_repeat_watch() {
         kept.wanted, 0,
         "nothing was asked for, so nothing may stay in `wanted`: {kept:?}"
     );
-    assert!(
-        kept.settled <= 1024,
-        "the duplicate guard kept {} of {JOBS} handles - it is a guard and not a history: {kept:?}",
+    assert_eq!(
+        kept.settled, 1024,
+        "the duplicate guard kept {} of {WATCHED} handles - it is a guard and not a history: \
+         {kept:?}",
         kept.settled
     );
     // The guard's whole job: a second `watch` for a handle that just settled starts no watcher.
@@ -326,6 +360,7 @@ fn the_settled_set_is_bounded_and_still_refuses_a_repeat_watch() {
 /// A result delivered on every turn, and the record of what the model has been told.
 #[test]
 fn a_result_delivered_every_turn_does_not_grow_the_read_record() {
+    let _serial = serial();
     let hub = Hub::new("s-r66-read");
     let watch = JobWatchers::watching_tasks(&hub, None);
     let mut most = 0usize;
@@ -348,6 +383,14 @@ fn a_result_delivered_every_turn_does_not_grow_the_read_record() {
         most <= 4,
         "the read record kept {most} names: what may still be graced is a turn and a half's \
          worth, so a session that delivers a result every turn must not grow it for its life"
+    );
+    // And a want for a result the model already has is not recorded: nothing would ever spend it,
+    // so it would sit in `wanted` for the session's life.
+    watch.want_now("j199", letibot_tools::runtime::WantedNow::WakeNow);
+    assert_eq!(
+        watch.retained().wanted,
+        0,
+        "a want was recorded for a handle whose result was already delivered"
     );
 }
 
@@ -372,9 +415,15 @@ fn completion(job: &str, slug: Option<&str>) -> JobCompletion {
 // The worker and the queue: many turns through a real `Sessions`
 // ---------------------------------------------------------------------------
 
-/// One test at a time in this binary: `XDG_CONFIG_HOME` is the process's, and the provider this
-/// file points at is written there.
+/// One test at a time in this binary. Two reasons, and either alone is enough: `XDG_CONFIG_HOME` is
+/// the process's and the provider this file points at is written there, and every measurement here
+/// is `memwatch::heap()`, which is the WHOLE process's live heap - a sibling test allocating
+/// through the same window is a delta that is not this test's.
 static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
+
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 /// Turns the fixture runs. A 47-hour session runs thousands; forty is where a per-turn entry has
 /// to show, because forty of anything is a number a reader can see.
@@ -502,7 +551,7 @@ fn a_daemon(dir: &TempDir, url: &str) -> (Parts, Config, Arc<Registry>) {
 fn turns_through_the_worker_leave_no_entry_behind() {
     use letibot_harnessd::sessions::Sessions;
 
-    let _serial = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let _serial = serial();
     let url = a_model_that_says_ok();
     let dir = TempDir::new("harnessd-r66-turns");
     let (parts, cfg, registry) = a_daemon(&dir, &url);
@@ -611,7 +660,7 @@ const CHILD_ANSWER: usize = 16 << 10;
 fn children_a_session_has_run_leave_their_answers_behind() {
     use letibot_harnessd::sessions::Sessions;
 
-    let _serial = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let _serial = serial();
     let big = format!("the child's own answer. {}", "a".repeat(CHILD_ANSWER));
     let small = "ok".to_string();
     let dir = TempDir::new("harnessd-r66-children");

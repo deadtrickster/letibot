@@ -562,13 +562,15 @@ impl JobWatchers {
     /// [`letibot_tools::runtime::CompletionWanted`]. A want already recorded is not replaced
     /// `wake: "now"` and a later wait are both *now*, and the first is the one recorded.
     pub fn want_now(&self, handle: &str, why: WantedNow) {
-        if self
+        // A handle whose result the model has already been told is nothing to ask about: the want
+        // would never be spent, and the read record only remembers the last turn or two.
+        let delivered = self
             .read
             .lock()
             .expect("read record")
             .seen
-            .contains_key(handle)
-        {
+            .contains_key(handle);
+        if delivered || self.settled.lock().expect("job watchers").contains(handle) {
             return;
         }
         self.wanted
