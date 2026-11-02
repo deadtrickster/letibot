@@ -34,31 +34,19 @@ history. What remains is the ids and what each one owns.
 
 ### The contracts, named
 
-A strand's contract is what it hands the next one. Where the plan left a gap, the answer is in the tree
-now, and this is the list a new strand should read before inventing a second shape:
+A strand's contract is what it hands the next one. Where the plan left a gap the answer is in the tree,
+and this is what a new strand reads before inventing a second shape: **W1/W16** the scripted session is
+`tests/fidelity` plus `experiments/falsifier-b/tasks.py`; **W3** a fixture is messages plus tools plus an
+expected render, run against a directly launched single-model server (not the router, UNVERIFIED-6);
+**W4** `RenderSpan`, `ParsedSpan`, `ControlTokens` and `Guard` live in `crates/dialect`; **W5** the memfd
+region and ledger are `tokencore/{region,ledger,store}.rs`, and a restart replays spans; **W7** ATTACH,
+snapshot, `RESYNC`, `expected_seq` and `client_request_id` are `sessionlog/{wire,protocol}.rs`; **W9**
+`tools/src/backend.rs` plus the `exec` module is what keeps W9 off W10; **W11** §11.2's two objects are the
+interface, and the gate is `AdjudicatedGate` with `ModelBrief` for the model arm.
 
-- **W1/W16 - the scripted-session format.** Not specified in the plan; the rig is `tests/fidelity` plus
-  `experiments/falsifier-b/tasks.py`, and a new measurement should reuse them rather than grow a third.
-- **W3 - the fixture corpus.** A fixture is messages plus tools plus an expected render, run by
-  `tests/fidelity/run_gate.py` against a directly launched single-model server (not the router, §20.1
-  UNVERIFIED-6).
-- **W4 - the dialect types.** `RenderSpan`, `ParsedSpan`, `ControlTokens` and `Guard` live in
-  `crates/dialect`. The plan's §7.1 named the trait and not its vocabulary; that is settled, and the two
-  invariants (`render_incremental ≡ render`, `parse ∘ render ≡ id`) are the tests.
-- **W5 - the store schema and the region.** §4.4 lists the tables; the memfd region and ledger live in
-  `tokencore/{region,ledger,store}.rs`. A restart replays spans, never re-renders.
-- **W7 - the head frames.** ATTACH, snapshot, `RESYNC`, the event envelope, `expected_seq` and
-  `client_request_id` are in `sessionlog/{wire,protocol}.rs`; the plan's §13.2 is the prose and the code
-  is the format.
-- **W9 - the execution-backend seam.** `crates/tools/src/backend.rs` plus the `exec` module: this is what
-  keeps W9 from depending on W10, since firecode is a backend swap.
-- **W11 - the adjudicator interface.** §11.2's two objects are the interface; `Adjudicator` is not a
-  named trait in the plan, and in the tree the gate is `AdjudicatedGate` with `ModelBrief` for the model
-  arm.
-- **W14 - `ExplainPlan` is still untyped.** This is the one contract the plan promised and the tree has
-  not got: counters exist per stage, and a field list invented before them would have been guesses.
-- **W15 - the control-channel wire format.** §3.3 names the messages and the transport; framing, encoding
-  and the handshake are unbuilt, and S0 cannot start without them.
+Two contracts are still open: **W14**'s `ExplainPlan` has no field list, so the event carries the plan
+untyped - the one thing the plan promised and the tree has not got - and **W15**'s wire format (framing,
+encoding, handshake) is unbuilt, so S0 cannot start.
 
 ## 2. The dependency graph
 
