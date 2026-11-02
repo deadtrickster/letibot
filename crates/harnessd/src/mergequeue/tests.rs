@@ -224,8 +224,11 @@ fn a_live_rows_own_moves_are_in_the_snapshot_whatever_else_the_queue_has_done() 
     }
 
     let snap = super::snapshot(&store);
-    let mine: Vec<&letibot_sessionlog::event::QueueMove> =
-        snap.recent.iter().filter(|m| m.entry_id == "m-one").collect();
+    let mine: Vec<&letibot_sessionlog::event::QueueMove> = snap
+        .recent
+        .iter()
+        .filter(|m| m.entry_id == "m-one")
+        .collect();
     assert!(
         !mine.is_empty(),
         "the landing's own moves are in the window: {:?}",

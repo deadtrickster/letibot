@@ -96,7 +96,9 @@ fn only_the_states_asked_for_are_read_and_an_old_row_never_comes_back() {
 
     let ids = |rows: Vec<ReviewRow>| -> Vec<String> { rows.into_iter().map(|r| r.id).collect() };
     assert_eq!(
-        ids(s.review_rows_in(Some("/repo"), &ReviewState::QUEUED).unwrap()),
+        ids(s
+            .review_rows_in(Some("/repo"), &ReviewState::QUEUED)
+            .unwrap()),
         vec!["r1".to_string(), "r2".to_string(), "r5".to_string()],
         "the live rows of this repository, and neither a rejected nor a withdrawn one"
     );
@@ -106,7 +108,9 @@ fn only_the_states_asked_for_are_read_and_an_old_row_never_comes_back() {
         "one state, across every repository"
     );
     assert_eq!(
-        ids(s.review_rows_in(Some("/other"), &ReviewState::QUEUED).unwrap()),
+        ids(s
+            .review_rows_in(Some("/other"), &ReviewState::QUEUED)
+            .unwrap()),
         vec!["elsewhere".to_string()],
         "a repository is read on its own"
     );

@@ -614,7 +614,10 @@ fn a_refusal_nobody_heard_is_handed_to_the_session_that_opens_later() {
     open.store(true, std::sync::atomic::Ordering::Relaxed);
     let nobody_live = |_: &str| false;
     let served = a_pass(&store, &door, &nobody_live, heard.clone());
-    assert_eq!(served.redelivered, 1, "the pass handed the owed refusal over");
+    assert_eq!(
+        served.redelivered, 1,
+        "the pass handed the owed refusal over"
+    );
     let went = heard.sent();
     assert_eq!(went.len(), 1, "{went:?}");
     assert_eq!(

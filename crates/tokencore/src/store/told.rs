@@ -140,8 +140,20 @@ mod tests {
         assert_eq!(
             s.told_with_prefix("refusal:").unwrap(),
             vec![
-                ("refusal:abc:s-1".to_string(), Told { count: 1, at_ms: 30 }),
-                ("refusal:def:s-2".to_string(), Told { count: 1, at_ms: 40 }),
+                (
+                    "refusal:abc:s-1".to_string(),
+                    Told {
+                        count: 1,
+                        at_ms: 30
+                    }
+                ),
+                (
+                    "refusal:def:s-2".to_string(),
+                    Told {
+                        count: 1,
+                        at_ms: 40
+                    }
+                ),
             ],
             "oldest first, with the count and the clock each was written at"
         );
