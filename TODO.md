@@ -136,7 +136,7 @@ Record: `docs/review/2026-11-01-ab5f7841-90dd9c84.md` (three reviewers, two roun
 6. Deslop per `hands-off/templates/deslop.md`: comments to the 2-3 line rule, `.letibot/notes` merged into rewritten topic docs.
 7. Structure: split `open_with_registry`, `rounds`, `run_to_completion`; break `harness.rs` into modules.
 8. Plugins: script layers (`docs/plugins-plan.md` step 11).
-9. Backlog, unchanged: R94, R95, R98 half 1, R104, R89-R93, R62-R67 and the older open entries below.
+9. Backlog, unchanged: R94, R95, R98 half 1, R104, R89-R93, R64-R67 and the older open entries below.
 
 **Done when**: steps 1-8 are closed or moved to their own entries. **Still open?** this entry's list.
 
@@ -835,7 +835,7 @@ own right**, addressed as R93.<id>; the list below groups them by what to fix fi
 
 ---
 
-## R62 — The gate runs locally and on the fleet, never on GitHub — **OPEN, 2026-10-11**
+## R62 — The gate runs locally and on the fleet, never on GitHub — **DONE 2026-11-02: the GitHub half, which was the only one left**
 
 The operator: *"this is mostly local concern - i've been rate limited on github recently with
 actions, so _act_ is our friend. we can use other machines like lubuntu2 to run tests"*, *"so we
@@ -859,14 +859,35 @@ Measured 2026-10-11: lubuntu1/2/3 each 32 cores, 123 GB, docker usable. `act` v0
 **Done when:** a branch lands through the merge queue with its gate run on lubuntu1 or lubuntu2,
 the row names the runner, and nothing in the path talks to GitHub Actions.
 
+**Built:** items 1 and 2 were already in the tree, under the names the rest of it uses - the fleet
+file is `~/.config/letibot/hosts.toml` (`[host.NAME]` with `key`, `root`, `path`, `reserve`,
+`flags`, `never_touch`; `crates/tools/src/remote.rs`) and the gate on a host is
+`mergequeue::gate_host` (`[queue] gate_host` / `--gate-host`, end to end in
+`crates/harnessd/tests/gate_host.rs` over a fake ssh). **Item 3 is moot**: the host runs the
+`## Merge gate` steps themselves, so no `~/.actrc` and no `act` is in the path - `merge_gate`
+offers a workflow run with `act` only when that workflow judges a BRANCH. **What this closed is the
+GitHub half.** `.github/workflows/ci.yml` is deleted: it answered `pull_request` and every push to
+main, and ran `check-fmt.sh`, the test-attributes check, clippy, `cargo test --workspace` and the
+release build - the gate, on a push rather than on the rebased branch. `agents.md` no longer calls
+CI the standard the queue must match, `docs/gate.md` is the how-to (by hand, through the queue, and
+on a declared host), and `crates/tools/tests/gate_not_on_github.rs` refuses any workflow that runs
+a gate step or answers a `pull_request`. `release.yml` stays - a tag starts it and it publishes the
+assets `install.sh` downloads - and `check-dist-names.sh` still reads the workflows for its triples
+and its llama pin. The acceptance specs are in no gate now (they need tmux and a release build);
+`tests/acceptance/run.sh` by hand, `--local` for the VM ones.
+
+**Unproven from this tree, and it is the done-when's other half:** a real branch landing with its
+gate on lubuntu1/2, the row naming the runner. No host in this session's boundary can reach the
+fleet, so the evidence here is `gate_host.rs` and the row's own `(lab2x1 gate)` line.
+
 ---
 
-## R63 — One thread per root session — **OPEN, 2026-10-11, after R61**
+## R63 — One thread per root session — **DONE (landed on main as `f68c90b0`); this branch adds the direct proof**
 
 The operator: *"each session gets a thread, what not to like?"*, *"obviously i should see
-everything going in my thread"*. Today one worker serves every root session's turns
-(`daemon.rs`, `Daemon::run`), so a turn or a long tool call in one session queues the prompt of
-another — measured 89 s on 2026-10-11 behind another session's `sleep 30`.
+everything going in my thread"*. Then one worker served every root session's turns
+(`daemon.rs`, `Daemon::run`), so a turn or a long tool call in one session queued the prompt of
+another - measured 89 s on 2026-10-11 behind another session's `sleep 30`.
 
 1. One thread per root session, on the pattern subagents already run on (`serve_child_under`,
    `Hub::take_own_work_until`, `Hub::wake_its_own_reader`).
@@ -876,6 +897,22 @@ another — measured 89 s on 2026-10-11 behind another session's `sleep 30`.
 
 **Done when:** two sessions on one daemon each answer a one-word prompt in under a second while
 the other is inside a 30 s tool call.
+
+**Built:** `sessions::Court` is one root session's thread: the hub is marked `Owner::OwnThread`,
+the harness moves onto the thread, and it loops on `hub.take_own_work_until(next_idle_at())` for
+commands, for wakes and for its own clocks; `Daemon::run` calls `serve_each_on_its_own_thread` and
+is a supervisor rather than a worker. A turn's outcome is said to the hub and to the daemon's log
+through the same `ReplySink`, a wake-started turn publishes `turn` as the reason it is running, and
+a failed turn publishes its notice, so nothing lands only in the log. The queue was already off the
+session worker (R61).
+
+**Evidence:** `crates/harnessd/tests/thread_per_session.rs` - a held turn in one session while the
+other answers, both hubs `OwnThread`, a session's own commands still in order, and a stop that ends
+inside its bound. **Added here, the claim itself:** the kernel's task list, where two root sessions
+on one daemon are two threads named `session-<id>` (measured: `["session-s-held-",
+"session-s-quick"]`; inverting the assertion fails the test naming both, so it has teeth). The
+comments in `activity_two_sessions`, `sudo_ask`, `stop_ends_runs`, `sessionlog`'s registry diagram
+and the hub's bell that described the one-worker era now say what was measured and when.
 
 ---
 
