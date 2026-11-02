@@ -1,19 +1,6 @@
 //! `ask_code` and `ask_corpus`: retrieval as callable tools.
-//!
-//! The harness does no retrieval of its own; it calls these as tools and takes their
-//! abstention as a verdict. Two rules the seam exists to enforce:
-//!
-//! 1. A backend that does not cover the question abstains. `covered: false`, an empty
-//!    answer or an answer with no citations becomes [`ToolOutcome::Abstained`] and then
-//!    the `NO_RESULT` envelope, never an `Ok` with a hedged sentence in it: a
-//!    hallucination wearing a footnote is more dangerous than a naked one.
-//! 2. A rewritten query is visible. If a backend searched for something other than what
-//!    was asked, [`RetrievalAnswer::rewritten_query`] carries it and the tool prints it.
-//!    The harness itself rewrites nothing.
-//!
-//! There is no MCP client here: an untested transport reports success while delivering
-//! nothing. [`Unavailable`] is what answers when nothing is attached, and it returns
-//! `NotRun`, which is a different fact from *the corpus does not cover it*.
+//! The harness does no retrieval of its own; it calls these and takes an abstention as a verdict,
+//! because a hedged `Ok` is a hallucination wearing a footnote. A rewritten query is printed.
 
 use serde_json::Value;
 

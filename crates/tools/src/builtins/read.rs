@@ -1,8 +1,6 @@
 //! `read`: the text of a file, and three misses that answer themselves.
-//!
-//! A guessed line range that is not there hands back the file anyway, with a line saying what
-//! the real extent is. A bare "offset out of range" costs a whole extra call to learn a number
-//! the tool already had.
+//! A guessed line range that is not there hands back the file anyway, with a line saying what the
+//! real extent is: "offset out of range" costs a call to learn a number the tool already had.
 
 use letibot_transcript::text::chars_head;
 use serde_json::Value;
@@ -170,17 +168,9 @@ impl Tool for Read {
             None => (offset - 1 + ctx.limits.max_read_lines).min(total),
         };
 
-        // Rendered with two more bounds than the line count: a line longer than the clip is
-        // shown clipped and counted (minified javascript is one line), and the byte budget
-        // stops the call even under the line cap. At least one line always renders, since a
-        // cap that returns nothing answers no question.
-        //
-        // Several windows of one file, in one call: three lookups would be three round trips,
-        // and at `automode` a round trip is also a gate decision. `ranges` is that batch, and
-        // it keeps what a shell pipeline throws away: line numbers, the file's real bounds,
-        // and a refusal that says what is there instead of printing nothing.
-        //
-        // The budget is shared across the windows, not per window: the cap bounds one REPLY.
+        // Two bounds beyond the line count: a line longer than the clip is shown clipped and
+        // counted, and the byte budget stops the call under the line cap. `ranges` is the batch,
+        // because three lookups would be three round trips and a round trip is a gate decision.
         let windows: Vec<(usize, usize)> = match args.get("ranges").and_then(|v| v.as_array()) {
             Some(rs) if !rs.is_empty() => rs
                 .iter()
@@ -239,10 +229,9 @@ impl Tool for Read {
             }
         }
 
-        // The shown-lines ledger, recorded at the moment of the display: a read that showed
-        // every line in full marks the whole file, and a capped or clipped one marks only the
-        // lines the model actually saw. The whole-file digest is recorded either way, because
-        // the bytes were read, which is `write`'s fact (`crate::files`).
+        // The shown-lines ledger, recorded at the moment of the display: a read that showed every
+        // line marks the whole file, a capped one marks only the lines the model saw, and the
+        // whole-file digest is recorded either way because the bytes were read.
         let whole_file =
             end == total && !byte_capped && truncated == 0 && (total == 0 || end >= offset);
         if whole_file {
@@ -268,10 +257,9 @@ impl Tool for Read {
                 end + 1
             ));
         } else if end < total && limit.is_none() {
-            // Only when the cap bound the output. A caller that passed `limit` chose this
-            // window and knows where it ends; the note exists for the other case, where the
-            // 200-line cap stopped short and the boundary is OURS, so silence would read as
-            // "that was the whole file".
+            // Only when the cap bound the output: a caller that passed `limit` chose this window
+            // and knows where it ends, while the 200-line cap's boundary is OURS and silence would
+            // read as "that was the whole file".
             if limit.is_some() {
                 notes.push(format!(
                     "showing lines {offset}–{end} of {total}; call read again with \
@@ -344,11 +332,8 @@ fn directory(ctx: &mut InvokeCtx<'_>, path: &str) -> Invocation {
 mod tests {
 
     /// Does `read` hand the model the file's bytes, spaces and all?
-    ///
-    /// Asked because a model that keeps failing on missing spaces is either shown a lossy file
-    /// or losing them on the way in, and this is the cheapest place to find out.
-    ///
-    /// What a model that asked for 50 lines is told: the cap must not be recited back at it.
+    /// Asked because a model that keeps failing on missing spaces is either shown a lossy file or
+    /// losing them on the way in, and this is the cheapest place to find out.
     #[test]
     fn a_read_with_a_limit_is_never_told_about_the_cap_it_did_not_hit() {
         let mut h = crate::testing::harness();
@@ -603,10 +588,8 @@ mod tests {
         );
     }
 
-    /// A file past `FILE_CEILING * 16` is refused by its size, before it is opened.
-    ///
-    /// The file is created SPARSE, so the test costs a metadata call rather than 256 MiB of
-    /// writes, and the refusal has to name the size and point at `bash`.
+    /// A file past `FILE_CEILING * 16` is refused by its size, before it is opened, and the
+    /// refusal names the size and points at `bash`.
     #[test]
     fn a_file_over_the_ceiling_is_refused_by_size_before_it_is_opened() {
         let mut h = harness();

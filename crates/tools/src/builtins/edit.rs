@@ -1,8 +1,6 @@
 //! `edit`: replace exact text in a file, and answer a miss with what is actually there.
-//!
-//! The first tool in this harness that can change the operator's tree, so the order of its
-//! checks is the design:
-//!
+//! The first tool in this harness that can change the operator's tree, so the order of its checks
+//! is the design:
 //! ```text
 //!   arguments (clause 2, in the runtime)
 //!     → the GATE (clause 4, in the runtime) — refuses with no adjudicator
@@ -15,11 +13,9 @@
 //!
 //! Every `no` on that ladder produces more output than the `yes` does, because the
 //! alternative to a good miss report is a model guessing at a file it is about to write to.
-//!
-//! What guards a write is [`crate::files`]: one fingerprint per line the model was shown, and
-//! the gate asks it about the lines the match located. A region no tool displayed is refused
-//! with the range to read; a region whose bytes moved since they were shown is refused the
-//! same way; a change elsewhere in the file refuses nothing.
+//! What guards a write is [`crate::files`]: one fingerprint per line the model was shown, and the
+//! gate asks it about the lines the match located. An unseen region, or one whose bytes moved, is
+//! refused with the range to read; a change elsewhere in the file refuses nothing.
 
 use serde_json::Value;
 
@@ -33,10 +29,8 @@ use super::{near_names, nearest_listing, notes, render_listing};
 /// How many lines of the file are shown either side of a reported region.
 const CONTEXT: usize = 3;
 
-/// How many occurrences an ambiguity report lists before it says how many more.
-///
-/// Neither the model's own guess nor a longer string is an answer here, so the report lists the
-/// line numbers; this is how many of them fit before the report stops being readable.
+/// How many occurrences an ambiguity report lists before it says how many more. Neither the model's
+/// own guess nor a longer string is an answer, so the report lists the line numbers.
 const MAX_OCCURRENCES_SHOWN: usize = 10;
 
 pub struct Edit;
@@ -216,13 +210,8 @@ enum Step {
 }
 
 /// Several edits to one file, applied in order, all or nothing.
-///
-/// Each step resolves against the text as the steps before it left it, which is what makes a
-/// sequence expressible at all, so a failure names the step's index rather than a line number
-/// in the original.
-///
-/// Nothing is written until every step has resolved: half a change, on disk, reported as an
-/// error is the state no caller can recover from.
+/// Each step resolves against the text as the steps before it left it, so a failure names the step's
+/// index, and nothing is written until every step has resolved.
 fn batch(ctx: &mut InvokeCtx<'_>, path: &str, args: &Value) -> Invocation {
     let Some(list) = args.get("edits").and_then(|v| v.as_array()) else {
         return Invocation::failed(
@@ -297,10 +286,9 @@ fn batch(ctx: &mut InvokeCtx<'_>, path: &str, args: &Value) -> Invocation {
     let mut text = file.lf.clone();
     let mut replacements = 0usize;
     let mut first_at: Option<usize> = None;
-    // The shown-lines gate over a batch's steps: each step is checked against
-    // the text as the steps before it left it, on a checkout of the ledger that
-    // is thrown away unless the whole batch writes. The ledger itself is updated
-    // once, in write_out, over the batch's outer change.
+    // The shown-lines gate over a batch's steps: each step is checked against the text as the steps
+    // before it left it, on a checkout of the ledger that is thrown away unless the whole batch
+    // writes, and the ledger is updated once in write_out.
     let mut shown = ctx.files.checkout(path);
     for (i, step) in steps.iter().enumerate() {
         let n = i + 1;
@@ -428,15 +416,9 @@ fn excerpt(needle: &str) -> String {
     }
 }
 
-/// The shown-lines gate: an edit may only replace lines a tool displayed to this session, and
-/// only while those lines are still what was displayed. Every occurrence is checked, so a
-/// `replace_all` cannot touch an unseen region through a seen one.
-///
-/// A refusal does NOT mark what it refused over: marking it would clear its own flag, and the
-/// read it names must be a real read.
-///
-/// The refusal both doors share: the range to read, what has been shown, and
-/// not one byte of the refused region (see the gate's note above).
+/// The shown-lines gate: an edit may only replace lines a tool displayed to this session, and only
+/// while those lines are still what was displayed. Every occurrence is checked, so a `replace_all`
+/// cannot touch an unseen region through a seen one, and a refusal does not mark what it refused.
 fn unshown_refusal(
     files: &crate::files::FileLedger,
     path: &str,
@@ -537,11 +519,9 @@ fn apply(
     write_out(ctx, path, file, after, hits.len(), hits[0], extra)
 }
 
-/// The write, the record and the edit card: one place, so a second caller cannot drift from
-/// the first.
-///
-/// `first_at` is a byte offset into the file AS IT WAS, used only to decide
-/// which lines to show; `replacements` is how many places the caller changed.
+/// The write, the record and the edit card: one place, so a second caller cannot drift from the
+/// first. `first_at` is a byte offset into the file as it was, used only to decide which lines to
+/// show; `replacements` is how many places the caller changed.
 fn write_out(
     ctx: &mut InvokeCtx<'_>,
     path: &str,
@@ -810,14 +790,9 @@ fn missing_strings(ctx: &mut InvokeCtx<'_>, path: &str, args: &Value) -> Invocat
     )
 }
 
-/// Lines containing the most distinctive token of `first`.
-///
-/// The nearest-match hint: whole tokens of `old_string`'s first line, longest first, and every
-/// line that holds one, because "it occurs eleven times" is itself the answer sometimes.
-///
-/// A missing space fuses two tokens into one that occurs nowhere (`if!text.is_empty()`), so if
-/// no whole token occurs, each is split on non-alphanumeric boundaries and the pieces tried the
-/// same way.
+/// Lines containing the most distinctive token of `first`: the nearest-match hint. Whole tokens of
+/// `old_string`'s first line, longest first, because "it occurs eleven times" is itself the answer
+/// sometimes; if no whole token occurs, each is split on non-alphanumeric boundaries and retried.
 fn anchor_lines(file: &FileText, first: &str) -> Vec<(usize, String)> {
     let mut tokens: Vec<&str> = first.split_whitespace().filter(|t| t.len() >= 3).collect();
     tokens.sort_by_key(|t| std::cmp::Reverse(t.len()));
@@ -860,12 +835,9 @@ fn lines_containing(file: &FileText, token: &str) -> Vec<(usize, String)> {
 #[cfg(test)]
 mod tests {
 
-    /// A refusal must not cost a context window: a stale edit on a large file must not paste it
-    /// back to say "the file moved, try again".
-    ///
-    /// Both halves matter. The refusal still has to be actionable, so the current digest is
-    /// recorded and the retry works, and it has to be bounded: an excerpt, not the file. A fix
-    /// that only did the second would trade a huge refusal for an infinite loop of small ones.
+    /// A refusal must not cost a context window: a stale edit on a large file must not paste it back
+    /// to say the file moved. The digest is still recorded, so the retry works, and the excerpt is
+    /// bounded, since a fix that only did the second would trade a huge refusal for an endless loop.
     use crate::testing::{deny_all, writable_harness, writable_harness_with_gate};
 
     #[test]

@@ -1,16 +1,6 @@
 //! `harness`: what the session can see about the harness it runs inside.
-//!
-//! Read-only, and the first tool whose subject is letibot itself. `what` is one of
-//! `status` (the startup disclosures), `warnings` (the `!` lines on this session's log,
-//! newest last), `turn`, `heads`, `screen` (the rows a head has drawn, escape codes
-//! included).
-//!
-//! Read-only is not a placeholder: a tool that could change the harness from inside a
-//! turn would let a model widen its own gate, and the mode, the permission list and the
-//! adjudicator are the operator's.
-//!
-//! It does not carry the transcript: a model re-reading its own conversation would spend
-//! context to recover context it already has.
+//! Read-only, and not as a placeholder: a tool that could change the harness from inside a turn
+//! would let a model widen its own gate. It does not carry the transcript the model already has.
 
 use std::sync::Arc;
 
@@ -31,12 +21,9 @@ pub trait HarnessFacts: Send + Sync {
     fn turn(&self) -> Option<(bool, usize, String)>;
     /// `(kind, identity)` per attached head.
     fn heads(&self) -> Vec<(String, String)>;
-    /// What a head has on screen right now, as `(cols, rows, lines)`, escape codes
-    /// included, or `None` when no head answered in time.
-    ///
-    /// Asked of the heads rather than rendered here: only the process that drew the bytes
-    /// knows the width, the scroll position, the theme and which folds are open, and a
-    /// daemon-side re-render would be a reconstruction, not what the operator sees.
+    /// What a head has on screen right now, as `(cols, rows, lines)`, or `None` when no head
+    /// answered in time. Asked of the heads because only the process that drew the bytes knows the
+    /// width, the scroll position and which folds are open.
     fn screen(&self) -> Option<(usize, usize, Vec<String>)>;
 }
 
@@ -269,10 +256,8 @@ mod tests {
         )
     }
 
-    /// The five views, and the distinction that matters in each: a warning's age
-    /// rather than a timestamp (a session's clock is hours stale by the time it reads
-    /// this), an empty log reported as empty rather than as "fine", and a screen handed
-    /// back as bytes rather than as a description of itself.
+    /// The five views: a warning's age rather than a timestamp, an empty log reported as empty
+    /// rather than as fine, and a screen handed back as bytes rather than a description of itself.
     #[test]
     fn the_five_views_report_what_the_operator_sees() {
         let f: Arc<dyn HarnessFacts> = Arc::new(Fake);
@@ -333,10 +318,9 @@ mod tests {
         );
     }
 
-    /// Empty is reported as empty, never as fine: a model told "no warnings" must not
-    /// read it as "nothing is wrong". And no head is not an empty screen - the two look
-    /// identical from the daemon, zero rows either way, and a model told "the screen is
-    /// empty" would go on to explain a blank screen that nobody has.
+    /// Empty is reported as empty, never as fine. And no head is not an empty screen: the two look
+    /// identical from the daemon, so a model told the screen is empty would explain a blank screen
+    /// nobody has.
     #[test]
     fn no_head_is_never_reported_as_a_blank_screen() {
         let s = ask(Arc::new(Empty), r#"{"what":"screen"}"#);

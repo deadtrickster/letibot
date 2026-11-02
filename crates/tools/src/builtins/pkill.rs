@@ -1,17 +1,6 @@
 //! `pkill`: find processes by a pattern, and kill them by pid, never by the pattern.
-//!
-//! A pattern matched against `ps` output also matches the shell that ran the command,
-//! so listing and killing are two steps. `action: list` (the default) runs
-//! [`crate::exec::procs::find`], which drops this process, its ancestors and the
-//! process host's protected pids before the pattern is applied.
-//!
-//! `action: kill` takes `pids` from that listing: each must still match the pattern
-//! now (a reused pid is refused, not killed), must not be protected, and is signalled
-//! by (pid, start time). After `term` the tool waits two seconds and reports what is
-//! gone, so a `kill` is a decision made on a reading rather than a reflex.
-//!
-//! A job of this session is refused: `job_kill` reaps it with its cgroup, and killing
-//! its pid here would leave the job's record saying "running".
+//! A pattern also matches the shell that ran the command, so listing and killing are two steps,
+//! and a kill re-checks each pid. A job of this session is refused: `job_kill` reaps its cgroup.
 
 use std::time::Duration;
 

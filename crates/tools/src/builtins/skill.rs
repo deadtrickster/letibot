@@ -1,21 +1,6 @@
 //! `skill`: named, loadable capabilities.
-//!
-//! A skill is a name, a one-line description and a body of instructions. The tool lists
-//! what is loaded, or loads one by name so its instructions reach the model.
-//! Session-scoped: it changes only what the model knows, nothing the operator owns.
-//!
-//! Every skill carries a [`SkillSource`] and the prompt's index shows it, because a skill
-//! is material to follow only as far as it does not contradict the operator. Only the
-//! operator's own directory is theirs; `~/.claude/skills` is shared with the installers,
-//! so a skill there is labelled *installed* unless the folder names its origin.
-//!
-//! [`SkillRegistry::index`] is the one-line-per-skill listing injected into the system
-//! prompt, bounded by [`INDEX_MAX_ROWS`], [`INDEX_MAX_BYTES`] and [`INDEX_BUDGET_TOKENS`].
-//! Bodies arrive only when something asks ([`SkillTool`], `/skills`, a `task` naming them).
-//!
-//! Two sources, one tool: skills on disk are read once at startup, and skills on the
-//! fabric's shelf arrive through a [`SkillShelf`] the daemon installs when it holds a seat.
-//! `list` says which is which.
+//! The prompt carries one line per skill; a body arrives only when something asks. Each carries a
+//! [`SkillSource`], because only the operator's own directory is theirs and the index shows it.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -38,16 +23,12 @@ pub const INDEX_MAX_BYTES: usize = 4_000;
 /// beside the standing notes and not out of them: a corpus of notes must not eat the skills.
 pub const INDEX_BUDGET_TOKENS: usize = 800;
 
-/// **The floor a free-text query must clear** before [`SkillRegistry::ranked`] loads anything.
-///
-/// Lower than the notes' read-hint floor: a skill's document is its name and one line, so it is
-/// shorter and scores lower for the same subject.
+/// The floor a free-text query must clear before [`SkillRegistry::ranked`] loads anything. Lower
+/// than the notes' read-hint floor, because a skill's document is its name and one line.
 pub const QUERY_FLOOR: f64 = 0.15;
 
-/// Where a skill was found, which is the fact the index shows beside every name.
-///
-/// A label, never a permission: a skill cannot grant itself anything by where it sits, and
-/// `SkillRegistry::tool_ceiling` can only narrow.
+/// Where a skill was found, the fact the index shows beside every name. A label, never a
+/// permission: a skill cannot grant itself anything by where it sits.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SkillSource {
     /// `<workspace>/.letibot/skills` or `<workspace>/.claude/skills`.
@@ -78,10 +59,8 @@ impl SkillSource {
         }
     }
 
-    /// Which name wins a clash, and where a truncated index cuts. Lower is first.
-    ///
-    /// `Installed` sits ahead of `BuiltIn` on purpose: a person's copy of a built-in's name in
-    /// `~/.claude/skills` replaces it, labelled or not.
+    /// Which name wins a clash, and where a truncated index cuts. Lower is first, and `Installed`
+    /// sits ahead of `BuiltIn`: a person's copy of a built-in's name replaces it, labelled or not.
     pub fn priority(&self) -> u8 {
         match self {
             SkillSource::Project => 0,
@@ -123,10 +102,8 @@ impl Skill {
     }
 }
 
-/// Every directory a skill can be found in, by source. Read by [`SkillRegistry::load_for`].
-///
-/// The shape exists so the crate that owns the policy (the workspace, the box's config dir,
-/// the data dir) names the directories, and this crate only reads them.
+/// Every directory a skill can be found in, by source. The shape exists so the crate that owns
+/// the policy names the directories, and this crate only reads them.
 #[derive(Debug, Clone, Default)]
 pub struct SkillDirs {
     pub project: Vec<PathBuf>,
@@ -136,12 +113,9 @@ pub struct SkillDirs {
 }
 
 impl SkillDirs {
-    /// This box's: the project's two conventions, the operator's own, the shared install
-    /// directory, and the data dir a model writes into.
-    ///
-    /// The one reader of `$HOME` and `$XDG_CONFIG_HOME` here, called once by the daemon's
-    /// startup. Everything after it takes the directories as data, so a fixture's skills do not
-    /// become a claim about whose home the suite runs in.
+    /// This box's: the project's two conventions, the operator's own, the shared install directory,
+    /// and the data dir a model writes into. The one reader of `$HOME` here, called once at
+    /// startup, so a fixture's skills do not become a claim about whose home the suite runs in.
     pub fn for_this_box(workspace: Option<&Path>, data: Option<&Path>) -> SkillDirs {
         let mut dirs = SkillDirs::default();
         if let Some(ws) = workspace {
@@ -260,12 +234,9 @@ impl SkillRegistry {
         self.shelf.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
-    /// Load the skills this box has, by where they were found: the one loader every door uses.
-    ///
-    /// The built-ins come first so a box that installs nothing still has the ones this tree
-    /// ships, then each directory in [`SkillDirs::walk`]'s order. A name found twice is held
-    /// once, by the higher-priority source; a directory that cannot be read is skipped rather
-    /// than fatal (a skill is a convenience, not a reason to refuse a daemon).
+    /// Load the skills this box has, by where they were found: the one loader every door uses. A
+    /// name found twice is held once, by the higher-priority source, and a directory that cannot be
+    /// read is skipped rather than fatal.
     pub fn load_for(dirs: &SkillDirs) -> Self {
         let mut skills = Self::built_in();
         for (dir, source) in dirs.walk() {
@@ -289,11 +260,8 @@ impl SkillRegistry {
         Self::load_for(&SkillDirs::for_this_box(None, None))
     }
 
-    /// The skills this build carries, compiled in from this repository's `skills/`.
-    ///
-    /// Compiled in rather than looked for beside the binary: a skill that is nearly always
-    /// there is worse than one that is always there, because a model that finds `skill list`
-    /// empty concludes the loop is not available in this build.
+    /// The skills this build carries, compiled in from this repository's `skills/`: a model that
+    /// finds `skill list` empty concludes the loop is not available in this build.
     pub fn built_in() -> Vec<Skill> {
         [
             (
@@ -472,10 +440,8 @@ impl SkillRegistry {
     }
 
     /// The index the prompt carries: one line per skill, capped three ways (rows, bytes and the
-    /// session's own token counter), or `None` when there is nothing to list.
-    ///
-    /// The cap is why the order is the source priority: a box with two hundred installed skills
-    /// must still show the project's own, and the tail says how many more `skill list` holds.
+    /// session's own token counter), or `None` when there is nothing to list. The cap is why the
+    /// order is the source priority, and the tail says how many more `skill list` holds.
     pub fn index(&self, vocab: &Vocab) -> Option<String> {
         let (rows, said) = self.index_rows();
         if rows.is_empty() && said.is_none() {

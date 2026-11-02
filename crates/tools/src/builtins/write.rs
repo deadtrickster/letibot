@@ -1,13 +1,6 @@
 //! `write`: put a file's whole contents there, atomically.
-//!
-//! The narrower of the two write tools, and the more dangerous, because its miss is not "I
-//! could not find the text" but "I replaced everything". Creating a file needs no prior read,
-//! because there is nothing to have read; overwriting one applies the same staleness check
-//! `edit` keeps ([`crate::files`]), because a write over somebody else's change would discard
-//! it unseen.
-//!
-//! It does not run a formatter over the result: that turns one tool call into two writes and
-//! makes the returned content something the model did not author.
+//! The more dangerous of the two write tools, because its miss is "I replaced everything": an
+//! overwrite keeps `edit`'s staleness check, and nothing formats the result behind the model.
 
 use serde_json::Value;
 
@@ -300,10 +293,8 @@ mod tests {
         );
     }
 
-    /// A write reports the bytes it landed, where they landed.
-    ///
-    /// The path is ABSOLUTE, resolved against the session's workspace: a record keyed by a
-    /// relative path would be a different key in every process that read it.
+    /// A write reports the bytes it landed, where they landed: the path is ABSOLUTE, since a
+    /// record keyed by a relative path would be a different key in every process that read it.
     #[test]
     fn a_write_and_an_edit_report_the_bytes_they_landed() {
         struct Keeps(std::sync::Mutex<Vec<(std::path::PathBuf, Vec<u8>)>>);
@@ -356,11 +347,9 @@ mod tests {
         );
     }
 
-    /// An unread file is written, and the write is disclosed.
-    ///
-    /// Has this session read it is a question about the session, not about the file, and a
-    /// shared surface makes it the wrong one. The row must still show that content was
-    /// replaced: the guard goes, the disclosure stays.
+    /// An unread file is written, and the write is disclosed: whether this session read it is a
+    /// question about the session, not about the file, so the guard goes and the row still shows
+    /// that content was replaced.
     #[test]
     fn overwriting_a_file_this_session_has_not_read_lands_and_the_change_is_disclosed() {
         let mut h = writable_harness();

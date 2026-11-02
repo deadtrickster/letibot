@@ -1,9 +1,6 @@
 //! The built-in tools.
-//!
-//! The rule they share: a miss produces more output than a hit, and every extra byte
-//! is something the model can act on without another call. The two write tools pay
-//! more for it than the read-only ones do, because the alternative to a good miss
-//! report is a model guessing at a file it is about to change.
+//! The rule they share: a miss produces more output than a hit, and every extra byte is something
+//! the model can act on without another call. The two write tools pay most for it.
 
 pub mod bash;
 pub mod changelog;
@@ -48,10 +45,8 @@ pub mod write;
 
 use crate::backend::{DirEntry, ExecBackend};
 
-/// The deepest ancestor of `path` that exists, and its listing.
-///
-/// This is what makes a missing path useful rather than merely absent: the model
-/// asked for `src/parser/mod.rs`, and what it needs to know is what `src` holds.
+/// The deepest ancestor of `path` that exists, and its listing. This is what makes a missing path
+/// useful rather than merely absent: what the model needs is what the nearest directory holds.
 pub(crate) fn nearest_listing(backend: &dyn ExecBackend, path: &str) -> (String, Vec<DirEntry>) {
     let mut cur = path.trim_end_matches('/').to_string();
     loop {
@@ -74,10 +69,8 @@ pub(crate) fn nearest_listing(backend: &dyn ExecBackend, path: &str) -> (String,
     }
 }
 
-/// Entries whose name is close to what was asked for.
-///
-/// Only near misses, since a listing already shows everything. The threshold is
-/// deliberately tight: a suggestion the model then chases is worse than none.
+/// Entries whose name is close to what was asked for, and only near misses, since a listing already
+/// shows everything. The threshold is deliberately tight: a suggestion the model chases is worse.
 pub(crate) fn near_names(want: &str, entries: &[DirEntry], limit: usize) -> Vec<String> {
     let want = want.rsplit('/').next().unwrap_or(want).to_lowercase();
     let mut scored: Vec<(usize, &DirEntry)> = entries
@@ -143,10 +136,8 @@ pub(crate) fn human(bytes: u64) -> String {
     }
 }
 
-/// Text out of bytes, without ever dropping any.
-///
-/// A file that is not valid UTF-8 is still a file somebody asked to read, so the
-/// replacement characters are visible rather than the call refused.
+/// Text out of bytes, without ever dropping any. A file that is not valid UTF-8 is still a file
+/// somebody asked to read, so the replacement characters are visible rather than the call refused.
 pub(crate) fn text_of(bytes: &[u8]) -> (String, bool) {
     match std::str::from_utf8(bytes) {
         Ok(s) => (s.to_string(), false),
@@ -160,20 +151,16 @@ pub const DELIVERED: &str = "Its completion reaches you automatically — when y
      ends, or at once if a todo row needs it or wake is \"now\".";
 
 /// Where a command sends its own output instead of letting the job capture it.
-///
 /// The redirect is in the command text, so this is knowable before anything runs:
-///
 /// ```text
 /// cargo build --release … > /tmp/release-build.log 2>&1
 /// ```
-///
-/// That command's captured output is empty by construction, and `job_output` then has
-/// nothing to return. Returns the first file written to, or `None` for a command that
-/// writes to the captured descriptors normally.
-///
-/// A write to a file on stdout or stderr counts. `2>&1` does not: it merges stderr
-/// into stdout, which is what makes the capture complete. Neither do `<`, a
-/// here-document or a here-string, which are stdin.
+/// That command's captured output is empty by construction, and `job_output` then has nothing to
+/// return. Returns the first file written to, or `None` for a command that writes to the captured
+/// descriptors normally.
+/// A write to a file on stdout or stderr counts. `2>&1` does not: it merges stderr into stdout,
+/// which is what makes the capture complete. Neither do `<`, a here-document or a here-string, which
+/// are stdin.
 ///
 /// Public because the daemon puts it on the wire, not only in a payload: a head that
 /// says which of its running jobs is unwatchable must not parse shell itself.
@@ -181,13 +168,9 @@ pub fn output_redirect_path(command: &str) -> Option<String> {
     output_redirect_paths(command).into_iter().next()
 }
 
-/// Every file a command sends its output to, in the order the command names them, each
-/// once: [`output_redirect_path`]'s rule applied to every stage of a compound command.
-///
-/// A reader told where a lost job's output went needs all of it: `a > x && b > y` wrote
-/// two files, and naming one hides the other. Each stage counts (after `&&`, `||`, `;`,
-/// inside `( ... )` and `{ ...; }`), and only a literal path does, since one built at run
-/// time is not provable from the text.
+/// Every file a command sends its output to, in the order the command names them, each once:
+/// [`output_redirect_path`]'s rule applied to every stage of a compound command. A reader told where
+/// a lost job's output went needs all of it, and only a literal path is provable from the text.
 pub fn output_redirect_paths(command: &str) -> Vec<String> {
     let n = letibot_code::shell::normalise(command);
     let mut out: Vec<String> = Vec::new();
@@ -215,10 +198,8 @@ pub fn output_redirect_paths(command: &str) -> Vec<String> {
 mod output_redirect_tests {
     use super::{output_redirect_path, output_redirect_paths};
 
-    /// A redirect to a file, and the spellings that must not be mistaken for one.
-    ///
-    /// The `>` is the bug and the `2>&1` beside it is its opposite: a merge, which is
-    /// what makes the capture complete.
+    /// A redirect to a file, and the spellings that must not be mistaken for one. The `>` is the bug
+    /// and the `2>&1` beside it is its opposite: a merge, which is what makes the capture complete.
     #[test]
     fn a_redirected_output_is_found_and_a_merged_descriptor_is_not() {
         let cases: &[(&str, Option<&str>)] = &[
@@ -317,11 +298,9 @@ mod output_redirect_tests {
 mod prompt_line_tests {
     use crate::runtime::Tool;
 
-    /// The prompt closes a behaviour, not a verb.
-    ///
-    /// The tool description IS the prompt, so it must state the rule about clocks rather
-    /// than list forbidden verbs. The reason is asserted too: an edit that swapped the rule
-    /// for `do not write sleep` would keep the words and fail the requirement.
+    /// The prompt closes a behaviour, not a verb. The tool description IS the prompt, so it must
+    /// state the rule about clocks rather than list forbidden verbs, and the reason is asserted too:
+    /// swapping the rule for `do not write sleep` would keep the words and fail the requirement.
     #[test]
     fn the_bash_prompt_closes_the_waiting_behaviour_and_not_only_a_verb() {
         let d = super::bash::Bash::default().schema().description;
@@ -342,11 +321,9 @@ mod prompt_line_tests {
         );
     }
 
-    /// A parameter the tool description does not name does not exist.
-    ///
-    /// The property description is metadata a model skims; the tool description is the
-    /// prompt line it reads and summarises itself with. Both are asserted, since either
-    /// alone passes on the bug.
+    /// A parameter the tool description does not name does not exist. The property description is
+    /// metadata a model skims; the tool description is the prompt line it reads and summarises itself
+    /// with. Both are asserted, since either alone passes on the bug.
     #[test]
     fn the_prompt_line_names_the_parameters_that_replace_the_shell() {
         for (schema, param) in [

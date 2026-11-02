@@ -1,8 +1,6 @@
 //! `lsp`: run a language server and read the diagnostics for one file.
-//!
-//! A minimal client: spawn the server for a language, handshake, open the file, pull
-//! `textDocument/diagnostic`. Best effort: a server that is not installed refuses by
-//! name rather than pretending.
+//! A minimal client: spawn the server, handshake, open the file, pull `textDocument/diagnostic`.
+//! Best effort: a server that is not installed refuses by name rather than pretending.
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Write};

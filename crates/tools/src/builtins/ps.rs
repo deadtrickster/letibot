@@ -1,8 +1,5 @@
 //! `ps`: one question over process state, answered without a pipeline.
-//!
-//! Four shapes, one tool: `pattern` (a substring of the command line, never matching
-//! this process), `pid`, `children_of`, `top`. Each row is pid, ppid, age, state, CPU%,
-//! RSS and the command line, with `PROTECTED` or `job <id>` where `pkill` would say so.
+//! Four shapes, one tool: `pattern` (never matching this process), `pid`, `children_of`, `top`.
 //! Read-only; it never signals.
 
 use serde_json::Value;

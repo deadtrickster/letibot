@@ -1,22 +1,15 @@
 //! `outline`: the definitions in a file or a tree, from a parse rather than a pattern.
-//!
-//! The question it answers, *what is the structure of this file*, cannot be asked with a regex:
-//!
+//! The question it answers, what is the structure of this file, cannot be asked with a regex:
 //! ```text
 //! ^(pub )?(mod|fn|struct|enum|impl|const|static)\s
 //! ^\s*(pub )?fn |^mod |^#\[cfg\(test\)\]|^impl
 //! ```
-//!
 //! Relaxing a structural query lexically can only ever miss. Keep the `^` and a method indented
 //! under an `impl` is invisible; drop it and `fn` matches inside comments, strings, and the word
 //! "define". There is no third pattern.
-//!
-//! A miss answers itself: a path that does not exist returns the nearest listing, a file whose
-//! language has no grammar says which extension and lists what is supported, a `kind` filter that
-//! selects nothing reports the kinds that are present, and a directory holding no parsable file is
-//! a failed scope rather than an empty answer. An outline of a file that did not parse cleanly is
-//! marked partial, because a short outline of a broken file and of a small file are different
-//! facts.
+//! A miss answers itself: a missing path returns the nearest listing, a language with no grammar
+//! says which extension, and a `kind` filter selecting nothing reports the kinds present. An outline
+//! of a file that did not parse cleanly is marked partial, a different fact from a small file.
 
 use letibot_code::{Language, Outline, Symbol};
 use serde_json::Value;
@@ -207,12 +200,9 @@ impl OutlineTool {
         let mut capped = false;
         let mut all_kinds: Vec<&'static str> = Vec::new();
 
-        // A page at a time, not a file at a time: over firecode one `read` is one
-        // `firecode in` (~0.5 s), so a tree-wide outline of a few hundred files was a few
-        // hundred round trips with no result until the last, and the reviewer holding the
-        // queue's slot looked hung. The page is chosen by the test the per-file loop applied
-        // (the LANGUAGE, known before any read), and the loop never exits early, so no page
-        // boundary can change an answer.
+        // A page at a time, not a file at a time: over firecode one `read` is one `firecode in`
+        // (~0.5 s), so a tree-wide outline was hundreds of round trips with no result until the last.
+        // The page is chosen by the language, known before any read, so no boundary can change an answer.
         let mut i = 0usize;
         while i < files.len() {
             let mut page: Vec<(usize, Language)> = Vec::new();
@@ -448,10 +438,9 @@ fn render_file(path: &str, o: &Outline, kept: &[&Symbol], max: usize) -> (String
     let mut capped = false;
     for s in kept.iter().take(max) {
         let q = s.qualified();
-        // The signature is the payload: `pub fn insert(&mut self, c: char) -> bool`
-        // is enough to call it without a second `read`. The qualified name sits
-        // beside it rather than being spliced into it, because splicing a
-        // container into somebody else's syntax is a guess.
+        // The signature is the payload: `pub fn insert(&mut self, c: char) -> bool` is enough to call
+        // it without a second `read`. The qualified name sits beside it rather than being spliced in,
+        // because splicing a container into somebody else's syntax is a guess.
         out.push_str(&format!(
             "  {:>5}  {:<9} {:<name_w$}  {}\n",
             s.line, s.kind, q, s.signature
@@ -700,12 +689,9 @@ mod paging_tests {
         batches: AtomicUsize,
     }
 
-    /// A backend over a real tree that counts how it was asked: the instrument for "one round
-    /// trip per file" against "one per page". `batched` is what a substrate whose `read` is a
-    /// round trip looks like; `fail` makes the batch call itself fail.
-    ///
-    /// Deliberately not shared with `grep`'s paging test: that one can also lose a single file
-    /// inside a page, which is a shape this tool's answer would hide.
+    /// A backend over a real tree that counts how it was asked: the instrument for "one round trip
+    /// per file" against "one per page". `batched` is what a substrate whose `read` is a round trip
+    /// looks like; `fail` makes the batch call itself fail.
     struct Counting {
         inner: HostBackend,
         batched: bool,
@@ -781,13 +767,9 @@ mod paging_tests {
 
     const ASK: &str = r#"{"path":"."}"#;
 
-    /// A tree outline costs one round trip per FILE without the batched read and one per PAGE
-    /// with it.
-    ///
-    /// Both numbers are asserted: 0 page calls is a backend that ignored the seam, and one read
-    /// per file beside the pages would be a paging loop that still went back for every file. The
-    /// two answers are compared too, because a count that fell by losing a definition is not a
-    /// win.
+    /// A tree outline costs one round trip per FILE without the batched read and one per PAGE with
+    /// it. Both numbers are asserted, and the two answers are compared too, because a count that
+    /// fell by losing a definition is not a win.
     #[test]
     fn a_tree_outline_is_one_call_per_page_and_not_one_per_file() {
         let (one_at_a_time, reads, batches) = outline_over(false, false, ASK);
@@ -833,12 +815,9 @@ mod paging_tests {
         );
     }
 
-    /// How the files were read cannot be told from the answer: the whole rendered result is the
-    /// same either way for every shape this tool has, including a plain tree, a `kind` filter
-    /// that selects nothing, (the abstention that names the kinds present),
-    /// a `max_symbols` cap (the truncation note), a forced `language` (which parses the
-    /// files that would otherwise be skipped), and a scope holding nothing this build can
-    /// parse (the failed-scope branch, with its tally).
+    /// How the files were read cannot be told from the answer: the whole rendered result is the same
+    /// either way for every shape this tool has, including a plain tree, a `kind` filter that selects
+    /// nothing, a `max_symbols` cap, a forced `language`, and a scope holding nothing parsable.
     #[test]
     fn the_answer_does_not_depend_on_how_the_files_were_read() {
         let shapes = [

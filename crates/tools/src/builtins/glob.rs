@@ -1,8 +1,6 @@
 //! `glob`: list the file paths a pattern matches.
-//!
-//! A miss answers two ways, because neither alone corrects the guess: the relaxation
-//! ladder says what a looser pattern would have matched, and the listing around the
-//! literal prefix says what the directory really holds.
+//! A miss says both what a looser pattern would have matched and what the directory really holds,
+//! because neither alone corrects the guess.
 
 use serde_json::Value;
 

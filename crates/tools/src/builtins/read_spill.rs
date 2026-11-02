@@ -1,10 +1,6 @@
 //! `read_spill`: the tool that makes a spilled result's notice actionable.
-//!
-//! The locator is a content hash into the spill table, so the hint is actionable rather than
-//! advisory: a model that was told its output spilled can read any range of it back.
-//!
-//! Its own miss follows the same rule as every other: an unknown hash comes back with the hashes
-//! this session actually has, and their sizes.
+//! The locator is a content hash into the spill table, so a model told its output spilled can read
+//! any range of it back, and an unknown hash comes back with the hashes this session has.
 
 use serde_json::Value;
 
