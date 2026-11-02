@@ -81,41 +81,28 @@ convenience.
 
 ### Edges that are real
 
-- **W5 → W6 (H)**: the engine appends to the ledger and submits a span of it.
-- **W4 → W6 (H)**: the engine needs *a* dialect. The hard edge is on the trait, not on the GLM
-  implementation, which is why fixing the trait's types early splits it in two.
-- **W3 → W4 (S)**: a renderer can be written the day the fixture format exists; it cannot be believed
-  until the diff is green. This is §7.2's gate and the most valuable semantic edge in the graph.
-- **W7 → W8, W7 → W12 (H)**: heads speak the frame format, and the connector is a head (§13.4).
-- **W9 → W11 (H)**: the action class is derived from `tool.access`, which lives in the tool schema.
-- **W11 → W12 (H)**: the connector delivers decision objects.
-- **W5 → W13 (H)**: segments are spans in the ledger; compaction has nothing to address without them.
-- **W6 → W2 (S)**, **W6 → W14 (S)**: the invariant suite verifies us only once a turn happens, and
-  EXPLAIN's numbers exist only once turns produce them.
-- **W1 → W16 (H)**: Falsifier B and UNVERIFIED-15 both need the scripted session as their instrument.
-- **W10 → W11 (S)**: the boundary adjudicator decides on facts the substrate supplies, and a
-  `NullBoundary` that denies everything lets W11 be built and tested first.
+**W5 → W6** (the engine appends to the ledger and submits a span of it) and **W4 → W6** (the engine needs
+*a* dialect - though the hard edge is on the trait, not on GLM, which is why fixing the trait's types
+early splits it in two); **W7 → W8** and **W7 → W12** (heads speak the frame format, and the connector is a
+head); **W9 → W11** (the class is derived from `tool.access`); **W11 → W12** (the connector delivers
+decision objects); **W5 → W13** (segments are ledger spans); **W1 → W16** (Falsifier B needs the scripted
+session). Semantic ones: **W3 → W4** (a renderer can be written the day the fixture format exists and
+cannot be believed until the diff is green - §7.2's gate and the most valuable edge in the graph), **W6 →
+W2** and **W6 → W14** (the suite and the numbers exist only once a turn happens), and **W10 → W11** (a
+`NullBoundary` that denies everything lets W11 be built first).
 
 ### Edges that look real and are not
 
-- **W15 → anything (C)**. The `/completion` fallback carries token arrays, generated token ids, progress,
-  timings and `message_delimiters`, so S0 is an optimisation that lands and never a gate. This is the
-  single largest parallelism enabler in the plan and it is why this tree runs without the server track.
-- **W4 → W5 (C, if `RenderSpan` is text plus control tokens)**. A renderer emitting text-and-control-token
-  pieces needs no tokenizer, no vocab and no daemon, and is a pure function testable against
-  `/apply-template`. Left unspecified, someone makes `render` return `Vec<llama_token>` and this becomes
-  H for no reason.
-- **W8 → W6 (C)**: the TUI renders an event stream, so a recorded log is enough to build and demo it.
-- **W9 → W10 (C)**: tools are host-local algorithms, and firecode is a backend swap once the execution
-  interface is named.
-- **W12 → flowy's stream (C)**: §12.3's degraded mode is complete enough to build against, so write the
-  connector to the degraded protocol first and add the stream as a transport.
-- **W13 → W16 (C for the mechanism, H for the thresholds)**: only *how aggressively to compact* depends on
-  Falsifier B, so build the mechanism and leave the high-water constant a config value.
-- **W11 → W12 (H for the object, C for everything else)**: the policy table, class derivation, audit and
-  timeouts are testable with a console adjudicator.
-- **W2 → W5 (C)**, **W6 → W7 (C, both ways)**: the ported suite runs black-box on day one, and the engine
-  emits into a channel the log consumes, so fixing §4.5's enum means the two never meet until integration.
+**W15 → anything**: the `/completion` fallback carries token arrays, generated ids, progress, timings and
+`message_delimiters`, so S0 is an optimisation that lands and never a gate - the single largest
+parallelism enabler in the plan, and why this tree runs without the server track. **W4 → W5**, if
+`RenderSpan` is text plus control tokens, since such a renderer needs no tokenizer, no vocab and no daemon;
+left unspecified, someone makes `render` return `Vec<llama_token>` and it becomes hard for no reason.
+**W8 → W6** (the TUI renders an event stream), **W9 → W10** (tools are host-local and firecode is a backend
+swap), **W12 → flowy's stream** (§12.3's degraded mode is enough to build against), **W13 → W16** (only
+*how aggressively* to compact depends on Falsifier B), **W11 → W12** (only the object is hard), and **W2 →
+W5**, **W6 → W7** (the suite runs black-box on day one, and the engine emits into a channel the log
+consumes).
 
 ## 3. The critical path
 
