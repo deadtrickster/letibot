@@ -2,7 +2,7 @@
 
 The theses a plan for this harness is written against, the decisions they force, and what a reader
 must hold. **[operator]** marks the operator's own position; the rest is inference, and the arguments
-behind these decisions live in the companion documents this brief points at.
+live in the companion documents this brief points at.
 
 ## 1. The thesis
 
@@ -15,7 +15,7 @@ Every failure measured has a name in data systems:
 |---|---|
 | cache entries never superseded | an index that never merges duplicates |
 | a byte cap but no entry cap | a buffer pool with no page limit |
-| eviction spills a whole entry or nothing | no graded replacement - no LRU-K, CLOCK, ARC, no cost model |
+| eviction spills a whole entry or nothing | no graded replacement - no LRU-K, CLOCK, ARC |
 | one long stop-the-world compaction | pre-LSM compaction |
 | `finish_reason: length` parsed then discarded | swallowing an error return |
 | OOM under a `MAP_POPULATE` burst | no admission control, no backpressure |
@@ -35,13 +35,12 @@ relocatable the way database pages are.
 
 On a harness built on OpenAI-shaped requests against GLM-5.3-Flash on llama.cpp: **reasoning was not
 replayed**, so every turn diverged from its own cache entry and entries grew without bound;
-**compaction cold-prefilled by construction**, at 144,436 tokens and cache hit 0, about 13 minutes to
+**compaction cold-prefilled by construction** at 144,436 tokens and cache hit 0, about 13 minutes to
 the first summary token; **the output cap was silent**, so a subagent that spent its budget thinking
-returned an empty result recorded as success; **the renderer was quadratic**. Replaying reasoning
-moved `f_keep` p10 from **0.000 to 0.999**.
+returned an empty result recorded as success; **the renderer was quadratic**.
 
-Nobody surveyed has warm compaction on the default path; only one enforces prefix stability with a
-test.
+Replaying reasoning moved `f_keep` p10 from **0.000 to 0.999**. Nobody surveyed has warm compaction on
+the default path; only one enforces prefix stability with a test.
 
 ## 3. Model targets
 
