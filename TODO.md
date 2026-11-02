@@ -1289,7 +1289,7 @@ fails on `435bb88` and passes after. The four reviews these come from are in ful
 
 ---
 
-## R73 — A compaction is eight lines of notes and two numbers that read as 1.95M tokens — **the daemon half is on main (settled 2026-10-30, see `TODO-settled.md` R72); leticl's half OPEN**
+## R73 — A compaction is eight lines of notes and two numbers that read as 1.95M tokens — **one honest line per compaction landed (daemon and head); leticl's half OPEN**
 
 The operator, pasting what leticl's head showed for ONE compaction: *"this is how much text i get
 for a compaction in leticl"*:
@@ -1345,16 +1345,41 @@ head already draws `CompactionProgress` as one walking line (`crates/tui/src/ui/
 `compact_half` stays classed `Routine` in `crates/sessionlog/src/warning.rs` and in the notes pane's
 `COMPACTION_ROWS` for logs written before this.
 
+**What landed (`wt-r73`, the honest line):** an automatic compaction now leaves ONE durable row,
+and that row carries the four facts a reader needs.
+
+- **The sentence** (`crates/harnessd/src/sessions.rs::compaction_said`) is `compacted: 958397 →
+  100005 deepseek tokens, kept 12 item(s) verbatim plus a 13532-character summary, 2 item(s)
+  dropped at the seam, on transcript s#t25.` — the size before and after in the daemon's own unit
+  for that count, what the summary stands in for, what was kept verbatim, and what was dropped. A
+  count said once: the two sentences that repeated the tail's numbers are gone. The `compacted`
+  report also carries *the summary was CUT OFF* now (`sessions::SUMMARY_CUT_OFF`, shared with the
+  daemon's log line).
+- **The third row is gone.** The wall door published a second `auto_compact` row after the report
+  with the same numbers and that cut-off sentence; it is deleted, so nothing named `auto_compact`
+  names a size any more (asserted in `crates/harnessd/tests/compact.rs` and `wall_refusal.rs`).
+- **The announcement is not a row.** A fold that is about to run — the wall, a refusal for
+  length, which fold was chosen — is published as `compacting` (new, `Class::Routine`), and the
+  head takes it as STATE: it is the progress line's click (`App::compacting_why`), never a note.
+  An older head draws it as the routine row it used to be, which is the same text.
+- **The drawn line** (`crates/tui/src/ui/transcript/notice_card.rs::compaction_line`) is
+  `session · compacted · 958k → 100k deepseek tokens · kept 12 items + a 13.5k-char summary ·
+  2 dropped · click for details`, with `≈` kept in front of an estimated after-count, `nothing
+  dropped` when the sentence says so, and `summary CUT OFF` when it does. It parses the whole unit
+  (`deepseek tokens`, not the bare `tokens` the old line printed beside a provider's number), and
+  a detail it cannot read falls back to the words it has rather than guessing. Pinned by
+  `a_compaction_draws_the_size_the_unit_and_what_it_kept_and_dropped` (the card, five shapes) and
+  `a_compaction_draws_one_row_with_its_unit_and_what_it_kept_and_dropped` (the frame).
+
 **Still open:**
 
 1. **leticl** (its repo, not this one): stop adding a remedy line under routine codes
-   (`src/cards/note-card.lisp:182`, `src/session/warnings.lisp:289`), and draw
-   `CompactionProgress` as one line updated in place (half N of M, read/written count) cleared by
-   the `compacted` warning, if it does not already.
-2. An automatic compaction still publishes three rows: the wall's `auto_compact` announcement,
-   the `compacted` report, and an `auto_compact` *"compacted: A → B … resident"* line after it
-   (both doors). The last one duplicates the report's numbers and was kept because it is the only
-   hub line carrying *"the summary was CUT OFF"*; folding that into the report would make it one.
+   (`src/cards/note-card.lisp:182`, `src/session/warnings.lisp:289`), draw `CompactionProgress`
+   as one line updated in place (half N of M, read/written count) cleared by the `compacted`
+   warning, and read the `compacted` detail the way this tree's head does — that first sentence is
+   the contract, and `compaction_of` is its other end. **And it has to know one new code:** a fold
+   about to run is announced as `compacting`, so a head that takes it as state keeps one row per
+   compaction; one that draws every warning keeps drawing it, which is what it did before.
 
 ---
 
