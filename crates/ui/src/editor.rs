@@ -79,12 +79,8 @@ pub enum Reaction {
     Quit,
 }
 
-/// A pending edit, before it is applied.
-///
-/// grok-build's `EditPlan`, minus the affinity field this crate has no use for.
-/// The reason to have it at all: applying is a one-liner, but *knowing the byte
-/// range that is about to move* is what lets the paste ledger and (later) an
-/// undo coalescer decide anything.
+/// A pending edit, before it is applied. Applying is a one-liner, but knowing the byte range that
+/// is about to move is what lets the paste ledger decide anything.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Plan {
     pub range: std::ops::Range<usize>,
@@ -169,18 +165,9 @@ pub struct Editor {
     /// The text as it was when a history entry was recalled, so an edit to it
     /// can be detected.
     history_recalled: Option<String>,
-    /// **What was in the buffer when the history walk began** (§6).
-    ///
-    /// Walking down past the newest entry used to restore the **empty string**, so a
-    /// half-written prompt was destroyed by pressing Up once to glance at the previous
-    /// message and Down to come back to it. Every shell keeps the draft across a walk,
-    /// and the loss was silent: the words were not sent anywhere, they were simply
-    /// gone, and there is no undo entry for a recall because a recall is navigation.
-    ///
-    /// `None` means no walk is in progress. Kept across the whole walk (never
-    /// overwritten by a recalled entry) and taken — not merely read — when the walk
-    /// ends, so a second walk saves its own draft rather than inheriting the first
-    /// one's.
+    /// What was in the buffer when the history walk began. Walking down past the newest entry used
+    /// to restore the empty string, so a glance at the previous message destroyed a half-written
+    /// prompt with no undo entry. `None` means no walk is in progress.
     draft: Option<String>,
     /// Placeholder text → the real pasted content.
     pastes: Vec<(String, String)>,
@@ -337,11 +324,8 @@ impl Editor {
                 Reaction::Changed
             }
             Key::Up | Key::Down => {
-                // Vertical motion needs a width, which the caller has and this
-                // does not. `vertical` is the entry point that takes one; this
-                // arm exists so an unwired Up/Down does something sane rather
-                // than nothing: it walks history, which is what a single-line
-                // composer's Up meant.
+                // Vertical motion needs a width the caller has and this does not; this arm exists so
+                // an unwired Up walks history rather than doing nothing.
                 self.recall(matches!(k, Key::Up))
             }
             Key::KillToEnd => {
@@ -449,11 +433,8 @@ impl Editor {
         }
     }
 
-    /// Vertical motion, which needs the wrap width the composer is drawn at.
-    ///
-    /// Moves by **visual** row, not logical line. A pasted paragraph soft-wrapped
-    /// over six rows should take six presses to cross, not one; anything else
-    /// makes the cursor jump somewhere the person was not looking.
+    /// Vertical motion, which needs the wrap width the composer is drawn at: by visual row, not
+    /// logical line, so a paragraph wrapped over six rows takes six presses to cross.
     pub fn vertical(&mut self, up: bool, cols: usize) -> Reaction {
         let rows = width::wrap_ranges(&self.text, cols).len();
         let (row, col) = width::locate(&self.text, self.cursor, cols);
@@ -493,10 +474,8 @@ impl Editor {
             (Some(0), false) => None,
             (Some(i), false) => Some(i - 1),
         };
-        // **Save the draft as the walk begins**, which `(None, true)` is exactly.
-        // Checked here rather than in `vertical` so the two directions cannot disagree
-        // about when a walk starts, and guarded on `draft.is_none()` so a walk that
-        // somehow begins twice keeps the first draft rather than a recalled entry.
+        // Save the draft as the walk begins, here rather than in `vertical` so the two directions
+        // cannot disagree, and guarded so a walk that begins twice keeps the first draft.
         if self.history_at.is_none() && back && self.draft.is_none() {
             self.draft = Some(self.text.clone());
         }
@@ -518,16 +497,9 @@ impl Editor {
         self.replace(self.cursor..self.cursor, s, Kind::Insert);
     }
 
-    /// **Remove a span whole**, as one undo entry — the composer's attachment chip, which Backspace
-    /// takes in one press rather than a character at a time.
-    ///
-    /// A chip is a span of the buffer and the editor is the only thing that may move it, so the
-    /// deletion belongs here rather than in a head that would have to re-spell `text`, `cursor`,
-    /// `last_kind` and the undo snapshot itself — four fields that must move together.
-    ///
-    /// Clamped rather than panicking on a range past the end: the caller is a head acting on a
-    /// buffer it searched a moment ago, and a message that changed between the search and the
-    /// delete must leave a shorter line, never a crash.
+    /// Remove a span whole, as one undo entry: the composer's attachment chip, which Backspace
+    /// takes in one press. The editor owns it because `text`, `cursor`, `last_kind` and the undo
+    /// snapshot must move together; a range past the end is clamped rather than panicking.
     pub fn kill_range(&mut self, range: std::ops::Range<usize>) {
         let end = range.end.min(self.text.len());
         let start = range.start.min(end);
@@ -544,18 +516,9 @@ impl Editor {
         // a bracketed paste, and a naive `\r\n` replace leaves those behind as
         // control characters that a terminal renders as a carriage return.
         let s = raw.replace("\r\n", "\n").replace('\r', "\n");
-        // **Lines, which is not newlines-plus-one when the paste ends in a newline.**
-        //
-        // This was `s.matches('\n').count() + 1`, and almost every real paste is a
-        // whole file dragged out of an editor — which ends `…\n` — so a 300-line paste
-        // announced itself as **301**, and a 40-line stack trace as 41. The reader's
-        // one use for this number is deciding whether the placeholder holds their whole
-        // paste, and an off-by-one there is the number disagreeing with the thing it
-        // counts.
-        //
-        // `lines()` is the count a reader would make: `"a\nb\n"` and `"a\nb"` are both
-        // two lines, and an empty paste is zero (which is below the threshold and so is
-        // not collapsed — the right answer for a paste of nothing).
+        // Lines, which is not newlines-plus-one when the paste ends in a newline: almost every real
+        // paste is a whole file, so a 300-line paste announced itself as 301 and the number
+        // disagreed with the thing it counts.
         let lines = s.lines().count();
         if lines >= PASTE_LINES || s.len() > PASTE_BYTES {
             let n = self.pastes.len() + 1;
@@ -567,12 +530,8 @@ impl Editor {
         }
     }
 
-    /// Everything a placeholder stands for, substituted back in.
-    ///
-    /// A placeholder the person deleted takes its paste with it; a placeholder
-    /// they edited no longer matches and is sent as the literal text on screen.
-    /// Both are visible outcomes of a visible action, which is the trade made
-    /// against opencode's extmark ranges — see the module header.
+    /// Everything a placeholder stands for, substituted back in. A placeholder the person deleted
+    /// takes its paste with it, and one they edited is sent as the literal text on screen.
     pub fn expanded(&self) -> String {
         let mut out = self.text.clone();
         for (ph, full) in &self.pastes {
@@ -628,12 +587,8 @@ impl Editor {
         self.redo.clear();
     }
 
-    /// Push an undo entry if this mutation starts a new batch.
-    ///
-    /// The batching rule is grok-build's and it is the one that makes undo feel
-    /// right: typing a word is one undo, but the space before it is a boundary,
-    /// and so is moving the cursor. Without the whitespace rule, undo either
-    /// swallows a paragraph or steps one character at a time.
+    /// Push an undo entry if this mutation starts a new batch: typing a word is one undo, the space
+    /// before it is a boundary, and so is moving the cursor.
     fn snapshot(&mut self, kind: Kind) {
         let batch = match (self.last_kind, kind) {
             (Some(Kind::Insert), Kind::Insert) | (Some(Kind::Delete), Kind::Delete) => {
@@ -756,11 +711,8 @@ impl Editor {
         k
     }
 
-    /// Rows the composer wants, given the terminal width and height.
-    ///
-    /// Never more than a third of the screen, floor 6 — opencode's rule
-    /// (`prompt/index.tsx:1494`). A composer that grows without a bound eats the
-    /// conversation one paste at a time.
+    /// Rows the composer wants: never more than a third of the screen, floor 6, because a composer
+    /// that grows without a bound eats the conversation one paste at a time.
     pub fn height(&self, cols: usize, screen_rows: usize) -> usize {
         let want = width::wrap_ranges(&self.text, cols.saturating_sub(2).max(4)).len();
         let cap = (screen_rows / 3).max(6);
@@ -804,25 +756,9 @@ impl Editor {
         (out, (row, col + width::width(prompt)))
     }
 
-    /// The one-line hint under the composer.
-    ///
-    /// **Empty in the steady state, and that is the point.** It used to name the keys
-    /// that change: `enter send · ctrl+c exit` when idle, `esc interrupt · ctrl+c clear`
-    /// while a turn runs, and a longer form once the composer had text. Those are three
-    /// different lengths in front of a **constant** tail bar (`ctrl-s sessions · …`), so
-    /// the whole bottom line shifted sideways every time a turn started or the first
-    /// character was typed — the operator: *"at the very bottom we have either 'enter
-    /// send' or 'esc interrupt' they have different length and that bottom line always
-    /// jumps back and forth. I dont want that. just dont show enter and esc at all."*
-    ///
-    /// So nothing is shown, and the bar is the tail alone: the same width in every
-    /// state, and `hint_bar` already has the branch that suppresses the separator in
-    /// front of one half.
-    ///
-    /// **The double-tap messages stay**, and they are not the same thing: they appear
-    /// for a second *in response to a key*, which is a reply rather than a flicker, and
-    /// they are the entire mechanism by which anybody learns that a second press does
-    /// something different.
+    /// The one-line hint under the composer, empty in the steady state: three different prefixes in
+    /// front of a constant tail bar moved the whole bottom line whenever a turn started. The
+    /// double-tap messages stay, since they answer a key rather than flicker.
     pub fn hint(&self, now_ms: u64, palette: Palette) -> String {
         match self.hint_text(now_ms) {
             Some(s) => palette.painted(Role::Attention, s),
@@ -857,13 +793,9 @@ mod tests {
         }
     }
 
-    /// **§6: a history walk keeps the draft it interrupted.**
-    ///
-    /// Pressing Up to glance at the previous message and Down to come back used to
-    /// restore the **empty buffer**, so the half-written prompt was gone. It was the
-    /// quietest kind of loss — nothing was sent anywhere and there is no undo entry,
-    /// because a recall is navigation rather than an edit — and every shell keeps the
-    /// draft, so the behaviour was also the one thing nobody would think to check.
+    /// A history walk keeps the draft it interrupted: pressing Up and Down used to restore the empty
+    /// buffer, which was the quietest kind of loss, since a recall is navigation and there is no undo
+    /// entry for it.
     #[test]
     fn a_history_walk_restores_the_draft_it_interrupted() {
         let mut e = ed().with_history(vec!["first".into(), "second".into()]);
@@ -878,11 +810,8 @@ mod tests {
         assert!(matches!(e.key(Key::Down, 0), Reaction::Changed));
         assert_eq!(e.text(), "half a thought", "the draft survived the walk");
 
-        // **And editing the restored draft still stops navigation**, which is the rule
-        // that keeps a walk from destroying an edit: the draft is now an edited recall
-        // (`history_recalled != text`), so another Up is refused rather than
-        // overwriting what they typed. My first draft of this test asserted a second
-        // walk here and failed — the assertion was wrong, not the guard.
+        // Editing the restored draft still stops navigation: the draft is now an edited recall, so
+        // another Up is refused rather than overwriting what they typed.
         type_str(&mut e, " and more");
         assert!(matches!(e.key(Key::Up, 0), Reaction::Idle));
         assert_eq!(e.text(), "half a thought and more");
@@ -928,13 +857,8 @@ mod tests {
         assert!(!out.contains("[Pasted"), "the placeholder must not be sent");
     }
 
-    /// **§6: the count is the number of lines, and a paste that ends in a newline is
-    /// not one line longer for it.**
-    ///
-    /// The operator's own case: this head announced a 300-line file as `~301 lines`,
-    /// because a file dragged out of an editor ends `…\n` and the old count was the
-    /// newline total plus one. The reader's whole use for this number is deciding
-    /// whether the placeholder holds their paste.
+    /// The count is the number of lines, and a paste ending in a newline is not one line longer for
+    /// it: a file dragged out of an editor used to announce itself as 301 lines.
     #[test]
     fn the_paste_count_is_the_lines_a_reader_would_count() {
         // A 300-line paste, as an editor gives it to you.
@@ -1016,25 +940,17 @@ mod tests {
         assert!(!e.hint(9_000, Palette::None).contains("again"));
     }
 
-    /// **The steady hint is empty, so the bottom line cannot jump.**
-    ///
-    /// The operator: *"at the very bottom we have either 'enter send' or 'esc
-    /// interrupt' they have different length and that bottom line always jumps back and
-    /// forth"*. Three different prefixes — idle, running, and composer-not-empty — sat
-    /// in front of a constant tail bar, so every state change moved the whole line.
-    ///
-    /// This asserts the absence, in every steady state, because the fix *is* the
-    /// absence: a hint that returns `""` in all three cannot shift anything.
+    /// The steady hint is empty, so the bottom line cannot jump. Three steady states used to sit in
+    /// front of a constant tail bar, and every change of state moved the whole line; this asserts the
+    /// absence, because the fix is the absence.
     #[test]
     fn the_steady_hint_is_empty_whichever_state_the_editor_is_in() {
         let mut e = ed();
         assert_eq!(e.hint(1_000, Palette::None), "", "an idle composer");
         type_str(&mut e, "writing something");
         assert_eq!(e.hint(1_000, Palette::None), "", "a composer with text");
-        // A running turn is the other state the old hint distinguished, and it no
-        // longer reaches the hint at all — the parameter is gone, so the only way it
-        // could shift the line is by being named here. `hint` takes no `running` for
-        // that reason; this asserts the editor's own text is not what changes.
+        // A running turn no longer reaches the hint at all: `hint` takes no `running`, so this
+        // asserts the editor's own text is not what changes.
         assert!(!e.hint(1_000, Palette::None).contains("interrupt"));
 
         // The double-taps still speak, which is the part that must not be lost.

@@ -1,24 +1,18 @@
 //! Colour a foreign program asked for, drawn in this head's own roles.
 //!
-//! Such output carries `ESC[01;34m`, which the head's sanitiser deletes, so this walks a line with
-//! that sanitiser's own parser and turns each SGR into the palette role that means the same thing.
-//! A table from a hue and a weight to a [`Role`], because a role is a meaning and the colours a
-//! theme.
-//!
-//! No sequence is ever passed through: what a command can say about colour is a closed set of roles
-//! this head chose, painted through a [`Painter`] so a span closes back into its block.
+//! Such output carries `ESC[01;34m`, which the sanitiser deletes, so this turns each SGR into the
+//! palette role that means the same thing, painted through a [`Painter`] so a span closes back into
+//! its block. No sequence is ever passed through: what a command can say about colour is a closed
+//! set of roles this head chose.
 
 use crate::painter::Painter;
 use letibot_vt::Screen;
 use letibot_vt::attr::{Attr, Hue, apply_sgr};
 use rano::style::{Palette, Role};
 
-/// One line of a foreign program's output, with its SGR drawn as this head's roles and
-/// every other control byte dropped.
-///
-/// `p` is the painter for the block the line is going into — [`Painter::inside`] where the
-/// row paints its payload in [`Role::Faint`], so a coloured run ends by restoring the dim
-/// body rather than the terminal's default.
+/// One line of a foreign program's output, with its SGR drawn as this head's roles and every other
+/// control byte dropped. `p` is the painter for the block the line goes into, so a coloured run ends
+/// by restoring the block's own style rather than the terminal's default.
 pub fn painted(p: Painter, line: &str) -> String {
     // The fast path, and the common one: a line with no control character in it has no
     // sequence to interpret, and this is called once per payload line of every tool row
@@ -75,16 +69,9 @@ pub fn painted(p: Painter, line: &str) -> String {
     out
 }
 
-/// **[`painted`], as a `rano::render::Line`** — the same walk and the same [`role`] table,
-/// with each painted run a span carrying its role instead of the sequences that draw it.
-///
-/// For a widget that takes lines rather than strings (`rano::agent::tool_row`'s payload): the
-/// row it goes into decides the register around it, and drawing the line under that register
-/// with `Line::to_ansi_inside` writes the bytes [`painted`] writes under
-/// [`Painter::inside`] — a run opened where the program's colour starts, closed back to the
-/// block where it ends, a run with no text still opened and closed. That is why an empty run
-/// is kept as a span here rather than dropped: the bytes the head's rows are compared by are
-/// the bytes a terminal was always sent.
+/// [`painted`] as a `rano::render::Line`: the same walk and the same [`role`] table, with each run a
+/// span carrying its role. Drawn under the row's register it writes the bytes [`painted`] writes,
+/// which is why a run with no text is kept as a span rather than dropped.
 pub fn line(line: &str) -> rano::render::Line {
     use rano::render::{Line, Span};
     if !line.chars().any(char::is_control) {
@@ -139,18 +126,9 @@ pub fn line(line: &str) -> rano::render::Line {
     Line::new(spans)
 }
 
-/// The role a pen is drawn as, or `None` for the block's own style.
-///
-/// **This is the whole of the head's half of the mapping**, and it is a function of the *pen*
-/// rather than of the parameters: by the time it is asked, `letibot_vt::attr::apply_sgr` has
-/// already applied whatever the program wrote, and the question here is only what this head calls
-/// the result. A hue the palette has no role for is no role, and the intensity is not a second
-/// shade — `Attr::hue` takes it off, which is why a bright red and a red are one role and a bold
-/// blue and a blue are two.
-///
-/// `Attr::reverse` is deliberately not read here. See the module header: a program's reverse is not
-/// a role on the payload path, and it now *is* carried by the pen because a screen needs to draw
-/// it.
+/// The role a pen is drawn as, or `None` for the block's own style: the question is what this head
+/// calls the pen's result, not what the program wrote. A hue with no role is no role, and the
+/// intensity is not a second shade. `Attr::reverse` is not read here; a screen draws it instead.
 fn role(a: Attr) -> Option<Role> {
     match (a.bold, a.hue()) {
         (_, Some(Hue::Red)) => Some(Role::Failure),
@@ -173,11 +151,9 @@ fn role(a: Attr) -> Option<Role> {
     }
 }
 
-/// What a cell's pen is drawn as: the head's role for its foreground, plus the two things a program
-/// asked for that **no role names** — reverse, and a background slot.
-///
-/// This is the key a frame groups its runs by, so two cells share a span exactly when a reader
-/// cannot tell them apart. `Eq` because that is what the grouping is.
+/// What a cell's pen is drawn as: the role for its foreground plus the two things no role names,
+/// reverse and a background slot. This is the key a frame groups runs by, so two cells share a span
+/// exactly when a reader cannot tell them apart.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Look {
     role: Option<Role>,
@@ -217,34 +193,9 @@ impl Look {
     }
 }
 
-/// **A screen's cells, as the rows a pane draws** — the second reader, and the head's half of it.
-///
-/// [`painted`] is one *line* of a foreign program's output; this is a whole screen of it. Both go
-/// through [`role`], so a program's colour means one thing in this process. What this one adds is
-/// the two things a screen has and a payload row does not: a cell's **background** and its
-/// **reverse**, both of which [`painted`] deliberately drops — see the module header.
-///
-/// # A cell is a column, so an untouched cell is a space
-///
-/// A row is its cells, one column each, and nothing else: skipping the blank ones would slide
-/// everything left of the cursor into column zero, which is a screen that lines nothing up. The one
-/// cell that contributes no column is the trailing half of a wide glyph
-/// ([`letibot_vt::Cell::is_wide_tail`]) — the glyph is in the cell to its left and writing its
-/// space over would erase half of it.
-///
-/// # What ends a row, and why it is not `trim_end`
-///
-/// The row stops at its last cell that is not a blank in the default pen
-/// ([`letibot_vt::Cell::is_blank`]) — so a row of nothing is the empty string and costs no bytes,
-/// which is what a head that erases each row's tail before drawing it wants
-/// (`letibot_tui::backend::terminal::paint_full`).
-/// **A trailing blank that a program *painted* is not a blank and is kept**, which `trim_end`
-/// cannot see: a run that ends in a background or a reverse is the edge of a panel, and trimming
-/// it would leave `mc`'s blue rectangle short of its own border.
-///
-/// The retired `crates/ui/src/vt.rs` did this with `trim_end` and therefore kept the trailing
-/// blanks of every row that ended coloured and dropped those of every row that did not. This is the
-/// same convenience with the property stated instead of approximated.
+/// A screen's cells as the rows a pane draws: both readers go through [`role`], and this one adds a
+/// cell's background and reverse, which [`painted`] drops. The row stops at the last cell not in the
+/// default pen, because a trailing blank a program painted is the edge of a panel.
 pub fn lines(screen: &Screen, palette: Palette) -> Vec<String> {
     painted_rows(screen.rows(), palette)
 }
@@ -295,24 +246,14 @@ fn painted_rows<'a>(
     out
 }
 
-/// **The rows, and the rectangle they came out of** — the pane's one entry point.
-///
-/// Resizes the screen to `cols` × `room` and returns **exactly `room` rows**, so a pane drawn with
-/// this takes the conversation's rectangle and gives it back: the composer, the status row and the
-/// header keep the rows they had, and nothing above the pane moves when it opens.
-///
-/// `room` is clamped to at least one by [`Screen::resize`], which is the model's own posture — a
-/// rectangle of no rows is a window that has told us nothing useful, and one row is the smaller
-/// lie. `cols` is clamped the same way.
+/// The rows, and the rectangle they came out of: resizes the screen to `cols` x `room` and returns
+/// exactly `room` rows, so a pane takes the conversation's rectangle and gives it back.
 pub fn pane_rows(screen: &mut Screen, cols: usize, room: usize, palette: Palette) -> Vec<String> {
     pane_rows_back(screen, cols, room, palette, 0)
 }
 
-/// [`pane_rows`], **scrolled `back` rows into the scrollback** — the rectangle a pane draws while
-/// the operator is reading what a program printed past the glass (R60 item 1).
-///
-/// The same contract, exactly `room` rows, because [`Screen::view`] keeps it: a `back` beyond the
-/// history shows the oldest row at the top, and `0` is the live screen.
+/// [`pane_rows`] scrolled `back` rows into the scrollback: the same contract, exactly `room` rows,
+/// with a `back` past the history showing the oldest row at the top and `0` the live screen.
 pub fn pane_rows_back(
     screen: &mut Screen,
     cols: usize,
@@ -334,12 +275,8 @@ mod tests {
         Painter::new(Palette::Colour)
     }
 
-    /// **The case that was reported, and the whole of the requirement**: what a colour-aware
-    /// program writes comes out as the roles this head already draws those colours with.
-    ///
-    /// Every sequence here is one `ls`, `grep` or `cargo` actually writes, and the expected
-    /// bytes are `Palette::open`'s own — so the assertion is not "there is an escape in the
-    /// output" but "the escape is the one this head chose for that meaning".
+    /// The case that was reported: what a colour-aware program writes comes out as the roles this
+    /// head already draws those colours with, so the assertion is on this head's own bytes.
     #[test]
     fn what_a_foreign_program_colours_becomes_the_palette_role_for_it() {
         // `ls`'s own default for a directory, which is the line the operator was looking at.
@@ -406,16 +343,9 @@ mod tests {
         );
     }
 
-    /// **The operator's own `ls -la`, as `ls` actually writes it** — not the fixture.
-    ///
-    /// The synthetic payload the first cut used was `"\u{1b}[01;34msrc\u{1b}[0m"`: a colour,
-    /// the text, a close. `ls` writes **three** sequences on a directory row and the middle one
-    /// is a reset *before* the colour — `\u{1b}[0m\u{1b}[01;34m.\u{1b}[0m` — because it restores
-    /// the default between entries. That extra leading `0` is the whole reason the operator's
-    /// paste reads `[0m[01;34m.`: the two bodies sit next to each other with no visible
-    /// introducer between them, which is what makes a paste look like "the escapes are printed
-    /// as text". The walk has to see it as *reset then open* and paint nothing for the first —
-    /// which is what the assertion on the exact bytes below holds.
+    /// The operator's own `ls -la`, as `ls` writes it. `ls` puts a reset before the colour on a
+    /// directory row, which is why the walk has to read it as reset then open and paint nothing for
+    /// the first.
     #[test]
     fn the_operators_own_ls_line_is_painted_from_its_real_bytes() {
         // The directory row verbatim, `ls`'s own reset-before-colour included.
@@ -438,11 +368,8 @@ mod tests {
         assert_eq!(seen, ".");
     }
 
-    /// **A colour that runs to the end of the line is closed at the end of the line.**
-    ///
-    /// A terminal carries SGR state across a newline and a head must not: the next row is
-    /// drawn with a gutter this head wrote, and a leaked red would tint it. The assertion is
-    /// on the trailing bytes, which is where a leak would be visible.
+    /// A colour that runs to the end of the line is closed at the end of the line: a terminal
+    /// carries SGR state across a newline and a head must not, or the next row's gutter is tinted.
     #[test]
     fn a_run_that_reaches_the_end_of_the_line_is_closed_before_the_next_one() {
         let out = painted(colour(), "src/\u{1b}[31mno reset here");
@@ -460,12 +387,8 @@ mod tests {
         );
     }
 
-    /// **A sequence this head has no role for paints nothing and is still consumed.**
-    ///
-    /// The extended-colour case is the one with a trap in it: `38;5;1` is the cube's index 1
-    /// and its last parameter is the `1` that means bold. Reading the parameters one at a
-    /// time would turn a red the palette cannot name into a bold this head would be
-    /// inventing, so the whole extended form goes — and the text either side is kept.
+    /// A sequence this head has no role for paints nothing and is still consumed. `38;5;1` is the
+    /// trap: its last parameter is the `1` that means bold, so the whole extended form goes.
     #[test]
     fn a_colour_outside_the_palette_is_dropped_rather_than_guessed_at() {
         for hostile in [
@@ -479,14 +402,8 @@ mod tests {
         }
     }
 
-    /// **The existing guarantee, re-asserted where the colour now enters**: everything that
-    /// is not SGR is still removed whole, and no byte of any sequence survives as text.
-    ///
-    /// **The assertion is not "no `ESC` on the line"** — the head's own escapes are there,
-    /// by design, and the first version of this test failed on exactly that. What is
-    /// asserted is the property that matters and that the whole of §3.1 is about: every
-    /// escape in the output is **one this head chose**, and once those are removed nothing
-    /// is left that a terminal would act on.
+    /// Everything that is not SGR is still removed whole, and no byte of a sequence survives as
+    /// text. Not "no `ESC` on the line": every escape left is one this head chose.
     #[test]
     fn a_control_byte_that_is_not_a_colour_is_still_dropped() {
         let hostile = "a\u{1b}[2J\u{1b}[?1002h\u{1b}[?1006h\u{1b}[?1049h\u{1b}[?2004h\
@@ -521,11 +438,8 @@ mod tests {
         );
     }
 
-    /// **A no-colour head is byte-identical to the sanitiser it replaces.**
-    ///
-    /// `Palette::None` is the `--replay`, pipe-to-a-file and CI case, and it has to produce
-    /// the same bytes on every machine: with no palette there is nothing to paint, and the
-    /// line is exactly what `without_control` would have given.
+    /// A no-colour head is byte-identical to the sanitiser it replaces: with no palette there is
+    /// nothing to paint, which is the `--replay` and pipe-to-a-file case.
     #[test]
     fn under_the_none_palette_the_line_is_what_the_sanitiser_alone_would_give() {
         let line = "src/\u{1b}[01;34mthe-dir\u{1b}[0m and \u{1b}[2J clear \u{1b}[?1002h";
@@ -543,11 +457,8 @@ mod tests {
         assert_eq!(painted(colour(), line), line);
     }
 
-    /// **Inside a themed block, a coloured run closes back into the block.** The payload is
-    /// drawn dim, so a run that closed to the terminal's default would make the rest of the
-    /// row brighter than the line it is part of — the defect `Painter` exists for. The close
-    /// is a reset **plus the block's own opening sequence**, which is why a `Painter` is
-    /// what this module takes rather than a `Palette`.
+    /// Inside a themed block a coloured run closes back into the block: the close is a reset plus
+    /// the block's own opening sequence, which is why this takes a `Painter` and not a `Palette`.
     #[test]
     fn a_coloured_run_closes_back_into_the_block_it_is_drawn_in() {
         let p = Painter::inside(Palette::Colour, Role::Faint);
@@ -567,13 +478,8 @@ mod tests {
         );
     }
 
-    /// **A program's background survives the feed and is not dropped**, and the frame draws it.
-    ///
-    /// This is the gap the operator's own programs name: `mc`'s blue panels and `nano`'s status bar
-    /// are backgrounds, and a pane that dropped the slot would draw their text on the transcript's
-    /// own background — the panel gone and the words left behind. The assertion is on the *bytes of
-    /// the row*, because a screen that kept the slot in its cells and painted nothing would pass
-    /// every assertion the model can make about itself.
+    /// A program's background survives the feed and the frame draws it, asserted on the row's bytes
+    /// because a screen that kept the slot and painted nothing would pass every other check.
     #[test]
     fn a_background_a_program_painted_reaches_the_frame() {
         let mut screen = Screen::new(1, 6);
@@ -592,11 +498,8 @@ mod tests {
         assert_eq!(lines(&screen, Palette::None), vec!["panel "]);
     }
 
-    /// **A 256-colour or truecolour background is consumed and paints nothing.**
-    ///
-    /// The cube's indices are absolute RGB and a slot is a theme position, so `48;5;n` and
-    /// `48;2;r;g;b` set no background — and, the load-bearing half, their parameters are not read as
-    /// codes: `48;5;1`'s `1` is the cube's index and also the code for bold.
+    /// A 256-colour or truecolour background is consumed and paints nothing, and its parameters are
+    /// not read as codes: `48;5;1`'s `1` is a cube index and also the code for bold.
     #[test]
     fn a_256_colour_background_is_consumed_and_paints_nothing() {
         let mut screen = Screen::new(1, 6);
@@ -645,13 +548,8 @@ mod tests {
         assert_eq!(lines(&screen, Palette::None), vec![" sel "]);
     }
 
-    /// **The payload path still drops a background and a reverse**, and this is the one place the
-    /// two readers of one parameter list deliberately disagree.
-    ///
-    /// It has to be asserted rather than assumed: `painted` and [`lines`] read the *same* pen, the
-    /// pen carries both, and a payload row sits inside a block this head chose — so a `\u{1b}[44m`
-    /// there would put a foreign panel's colour inside a card. The screen is the reader that keeps
-    /// them, because a screen **is** the program's own drawing.
+    /// The payload path still drops a background and a reverse, which is the one place the two
+    /// readers of one pen deliberately disagree: a payload row sits in a block this head chose.
     #[test]
     fn a_payload_row_still_drops_the_background_and_the_reverse_a_screen_keeps() {
         let line = "\u{1b}[44;7mX\u{1b}[0m";
@@ -667,12 +565,8 @@ mod tests {
         );
     }
 
-    /// **The pane takes the conversation's rectangle and gives it back** — the one property the
-    /// frame's layout depends on, and the reason `pane_rows` exists rather than a caller doing
-    /// `resize` and `lines` itself.
-    ///
-    /// This is one of the two conveniences the retired `crates/ui/src/vt.rs` carried, and it is
-    /// asserted here rather than there because this is where it lives now.
+    /// The pane takes the conversation's rectangle and gives it back, which is the one property the
+    /// frame's layout depends on and why `pane_rows` exists.
     #[test]
     fn the_pane_gets_exactly_the_room_it_was_given() {
         let mut screen = Screen::new(24, 80);
@@ -733,13 +627,8 @@ mod tests {
         );
     }
 
-    /// **A trailing blank a program painted is not a blank.**
-    ///
-    /// The row ends at the last cell in the *default* pen, not at the last cell that is not a
-    /// space: a run that ends in a colour, a background or a reverse is the edge of a panel, and a
-    /// frame that trimmed it would cut `mc`'s rectangle short of its own border. The retired screen
-    /// used `trim_end`, which cannot tell the two apart — it kept the trailing blanks of every row
-    /// that ended coloured and dropped those of every row that did not.
+    /// A trailing blank a program painted is not a blank: the row ends at the last cell in the
+    /// default pen, so trimming by spaces would cut `mc`'s rectangle short of its own border.
     #[test]
     fn a_trailing_blank_the_program_painted_is_part_of_the_run() {
         let mut screen = Screen::new(1, 6);
@@ -751,22 +640,9 @@ mod tests {
         );
     }
 
-    /// (Moved here with `width.rs`'s deletion: the head measures with `rano::width` now, and
-    /// this crate is still the one that reads both.)
-    ///
-    /// **The two width tables in this process agree, and where they do not it is written down.**
-    ///
-    /// A cell grid has to measure a character in columns for itself: `letibot_vt` is below this
-    /// crate and cannot call `rano::width::char_width`, and the ranges below are the ones this tree is willing
-    /// to carry, so they are the ones it copies. **A copy is a thing that drifts**, so the
-    /// agreement is asserted here rather than claimed in a comment — and the one deliberate
-    /// divergence is asserted too, because a difference nobody wrote down is a bug somebody will
-    /// "fix" in the wrong place.
-    ///
-    /// The divergence is the emoji planes: a grid has one cell per code point and the head has
-    /// one per *grapheme cluster*, so a single emoji is two columns to the head and one to the
-    /// screen, and a ZWJ sequence is one glyph here and its parts there. `letibot_vt::width`'s
-    /// header is where the cost is stated.
+    /// The two width tables in this process agree, and the one deliberate divergence is asserted
+    /// too: a grid has one cell per code point and the head one per grapheme cluster, so a ZWJ
+    /// sequence is one glyph to the head and its parts to the screen.
     #[test]
     fn the_cell_grid_measures_the_way_the_head_does_except_where_it_says_otherwise() {
         // Everything a full-screen program's box, a path and a CJK filename are made of.

@@ -83,23 +83,12 @@ impl Sgr for Palette {
     }
 }
 
-/// A palette **bound to the style of the block it is painting inside**.
+/// A palette bound to the style of the block it is painting inside.
 ///
-/// # The defect this type exists to make unrepresentable
-///
-/// [`Palette::paint`] closes a span with `RESET`, which restores the *terminal
-/// default*. That is right at the top level and wrong everywhere else, and the
-/// operator found the difference by looking at the screen: the model's reasoning
-/// is dim grey, the reasoning contained a heading and an inline code span, and
-/// each of those closed to white — so the block "tries to be grey, then goes
-/// green and becomes white for several rows and then grey again".
-///
-/// A reset is not a restore. Inside a themed block the close has to re-establish
-/// the block's own style, and the only way that cannot be forgotten one call site
-/// at a time is for the closing sequence to come from a value that knows what it
-/// is inside. That value is this one: [`Painter::close`] is `RESET` at the top
-/// level and `RESET` + the block's opening sequence inside one, and every span
-/// painted through a `Painter` closes with it.
+/// [`Palette::paint`] closes a span with a reset, which restores the terminal default: right at the
+/// top level and wrong inside a themed block, where it turned the rest of a dim block white. Inside
+/// a block the close has to re-establish the block's own style, and taking it from a value that
+/// knows what it is inside is the only way that cannot be forgotten at one call site.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Painter {
     palette: Palette,
@@ -145,10 +134,8 @@ impl Painter {
         self.palette.sgr(r)
     }
 
-    /// **A program's own background slot**, `0`–`15`, as a sequence: empty under
-    /// [`Palette::None`] and for a slot above the sixteen. See
-    /// [`Palette::background_look`] for why this is a slot and not a role; the screen is
-    /// its one caller, and a payload row never comes through here (`ansi.rs`'s header).
+    /// A program's own background slot as a sequence: empty under [`Palette::None`] and for a slot
+    /// above the sixteen. A slot rather than a role because the theme decides what it looks like.
     pub fn background(self, slot: u8) -> &'static str {
         match table().background[palette_index(self.palette)].get(slot as usize) {
             Some(s) => s,
@@ -162,10 +149,8 @@ impl Painter {
         &table().reverse[palette_index(self.palette)]
     }
 
-    /// What re-establishes the enclosing block after a span: a reset, plus the
-    /// block's own opening sequence when there is a block.
-    ///
-    /// Empty under [`Palette::None`], where there is nothing to close.
+    /// What re-establishes the enclosing block after a span: a reset, plus the block's own opening
+    /// sequence when there is a block. Empty under [`Palette::None`].
     pub fn close(self) -> String {
         if self.palette == Palette::None {
             return String::new();
@@ -187,12 +172,9 @@ impl Painter {
         format!("{o}{s}{}", self.close())
     }
 
-    /// `s`, already carrying escapes of its own, made safe to place inside the
-    /// block: every reset in it is turned into a restore of the block's style.
-    ///
-    /// The escape hatch for text painted by something that was never told what it
-    /// is inside — a syntax highlighter's line, a diff's gutter. Preferred over
-    /// re-painting, which would double the sequences.
+    /// `s`, already carrying escapes of its own, made safe to place inside the block: every reset in
+    /// it becomes a restore of the block's style. The escape hatch for text painted by something that
+    /// was never told what it is inside.
     pub fn rebase_resets(self, s: &str) -> String {
         let close = self.close();
         if self.base.is_none() || close == RESET {
@@ -265,11 +247,9 @@ mod tests {
         }
     }
 
-    /// **A program's background is the reader's own theme slot**, spelled the way a terminal
-    /// spells them — the eight, then the bright eight at `100` — and nothing past the sixteen;
-    /// and reverse is the user block's one spelling. These were `&'static str` in the copy of
-    /// the table this crate kept; they are rano's looks now, and these are the bytes the
-    /// screen writes, so they are pinned here.
+    /// A program's background as the reader's own theme slot, spelled the way a terminal does -- the
+    /// eight, then the bright eight -- and nothing past the sixteen; reverse is the user block's one
+    /// spelling. These are the bytes the screen writes, so they are pinned here.
     #[test]
     fn a_programs_background_and_reverse_are_the_bytes_they_were() {
         let p = Painter::new(Palette::Colour);
