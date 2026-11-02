@@ -1,11 +1,9 @@
-//! **The GGUF vocabulary**: llama.cpp's tokenizer, as a
-//! [`letibot_tokencore::VocabBackend`].
+//! The GGUF vocabulary: llama.cpp's tokenizer, as a [`letibot_tokencore::VocabBackend`].
 //!
-//! [`load`] reads the vocabulary out of a GGUF with `vocab_only = true`, so it holds a few
-//! megabytes of token table and no weights — measured at 0.6 s against shard 1 of a
-//! six-way split model, the other five shards never opened. The result is an ordinary
-//! [`Vocab`]; the rules a vocabulary keeps (one id per control literal, no specials from
-//! text, bytes-then-decode) live there, once, for every backend.
+//! [`load`] reads the vocabulary out of a GGUF with `vocab_only = true`, so it holds a token
+//! table and no weights, and the other shards of a split model are never opened. The result
+//! is an ordinary [`Vocab`]; the rules a vocabulary keeps live there, once, for every
+//! backend.
 //!
 //! This is the only crate that links llama.cpp. See `Cargo.toml` for why that moved here.
 
@@ -98,9 +96,9 @@ impl VocabBackend for Gguf {
         let len =
             i32::try_from(text.len()).map_err(|_| VocabError::TextTooLong { bytes: text.len() })?;
 
-        // Every token decodes to at least one byte, so byte length is an upper
-        // bound. The negative-return retry below is kept anyway: it is the
-        // contract llama_tokenize documents and it costs nothing.
+        // Every token decodes to at least one byte, so byte length is an upper bound. The
+        // negative-return retry below is llama_tokenize's documented contract and costs
+        // nothing.
         let mut out: Vec<ffi::LlamaToken> = vec![0; text.len()];
         let mut n = unsafe {
             ffi::llama_tokenize(
