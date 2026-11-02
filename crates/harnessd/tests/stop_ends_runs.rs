@@ -31,6 +31,14 @@
 //! 3. And the head is told the truth either way: it does not leave on the `Bye`, because
 //!    `Bye` is published by the connection thread before the worker has ended (that half is
 //!    `crates/tui/tests/stop_daemon.rs`'s).
+//!
+//! # The run, and why it is `/bin/cat`
+//!
+//! The fixture has to be a run that **cannot end on its own**, or the stop arrives at nothing
+//! and the test proves nothing: `su -c true` blocks only where it has to ask for a password,
+//! so on a box whose session is already root inside its own namespace it ran `true` and was
+//! gone milliseconds later. `/bin/cat` blocked on the terminal the daemon holds is the same
+//! state everywhere, and it is also the state the first measurement above was about.
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -196,51 +204,50 @@ fn a_stop_ends_the_run_that_holds_the_worker() {
     let mut daemon = Daemon(start_daemon(&dir, &log, &socket, &store, session));
     let (mut head, rx) = attach(&socket, session, &log, &mut daemon);
 
-    // ---- The run. The operator's own shape: a process **blocked on the stdin this daemon
-    // holds**, whose own process the daemon **cannot look at**. It will not end on its own.
+    // ---- The run, and it must be one that CANNOT end on its own: a process blocked reading
+    // the terminal the daemon holds for it, which is `/bin/cat` on every box and inside every
+    // boundary.
     //
-    // **Those are four words on Linux and they are a DIFFERENT PROGRAM on a Mac.**
-    // `! /usr/bin/su -c true` is util-linux's `su`; Darwin ships BSD's, whose usage is
-    // `su [-] [-flm] [login [args]]`, and MEASURED 2026-10-26 it answers
-    // `/usr/bin/su: illegal option -- c` and exits 1 — so on a Mac the run was over before
-    // it began, nothing was ever in flight, no sentence was ever published, and this test
-    // failed with *"the run never reached the state this test is about"*.
-    //
-    // What the state IS does not change between boxes, and neither does the assertion:
-    // *unreadable* is `/proc`'s answer, and Darwin has none — `letibot_tools::exec::ask`
-    // says `Waiting::Unreadable` for every run there on purpose (a thread's run state
-    // says *waiting* without saying on what, and a guess would card every quiet `sleep`).
-    // So on a Mac any run that BLOCKS is the operator's shape, and `cat` reading the pty
-    // the daemon holds until a line is sent is the plainest one.
-    let command = if cfg!(target_os = "macos") {
-        "/bin/cat"
-    } else if Path::new("/usr/bin/su").exists() {
-        "/usr/bin/su -c true"
-    } else {
-        eprintln!("no /usr/bin/su on this box — nothing to measure");
-        return;
-    };
-    head.operator_shell(0, &format!("! {command}"))
+    // **It was `su -c true` on Linux and that fixture was the defect.** `su` blocks only where
+    // it has to ask for a password; on a box whose session is already root inside its own
+    // namespace it runs `true`, and the run is over a few milliseconds after it started. The
+    // old precondition was the `operator_run_unreadable` warning, which is a statement about
+    // the moment it was published — so the test sent its stop to a run that had ended and
+    // proved nothing. MEASURED on a 24-core host with cgroups: the daemon closed its hubs
+    // 11.4 ms after the stop and named no run, because there was none left to name.
+    head.operator_shell(0, "! /bin/cat")
         .expect("the line is submitted");
 
-    // **The run is in flight when the daemon says it cannot look at it** — that sentence is
-    // published from the run's own wait loop, so it is a measurement of the run being there
-    // and not a guess from a sleep.
+    // **The daemon's own signal that the run still holds the worker**: the card it raises for
+    // a run of the operator's that is reading its terminal — `Blocked` where `/proc` can be
+    // read, `Unreadable` where it cannot. `Prompts` holds that run until `ended` settles the
+    // card (`crates/harnessd/src/prompt.rs`), so a card that is up is a statement about the
+    // moment the stop is sent and not about an earlier one.
     let deadline = Instant::now() + PATIENCE;
     let mut in_flight = false;
-    while Instant::now() < deadline && !in_flight {
+    let mut settled = false;
+    while Instant::now() < deadline && !in_flight && !settled {
         let Ok(inbound) = rx.recv_timeout(Duration::from_millis(250)) else {
             continue;
         };
-        if let ServerFrame::Event(env) = inbound.frame()
-            && let SessionEvent::Warning { code, .. } = &env.event
-            && code == "operator_run_unreadable"
-        {
-            in_flight = true;
+        if let ServerFrame::Event(env) = inbound.frame() {
+            match &env.event {
+                SessionEvent::PromptRequested { job, reading, .. } => {
+                    eprintln!("---- the run's card: job={job} reading={reading:?} ----");
+                    in_flight = true;
+                }
+                // The card came down without one going up: the run ended under this test, and
+                // a stop with nothing running is not the state it is about.
+                SessionEvent::PromptSettled { by, .. } => {
+                    eprintln!("---- the run ended before the stop: {by} ----");
+                    settled = true;
+                }
+                _ => {}
+            }
         }
     }
     assert!(
-        in_flight,
+        in_flight && !settled,
         "the run never reached the state this test is about, so nothing can be concluded"
     );
 
