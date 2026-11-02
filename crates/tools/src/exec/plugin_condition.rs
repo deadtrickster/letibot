@@ -1,36 +1,6 @@
-//! **A monitor whose condition is a plugin** — `condition`, `docs/plugins-plan.md` §4.4.
-//!
-//! A condition today is a Rust type: `GithubCondition` spawns `gh` at most once per interval, polls
-//! the child with `try_wait` so a slow network never stalls the poller, keeps a baseline, and fires
-//! when something happened. This is that shape with the *policy* moved into a layer: the plugin
-//! says what to look at and whether what came back is a firing, and the host does the looking.
-//!
-//! # The split, and why it is the whole design
-//!
-//! A hook is pure (`docs/plugins-plan.md` §1 principle 1: plugins never do I/O). So the look is a
-//! DECLARATION in the answer — `{"exec": ["gh", "pr", "view", …]}` or `{"read": "path"}` — and this
-//! type is the host's half: it starts it, never blocks on it, and hands the result back in the next
-//! input's `look`. That is what keeps a plugin call replayable and the shadow gate's diff honest.
-//!
-//! # Why a look is a [`Look`] and not a result
-//!
-//! `met()` is called by the session's ONE poller thread, so a look that blocked would stall every
-//! other monitor in the session — exactly the defect `GithubCondition`'s spawn-and-poll exists to
-//! avoid. A `read` finishes in the call; an `exec` starts a child and answers [`Look::Running`],
-//! and the child is polled on the next tick.
-//!
-//! # State belongs to the host
-//!
-//! The `state` the plugin returns is kept here and handed back on the next call (§1 principle 5),
-//! so a restart, a reload and a newer build of the plugin all keep a watch's baseline. A `null` on
-//! the arming call is *nothing has been looked at yet*.
-//!
-//! # One plugin call per tick
-//!
-//! A tick hands over at most what came in: a look's result, or — when the interval has come round —
-//! a call with nothing new. A plugin that answers every call by asking for another look therefore
-//! costs one call per tick, not a loop, which is the same rule the pane's render follows
-//! (`one look per pass`).
+//! A monitor whose condition is a plugin: the layer declares what to look at and whether the
+//! answer is a firing, and the host does the looking, so a hook stays pure and a call stays
+//! replayable. One plugin call per tick, never a loop, and the plugin's state is kept here.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -44,18 +14,17 @@ use letibot_plugin::condition::{ConditionIn, ConditionOut, LookAsk, LookResult};
 /// How often a watch polls when the plugin does not say.
 pub const EVERY: Duration = Duration::from_secs(30);
 
-/// **What the host can do for a condition**: ask the stack, and run a look.
-///
-/// A trait, because this crate holds no plugin stack and no workspace — the daemon has both, and
-/// it is the same seam `Loader` is for the layer stack one crate down.
+/// What the host can do for a condition: ask the stack, and run a look. A trait because this
+/// crate holds no plugin stack and no workspace: the daemon has both, and it is the same seam
+/// `Loader` is for the layer stack one crate down.
 pub trait PluginStack: Send + Sync {
     /// Ask `hook` with `input`. `None` when nothing answers it, or when the stack's answer is a
     /// pass or a mask; otherwise the JSON text of the answer.
     fn ask(&self, hook: &str, input: &Value) -> Option<Value>;
 
-    /// **Run a look the hook declared.** `hook` is the export whose topmost layer's capabilities
-    /// the look runs under — the same layer `ask` names, so the caller does not have to carry it.
-    /// Never blocks on a program: one that was started comes back as [`Look::Running`].
+    /// Run a look the hook declared. `hook` is the export whose topmost layer's capabilities the
+    /// look runs under, the same layer `ask` names, so the caller does not have to carry it. It
+    /// never blocks on a program: one that was started comes back as [`Look::Running`].
     fn look(&self, hook: &str, ask: &LookAsk) -> Look;
 }
 
@@ -65,18 +34,9 @@ pub enum Look {
     Done(LookResult),
     /// A program is running. Poll it; the poller must not wait for it.
     Running(Box<dyn LookChild>),
-    /// **Nothing happened, and nothing is owed** — ask again on the next tick.
-    ///
-    /// The third answer exists because the host is not always free to look: an `exec` look goes
-    /// through the session's gate (`docs/plugins-plan.md` §1 principle 2), and that gate may be
-    /// holding a card up for the model's own call at this moment. It is held on purpose and for
-    /// minutes (`ToolRuntime::run`), so a look that waited for it would park the session's one
-    /// monitor thread — and every watch on it — behind somebody's decision.
-    ///
-    /// So a busy gate is *not now*, not *no*: the watch keeps this look and asks again when the
-    /// poller next comes round. It is deliberately not a [`LookResult`] — a refusal a plugin can
-    /// read would be a fact about the world (*your program may not run*), and this is a fact about
-    /// the moment.
+    /// Nothing happened and nothing is owed: ask again on the next tick. An `exec` look goes
+    /// through the session's gate, which may hold a card up for minutes, and waiting would park
+    /// the session's one monitor thread. Not a [`LookResult`]: that would be news, not a delay.
     Deferred,
 }
 
@@ -86,12 +46,9 @@ pub trait LookChild: Send {
     fn poll(&mut self) -> Option<LookResult>;
 }
 
-/// **The seam the daemon fills** so a `monitor` call can arm a plugin's condition
-/// (`docs/plugins-plan.md` §4.4).
-///
-/// One method, because everything a condition needs after arming is held by the condition itself:
-/// the stack it asks, the look it runs, and the state it keeps. `Err` is the sentence a model
-/// reads, in the two fields a tool refusal is made of.
+/// The seam the daemon fills so a `monitor` call can arm a plugin's condition. One method,
+/// because everything a condition needs after arming is held by the condition itself; `Err` is
+/// the sentence a model reads, in the two fields a tool refusal is made of.
 pub trait PluginConditions: Send + Sync {
     fn arm(&self, plugin: &str, args: Value) -> Result<Armed, NotArmed>;
 }
@@ -143,7 +100,7 @@ impl std::fmt::Debug for PluginCondition {
     }
 }
 
-/// **Why a watch could not be armed**, in the two fields a tool refusal is made of: the sentence,
+/// Why a watch could not be armed, in the two fields a tool refusal is made of: the sentence,
 /// and the detail it is fixed from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NotArmed {
@@ -152,12 +109,9 @@ pub struct NotArmed {
 }
 
 impl PluginCondition {
-    /// **Arm a watch**: ask the hook once with no look, keep what it says, answer the condition.
-    ///
-    /// The call at arming is not a formality. It is where a plugin that traps or runs out of fuel
-    /// is found before a monitor exists to be told about it, where `max_ttl_s` comes from, and
-    /// where a condition that already knows enough to fire fires at once rather than on the second
-    /// poll.
+    /// Arm a watch: ask the hook once with no look, keep what it says, answer the condition. The
+    /// call at arming is not a formality: it is where a plugin that traps or runs out of fuel is
+    /// found before a monitor exists to be told about it, and where `max_ttl_s` comes from.
     pub fn arm(
         stack: Arc<dyn PluginStack>,
         plugin: &str,
@@ -198,10 +152,9 @@ impl PluginCondition {
             }
         };
         let every = interval(out.every_s);
-        // **The longest a watch may live in this tree is the GitHub watch's week**, because the
-        // reason is the same one: a review takes days, and a monitor's ordinary hour would expire
-        // before most of them. One number, so a plugin condition and a `github` watch are capped
-        // by the same rule.
+        // The longest a watch may live is the GitHub watch's week, for the same reason: a review
+        // takes days and a monitor's ordinary hour would expire first. One number, so both are
+        // capped by the same rule.
         let max_ttl = out
             .max_ttl_s
             .map(Duration::from_secs)
@@ -249,16 +202,14 @@ impl PluginCondition {
         match self.stack.look(&self.hook, &spec) {
             Look::Done(result) => self.lock().ready = Some(result),
             Look::Running(child) => self.lock().child = Some(child),
-            // **Nothing ran and nothing is owed**: `spec` stays where it is, so the next
-            // `start_look` — the next tick, since nothing is ready and nothing is running — asks
-            // the same question again. Deliberately no state is written here: a `ready` would hand
-            // the plugin a result that is not one, and a `child` would claim a process that does
-            // not exist.
+            // Nothing ran and nothing is owed: `spec` stays, so the next tick asks again. No
+            // state is written here - a `ready` would hand the plugin a result that is not one,
+            // and a `child` would claim a process that does not exist.
             Look::Deferred => {}
         }
     }
 
-    /// **One advanced step**: hand `look` (or nothing) to the plugin, keep what it says, and start
+    /// One advanced step: hand `look` (or nothing) to the plugin, keep what it says, and start
     /// whatever it asks to look at next.
     fn advance(&self, look: Option<LookResult>) -> Option<String> {
         let input = {
@@ -278,9 +229,9 @@ impl PluginCondition {
         )?;
         let out: ConditionOut = match serde_json::from_value(asked) {
             Ok(out) => out,
-            // **A layer that answers something else is spent for this tick, not for ever.** The
-            // next tick asks again: a reload or a fixed layer answers then, and a watch whose
-            // plugin is broken is a watch that says nothing rather than one that kills the poller.
+            // A layer that answers something else is spent for this tick, not for ever: the next
+            // tick asks again, so a watch whose plugin is broken says nothing rather than killing
+            // the poller.
             Err(_) => return None,
         };
         {
@@ -311,17 +262,13 @@ fn interval(every_s: Option<u64>) -> Duration {
 }
 
 impl Condition for PluginCondition {
-    /// **One tick**: hand over a result that came in, else poll the running look, else — when the
-    /// interval has come round — ask the plugin with nothing new.
-    ///
-    /// At most one plugin call per tick: a hook that always asks for another look costs one call a
-    /// tick rather than a loop, and a look that is still running is not started again.
+    /// One tick: hand over a result that came in, else poll the running look, else - when the
+    /// interval has come round - ask the plugin with nothing new. At most one call per tick, and
+    /// a look still running is not started again.
     fn met(&self) -> Option<String> {
-        // **The guard is taken and DROPPED before `advance` is called**, and that is not style.
-        // Writing it as `if let Some(result) = self.lock().ready.take()` keeps the guard alive
-        // inside the block, and `advance` locks again: measured as a test binary at 0% CPU for
-        // fifty-eight minutes, because a `std::sync::Mutex` is not reentrant and the deadlock is
-        // silent. Every path below takes the lock in a block or a statement of its own.
+        // The guard is taken and DROPPED before `advance` is called: writing it as
+        // `if let Some(result) = self.lock().ready.take()` keeps the guard alive inside the block
+        // and `advance` locks again, which hangs silently because the mutex is not reentrant.
         let ready = { self.lock().ready.take() };
         if let Some(result) = ready {
             return self.advance(Some(result));
@@ -379,12 +326,9 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// **Run `f` with a deadline, so a deadlock fails instead of stalling.**
-    ///
-    /// The condition's state is behind one mutex and `met()` calls into itself more than once, so a
-    /// re-lock is a SILENT hang: MEASURED once as this test binary at 0% CPU for fifty-eight
-    /// minutes. Every test that reaches `met()` or `arm()` goes through here, so the same defect
-    /// costs ten seconds and a panic that says what it is.
+    /// Run `f` with a deadline, so a deadlock fails instead of stalling. The state is behind one
+    /// mutex and `met()` calls into itself more than once, so a re-lock is a silent hang; every
+    /// test that reaches `met()` or `arm()` goes through here.
     fn within<T: Send + 'static>(what: &str, f: impl FnOnce() -> T + Send + 'static) -> T {
         let (tx, rx) = std::sync::mpsc::channel();
         let handle = std::thread::spawn(move || {
@@ -464,8 +408,8 @@ mod tests {
         }
     }
 
-    /// **A stack whose look is deferred the first `n` times, then runs** — the shape a watch sees
-    /// while the session's gate is busy holding a card up for somebody else.
+    /// A stack whose look is deferred the first `n` times, then runs: the shape a watch sees while
+    /// the session's gate is busy holding a card up for somebody else.
     struct BusyFirst {
         remaining: Mutex<usize>,
         looks: Mutex<usize>,
@@ -492,9 +436,9 @@ mod tests {
         }
     }
 
-    /// **A deferred look is not a result and not a refusal**: nothing is handed to the plugin, and
-    /// the same look is asked again on the next tick — which is how a watch whose gate is busy with
-    /// somebody's card waits instead of blocking the poller or reading as a refusal.
+    /// A deferred look is not a result and not a refusal: nothing is handed to the plugin, and the
+    /// same look is asked again on the next tick - how a watch whose gate is busy waits instead of
+    /// blocking the poller or reading as a refusal.
     #[test]
     fn a_deferred_look_is_asked_again_on_the_next_tick() {
         let stack = Arc::new(BusyFirst {
@@ -520,8 +464,8 @@ mod tests {
             "a deferred look was handed to the plugin as though it had run"
         );
 
-        // **And the spec was KEPT**: the next firing asks the same look again rather than losing
-        // it. `met` finds nothing ready and nothing running, and the interval's tick asks.
+        // And the spec was kept: the next firing asks the same look again rather than losing it.
+        // `met` finds nothing ready and nothing running, and the interval's tick asks.
         let waiting = within("a second tick", {
             let stack = stack.clone();
             move || PluginCondition::arm(stack, "shell", json!({})).expect("armed")
@@ -548,8 +492,8 @@ mod tests {
         );
     }
 
-    /// **Arming asks once, and the answer's interval and ttl are the watch's.** The call at arming
-    /// is what makes a trap a refusal rather than a monitor that explodes on its second poll.
+    /// Arming asks once, and the answer's interval and ttl are the watch's. The call at arming is
+    /// what makes a trap a refusal rather than a monitor that explodes on its second poll.
     #[test]
     fn arming_asks_the_hook_and_takes_its_interval_and_ttl() {
         let stack = Scripted::new(vec![json!({
@@ -586,8 +530,8 @@ mod tests {
         assert_eq!(stack.looks().len(), 1);
     }
 
-    /// **A watch that cannot be armed says why** — no layer answers the hook, or the answer is not
-    /// a condition. Both are sentences a model can act on.
+    /// A watch that cannot be armed says why: no layer answers the hook, or the answer is not a
+    /// condition. Both are sentences a model can act on.
     #[test]
     fn arming_refuses_with_a_reason() {
         let why = PluginCondition::arm(Arc::new(Silent), "nobody", json!({})).unwrap_err();
@@ -615,8 +559,8 @@ mod tests {
         );
     }
 
-    /// **A look's result reaches the plugin, and `fired` is the firing** — the whole round trip,
-    /// with the state carried across it.
+    /// A look's result reaches the plugin, and `fired` is the firing: the whole round trip, with
+    /// the state carried across it.
     #[test]
     fn a_look_result_is_handed_back_and_a_firing_is_said() {
         let stack = Scripted::new(vec![
@@ -655,8 +599,8 @@ mod tests {
         assert!(asked.len() >= 2, "no third call within one tick: {asked:?}");
     }
 
-    /// **A github declaration takes part in the coalescing rule**, and it is the plugin's own
-    /// words a refusal reads back.
+    /// A github declaration takes part in the coalescing rule, and it is the plugin's own words a
+    /// refusal reads back.
     #[test]
     fn a_plugin_condition_can_be_about_a_pull_request() {
         let stack = Scripted::new(vec![json!({
@@ -671,8 +615,8 @@ mod tests {
         );
     }
 
-    /// **A look that is still running is not started again**, and its result is what the plugin is
-    /// asked about when it ends — the non-blocking half.
+    /// A look that is still running is not started again, and its result is what the plugin is
+    /// asked about when it ends: the non-blocking half.
     #[test]
     fn a_running_look_is_polled_and_not_restarted() {
         struct Gated {
