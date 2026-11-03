@@ -1448,3 +1448,92 @@ fn a_stopped_turn_keeps_the_wake_a_monitor_rang() {
         "the firing was never read and nothing will ring for it again"
     );
 }
+
+/// **A settlement hops as far as it has to.** A stopped session hands its queue up, and the level it
+/// hands to may have stopped as well - the common stop order hides it, children first into a live
+/// parent, and `--max-subagent-depth` 3 makes the chain that bites reachable.
+#[test]
+fn a_settlement_from_a_grandchild_skips_a_parent_that_has_stopped() {
+    use letibot_sessionlog::registry::{Registry, SessionWiring, Work, WorkOrIdle};
+
+    let r = Registry::new();
+    let root = r
+        .create("s-root", "", SessionWiring::default())
+        .expect("the root registers");
+    let c1 = r
+        .create_under("s-c1", "", SessionWiring::default(), Some("s-root".into()))
+        .expect("the child registers");
+    let c2 = r
+        .create_under("s-c2", "", SessionWiring::default(), Some("s-c1".into()))
+        .expect("the grandchild registers");
+    for _ in 0..3 {
+        assert!(matches!(r.next_work(), Some(Work::Open(_))));
+    }
+    let bell = Arc::clone(r.bell());
+    let root_watch = JobWatchers::watching_tasks(&root, Some(Arc::clone(&bell)));
+    let c1_watch =
+        JobWatchers::watching_tasks(&c1, Some(Arc::clone(&bell))).shares_tree(&root_watch);
+    let c2_watch = JobWatchers::watching_tasks(&c2, Some(Arc::clone(&bell))).shares_tree(&c1_watch);
+    // The middle of the chain stops, and its queue has already been handed up: what is pushed
+    // into it from now on leaves a session nobody serves.
+    c1_watch.stop();
+
+    let settled = |job: &str, later: bool| JobCompletion {
+        arrived: std::time::SystemTime::UNIX_EPOCH,
+        later,
+        kind: BackgroundKind::Job,
+        owner: "s-c2".into(),
+        job: job.into(),
+        command: "cargo test".into(),
+        slug: None,
+        state: "exited 0".into(),
+        produced: 0,
+        elapsed_ms: 0,
+        detail: String::new(),
+        memory: None,
+    };
+
+    // A later turn of the grandchild: `settle_up` is the door its own thread uses, and it hops
+    // from the session above it - which has stopped.
+    assert!(c2_watch.settle_up(settled("s-c2", true)));
+    let up: Vec<String> = root_watch
+        .take_completions()
+        .into_iter()
+        .map(|c| c.job)
+        .collect();
+    assert_eq!(up, vec!["s-c2"], "a later turn stopped one level short");
+
+    // And a watcher's push from a grandchild that has stopped itself: its queue is handed up, and
+    // the level it hands to has stopped too.
+    c2_watch.stop();
+    let queue = SettlementQueue {
+        own: Arc::clone(&c2_watch.completions),
+        parent: c2_watch.parent.clone(),
+        stopped: Arc::clone(&c2_watch.stop),
+        owner: "s-c2".into(),
+        bell: Some(Arc::clone(&bell)),
+        recorder: None,
+    };
+    queue.push(settled("j-pushed", false));
+    let up: Vec<String> = root_watch
+        .take_completions()
+        .into_iter()
+        .map(|c| c.job)
+        .collect();
+    assert_eq!(
+        up,
+        vec!["j-pushed"],
+        "the pushed settlement stopped one level short"
+    );
+    assert!(
+        c1_watch.take_completions().is_empty(),
+        "a settlement sat in the queue of a session that has stopped"
+    );
+    assert!(
+        matches!(
+            r.next_work_until(Some(Instant::now() + Duration::from_millis(200))),
+            WorkOrIdle::Work(Work::Woken(id)) if id == "s-root"
+        ),
+        "the root is the session that has to act on it, and it was never rung"
+    );
+}

@@ -260,23 +260,26 @@ pub struct Retained {
 
 /// The level above this session's watcher set: its queue, whose session it is, its own stop flag,
 /// and the level above that. A stopped set has handed its queue up, so what is pushed into it
-/// afterwards needs the hop `route` makes.
+/// afterwards needs the hop `route` makes - and the level it hands to may have stopped too.
 #[derive(Clone)]
 struct Up {
     queue: Arc<Settlements>,
     who: String,
     stopped: Arc<AtomicBool>,
-    up: Option<(Arc<Settlements>, String)>,
+    up: Option<Arc<Up>>,
 }
 
 impl Up {
-    /// Where a settlement goes now: this level, or the one above it when this one has stopped. The
-    /// top of a tree hands nothing further up, so its own queue is where it still goes.
+    /// Where a settlement goes now: the first level up that has not stopped, or the top of the tree
+    /// - which hands nothing further up, so its own queue is where the settlement still goes.
     fn route(&self) -> (&Arc<Settlements>, &str) {
-        match &self.up {
-            Some((above, who)) if self.stopped.load(Ordering::Relaxed) => (above, who),
-            _ => (&self.queue, &self.who),
+        let mut here = self;
+        while here.stopped.load(Ordering::Relaxed)
+            && let Some(above) = &here.up
+        {
+            here = above;
         }
+        (&here.queue, &here.who)
     }
 }
 
@@ -300,7 +303,7 @@ pub struct JobWatchers {
     completions: Arc<Settlements>,
     /// The queue of the set this one was built from, and whose session owns it - the parent's
     /// for a child.
-    parent: Option<Up>,
+    parent: Option<Arc<Up>>,
     /// A settlement left this queue to be said, and the turn that says it has not begun -
     /// between the two the activity would read quiet and a `wait` would answer the turn that
     /// STARTED the job. [`JobWatchers::turn_began`] ends it.
@@ -518,15 +521,14 @@ impl JobWatchers {
             in_flight: Arc::clone(&self.in_flight),
             // Where what it can no longer drain is handed up, with the parent's id - who the
             // ring for a handed-up settlement names.
-            parent: Some(Up {
+            parent: Some(Arc::new(Up {
                 queue: Arc::clone(&tree.completions),
                 who: tree.me.clone(),
                 stopped: Arc::clone(&tree.stop),
-                up: tree
-                    .parent
-                    .as_ref()
-                    .map(|up| (Arc::clone(&up.queue), up.who.clone())),
-            }),
+                // The ancestor's own level, not a copy of its queue: a hop that stopped short is
+                // a settlement in the queue of a session nobody serves.
+                up: tree.parent.clone(),
+            })),
             me: self.me.clone(),
             bell: self.bell.clone(),
             stop: Arc::clone(&self.stop),
@@ -579,10 +581,7 @@ impl JobWatchers {
             own: Arc::clone(&self.completions),
             // The level above only for what this set cannot drain itself: `SettlementQueue::push`
             // reads `stopped` under `own`'s lock, so a session that is still here keeps it.
-            parent: self
-                .parent
-                .as_ref()
-                .map(|up| (Arc::clone(&up.queue), up.who.clone())),
+            parent: self.parent.clone(),
             stopped: Arc::clone(&self.stop),
             owner: self.me.clone(),
             bell: self.bell.clone(),
@@ -1000,10 +999,7 @@ impl JobWatchers {
         // see `SettlementQueue`.
         let queue = Arc::new(SettlementQueue {
             own: Arc::clone(&self.completions),
-            parent: self
-                .parent
-                .as_ref()
-                .map(|up| (Arc::clone(&up.queue), up.who.clone())),
+            parent: self.parent.clone(),
             stopped: Arc::clone(&self.stop),
             owner: self.me.clone(),
             bell: self.bell.clone(),
@@ -1087,9 +1083,10 @@ impl JobWatchers {
 struct SettlementQueue {
     /// The queue of the session that started it.
     own: Arc<Settlements>,
-    /// The queue of the level above it and that session's own id, when there is one. The id
-    /// travels with the queue so the two cannot disagree about where the settlement went.
-    parent: Option<(Arc<Settlements>, String)>,
+    /// The queue of the level above it, when there is one. The `Up` travels whole, because a level
+    /// that has stopped is not where the settlement goes and its own flag is the only fact that says
+    /// so.
+    parent: Option<Arc<Up>>,
     /// The owner's stop flag - see [`JobWatchers::stop`]. Read while holding `own`, which is
     /// what makes the two orderings exhaustive.
     stopped: Arc<AtomicBool>,
@@ -1116,10 +1113,13 @@ impl SettlementQueue {
         }
         let mut g = self.own.queue.lock().expect("job completions");
         if self.stopped.load(Ordering::Relaxed)
-            && let Some((above, who)) = &self.parent
+            && let Some(above) = &self.parent
         {
+            // The first level up that is still here: the one this set hands to may have stopped
+            // since, and its queue has already been drained to a session nobody serves.
+            let (queue, who) = above.route();
             drop(g);
-            above.push(c);
+            queue.push(c);
             self.ring(who);
             return;
         }
