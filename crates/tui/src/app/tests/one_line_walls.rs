@@ -620,7 +620,7 @@ fn a_compaction_note_is_one_clickable_row_at_eighty_columns() {
     assert_eq!(
         screen.matches("compacted").count(),
         1,
-        "the code once on the row and once in the frame's own heading:\n{screen}"
+        "the code said once on the row:\n{screen}"
     );
     assert!(!screen.contains("/notes"), "{screen}");
     let (popup, _) = click_note(warned("compacted", detail));
