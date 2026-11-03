@@ -1787,7 +1787,11 @@ fn seat_in(
                 session_id: session_id.clone(),
                 head_id: head_id.clone(),
                 dropped: a.dropped,
-                snapshot: if inside { None } else { a.snapshot.map(Box::new) },
+                snapshot: if inside {
+                    None
+                } else {
+                    a.snapshot.map(Box::new)
+                },
                 resumed_from: a.resumed_from,
                 scrubbed: a.scrubbed,
                 wiring: if inside {
