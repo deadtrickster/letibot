@@ -57,6 +57,8 @@ is how to put a session in a VM instead.
 
 ## Documentation
 
+- [docs/STATUS.md](docs/STATUS.md) - where the tree stands today: what works, what is half built, what
+  is broken, and what is next.
 - [docs/design-brief.md](docs/design-brief.md) - the thesis, and the constraints it puts on the code.
 - [docs/boundary-and-adjudication.md](docs/boundary-and-adjudication.md) - the gate: what is read, what is refused, and why.
 - [docs/socket.md](docs/socket.md) - the daemon socket, and what a tool call may and may not do through it.
