@@ -764,6 +764,16 @@ fn heredoc_then_operator(node: &Node, source: &str) -> bool {
             .is_some_and(|s| s.contains("<<"))
 }
 
+/// `%(…)`: this grammar takes the `(` for a subshell and lists its contents as commands that run.
+/// The error may hold the `%`, end at it, or wrap the whole command around it.
+fn percent_bracket(node: &Node, source: &str) -> bool {
+    let text = src(node, source);
+    let opens = source.get(node.end..).is_some_and(|s| s.starts_with('('));
+    text.contains("%(")
+        || (text.ends_with('%') && opens)
+        || (source.get(..node.start).is_some_and(|s| s.ends_with('%')) && opens)
+}
+
 /// The sentence a refusal carries for the region the grammar could not read. Three of its shapes are
 /// the grammar's own limits rather than text nobody wrote, and each has a writing that reads, so the
 /// refusal names the shape and that writing instead of calling the whole tree a guess.
@@ -773,6 +783,13 @@ fn unreadable_why(node: &Node, source: &str) -> String {
                 operator for it: with no descriptor the recovery is two redirects (`<` and \
                 `>file`) where the shell opens one. Write the descriptor you mean in front of \
                 the operator - `3<>file` is one redirect on fd 3 and it reads"
+            .into();
+    }
+    if percent_bracket(node, source) {
+        return "the shell refuses this text too - `(` after an unquoted `%` is a syntax error \
+                - and this grammar recovers it as a subshell, so what is inside the brackets \
+                would be listed as a command that runs. Quote the word (`--format='%(refname)'`) \
+                and both the shell and this read it"
             .into();
     }
     if heredoc_then_operator(node, source) {
@@ -2791,6 +2808,25 @@ mod tests {
         // cat`'s tree has `cat` as a second destination, so the `exec` of a command is refused.
         let swallowed = n("exec 3<>file cat");
         assert!(swallowed.partial, "{:?}", swallowed.unresolved);
+    }
+
+    /// `%(…)` in a word is not a command bash will run either, so the refusal says what the shell
+    /// says and which writing both the shell and the gate read.
+    #[test]
+    fn a_percent_before_a_bracket_is_refused_as_the_text_bash_refuses() {
+        for cmd in [
+            "git for-each-ref --format=%(refname)",
+            "echo a%(x)b",
+            "a=%(x)",
+        ] {
+            let x = n(cmd);
+            assert!(x.partial, "{cmd}");
+            let why = &x.unresolved[0].why;
+            assert!(why.contains("%("), "{cmd}: {why}");
+            assert!(why.contains("quote"), "{cmd}: {why}");
+        }
+        let written = n("git for-each-ref --format='%(refname)'");
+        assert!(written.is_resolved(), "{:?}", written.unresolved);
     }
 
     #[test]
