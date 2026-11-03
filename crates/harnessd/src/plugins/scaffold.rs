@@ -818,6 +818,22 @@ fn escape(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// **Every line of a hook's header is a doc comment**: a template sentence that wraps must
+    /// keep its `//!`, or the scaffolded crate fails to build before the session writes a line.
+    #[test]
+    fn every_hook_template_header_line_is_a_doc_comment() {
+        for kind in ["on_tool_call", "on_tool_result", "notice", "condition"] {
+            let body = super::lib_rs("probe", "a probe", "hook", kind);
+            let header: Vec<&str> = body
+                .lines()
+                .take_while(|l| !l.starts_with("use "))
+                .collect();
+            for line in header.iter().filter(|l| !l.trim().is_empty()) {
+                assert!(line.starts_with("//!"), "{kind}: {line:?}");
+            }
+        }
+    }
+
     use super::*;
 
     fn temp(tag: &str) -> PathBuf {
