@@ -190,8 +190,12 @@ fn after_orders_the_starts_and_a_roles_facts_resolve() {
     let rig = Rig::new("after", &["fake1"]);
     let port = free_port();
     let client = format!(
+        // The round trip is this role's readiness, so the tool waits for it before tearing
+        // anything down; a role that ends the moment it has printed cannot answer a log check,
+        // and its exit code is the teardown's business rather than the edge's.
         "echo peer=${{web.host}}; python3 -c \"import urllib.request; \
-         print('ok=' + str(urllib.request.urlopen('http://127.0.0.1:{port}/').status == 200))\""
+         print('ok=' + str(urllib.request.urlopen('http://127.0.0.1:${{web.port}}/').status == 200))\"; \
+         sleep 60"
     );
     let answer = tool(&rig).answer(
         &json!({
@@ -200,7 +204,9 @@ fn after_orders_the_starts_and_a_roles_facts_resolve() {
                 "client": {
                     "host": "fake1",
                     "command": client,
-                    "after": ["web"]
+                    "after": ["web"],
+                    // Readiness, so this role is not torn down while it is still answering.
+                    "ready": {"log": "ok=True"}
                 },
                 "web": {
                     "host": "fake1",
@@ -224,13 +230,14 @@ fn after_orders_the_starts_and_a_roles_facts_resolve() {
         lines[1].starts_with("client on fake1"),
         "and `client` second:\n{text}"
     );
-    // Both facts resolved: the client's own line shows the peer's name, and it reached the
-    // server. A `${...}` left unsubstituted is a bash `bad substitution` and an `exited 1` row.
+    // Both facts resolved in the later role's own command: it printed the peer's name, and it
+    // reached the server. A `${...}` left unsubstituted is a bash `bad substitution`, and then
+    // the round trip never answers.
     assert!(
         lines[1].contains("peer=fake1")
             && lines[1].contains("ok=True")
-            && lines[1].contains("exited 0"),
-        "`${{web.host}}` and `${{web.port}}` were substituted:\n{text}"
+            && lines[1].contains("ready after "),
+        "`${{web.host}}` and `${{web.port}}` were substituted and the client reached `web`:\n{text}"
     );
     // The teardown's stop is a signal and the row is written before the socket closes, so the
     // port is a fact to wait for and not something the call returned with.
