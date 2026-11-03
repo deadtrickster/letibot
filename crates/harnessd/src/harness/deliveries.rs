@@ -357,7 +357,11 @@ pub(crate) fn handles_as(field: &str, done: &[JobCompletion]) -> String {
 /// One channel, two nouns: a job and a subagent arrive through the same queue and ring the same bell,
 /// and are told apart here rather than in two queues, because two queues would be the second mechanism
 /// the ruling avoided. `owner != me` is what says whose a settlement was.
-pub(crate) fn completion_notices(done: Vec<JobCompletion>, me: &str, rows: &[TodoItem]) -> Vec<String> {
+pub(crate) fn completion_notices(
+    done: Vec<JobCompletion>,
+    me: &str,
+    rows: &[TodoItem],
+) -> Vec<String> {
     // **Mine first**, then what was handed up - so a session reading one wake reads its
     // own settlements before its children's, and the order of the two groups cannot be
     // mistaken for one list.

@@ -3003,80 +3003,77 @@ impl HarnessTaskRunner {
         sub_window: Option<Option<u64>>,
         seat: Seat,
     ) {
-    // The worktree `task_start` arranged is the child's workspace, not the parent's tree: a child whose
-    // workspace is not the worktree the tool reported would work in the wrong tree while the answer said
-    // otherwise. `None` is a plain `task`, which keeps the parent's workspace.
-    if let Some(wt) = &spec.worktree {
-        cfg.workspace = std::path::PathBuf::from(&wt.path);
-        // And the main tree's build cache, through the child's environment and never a file in its tree.
-        // Computed from the worktree itself, so a child brought back after a restart gets the same pair.
-        cfg.build_env.retain(|(k, _)| k != "CARGO_TARGET_DIR");
-        cfg.build_env.extend(worktree_build_env(wt));
-    }
-    // And the tree a VM placement copies, when the caller named one that is not the child's workspace: the
-    // spawn is the one place that turns a spec into a session, and a child whose VM copied another tree is a
-    // record that does not match what happened. `None` leaves the field as the parent had it.
-    if let Some(src) = &vm_copy {
-        cfg.vm_source = Some(src.clone());
-    }
-    // A child of a session in a VM lives in that VM unless it asks for one of its own, the same VM down a
-    // whole chain: `host` is the tool's *your own boundary*, which for a VM session is the VM. Named the way
-    // the parent's backend named it, its worktree when that was mounted and its copy under the cache otherwise.
-    let parent_vm = base.vm_attach.clone().or_else(|| {
-        (base.placement == Placement::Firecode).then(|| {
-            if base.vm_mounts_workspace() {
-                base.workspace.clone()
-            } else {
-                letibot_tools::firecode::project_for(
-                    &base.vm_copy_source(),
-                    &base.session_id,
-                )
+        // The worktree `task_start` arranged is the child's workspace, not the parent's tree: a child whose
+        // workspace is not the worktree the tool reported would work in the wrong tree while the answer said
+        // otherwise. `None` is a plain `task`, which keeps the parent's workspace.
+        if let Some(wt) = &spec.worktree {
+            cfg.workspace = std::path::PathBuf::from(&wt.path);
+            // And the main tree's build cache, through the child's environment and never a file in its tree.
+            // Computed from the worktree itself, so a child brought back after a restart gets the same pair.
+            cfg.build_env.retain(|(k, _)| k != "CARGO_TARGET_DIR");
+            cfg.build_env.extend(worktree_build_env(wt));
+        }
+        // And the tree a VM placement copies, when the caller named one that is not the child's workspace: the
+        // spawn is the one place that turns a spec into a session, and a child whose VM copied another tree is a
+        // record that does not match what happened. `None` leaves the field as the parent had it.
+        if let Some(src) = &vm_copy {
+            cfg.vm_source = Some(src.clone());
+        }
+        // A child of a session in a VM lives in that VM unless it asks for one of its own, the same VM down a
+        // whole chain: `host` is the tool's *your own boundary*, which for a VM session is the VM. Named the way
+        // the parent's backend named it, its worktree when that was mounted and its copy under the cache otherwise.
+        let parent_vm = base.vm_attach.clone().or_else(|| {
+            (base.placement == Placement::Firecode).then(|| {
+                if base.vm_mounts_workspace() {
+                    base.workspace.clone()
+                } else {
+                    letibot_tools::firecode::project_for(&base.vm_copy_source(), &base.session_id)
+                }
+            })
+        });
+        cfg.vm_attach = match placement {
+            Placement::Host => parent_vm,
+            Placement::Firecode => None,
+            // A remote child is not inside the parent's VM, and its own checkout is
+            // arranged by its `open` (`SshBackend::place`) rather than attached.
+            Placement::Remote(_) | Placement::RemoteVm(_) => None,
+        };
+        // A child given a VM of its own copies (or mounts its worktree), as before - only the
+        // session `--vm` placed works in the folder itself, and its attached children with it.
+        cfg.vm_mount = false;
+        // The parent's acceptance check rides to the child's VM the same way: on the spec, into
+        // the child's config at the spawn, and from there onto `firecode up` (`Harness::open`).
+        cfg.vm_verify = spec.vm_verify.clone();
+        // **And the local model's own address, alias and sampling**, after the spread,
+        // because `..base.clone()` would otherwise put the parent's back.
+        if let (Some(e), Some(m)) = (&sub_endpoint, &sub_local) {
+            cfg.endpoint = e.clone();
+            cfg.model = m.model.clone();
+            if !m.profile.sampling.is_empty() {
+                cfg.sampling = serde_json::Value::Object(m.profile.sampling.clone());
             }
-        })
-    });
-    cfg.vm_attach = match placement {
-        Placement::Host => parent_vm,
-        Placement::Firecode => None,
-        // A remote child is not inside the parent's VM, and its own checkout is
-        // arranged by its `open` (`SshBackend::place`) rather than attached.
-        Placement::Remote(_) | Placement::RemoteVm(_) => None,
-    };
-    // A child given a VM of its own copies (or mounts its worktree), as before - only the
-    // session `--vm` placed works in the folder itself, and its attached children with it.
-    cfg.vm_mount = false;
-    // The parent's acceptance check rides to the child's VM the same way: on the spec, into
-    // the child's config at the spawn, and from there onto `firecode up` (`Harness::open`).
-    cfg.vm_verify = spec.vm_verify.clone();
-    // **And the local model's own address, alias and sampling**, after the spread,
-    // because `..base.clone()` would otherwise put the parent's back.
-    if let (Some(e), Some(m)) = (&sub_endpoint, &sub_local) {
-        cfg.endpoint = e.clone();
-        cfg.model = m.model.clone();
-        if !m.profile.sampling.is_empty() {
-            cfg.sampling = serde_json::Value::Object(m.profile.sampling.clone());
+            if let Some(eff) = &m.profile.effort {
+                cfg.effort = Some(eff.clone());
+            }
         }
-        if let Some(eff) = &m.profile.effort {
-            cfg.effort = Some(eff.clone());
+        // And the foreign weights' own vocabulary, dialect and marker, when the declared model serves other
+        // weights: the child's engine, prefix and row are all built from these three, and `cfg.dialect` is
+        // what its own spawns compare against, so the fact travels down the tree.
+        if let Some(f) = &sub_foreign {
+            cfg.dialect = f.dialect;
+            cfg.vocab_gguf = Some(f.gguf.clone());
+            cfg.media_marker = f.media_marker.clone();
         }
-    }
-    // And the foreign weights' own vocabulary, dialect and marker, when the declared model serves other
-    // weights: the child's engine, prefix and row are all built from these three, and `cfg.dialect` is
-    // what its own spawns compare against, so the fact travels down the tree.
-    if let Some(f) = &sub_foreign {
-        cfg.dialect = f.dialect;
-        cfg.vocab_gguf = Some(f.gguf.clone());
-        cfg.media_marker = f.media_marker.clone();
-    }
-    if let Some(w) = sub_window {
-        cfg.context_window = w;
-        // The child's ledger is its own conversation, so it has no measured ratio:
-        // the provider's number stands rather than the parent's scaled one.
-        cfg.ledger_scale = None;
-    }
-    // And the project's parameters for the role this child was seated on, which are the last word on how it
-    // samples: the file beats the `[model.*]` profile, the way the project beats `~/.config/letibot/`
-    // everywhere else. They touch `sampling` and not the window, which belongs to the box answering.
-    apply_spawn_parameters(cfg, &base.leticode, seat.as_str());
+        if let Some(w) = sub_window {
+            cfg.context_window = w;
+            // The child's ledger is its own conversation, so it has no measured ratio:
+            // the provider's number stands rather than the parent's scaled one.
+            cfg.ledger_scale = None;
+        }
+        // And the project's parameters for the role this child was seated on, which are the last word on how it
+        // samples: the file beats the `[model.*]` profile, the way the project beats `~/.config/letibot/`
+        // everywhere else. They touch `sampling` and not the window, which belongs to the box answering.
+        apply_spawn_parameters(cfg, &base.leticode, seat.as_str());
     }
 
     fn run_to_completion(
@@ -3623,7 +3620,6 @@ impl HarnessTaskRunner {
         })
     }
 }
-
 
 /// The intent diff at a turn boundary, or `None` when there is nothing to say, which is the common case and the
 /// point. A free function because the choice is worth testing on its own. `prose` is opt-in: it can only fire on

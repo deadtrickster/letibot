@@ -1936,7 +1936,6 @@ impl Harness {
         Ok(())
     }
 
-
     /// **The round's calls, run in the order they were proposed, each as the row it is appended as.**
     /// The order is the contract: GLM's template sorts results by call order, so a batch run any other
     /// way would rewrite bytes the KV cache already holds. Answers the rows and whether one of them
@@ -1979,9 +1978,7 @@ impl Harness {
                 // and its result is the failure's own words - which the model has to read
                 // exactly, not through a layer's opinion of them.
                 let how = match outcome {
-                    letibot_transcript::ToolOutcome::Ok => {
-                        Some(letibot_plugin::tool_result::OK)
-                    }
+                    letibot_transcript::ToolOutcome::Ok => Some(letibot_plugin::tool_result::OK),
                     letibot_transcript::ToolOutcome::Backgrounded { .. } => {
                         Some(letibot_plugin::tool_result::BACKGROUNDED)
                     }
@@ -2025,7 +2022,6 @@ impl Harness {
         results.extend(asked);
         (results, backgrounded)
     }
-
 
     /// **What a round's own failure means.** Two arms carry a notice the model answers and the
     /// loop goes on; two end the turn - one of them as the wall the provider itself named, which is
@@ -2146,7 +2142,6 @@ impl Harness {
         };
         Ok(RoundEnd::Go(ok))
     }
-
 
     /// **One round as the provider took it**, and the ladder that decides whether it is taken
     /// again: an endpoint failure is retried here rather than in `rounds`, because a retry produced

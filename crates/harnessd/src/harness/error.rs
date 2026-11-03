@@ -112,4 +112,3 @@ impl From<letibot_turn::EngineError> for HarnessError {
         HarnessError::Turn(TurnFailure::Engine(e))
     }
 }
-

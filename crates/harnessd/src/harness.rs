@@ -129,9 +129,6 @@ impl Reply {
     }
 }
 
-
-/// **"workspace gone", in one sentence** - said when a session opens or wakes on a workspace that
-/// no longer exists (R92.24).
 /// The warning code for a session whose workspace no longer exists (R92.24).
 const WORKSPACE_GONE: &str = "workspace_gone";
 
@@ -149,6 +146,8 @@ const BOUNDARY_ABSENT: &str = "boundary_absent";
 /// the branch that comes back, and what stayed here (`docs/remote-hosts.md`).
 const REMOTE_PLACEMENT: &str = "remote_placement";
 
+/// **"workspace gone", in one sentence** - said when a session opens or wakes on a workspace that
+/// no longer exists (R92.24).
 fn workspace_gone(workspace: &std::path::Path) -> String {
     format!(
         "workspace gone: `{}` no longer exists (a retired worktree, or a checkout moved or \
@@ -1569,28 +1568,25 @@ pub(crate) use children::{
     HarnessTaskRunner, TaskSlots, child_mode_source, git_in, steer_for_turn_over,
     stop_children_first, visible_text,
 };
-pub use job_window::{JobFate, JobWindow};
-pub use deliveries::{JOB_CLOSING, MONITORS_ENDED_SHOWN};
-pub use error::HarnessError;
-pub use hub_io::{HubAdmissions, HubDenials, HubSteering};
-pub use parts::Parts;
-pub use trail::TrailMirror;
-pub(crate) use trail::{
-    ASK_USER_QUESTION, asked_rows, operator_answer_text, question_row_text,
-};
 pub(crate) use deliveries::{
     Deliveries, OPERATOR_RETIRE, graced_endings, human_secs, monitor_entries_of, monitor_facts,
     monitor_notice,
 };
+pub use deliveries::{JOB_CLOSING, MONITORS_ENDED_SHOWN};
 #[cfg(test)]
 pub(crate) use deliveries::{
     completion_notice, completion_notices, meanwhile_notice, subagent_notice,
+};
+pub use error::HarnessError;
+pub use hub_io::{HubAdmissions, HubDenials, HubSteering};
+pub use job_window::{JobFate, JobWindow};
+pub(crate) use job_window::{
+    VM_LOST, fate_line, live_job_output, progress_lines, vm_jobs_lost_line,
 };
 #[cfg(test)]
 pub(crate) use job_window::{
     due_rows, fate_of, job_window_for, next_job_offset, recorded_job_lines, tail_file,
 };
-pub(crate) use job_window::{VM_LOST, fate_line, live_job_output, progress_lines, vm_jobs_lost_line};
 #[cfg(test)]
 pub(crate) use models::switch_back_said;
 pub use models::{LocalSwitch, local_switch_decision, local_url_authority};
@@ -1610,6 +1606,9 @@ pub use open::{
 pub(crate) use open::{
     base_role_for_seat, confined_grants, downgraded_ruleset, role_for, role_for_seat,
 };
+pub use parts::Parts;
+pub use trail::TrailMirror;
+pub(crate) use trail::{ASK_USER_QUESTION, asked_rows, operator_answer_text, question_row_text};
 pub use turns::abandoned_calls;
 #[cfg(test)]
 pub(crate) use turns::reconcile_rows;
