@@ -80,7 +80,7 @@ fn reading_bodies() -> Caps {
 /// in front of it. An absence assertion that stopped anywhere else would have no teeth.
 fn marker(registry: &Arc<Registry>, said: &str) {
     hub(registry).publish(SessionEvent::Warning {
-        code: "marker".into(),
+        code: "auto_compact".into(),
         detail: said.into(),
         compaction: None,
     });
