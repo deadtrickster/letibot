@@ -3348,7 +3348,9 @@ impl SshBackend {
                     .lines()
                     .next()
                     .unwrap_or("bubblewrap"),
-                session_home.as_deref().unwrap_or("the session's own directory")
+                session_home
+                    .as_deref()
+                    .unwrap_or("the session's own directory")
             ));
         }
         let confined_env = toolchain_env(confine.as_ref());

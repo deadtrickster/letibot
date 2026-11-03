@@ -2285,7 +2285,9 @@ fn a_stopped_session_is_collected_by_the_names_its_placement_used() {
         &rig.worktree,
         &["commit", "-q", "-m", "the work the package did"],
     );
-    let remote_head = git(&rig.worktree, &["rev-parse", "HEAD"]).trim().to_string();
+    let remote_head = git(&rig.worktree, &["rev-parse", "HEAD"])
+        .trim()
+        .to_string();
     let back = format!("remote/{}/{SHORT}", rig.host.name);
     // The state `letibot --stop` leaves: the session was never closed, so nothing fetched.
     drop(b);

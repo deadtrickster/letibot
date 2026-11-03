@@ -310,7 +310,10 @@ fn a_stopped_session_leaves_no_process_of_its_own_running_on_the_host() {
     // branch is the only way the work comes back and no close is coming to fetch it.
     std::fs::write(elsewhere.join("stopped.rs"), b"// the work\n").expect("a file");
     git(&elsewhere, &["add", "stopped.rs"]);
-    git(&elsewhere, &["commit", "-q", "-m", "the work the session did"]);
+    git(
+        &elsewhere,
+        &["commit", "-q", "-m", "the work the session did"],
+    );
     let remote_head = git(&elsewhere, &["rev-parse", "HEAD"]).trim().to_string();
 
     let ended = letibot_tools::remote::placements_down();
