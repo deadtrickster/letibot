@@ -10,7 +10,7 @@ use std::time::Duration;
 use letibot_sessionlog::SessionEvent;
 use letibot_tokencore::store::{
     Approval, HealthState, LeaseClaim, LeaseOutcome, MergePriority, MergeState, Move, NewReview,
-    ReviewKind, ReviewState, Store,
+    ReviewKind, ReviewState, Store, StoreError,
 };
 use letibot_tools::builtins::task::{TaskRunner, TaskSpec, TaskStatus};
 use letibot_tools::builtins::verdict::ReviewDesk;
@@ -119,10 +119,16 @@ pub(crate) struct Door {
     /// Whether [`QueueDoor::delivers`] answers true - off by default, so every existing test keeps
     /// the card-only path exactly.
     pub(crate) delivers: Mutex<bool>,
+    /// Run with every event after it is recorded: the only code that runs between two attempts of
+    /// a retrying worker, so it is where a test makes the world change while it waits.
+    pub(crate) hook: Mutex<Option<Arc<dyn Fn(&SessionEvent) + Send + Sync>>>,
 }
 
 impl QueueDoor for Door {
     fn announce(&self, event: SessionEvent) {
+        if let Some(f) = self.hook.lock().unwrap().clone() {
+            f(&event);
+        }
         self.events.lock().unwrap().push(event);
     }
     fn announce_to(&self, repository: &str, event: SessionEvent) {
@@ -2609,6 +2615,88 @@ fn the_retry_wait_doubles_and_is_capped() {
     assert_eq!(store_retry_wait(1), STORE_RETRY_FIRST);
     assert_eq!(store_retry_wait(2), STORE_RETRY_FIRST * 2);
     assert_eq!(store_retry_wait(40), STORE_RETRY_CAP);
+}
+
+/// The retry driven through the worker itself: a store that will not open is waited out and tried
+/// again, and the pass after it runs - the thread survives the error rather than returning on it.
+#[test]
+fn a_store_that_will_not_open_is_waited_out_and_the_worker_goes_on() {
+    let w = World::new("store-weather");
+    let late = w.dir.0.join("late");
+    let db = late.join("sessions.db");
+    // The directory appearing between two attempts is the store coming back; the door is the only
+    // thing that runs in that window, and it hears about the attempt after the wait.
+    let made = late.clone();
+    *w.door.hook.lock().unwrap() = Some(Arc::new(move |e: &SessionEvent| {
+        if let SessionEvent::Warning { code, .. } = e
+            && code == "merge_queue_store_error"
+        {
+            std::fs::create_dir_all(&made).unwrap();
+        }
+    }));
+    let env = env(Arc::new(GreenGate), w.door.clone(), "weather");
+    let repo = w.repo.clone();
+    let worked = std::thread::spawn(move || {
+        let stop = AtomicBool::new(false);
+        work(db, repo, env, &stop);
+    });
+    // It ends by itself: with no lease of this repository it serves one pass and gives up.
+    worked.join().expect("the worker returns after a store error");
+    let said = w.door.warnings("merge_queue_store_error");
+    assert_eq!(said.len(), 1, "one outage, one line: {said:?}");
+    assert!(said[0].contains("opening the store"), "{}", said[0]);
+    assert!(
+        late.join("sessions.db").is_file(),
+        "the second attempt opened the store"
+    );
+    assert_eq!(
+        w.door.warnings("queue_lease_lost").len(),
+        1,
+        "and went on to serve a pass, which found no lease of this repository to beat"
+    );
+}
+
+/// A run of store errors is said once per reason and ended out loud once, with the count that
+/// happened - the words a person reads, and the state the next wait is computed from.
+#[test]
+fn a_store_error_is_said_once_per_reason_and_the_recovery_once() {
+    use crate::mergequeue::{STORE_RETRY_FIRST, StoreTrouble};
+    let door = Arc::new(Door::default());
+    let mut trouble = StoreTrouble::default();
+    let locked = StoreError::Refused("database is locked".into());
+    // Two failures of ONE reason: one line, and the wait doubling behind it.
+    assert_eq!(
+        trouble.failed("serving the queues", &locked, &*door),
+        STORE_RETRY_FIRST
+    );
+    assert_eq!(
+        trouble.failed("serving the queues", &locked, &*door),
+        STORE_RETRY_FIRST * 2
+    );
+    assert_eq!(door.warnings("merge_queue_store_error").len(), 1);
+    // A different reason is a different outage, and is said.
+    trouble.failed(
+        "serving the queues",
+        &StoreError::Corrupt("a row that is not a row".into()),
+        &*door,
+    );
+    let said = door.warnings("merge_queue_store_error");
+    assert_eq!(said.len(), 2, "a new reason is a new line: {said:?}");
+    assert!(said[1].contains("not a row"), "{}", said[1]);
+    // Serving again ends the run out loud, naming how many attempts it took.
+    trouble.passed(&*door);
+    let recovered = door.warnings("merge_queue_recovered");
+    assert_eq!(recovered.len(), 1);
+    assert!(
+        recovered[0].contains("after 3 failed attempt"),
+        "{}",
+        recovered[0]
+    );
+    // And the count starts over, so the next error waits the first wait rather than the cap.
+    assert_eq!(
+        trouble.failed("serving the queues", &locked, &*door),
+        STORE_RETRY_FIRST
+    );
 }
 
 // ===== The supervisor =====
