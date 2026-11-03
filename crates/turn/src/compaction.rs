@@ -1866,7 +1866,7 @@ fn run_half<T>(
 pub fn fold_tail_room(window: u64, prefix_tokens: u64, headroom: u64) -> u64 {
     window
         .saturating_sub(prefix_tokens)
-        .saturating_sub(headroom)
+        .saturating_sub(headroom.max(WRITE_ROOM + CUT_MARGIN))
 }
 
 /// Summarise the first half, then continue on `summary ++ second half`: the operator's design
