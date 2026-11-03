@@ -716,15 +716,13 @@ impl App {
         if over == 0 {
             return;
         }
-        // Enough rows to get back under, never the one the reader is looking at or anything below
-        // it: a window that dropped the held row would move the page under them.
+        // Enough rows to get back under. **Not capped at the row the reader is holding**: a reader
+        // parked on the top row of a live session would keep every arriving row for the life of the
+        // head, so the bound wins and `drop_rows_above` moves the anchor to the oldest row left.
         let (mut freed, mut n) = (0, 0);
         while freed < over && n < self.items.len() {
             freed += self.items[n].item.as_ref().map_or(0, |i| i.bytes());
             n += 1;
-        }
-        if let Some(h) = &self.anchor {
-            n = n.min(h.ordinal);
         }
         if n > 0 {
             self.drop_rows_above(n, room);
@@ -762,10 +760,24 @@ impl App {
     /// Let go of the `n` oldest rows, and of everything drawn for them. Every row this head keeps is
     /// still one contiguous run, so the page a reader asks for next is `items_base`.
     fn drop_rows_above(&mut self, n: usize, room: usize) {
+        // The reader's own row, when the trim takes it: the anchor names a row that is about to be
+        // gone, and the nearest surviving one is the oldest this head keeps.
+        let held_gone = self.anchor.as_ref().is_some_and(|h| h.ordinal < n);
         self.items.drain(..n);
         self.items_base += n;
         if let Some(h) = &mut self.anchor {
             h.ordinal = h.ordinal.saturating_sub(n);
+        }
+        if held_gone {
+            self.anchor = self.items.first().map(|first| Held {
+                item_id: first.item_id.clone(),
+                ordinal: 0,
+                into: 0,
+            });
+            self.say(
+                "the row you were reading is above the window this head keeps — the view is \
+                 holding the oldest row it still has",
+            );
         }
         // The seam a note was filed at is a row index, and the rows it named are gone: a note above
         // the window becomes one the head no longer draws, which is the rule a fork's seams follow.

@@ -4437,6 +4437,55 @@ fn an_empty_page_says_the_window_holds_the_beginning() {
     );
 }
 
+/// **The byte bound is a bound.** `trim_held` capped its drop at the row the reader was holding, so
+/// one `PageUp` to the beginning of a live session kept every row that arrived afterwards for the
+/// life of the head.
+#[test]
+fn a_reader_holding_the_top_row_does_not_keep_the_whole_session() {
+    let mut a = app();
+    a.walk_limit = 1;
+    a.held_limit = 8 * 1024;
+    let body = "a line of conversation, and enough of them to make a row cost its bytes\n\n\
+                ```rust\nfn f() { let n = 1; }\n```\n";
+    for i in 0..60u64 {
+        a.apply(ServerFrame::Event(env(
+            i * 2 + 1,
+            testing::appended(&format!("s.{i}"), "user"),
+        )));
+        a.apply(ServerFrame::Event(env(
+            i * 2 + 2,
+            testing::content(&format!("s.{i}"), &format!("row {i}\n{body}")),
+        )));
+    }
+    let _ = a.screen(100, 40);
+    // The reader goes up to the very beginning of the session, which is the row no trim may pass.
+    for _ in 0..20 {
+        a.key(Key::PageUp);
+        let _ = a.screen(100, 40);
+    }
+    let held = a.anchor.clone().expect("the fixture is not holding a row");
+    assert_eq!(held.ordinal, 0, "the fixture did not reach the top row");
+    // And the session runs on under the held view.
+    for i in 60..260u64 {
+        a.apply(ServerFrame::Event(env(
+            i * 2 + 1,
+            testing::appended(&format!("s.{i}"), "user"),
+        )));
+        a.apply(ServerFrame::Event(env(
+            i * 2 + 2,
+            testing::content(&format!("s.{i}"), &format!("row {i}\n{body}")),
+        )));
+    }
+    let _ = a.screen(100, 40);
+    assert!(
+        transcript_bytes(&a.items) <= a.held_limit,
+        "the head holds {} bytes of {} rows, over its {} byte window",
+        transcript_bytes(&a.items),
+        a.items.len(),
+        a.held_limit
+    );
+}
+
 /// **A head at the tail asks for nothing.** `hist_floor == 0` means *everything this head holds is
 /// rendered*, which is true at the tail of every session short enough to walk whole - and the page
 /// ask read it as *the reader has scrolled up*, so a head that had just attached pulled the rows
