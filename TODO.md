@@ -144,7 +144,7 @@ The prompt's skill index (`crates/tools/src/builtins/skill.rs`, `SkillRegistry::
 
 ---
 
-## R105 - The work order after the 2026-11-01 review, folded with the open list - **OPEN, filed 2026-11-01**
+## R105 - The work order after the 2026-11-01 review, folded with the open list - **five of the nine steps are closed (1, 2 except R99's live Done-when, 3, 5, 7); left: step 4's four live facts on lab2x1, step 6's tree-wide comment rule (478 blocks over three lines today), step 8's two decisions about script layers, and step 9, the backlog entries further down**
 
 Record: `docs/review/2026-11-01-ab5f7841-90dd9c84.md` (three reviewers, two rounds, synthesis). In order; each step relies on the one before it.
 
