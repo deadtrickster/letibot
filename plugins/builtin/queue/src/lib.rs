@@ -107,8 +107,6 @@ struct Review {
     #[serde(default)]
     state_words: String,
     #[serde(default)]
-    mark: String,
-    #[serde(default)]
     in_state_ms: u64,
     #[serde(default)]
     repository: String,
@@ -158,8 +156,6 @@ struct Merge {
     state: String,
     #[serde(default)]
     state_words: String,
-    #[serde(default)]
-    mark: String,
     #[serde(default)]
     in_state_ms: u64,
     #[serde(default)]
@@ -307,27 +303,39 @@ struct Out {
     detail: String,
 }
 
-/// The phrase a person can act on, from the feed's own answer - the verb that would move the row,
-/// or the one they would reach for with the reason it would not. One phrase per row is the whole
-/// design: four verbs of prose per row made the pane this replaced illegible.
-fn the_verb(verbs: &[VerbWhy]) -> Option<String> {
-    let acts: Vec<&str> = verbs
+/// The phrase a person can act on, from the feed's own answer - what they could DO about the row.
+/// One phrase per row is the whole design: four verbs of prose per row made the pane this replaced
+/// illegible. The words are the action's own (`withdraw`, not `rm`), because the row is read by
+/// somebody who has never been told what the head's letters mean.
+fn what_you_can_do(verbs: &[VerbWhy]) -> Option<String> {
+    let mut acts: Vec<&str> = verbs
         .iter()
         .filter(|v| v.why.is_empty() && !v.verb.is_empty())
-        .map(|v| v.verb.as_str())
+        .filter_map(|v| match v.verb.as_str() {
+            "approve" => Some("approve"),
+            "veto" => Some("veto"),
+            "restart" => Some("restart"),
+            "rm" => Some("withdraw"),
+            _ => None,
+        })
         .collect();
+    acts.dedup();
     if !acts.is_empty() {
-        // The first that would do something is the one to name. Two of them (`approve` and `veto`
-        // on a `reviewing` row) are both real choices, so both are said.
-        return Some(acts.join(" · "));
+        let last = acts.pop().unwrap_or_default();
+        let phrase = if acts.is_empty() {
+            last.to_string()
+        } else {
+            format!("{} or {last}", acts.join(", "))
+        };
+        return Some(format!("you can {phrase} it"));
     }
-    // **Nothing would move it** - say the verb they would reach for and why it would not. `restart`
-    // is the one a stuck row is stuck ON, so its reason is the useful one.
+    // **Nothing would move it** - say why, in the words of the verb a stuck row is stuck ON:
+    // `restart` is the one a person reaches for first.
     let restart = verbs
         .iter()
         .find(|v| v.verb == "restart" && !v.why.is_empty());
     let any = restart.or_else(|| verbs.iter().find(|v| !v.why.is_empty()));
-    any.map(|v| format!("{} ({})", v.verb, v.why))
+    any.map(|v| format!("nothing to do: {}", v.why))
 }
 
 /// **`4m`** - an age, from the milliseconds the feed carries. The guest has no clock, so this is
@@ -339,6 +347,41 @@ fn age(ms: u64) -> String {
         format!("{}m", ms / 60_000)
     } else {
         format!("{}h", ms / 3_600_000)
+    }
+}
+
+/// **A state as a sentence a person reads.** The pane's rows are read by somebody who has never
+/// been told what `rejected` or `cannot_decide` mean, so every state the two queues have says what
+/// it is about the branch and not which column of the store it is in. A state this layer does not
+/// know falls back to the daemon's own word (`given`) rather than to a guess - a newer daemon's
+/// states arrive in the feed, and a feed without one reads the underscore out of the state.
+fn state_words(state: &str, given: &str) -> String {
+    match state {
+        // The review queue.
+        "waiting" => "waiting for a reviewer".into(),
+        "reviewing" => "a reviewer is reading it".into(),
+        "cannot_decide" => "the reviewer could not decide".into(),
+        "rejected" => "the reviewer refused it".into(),
+        // The merge queue.
+        "queued" => "waiting for the gate".into(),
+        "gating" => "the gate is running".into(),
+        "failed" => "the gate failed".into(),
+        "timed_out" => "the gate timed out".into(),
+        "conflict" => "it does not merge cleanly".into(),
+        "moved" => "a newer row replaced it".into(),
+        // Both.
+        "approved" => "approved; it lands next".into(),
+        "landed" => "landed".into(),
+        "blocked" => "stopped: a person has to act".into(),
+        "withdrawn" => "withdrawn".into(),
+        "archived" => "archived".into(),
+        other => {
+            if given.is_empty() {
+                other.replace('_', " ")
+            } else {
+                given.to_string()
+            }
+        }
     }
 }
 
@@ -355,11 +398,11 @@ fn one_line(text: &str) -> String {
         .to_string()
 }
 
-/// **What the row is about** - the branch, or the target a red-tip review is of. A target's own
+/// **What the row is about** - the branch, or the target whose own tip is red. A target's own
 /// review is not a branch and never reads like one.
 fn what_of(kind: &str, branch: &str, target: &str) -> String {
     if kind == "target" {
-        format!("RED TARGET {target}")
+        format!("{target}'s own tip")
     } else {
         branch.to_string()
     }
@@ -385,19 +428,20 @@ fn reason_of(
     one_line(evidence)
 }
 
-/// **One live review, one line.**
+/// **One live review, one line.** The cells are what it is and what state it is in; the facts
+/// under them are how long it has been there, whose repository it is, and what a person could do.
 fn review_row(r: &Review, feed: &Feed, show_repo: bool, picked: bool) -> Out {
     let mut facts: Vec<Cell> = Vec::new();
     // **The owner only when the claim is not the serving daemon's** - the serving daemon's name on
     // every row says nothing.
     if !r.owner.is_empty() && !r.owner_is_serving {
-        facts.push(Cell::role(r.owner.clone(), Role::Faint));
+        facts.push(Cell::role(format!("served by {}", r.owner), Role::Faint));
     }
-    facts.push(Cell::role(age(r.in_state_ms), Role::Faint));
+    facts.push(Cell::role(format!("for {}", age(r.in_state_ms)), Role::Faint));
     if show_repo {
-        facts.push(Cell::role(r.repository.clone(), Role::Faint));
+        facts.push(Cell::role(format!("in {}", r.repository), Role::Faint));
     }
-    if let Some(v) = the_verb(&r.verbs) {
+    if let Some(v) = what_you_can_do(&r.verbs) {
         facts.push(Cell::role(v, Role::Pending));
     }
     let mut under = vec![reason_of(
@@ -409,15 +453,14 @@ fn review_row(r: &Review, feed: &Feed, show_repo: bool, picked: bool) -> Out {
     // **The address is only under the cursor.** The id exists so it can be typed into
     // `/queue approve`; repeating it on every row was half of what made the pane illegible.
     if picked {
-        under.push(format!("{} · head {}", r.id, r.short_sha));
+        under.push(format!("row {} · the head it judged {}", r.id, r.short_sha));
         under.extend(moves_under(feed, &r.id, 3));
     }
     Out {
         id: r.id.clone(),
         cells: vec![
-            Cell::role(r.mark.clone(), role_of(&r.state)),
             Cell::role(what_of(&r.kind, &r.branch, &r.target), Role::Strong),
-            Cell::role(r.state_words.clone(), role_of(&r.state)),
+            Cell::role(state_words(&r.state, &r.state_words), role_of(&r.state)),
         ],
         facts,
         under,
@@ -433,26 +476,25 @@ fn review_row(r: &Review, feed: &Feed, show_repo: bool, picked: bool) -> Out {
 fn merge_row(m: &Merge, feed: &Feed, show_repo: bool, picked: bool) -> Out {
     let mut facts: Vec<Cell> = Vec::new();
     if !m.owner.is_empty() && !m.owner_is_serving {
-        facts.push(Cell::role(m.owner.clone(), Role::Faint));
+        facts.push(Cell::role(format!("served by {}", m.owner), Role::Faint));
     }
-    facts.push(Cell::role(age(m.in_state_ms), Role::Faint));
+    facts.push(Cell::role(format!("for {}", age(m.in_state_ms)), Role::Faint));
     if show_repo {
-        facts.push(Cell::role(m.repository.clone(), Role::Faint));
+        facts.push(Cell::role(format!("in {}", m.repository), Role::Faint));
     }
-    if let Some(v) = the_verb(&m.verbs) {
+    if let Some(v) = what_you_can_do(&m.verbs) {
         facts.push(Cell::role(v, Role::Pending));
     }
     let mut under = vec![match &m.waits_on {
         // **What it is waiting for**, in the pane's own words (`gate running on 1f2a3b4 for 2m`).
-        Some(w) => format!("waits: {w}"),
+        Some(w) => format!("waits for the gate: {w}"),
         // **Or what its own gate is doing**, when the row is the one gating.
         None => match &m.running_gate {
             Some(g) => format!(
-                "gate step {} of {} · running {} · {} byte(s) written",
+                "the gate is on step {} of {}{}",
                 g.step.max(1),
                 g.of.max(1),
-                age(g.running_ms),
-                g.bytes
+                written(g.bytes)
             ),
             // A gating landing between two steps still says the gate is on it: the sha it was
             // rebased to and how long the state has stood.
@@ -466,22 +508,21 @@ fn merge_row(m: &Merge, feed: &Feed, show_repo: bool, picked: bool) -> Out {
                     .chars()
                     .take(10)
                     .collect();
-                format!("gate running on {} for {}", short, minutes(m.in_state_ms))
+                format!("the gate is running on {} for {}", short, minutes(m.in_state_ms))
             }
             None => reason_of(m.fixes.as_deref(), None, &[], &m.evidence),
         },
     }];
     if picked {
-        under.push(format!("{} · approved {}", m.id, m.short_sha));
+        under.push(format!("row {} · approved at {}", m.id, m.short_sha));
         under.extend(moves_under(feed, &m.id, 3));
     }
     Out {
         id: m.id.clone(),
         cells: vec![
-            Cell::role(m.mark.clone(), role_of(&m.state)),
             Cell::role(m.branch.clone(), Role::Strong),
             Cell::role(format!("onto {}", m.target), Role::Faint),
-            Cell::role(m.state_words.clone(), role_of(&m.state)),
+            Cell::role(state_words(&m.state, &m.state_words), role_of(&m.state)),
         ],
         facts,
         under,
@@ -499,14 +540,18 @@ fn moves_under(feed: &Feed, id: &str, n: usize) -> Vec<String> {
     mine[from..].iter().map(|m| move_line(m)).collect()
 }
 
-/// One move as one line.
+/// **One move of one row**, in the words a reader needs: from where, to where, when, and who did
+/// it - the actor's id stripped of the `reviewer:` prefix the store keys it by.
 fn move_line(m: &Move) -> String {
     format!(
-        "{} → {} · {} ago · {}: {}",
-        m.from.as_deref().unwrap_or("(new)"),
-        m.to,
+        "{} → {} · {} ago · {} said: {}",
+        m.from
+            .as_deref()
+            .map(|s| state_words(s, ""))
+            .unwrap_or("(new)".into()),
+        state_words(&m.to, ""),
         age(m.ago_ms),
-        m.by,
+        m.by.trim_start_matches("reviewer:").trim_end_matches(":operator"),
         one_line(&m.why)
     )
 }
@@ -549,28 +594,23 @@ fn history_row(feed: &Feed, folded: bool) -> Out {
         + feed.merges.iter().filter(|m| !m.live).count();
     Out {
         id: "finished".to_string(),
-        cells: vec![
-            Cell::role(if folded { "[-]" } else { "[+]" }, Role::Faint),
-            Cell::role(
-                format!(
-                    "finished · {n}{}",
-                    if shown < n {
-                        format!(" (the last {shown})")
-                    } else {
-                        String::new()
-                    }
-                ),
-                Role::Faint,
-            ),
-            Cell::role(
-                if folded {
-                    "enter folds it away"
+        cells: vec![Cell::role(
+            format!(
+                "finished: {n} row{}{} - {}",
+                if n == 1 { "" } else { "s" },
+                if shown < n {
+                    format!(" (the last {shown})")
                 } else {
-                    "enter opens it"
+                    String::new()
                 },
-                Role::Faint,
+                if folded {
+                    "enter hides them"
+                } else {
+                    "enter shows them"
+                },
             ),
-        ],
+            Role::Faint,
+        )],
         facts: Vec::new(),
         under: Vec::new(),
         open: Some(if folded { Fold::Open } else { Fold::Closed }),
@@ -588,25 +628,29 @@ fn chrome(feed: &Feed) -> Vec<Value> {
         lines.push(json!({"label": "the store", "value": why, "role": "failure"}));
     }
     for t in &feed.targets {
+        let where_ = format!("{} in {}", t.target, t.repository);
         match t.state.as_str() {
+            // **The alarm the pane leads with**, in words: the target's own tip failed its gate, so
+            // nothing lands until it is green again.
             "red" => lines.push(json!({
-                "label": format!("RED {} {}", t.target, t.repository),
-                "value": format!("{} at {}", one_line(&t.evidence), t.short_sha),
-                "tail": age(t.since_ms),
+                "label": format!("{where_} is red"),
+                "value": format!("its gate failed: {}", one_line(&t.evidence)),
+                "tail": format!("{} ago", age(t.since_ms)),
                 "role": "failure",
             })),
+            // **A tip nobody could judge**: not red, and nothing lands on it either.
             "timed_out" | "blocked" => lines.push(json!({
-                "label": format!("{} {} {}", t.target, t.state_words, t.repository),
+                "label": format!("{where_} could not be gated"),
                 "value": one_line(&t.evidence),
-                "tail": age(t.since_ms),
+                "tail": format!("{} ago", age(t.since_ms)),
                 "role": "attention",
             })),
             // A gate on the target tip is what every queued landing of that repository waits for,
             // so it is said here even though no row of either queue carries it.
             "gating" => lines.push(json!({
-                "label": format!("{} {}", t.target, t.repository),
+                "label": format!("{where_} is being gated"),
                 "value": format!(
-                    "gate running on {} for {}",
+                    "the gate is running on {} for {}",
                     t.short_sha,
                     minutes(t.since_ms)
                 ),
@@ -615,11 +659,18 @@ fn chrome(feed: &Feed) -> Vec<Value> {
             // Green is not an alarm, but it is where the target stands: a pane that never said it
             // left the reader to infer health from the absence of a line.
             "green" => lines.push(json!({
-                "label": format!("{} {}", t.target, t.repository),
-                "value": format!("green at {}", t.short_sha),
+                "label": where_,
+                "value": format!("green at {} - branches land on it", t.short_sha),
                 "role": "faint",
             })),
-            _ => {}
+            // **A state this layer does not know** - the daemon's own word, never silence: a target
+            // branch whose health arrived from a newer daemon is still where the queue leads.
+            _ => lines.push(json!({
+                "label": format!("{where_} {}", t.state_words),
+                "value": one_line(&t.evidence),
+                "tail": format!("{} ago", age(t.since_ms)),
+                "role": "faint",
+            })),
         }
     }
     // ---- Who serves each repository, and how alive it is. **Every lease, healthy or not**: a
@@ -629,24 +680,24 @@ fn chrome(feed: &Feed) -> Vec<Value> {
         let who = format!("{} (pid {}, {})", l.host, l.pid, l.build);
         if l.stale {
             lines.push(json!({
-                "label": format!("STALE {}", l.repository),
-                "value": format!("{who} has not said anything"),
-                "tail": age(l.heartbeat_ms),
+                "label": format!("nobody is serving {}", l.repository),
+                "value": format!("{who} stopped saying it was alive"),
+                "tail": format!("{} ago", age(l.heartbeat_ms)),
                 "role": "attention",
             }));
         } else {
             lines.push(json!({
-                "label": l.repository,
-                "value": format!("served by {who} · heartbeat"),
-                "tail": age(l.heartbeat_ms),
+                "label": format!("{} is served by {who}", l.repository),
+                "value": "its last heartbeat",
+                "tail": format!("{} ago", age(l.heartbeat_ms)),
                 "role": "faint",
             }));
         }
     }
     if feed.leases.is_empty() {
         lines.push(json!({
-            "label": "no lease",
-            "value": "no daemon holds a queue lease - nothing is serving the queues",
+            "label": "nothing is serving the queues",
+            "value": "no daemon holds this repository's queue lease",
             "role": "attention",
         }));
     }
@@ -654,7 +705,7 @@ fn chrome(feed: &Feed) -> Vec<Value> {
         lines.push(json!({
             "label": "not queued",
             "value": format!(
-                "{} - no `Merge gate` section in its AGENTS.md",
+                "{} - it declares no `Merge gate` in its AGENTS.md, so it has no queue",
                 feed.not_queued.join(", ")
             ),
             "role": "faint",
@@ -663,7 +714,7 @@ fn chrome(feed: &Feed) -> Vec<Value> {
     if feed.archived > 0 {
         lines.push(json!({
             "label": "archived",
-            "value": format!("{} row(s) of the pre-split queue (merge_queue_v23)", feed.archived),
+            "value": format!("{} row(s) of the queue before it was split in two", feed.archived),
             "role": "faint",
         }));
     }
@@ -673,6 +724,17 @@ fn chrome(feed: &Feed) -> Vec<Value> {
 /// Whole minutes, for a gate that has run a while - the resolution the words claim.
 fn minutes(ms: u64) -> String {
     format!("{}m", ms / 60_000)
+}
+
+/// **How much a step has written**, in the unit a person reads - `4 KB`, not `4096 byte(s)`.
+fn written(bytes: u64) -> String {
+    if bytes < 1024 {
+        format!(" · {bytes} bytes written")
+    } else if bytes < 1024 * 1024 {
+        format!(" · {} KB written", bytes / 1024)
+    } else {
+        format!(" · {} MB written", bytes / (1024 * 1024))
+    }
 }
 
 /// The empty-list sentence of the view the person is on. The two queues arrive differently, and
@@ -756,17 +818,17 @@ fn answer(bytes: &[u8]) -> Option<String> {
         }));
     }
     // **Both queues' counts, the drawn view first** - the strip that says which half `tab` is on.
-    let strip = |first: &str, n: usize, other: &str, m: usize| {
-        format!("{first} queue ({n}) · {other} queue ({m})")
-    };
+    // The words are what the halves ARE: a branch in review is waiting for a reviewer, a landing
+    // is on its way through the gate.
+    let strip = |first: &str, n: usize, other: &str, m: usize| format!("{n} {first} · {m} {other}");
     panels.push(json!({
         "id": "rows",
         "title": if live == 0 {
-            "the queue is idle".to_string()
+            "nothing in either queue".to_string()
         } else if reviews_first {
-            strip("review", feed.counts.review, "merge", feed.counts.merge)
+            strip("in review", feed.counts.review, "to land", feed.counts.merge)
         } else {
-            strip("merge", feed.counts.merge, "review", feed.counts.review)
+            strip("to land", feed.counts.merge, "in review", feed.counts.review)
         },
         "summary": [{"tree": {
             "rows": rows,
@@ -776,22 +838,22 @@ fn answer(bytes: &[u8]) -> Option<String> {
     if feed.counts.finished > 0 {
         panels.push(json!({
             "id": "history",
-            "title": format!("finished · {}", feed.counts.finished),
+            "title": "finished: the rows that left the two queues".to_string(),
             "summary": [{"tree": {"rows": [row_value(&history_row(&feed, folded))]}}],
         }));
     }
-    // **The one bar that is not a row's.** A row says the verb that would act on IT; the legend
+    // **The one bar that is not a row's.** A row says what a person could do about IT; the legend
     // says what each verb means in general, which is where the prose belongs.
     let view = json!({
-        "title": "the queue",
+        "title": "the merge queue: branches in review, and landings gated onto main",
         "panels": panels,
         "legend": {
             "approve": "your approval over the reviewer, at the branch's head now - the gate still runs",
             "veto": "rejected in your words, sent back to the child",
             "restart": "back in line: reviewed, or gated, again",
-            "rm": "withdrawn - the branch and its worktree stay, the history keeps the row",
-            "RED TARGET": "the target branch's own tip is red: nothing lands but its fix",
-            "STALE": "the daemon serving this queue has stopped saying so - another takes it over",
+            "withdraw": "the row leaves the queue - the branch and its worktree stay",
+            "red": "the target branch's own tip failed its gate: nothing lands until it is green",
+            "nobody is serving": "the daemon serving this queue has stopped saying so - another takes it over",
         },
     });
     serde_json::to_string(&view).ok()
@@ -806,25 +868,40 @@ fn field(k: &str, v: &str) -> String {
     }
 }
 
-/// **A review read whole** - every field the feed carries, then its moves.
+/// **A review read whole** - what it is, every field the feed carries in the words a person reads,
+/// then its moves.
 fn review_detail(r: &Review, feed: &Feed) -> String {
     let mut l: Vec<String> = Vec::new();
-    l.push(field("queue", "review"));
-    if !r.kind.is_empty() {
-        l.push(field("kind", &r.kind));
-    }
+    l.push(field(
+        "this is",
+        if r.kind == "target" {
+            "the review of the target's own tip: is the red in the code, or in the gate?"
+        } else {
+            "a branch put up for review: it lands only if a reviewer approves it"
+        },
+    ));
     l.push(field("repository", &r.repository));
-    l.push(field("target", &r.target));
+    l.push(field("target", &format!("it would land on {}", r.target)));
     l.push(field("branch", &r.branch));
     l.push(field(
         "state",
-        &format!("{} · {} in it", r.state_words, age(r.in_state_ms)),
+        &format!(
+            "{} · for {}",
+            state_words(&r.state, &r.state_words),
+            age(r.in_state_ms)
+        ),
     ));
-    if !r.owner.is_empty() {
-        l.push(field("owner", &r.owner));
-    }
     if r.reviewer.as_deref().is_some_and(|s| !s.is_empty()) {
-        l.push(field("reviewer", r.reviewer.as_deref().unwrap_or("")));
+        l.push(field(
+            "reviewer",
+            &format!(
+                "{} - the session that is reading it",
+                r.reviewer.as_deref().unwrap_or("")
+            ),
+        ));
+    }
+    if !r.owner.is_empty() {
+        l.push(field("served by", &r.owner));
     }
     l.push(field("head", &r.head_sha));
     if let Some(v) = r.verdict.as_deref().filter(|v| !v.trim().is_empty()) {
@@ -834,12 +911,18 @@ fn review_detail(r: &Review, feed: &Feed) -> String {
             .filter(|s| !s.is_empty())
             .map(|s| s.chars().take(10).collect())
             .unwrap_or_else(|| "?".to_string());
+        // **Who reviewed what, and what came of it** - the one sentence a verdict owes a reader
+        // who was not there.
         let by = r
             .verdict_by
             .as_deref()
             .filter(|s| !s.is_empty())
-            .unwrap_or("?");
-        l.push(field("verdict", &format!("{v} at {at} by {by}")));
+            .map(|s| s.trim_start_matches("reviewer:").to_string())
+            .unwrap_or_else(|| "nobody in particular".to_string());
+        l.push(field(
+            "verdict",
+            &format!("{by} reviewed {} at {at} and {v}", r.branch),
+        ));
     }
     for reason in &r.reasons {
         l.push(field("reason", reason));
@@ -856,7 +939,7 @@ fn review_detail(r: &Review, feed: &Feed) -> String {
         l.push(field("fixes", f));
     }
     l.push(field("why", &r.evidence));
-    l.push(field("ask", &r.brief));
+    l.push(field("the ask", &r.brief));
     l.push(String::new());
     l.extend(moves_detail(feed, &r.id));
     l.join("\n")
@@ -866,22 +949,31 @@ fn review_detail(r: &Review, feed: &Feed) -> String {
 /// output, and its moves.
 fn merge_detail(m: &Merge, feed: &Feed) -> String {
     let mut l: Vec<String> = Vec::new();
-    l.push(field("queue", "merge"));
+    l.push(field(
+        "this is",
+        "a landing: an approved branch on its way onto the target through the gate",
+    ));
     l.push(field("repository", &m.repository));
-    l.push(field("target", &m.target));
+    l.push(field("target", &format!("it lands on {}", m.target)));
     l.push(field("branch", &m.branch));
     l.push(field(
         "state",
-        &format!("{} · {} in it", m.state_words, age(m.in_state_ms)),
+        &format!(
+            "{} · for {}",
+            state_words(&m.state, &m.state_words),
+            age(m.in_state_ms)
+        ),
     ));
     if !m.owner.is_empty() {
-        l.push(field("owner", &m.owner));
+        l.push(field("served by", &m.owner));
     }
     l.push(field(
         "approved",
         &format!(
-            "{} by {} (review {})",
-            m.approved_sha, m.approved_by, m.review_id
+            "{} approved it at {} (review {})",
+            m.approved_by.trim_start_matches("reviewer:"),
+            m.approved_sha,
+            m.review_id
         ),
     ));
     if let Some(s) = m.rebased_sha.as_deref().filter(|s| !s.is_empty()) {
@@ -961,23 +1053,23 @@ fn gate_detail(g: &RunningGate, waiting: bool, feed: &Feed) -> Vec<String> {
     let snapshot_age = feed.now_ms.saturating_sub(feed.at_ms);
     let moving = if snapshot_age > GATE_SNAPSHOT_STALE_MS {
         format!(
-            "no snapshot for {} - this is what the daemon said then ({} byte(s) written)",
+            "no snapshot for {} - this is what the daemon said then{}",
             age(snapshot_age),
-            g.bytes
+            written(g.bytes)
         )
     } else if g.still_ms >= GATE_QUIET_MS {
         format!(
-            "the tail has not moved in {} - it may be stuck ({} byte(s) written)",
+            "the tail has not moved in {} - it may be stuck{}",
             age(g.still_ms),
-            g.bytes
+            written(g.bytes)
         )
     } else if g.still_ms < 1_000 {
-        format!("the tail moved just now ({} byte(s) written)", g.bytes)
+        format!("the tail moved just now{}", written(g.bytes))
     } else {
         format!(
-            "the tail moved {} ago ({} byte(s) written)",
+            "the tail moved {} ago{}",
             age(g.still_ms),
-            g.bytes
+            written(g.bytes)
         )
     };
     l.push(field("moving", &moving));
@@ -992,27 +1084,17 @@ fn gate_detail(g: &RunningGate, waiting: bool, feed: &Feed) -> Vec<String> {
     l
 }
 
-/// One gate step as one line, its outcome in the words a person reads.
+/// One gate step as one line, its outcome in the words a person reads - `passed: cargo test ·
+/// 12s`, never a tick a reader has to guess at.
 fn step_line(s: &Step) -> String {
-    let tail = match s.outcome.as_str() {
-        "passed" => format!("· {}", age(s.elapsed_ms)),
-        "failed" => format!("· {}", age(s.elapsed_ms)),
-        "timed out" => format!("· TIMED OUT after {}", age(s.elapsed_ms)),
-        "killed" => "· killed".to_string(),
-        _ => "· not run".to_string(),
+    let (word, tail) = match s.outcome.as_str() {
+        "passed" => ("passed", age(s.elapsed_ms)),
+        "failed" => ("failed", age(s.elapsed_ms)),
+        "timed out" => ("timed out", age(s.elapsed_ms)),
+        "killed" => ("killed", age(s.elapsed_ms)),
+        _ => ("not run", age(s.elapsed_ms)),
     };
-    format!("{} {} {}", mark_of(&s.outcome), one_line(&s.command), tail)
-}
-
-/// The mark of a step's outcome.
-fn mark_of(outcome: &str) -> &'static str {
-    match outcome {
-        "passed" => "✓",
-        "failed" => "✗",
-        "timed out" => "⧗",
-        "killed" => "✗",
-        _ => "·",
-    }
+    format!("{}: {} · {tail}", word, one_line(&s.command))
 }
 
 /// All the moves of one entry, oldest first - the row's whole recent history.

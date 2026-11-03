@@ -170,7 +170,7 @@ fn live_rows_fill_the_frame_and_history_is_one_folded_line() {
     let history = drawn.last().expect("the history row");
     let cells = cells_of(history);
     assert!(
-        cells.iter().any(|c| c.contains("finished · 12")),
+        cells.iter().any(|c| c.contains("finished: 12 rows")),
         "the count is on the line: {cells:?}"
     );
     assert_eq!(history["open"], false);
@@ -193,7 +193,7 @@ fn live_rows_fill_the_frame_and_history_is_one_folded_line() {
         .map(|p| p["title"].as_str().unwrap_or_default())
         .collect();
     assert!(
-        titles.contains(&"review queue (2) · merge queue (1)"),
+        titles.contains(&"2 in review · 1 to land"),
         "{titles:?}"
     );
 }
@@ -212,7 +212,7 @@ fn the_strip_names_the_drawn_view_first() {
         .map(|p| p["title"].as_str().unwrap_or_default())
         .collect();
     assert!(
-        titles.contains(&"merge queue (1) · review queue (2)"),
+        titles.contains(&"1 to land · 2 in review"),
         "{titles:?}"
     );
 }
@@ -256,7 +256,7 @@ fn opening_the_fold_draws_the_history_and_says_how_to_close_it() {
     assert_eq!(history["open"], true);
     let cells = cells_of(history);
     assert!(
-        cells.iter().any(|c| c.contains("folds it away")),
+        cells.iter().any(|c| c.contains("enter hides them")),
         "an open fold says how to close it: {cells:?}"
     );
 }
@@ -276,8 +276,11 @@ fn a_row_says_the_verb_that_would_move_it_and_why_when_none_would() {
     let facts = facts_of(live);
     assert_eq!(
         facts,
-        vec!["4m", "approve · veto · rm"],
-        "the verbs that WOULD move it, and `restart` left out because it would not"
+        vec![
+            "for 4m",
+            "you can approve, veto or withdraw it"
+        ],
+        "the actions that WOULD move it, and `restart` left out because it would not"
     );
 
     // **A row nothing would move** says why, in the same one phrase.
@@ -297,8 +300,8 @@ fn a_row_says_the_verb_that_would_move_it_and_why_when_none_would() {
     let old = drawn.iter().find(|r| r["id"] == "r-old").expect("the row");
     let facts = facts_of(old);
     assert!(
-        facts.iter().any(|f| f == "restart (it has landed)"),
-        "the verb they would reach for, with the daemon's own reason: {facts:?}"
+        facts.iter().any(|f| f == "nothing to do: it has landed"),
+        "the action they would reach for, with the daemon's own reason: {facts:?}"
     );
 }
 
@@ -335,7 +338,7 @@ fn the_address_is_under_the_cursor_and_on_no_other_row() {
     assert!(
         under
             .iter()
-            .any(|u| u.starts_with("r-live-2 · head 1f2a3b4c5d")),
+            .any(|u| u.starts_with("row r-live-2 · the head it judged 1f2a3b4c5d")),
         "the id and sha are under the cursor: {under:?}"
     );
     // **No other row carries its id.**
@@ -343,14 +346,14 @@ fn the_address_is_under_the_cursor_and_on_no_other_row() {
         let text = row.to_string();
         let id = row["id"].as_str().unwrap();
         assert!(
-            !text.contains(&format!("\"{id} · head")),
+            !text.contains(&format!("\"row {id} · the head it judged")),
             "`{id}` prints its address on a row that is not picked: {text}"
         );
     }
     // And a row that IS the cursor's is the only one - an empty cursor means nobody's.
     let plain = view_of(&a_queue(), &[]);
     assert!(
-        !plain.to_string().contains(" · head "),
+        !plain.to_string().contains(" · the head it judged "),
         "with no row picked, no row prints an address"
     );
 }
@@ -393,9 +396,10 @@ fn the_verbs_are_the_daemons_words() {
     let text = view.to_string();
     assert!(!text.contains("\"drop\""), "the pane never says `drop`");
     assert!(text.contains("approve"), "and it says the daemon's words");
-    // **The legend is where the meaning lives**, once, instead of on every row.
+    // **The legend is where the meaning lives**, once, instead of on every row, and it names the
+    // action a person would use - `withdraw`, the row's word, not the head's `rm`.
     let legend = view["legend"].as_object().expect("a legend");
-    for verb in ["approve", "veto", "restart", "rm"] {
+    for verb in ["approve", "veto", "restart", "withdraw"] {
         assert!(legend.contains_key(verb), "the legend documents `{verb}`");
     }
     // **No row carries the legend's prose.** A row says `approve`; the sentence is the legend's.
@@ -425,9 +429,9 @@ fn a_red_target_is_a_line_of_its_own_and_its_old_review_is_history() {
         !drawn.iter().any(|r| r["id"] == "r-target-old"),
         "a withdrawn target review is behind the fold, not on the frame"
     );
-    // The alarm is the target's health, in the chrome above the rows.
+    // The alarm is the target's health, in the chrome above the rows, in words.
     let text = view.to_string();
-    assert!(text.contains("RED main letibot"), "{text}");
+    assert!(text.contains("main in letibot is red"), "{text}");
     assert!(text.contains("the gate's step 2 failed"), "{text}");
 }
 
@@ -438,12 +442,12 @@ fn a_stale_lease_says_so_and_names_the_lifetime_it_passed() {
     feed["leases"][0]["stale"] = json!(true);
     feed["leases"][0]["heartbeat_ms"] = json!(100_100u64);
     let view = view_of(&feed, &[]);
-    let stale = chrome_line(&view, "STALE letibot").expect("the alarm line");
+    let stale = chrome_line(&view, "nobody is serving letibot").expect("the alarm line");
     assert_eq!(
-        stale["value"], "mac (pid 4242, 0.5.1) has not said anything",
+        stale["value"], "mac (pid 4242, 0.5.1) stopped saying it was alive",
         "who has gone quiet"
     );
-    assert_eq!(stale["tail"], "1m", "the age of the heartbeat");
+    assert_eq!(stale["tail"], "1m ago", "the age of the heartbeat");
     assert_eq!(stale["role"], "attention");
 }
 
@@ -453,15 +457,16 @@ fn a_stale_lease_says_so_and_names_the_lifetime_it_passed() {
 #[test]
 fn a_healthy_lease_names_its_owner_and_its_heartbeat() {
     let view = view_of(&a_queue(), &[]);
-    let lease = chrome_line(&view, "letibot").expect("a line for the repository");
+    let lease = chrome_line(&view, "letibot is served by mac (pid 4242, 0.5.1)")
+        .expect("a line for the repository");
     assert_eq!(
-        lease["value"], "served by mac (pid 4242, 0.5.1) · heartbeat",
-        "the holder, the way the host pane names it"
+        lease["value"], "its last heartbeat",
+        "the holder is on the label, so the value is the one fact left"
     );
-    assert_eq!(lease["tail"], "4s", "and how long since it last said so");
-    // **And no STALE line** - the legend names the word, so the chrome is what is asked.
+    assert_eq!(lease["tail"], "4s ago", "and how long since it last said so");
+    // **And no stale line** - the legend names the word, so the chrome is what is asked.
     assert!(
-        chrome_line(&view, "STALE letibot").is_none(),
+        chrome_line(&view, "nobody is serving letibot").is_none(),
         "a fresh lease is not an alarm"
     );
 }
@@ -475,7 +480,7 @@ fn no_lease_says_nothing_is_serving_the_queues() {
     let view = view_of(&feed, &[]);
     let text = view.to_string();
     assert!(
-        text.contains("no daemon holds a queue lease - nothing is serving the queues"),
+        text.contains("no daemon holds this repository's queue lease"),
         "{text}"
     );
 }
@@ -494,7 +499,7 @@ fn a_row_names_its_repository_only_when_several_are_in_scope() {
         .find(|r| r["id"] == "r-live-1")
         .expect("a live row");
     assert!(
-        facts_of(live).iter().any(|f| f == "letibot"),
+        facts_of(live).iter().any(|f| f == "in letibot"),
         "the repository is on the row: {:?}",
         facts_of(live)
     );
@@ -510,7 +515,7 @@ fn a_row_names_its_repository_only_when_several_are_in_scope() {
         .find(|r| r["id"] == "r-live-1")
         .expect("a live row");
     assert!(
-        !facts_of(live).iter().any(|f| f == "letibot"),
+        !facts_of(live).iter().any(|f| f == "in letibot"),
         "one repository, so the title says it: {:?}",
         facts_of(live)
     );
@@ -534,7 +539,7 @@ fn a_queued_landing_says_what_it_waits_for() {
         .map(|u| u.as_str().unwrap_or_default())
         .collect();
     assert!(
-        under[0].starts_with("waits: gate running on 1f2a3b4 for 2m"),
+        under[0].starts_with("waits for the gate: gate running on 1f2a3b4 for 2m"),
         "{under:?}"
     );
 }
@@ -555,7 +560,7 @@ fn an_idle_queue_says_so_rather_than_drawing_nothing() {
         .iter()
         .map(|p| p["title"].as_str().unwrap_or_default())
         .collect();
-    assert!(titles.contains(&"the queue is idle"), "{titles:?}");
+    assert!(titles.contains(&"nothing in either queue"), "{titles:?}");
     let text = view.to_string();
     assert!(
         text.contains("nothing is in flight"),
@@ -571,9 +576,11 @@ fn a_row_is_one_line_with_the_reason_under_it() {
     let drawn = rows(&view);
     let row = drawn.iter().find(|r| r["id"] == "r-live-1").expect("a row");
     let cells = cells_of(row);
-    assert_eq!(cells[0], "[~]", "the state's mark");
-    assert_eq!(cells[1], "agent/r-live-1", "what it is about");
-    assert_eq!(cells[2], "reviewing", "the state's own word");
+    assert_eq!(cells[0], "agent/r-live-1", "what it is about");
+    assert_eq!(
+        cells[1], "a reviewer is reading it",
+        "the state as a sentence, not a mark and a code"
+    );
     let under: Vec<&str> = row["under"]
         .as_array()
         .unwrap()
@@ -587,8 +594,8 @@ fn a_row_is_one_line_with_the_reason_under_it() {
     );
 }
 
-/// **A target's own review reads as a target**, never as a branch - `RED TARGET main`, the words the
-/// host pane used, so a person who learnt the pane keeps the word.
+/// **A target's own review reads as a target**, never as a branch - `main's own tip`, in words,
+/// because `RED TARGET main` was a code a newcomer had to be told.
 #[test]
 fn a_target_review_says_red_target() {
     let mut feed = a_queue();
@@ -601,7 +608,7 @@ fn a_target_review_says_red_target() {
     let drawn = rows(&view);
     let row = drawn.iter().find(|r| r["id"] == "r-tip").expect("the row");
     let cells = cells_of(row);
-    assert_eq!(cells[1], "RED TARGET main", "{cells:?}");
+    assert_eq!(cells[0], "main's own tip", "{cells:?}");
 }
 
 /// A `gating` row says which step its gate is on, and how long it has been there. The tail itself
@@ -635,8 +642,8 @@ fn a_gating_row_says_which_step_its_gate_is_on() {
     assert!(
         under
             .iter()
-            .any(|u| u == "gate step 2 of 4 · running 6m · 12345 byte(s) written"),
-        "the step, its place, and how long it has been going: {under:?}"
+            .any(|u| u == "the gate is on step 2 of 4 · 12 KB written"),
+        "the step, its place, and how much it has written: {under:?}"
     );
 }
 
@@ -664,8 +671,8 @@ fn a_gating_rows_verb_is_withdraw() {
             .expect("the row"),
     );
     assert!(
-        facts.iter().any(|f| f == "rm"),
-        "the verb that would move it: {facts:?}"
+        facts.iter().any(|f| f == "you can withdraw it"),
+        "the action that would move it: {facts:?}"
     );
 }
 
@@ -688,8 +695,8 @@ fn a_gating_target_says_its_gate_is_running() {
     let mut feed = a_queue();
     feed["targets"] = json!([a_target("gating")]);
     let view = view_of(&feed, &[]);
-    let line = chrome_line(&view, "main letibot").expect("the gating target's line");
-    assert_eq!(line["value"], "gate running on fedcba9876 for 4m");
+    let line = chrome_line(&view, "main in letibot is being gated").expect("the gating target's line");
+    assert_eq!(line["value"], "the gate is running on fedcba9876 for 4m");
     assert_eq!(line["role"], "pending");
 }
 
@@ -700,8 +707,8 @@ fn a_green_target_says_where_it_stands() {
     let mut feed = a_queue();
     feed["targets"] = json!([a_target("green")]);
     let view = view_of(&feed, &[]);
-    let line = chrome_line(&view, "main letibot").expect("the green target's line");
-    assert_eq!(line["value"], "green at fedcba9876");
+    let line = chrome_line(&view, "main in letibot").expect("the green target's line");
+    assert_eq!(line["value"], "green at fedcba9876 - branches land on it");
     assert_eq!(line["role"], "faint");
 }
 
@@ -725,7 +732,8 @@ fn a_gating_landing_between_steps_says_the_gate_is_on_it() {
     assert!(
         under
             .iter()
-            .any(|u| u.as_str().unwrap_or_default() == "gate running on fedcba9876 for 2m"),
+            .any(|u| u.as_str().unwrap_or_default()
+                == "the gate is running on fedcba9876 for 2m"),
         "{under:?}"
     );
 }
@@ -783,8 +791,8 @@ fn the_picked_row_carries_its_last_three_moves() {
     let under = under_of(&feed, "r-live-1");
     let moves: Vec<&String> = under.iter().filter(|u| u.contains("→")).collect();
     assert_eq!(moves.len(), 3, "the last three, not all five: {under:?}");
-    assert!(moves[0].contains("waiting → reviewing"), "{under:?}");
-    assert!(moves[2].contains("blocked → reviewing"), "{under:?}");
+    assert!(moves[0].contains("waiting for a reviewer → a reviewer is reading it"), "{under:?}");
+    assert!(moves[2].contains("stopped: a person has to act → a reviewer is reading it"), "{under:?}");
     assert!(moves[2].contains("2m ago"), "{under:?}");
     assert!(moves.iter().all(|m| !m.contains("r-live-2")), "{under:?}");
 }
@@ -806,14 +814,14 @@ fn a_review_detail_carries_every_field() {
     feed["recent"] = json!([a_move("r-live-1", None, "waiting", 300_000)]);
     let detail = detail_of(&feed, "r-live-1");
     for want in [
-        "queue      review",
-        "state      waiting · 4m in it",
+        "this is    a branch put up for review",
+        "state      waiting for a reviewer · for 4m",
         "head       1f2a3b4c5d6e",
-        "verdict    rejected at abc1234567 by the operator",
+        "verdict    the operator reviewed agent/r-live-1 at abc1234567 and rejected",
         "failure    WAITING FOR THE REVIEWER'S TREE: the clone was refused",
-        "ask        the ask",
+        "the ask    the ask",
         "its moves",
-        "(new) → waiting · 5m ago · mac/4242: r-live-1 to waiting",
+        "(new) → waiting for a reviewer · 5m ago · mac/4242 said: r-live-1 to waiting",
     ] {
         assert!(detail.contains(want), "missing `{want}`:\n{detail}");
     }
@@ -842,16 +850,16 @@ fn a_merge_detail_carries_the_gate_and_its_steps() {
     feed["recent"] = json!([a_move("m-live", None, "queued", 300_000)]);
     let detail = detail_of(&feed, "m-live");
     for want in [
-        "queue      merge",
-        "approved   aaaa1111bbbb by the reviewer (review r-live-9)",
+        "this is    a landing: an approved branch",
+        "approved   the reviewer approved it at aaaa1111bbbb (review r-live-9)",
         "the gate's steps",
-        "✓ cargo clippy · 1m",
-        "⧗ cargo test · TIMED OUT after 30m",
+        "passed: cargo clippy · 1m",
+        "timed out: cargo test · 30m",
         "  still compiling",
         "  no reply",
-        "· cargo build · not run",
+        "not run: cargo build · 0s",
         "its moves",
-        "(new) → queued · 5m ago · mac/4242: m-live to queued",
+        "(new) → waiting for the gate · 5m ago · mac/4242 said: m-live to queued",
     ] {
         assert!(detail.contains(want), "missing `{want}`:\n{detail}");
     }
@@ -887,7 +895,7 @@ fn the_detail_of_a_running_gate_says_whether_it_moved() {
         "{moved}"
     );
     assert!(
-        moved.contains("moving     the tail moved 5s ago (12345 byte(s) written)"),
+        moved.contains("moving     the tail moved 5s ago · 12 KB written"),
         "{moved}"
     );
     assert!(
@@ -917,7 +925,7 @@ fn the_detail_of_a_running_gate_says_whether_it_moved() {
     let empty = detail_of(&feed, "m-gating");
     assert!(empty.contains("tail       nothing written yet"), "{empty}");
     assert!(
-        empty.contains("moving     the tail moved just now (12345 byte(s) written)"),
+        empty.contains("moving     the tail moved just now · 12 KB written"),
         "{empty}"
     );
 }
@@ -964,7 +972,7 @@ fn the_open_row_is_drawn_even_when_it_is_history() {
         open["detail"]
             .as_str()
             .unwrap_or_default()
-            .contains("queue      review")
+            .contains("this is    a branch put up for review")
     );
     // With no row open, history stays behind the fold.
     feed["open"] = json!("");
