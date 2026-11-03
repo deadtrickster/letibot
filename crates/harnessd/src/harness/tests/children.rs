@@ -419,6 +419,39 @@ fn a_failed_child_leaves_no_worktree_and_keeps_its_branch() {
         "a tree with uncommitted work is not reaped"
     );
 
+    // **A child that ANSWERED and then parked keeps its tree**, whatever its last turn did: the
+    // parent was told the branch is at this path, and `later_turn` settles the same slot when a
+    // `task_message` turn fails. That is not the turn the child was started for.
+    let path3 = root.join("wt-answered");
+    let path3 = path3.to_str().expect("utf-8 path").to_string();
+    let branch3 = letibot_tools::builtins::task::worktree_branch("answered");
+    super::git_in(
+        root.to_str().unwrap(),
+        &["worktree", "add", "-q", &path3, "-b", &branch3, "HEAD"],
+    )
+    .expect("a third worktree");
+    let parked = TaskSlot::new("s-parent");
+    parked.set_deliverable(deliverable::Deliverable::of(
+        &letibot_tools::builtins::task::WorktreePlacement {
+            path: path3.clone(),
+            branch: branch3.clone(),
+            base_sha: String::new(),
+            main_tree: false,
+        },
+    ));
+    parked.settle(letibot_tools::builtins::task::TaskStatus::Done {
+        answer: "the branch is here".into(),
+        child: None,
+    });
+    parked.settle(letibot_tools::builtins::task::TaskStatus::Failed {
+        why: "the provider refused the request".into(),
+    });
+    finish_child_thread(&parked, Ok("the branch is here".into()), &registry);
+    assert!(
+        std::path::Path::new(&path3).exists(),
+        "a parked child whose last turn failed still has the tree its answer named"
+    );
+
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -468,7 +501,10 @@ fn a_child_the_orderly_stop_ended_keeps_its_worktree() {
     registry.close();
     finish_child_thread(&slot, Err("the daemon is stopping".into()), &registry);
     assert!(
-        slot.failed(),
+        matches!(
+            slot.status(),
+            letibot_tools::builtins::task::TaskStatus::Failed { .. }
+        ),
         "the turn was ended by the stop, so the slot is not an answer: {:?}",
         slot.status()
     );

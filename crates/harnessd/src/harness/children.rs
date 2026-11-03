@@ -137,6 +137,9 @@ pub(crate) struct TaskSlot {
     /// once the child has failed: nothing else removes a refused, failed or killed child's tree, and
     /// a tree left behind is a copy of a branch that already holds the work.
     deliverable: std::sync::Mutex<Option<deliverable::Deliverable>>,
+    /// Whether the answer the PARENT was handed was a failure. The reap reads this and not the
+    /// slot's latest status: a later turn's error says nothing about the task it was started for.
+    answer_failed: std::sync::atomic::AtomicBool,
 }
 
 /// The handles one runner has handed out, with the slot each knocks on, in the order the
@@ -169,6 +172,7 @@ impl TaskSlot {
             }),
             settled: std::sync::Condvar::new(),
             killed: std::sync::atomic::AtomicBool::new(false),
+            answer_failed: std::sync::atomic::AtomicBool::new(false),
             owner: owner.to_string(),
             exited: std::sync::atomic::AtomicBool::new(false),
             parked: std::sync::atomic::AtomicBool::new(false),
@@ -180,12 +184,10 @@ impl TaskSlot {
         *self.deliverable.lock().expect("task slot") = d;
     }
 
-    /// Whether this child ended without an answer — the case whose tree nothing else reaps.
-    pub(crate) fn failed(&self) -> bool {
-        matches!(
-            *self.state.lock().expect("task slot"),
-            letibot_tools::builtins::task::TaskStatus::Failed { .. }
-        )
+    /// Whether this child ended without an answer — the case whose tree nothing else reaps. The
+    /// FIRST settlement and never a later one, which a `task_message` turn of a parked child makes.
+    pub(crate) fn answer_failed(&self) -> bool {
+        self.answer_failed.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// The child parked as store-only. Set before [`TaskSlot::mark_exited`], on the same thread.
@@ -276,7 +278,23 @@ impl TaskSlot {
                 self.killed.load(std::sync::atomic::Ordering::SeqCst),
             );
         }
-        *self.state.lock().expect("task slot") = status;
+        let mut g = self.state.lock().expect("task slot");
+        // The first settlement is the answer the parent was handed; a parked child's later turn
+        // overwrites the slot and must not turn the tree that answer named into debris.
+        if matches!(
+            *g,
+            letibot_tools::builtins::task::TaskStatus::Running { .. }
+        ) {
+            self.answer_failed.store(
+                matches!(
+                    status,
+                    letibot_tools::builtins::task::TaskStatus::Failed { .. }
+                ),
+                std::sync::atomic::Ordering::SeqCst,
+            );
+        }
+        *g = status;
+        drop(g);
         self.settled.notify_all();
     }
 
@@ -314,7 +332,7 @@ pub(crate) fn finish_child_thread(
     // **A failed child's tree is debris**: the branch keeps whatever it committed, and the removal
     // keeps a tree that still holds uncommitted work, so nothing that matters goes. A stop during
     // an orderly shutdown is not the child's ending: the next daemon resumes it INTO this tree.
-    if slot.failed() && !registry.is_stopping() {
+    if slot.answer_failed() && !registry.is_stopping() {
         let d = slot.deliverable.lock().expect("task slot").clone();
         let _ = deliverable::reap_failed(d.as_ref());
     }
