@@ -43,6 +43,16 @@ go stale.*
 
 ---
 
+## R120 - One seat and a working automode, instead of roles - **OPEN, filed 2026-11-03, the operator's direction**
+
+The operator, deciding N4: "the more i use things the more i understand the roles were overcomplication - we need working automode". N4 (a coder can write a test and cannot run it) is superseded: the answer is not a shaped verb for one role, it is fewer roles.
+
+- One working seat that can read, write and run commands. What it may do without asking is the MODE's business, not the role's. The coder/runner/m2 split and role switching go, except where a confined seat is the point (a VM or a placement).
+- `automode` works out of the box: today it requires an adjudicator and a reachable oracle and refuses without them. Its default decider is the session's own provider or a cheap fast model, with no setup. It admits in-checkout reads, writes, builds and tests; asks the operator for the network, paths outside the project, the always-ask list and destructive or irreversible actions; tells the model why when it denies; and records each decision with its reason, so the decisions can be reviewed and measured (the etalon oracle corpus exists for that).
+- It must be predictable: the same call in the same context gets the same answer, and the operator can read why.
+
+N4 moves to TODO-settled.md as superseded by this entry.
+
 ## R119 - Automation reacts to rate limits and model timeouts, and can move a running session to another model - **OPEN, filed 2026-11-03, the operator's ask**
 
 The operator: "mcp and basically all automation tools must be able to react to rate limits, model api timeouts and switch running session to a different model". On 2026-11-02 a peer orchestrator ran four sessions into GLM's 5-hour quota (HTTP 429, code 1113) and had no way to move them: `/models` sent through `leticode_send` reached the model as text, and a restart was the only route.
@@ -3212,7 +3222,7 @@ That is N4's answer too — see there for why a shaped runner is wanted rather t
 
 ---
 
-## N4 — a coder can write a test and cannot run it
+## N4 — a coder can write a test and cannot run it - **SUPERSEDED 2026-11-03 by R120: one seat and a working automode, not a verb for the coder role**
 
 **Observed 2026-09-11**: letibot wrote a regression test and then had no way to execute
 it. Not a bug — a consequence, and the role table shows it plainly:
