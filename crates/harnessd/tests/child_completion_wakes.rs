@@ -955,6 +955,72 @@ fn a_childs_later_turn_reaches_its_parent_too() {
     );
 }
 
+/// **A settlement the session was still holding when it closed is said at the next open** (R91.18):
+/// closing a root takes the watcher set's held and queued results, and the row's `delivered = 0`
+/// is what the next open of the same session in the same daemon reads.
+#[test]
+fn a_settlement_held_when_the_session_closed_is_said_at_the_next_open() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let dir = TempDir::new("child-wakes-held-close");
+    let store = dir.path().join("sessions.db");
+    let parent_id = "s-parent-held";
+    seed_session(&store, parent_id, dir.path());
+    let mut cfg = config(parent_id, Endpoint::new("127.0.0.1", 1), &store, dir.path());
+    let parts = parts_for(&cfg);
+    let stub = Stub::new(&parts.vocab);
+    cfg.endpoint = stub.endpoint.clone();
+    let registry = Registry::new();
+    let mut parent = Parent::open(&parts, &cfg, registry).owning();
+    parent
+        .harness_mut()
+        .submit(PROMPT)
+        .expect("the turn that starts the child");
+    let child = parent
+        .spawned()
+        .expect("the `task` call's result row names the child it started");
+    // The settlement is in the queue, unanswered: nobody has woken for it, so it is as held as a
+    // result ever is when the session closes.
+    assert!(
+        parent.wait_for_a_ring(parent_id),
+        "the child answered and its parent was never rung"
+    );
+    parent.close();
+    let run = wait_for_a_settled_child(&store, &child);
+    assert!(
+        !run.delivered,
+        "the row says the answer was told, so nothing can bring it back: {run:?}"
+    );
+
+    // The next open, in the SAME daemon: the row is this daemon's own, which is the case the
+    // restore's `instance != me` filter would otherwise skip.
+    parent.forget();
+    let mut second = Parent::open(&parts, &cfg, parent.registry.clone());
+    second.harness_mut().restore_after_restart();
+    let woke = second
+        .harness_mut()
+        .wake()
+        .expect("the open's wake")
+        .expect("the settlement the closed session was holding is a turn");
+    assert!(!woke.text.is_empty(), "the wake carries its notice");
+    let said = notices(second.harness().items());
+    assert_eq!(
+        said.len(),
+        1,
+        "the settlement the closed session dropped was never said: {said:#?}"
+    );
+    assert!(
+        said[0].contains(&child) && said[0].contains("the count is forty-two."),
+        "the notice names the child and carries its answer: {}",
+        said[0]
+    );
+    let after = wait_for_a_settled_child(&store, &child);
+    assert!(after.delivered, "the delivery was not recorded: {after:?}");
+    drop(second);
+    parent.registry.close();
+}
+
 /// The `[task]` notices in a session's log, in order - the rows only the daemon writes.
 fn notices(items: &[TranscriptItem]) -> Vec<String> {
     user_rows(items)
