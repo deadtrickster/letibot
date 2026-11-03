@@ -453,6 +453,12 @@ impl TaskSlot {
     pub(crate) fn newest_again(&self) -> Option<String> {
         self.again.lock().expect("task slot").clone()
     }
+
+    /// The child's name, for a settlement raised from another thread - `later_turn` reads the
+    /// field itself, and the daemon's worker has only the slot.
+    pub(crate) fn name(&self) -> Option<String> {
+        self.slug.clone()
+    }
 }
 
 /// **What a child's thread leaves behind when `run_to_completion` returns**: a refusal that came
@@ -751,12 +757,16 @@ pub(crate) fn serve_child(
 /// the exits are `?`s and early returns and the defect this replaces was an exit that forgot.
 pub(crate) struct ChildSessionGuard<'a> {
     registry: &'a Arc<letibot_sessionlog::registry::Registry>,
+    trees: &'a super::trees::Trees,
     id: &'a str,
 }
 
 impl Drop for ChildSessionGuard<'_> {
     fn drop(&mut self) {
         self.registry.remove(self.id);
+        // And this session's place in the daemon's tree table: it is nobody's parent while it has
+        // no harness, and a child that reopens puts its entry back.
+        self.trees.forget(self.id);
     }
 }
 
@@ -1274,6 +1284,64 @@ fn later_turn(
     out
 }
 
+/// **A later turn of a child the daemon's WORKER ran**: a parked child has no thread, so the two
+/// acts its own thread would have made in [`later_turn`] are made here, from the parent's side.
+/// Without them the parent is never told and `task_result` keeps answering the first answer.
+/// `settled_before` is read BEFORE the turn: a turn of the hold is not news of its own.
+pub(crate) fn a_child_turn_ended(
+    trees: &super::trees::Trees,
+    parent: &str,
+    child: &str,
+    somebody_spoke: bool,
+    settled_before: bool,
+    out: &Option<Result<Reply, HarnessError>>,
+) {
+    let Some(tree) = trees.of(parent) else {
+        return;
+    };
+    let Some(slot) = tree.slot(child) else {
+        return;
+    };
+    let Some(status) = later_news(somebody_spoke, settled_before, out) else {
+        return;
+    };
+    let (state, detail) = match &status {
+        letibot_tools::builtins::task::TaskStatus::Failed { why } => {
+            ("failed", crate::jobwatch::first_line(why))
+        }
+        other => (
+            "done",
+            crate::jobwatch::first_line(match other {
+                letibot_tools::builtins::task::TaskStatus::Done { answer, .. } => answer,
+                _ => "",
+            }),
+        ),
+    };
+    slot.settle_later(status);
+    // **This turn's answer is the child's last word**, kept where `collect` reads it.
+    let again = match out {
+        Some(Ok(reply)) if !reply.text.trim().is_empty() => {
+            slot.spoke_again(reply.text.trim());
+            true
+        }
+        _ => false,
+    };
+    tree.watch.settle_here(crate::jobwatch::JobCompletion {
+        memory: None,
+        kind: crate::jobwatch::BackgroundKind::Subagent,
+        owner: parent.to_string(),
+        job: child.to_string(),
+        command: String::new(),
+        slug: slot.name(),
+        state: state.to_string(),
+        produced: 0,
+        elapsed_ms: 0,
+        detail,
+        arrived: std::time::SystemTime::now(),
+        later: again,
+    });
+}
+
 /// The session's children, and the whole of the supervision edge between them. A parent owns its
 /// children's lifecycle, an exit goes parent-ward and never to the root, termination walks the subtree
 /// downward one level per session, and depth is a bound refused by name rather than a prohibition.
@@ -1317,6 +1385,9 @@ pub(crate) struct HarnessTaskRunner {
     /// Shared with every clone of this runner - the thread that runs a child
     /// holds one, and so does the tool that collects it.
     pub(crate) slots: TaskSlots,
+    /// The daemon's table of every open session's own set and slots, carried into a child's
+    /// `Parts` so its own entry lands where the daemon's worker reads.
+    pub(crate) trees: super::trees::Trees,
     /// The watcher set a child of THIS session joins (R58). A slot because the runner is built before the
     /// harness has its own `job_watch`; for a root that set is the root's, and for a child it carries the
     /// tree's ROOT and the level above, so a grandchild's `Parts` inherits both without a chain walk.
@@ -2587,7 +2658,12 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
                 TaskStatus::Done { answer, .. } => TaskStatus::Done {
                     // **The last word, not the first.** A child that answered again after the slot
                     // settled said something newer, and every notice of it promises `task_result`.
-                    answer: slot.newest_again().unwrap_or(answer),
+                    // A turn the worker ran moves the slot; the record is the second half, for a
+                    // daemon whose slot a restart left behind.
+                    answer: slot
+                        .newest_again()
+                        .or_else(|| self.a_later_answer(handle))
+                        .unwrap_or(answer),
                     child: Some(child),
                 },
                 other => other,
@@ -2889,6 +2965,13 @@ impl HarnessTaskRunner {
         }
     }
 
+    /// The child's LAST word, when this daemon's slot is not where it is: a turn the worker ran
+    /// writes the record, and a `task_result` that finds no later answer in the slot must read it
+    /// rather than hand the parent the first answer under the name of its last.
+    fn a_later_answer(&self, handle: &str) -> Option<String> {
+        self.record_of(handle)?.later_answer
+    }
+
     /// This session's record of one of its children, and nothing for a child of another session: the
     /// store is the whole daemon's and the upward edge is what makes an answer this session's to read.
     fn record_of(&self, handle: &str) -> Option<letibot_tokencore::store::SubagentRun> {
@@ -2926,6 +3009,7 @@ impl HarnessTaskRunner {
             child_boards: parts.child_boards.clone(),
             reviews: parts.reviews.clone(),
             slots: parts.tree_slots.clone().unwrap_or_default(),
+            trees: parts.trees.clone(),
             // The three cells a SPAWN reads and an enqueue never does: a tree's watcher set,
             // the head's answers, and the daemon's server window. A test that starts no child
             // has nothing to put in them, and `None` is what a root session starts with.
@@ -3539,6 +3623,8 @@ impl HarnessTaskRunner {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .clone(),
+            // The daemon's tree table is the daemon's: a child's own entry lands in it as it opens.
+            trees: self.trees.clone(),
         };
 
         // The child's adjudicator: its asks surface at the tree's ROOT. A child used to deny every `ask` on a
@@ -3595,6 +3681,7 @@ impl HarnessTaskRunner {
         // AFTER `sub`, so it drops first, before the harness and whatever holds its `HostProcesses`.
         let _session = ChildSessionGuard {
             registry: &self.registry,
+            trees: &self.trees,
             id: &sub_id,
         };
         self.tasks.record(crate::tasks::TaskEntry {

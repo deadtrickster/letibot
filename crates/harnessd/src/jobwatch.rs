@@ -571,6 +571,27 @@ impl JobWatchers {
         self.completions.push(c);
     }
 
+    /// **A settlement made on this session's OWN side of the tree**: the daemon's worker runs a
+    /// parked child's later turn, and the slot and the queue that must move are its parent's. Queued
+    /// and rung exactly as a watcher's would be, because this session is the one that has to act.
+    pub fn settle_here(&self, c: JobCompletion) {
+        let queue = SettlementQueue {
+            own: Arc::clone(&self.completions),
+            // The level above only for what this set cannot drain itself: `SettlementQueue::push`
+            // reads `stopped` under `own`'s lock, so a session that is still here keeps it.
+            parent: self
+                .parent
+                .as_ref()
+                .map(|up| (Arc::clone(&up.queue), up.who.clone())),
+            stopped: Arc::clone(&self.stop),
+            owner: self.me.clone(),
+            bell: self.bell.clone(),
+            // The row for a child's ending is the record's own, written wherever it settled.
+            recorder: None,
+        };
+        queue.push(c);
+    }
+
     /// **A settlement found by the session that knows and not by a watcher**: a subagent's later
     /// turn ends and nothing is blocked on its slot, so it goes to the level above - queued and
     /// rung the way a stopped session's queue hands up. `false` for a session with no level above.

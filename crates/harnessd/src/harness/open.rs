@@ -1656,6 +1656,11 @@ impl Harness {
         // against the session that outlives it, and a leftover with nowhere to go is an orphan.
         let heir_slot: Arc<std::sync::Mutex<Option<Arc<dyn letibot_tools::exec::ProcessHost>>>> =
             Default::default();
+        // **This session's handle list, in one place**: the runner is what `task` and `task_result`
+        // ask, and the tree entry is what the daemon's worker asks when it runs a parked child's
+        // turn - see `crates::trees`. One map, or the two would hand out different children.
+        let tree_slots: crate::harness::children::TaskSlots =
+            parts.tree_slots.clone().unwrap_or_default();
         let task_runner: Arc<dyn letibot_tools::builtins::task::TaskRunner> =
             Arc::new(HarnessTaskRunner {
                 vocab: parts.vocab.clone(),
@@ -1672,7 +1677,8 @@ impl Harness {
                 // registers `review_verdict` bound to its own session id, and the desk it submits to
                 // has to be the one this session opened the review on.
                 reviews: parts.reviews.clone(),
-                slots: parts.tree_slots.clone().unwrap_or_default(),
+                slots: tree_slots.clone(),
+                trees: parts.trees.clone(),
                 // Filled below, once this harness has built its own `job_watch` (R58).
                 tree_watch: tree_watch_slot.clone(),
                 // Filled as this session's gate is built: a root's own answers, or the ones
@@ -2458,6 +2464,16 @@ impl Harness {
         // child reads is already the joined one: that is how the ROOT stays the tree's root at every depth.
         if let Some(w) = &job_watch {
             *tree_watch_slot.lock().expect("tree watch") = Some(Arc::clone(w));
+            // **And the tree table hears it**, so the daemon's worker can settle this session's
+            // children while this session runs on another thread: a parked child's later turn is
+            // the worker's, and its slot and queue are this session's own.
+            parts.trees.register(
+                &cfg.session_id,
+                crate::harness::trees::Tree {
+                    watch: Arc::clone(w),
+                    slots: tree_slots.clone(),
+                },
+            );
             // Where a settlement gets written down: the watcher threads cannot be handed this harness's `Store`, so
             // they get its PATH and open a handle onto the process's one connection. This session's own id and not the
             // tree's, since a job a child backgrounded is the child's row.

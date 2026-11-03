@@ -46,6 +46,10 @@ pub struct Parts {
     /// [`Parts`] because a review has two sides in two sessions, and one `Arc` is what makes them one
     /// act. Not a store: the durable row is the queue's own.
     pub reviews: std::sync::Arc<letibot_tools::builtins::verdict::ReviewDesk>,
+    /// Every open session's own watcher set and slots, by id - see [`trees::Trees`]. Here
+    /// because the daemon's worker runs a PARKED child's later turn while the slot it must settle
+    /// is its parent's, on a thread the worker cannot reach.
+    pub(crate) trees: super::trees::Trees,
 }
 
 impl Parts {
@@ -109,6 +113,8 @@ impl Parts {
             // The daemon's review desk, empty: the queue's session opens a review on it when it
             // starts a gatekeeper, and the child hands its verdict back through the same one.
             reviews: std::sync::Arc::new(letibot_tools::builtins::verdict::ReviewDesk::new()),
+            // Empty: every harness puts its own entry in as it opens.
+            trees: super::trees::Trees::default(),
         })
     }
 }

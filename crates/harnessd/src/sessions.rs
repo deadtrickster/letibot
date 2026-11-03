@@ -2576,6 +2576,26 @@ impl<'a> Sessions<'a> {
                 pending: None,
             });
         let prior = record.as_ref().and_then(|r| r.later_turn_began());
+        // **The parent's slot, settled from here.** This turn is not on the child's own thread, so
+        // the two acts that thread makes (`harness::later_turn`) have to be made from the parent's
+        // side - and whether it had settled is read BEFORE the turn, since a turn of the hold is
+        // part of the answer it ends with rather than news of its own.
+        let parent = h.config().parent_session_id.clone();
+        let a_child_turn = parent.as_ref().map(|parent| {
+            let settled_before = self
+                .parts
+                .trees
+                .of(parent)
+                .and_then(|tree| tree.slot(session_id))
+                .is_some_and(|slot| slot.has_settled());
+            (parent.clone(), settled_before)
+        });
+        let somebody_spoke = matches!(
+            door,
+            crate::turn_tail::Door::Prompt
+                | crate::turn_tail::Door::Message
+                | crate::turn_tail::Door::Wake
+        );
         let out = run_turn(
             &mut h,
             &mut DaemonTurn {
@@ -2594,6 +2614,16 @@ impl<'a> Sessions<'a> {
                 r.answered_again(reply.text.trim());
             }
             r.later_turn_ended(prior);
+        }
+        if let Some((parent, settled_before)) = &a_child_turn {
+            crate::harness::a_child_turn_ended(
+                &self.parts.trees,
+                parent,
+                session_id,
+                somebody_spoke,
+                *settled_before,
+                &out,
+            );
         }
         self.open.insert(session_id.to_string(), h);
         out
@@ -3056,6 +3086,9 @@ impl<'a> Sessions<'a> {
             );
         }
         let held = self.open.remove(session_id);
+        // The tree table keeps a session's watcher set and slots for as long as it is open, and a
+        // session nobody serves has neither: a settlement naming it has nowhere to go.
+        self.parts.trees.forget(session_id);
         let said = match &held {
             Some(h) => {
                 h.stop_children();

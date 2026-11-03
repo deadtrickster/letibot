@@ -1525,6 +1525,8 @@ pub use clear::{ClearReport, clear_reply};
 // that a store already in that state needs, so a conversation is not refused for ever. See the
 // module's header for the shape it is, and why only that shape is repaired.
 mod children;
+// Where each open session's own watcher set and slots are, by id - see the module's header.
+pub(crate) mod trees;
 // **A session's estate** - what it was still holding when it ended, what ended with it, and what
 // it handed to the session that outlives it. See the module's header for why the substrate's own
 // reaping is not the whole answer for a subagent.
@@ -1561,8 +1563,8 @@ pub use children::{
     subagent_model, subagent_model_in,
 };
 pub(crate) use children::{
-    HarnessTaskRunner, TaskSlots, child_mode_source, git_in, steer_for_turn_over,
-    stop_children_first, visible_text,
+    HarnessTaskRunner, TaskSlots, a_child_turn_ended, child_mode_source, git_in,
+    steer_for_turn_over, stop_children_first, visible_text,
 };
 pub(crate) use deliveries::{
     Deliveries, OPERATOR_RETIRE, graced_endings, human_secs, monitor_entries_of, monitor_facts,
