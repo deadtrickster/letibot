@@ -138,10 +138,7 @@ impl Offers {
         let Some((path, score)) = corpus.best_with(brief, Some(tier)) else {
             return false;
         };
-        let Some((_, text)) = records.iter().find(|(p, _)| *p == path) else {
-            return false;
-        };
-        let offer = offer_of(&path, text, score);
+        let offer = offer_of(path, score);
         if score < OFFER_FLOOR || self.offered.contains(&offer.key()) {
             return false;
         }
@@ -203,7 +200,7 @@ impl Offers {
 }
 
 /// One record as an offer: a sha is a commit, and the settled file's own prefix says it is not.
-fn offer_of(path: &Path, _text: &str, score: f64) -> Offer {
+fn offer_of(path: &Path, score: f64) -> Offer {
     let key = path.to_string_lossy();
     match key.split_once('#') {
         Some((file, name)) => Offer {

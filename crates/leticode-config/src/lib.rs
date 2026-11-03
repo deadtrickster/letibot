@@ -1502,6 +1502,20 @@ mod tests {
         );
     }
 
+    /// The `[embeddings]` table is carried and not interpreted: it names where a vector comes
+    /// from, so refusing the file for carrying it would make the mode unwritable on every box
+    /// that declared one, and this reader seats no tool and sets no model from it.
+    #[test]
+    fn the_embeddings_table_is_carried_not_refused() {
+        let dir = project_dir("embeddings_table");
+        let path = write_file(
+            &dir,
+            "[embeddings]\nmode = \"internal\"\nmodel = \"/tmp/nowhere\"\n",
+        );
+        let cfg = LeticodeConfig::load(&path).expect("the section is carried");
+        assert!(cfg.main_model.is_none(), "and sets no model at this level");
+    }
+
     /// A typo inside a role's table is named too, and that is the half serde cannot do:
     /// `[roles.coder]` is read key by key, so a `temperatuer` that was accepted and read
     /// as nothing would leave the operator no way to tell they were ignored.

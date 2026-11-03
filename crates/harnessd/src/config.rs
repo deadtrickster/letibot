@@ -457,8 +457,9 @@ pub struct Config {
     pub logs_root: Option<std::path::PathBuf>,
     /// **The box's one embedder**, built by [`Config::read_embeddings`] from `[embeddings]` and
     /// shared by every caller that scores something: the notes offer, the near-copy gate, the
-    /// context-claim check and the skill offer. `None` is the lexical score exactly, which is the
-    /// default and every fixture.
+    /// context-claim check, the skill offer, and the three callers over the plan, the commit log
+    /// and a compaction's old half. `None` is the lexical score exactly, which is the default and
+    /// every fixture.
     pub embedder: Option<std::sync::Arc<letibot_embeddings::Embedder>>,
     /// Why a section the box DID write produced no embedder. Said once, at the next session's
     /// open, because a tier that is silently absent is a tier nobody can fix.

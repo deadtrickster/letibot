@@ -22,7 +22,8 @@ use letibot_transcript::{Speaker, TranscriptItem, UserPart};
 pub const OFFER_FLOOR: f64 = 0.35;
 
 /// How many chars of a brief are scored, from the newest end: a task prompt is the brief, and the
-/// 200 KB a tool result printed before it is not.
+/// 200 KB a tool result printed before it is not. The cut falls at the oldest end, so the work
+/// being written down now is the part that survives it.
 pub const DRAFT_CHARS: usize = 8_000;
 
 /// The file the take-up log is appended to, in the session's logs directory beside the others.
