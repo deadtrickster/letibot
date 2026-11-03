@@ -335,7 +335,7 @@ impl TaskSlot {
     /// A turn after the answer settled the slot: the record keeps the first outcome and the later
     /// answer, which `spoke_again` writes.
     pub(crate) fn settle_later(&self, status: letibot_tools::builtins::task::TaskStatus) {
-        self.settle_with(status, true);
+        self.settle_with(status, false);
     }
 
     fn settle_with(&self, status: letibot_tools::builtins::task::TaskStatus, record: bool) {
@@ -1213,11 +1213,7 @@ fn later_turn(
                 }),
             ),
         };
-        if settled_before {
-            slot.settle_later(status);
-        } else {
-            slot.settle(status);
-        }
+        slot.settle_later(status);
         // **This turn's answer is the child's last word**, kept where `collect` reads it: a later
         // turn's reply is what `task_result` answers with, not the first one it gave.
         let again = match &out {
