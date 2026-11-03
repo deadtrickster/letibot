@@ -1494,6 +1494,47 @@ impl Harness {
         Ok(())
     }
 
+    /// The rows a brief is checked against: this session's plan and its relatives' - a parent's
+    /// and a child's board are the same tree's work, which is what "somebody is already doing
+    /// this" spans. A storeless session still has its own board, so it is scored against that.
+    fn open_rows(&self) -> Vec<crate::waits_offer::OpenRow> {
+        let mut out: Vec<crate::waits_offer::OpenRow> = Vec::new();
+        for item in self.todos.snapshot() {
+            if crate::waits_offer::open(&item) {
+                out.push(crate::waits_offer::OpenRow {
+                    owner: "this session".into(),
+                    content: item.content,
+                });
+            }
+        }
+        let Some(store) = &self.store else {
+            return out;
+        };
+        let mut kin: Vec<(String, String)> = Vec::new();
+        for b in self.session_registry.list() {
+            let child = b.parent_session_id.as_deref() == Some(self.cfg.session_id.as_str());
+            let parent = self.cfg.parent_session_id.as_deref() == Some(b.session_id.as_str());
+            if child || parent {
+                kin.push((
+                    b.session_id.clone(),
+                    letibot_tools::builtins::task::subagent_label(Some(&b.slug), &b.session_id),
+                ));
+            }
+        }
+        for (id, owner) in kin.into_iter().take(KIN_MAX) {
+            for item in store.todos(&id).unwrap_or_default() {
+                if crate::waits_offer::open(&item) {
+                    out.push(crate::waits_offer::OpenRow {
+                        owner: owner.clone(),
+                        content: item.content,
+                    });
+                }
+            }
+        }
+        out.truncate(ROWS_MAX);
+        out
+    }
+
     fn rounds(&mut self) -> Result<Reply, HarnessError> {
         self.the_turn_has_somewhere_to_go()?;
         // How many times this turn has asked again after a refused key. Bounded, so a
@@ -1527,6 +1568,10 @@ impl Harness {
         // per session, settled against the round's own `skill` loads.
         let mut skill_offers = crate::skills_offer::Offers::new().with_tier(self.cfg.tier());
         skill_offers.recall(&self.cfg.daemon_logs(), &self.cfg.session_id);
+        // And the tree's open rows, offered when the brief in hand is one of them: a row somebody
+        // already holds is a wait, and spawning a child to redo it is what that line saves.
+        let mut waits = crate::waits_offer::Offers::new().with_tier(self.cfg.tier());
+        waits.recall(&self.cfg.daemon_logs(), &self.cfg.session_id);
         // The bodies this session was STARTED with are not news to it. The ones its own rounds load
         // are read per round, below, because they are in the transcript only once that round ran.
         skill_offers.skip_names(self.cfg.skills.iter());
@@ -1567,9 +1612,15 @@ impl Harness {
                 if let Some(said) = crate::embeddings::fault_note(self.cfg.embedder.as_ref()) {
                     self.warn("embeddings_unavailable", said);
                 }
+                // The brief in hand is the person's prompt and the model's own latest words, which
+                // is where a `task` call's prompt is written - the case this caller exists for.
+                let brief = crate::waits_offer::draft(&self.session.items);
+                let rows = self.open_rows();
+                waits.compose(&rows, &brief);
             }
             let mut tail = offers.tail();
             tail.extend(skill_offers.tail());
+            tail.extend(waits.tail());
             // Take the round again when the endpoint is what failed: an inner loop, so a retry does not spend a
             // `max_tool_rounds`, since it produced nothing. And `/models` is ANSWERED here but not APPLIED, because a
             // re-issued round carries the rest of the old turn, which a thinking-mode provider refuses.
@@ -1920,6 +1971,7 @@ impl Harness {
             // that ends the turn with no calls settles with an empty list, which is an untaken offer recorded as one.
             offers.settle(&self.cfg.daemon_logs(), &self.cfg.session_id, &calls);
             skill_offers.settle(&self.cfg.daemon_logs(), &self.cfg.session_id, &calls);
+            waits.settle(&self.cfg.daemon_logs(), &self.cfg.session_id, &calls);
             // What the agent says it is doing, recorded before its calls are adjudicated: the sentence in front of its
             // tool calls is what the guard is missing when the operator's instruction names a goal rather than a file.
             // Never an authorisation and never citable.

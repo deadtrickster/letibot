@@ -66,6 +66,11 @@ use letibot_tools::ProcessHost as _;
 /// travels separately, so a short trail cannot read as a complete one.
 const TRAIL_UTTERANCES: usize = 12;
 
+/// How many relatives' boards a brief is scored against, and how many rows in all: the corpus is
+/// read once a round, and a tree of twenty children is not a corpus worth the wait.
+const KIN_MAX: usize = 8;
+const ROWS_MAX: usize = 48;
+
 /// How far back the walk goes, and how many utterances the trail holds: the only reader takes the
 /// last `TRAIL_SCAN`, so anything older was held for the life of the session and never read.
 pub(crate) const TRAIL_SCAN: usize = 60;

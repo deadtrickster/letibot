@@ -1137,6 +1137,12 @@ struct LeticodeConfigFile {
     fallback: Option<toml::Value>,
     #[serde(default)]
     fallback_after_timeouts: Option<toml::Value>,
+    /// **The `[embeddings]` table**, read by `letibot_embeddings::Settings` from this same file.
+    /// Accepted and not interpreted: it seats no tool and sets no model, so refusing the file for
+    /// carrying it would refuse a key this reader has no opinion about, as `[queue]` is accepted.
+    #[serde(default)]
+    #[allow(dead_code)]
+    embeddings: Option<toml::Value>,
 }
 
 /// The fallback list as the file wrote it: an array of model names, in the order they are

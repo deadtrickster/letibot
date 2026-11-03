@@ -58,25 +58,29 @@ pub fn fault_note(embedder: Option<&Arc<Embedder>>) -> Option<String> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::path::PathBuf;
+pub mod fixture {
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
 
-    /// A directory that removes itself.
-    struct Dir(PathBuf);
+    use letibot_embeddings::{Embedder, Settings};
+
+    /// A directory that removes itself, kept alive for as long as the embedder reads it.
+    pub struct Dir(pub PathBuf);
 
     impl Dir {
-        fn new(tag: &str) -> Dir {
+        pub fn new(tag: &str) -> Dir {
+            static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
             let p = std::env::temp_dir().join(format!(
-                "letibot-embeddings-{tag}-{}-{}",
+                "harnessd-embeddings-{tag}-{}-{}-{}",
                 std::process::id(),
-                letibot_metrics::now_ms()
+                letibot_metrics::now_ms(),
+                N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             ));
             std::fs::create_dir_all(&p).expect("scratch dir");
             Dir(p)
         }
 
-        fn path(&self) -> &Path {
+        pub fn path(&self) -> &Path {
             &self.0
         }
     }
@@ -86,6 +90,33 @@ mod tests {
             let _ = std::fs::remove_dir_all(&self.0);
         }
     }
+
+    /// The box's embedder over the tiny BERT, built rather than downloaded: its words are two
+    /// directions, so `alpha beta gamma delta` and `kappa lambda mu nu` are as far apart as the
+    /// fixture's model can make two sentences and a test is written in them. A tier holds one
+    /// caller's corpus, so a test takes one per caller over this.
+    pub fn model(tag: &str) -> (Dir, Dir, Arc<Embedder>) {
+        let model = Dir::new(&format!("model-{tag}"));
+        letibot_embeddings::testing::tiny_bert(model.path()).expect("fixture model");
+        let data = Dir::new(&format!("data-{tag}"));
+        let settings = Settings::from_toml(&format!(
+            "[embeddings]\nmode = \"internal\"\nmodel = \"{}\"\n",
+            model.path().display()
+        ))
+        .expect("settings");
+        let embedder = Embedder::open(&settings, data.path())
+            .expect("the fixture cache")
+            .expect("an embedder");
+        (model, data, embedder)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    use super::fixture::Dir;
 
     /// A file with the section in it, and the data directory its cache lands in.
     fn section(dir: &Dir, body: &str) -> PathBuf {

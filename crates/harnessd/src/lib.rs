@@ -79,6 +79,7 @@ pub mod term;
 pub mod transcript_source;
 pub mod turn_tail;
 pub mod vm_reap;
+pub mod waits_offer;
 pub mod wall;
 // One process per session's transcript: the claim in `letibot_tokencore::store::writers`
 // that refuses a second daemon's open, and the sentence it is refused with.
