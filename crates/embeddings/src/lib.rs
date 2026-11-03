@@ -38,4 +38,4 @@ pub use config::{ConfigError, Mode, Settings};
 pub use cosine::{Index, cosine};
 pub use model::{BUILTIN_MODEL, Model, ModelError, builtin_dir};
 pub use remote::{Remote, RemoteError};
-pub use tier::{Engine, Filled, Tier, TierError};
+pub use tier::{Embedder, Engine, Filled, Planted, Tier, TierError};

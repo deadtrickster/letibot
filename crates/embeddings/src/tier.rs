@@ -6,18 +6,23 @@
 //! optional `&Tier` and one floor.
 
 use std::path::Path;
+use std::sync::{Arc, Mutex, RwLock};
 
-use crate::cache::{Cache, CacheError, Hit};
+use crate::cache::{Cache, CacheError, EmbedOrCacheError, Hit};
 use crate::config::{Mode, Settings};
 use crate::cosine::Index;
 use crate::model::{Model, ModelError};
 use crate::remote::{Remote, RemoteError};
 
 /// Where a vector comes from, once the mode has been read. Boxed because a loaded
-/// checkpoint is megabytes beside a URL's few fields, and a tier is held behind a lock.
+/// checkpoint is megabytes beside a URL's few fields, and an embedder is shared by every
+/// caller on the box.
 pub enum Engine {
     Internal(Box<Model>),
     Remote(Remote),
+    /// Synonyms planted by hand, for a caller's test: no model, no download, and no
+    /// `[embeddings]` value reaches it.
+    Planted(Planted),
 }
 
 impl Engine {
@@ -26,6 +31,7 @@ impl Engine {
         match self {
             Engine::Internal(m) => m.name(),
             Engine::Remote(r) => r.name(),
+            Engine::Planted(p) => p.name(),
         }
     }
 
@@ -34,6 +40,7 @@ impl Engine {
         match self {
             Engine::Internal(_) => "internal",
             Engine::Remote(_) => "url",
+            Engine::Planted(_) => "planted",
         }
     }
 
@@ -41,8 +48,59 @@ impl Engine {
         let mut vectors = match self {
             Engine::Internal(m) => m.embed(&[text]).map_err(TierError::Model)?,
             Engine::Remote(r) => r.embed(&[text]).map_err(TierError::Remote)?,
+            Engine::Planted(p) => vec![p.vector(text)],
         };
         vectors.pop().ok_or_else(|| TierError::Empty(text.len()))
+    }
+}
+
+/// **A tier whose meaning is a table.** Each group is one dimension and each word in the
+/// group sets it, so two texts that share a group and no word score as one - which is what a
+/// caller's test needs to say *a paraphrase clears this floor*, with no model and no file.
+///
+/// Built by [`crate::testing::planted`] and by nothing else; it is here rather than behind a
+/// feature so the arm that answers it is compiled wherever the enum is.
+pub struct Planted {
+    groups: Vec<Vec<String>>,
+}
+
+impl Planted {
+    pub fn new(groups: &[&[&str]]) -> Planted {
+        Planted {
+            groups: groups
+                .iter()
+                .map(|g| g.iter().map(|w| w.to_lowercase()).collect())
+                .collect(),
+        }
+    }
+
+    pub fn name(&self) -> &'static str {
+        "planted"
+    }
+
+    /// How wide a vector this makes, which is the number of groups.
+    pub fn dim(&self) -> usize {
+        self.groups.len()
+    }
+
+    /// One word, one dimension: a word outside every group means nothing to this tier, and a
+    /// text of such words has no direction at all.
+    fn vector(&self, text: &str) -> Vec<f32> {
+        let words: Vec<String> = text
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| !w.is_empty())
+            .map(|w| w.to_lowercase())
+            .collect();
+        self.groups
+            .iter()
+            .map(|group| {
+                if group.iter().any(|w| words.contains(w)) {
+                    1.0
+                } else {
+                    0.0
+                }
+            })
+            .collect()
     }
 }
 
@@ -89,21 +147,33 @@ pub struct Filled {
     pub cached: usize,
 }
 
-/// The second tier: an engine, the cache it fills, and the corpus's vectors in memory.
-pub struct Tier {
-    engine: Engine,
-    cache: Cache,
-    index: Index,
-    /// The first failure this session, held until a caller says it: the tier falls back to
-    /// the lexical score on every failure, and a line per round would be worse than the
-    /// silence. `Mutex` because a caller reaches a tier from another thread.
-    fault: std::sync::Mutex<Option<String>>,
+/// **The one embedder a box has.** The engine and the cache, and nothing about what is
+/// being scored: the corpus's vectors belong to the caller that holds them, so four callers
+/// on one box load one model between them and pay for a text once.
+pub struct Embedder {
+    /// One lock, because the cache is a single connection: a query is milliseconds and there
+    /// is one per round per caller, which is not worth a second model.
+    inner: Mutex<Inner>,
+    /// The first failure this box, held until a caller says it: every caller falls back to
+    /// the lexical score on a failure, and a line per round would be worse than the silence.
+    fault: Mutex<Option<String>>,
 }
 
-impl Tier {
-    /// Build the tier the mode asks for, or `None` when the mode is `off` - which is the
+struct Inner {
+    engine: Engine,
+    cache: Cache,
+}
+
+impl std::fmt::Debug for Embedder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Embedder({})", self.model())
+    }
+}
+
+impl Embedder {
+    /// Build the embedder the mode asks for, or `None` when the mode is `off` - which is the
     /// whole of "lexical only".
-    pub fn open(settings: &Settings, data_dir: &Path) -> Result<Option<Tier>, TierError> {
+    pub fn open(settings: &Settings, data_dir: &Path) -> Result<Option<Arc<Embedder>>, TierError> {
         let engine = match &settings.mode {
             Mode::Off => return Ok(None),
             Mode::Internal { model } => match model {
@@ -119,36 +189,85 @@ impl Tier {
             }
         };
         let cache = Cache::open_in(data_dir)?;
-        Ok(Some(Tier {
-            engine,
-            cache,
-            index: Index::default(),
-            fault: std::sync::Mutex::new(None),
-        }))
+        Ok(Some(Embedder::with(engine, cache)))
     }
 
-    /// A tier over an engine and a cache a caller already holds, which is what a test
-    /// and a second caller on one box both need.
-    pub fn with(engine: Engine, cache: Cache) -> Tier {
-        Tier {
-            engine,
-            cache,
-            index: Index::default(),
-            fault: std::sync::Mutex::new(None),
-        }
+    /// An embedder over an engine and a cache the caller already holds, which is what a test
+    /// needs.
+    pub fn with(engine: Engine, cache: Cache) -> Arc<Embedder> {
+        Arc::new(Embedder {
+            inner: Mutex::new(Inner { engine, cache }),
+            fault: Mutex::new(None),
+        })
     }
 
-    /// **The first failure, once.** The tier falls back to the lexical score whenever it
-    /// cannot answer, so a caller that says every failure would say it every round; a
-    /// caller that says nothing would hide a wrong URL for a whole session. This is the
-    /// sentence, handed out exactly once.
+    /// The engine's name, which is what a disclosure and a cache row are keyed by.
+    pub fn model(&self) -> String {
+        self.lock().engine.name().to_string()
+    }
+
+    pub fn kind(&self) -> &'static str {
+        self.lock().engine.kind()
+    }
+
+    /// **The first failure, once.** Every caller falls back to the lexical score whenever the
+    /// embedder cannot answer, so a caller that said every failure would say it every round; a
+    /// caller that said nothing would hide a wrong URL for a whole session. This is the
+    /// sentence, handed out exactly once, and whichever caller asks first says it.
     pub fn take_fault(&self) -> Option<String> {
         self.fault.lock().unwrap_or_else(|e| e.into_inner()).take()
     }
 
-    /// Remember why this call could not answer, keeping the first reason of the session,
-    /// and hand the caller the narrow variant it can act on.
-    fn fail(&self, e: crate::cache::EmbedOrCacheError) -> TierError {
+    /// One vector for a text - the round's query - from the cache when it has been seen
+    /// before, which for a prompt is almost never and for an unchanged note is almost always.
+    pub fn vector(&self, text: &str, now_ms: i64) -> Result<Vec<f32>, TierError> {
+        let (vector, _) = self.embed_or_get(text, now_ms)?;
+        Ok(vector)
+    }
+
+    /// Every document's vector, keyed as the caller gave them, and how much of that the box
+    /// had already paid for. Only a text the cache has never seen costs an embedding.
+    pub fn vectors(
+        &self,
+        documents: impl IntoIterator<Item = (String, String)>,
+        now_ms: i64,
+    ) -> Result<(Vec<(String, Vec<f32>)>, Filled), TierError> {
+        let mut done = Filled::default();
+        let mut rows: Vec<(String, Vec<f32>)> = Vec::new();
+        for (key, text) in documents {
+            let (vector, hit) = self.embed_or_get(&text, now_ms)?;
+            match hit {
+                Hit::Cached => done.cached += 1,
+                Hit::Embedded => done.embedded += 1,
+            }
+            rows.push((key, vector));
+        }
+        Ok((rows, done))
+    }
+
+    fn embed_or_get(&self, text: &str, now_ms: i64) -> Result<(Vec<f32>, Hit), TierError> {
+        let inner = self.lock();
+        let name = inner.engine.name().to_string();
+        let embedded = |t: &str| {
+            inner
+                .engine
+                .embed(t)
+                .map(normalise)
+                .map_err(|e| e.to_string())
+        };
+        inner
+            .cache
+            .embed_or_get(&name, text, now_ms, embedded)
+            .map_err(|e| self.fail(e))
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Remember why this call could not answer, keeping the first reason of the box, and hand
+    /// the caller the narrow variant it can act on.
+    fn fail(&self, e: EmbedOrCacheError) -> TierError {
         {
             let mut fault = self.fault.lock().unwrap_or_else(|p| p.into_inner());
             if fault.is_none() {
@@ -156,77 +275,79 @@ impl Tier {
             }
         }
         match e {
-            crate::cache::EmbedOrCacheError::Cache(c) => TierError::Cache(c),
-            crate::cache::EmbedOrCacheError::Embed(m) => TierError::Embed(m),
+            EmbedOrCacheError::Cache(c) => TierError::Cache(c),
+            EmbedOrCacheError::Embed(m) => TierError::Embed(m),
+        }
+    }
+}
+
+/// One caller's second tier: the box's embedder, and this caller's corpus's vectors in
+/// memory. Two callers share the model and never score each other's documents.
+pub struct Tier {
+    embedder: Arc<Embedder>,
+    /// `&self` because a tool is invoked through it and a round refills a corpus it did not
+    /// create; a read is a cosine over the rows already there.
+    index: RwLock<Index>,
+}
+
+impl Tier {
+    /// Build the tier the mode asks for, or `None` when the mode is `off` - which is the
+    /// whole of "lexical only".
+    pub fn open(settings: &Settings, data_dir: &Path) -> Result<Option<Tier>, TierError> {
+        Ok(Embedder::open(settings, data_dir)?.map(Tier::over))
+    }
+
+    /// A tier over the box's embedder, with no documents in it yet.
+    pub fn over(embedder: Arc<Embedder>) -> Tier {
+        Tier {
+            embedder,
+            index: RwLock::new(Index::default()),
         }
     }
 
-    /// The engine's name, which is what a disclosure and a cache row are keyed by.
-    pub fn model(&self) -> &str {
-        self.engine.name()
+    /// A tier over an engine and a cache the caller already holds.
+    pub fn with(engine: Engine, cache: Cache) -> Tier {
+        Tier::over(Embedder::with(engine, cache))
+    }
+
+    /// The box's embedder, for the caller that says the first failure.
+    pub fn embedder(&self) -> &Arc<Embedder> {
+        &self.embedder
+    }
+
+    pub fn model(&self) -> String {
+        self.embedder.model()
     }
 
     pub fn kind(&self) -> &'static str {
-        self.engine.kind()
+        self.embedder.kind()
     }
 
-    pub fn index(&self) -> &Index {
-        &self.index
+    /// **The first failure, once**, from the box's embedder - which every caller shares, so it
+    /// is said once for the box and not once for each of them.
+    pub fn take_fault(&self) -> Option<String> {
+        self.embedder.take_fault()
     }
 
-    /// Embed every document that has changed and put its vector in memory. Only a text
-    /// the cache has never seen costs an embedding, so a restart pays for the corpus once.
+    /// Embed every document that has changed and put its vector in memory. Only a text the
+    /// cache has never seen costs an embedding, so a restart pays for the corpus once.
     pub fn fill(
-        &mut self,
+        &self,
         documents: impl IntoIterator<Item = (String, String)>,
         now_ms: i64,
     ) -> Result<Filled, TierError> {
-        let name = self.engine.name().to_string();
-        let mut done = Filled::default();
-        let mut rows: Vec<(String, Vec<f32>)> = Vec::new();
-        for (key, text) in documents {
-            let (vector, hit) = self
-                .cache
-                .embed_or_get(&name, &text, now_ms, |t| {
-                    self.engine
-                        .embed(t)
-                        .map_err(|e| e.to_string())
-                        .map(normalise)
-                })
-                .map_err(|e| match e {
-                    crate::cache::EmbedOrCacheError::Cache(c) => TierError::Cache(c),
-                    crate::cache::EmbedOrCacheError::Embed(e) => TierError::Embed(e),
-                })?;
-            match hit {
-                Hit::Cached => done.cached += 1,
-                Hit::Embedded => done.embedded += 1,
-            }
-            rows.push((key, vector));
-        }
-        self.index = Index::new(rows);
+        let (rows, done) = self.embedder.vectors(documents, now_ms)?;
+        *self.write() = Index::new(rows);
         Ok(done)
     }
 
-    /// One vector for a text - the round's query - from the cache when it has been seen
-    /// before, which for a prompt is almost never and for an unchanged note is almost
-    /// always.
     pub fn query(&self, text: &str, now_ms: i64) -> Result<Vec<f32>, TierError> {
-        let name = self.engine.name().to_string();
-        let (vector, _) = self
-            .cache
-            .embed_or_get(&name, text, now_ms, |t| {
-                self.engine
-                    .embed(t)
-                    .map(normalise)
-                    .map_err(|e| e.to_string())
-            })
-            .map_err(|e| self.fail(e))?;
-        Ok(vector)
+        self.embedder.vector(text, now_ms)
     }
 
     /// How alike a document and a query are, `None` when the document was never embedded.
     pub fn cosine(&self, key: &str, query: &[f32]) -> Option<f32> {
-        self.index.cosine_to(key, query)
+        self.read().cosine_to(key, query)
     }
 
     /// The documents most like a text, best first.
@@ -238,11 +359,19 @@ impl Tier {
     ) -> Result<Vec<(String, f32)>, TierError> {
         let query = self.query(text, now_ms)?;
         Ok(self
-            .index
+            .read()
             .nearest(&query, most)
             .into_iter()
             .map(|(k, s)| (k.to_string(), s))
             .collect())
+    }
+
+    fn read(&self) -> std::sync::RwLockReadGuard<'_, Index> {
+        self.index.read().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn write(&self) -> std::sync::RwLockWriteGuard<'_, Index> {
+        self.index.write().unwrap_or_else(|e| e.into_inner())
     }
 }
 
@@ -338,7 +467,7 @@ mod tests {
     /// the same data directory costs no embedding at all.
     #[test]
     fn a_second_fill_reads_every_vector_from_the_cache() {
-        let (model_dir, data, mut tier) = tier("fill");
+        let (model_dir, data, tier) = tier("fill");
         let first = tier.fill(docs(), now()).unwrap();
         assert_eq!(
             first,
@@ -353,7 +482,7 @@ mod tests {
             model_dir.path().display()
         ))
         .unwrap();
-        let mut again = Tier::open(&settings, data.path()).unwrap().expect("a tier");
+        let again = Tier::open(&settings, data.path()).unwrap().expect("a tier");
         assert_eq!(
             again.fill(docs(), now()).unwrap(),
             Filled {
@@ -367,7 +496,7 @@ mod tests {
     /// note last.
     #[test]
     fn ranking_puts_the_paraphrase_above_the_unrelated_note() {
-        let (_m, _d, mut tier) = tier("rank");
+        let (_m, _d, tier) = tier("rank");
         tier.fill(docs(), now()).unwrap();
         let ranked = tier.rank("alpha beta gamma", now(), 3).unwrap();
         assert_eq!(ranked[0].0, "note/paraphrase", "{ranked:?}");
@@ -378,7 +507,7 @@ mod tests {
     /// "not embedded" apart from "not alike".
     #[test]
     fn a_document_outside_the_index_has_no_score() {
-        let (_m, _d, mut tier) = tier("absent");
+        let (_m, _d, tier) = tier("absent");
         tier.fill(docs(), now()).unwrap();
         let query = tier.query("alpha", now()).unwrap();
         assert!(tier.cosine("note/paraphrase", &query).is_some());
@@ -400,6 +529,45 @@ mod tests {
         let said = tier.take_fault().expect("the first failure is said");
         assert!(said.contains("127.0.0.1:1"), "{said}");
         assert_eq!(tier.take_fault(), None);
+    }
+
+    /// **One embedder, two callers.** Two tiers over one embedder share the vectors it makes -
+    /// a text either of them asks for is embedded once - and share the corpus's absence: a
+    /// document is in the index of the caller that filled it and in no other.
+    #[test]
+    fn one_embedder_serves_two_tiers_and_keeps_their_corpora_apart() {
+        let data = Dir::new("shared");
+        let groups: &[&[&str]] = &[&["alpha", "omega"], &["beta", "kappa"]];
+        let cache = Cache::open_in(data.path()).unwrap();
+        let embedder = Embedder::with(Engine::Planted(Planted::new(groups)), cache);
+        let notes = Tier::over(embedder.clone());
+        let skills = Tier::over(embedder.clone());
+        notes
+            .fill([("a/note".to_string(), "alpha".to_string())], now())
+            .unwrap();
+        let query = skills.query("omega", now()).unwrap();
+        assert_eq!(notes.cosine("a/note", &query), Some(1.0));
+        // The same embedder, and still another caller's corpus: a skill is not a note.
+        assert_eq!(skills.cosine("a/note", &query), None);
+    }
+
+    /// The failure is said once for the BOX, not once per caller: whichever tier trips over
+    /// it first takes the sentence and the other is silent.
+    #[test]
+    fn two_tiers_over_one_embedder_say_a_failure_once() {
+        let data = Dir::new("shared-fault");
+        let settings =
+            Settings::from_toml("[embeddings]\nmode = \"http://127.0.0.1:1\"\nmodel = \"m\"\n")
+                .unwrap();
+        let embedder = Embedder::open(&settings, data.path())
+            .unwrap()
+            .expect("an embedder");
+        let first = Tier::over(embedder.clone());
+        let second = Tier::over(embedder);
+        assert!(first.query("alpha", now()).is_err());
+        assert!(second.query("beta", now()).is_err());
+        assert!(first.take_fault().is_some());
+        assert_eq!(second.take_fault(), None);
     }
 
     /// A URL mode against a server that is not there fails, and it fails as an error the

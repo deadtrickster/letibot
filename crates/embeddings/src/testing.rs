@@ -227,3 +227,14 @@ fn safetensors_bytes(tensors: &[(String, Vec<usize>, Vec<f32>)]) -> Result<Vec<u
     out.extend_from_slice(&data);
     Ok(out)
 }
+
+/// **A tier with no model at all**: the words in one group mean the same thing, so two texts
+/// that share a group and not a word score as one. What a caller's test needs to say a
+/// paraphrase clears its own floor, which no word-bag model can show.
+///
+/// The cache is a real one, in `data_dir`, because a caller that asks twice must be answered
+/// from it exactly as it would be on a box.
+pub fn planted(data_dir: &Path, groups: &[&[&str]]) -> crate::Tier {
+    let cache = crate::Cache::open_in(data_dir).expect("the fixture's cache");
+    crate::Tier::with(crate::Engine::Planted(crate::Planted::new(groups)), cache)
+}
