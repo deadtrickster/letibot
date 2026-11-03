@@ -12,11 +12,7 @@ use crate::model::BUILTIN_MODEL;
 
 /// The commit the three files are pinned at. A branch would move under a box that fetched
 /// before it moved, so this is a full hash, and every URL below is built under it.
-///
-/// **This is a placeholder.** It is `0000…` until the real revision is recorded, and
-/// [`Pin::is_filled`] refuses a fetch until it is: a box must not embed with bytes nobody
-/// pinned.
-pub const REVISION: &str = "0000000000000000000000000000000000000000";
+pub const REVISION: &str = "1110a243fdf4706b3f48f1d95db1a4f5529b4d41";
 
 /// The repository's `resolve` root, with `/<revision>/<file>` under it.
 pub const BASE: &str = "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve";
@@ -30,23 +26,23 @@ pub struct Source {
     pub bytes: u64,
 }
 
-/// **The three files, and the trust in them.** Hashes are placeholders in the same way
-/// [`REVISION`] is, and a fetch refuses to run until all four are the real ones.
+/// **The three files, and the trust in them.** `sha256` is what the bytes must hash to, and
+/// `bytes` is how much the one sentence before a fetch promises is coming.
 pub const SOURCES: [Source; 3] = [
     Source {
         file: "config.json",
-        sha256: "PIN-config.json",
-        bytes: 0,
+        sha256: "953f9c0d463486b10a6871cc2fd59f223b2c70184f49815e7efbcab5d8908b41",
+        bytes: 612,
     },
     Source {
         file: "tokenizer.json",
-        sha256: "PIN-tokenizer.json",
-        bytes: 0,
+        sha256: "be50c3628f2bf5bb5e3a7f17b1f74611b2561a3a27eeab05e5aa30f411572037",
+        bytes: 466_247,
     },
     Source {
         file: "model.safetensors",
-        sha256: "PIN-model.safetensors",
-        bytes: 0,
+        sha256: "53aa51172d142c89d9012cce15ae4d6cc0ca6895895114379cacb4fab128d9db",
+        bytes: 90_868_376,
     },
 ];
 
@@ -100,11 +96,11 @@ impl Pin {
         format!("{}/{}/{}", self.base, self.revision, file)
     }
 
-    /// **Is the pin a real one?** A commit hash and a SHA-256 are fixed lengths, so a
-    /// placeholder is a string of the wrong length or one that is not hexadecimal, and a fetch
-    /// that ran on it would trust bytes nobody chose.
+    /// **Is the pin a real one?** A commit hash and a SHA-256 are fixed lengths, so a string of
+    /// the wrong length, one that is not hexadecimal, or the all-zero filler a table is written
+    /// with before its values are known is a pin no fetch may run under.
     pub fn is_filled(&self) -> bool {
-        is_hex(&self.revision, 40) && self.sources.iter().all(|s| is_hex(s.sha256, 64))
+        pinned(&self.revision, 40) && self.sources.iter().all(|s| pinned(s.sha256, 64))
     }
 
     /// Are all three files already here? Checked before anything is fetched, so a box that
@@ -118,11 +114,18 @@ fn is_hex(text: &str, len: usize) -> bool {
     text.len() == len && text.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+/// A pin's own spelling: `len` hexadecimal digits, and not the filler a table holds before its
+/// values are known.
+fn pinned(text: &str, len: usize) -> bool {
+    is_hex(text, len) && text.bytes().any(|b| b != b'0')
+}
+
 /// Why the built-in model is not in the data directory, in the words the one sentence a box
 /// says about it uses. Every variant names what to act on: a URL, a file, or a path.
 #[derive(Debug)]
 pub enum DownloadError {
-    /// The pin is a placeholder: this build does not know which bytes to trust.
+    /// The pin is not a commit and a hash per file, so this build does not know which bytes to
+    /// trust.
     Unpinned,
     /// A URL this build's client cannot fetch.
     Url(String),
@@ -148,8 +151,8 @@ impl std::fmt::Display for DownloadError {
         match self {
             DownloadError::Unpinned => write!(
                 f,
-                "the built-in model is not pinned in this build - its revision and the three \
-                 file hashes are placeholders - so nothing was fetched"
+                "the built-in model's pin is not a full commit and a sha-256 for every file, so \
+                 nothing was fetched"
             ),
             DownloadError::Url(url) => write!(
                 f,
@@ -366,22 +369,32 @@ mod tests {
     use letibot_http::retry::Policy;
 
     /// **The pin is the whole trust story.** A box that fetched whatever a branch held would
-    /// embed with bytes nobody reviewed, so this fails until the table holds the real commit
-    /// and the three real hashes.
+    /// embed with bytes nobody reviewed, so the shipped table is a full commit and a full
+    /// sha-256 per file, and none of the four is the all-zero filler.
     #[test]
     fn the_builtin_pin_names_a_commit_and_a_hash_for_every_file() {
         let pin = Pin::shipped();
         assert!(
-            pin.is_filled(),
-            "the built-in model is not pinned yet: REVISION is {:?} and the files are {}. Fill \
-             all four in `crates/embeddings/src/builtin.rs` from the reviewed checkpoint.",
-            pin.revision(),
-            pin.sources()
-                .iter()
-                .map(|s| format!("{} = {:?}", s.file, s.sha256))
-                .collect::<Vec<_>>()
-                .join(", ")
+            is_hex(pin.revision(), 40) && pin.revision().bytes().any(|b| b != b'0'),
+            "the built-in revision is {:?}, and a pin is a full 40-hex commit",
+            pin.revision()
         );
+        for source in pin.sources() {
+            assert!(
+                is_hex(source.sha256, 64) && source.sha256.bytes().any(|b| b != b'0'),
+                "{} is pinned at {:?}, and a pin is a full 64-hex sha-256",
+                source.file,
+                source.sha256
+            );
+            assert!(
+                source.bytes > 0,
+                "{} is weighed {} bytes, and the sentence before a fetch says how much is \
+                 coming",
+                source.file,
+                source.bytes
+            );
+        }
+        assert!(pin.is_filled(), "the shipped pin is a real one");
     }
 
     /// One directory per revision, so a moved pin fetches into a new place instead of mixing
@@ -528,16 +541,17 @@ mod tests {
         assert!(!dir.join("config.json.part").exists(), "the temp was left");
     }
 
-    /// The placeholder table cannot fetch anything, and it must not reach the server to find
+    /// A pin that is not filled cannot fetch anything, and it must not reach the server to find
     /// that out: a box must never embed with bytes nobody pinned.
     #[test]
     fn an_unfilled_pin_is_refused_before_anything_is_fetched() {
         let fake = Fake::new(|_| b"HTTP/1.1 500 Oops\r\nContent-Length: 0\r\n\r\n".to_vec());
         let data = Dir::new("unpinned");
-        let err = ensure(&Pin::shipped(), data.path(), Policy::none(), &mut |_| {
+        let filler = Pin::new(BASE, "0".repeat(40), Pin::shipped().sources().to_vec());
+        let err = ensure(&filler, data.path(), Policy::none(), &mut |_| {
             panic!("nothing is announced when nothing is fetched")
         })
-        .expect_err("a placeholder pin is a refusal");
+        .expect_err("an unfilled pin is a refusal");
         assert!(matches!(err, DownloadError::Unpinned), "{err}");
         assert_eq!(fake.requests(), 0);
     }
