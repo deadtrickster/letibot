@@ -258,11 +258,10 @@ fn exit_verdict(verdicts: &[String]) -> (bool, String) {
     for v in verdicts {
         let mut words = v.split_whitespace();
         let Some(check) = words.next() else { continue };
-        let digits = &check[1..];
-        if !check.starts_with('C')
-            || digits.is_empty()
-            || !digits.chars().all(|c| c.is_ascii_digit())
-        {
+        let Some(digits) = check.strip_prefix('C') else {
+            continue;
+        };
+        if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
             continue;
         }
         if MEASURED_ELSEWHERE.iter().any(|(c, _)| *c == check) {
