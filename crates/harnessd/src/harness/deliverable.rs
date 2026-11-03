@@ -79,12 +79,13 @@ pub fn completion_line(d: &Deliverable, files: &[String]) -> String {
     )
 }
 
-/// What the parent is handed, with the dirty-tree line on top when there is one. `text` is the
+/// What the parent is handed, with the dirty-tree line AFTER what the child said. `text` is the
 /// child's answer or the failure's sentence; a child with no deliverable, or a clean tree, gets it
-/// back unchanged.
+/// back unchanged. The line goes second because the parent's `[task]` bullet is the first line, and
+/// that must be the answer rather than a complaint about the tree.
 pub fn with_the_line(d: Option<&Deliverable>, text: &str) -> String {
     match d.and_then(|d| d.uncommitted().map(|f| completion_line(d, &f))) {
-        Some(line) => format!("{line}\n\n{text}"),
+        Some(line) => format!("{text}\n\n{line}"),
         None => text.to_string(),
     }
 }
@@ -257,23 +258,25 @@ mod tests {
             "one nudge, then it may finish"
         );
 
+        // R93.C13: the answer is what the parent's first line reads, so the line follows it.
         let handed = with_the_line(Some(&r.wt), "all done");
-        let first = handed.lines().next().unwrap();
+        assert!(handed.starts_with("all done\n\n"), "{handed}");
+        let line = handed.trim_start_matches("all done\n\n");
         assert!(
-            first.starts_with(&format!(
+            line.starts_with(&format!(
                 "the worktree {} has uncommitted changes: M lib.rs — the branch {} does not \
                  contain them.",
                 r.wt.path, r.wt.branch
             )),
-            "{first}"
+            "{line}"
         );
         assert!(
-            first.contains(&format!("git -C {} add -A", r.wt.path)),
-            "{first}"
+            line.contains(&format!("git -C {} add -A", r.wt.path)),
+            "{line}"
         );
         assert!(
-            first.contains(&format!("git -C {} commit -m", r.wt.path)),
-            "{first}"
+            line.contains(&format!("git -C {} commit -m", r.wt.path)),
+            "{line}"
         );
 
         // And the two commands do what the line says: run as printed, the branch holds the work,
@@ -297,8 +300,8 @@ mod tests {
             );
             String::from_utf8_lossy(&out.stdout).to_string()
         };
-        let commands: Vec<&str> = first.split('`').skip(1).step_by(2).collect();
-        assert_eq!(commands.len(), 2, "{first}");
+        let commands: Vec<&str> = line.split('`').skip(1).step_by(2).collect();
+        assert_eq!(commands.len(), 2, "{line}");
         for c in &commands {
             sh(c);
         }
@@ -308,7 +311,6 @@ mod tests {
             wt.display()
         ));
         assert_eq!(committed.trim(), "lib.rs", "{committed}");
-        assert!(handed.ends_with("\n\nall done"), "{handed}");
     }
 
     #[test]
@@ -316,9 +318,15 @@ mod tests {
         let r = repo("dead");
         std::fs::write(Path::new(&r.wt.path).join("half.rs"), "fn half(").unwrap();
         let why = with_the_line(Some(&r.wt), "the provider refused the request");
-        assert!(why.starts_with("the worktree "), "{why}");
+        assert!(why.starts_with("the provider refused the request\n\n"), "{why}");
         assert!(why.contains("?? half.rs"), "{why}");
-        assert!(why.ends_with("the provider refused the request"), "{why}");
+        assert!(
+            why.ends_with(&format!(
+                "salvage: uncommitted work of {}\"`.",
+                r.wt.branch
+            )),
+            "{why}"
+        );
     }
 
     /// The settlement the parent reads, through the guard every ending of a child goes through
@@ -343,11 +351,11 @@ mod tests {
                 why: "the provider refused".into(),
             });
         let why = why_of(slot.status());
+        assert!(why.starts_with("the provider refused\n\n"), "{why}");
         assert!(
-            why.starts_with(&format!("the worktree {} has", r.wt.path)),
+            why.contains(&format!("the worktree {} has", r.wt.path)),
             "{why}"
         );
-        assert!(why.ends_with("the provider refused"), "{why}");
 
         // Killed: the answer it had is not an answer, and the line survives the replacement.
         let slot = TaskSlot::new("s-parent");
@@ -367,9 +375,13 @@ mod tests {
         let slot = TaskSlot::new("s-parent");
         drop(AnswerOnce::new(&slot).with_deliverable(Some(r.wt.clone())));
         let why = why_of(slot.status());
-        assert!(why.starts_with("the worktree "), "{why}");
+        assert!(
+            why.starts_with("this subagent's turn ended without saying how it went"),
+            "{why}"
+        );
+        assert!(why.contains("the worktree "), "{why}");
 
-        // Answered: the line is on top of the answer.
+        // Answered: the answer first, the line after it.
         let slot = TaskSlot::new("s-parent");
         AnswerOnce::new(&slot)
             .with_deliverable(Some(r.wt.clone()))
@@ -379,8 +391,8 @@ mod tests {
             });
         match slot.status() {
             TaskStatus::Done { answer, .. } => {
-                assert!(answer.starts_with("the worktree "), "{answer}");
-                assert!(answer.ends_with("\n\ndone"), "{answer}");
+                assert!(answer.starts_with("done\n\n"), "{answer}");
+                assert!(answer.contains("the worktree "), "{answer}");
             }
             other => panic!("expected an answer, got {other:?}"),
         }
