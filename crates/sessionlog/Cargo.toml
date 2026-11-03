@@ -28,6 +28,9 @@ sha2 = "0.10"
 # frame with its key order intact. The same reason dialect-glm needs it: those
 # bytes become prompt bytes again on the next turn.
 serde_json = { workspace = true, features = ["preserve_order"] }
+# **`getsockopt`, for the pid on the other end of the socket** (`peer`): `SO_PEERCRED` on Linux and
+# `LOCAL_PEERPID` on macOS, each with its own struct, and `getuid` alone cannot name a process.
+libc = "0.2"
 
 # The turn engine, for the lift from `TurnEvent` into §4.5's full enum. Optional
 # and off by default so `cargo build -p letibot-sessionlog` proves the log, the

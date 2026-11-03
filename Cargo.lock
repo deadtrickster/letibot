@@ -1635,6 +1635,7 @@ dependencies = [
  "letibot-tools",
  "letibot-transcript",
  "letibot-turn",
+ "libc",
  "serde",
  "serde_json",
  "sha2",
