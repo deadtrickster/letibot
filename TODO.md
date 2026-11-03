@@ -2543,7 +2543,7 @@ gap explicit **rather than widening it unilaterally**, which was the right call:
 changes the head protocol. The question for the operator is one line — *does the event
 carry the content, or a handle the head resolves?* — and after that it is code.
 
-## N2 — `Dialect` split, rendering-as-data (T2), and structural eviction (T15) — ✓ T2's split fixed in 8ca0d4b3, test a_spec_can_be_built_entirely_at_runtime — OPEN: T15's structural eviction is still a design (`docs/compaction.md`) and no code; compaction still cuts and summarises (`crates/turn/src/compaction.rs:649`).
+## N2 — `Dialect` split, rendering-as-data (T2), and structural eviction (T15) — ✓ T2's split fixed in 8ca0d4b3, test a_spec_can_be_built_entirely_at_runtime — PARTLY LANDED: T15's unit eviction runs before the summary turn; the map and `recall` are still design (`docs/compaction.md` §7).
 
 Both arguments are finished and written down. Neither needs an answer so much as a
 decision to spend the time; each is large enough that starting one is a scheduling
@@ -5602,10 +5602,13 @@ rather than rewritten in place.
 
 Depends on nothing. Feeds `docs/memory.md`. Gives `SegmentMark` its missing producer.
 
-— OPEN: the design is written (`docs/compaction.md`) and nothing was scheduled or built: §10 of
-the plan still reads *Compaction, as leveled compaction* (`docs/implementation-plan.md:215-223`),
-`crates/turn/src/compaction.rs` is still the summarise-as-one-more-turn module, and there is no
-eviction map and no `recall` tool.
+— PARTLY LANDED: the record is sized by the room and gated on what it kept, and the tail keeps the
+old turns most relevant to the plan (embedding relevance). Structural eviction of units now runs
+before every summary turn (`crates/turn/src/evict.rs`, test `crates/turn/tests/evict_summary.rs`):
+superseded reads, settled subagents and finished calls go as stubs, and failures, the exchange in
+hand and anything a plan row names stay. OPEN: the addressable map in the new base, the `recall`
+tool, a standalone `prune`, and §10 of the plan (`docs/implementation-plan.md:215-223`) still reads
+*leveled compaction*.
 
 ---
 

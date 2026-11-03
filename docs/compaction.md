@@ -254,7 +254,35 @@ Adopt, adapted - it is §4's first rung, not an alternative to it:
 
 Sized as its own verb (`/prune`) so it can run with no model behind it, and not scheduled.
 
-## 7. Open, and honestly
+## 7. What landed, and what is open
+
+Landed (`crates/turn/src/evict.rs`, called from `summarise_one`):
+
+- **Covered before this:** the record is sized by the room the window has and gated on what it kept
+  (§6); the verbatim tail keeps the old exchanges most relevant to the plan by embedding score
+  (`compaction_relevance`). Neither evicts anything: both decide what the summary is, not what it is shown.
+- **Eviction before summary.** Every summary turn (`summarise_first_half`, both halves of
+  `summarise_overrun`) is handed `evict::reduce(slice, plan_rows)`, not the raw span. A body goes
+  as a stub in three classes, in this order: a read or command run again later in the span
+  (superseded), a `task_result` whose subagent has answered (the stub names the child's session),
+  and any other finished call's output over `BODY_FLOOR`. The call, its arguments and its outcome stay.
+- **Never evicted:** a failed call's body, the exchange the session is inside, and any call whose
+  subject (path or command) a pending or in-progress plan row names.
+- **Not an edit.** The reduced span is only the summary turn's prompt. The session, ledger and
+  transcript are untouched, so no hash chain is broken. `Harvest` reports `evicted` and `gone`.
+- Tested in `crates/turn/tests/evict_summary.rs` on a long fake conversation: evicted units go,
+  plan-named and failed bodies stay, and an empty plan evicts strictly more.
+
+Still open:
+
+- **The map and `recall`.** Evicted spans are not replaced by an addressable map in the new base:
+  the record still carries prose, and nothing zooms back in. The stub names where the body was, but
+  no `recall` tool reads it.
+- **Cache cost.** The reduced prompt is no longer a byte prefix of the live stream, so the
+  summary turn on a local server reads cold. It is a smaller prompt, not a warm one.
+- **Standalone `prune`** (§6) is not built.
+
+Also open, honestly:
 
 - **Node labelling quality.** A bad label makes a node unfindable - with fewer words to guess
   from than the transcript had.
