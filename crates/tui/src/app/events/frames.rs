@@ -291,6 +291,18 @@ impl App {
             // it, so this arm stays explicit rather than a wildcard, and an answer that arrives one
             // day is visible here instead of swallowed.
             ServerFrame::RowFetched { .. } => Disposition::Control,
+            // The rows above the window, or the ones filling the gap to the tail: a page names the
+            // ordinal it starts at, so the window stays one contiguous run of the session.
+            ServerFrame::RowsFetched { from, rows, .. } => {
+                // The ask is spent whatever came back, and a page with nothing above it is the
+                // daemon's answer that the transcript begins there: asking again would be a loop.
+                self.fetch_asked = None;
+                if rows.is_empty() && from > 0 {
+                    self.no_more_above = true;
+                }
+                self.apply_rows(from, rows);
+                Disposition::Rendered
+            }
             ServerFrame::Peeked {
                 session_id,
                 dropped,

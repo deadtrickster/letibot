@@ -241,6 +241,14 @@ impl App {
         if self.scroll > 0 && self.hist_floor > 0 {
             self.fill_backward(self.scroll + room + TAIL_SLACK);
         }
+        // **The window has a budget, and everything this frame drew is in it.** Run after the walks
+        // and the fill above, so what is measured is what the head would go on holding.
+        self.trim_held(room);
+        // And when the reader has reached the oldest row this head holds, the rows above it are
+        // somebody else's: the daemon answers them, in pages.
+        if self.hist_floor == 0 {
+            self.ask_for_rows_above();
+        }
 
         // One walk, two numbers, and the numerator cannot exceed its denominator: how many rows have arrived out
         // of how many there are, both counted off one pass over `items`. The version this replaces kept a

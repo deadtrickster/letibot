@@ -2631,6 +2631,33 @@ attaching to a 1 MB one; scroll-up extends it without a full lex; an unfolded 41
 is reachable rather than truncated; and `eval` stays out of it — no logical string is cut
 to fit a screen.
 
+### R19.4 — the head holds a window, and scrolls above it by asking — **DONE**
+
+The head-side half of (a) and (b) together, because they are one thing: a window is only bounded
+if what is above it can be fetched back.
+
+- **`App::held_limit`** (8 MiB, a field so a test can shrink it) and **`App::trim_held`**: once
+the head's copy of the rows is over it, the oldest rows above the reader's window are let go and
+the window is rendered again from what is left. The rendered lines go with them, so the buffer
+is one window and not every line ever drawn. Before this, `hist_lines` never shrank: a session
+that started small and grew stayed in forward-walk mode for ever and the head grew with it.
+- **`App::items_base`**, from the snapshot's `items_dropped`: where `items[0]` sits in the
+session. That is what makes an ordinal nameable after a window has been trimmed.
+- **`ClientFrame::FetchRows`/`ServerFrame::RowsFetched`** (`PROTOCOL_VERSION` 56): a page of
+whole rows by ordinal. The daemon answers from its view and falls through to the store behind
+`RowSource::row_items` for the rest, one query per page. `FetchRow` was the wrong shape here: a
+byte window inside one row's body does not carry the row's kind.
+- **The ask**: `App::ask_for_rows_above` fires when the reader has scrolled to the oldest row
+the head holds, one page (100 rows) in flight at a time, and stops for good once a page comes
+back empty. The page is prepended, every row index shifts with it, and the reader's held row
+does not move on their screen.
+
+**Still open, and named so it is not found as a bug.** Trimming only lets go of rows *above* the
+reader. A reader parked up in history while the session keeps appending still grows the head with
+the rows arriving below them; bounding that needs the below-direction fetch (a count of rows not
+held, the same page in the other direction, and a seam that says the tail is not held), which is
+a second piece and not a smaller one.
+
 ---
 
 ## R22 — a 1.35M-token conversation compacted to a 2,250-token summary — **DONE 2026-11-02 (the flat budget, the enumeration and the gate; per-topic budgets stay open by the entry's own order)**

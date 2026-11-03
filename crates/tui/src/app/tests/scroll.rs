@@ -4097,3 +4097,278 @@ fn a_round_that_thinks_in_two_blocks_hands_each_over() {
         "the pane is still drawing a thinking block of its own:\n{landed}"
     );
 }
+
+/// **The head holds a window of the conversation and not the buffer.** A session that runs for hours
+/// appends rows for ever, and a body it holds is text: without a bound the head's copy of a long
+/// session grows with the session, and so does every line it has ever drawn.
+#[test]
+fn the_head_holds_a_window_of_a_long_session_and_not_the_whole_of_it() {
+    let mut a = app();
+    a.walk_limit = 1;
+    // A window a test can actually reach: 2000 rows of a few hundred bytes is over it in a moment.
+    a.held_limit = 64 * 1024;
+    let body = "a line of conversation, and enough of them to make a row cost its bytes\n\n\
+                ```rust\nfn f() { let n = 1; }\n```\n";
+    let rows = 2000u64;
+    for i in 0..rows {
+        a.apply(ServerFrame::Event(env(
+            i * 2 + 1,
+            testing::appended(&format!("s.{i}"), "user"),
+        )));
+        a.apply(ServerFrame::Event(env(
+            i * 2 + 2,
+            testing::content(&format!("s.{i}"), &format!("row {i}\n{body}")),
+        )));
+        // A frame now and then, as a head draws one per tick rather than per row.
+        if i % 100 == 0 {
+            let _ = a.screen(100, 40);
+        }
+    }
+    let frame = a.screen(100, 40);
+
+    // The tail is what it draws: the newest row, whole.
+    assert!(
+        frame
+            .iter()
+            .any(|l| l.contains(&format!("row {}", rows - 1))),
+        "the newest row is not on the screen:\n{}",
+        frame.join("\n")
+    );
+    // And what it holds is bounded, in the place the memory actually is.
+    assert!(
+        transcript_bytes(&a.items) <= a.held_limit,
+        "the head holds {} bytes of {} rows, over its {} byte window",
+        transcript_bytes(&a.items),
+        a.items.len(),
+        a.held_limit
+    );
+    assert!(
+        a.items_base > 0,
+        "nothing was let go, so this asserts nothing about a window"
+    );
+    // The count is still the session's: a row dropped above the window is counted, not lost.
+    assert_eq!(
+        a.items_base + a.items.len(),
+        rows as usize,
+        "the window no longer accounts for every row of the session"
+    );
+    // The lines are bounded too, and by the window rather than by the session: a rendered buffer that
+    // kept every row it ever drew would be the memory this test is about.
+    assert!(
+        a.hist_lines.len() < rows as usize / 4,
+        "the head kept {} rendered lines of a {} row session",
+        a.hist_lines.len(),
+        rows
+    );
+}
+
+/// A page of rows the daemon answers goes ABOVE the window and is drawn there, so the reader who
+/// asked for older rows gets them instead of a page the head keeps out of sight.
+#[test]
+fn an_answered_page_lands_above_the_window() {
+    let mut a = app();
+    // A head that attached to a session the daemon had already trimmed: its first row is row 60.
+    a.items_base = 60;
+    for i in 0..20u64 {
+        a.apply(ServerFrame::Event(env(
+            i * 2 + 1,
+            testing::appended(&format!("s.{i}"), "user"),
+        )));
+        a.apply(ServerFrame::Event(env(
+            i * 2 + 2,
+            testing::content(&format!("s.{i}"), &format!("row {i}\n")),
+        )));
+    }
+    a.walk_limit = 1;
+    let _ = a.screen(100, 20);
+    let floor = a.hist_floor;
+    assert!(floor > 0, "the tail path was not taken");
+
+    // The page the daemon would answer for the rows above, oldest first.
+    let page: Vec<SnapshotItem> = (40..60u64)
+        .map(|i| SnapshotItem {
+            item_id: format!("p.{i}"),
+            kind: "user".into(),
+            ledger_head: String::new(),
+            ts: 0,
+            item: Some(TranscriptItem::User {
+                speaker: Default::default(),
+                parts: vec![letibot_transcript::UserPart::Text {
+                    text: format!("older row {i}\n"),
+                }],
+            }),
+            citations: Vec::new(),
+        })
+        .collect();
+    a.apply(ServerFrame::RowsFetched {
+        session_id: "s".into(),
+        from: 40,
+        rows: page,
+    });
+
+    assert_eq!(a.items_base, 40, "the window's base moved to the page");
+    assert_eq!(a.items.len(), 40, "the page joined the rows it came above");
+    assert_eq!(
+        a.hist_floor,
+        floor + 20,
+        "the rendered rows moved down with them"
+    );
+
+    // And scrolling into them draws them: the page is reachable, not merely held.
+    a.scroll = 100_000;
+    let drawn = a.screen(100, 40).join("\n");
+    assert_eq!(
+        a.hist_floor, 0,
+        "the top of the window is still the page, so it was held and not drawn"
+    );
+    assert!(
+        drawn.contains("older row 40"),
+        "the fetched rows are not on the screen:\n{drawn}"
+    );
+}
+
+/// Scrolling above the oldest row this head holds asks the daemon for the rows it is missing, in
+/// pages, and asks once rather than once a frame.
+#[test]
+fn scrolling_above_the_window_asks_for_the_rows_it_is_missing() {
+    let mut a = app();
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", false)],
+        Hub::new("s").snapshot(),
+    ));
+    // A window the daemon trimmed before this head attached: 400 rows lived above it.
+    a.items_base = 400;
+    for i in 0..20u64 {
+        a.apply(ServerFrame::Event(env(
+            i * 2 + 1,
+            testing::appended(&format!("s.{i}"), "user"),
+        )));
+        a.apply(ServerFrame::Event(env(
+            i * 2 + 2,
+            testing::content(&format!("s.{i}"), &format!("row {i}\n")),
+        )));
+    }
+    a.walk_limit = 1;
+    let _ = a.screen(100, 20);
+    // Nothing is asked while the reader is at the tail: the rows above are not being read.
+    assert!(
+        !a.queued
+            .iter()
+            .any(|x| matches!(x, Action::FetchRows { .. })),
+        "a head following the tail asked for rows nobody is reading"
+    );
+
+    // Scroll to the top of what it holds: now the missing rows are the next thing to draw.
+    a.scroll = 100_000;
+    let _ = a.screen(100, 20);
+    let asked: Vec<(usize, usize)> = a
+        .queued
+        .iter()
+        .filter_map(|x| match x {
+            Action::FetchRows { from, count, .. } => Some((*from, *count)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(asked.len(), 1, "one page, not one per frame: {asked:?}");
+    let (from, count) = asked[0];
+    assert_eq!(
+        from + count,
+        400,
+        "the page must end where the window begins, or rows are skipped"
+    );
+
+    // The answer lands above the window, and the next screen can scroll into it.
+    let page: Vec<SnapshotItem> = (from..from + count)
+        .map(|i| SnapshotItem {
+            item_id: format!("p.{i}"),
+            kind: "user".into(),
+            ledger_head: String::new(),
+            ts: 0,
+            item: Some(TranscriptItem::User {
+                speaker: Default::default(),
+                parts: vec![letibot_transcript::UserPart::Text {
+                    text: format!("older row {i}\n"),
+                }],
+            }),
+            citations: Vec::new(),
+        })
+        .collect();
+    a.apply(ServerFrame::RowsFetched {
+        session_id: "s".into(),
+        from,
+        rows: page,
+    });
+    assert_eq!(a.items_base, from, "the window's base moved to the page");
+    assert!(a.fetch_asked.is_none(), "the ask was not cleared");
+
+    // And the window it holds now reaches further up: the head knows where to ask next.
+    a.scroll = 100_000;
+    let _ = a.screen(100, 20);
+    let next: Option<usize> = a.queued.iter().rev().find_map(|x| match x {
+        Action::FetchRows { from, .. } => Some(*from),
+        _ => None,
+    });
+    assert_eq!(
+        next,
+        Some(from.saturating_sub(count)),
+        "the next page does not continue where the last one ended"
+    );
+}
+
+/// **Attaching to a long session draws its end.** The daemon sends a window of a session it has
+/// trimmed 4500 rows of, and the head must draw the last screen of that window without lexing the
+/// rows above it: the first frame is the current one, not a walk of the conversation.
+#[test]
+fn a_fresh_attach_to_a_long_session_draws_its_tail() {
+    let mut a = app();
+    // The walk limit is the one knob the fixture bends: the same shape with row bodies big enough
+    // to pass the real limit would be megabytes of markdown per test, and the head's rule is the
+    // same at either value.
+    a.walk_limit = 8 * 1024;
+    let window = 400usize;
+    let mut snap = Hub::new("s").snapshot();
+    snap.seq = 3;
+    snap.items_dropped = 4_500;
+    snap.items = (0..window)
+        .map(|i| letibot_sessionlog::view::SnapshotItem {
+            citations: Vec::new(),
+            item_id: format!("s.{i}"),
+            kind: "user".into(),
+            ledger_head: "beef".into(),
+            ts: 0,
+            item: Some(TranscriptItem::User {
+                speaker: Default::default(),
+                parts: vec![letibot_transcript::UserPart::Text {
+                    text: format!("row {i} of a long conversation\n"),
+                }],
+            }),
+        })
+        .collect();
+    a.apply(hello("s", vec![brief("s", "one", false)], snap));
+
+    let first = a.screen(100, 40);
+    let drawn = first.join("\n");
+    assert!(
+        drawn.contains(&format!("row {}", window - 1)),
+        "the newest row is not on the first frame:\n{drawn}"
+    );
+    assert!(
+        !drawn.contains("row 0 of"),
+        "the first frame walked back to the oldest row it holds:\n{drawn}"
+    );
+    // The rows were not lexed: the tail is the window plus its slack, not the window.
+    assert!(
+        (a.hist_renders as usize) <= 40 + TAIL_SLACK + 4,
+        "the first frame rendered {} of {} rows",
+        a.hist_renders,
+        window
+    );
+    // And the head's copy is the window the daemon sent: the rows it left out are a count, not
+    // something this head went and read.
+    assert_eq!(a.items.len(), window, "the head holds more than the window");
+    assert_eq!(
+        a.items_base, 4_500,
+        "the rows above the window are not counted"
+    );
+}

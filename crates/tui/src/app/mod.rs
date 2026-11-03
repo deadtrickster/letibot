@@ -303,6 +303,20 @@ pub struct App {
     /// lex renders its tail and this is how many rows it did not render. Scrolling up decreases
     /// it; nothing else does.
     pub(crate) hist_floor: usize,
+    /// The row `items[0]` sits at in the SESSION, oldest first: the rows above the window this head
+    /// holds, counted from what the snapshot said it left out. It is what makes a scrolling reader's
+    /// position nameable after the window has been trimmed or paged.
+    pub(crate) items_base: usize,
+    /// The page of rows above the window this head has asked for and not been answered: the `from`
+    /// it named. One ask at a time, so a reader holding a key does not queue a page per frame.
+    pub(crate) fetch_asked: Option<usize>,
+    /// The daemon answered a page and had nothing above it: the head stops asking and says the
+    /// transcript begins there.
+    pub(crate) no_more_above: bool,
+    /// How many bytes of row text this head holds before it lets the oldest rows go. A window and
+    /// not the buffer: `items` is every body the session has shown, and nothing else bounds it.
+    /// A field, so a test can shrink it.
+    pub(crate) held_limit: usize,
     /// The `seq` at which the head last read the `model` settings row, and the `seq` of the
     /// last live word about it - a turn starting, or the daemon saying the row moved. The
     /// header takes whichever is later: a row is only ever an answer to a request.
@@ -1120,6 +1134,10 @@ impl App {
             hist_lines: Vec::new(),
             hist_upto: 0,
             hist_floor: 0,
+            items_base: 0,
+            fetch_asked: None,
+            no_more_above: false,
+            held_limit: HELD_LIMIT,
             model_from_settings_at: 0,
             model_from_live_at: 0,
             walk_limit: SELF_WALK_LIMIT,

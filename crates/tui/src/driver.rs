@@ -651,6 +651,13 @@ impl Link {
                     Action::WithdrawPrompts => {
                         self.client.withdraw_prompts(app.seq)?;
                     }
+                    Action::FetchRows {
+                        session,
+                        from,
+                        count,
+                    } => {
+                        self.client.fetch_rows(&session, from, count)?;
+                    }
                     // A snapshot announced a row it never filled, so the head asks the daemon for that row by
                     // name: the store is the truth and the answer arrives as `RowFetched` and fills the position
                     // the head named.

@@ -53,6 +53,7 @@ impl App {
             | ServerFrame::Settings { .. }) => self.on_lists(frame),
             frame @ (ServerFrame::Diagnostic { .. }
             | ServerFrame::RowFetched { .. }
+            | ServerFrame::RowsFetched { .. }
             | ServerFrame::Peeked { .. }
             | ServerFrame::Secret { .. }
             | ServerFrame::Resync { .. }
@@ -222,6 +223,15 @@ impl App {
             arriving: false,
         });
         self.items = s.items;
+        // **Where this snapshot's first row sits in the session.** The daemon trims its own view, so a
+        // head that attached to a long conversation holds a window whose first row is not row 0, and the
+        // ordinal is how it asks for the rows above: `items_dropped` is that count and it is already on
+        // the wire. A resync replaces the window, so what the head knew about rows below it goes too.
+        self.items_base = s.items_dropped as usize;
+        // A page asked for against the transcript this one replaced is a page nobody will place, and
+        // the rows the head was told do not exist above may be another session's entirely.
+        self.fetch_asked = None;
+        self.no_more_above = false;
         // A collapse is about a row, so it goes only with the rows that went: the pairing is keyed by `item_id`
         // and a snapshot hands the same ids back. A retired one outlives even the session, since a hide the
         // reader asked for must not come back when they return.

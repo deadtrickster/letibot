@@ -765,6 +765,23 @@ impl HeadClient {
         Ok(())
     }
 
+    /// Ask for a page of whole rows by ordinal, without leaving this session: answered with a
+    /// `RowsFetched` frame on the pump. The head holds a window, so this is how a reader scrolling
+    /// above it reaches the conversation behind it.
+    pub fn fetch_rows(
+        &mut self,
+        session_id: &str,
+        from: usize,
+        count: usize,
+    ) -> Result<(), ClientError> {
+        self.writer.write(&ClientFrame::FetchRows {
+            session_id: session_id.to_string(),
+            from,
+            count,
+        })?;
+        Ok(())
+    }
+
     /// Read a window of one row's body without leaving this session: answered with a `RowFetched`
     /// frame on the pump.
     pub fn fetch_row(

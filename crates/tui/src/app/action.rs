@@ -176,6 +176,15 @@ pub enum Action {
         at: usize,
         len: usize,
     },
+    /// Ask for a page of whole rows by ordinal: the rows above the window this head holds, so a
+    /// reader who scrolls past the oldest row on the screen reaches the conversation behind it.
+    FetchRows {
+        session: String,
+        /// The first ordinal wanted, oldest first.
+        from: usize,
+        /// How many: the daemon caps a page, so this is a request and not a promise.
+        count: usize,
+    },
     /// Read one background job's output into a pane, without leaving this session and without
     /// posting a slash to the conversation. Answered with a `SessionEvent::JobOutput`, and the
     /// pane is built from it.

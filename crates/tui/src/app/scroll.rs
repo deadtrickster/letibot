@@ -700,6 +700,123 @@ impl App {
         }
     }
 
+    /// **The head holds a window, not the buffer.** A session that runs for hours appends rows for
+    /// ever, and a body this head keeps is text: once the window is over `held_limit` the oldest
+    /// rows go, and the window is rendered again from what is left. The lines go with them, which is
+    /// why this is cheap: a re-render costs one window and saves the history around it.
+    pub(crate) fn trim_held(&mut self, room: usize) {
+        let over = transcript_bytes(&self.items).saturating_sub(self.held_limit);
+        if over == 0 {
+            return;
+        }
+        // Enough rows to get back under, never the one the reader is looking at or anything below
+        // it: a window that dropped the held row would move the page under them.
+        let (mut freed, mut n) = (0, 0);
+        while freed < over && n < self.items.len() {
+            freed += self.items[n].item.as_ref().map_or(0, |i| i.bytes());
+            n += 1;
+        }
+        if let Some(h) = &self.anchor {
+            n = n.min(h.ordinal);
+        }
+        if n > 0 {
+            self.drop_rows_above(n, room);
+        }
+    }
+
+    /// Let go of the `n` oldest rows, and of everything drawn for them. Every row this head keeps is
+    /// still one contiguous run, so the page a reader asks for next is `items_base`.
+    fn drop_rows_above(&mut self, n: usize, room: usize) {
+        self.items.drain(..n);
+        self.items_base += n;
+        if let Some(h) = &mut self.anchor {
+            h.ordinal = h.ordinal.saturating_sub(n);
+        }
+        // The seam a note was filed at is a row index, and the rows it named are gone: a note above
+        // the window becomes one the head no longer draws, which is the rule a fork's seams follow.
+        for (place, _) in &mut self.notes {
+            if let Placed::Seam(at) = place {
+                *place = if *at >= n {
+                    Placed::Seam(*at - n)
+                } else {
+                    Placed::Before
+                };
+            }
+        }
+        // The rendered buffer describes rows this head no longer has, so it goes whole and the
+        // window is drawn again from the end. One window's work, once per trim.
+        self.invalidate_history_from(0);
+        if self.items.is_empty() {
+            return;
+        }
+        let stop = self.anchor.as_ref().map(|h| h.ordinal);
+        self.hist_floor = self.items.len();
+        self.fill_backward_until(room + TAIL_SLACK, stop);
+    }
+
+    /// Ask the daemon for the rows above the window, when the reader has scrolled past the oldest
+    /// one this head holds. One ask in flight and none once the daemon has answered that there is
+    /// nothing above, so a held key is pages and not a flood.
+    pub(crate) fn ask_for_rows_above(&mut self) {
+        if self.hist_floor > 0
+            || self.items_base == 0
+            || self.fetch_asked.is_some()
+            || self.no_more_above
+        {
+            return;
+        }
+        let count = self.items_base.min(PAGE_ROWS);
+        let from = self.items_base - count;
+        self.fetch_asked = Some(from);
+        self.queued.push(Action::FetchRows {
+            session: self.session_id.clone(),
+            from,
+            count,
+        });
+    }
+
+    /// A page of rows the daemon answered, placed above the window it asked about. Every row this
+    /// head holds is one contiguous run of the session, so a page lands where it joins that run or
+    /// not at all.
+    pub(crate) fn apply_rows(&mut self, from: usize, rows: Vec<SnapshotItem>) {
+        if rows.is_empty() {
+            return;
+        }
+        if from.saturating_add(rows.len()) == self.items_base {
+            let n = rows.len();
+            let mut page = rows;
+            page.append(&mut self.items);
+            self.items = page;
+            self.items_base = from;
+            // Everything indexed by row moves down by the page, and the anchor is a row: without
+            // this the reader's held row would be a page's worth of rows away from their screen.
+            self.hist_floor += n;
+            self.hist_upto += n;
+            for s in &mut self.spans {
+                s.row += n;
+            }
+            if let Some(h) = &mut self.anchor {
+                h.ordinal += n;
+            }
+            for (place, _) in &mut self.notes {
+                if let Placed::Seam(at) = place {
+                    *place = Placed::Seam(*at + n);
+                }
+            }
+            // The marks are a row-indexed rewind table and a page above them moves every index it
+            // holds. A head that has them walked from row 0, so it had no rows to be given; the
+            // rebuild is here so that a page landing on one is not left half-shifted.
+            if !self.hist_marks.is_empty() {
+                self.invalidate_history_from(0);
+                self.hist_upto = 0;
+            }
+            return;
+        }
+        // **A page that is neither side of the window is dropped rather than spliced in.** This head
+        // holds one contiguous run of the session; a page that would leave a hole in it is an answer
+        // to a question this head did not ask, and drawing it would put rows in the wrong places.
+    }
+
     /// Move the held viewport by `delta` lines, staying on a row: the line-to-row conversion happens here and
     /// nowhere else. Reaching the bottom returns the reader to following, which is an act they took, while
     /// arriving content never does.
@@ -1028,6 +1145,16 @@ pub(crate) fn round_results(
 /// walk is ~40 ms for 6000 rows, so 2 MB is well under a frame's budget and the incremental marks
 /// it buys are worth having; above it the only affordable thing is the end.
 pub(crate) const SELF_WALK_LIMIT: usize = 2 * 1024 * 1024;
+
+/// How many bytes of row text a head holds before it lets the oldest rows above the window go. The
+/// daemon bounds its own view at the same number, and the two are not the same budget: this one is
+/// the head's copy, and without it a session that runs for hours grows the head with it.
+pub(crate) const HELD_LIMIT: usize = 8 * 1024 * 1024;
+
+/// How many rows one page asks the daemon for. A page is what a screenful of scrolling consumes
+/// several times over, so a reader holding a key is not one round trip per screen, and small enough
+/// that a reader who paged too far did not pay for a transcript.
+pub(crate) const PAGE_ROWS: usize = 100;
 
 /// How many rows above the rendered window to keep, so a frame can be drawn while the reader is a
 /// little way up - the window plus one screen. Not a scrollback budget: scrolling further
