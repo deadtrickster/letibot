@@ -376,3 +376,36 @@ fn a_command_inside_the_profile_can_stop_its_own_child() {
     );
     assert!(out.contains("KILLED"), "rc={rc}: {out}");
 }
+
+/// Resolve a name and connect to a loopback listener from inside; prints `DNS=ok|fail` and
+/// `TCP=ok|fail`. No packet leaves the machine.
+fn net_probe(s: &Seatbelt, f: &Fixture, port: u16) -> String {
+    let script = format!(
+        "python3 -c 'import socket\n\
+try:\n socket.gethostbyname(\"localhost\"); print(\"DNS=ok\")\n\
+except Exception as e:\n print(\"DNS=fail\", e)\n\
+try:\n socket.create_connection((\"127.0.0.1\", {port}), 2).close(); print(\"TCP=ok\")\n\
+except Exception as e:\n print(\"TCP=fail\", e)'"
+    );
+    run_in(s, &f.project(), &script).1
+}
+
+#[test]
+fn a_host_egress_profile_resolves_names_and_connects_and_a_denied_one_does_neither() {
+    let l = std::net::TcpListener::bind("127.0.0.1:0").expect("a loopback listener");
+    let port = l.local_addr().expect("addr").port();
+    let f = Fixture::new("host-net");
+    let host = f
+        .probe(Egress::Host {
+            why: "test".into(),
+        })
+        .unwrap_or_else(|e| panic!("the macOS boundary did not measure on this box: {e}"));
+    let out = net_probe(&host, &f, port);
+    assert!(out.contains("DNS=ok"), "{out}");
+    assert!(out.contains("TCP=ok"), "{out}");
+    let denied = f
+        .probe(Egress::Denied)
+        .unwrap_or_else(|e| panic!("the macOS boundary did not measure on this box: {e}"));
+    let out = net_probe(&denied, &f, port);
+    assert!(out.contains("TCP=fail"), "{out}");
+}

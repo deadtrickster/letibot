@@ -406,16 +406,22 @@ impl HostBackend {
         root: impl AsRef<Path>,
         grants: Vec<crate::exec::confine::Grant>,
     ) -> Result<Self, BackendError> {
-        Self::confined_over(root.as_ref(), root.as_ref(), grants)
+        Self::confined_over(
+            root.as_ref(),
+            root.as_ref(),
+            grants,
+            crate::exec::confine::Egress::Denied,
+        )
     }
 
     /// Commands confined to `project`'s view while the file tools keep their reach from
     /// `files_root`. For a seat whose file tools are the whole host by design and whose
-    /// commands still get the boundary.
+    /// commands still get the boundary. `egress` is the caller's network decision.
     pub fn confined_over(
         files_root: impl AsRef<Path>,
         project: impl AsRef<Path>,
         grants: Vec<crate::exec::confine::Grant>,
+        egress: crate::exec::confine::Egress,
     ) -> Result<Self, BackendError> {
         let base = Self::writable(files_root)?;
         let project = Self::writable(project)?.root;
@@ -423,7 +429,7 @@ impl HostBackend {
         for g in grants {
             view = view.granting(g);
         }
-        let confine = crate::exec::confine::probe(view, crate::exec::confine::Egress::Denied)
+        let confine = crate::exec::confine::probe(view, egress)
             .map_err(|e| BackendError::Io(e.to_string()))?;
         let host = crate::exec::HostProcesses::confined(base.root.clone(), confine)
             .map_err(|e| BackendError::Io(e.to_string()))?;
@@ -478,7 +484,12 @@ impl HostBackend {
             }
         };
         let widened = view.granting(g);
-        let confine = crate::exec::confine::probe(widened, crate::exec::confine::Egress::Denied)
+        // A grant widens the files, never the network decision the session was opened with.
+        let egress = host
+            .boundary()
+            .map(|b| b.egress)
+            .unwrap_or(crate::exec::confine::Egress::Denied);
+        let confine = crate::exec::confine::probe(widened, egress)
             .map_err(|e| BackendError::Io(e.to_string()))?;
         let described = crate::exec::Confinement::describe(&*confine);
         host.replace_confinement(confine);

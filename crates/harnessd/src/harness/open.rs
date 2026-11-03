@@ -661,6 +661,23 @@ impl Harness {
         });
     }
 
+    /// The session's network rule, which the boundary expresses: denied unless the mode seats
+    /// network calls, and `Ask` counts as seated, because a boundary that refused a call after
+    /// the card said yes would be a second decision nobody made.
+    fn network_rule(cfg: &Config, place: &str) -> letibot_tools::exec::Egress {
+        if cfg.mode.seats(letibot_tools::schema::Access::Network) {
+            letibot_tools::exec::Egress::Host {
+                why: format!(
+                    "the `{}` mode seats network calls, so a confined command on {place} \
+                     shares the host's network rather than being handed an empty one",
+                    cfg.mode.name
+                ),
+            }
+        } else {
+            letibot_tools::exec::Egress::Denied
+        }
+    }
+
     /// The default local seat on a Mac: commands inside the seatbelt boundary over the checkout,
     /// file tools still rooted at `/`. `None` where the seat asks for no command, off a Mac, or
     /// where the probe refuses (said on the hub, and the caller falls back to unconfined).
@@ -677,6 +694,7 @@ impl Harness {
             "/",
             &cfg.workspace,
             confined_grants(cfg, cfg.landing_root.as_deref()),
+            Self::network_rule(cfg, "this Mac"),
         )
         .and_then(|b| b.with_cwd(&cfg.workspace));
         match built {
@@ -934,20 +952,7 @@ impl Harness {
                 // The bound every call that is not a command carries ([`STEP_BOUND`]): a session's
                 // tools must not be able to hold the daemon on a host that has stopped answering.
                 bound: None,
-                // The session's network rule, which the boundary expresses: denied unless the
-                // point seats network calls, and `Ask` counts as seated, because a boundary that
-                // refused a call after the card said yes would be a second decision nobody made.
-                egress: if cfg.mode.seats(letibot_tools::schema::Access::Network) {
-                    letibot_tools::exec::Egress::Host {
-                        why: format!(
-                            "the `{}` mode seats network calls, so a confined command on {} \
-                         shares its network namespace rather than being handed an empty one",
-                            cfg.mode.name, host.name
-                        ),
-                    }
-                } else {
-                    letibot_tools::exec::Egress::Denied
-                },
+                egress: Self::network_rule(cfg, &host.name),
                 // **Ask the host, which is what production always does.** A placement probes once
                 // per host (cached), and a host that cannot answer runs unconfined with the reason
                 // on the session's own notes - see `SshBackend::place`.
@@ -4009,8 +4014,15 @@ mod mac_default_seat_tests {
     }
 
     fn placed(allow_bash: bool) -> (Placed, bool) {
+        placed_in(allow_bash, None)
+    }
+
+    fn placed_in(allow_bash: bool, mode: Option<letibot_tools::mode::Mode>) -> (Placed, bool) {
         let dir = checkout();
         let mut cfg = Config::for_this_box(&dir);
+        if let Some(m) = mode {
+            cfg.mode = m;
+        }
         cfg.seat = Seat::Leticode;
         cfg.unconfined = true;
         cfg.allow_bash = allow_bash;
@@ -4074,6 +4086,41 @@ mod mac_default_seat_tests {
         assert!(dir.join("inside.txt").exists());
         assert_ne!(run(format!("touch '{}/outside.txt'", outside.display())), 0);
         assert!(!outside.join("outside.txt").exists());
+    }
+
+    #[test]
+    fn the_seat_gets_the_network_when_its_mode_seats_network_calls_and_not_otherwise() {
+        if !probe_works() {
+            eprintln!("skipped: the seatbelt probe refuses on this Mac");
+            return;
+        }
+        use letibot_tools::mode::Mode;
+        let egress = |m: Mode| {
+            placed_in(true, Some(m))
+                .0
+                .backend
+                .boundary()
+                .expect("a boundary")
+                .egress
+        };
+        assert!(egress(Mode::WRITES_ALLOWED).allowed(), "writes-allowed");
+        assert!(!egress(Mode::READ_ONLY).allowed(), "read-only");
+    }
+
+    #[test]
+    fn a_grant_into_the_view_keeps_the_sessions_network() {
+        if !probe_works() {
+            eprintln!("skipped: the seatbelt probe refuses on this Mac");
+            return;
+        }
+        use letibot_tools::backend::ExecBackend;
+        let (p, _) = placed_in(true, Some(letibot_tools::mode::Mode::WRITES_ALLOWED));
+        let extra = std::env::temp_dir().join(format!("letibot-macseat-g-{}", std::process::id()));
+        std::fs::create_dir_all(&extra).expect("a directory to grant");
+        p.backend
+            .grant_into_view(&extra.canonicalize().expect("path"), false, "test")
+            .expect("the grant takes");
+        assert!(p.backend.boundary().expect("a boundary").egress.allowed());
     }
 
     #[test]
