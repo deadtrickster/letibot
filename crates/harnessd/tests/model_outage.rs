@@ -469,7 +469,7 @@ fn one_outage_is_one_row_with_a_counter() {
         client.prompt(0, PROMPT).expect("the prompt is accepted");
         watch(rx, rec, |rec| {
             answers(hub) >= 1
-                && rec.answered.len() >= 1
+                && !rec.answered.is_empty()
                 && rec.series.last().is_some_and(|r| r.ended.is_some())
         });
     });
@@ -522,7 +522,7 @@ fn one_outage_is_one_row_with_a_counter() {
     let ep = endpoint.clone();
     let rec = drive(&parts, cfg, move |client, rx, _hub, rec| {
         client.prompt(0, PROMPT).expect("the prompt is accepted");
-        watch(rx, rec, |rec| rec.answered.len() >= 1);
+        watch(rx, rec, |rec| !rec.answered.is_empty());
         // The second outage, in the same session and against the same endpoint.
         ep.refuse(1);
         client

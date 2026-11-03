@@ -169,7 +169,7 @@ fn one_retried_call_is_one_row_at_eighty_columns() {
         "the row's last value is how the call ended, as far as this frame keeps it"
     );
     assert!(
-        crate::ui::render::visible_width(&settled.iter().find(|l| l.contains("gave up")).unwrap())
+        crate::ui::render::visible_width(settled.iter().find(|l| l.contains("gave up")).unwrap())
             <= 80,
         "and it fits the frame it is drawn in: {:?}",
         one[0]
