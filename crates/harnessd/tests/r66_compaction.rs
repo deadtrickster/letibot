@@ -404,11 +404,11 @@ fn a_refused_compaction_leaves_the_transcript_where_it_found_it() {
     );
 }
 
-/// `/reseat summarise` runs the same summary turn `/compact` does, so a refused one leaves the same
-/// instruction row. The census has to walk it too, or the footprint, the hub snapshot and the
-/// memory watchdog under-report a session that cannot re-seat by one instruction per attempt.
+/// `/reseat summarise` runs the same summary turn `/compact` does, so a refused one leaves nothing
+/// either: a session whose re-seats keep failing must not carry a copy of the instruction per
+/// attempt. The census is what proves it, since it is walked off the transcript.
 #[test]
-fn a_refused_reseat_leaves_the_census_walking_its_instruction() {
+fn a_refused_reseat_leaves_the_census_where_it_found_the_transcript() {
     let _serial = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
     let fake = Fake::start();
     let dir = TempDir::new("harnessd-r66-reseat-refused");
@@ -431,6 +431,7 @@ fn a_refused_reseat_leaves_the_census_walking_its_instruction() {
         h.reseat_target().expect("probing").is_some(),
         "the seated prompt differs, so a re-seat has a target"
     );
+    let before = held(&h);
     fake.answer_with(REFUSE);
     for i in 0..5 {
         assert!(
@@ -441,8 +442,20 @@ fn a_refused_reseat_leaves_the_census_walking_its_instruction() {
     let end = held(&h);
     assert_eq!(
         instructions(&h).len(),
-        5,
-        "one instruction row per refused attempt"
+        0,
+        "a refused attempt left a row that asks for a record"
+    );
+    assert_eq!(
+        end.items,
+        before.items,
+        "5 refused `/reseat summarise` attempts left {} item(s) within",
+        end.items.saturating_sub(before.items)
+    );
+    assert_eq!(
+        end.text,
+        before.text,
+        "5 refused `/reseat summarise` attempts left {} byte(s) of text",
+        end.text.saturating_sub(before.text)
     );
     assert_eq!(
         end.census,
