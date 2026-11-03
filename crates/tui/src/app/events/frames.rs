@@ -306,9 +306,9 @@ impl App {
                     return Disposition::Control;
                 }
                 // The ask is spent whatever came back. Which ask it was is the ordinal it names, the
-                // same rule `apply_rows` places by, and what a page that does not join means - the
-                // daemon's last word - is settled there too, so nothing is asked again here.
-                if from >= self.items_base + self.items.len() {
+                // same rule `apply_rows` places by, and what a page that does not join means is
+                // settled there too, so nothing is asked again here.
+                if from >= self.end_ordinal() {
                     self.fetch_below = None;
                 } else {
                     self.fetch_asked = None;

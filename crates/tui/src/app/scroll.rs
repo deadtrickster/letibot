@@ -703,7 +703,13 @@ impl App {
     /// How many rows this session has, as far as this head can account for them: everything it let
     /// go above the window, the window itself, and everything it let go below.
     pub(crate) fn rows_in_session(&self) -> usize {
-        self.items_base + self.items.len() + self.items_below
+        self.end_ordinal() + self.items_below
+    }
+
+    /// The ordinal of the first row this head does not hold. The rows above the base are the tail of
+    /// a transcript a resume republished, and the base does not number them, so they do not count.
+    pub(crate) fn end_ordinal(&self) -> usize {
+        self.items_base + (self.items.len() - self.items_lead)
     }
 
     /// **The head holds a window, not the buffer.** A session that runs for hours appends rows for
@@ -873,7 +879,7 @@ impl App {
         if self.items_below == 0 || self.anchor.is_some() || self.fetch_below.is_some() {
             return;
         }
-        let from = self.items_base + self.items.len();
+        let from = self.end_ordinal();
         let count = self.items_below.min(PAGE_ROWS);
         self.fetch_below = Some(from);
         self.queued.push(Action::FetchRows {
@@ -885,9 +891,9 @@ impl App {
 
     /// A page of rows the daemon answered, placed on the end of the window it asked about. Every
     /// row this head holds is one contiguous run of the session, so a page lands where it joins
-    /// that run or not at all - and one that does not join is the daemon's last word above it.
+    /// that run or not at all, and a page that does not join is read in the direction it names.
     pub(crate) fn apply_rows(&mut self, from: usize, rows: Vec<SnapshotItem>) {
-        let end = self.items_base + self.items.len();
+        let end = self.end_ordinal();
         // **A page below the window** is the tail the reader is coming back down to: it joins the
         // rows where they end, and what is above it is unchanged, so no index moves.
         if from == end {
@@ -946,6 +952,17 @@ impl App {
         // **The page was empty or short of the window, so what is above cannot be reached.** Empty
         // means nothing is above; short means a row in it could not be read, and every later page
         // would be short the same way. Splicing it in leaves a hole, so it is dropped and said.
+        // A page that starts past the window is the tail's, though, and says nothing about above.
+        if from >= end {
+            // The count below was wrong or a row of the tail cannot be read: asking again would
+            // fetch the same hole for ever, so the count goes and the live tail resumes from here.
+            self.items_below = 0;
+            self.say(
+                "the page below this window did not join it: a row in it could not be read, so \
+                 the rows between this window and the tail are lost",
+            );
+            return;
+        }
         self.no_more_above = true;
         self.say(if rows.is_empty() {
             "nothing is above this window — the daemon holds no rows above the oldest one this \

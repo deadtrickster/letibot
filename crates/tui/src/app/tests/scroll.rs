@@ -5010,3 +5010,96 @@ fn a_page_for_a_session_the_head_has_left_lands_nowhere() {
         a.notice
     );
 }
+
+/// A head holding the state a fork leaves: two rows above a base that does not number them, and a
+/// tail below the window it does not hold.
+fn above_a_base_with_a_lead(lead: usize, rows: u64, base: usize, below: usize) -> App {
+    let mut a = app();
+    a.session_id = "s".into();
+    a.walk_limit = 1;
+    for i in 0..rows {
+        a.apply(ServerFrame::Event(env(
+            i * 2 + 1,
+            testing::appended(&format!("s.{i}"), "user"),
+        )));
+        a.apply(ServerFrame::Event(env(
+            i * 2 + 2,
+            testing::content(&format!("s.{i}"), &format!("row {i}\n")),
+        )));
+    }
+    a.items_base = base;
+    a.items_lead = lead;
+    a.items_below = below;
+    a
+}
+
+/// **The row after the window is the base's ordinal plus the rows the base numbers.** A resume
+/// republishes ancestor rows above a base that does not number them, and the tail ask counted them
+/// in: it named an ordinal `items_lead` rows past the end, so no page it got ever joined.
+#[test]
+fn the_page_below_the_window_starts_after_the_rows_the_base_numbers() {
+    let mut a = above_a_base_with_a_lead(2, 20, 40, 30);
+    let _ = a.screen(100, 20);
+    let (from, count) = asked_for(&a).expect("no page below the window was asked for");
+    assert_eq!(
+        from, 58,
+        "the ask named an ordinal past the end of the window"
+    );
+    let said = a.notice.clone();
+
+    a.apply(ServerFrame::RowsFetched {
+        session_id: "s".into(),
+        from,
+        rows: page_of(from, count),
+    });
+    assert_eq!(
+        a.items.len(),
+        20 + count,
+        "the page did not join the window"
+    );
+    assert_eq!(a.items_base, 40, "the page moved the base");
+    assert_eq!(a.items_below, 0, "the page did not pay the count below");
+    assert_eq!(
+        a.notice, said,
+        "a page that joined was reported: {:?}",
+        a.notice
+    );
+}
+
+/// **A page below the window that does not join is a stale tail, not the top of the transcript.**
+/// The no-join branch called it the daemon's last word above, so one short tail page killed upward
+/// paging for the life of the session and left the tail ask armed on an ordinal no page can fill.
+#[test]
+fn a_page_below_the_window_that_does_not_join_does_not_say_the_transcript_stops() {
+    let mut a = above_a_base_with_a_lead(2, 20, 40, 30);
+    let _ = a.screen(100, 20);
+    let (from, _count) = asked_for(&a).expect("no page below the window was asked for");
+    let said = a.notice.clone();
+
+    // The daemon could not read the first row it was asked for, so the page starts past it.
+    a.apply(ServerFrame::RowsFetched {
+        session_id: "s".into(),
+        from: from + 1,
+        rows: page_of(from + 1, 10),
+    });
+    assert!(
+        !a.no_more_above,
+        "a tail page that did not join closed the paging above the window"
+    );
+    assert_eq!(
+        a.items_below, 0,
+        "the tail ask was left armed on an ordinal no page can fill"
+    );
+    assert_ne!(a.notice, said, "the head dropped a page and said nothing");
+    let said = a.notice.clone().unwrap_or_default();
+    assert!(
+        said.contains("below"),
+        "the head described the tail as the rows above it: {said:?}"
+    );
+    // And the window reaches the tail again: a row arriving now is held rather than counted.
+    a.apply(ServerFrame::Event(env(
+        99,
+        testing::appended("s.new", "user"),
+    )));
+    assert_eq!(a.items.last().map(|r| r.item_id.as_str()), Some("s.new"));
+}
