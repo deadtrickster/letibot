@@ -329,3 +329,31 @@ fn a_session_tmp_spelled_through_a_symlink_is_writable() {
     let _ = std::fs::remove_dir_all(&spelled);
     assert_eq!(rc, 0, "the session tmp is writable: {out}");
 }
+
+#[test]
+fn a_command_inside_the_profile_cannot_connect_to_a_hidden_unix_socket() {
+    // UNRUN: written on Linux. A listener in the project stands in for the coordinator; the
+    // profile must refuse the connect even though the project is writable and egress is on.
+    let f = Fixture::new("hidden-socket");
+    let sock = f.project().join("room-test.sock");
+    let _listener = std::os::unix::net::UnixListener::bind(&sock).expect("a stand-in");
+    let view = f.view().hiding(&sock);
+    let s = Seatbelt::probe_with(
+        view,
+        Egress::Host {
+            why: "the test needs the network rule to be the only thing in the way".into(),
+        },
+        Vec::new(),
+    )
+    .expect("the macOS boundary measures");
+    let (_, out) = run_in(
+        &s,
+        &f.project(),
+        &format!(
+            "/usr/bin/python3 -c 'import socket,sys; s=socket.socket(socket.AF_UNIX); \
+             s.connect(sys.argv[1]); print(\"CONNECTED\")' {} 2>&1",
+            sock.display()
+        ),
+    );
+    assert!(!out.contains("CONNECTED"), "{out}");
+}

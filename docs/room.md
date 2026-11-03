@@ -167,8 +167,11 @@ connection, whose author is the session. A head reaches the seat through its dae
 call, using the socket peer check (`crates/sessionlog/src/peer.rs`, `door`). The daemon holds one
 operator connection to the coordinator (`crates/harnessd/src/room/operator.rs`), opened on the first
 request, and forwards only chat requests (`rooms`, `say`, `dm`, `read`, `roster`, `inbox`, `ack`).
-Limit: a process of the user that opens the coordinator socket itself and claims `seat: operator` is
-not stopped. The socket's owner is the trust boundary, as for session hellos.
+Inside a command boundary the coordinator's socket and its lease and marker files are hidden: absent
+or replaced by `/dev/null` under bwrap, and denied for connect and file access under seatbelt, so a tool
+cannot open the socket at all (`docs/boundary-and-adjudication.md`). Limit: an unconfined session has no
+boundary, so a process of the user there that opens the coordinator socket itself and claims
+`seat: operator` is not stopped. The peer check on the daemon is its only guard.
 
 ### Messages
 

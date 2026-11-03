@@ -1123,3 +1123,68 @@ fn cgroup_members(scope: &letibot_tools::exec::ScopeId) -> Vec<u32> {
     // The tree's own reading: on macOS `cgroup.procs` holds group ids, not members.
     letibot_tools::exec::live_members(scope)
 }
+
+// ------------------------------------- the room coordinator is not in the view
+
+/// Run `command` inside a measured boundary and answer its output, or `None` on a box with no
+/// boundary (the refusal is asserted by `no_boundary`).
+fn run_boxed(view: ViewSpec, cwd: &Path, command: &str) -> Option<String> {
+    let b = match Bwrap::probe(view, Egress::Denied) {
+        Ok(b) => b,
+        Err(e) => {
+            no_boundary(&e, "run_boxed");
+            return None;
+        }
+    };
+    let argv = b
+        .wrap(&ConfinePlan { cwd, env: &[] })
+        .expect("a measured boundary wraps");
+    let out = std::process::Command::new(&argv[0])
+        .args(&argv[1..])
+        .arg("/bin/sh")
+        .arg("-c")
+        .arg(command)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("the wrapped command runs");
+    Some(format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    ))
+}
+
+#[test]
+fn a_command_inside_the_boundary_cannot_connect_to_or_see_the_room_coordinator() {
+    let dir = std::env::temp_dir().join(format!("letibot-roomhide-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let dir = dir.canonicalize().unwrap();
+    let sock = dir.join("room-test.sock");
+    let _listener = std::os::unix::net::UnixListener::bind(&sock).expect("a coordinator stand-in");
+    let probe = format!(
+        "python3 -c 'import socket,sys; s=socket.socket(socket.AF_UNIX); s.connect(sys.argv[1]); print(\"RE\"+\"ACHED\")' {} 2>&1; \
+         stat -c kind=%F {} 2>&1",
+        sock.display(),
+        sock.display()
+    );
+
+    // The control: the socket is in the project, so without the rule a command reaches it. A
+    // test that only saw the refusal could be measuring a missing python.
+    let Some(open) = run_boxed(ViewSpec::project_only(&dir), &dir, &probe) else {
+        return;
+    };
+    assert!(open.contains("REACHED"), "the control must connect: {open}");
+
+    let hidden = ViewSpec::project_only(&dir).hiding(&sock);
+    let shut = run_boxed(hidden, &dir, &probe).expect("the boundary measured above");
+    assert!(
+        !shut.contains("REACHED"),
+        "the socket must not connect: {shut}"
+    );
+    assert!(
+        !shut.contains("kind=socket"),
+        "and it must not stat as a socket: {shut}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

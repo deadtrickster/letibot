@@ -125,6 +125,22 @@ pub struct Layout {
     pub deny: Vec<PathBuf>,
     /// The per-user temporary directory, where the macOS toolchain's `xcrun` cache lives.
     pub user_temp: PathBuf,
+    /// Unix sockets and files the command may not connect to, read or write, in both the
+    /// `/var` and `/private/var` spellings: the host room coordinator's, and the view's own
+    /// `hidden` paths. Seatbelt names a unix socket by `network-outbound`, not by file access.
+    pub hidden: Vec<PathBuf>,
+}
+
+/// Every spelling of a path seatbelt may be asked about: macOS keeps `/var`, `/tmp` and `/etc`
+/// as links into `/private`, and the sandbox compares the resolved one.
+pub fn both_spellings(p: &Path) -> Vec<PathBuf> {
+    let mut out = vec![p.to_path_buf()];
+    if let Ok(rest) = p.strip_prefix("/private") {
+        out.push(Path::new("/").join(rest));
+    } else if ["/var", "/tmp", "/etc"].iter().any(|r| p.starts_with(r)) {
+        out.push(Path::new("/private").join(p.strip_prefix("/").unwrap_or(p)));
+    }
+    out
 }
 
 impl Layout {
@@ -165,7 +181,17 @@ impl Layout {
         if let Ok(real) = user_temp.canonicalize() {
             user_temp = real;
         }
+        let mut hidden: Vec<PathBuf> = view
+            .hidden
+            .iter()
+            .cloned()
+            .chain(super::confine::room_files())
+            .flat_map(|p| both_spellings(&p))
+            .collect();
+        hidden.sort();
+        hidden.dedup();
         Layout {
+            hidden,
             project: view.project.clone(),
             home,
             tmp,
@@ -291,6 +317,22 @@ pub fn render_profile(view: &ViewSpec, egress: &Egress, l: &Layout) -> String {
         s.push_str("(deny file-read* file-write*\n");
         for p in &l.deny {
             s.push_str(&format!("  (subpath \"{}\")\n", p.display()));
+        }
+        s.push_str(")\n");
+    }
+    // The coordinator's socket and files: no connect, no read, whatever the egress decision and
+    // whatever a grant covers. Last, so nothing above can undo it.
+    if !l.hidden.is_empty() {
+        s.push_str("\n; --- the room coordinator: not connectable, not visible ---\n");
+        for p in &l.hidden {
+            s.push_str(&format!(
+                "(deny network-outbound (remote unix-socket (path-literal \"{}\")))\n",
+                p.display()
+            ));
+        }
+        s.push_str("(deny file-read* file-write*\n");
+        for p in &l.hidden {
+            s.push_str(&format!("  (literal \"{}\")\n", p.display()));
         }
         s.push_str(")\n");
     }
@@ -942,7 +984,48 @@ mod tests {
                 PathBuf::from("/Users/x/.zshrc"),
             ],
             user_temp: PathBuf::from("/private/var/folders/aa/bb/T"),
+            hidden: Vec::new(),
         }
+    }
+
+    #[test]
+    fn the_coordinator_socket_is_denied_to_connect_in_both_spellings_after_every_allow() {
+        let mut l = layout();
+        l.hidden = both_spellings(Path::new("/var/folders/aa/room-k.sock"));
+        let view = ViewSpec::project_only("/Users/x/proj");
+        for egress in [
+            Egress::Denied,
+            Egress::Host {
+                why: "the build needs a registry".into(),
+            },
+        ] {
+            let p = render_profile(&view, &egress, &l);
+            for path in [
+                "/var/folders/aa/room-k.sock",
+                "/private/var/folders/aa/room-k.sock",
+            ] {
+                let rule = format!(
+                    "(deny network-outbound (remote unix-socket (path-literal \"{path}\")))"
+                );
+                let at = p.find(&rule).unwrap_or_else(|| panic!("{rule} in\n{p}"));
+                if let Some(allow) = p.rfind("(allow ") {
+                    assert!(at > allow, "the deny must come after every allow:\n{p}");
+                }
+            }
+            assert!(
+                p.contains("(literal \"/private/var/folders/aa/room-k.sock\")"),
+                "{p}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_private_path_has_its_plain_spelling_too() {
+        assert_eq!(
+            both_spellings(Path::new("/private/var/x")),
+            vec![PathBuf::from("/private/var/x"), PathBuf::from("/var/x")]
+        );
+        assert_eq!(both_spellings(Path::new("/Users/x/a")).len(), 1);
     }
 
     /// The golden: the whole profile, character for character. A policy that changes without

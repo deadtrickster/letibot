@@ -519,6 +519,48 @@ pub struct ViewSpec {
     /// either way.
     pub tmp: TmpView,
     pub grants: Vec<Grant>,
+    /// Files that must not be visible or connectable inside, whatever else the view binds:
+    /// the host coordinator's socket and its lease and marker files are added at spawn time
+    /// by [`room_files`], and a caller may add more.
+    pub hidden: Vec<PathBuf>,
+}
+
+/// The host room coordinator's files (`room-<host key>.sock`, `.lease`, `.restart`) in
+/// letibot's data directory, plus `$LETIBOT_ROOM_SOCKET` and its lease when set. Found by
+/// scanning, so the boundary needs no host key and sees a coordinator that started after the
+/// session did. A tool call that could open the socket could post as anyone in the rooms.
+pub fn room_files() -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    let data = std::env::var_os("XDG_DATA_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
+        .map(|d| d.join("letibot"));
+    if let Some(dir) = data
+        && let Ok(rd) = std::fs::read_dir(&dir)
+    {
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.starts_with("room-")
+                && (name.ends_with(".sock")
+                    || name.ends_with(".lease")
+                    || name.ends_with(".restart"))
+            {
+                out.push(e.path());
+            }
+        }
+    }
+    if let Some(p) = std::env::var_os("LETIBOT_ROOM_SOCKET").filter(|v| !v.is_empty()) {
+        let p = PathBuf::from(p);
+        out.push(p.with_extension("lease"));
+        out.push(p);
+    }
+    // Both spellings of each path: a symlinked prefix is two strings for one file.
+    let canon: Vec<PathBuf> = out.iter().filter_map(|p| p.canonicalize().ok()).collect();
+    out.extend(canon);
+    out.sort();
+    out.dedup();
+    out
 }
 
 /// The read-only system paths bound by default, with `--ro-bind-try` so a host that does
@@ -570,7 +612,14 @@ impl ViewSpec {
             home: HomeView::Tmpfs,
             tmp: TmpView::PerCommand,
             grants: Vec::new(),
+            hidden: Vec::new(),
         }
+    }
+
+    /// Keep this file out of the view and unconnectable even if a wider bind covers it.
+    pub fn hiding(mut self, path: impl Into<PathBuf>) -> ViewSpec {
+        self.hidden.push(path.into());
+        self
     }
 
     pub fn with_home(mut self, home: HomeView) -> ViewSpec {
@@ -2042,6 +2091,21 @@ fn pieces_of(
         }
     }
 
+    // Hidden files last, over whatever bound them: a socket replaced by `/dev/null` cannot be
+    // connected to or read. Only where the view reaches the path; elsewhere it is already absent
+    // and a bind would make its parents appear.
+    let mut hidden = view.hidden.clone();
+    hidden.extend(room_files());
+    hidden.sort();
+    hidden.dedup();
+    for p in &hidden {
+        if view.classify(p) == Presence::Inside && p.exists() {
+            arg(&mut a, "--ro-bind");
+            arg(&mut a, "/dev/null");
+            arg(&mut a, p.display().to_string());
+        }
+    }
+
     let home = match &view.home {
         HomeView::Tmpfs => TMPFS_HOME.to_string(),
         HomeView::Dir(d) => {
@@ -2451,6 +2515,39 @@ mod tests {
         // The note must not claim the path exists on the host: nothing was stat'ed, and the
         // sentence does not assert it either way.
         assert!(!n.contains("exists on"), "{n}");
+    }
+
+    #[test]
+    fn a_hidden_file_inside_the_view_is_replaced_by_dev_null_and_one_outside_is_left_alone() {
+        let dir = std::env::temp_dir().join(format!("letibot-hidden-argv-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sock = dir.join("room-x.sock");
+        std::fs::write(&sock, "").unwrap();
+        let outside = std::env::temp_dir().join("elsewhere-room.sock");
+        let _ = std::fs::write(&outside, "");
+        let view = ViewSpec::project_only(&dir)
+            .hiding(&sock)
+            .hiding("/nope/room.sock");
+        let a = build_argv(
+            Path::new("/usr/bin/bwrap"),
+            &view,
+            &Egress::Denied,
+            &ConfinePlan {
+                cwd: &dir,
+                env: &[],
+            },
+        )
+        .join(" ");
+        assert!(
+            a.contains(&format!("--ro-bind /dev/null {}", sock.display())),
+            "{a}"
+        );
+        assert!(
+            !a.contains("/nope/room.sock"),
+            "an absent path is not made to appear: {a}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(&outside);
     }
 
     #[test]

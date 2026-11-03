@@ -660,6 +660,30 @@ first and never for the rest; that needs its own decision and a deny-list of nam
 program does without appearing in any text. And it does not read an environment off disk - no
 `~/.bashrc`, no `environ` of a dying process, no store column: observed means the shell said so.
 
+### The room coordinator is outside the view
+
+The host room coordinator (`harnessd --room`) takes its author from the connection, so a command that
+could open its socket could post in the rooms as anyone. Its socket, lease and marker files
+(`room-<host key>.sock`, `.lease`, `.restart` in letibot's data directory, plus
+`$LETIBOT_ROOM_SOCKET` and its lease) are therefore hidden from every command boundary, and found by
+scanning at each spawn so a coordinator started after the session is covered too.
+
+- Linux: the data directory is not bound, so the files are absent. Where a wider bind reaches them (a
+  tmpfs home that is a real directory, a grant of the whole home), each is covered with
+  `--ro-bind /dev/null <path>` after every other bind. A command sees a character device and a
+  connect fails. `ViewSpec::hiding` adds a path to the same list.
+- macOS: the profile ends with `(deny network-outbound (remote unix-socket (path-literal ...)))` and a
+  `file-read* file-write*` deny for each file, in both the `/var` and `/private/var` spellings. Seatbelt
+  names a unix socket connect by `network-outbound`, so the file deny alone would not stop it. The rules
+  come after every allow, so neither a grant nor `(allow network*)` undoes them.
+- The session's daemon is outside the boundary and keeps its own connection to the coordinator.
+- The daemon's own socket is not hidden. `sudo -A` reaches the daemon through it
+  (`letibot-askpass` dials `$LETIBOT_SOCKET`), and the peer check in `crates/sessionlog/src/peer.rs`
+  already refuses a connection from inside the daemon's tree every door except the askpass and the
+  seat bookkeeping. Hiding it would need a dedicated askpass socket.
+- An unconfined session has no boundary, so the peer check on the operator's chat door is its only
+  guard.
+
 ## 4k. The Mac's boundary: Seatbelt
 
 macOS has no namespaces, no cgroups and no `unshare`. What it has is **Seatbelt**: `sandbox-exec -f
