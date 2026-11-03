@@ -4873,5 +4873,96 @@ unclickable `· /notes` line, everything else gets rano `Note::lines` (3 lines +
     - click paths `Target::Notice` vs `Target::NoteCard` vs none, and **no key opens any popup**;
     - popup titles differ (the fallback is `notice` in red);
     - one event, several rows: red target (2), restart (2), reseat (3), stale prompt (2).
+<!-- range K -->
+
+## T22 — `f_keep` names two different quantities, and C4 applies one's threshold to the other — **DONE 2026-11-03: C4's bar named `C4_KEEP` and held to `f_keep` alone, cca619f8, 576b558e; test `c4s_bar_is_about_the_entry_and_not_about_the_prompt`**
+
+Found while answering "how is `f_keep` computed". The answer is: **two ways, and the
+plan uses both under one name.**
+
+### The two
+
+`server-task.cpp:2603,2614` — a cache **selection** heuristic, with a hard floor
+refusing any entry under `f_keep < 0.25`:
+
+```
+f_keep = lcp / cached_entry.size()      denominator = the CACHED entry
+f_sim  = lcp / new_prompt.size()        denominator = the NEW prompt
+```
+
+`lcp` is the longest common prefix — how many leading tokens of the new prompt match
+the cached entry, token for token, via `server_tokens::get_common_prefix`.
+
+§18.2's **C4** defines it as `usage.prompt_tokens_details.cached_tokens /
+prompt_tokens`. **That is `f_sim`, under `f_keep`'s name.**
+
+### Why it matters — one turn of the M1 run
+
+```
+cached entry (turn N)     9,000 tokens
+new prompt  (turn N+1)   10,093 tokens   ← appended a 1,093-token tool result
+lcp                       9,000 tokens   ← the whole entry is a prefix; nothing rewritten
+```
+
+That is a **perfect** turn — full reuse, nothing recomputed.
+
+| | formula | value |
+|---|---|---|
+| llama's `f_keep` | lcp / cached | **1.000** |
+| llama's `f_sim` | lcp / new prompt | 0.892 |
+| **C4's `f_keep`** | cached_tokens / prompt_tokens | **0.892** |
+
+The gap is not a cache miss. **It is the tool result that was just appended.** C4's
+number falls purely as a function of how much the conversation grew.
+
+### The defect
+
+C4 says it is *"directly comparable to the 0.000 → 0.999 measurement"*. **It is not.**
+That 0.999 was read off the server's trace lines, so it was llama's `f_keep` —
+denominator the cached entry, and therefore **indifferent to growth**. The plan even
+notes at line 64 that the two are "a hit-ratio pair", then migrates a threshold from
+one to the other.
+
+So a bar measured on metric A is applied to metric B. On A, 0.99 is reachable and was
+reached. On B it is arithmetically impossible for any session that returns tool
+output.
+
+### SETTLED 2026-09-09 — option 1, see D11
+
+`f_keep = lcp / cached_entry`, computed as
+`cached_tokens(N+1) / (prompt_tokens(N) + committed_generated(N))` — **no server change
+needed**, since the denominator is what we left in the cache and the numerator is what
+the server already returns. It is the ratio form of C3's inequality, over C3's own
+quantities.
+
+**M1 must be re-measured.** 0.8771 was a correct measurement of the wrong metric.
+
+### The choice as it stood — operator's
+
+1. **Restate C4 as `lcp / cached_entry`** — directly comparable to the 0.999 that
+   motivated it, indifferent to growth, and what the append-only invariant actually
+   claims. Needs the server's `lcp`, which is S1 or `-lv 4`.
+2. **Keep `cached_tokens / prompt_tokens`** and set a bar reachable for tool-using
+   sessions. The harness-only version of this is T17's C4b, which measured p10 1.0000.
+
+Until it is decided, **M1 remains formally unexited** and the run stands as recorded.
+
+This is the seventh instance in one day of a number whose meaning was not checked
+before use, and unlike the others it is **ours** — it is in the plan, not in something
+we inherited.
+
+### What landed (2026-11-02, `wt-t22`)
+
+The naming went in with D11: `TurnMetrics::f_keep` and `TurnMetrics::f_sim`
+(`crates/turn/src/metrics.rs:81`, `:101`), `Usage::f_sim` (`crates/sessionlog/src/event.rs:531`).
+What was still missing was that **nothing held the two thresholds apart**: C4's bar lived as a
+bare `0.99` inside `judge`, exercised by no test, so a later change could have aimed it at the
+other quantity and the suite would have stayed green.
+
+`crates/harnessd/src/m1.rs` now has `C4_KEEP`, read in a pure `c4(rows)` against `f_keep` alone
+with `f_sim` printed beside it under its own name. Three tests: the T22 turn (9,000-token entry,
+10,093-token prompt, `f_keep` 1.000 PASSES where `f_sim` is 0.892), its converse (half the entry
+back on a prompt that grew by one token, `f_keep` 0.500 FAILS where `f_sim` 0.998 would have
+passed), and a first turn, which must not pass by vacancy.
 
 ---

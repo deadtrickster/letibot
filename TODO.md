@@ -5549,96 +5549,6 @@ documents. Small enough to re-embed rather than manage; lubuntu3's corpus, our c
 
 ---
 
-## T22 — `f_keep` names two different quantities, and C4 applies one's threshold to the other
-
-Found while answering "how is `f_keep` computed". The answer is: **two ways, and the
-plan uses both under one name.**
-
-### The two
-
-`server-task.cpp:2603,2614` — a cache **selection** heuristic, with a hard floor
-refusing any entry under `f_keep < 0.25`:
-
-```
-f_keep = lcp / cached_entry.size()      denominator = the CACHED entry
-f_sim  = lcp / new_prompt.size()        denominator = the NEW prompt
-```
-
-`lcp` is the longest common prefix — how many leading tokens of the new prompt match
-the cached entry, token for token, via `server_tokens::get_common_prefix`.
-
-§18.2's **C4** defines it as `usage.prompt_tokens_details.cached_tokens /
-prompt_tokens`. **That is `f_sim`, under `f_keep`'s name.**
-
-### Why it matters — one turn of the M1 run
-
-```
-cached entry (turn N)     9,000 tokens
-new prompt  (turn N+1)   10,093 tokens   ← appended a 1,093-token tool result
-lcp                       9,000 tokens   ← the whole entry is a prefix; nothing rewritten
-```
-
-That is a **perfect** turn — full reuse, nothing recomputed.
-
-| | formula | value |
-|---|---|---|
-| llama's `f_keep` | lcp / cached | **1.000** |
-| llama's `f_sim` | lcp / new prompt | 0.892 |
-| **C4's `f_keep`** | cached_tokens / prompt_tokens | **0.892** |
-
-The gap is not a cache miss. **It is the tool result that was just appended.** C4's
-number falls purely as a function of how much the conversation grew.
-
-### The defect
-
-C4 says it is *"directly comparable to the 0.000 → 0.999 measurement"*. **It is not.**
-That 0.999 was read off the server's trace lines, so it was llama's `f_keep` —
-denominator the cached entry, and therefore **indifferent to growth**. The plan even
-notes at line 64 that the two are "a hit-ratio pair", then migrates a threshold from
-one to the other.
-
-So a bar measured on metric A is applied to metric B. On A, 0.99 is reachable and was
-reached. On B it is arithmetically impossible for any session that returns tool
-output.
-
-### SETTLED 2026-09-09 — option 1, see D11
-
-`f_keep = lcp / cached_entry`, computed as
-`cached_tokens(N+1) / (prompt_tokens(N) + committed_generated(N))` — **no server change
-needed**, since the denominator is what we left in the cache and the numerator is what
-the server already returns. It is the ratio form of C3's inequality, over C3's own
-quantities.
-
-**M1 must be re-measured.** 0.8771 was a correct measurement of the wrong metric.
-
-### The choice as it stood — operator's
-
-1. **Restate C4 as `lcp / cached_entry`** — directly comparable to the 0.999 that
-   motivated it, indifferent to growth, and what the append-only invariant actually
-   claims. Needs the server's `lcp`, which is S1 or `-lv 4`.
-2. **Keep `cached_tokens / prompt_tokens`** and set a bar reachable for tool-using
-   sessions. The harness-only version of this is T17's C4b, which measured p10 1.0000.
-
-Until it is decided, **M1 remains formally unexited** and the run stands as recorded.
-
-This is the seventh instance in one day of a number whose meaning was not checked
-before use, and unlike the others it is **ours** — it is in the plan, not in something
-we inherited.
-
-### What landed (2026-11-02, `wt-t22`)
-
-The naming went in with D11: `TurnMetrics::f_keep` and `TurnMetrics::f_sim`
-(`crates/turn/src/metrics.rs:81`, `:101`), `Usage::f_sim` (`crates/sessionlog/src/event.rs:531`).
-What was still missing was that **nothing held the two thresholds apart**: C4's bar lived as a
-bare `0.99` inside `judge`, exercised by no test, so a later change could have aimed it at the
-other quantity and the suite would have stayed green.
-
-`crates/harnessd/src/m1.rs` now has `C4_KEEP`, read in a pure `c4(rows)` against `f_keep` alone
-with `f_sim` printed beside it under its own name. Three tests: the T22 turn (9,000-token entry,
-10,093-token prompt, `f_keep` 1.000 PASSES where `f_sim` is 0.892), its converse (half the entry
-back on a prompt that grew by one token, `f_keep` 0.500 FAILS where `f_sim` 0.998 would have
-passed), and a first turn, which must not pass by vacancy.
-
 ---
 
 
@@ -5813,7 +5723,7 @@ needs the operator: the :8080 server is never restarted for a measurement.
 
 ---
 
-## T24 — The harness owns what a subagent leaves behind, and monitors need the same owner
+## T24 — The harness owns what a subagent leaves behind, and monitors need the same owner — **scopes and monitors landed (25000d33, 104e3b73, 32fb7267, 4a188380, 56ada70d); left: a firing is still a user item and a full turn, with the monitor's TTL the only bound**
 
 Operator, 2026-09-09: *"you guys like to accumulate monitors and shells"* — and, on
 being shown the measurement, *"you are fine, others nt"*. That correction is the
@@ -6286,7 +6196,7 @@ eviction map and no `recall` tool.
 
 ---
 
-## T13 — §4.5's event enum is insufficient for a real head — **five gaps; gap 1 is a priority, see T14**
+## T13 — §4.5's event enum is insufficient for a real head — **five gaps; gap 1 is a priority, see T14; left: item 2 stays half closed — `TurnFinished` carries no `prefix_check` (needs a wire twin of `letibot_turn::PrefixCheck`) and no `dialect_template_sha`**
 
 Found by building one, then by fixing T12. Listed with what was done about each.
 
@@ -6407,7 +6317,7 @@ things. Listed in the order I would fix them.
 
 ---
 
-## T18 — The prompt cache costs ~120 KiB/token on recurrent models — **operational, caused a fifth OOM**
+## T18 — The prompt cache costs ~120 KiB/token on recurrent models — **operational, caused a fifth OOM; left: every cost here is the server's and outside this tree — nothing sizes or caps the per-sequence accumulator, `--cache-ram` or `-c`, the eviction and warm/cold figures have no consumer, and `--cache-reuse`'s dense-model disable has no explanation**
 
 Found while running UNVERIFIED-16, which **OOM-killed `qwen-flash-next` at 14:35 on
 2026-09-09** (158.1 GiB peak; systemd restarted it, `qwen-slots-restore` put the slots
@@ -6507,7 +6417,7 @@ lost, more disk reads), or make the RAM tier write-through (survives the kill, c
 NVMe bandwidth that is measurably spare). Not a letibot change either way — it is
 `~/bin/glm-flash-server` and llama.cpp's `server_prompt_cache`.
 
-## T20 — Where the assembled parts did not fit — **integration findings, several serious**
+## T20 — Where the assembled parts did not fit — **integration findings, several serious; left: item 5 — no fourth trait method merges Qwen's consecutive tool results, and the divergence is declared only in the renderer's header (items 1, 3, 4 and 8 landed in code with no test naming them)**
 
 1. **Double envelope.** `ToolRuntime::transcript_item` renders §8.2's `NO_RESULT`
    envelope into `payload`, and **both** dialect renderers wrapped it again — the model
