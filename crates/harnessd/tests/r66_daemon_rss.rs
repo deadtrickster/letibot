@@ -214,7 +214,8 @@ impl Daemon {
     }
 }
 
-/// `VmRSS` of a pid, in bytes.
+/// `VmRSS` of a pid, in bytes, and zero on a box with no `/proc` - every Mac. Resident memory is
+/// the instrument here and never the assertion, so an unreadable one costs a printed number.
 fn rss(pid: u32) -> u64 {
     let Ok(s) = std::fs::read_to_string(format!("/proc/{pid}/status")) else {
         return 0;
@@ -534,19 +535,23 @@ fn forty_turns_with_a_failed_compaction_each_keep_the_daemon_bounded() {
     );
     let first = readings.first().expect("a reading with a census");
     let last = readings.last().expect("a reading with a census");
-    assert!(
-        first.rss > 0,
-        "no VmRSS for the daemon: this box has no /proc"
-    );
     let spanned = last.turn - first.turn;
     let refused = run.rows.iter().filter(|r| !r.ran).count();
+    // Resident memory is printed and never asserted: it is the allocator's and the kernel's opinion,
+    // and on a box with no /proc there is no VmRSS to read at all.
+    let resident = if last.rss == 0 {
+        "rss unreadable here (no /proc): the census below is the assertion".to_string()
+    } else {
+        format!(
+            "rss {} → {} (the instrument, not the assertion)",
+            mb(first.rss as f64),
+            mb(last.rss as f64)
+        )
+    };
     println!(
         "\n{} turns of {prompt_bytes} bytes with a failed compaction each · {refused} turn(s) refused \
-         for room\n  rss {} → {} (the instrument, not the assertion)\n  harness {} → {} · view {} → \
-         {} rows · log {} → {} · heap {} → {}",
+         for room\n  {resident}\n  harness {} → {} · view {} → {} rows · log {} → {} · heap {} → {}",
         spanned,
-        mb(first.rss as f64),
-        mb(last.rss as f64),
         kb(first.held.harness),
         kb(last.held.harness),
         first.held.view,
