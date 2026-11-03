@@ -707,6 +707,64 @@ fn a_refusal_says_a_person_was_told_only_when_a_head_is_attached() {
     }));
     assert!(second.contains("The operator has been told"), "{second}");
     assert!(!second.contains("Nobody has been told"), "{second}");
+
+    // A connector that attached to WATCH - a bridge with `can_decide: false` - is not a person
+    // who may answer, so it is not a screen the model may be told is holding the decision.
+    let watching = Hub::new("s-watched");
+    watching.attach(
+        "bridge",
+        "phone",
+        Caps {
+            can_decide: false,
+            ..Caps::default()
+        },
+        0,
+    );
+    let mut gate = AdjudicatedGate::new(Box::new(NoAdjudicator))
+        .with_identity("s-watched", "dead")
+        .with_denial_sink(Box::new(HubDenials::new(watching.clone())));
+    let watched = told(gate.admit(&GateCall {
+        name: "write",
+        access: Access::Write,
+        args: &args,
+        turn_id: "t1",
+        call_id: "c1",
+        workspace: "/home/dead/Projects/letibot",
+        target_exists: Some(false),
+        scripts: &[],
+    }));
+    assert!(!watched.contains("The operator has been told"), "{watched}");
+    assert!(watched.contains("Nobody has been told"), "{watched}");
+
+    // And the console: the person who answered the brief HAS seen the decision, and there is no
+    // head at all to count. Telling the model nobody was told talks it out of asking again.
+    let console = Hub::new("s-console");
+    let mut gate = AdjudicatedGate::new(Box::new(letibot_tools::ConsoleAdjudicator::new(
+        "dead",
+        Box::new(std::io::Cursor::new(b"deny\n".to_vec())),
+        Box::new(Vec::new()),
+    )))
+    .with_identity("s-console", "dead")
+    .with_denial_sink(Box::new(HubDenials::new(console.clone())));
+    let answered = told(gate.admit(&GateCall {
+        name: "write",
+        access: Access::Write,
+        args: &args,
+        turn_id: "t1",
+        call_id: "c1",
+        workspace: "/home/dead/Projects/letibot",
+        target_exists: Some(false),
+        scripts: &[],
+    }));
+    assert!(
+        answered.contains("who decided: human:dead"),
+        "the console operator decided: {answered}"
+    );
+    assert!(
+        answered.contains("The operator has been told"),
+        "{answered}"
+    );
+    assert!(!answered.contains("Nobody has been told"), "{answered}");
 }
 
 /// The denial is durable: a head attaching after the refusal replays it, rather
