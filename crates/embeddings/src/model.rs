@@ -30,9 +30,13 @@ pub const MAX_TOKENS: usize = 256;
 /// The architectures this build runs: BERT and the fork of it `nomic-embed-text` ships.
 const BERT_FAMILY: [&str; 2] = ["bert", "nomic_bert"];
 
-/// Where the built-in model lives once somebody has put it there.
+/// Where the built-in model lives once it has been fetched: one directory per pinned
+/// revision, so a moved pin never shares a directory with the files it replaced.
 pub fn builtin_dir(data_dir: &Path) -> PathBuf {
-    data_dir.join("models").join(BUILTIN_MODEL)
+    data_dir
+        .join("models")
+        .join(BUILTIN_MODEL)
+        .join(crate::builtin::REVISION)
 }
 
 /// Why a checkpoint could not be opened or run. Every variant says the directory, because
@@ -345,7 +349,10 @@ mod tests {
     fn the_builtin_model_is_a_directory_in_the_data_directory_and_is_named_when_absent() {
         let dir = Dir::new("builtin");
         let path = builtin_dir(dir.path());
-        assert!(path.ends_with(format!("models/{BUILTIN_MODEL}")));
+        assert!(path.ends_with(format!(
+            "models/{BUILTIN_MODEL}/{}",
+            crate::builtin::REVISION
+        )));
         let err = refused(Model::open_builtin(dir.path()));
         assert!(err.to_string().contains(BUILTIN_MODEL), "{err}");
     }

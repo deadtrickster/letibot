@@ -21,6 +21,7 @@
 //! The cache is a cache: `<data dir>/embeddings.db`, keyed by `(model, sha256 of the
 //! text)`, so an edited note is a new key and a deleted file costs time and no more.
 
+pub mod builtin;
 pub mod cache;
 pub mod config;
 pub mod cosine;
@@ -33,6 +34,7 @@ pub mod tier;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 
+pub use builtin::{Pin, Source};
 pub use cache::{Cache, CacheError, Hit, db_path};
 pub use config::{ConfigError, Mode, Settings};
 pub use cosine::{Index, cosine};
