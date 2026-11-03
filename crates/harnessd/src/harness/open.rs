@@ -3841,7 +3841,14 @@ pub fn surroundings_for(cfg: &Config) -> letibot_tools::Surroundings {
     // The environment every command of this session really gets, read from the same two places `spawn` reads them,
     // so nothing is inferred from a command's text. And what this gate can see of the disk: `Host` only where the
     // command runs in this process's view, since a VM, a remote host and a confined session are different disks.
-    if pinned {
+    // Only on this box: a remote host and a guest export the CALL's own pairs into their own shell,
+    // so a seed built here reads a command as placed on a machine it is not on. `Host` is the one
+    // placement whose environment this process composes.
+    let on_this_box = matches!(
+        cfg.placement,
+        letibot_tools::builtins::task::Placement::Host
+    );
+    if pinned && on_this_box {
         let path = std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".to_string());
         let mut pairs: Vec<(String, String)> = vec![("PATH".to_string(), path.clone())];
         if let Some(home) = &env.home {
@@ -3849,29 +3856,18 @@ pub fn surroundings_for(cfg: &Config) -> letibot_tools::Surroundings {
         }
         pairs.extend(cfg.build_env.iter().cloned());
         // And the keep-list a boundary passes through: `KEEP_ENV` is what a bwrap'd command keeps from THIS process, so
-        // those values are what it really starts with, for a local placement. A remote or VM placement reads its
-        // keep-list on the far side, and seeding this box's `LANG` would be a claim about another machine.
-        if matches!(
-            cfg.placement,
-            letibot_tools::builtins::task::Placement::Host
-        ) {
-            for name in letibot_tools::exec::confine::KEEP_ENV {
-                if *name == "PATH" {
-                    continue;
-                }
-                if let Ok(value) = std::env::var(name) {
-                    pairs.push(((*name).to_string(), value));
-                }
+        // those values are what it really starts with.
+        for name in letibot_tools::exec::confine::KEEP_ENV {
+            if *name == "PATH" {
+                continue;
+            }
+            if let Ok(value) = std::env::var(name) {
+                pairs.push(((*name).to_string(), value));
             }
         }
         env.session = letibot_tools::intent::env::SessionEnv::seeded(pairs);
         env.shell_path = Some(path);
-        if !cfg.seat.needs_exec_backend()
-            && matches!(
-                cfg.placement,
-                letibot_tools::builtins::task::Placement::Host
-            )
-        {
+        if !cfg.seat.needs_exec_backend() {
             env.programs = letibot_tools::intent::ProgramLookup::Host;
         }
     }

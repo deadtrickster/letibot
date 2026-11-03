@@ -125,6 +125,53 @@ fn the_gate_is_told_the_configured_workspace_and_not_a_root() {
     );
 }
 
+/// The environment the gate reads is the one this box's spawn gives, and only where the command
+/// runs here: a remote host and a guest export the call's own pairs into their own shell, so a seed
+/// from this box's `$HOME`, `PATH` and build pairs reads a command as placed on another machine.
+#[test]
+fn a_placement_that_is_not_this_box_seeds_no_environment() {
+    let mut cfg = Config::for_this_box(std::env::temp_dir());
+    cfg.seat = Seat::Runner;
+    cfg.build_env = vec![("LT_BUILD".to_string(), "/w/target".to_string())];
+    let here = surroundings_for(&cfg);
+    assert!(
+        here.session.get("PATH").is_some(),
+        "a local spawn pins PATH, so the gate may name it"
+    );
+    assert_eq!(
+        here.session.get("LT_BUILD").map(|e| e.value.as_str()),
+        Some("/w/target"),
+        "a build pair is what every command of this session is spawned with"
+    );
+    assert!(here.shell_path.is_some());
+    assert!(
+        letibot_tools::intent::Baseline::of_command("cat $LT_BUILD/x", &here).resolved,
+        "a pair the spawn really gives must resolve here"
+    );
+
+    for placement in [
+        letibot_tools::builtins::task::Placement::Firecode,
+        letibot_tools::builtins::task::Placement::Remote("lab2x1".to_string()),
+        letibot_tools::builtins::task::Placement::RemoteVm("lab2x1".to_string()),
+    ] {
+        cfg.placement = placement.clone();
+        let away = surroundings_for(&cfg);
+        assert!(
+            away.session.is_empty(),
+            "{placement:?} runs elsewhere, so none of this box's pairs are in force: {:?}",
+            away.session
+        );
+        assert!(
+            away.shell_path.is_none(),
+            "{placement:?} claims this box's PATH for a shell it does not run"
+        );
+        assert!(
+            !letibot_tools::intent::Baseline::of_command("cat $LT_BUILD/x", &away).resolved,
+            "{placement:?} resolved a pair through this box's spawn"
+        );
+    }
+}
+
 /// The stop must not blame the model for working: the sentence this replaced said the model called tools twelve times
 /// without answering, which taught an operator to distrust the model when the harness was at fault.
 #[test]
