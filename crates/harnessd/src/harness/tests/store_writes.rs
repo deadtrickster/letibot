@@ -252,3 +252,50 @@ fn a_batch_a_turn_said_and_then_failed_is_not_owed_again() {
         "and it is said once, in the one row that carried it"
     );
 }
+
+/// A job settlement as a held batch, for the doors that carry one into a turn of the harness's own.
+fn held_job(owner: &str) -> crate::jobwatch::JobCompletion {
+    crate::jobwatch::JobCompletion {
+        memory: None,
+        kind: crate::jobwatch::BackgroundKind::Job,
+        owner: owner.into(),
+        job: "j2".into(),
+        command: "cargo build".into(),
+        slug: None,
+        state: "exited 0".into(),
+        produced: 12,
+        elapsed_ms: 1500,
+        detail: String::new(),
+        arrived: std::time::SystemTime::now(),
+        later: false,
+    }
+}
+
+/// The wall continuation and the re-seat turn are doors too: the row carrying the batch went in,
+/// so a round that fails afterwards does not make the batch owed again.
+#[test]
+fn a_batch_a_wall_door_said_and_then_failed_is_not_owed_again() {
+    let dir = Scratch::new("hdfix-wall-said");
+    let Some((mut h, _path)) = harness_on_a_store(&dir, "hdfix-wall-said") else {
+        return;
+    };
+    let watch = h.job_watch.clone().expect("a session's watcher set");
+    watch.hold(vec![held_job("hdfix-wall-said")]);
+    assert!(
+        h.continue_after_wall().is_err(),
+        "the premise: the rows went in and the rounds failed"
+    );
+    assert_eq!(
+        watch.held_count(),
+        0,
+        "continue_after_wall put a said batch back"
+    );
+
+    watch.hold(vec![held_job("hdfix-wall-said")]);
+    assert!(h.run_after_reseat("re-seated").is_err());
+    assert_eq!(
+        watch.held_count(),
+        0,
+        "run_after_reseat put a said batch back"
+    );
+}
