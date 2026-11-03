@@ -4687,6 +4687,58 @@ in `TODO.md` and says what is left.
 
 <!-- range D -->
 
+## R62 — The gate runs locally and on the fleet, never on GitHub — **DONE 2026-11-03: no workflow runs the gate and it runs on a declared host instead, 2ec7738b, 2d20ae10, 5d3b2f05; no_workflow_runs_the_gate and the_tree_and_the_repository_arrive_and_the_steps_run_there**
+
+The operator: *"this is mostly local concern - i've been rate limited on github recently with
+actions, so _act_ is our friend. we can use other machines like lubuntu2 to run tests"*, *"so we
+should gain a config - ssh key and fleet list"*, *"for runners id prefere lubuntu1,2 only"*.
+
+1. **`~/.config/letibot/fleet.toml`**, beside `providers.toml` and **never in the repo** — the
+   SSH key's PATH (`~/bin/fleet/headless_server`; the key is never read into a session or a log,
+   only passed as `ssh -i`), the boxes **by name** (`lubuntu1`..`lubuntu3`; `known_hosts` holds
+   them by name, so `ssh dead@192.168.1.76` fails host-key verification while `dead@lubuntu1`
+   works), and which are runners (`lubuntu1`, `lubuntu2`). — ✓ fixed in 2d20ae10 (as
+   `~/.config/letibot/hosts.toml`, read by `crates/tools/src/remote.rs`), test
+   the_file_the_contract_documents_parses
+2. **The merge queue's gate runs on a free runner over `ssh -i`** — the `## Merge gate` commands,
+   or `act` against `.github/workflows/ci.yml`. Tools by full path: `~/.local/bin` and
+   `~/.cargo/bin` are not on PATH for a non-interactive ssh command. — ✓ fixed in 5d3b2f05,
+   test the_tree_and_the_repository_arrive_and_the_steps_run_there
+3. **Each runner needs `~/.actrc`** pinning the `ubuntu-latest` image — `act`'s first run asks
+   which image, interactively, and a gate would hang there. — OPEN: nothing to pin — the gate
+   runs the project's own steps over ssh (`crates/harnessd/src/mergequeue/gate_host.rs:1`) and
+   `act` appears nowhere in the tree.
+
+Measured 2026-10-11: lubuntu1/2/3 each 32 cores, 123 GB, docker usable. `act` v0.2.89
+(checksum-verified) installed at `~/.local/bin/act` on lubuntu1 and lubuntu2. `cargo` in
+`~/.cargo/bin` on lubuntu2 and lubuntu3, **not** on lubuntu1. `act` is not on lab2x1.
+
+**Done when:** a branch lands through the merge queue with its gate run on lubuntu1 or lubuntu2,
+the row names the runner, and nothing in the path talks to GitHub Actions.
+
+**Built:** items 1 and 2 were already in the tree, under the names the rest of it uses - the fleet
+file is `~/.config/letibot/hosts.toml` (`[host.NAME]` with `key`, `root`, `path`, `reserve`,
+`flags`, `never_touch`; `crates/tools/src/remote.rs`) and the gate on a host is
+`mergequeue::gate_host` (`[queue] gate_host` / `--gate-host`, end to end in
+`crates/harnessd/tests/gate_host.rs` over a fake ssh). **Item 3 is moot**: the host runs the
+`## Merge gate` steps themselves, so no `~/.actrc` and no `act` is in the path - `merge_gate`
+offers a workflow run with `act` only when that workflow judges a BRANCH. **What this closed is the
+GitHub half.** `.github/workflows/ci.yml` is deleted: it answered `pull_request` and every push to
+main, and ran `check-fmt.sh`, the test-attributes check, clippy, `cargo test --workspace` and the
+release build - the gate, on a push rather than on the rebased branch. `agents.md` no longer calls
+CI the standard the queue must match, `docs/gate.md` is the how-to (by hand, through the queue, and
+on a declared host), and `crates/tools/tests/gate_not_on_github.rs` refuses any workflow that runs
+a gate step or answers a `pull_request`. `release.yml` stays - a tag starts it and it publishes the
+assets `install.sh` downloads - and `check-dist-names.sh` still reads the workflows for its triples
+and its llama pin. The acceptance specs are in no gate now (they need tmux and a release build);
+`tests/acceptance/run.sh` by hand, `--local` for the VM ones.
+
+**Unproven from this tree, and it is the done-when's other half:** a real branch landing with its
+gate on lubuntu1/2, the row naming the runner. No host in this session's boundary can reach the
+fleet, so the evidence here is `gate_host.rs` and the row's own `(lab2x1 gate)` line.
+
+---
+
 <!-- range E -->
 
 <!-- range F -->
