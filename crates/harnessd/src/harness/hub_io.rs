@@ -58,10 +58,13 @@ impl letibot_tools::adjudicate::AdmissionSink for HubAdmissions {
 }
 
 impl DenialSink for HubDenials {
-    fn denied(&self, notice: &DenialNotice) -> usize {
+    fn denied(&self, notice: &DenialNotice) -> Reach {
         // Read before publishing: a head that is not attached when the refusal is raised has
         // not been told, whatever it later finds in the snapshot.
         let heads = self.hub.deciding_heads().len();
+        // And an ask still open is one a head that attaches is handed, so the model may be told
+        // an answer given then is read. Both read here, where the refusal is decided.
+        let open = !self.hub.open_ask_ids().is_empty();
         let (repeat_count, breaker_open) = match notice.repeat {
             BreakerState::Closed => (1u32, false),
             BreakerState::Repeat { consecutive } => (consecutive.max(1) as u32, false),
@@ -82,7 +85,11 @@ impl DenialSink for HubDenials {
             breaker_open,
             grant: notice.grant.clone(),
         });
-        heads
+        match (heads, open) {
+            (0, false) => Reach::Nobody,
+            (0, true) => Reach::OpenAsk,
+            _ => Reach::OnScreen,
+        }
     }
 }
 

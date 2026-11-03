@@ -668,9 +668,16 @@ fn a_refusal_says_a_person_was_told_only_when_a_head_is_attached() {
     use letibot_sessionlog::Caps;
     use letibot_tools::{Access, AdjudicatedGate, Gate, GateCall, GateDecision, NoAdjudicator};
 
+    // A corpus sink is what makes `/gate recent` a true answer: the row the refusal names is
+    // written where `/gate` reads it, and the sentence may say so.
+    let corpus = || {
+        std::sync::Arc::new(letibot_tools::RecordingCorpusSink::default())
+            as std::sync::Arc<dyn letibot_tools::CorpusSink>
+    };
     let hub = Hub::new("s-told");
     let mut gate = AdjudicatedGate::new(Box::new(NoAdjudicator))
         .with_identity("s-told", "dead")
+        .with_corpus_sink(corpus())
         .with_denial_sink(Box::new(HubDenials::new(hub.clone())));
     let args = serde_json::json!({"path": "/home/dead/Projects/letibot/notes.md"});
     let told = |d: GateDecision| match d {
@@ -692,6 +699,15 @@ fn a_refusal_says_a_person_was_told_only_when_a_head_is_attached() {
     }));
     assert!(!first.contains("The operator has been told"), "{first}");
     assert!(first.contains("Nobody has been told"), "{first}");
+    // And it says plainly where the decision is, which is what answers "what decision" later.
+    assert!(
+        first.contains("`adj-s-told-0001`") && first.contains("/gate recent"),
+        "the row a person reads it in: {first}"
+    );
+    assert!(
+        first.contains("Nothing is waiting for an answer"),
+        "no ask of this refusal is open: {first}"
+    );
 
     // A head attaches, so the next refusal is on its screen and the model is told so.
     hub.attach("tui", "dead", Caps::default(), 0);
@@ -765,6 +781,36 @@ fn a_refusal_says_a_person_was_told_only_when_a_head_is_attached() {
         "{answered}"
     );
     assert!(!answered.contains("Nobody has been told"), "{answered}");
+
+    // And the case the entry was written against: no head now, but the ask is still open, so a
+    // head that attaches is handed it. The model may be told an answer given then is read, and
+    // must not be told nothing is waiting.
+    let holding = Hub::new("s-holding");
+    holding.publish(letibot_sessionlog::testing::requested(
+        "adj-s-holding-0001",
+        "restart the daemon",
+    ));
+    let mut gate = AdjudicatedGate::new(Box::new(NoAdjudicator))
+        .with_identity("s-holding", "dead")
+        .with_corpus_sink(corpus())
+        .with_denial_sink(Box::new(HubDenials::new(holding.clone())));
+    let held = told(gate.admit(&GateCall {
+        name: "write",
+        access: Access::Write,
+        args: &args,
+        turn_id: "t1",
+        call_id: "c1",
+        workspace: "/home/dead/Projects/letibot",
+        target_exists: Some(false),
+        scripts: &[],
+    }));
+    assert!(!held.contains("The operator has been told"), "{held}");
+    assert!(held.contains("no operator screen is attached"), "{held}");
+    assert!(
+        held.contains("a head that attaches is handed it"),
+        "the ask a head attaching is shown: {held}"
+    );
+    assert!(!held.contains("Nothing is waiting for an answer"), "{held}");
 }
 
 /// The denial is durable: a head attaching after the refusal replays it, rather

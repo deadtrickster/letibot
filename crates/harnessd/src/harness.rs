@@ -33,7 +33,7 @@ use letibot_tokencore::{Vocab, ledger::hex as hex32};
 // directly rather than through a helper there: the fingerprint is over the FROZEN text,
 // and only this crate knows what the live half of the prompt is.
 use letibot_tools::authorise::{
-    AuthorisationTrail, BreakerState, DenialNotice, DenialSink, Speaker, Utterance,
+    AuthorisationTrail, BreakerState, DenialNotice, DenialSink, Reach, Speaker, Utterance,
 };
 use letibot_tools::builtins::intent::{self as intent_tools, IntentLedger, IntentSink};
 use letibot_tools::builtins::todo::{TodoBoard, unfinished_plan, unfinished_plan_for};
