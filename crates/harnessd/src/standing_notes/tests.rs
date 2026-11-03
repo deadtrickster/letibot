@@ -19,7 +19,47 @@ fn dir(name: &str) -> PathBuf {
     ));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).expect("temp dir");
-    d
+    // The reader spells a workspace as its backend does, which is the resolved path: a fixture
+    // that asserted a heading by the name it typed would otherwise be testing `/tmp` on a Mac.
+    d.canonicalize().expect("a real path")
+}
+
+/// The section of a tree on THIS box: every fixture here is local, so the reader is the
+/// production one over a host backend rooted where the fixture wrote its files.
+fn with_reader<T>(ws: &Path, f: impl FnOnce(&Reader<'_>) -> T) -> T {
+    let backend = letibot_tools::backend::HostBackend::new(ws).expect("a fixture root");
+    f(&Reader::new(&backend, ws))
+}
+
+fn section(
+    ws: &Path,
+    global: &Path,
+    box_dirs: &crate::leticode_config::BoxDirs,
+    vocab: &Vocab,
+) -> Option<String> {
+    with_reader(ws, |files| super::section(files, global, box_dirs, vocab))
+}
+
+fn section_with_skills(
+    ws: &Path,
+    global: &Path,
+    box_dirs: &crate::leticode_config::BoxDirs,
+    vocab: &Vocab,
+    skills: Option<&SkillRegistry>,
+    preloaded: Option<&str>,
+) -> Option<String> {
+    with_reader(ws, |files| {
+        super::section_with_skills(files, global, box_dirs, vocab, skills, preloaded)
+    })
+}
+
+fn rows(
+    ws: &Path,
+    global: &Path,
+    box_dirs: &crate::leticode_config::BoxDirs,
+    vocab: &Vocab,
+) -> Vec<NoteEntry> {
+    with_reader(ws, |files| super::rows(files, global, box_dirs, vocab))
 }
 
 fn write(path: &Path, text: &str) {
@@ -773,4 +813,33 @@ fn the_section_carries_the_skills_index_and_never_a_body() {
     assert!(launched.contains("- release  [this project]"), "{launched}");
     let _ = std::fs::remove_dir_all(&ws);
     let _ = std::fs::remove_dir_all(&g);
+}
+
+/// **A note on the session's own backend is read into the prompt.** A placed session's notes are
+/// on that host, and the reader went to the daemon's path for the workspace instead: the note the
+/// model had just written reached no prompt until the branch came home.
+#[test]
+fn a_note_on_the_session_backend_reaches_the_section() {
+    let host = dir("placed-host");
+    let scope = dir("placed-scope");
+    write(
+        &host.join(".letibot/notes/placed.md"),
+        "the host's own note\n",
+    );
+    let s = super::section(
+        &Reader::new(
+            &letibot_tools::backend::HostBackend::writable(&host).expect("the session's root"),
+            &scope,
+        ),
+        &dir("none"),
+        &no_box(),
+        &vocab(),
+    );
+    assert!(
+        s.as_deref()
+            .is_some_and(|s| s.contains("the host's own note")),
+        "the note the session wrote on its own backend reached no prompt: {s:?}"
+    );
+    let _ = std::fs::remove_dir_all(&host);
+    let _ = std::fs::remove_dir_all(&scope);
 }

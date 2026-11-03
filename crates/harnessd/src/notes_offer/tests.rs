@@ -12,6 +12,9 @@ struct Fixture {
     /// The box's two instruction directories, pointed at scratch paths that do not exist, so the
     /// box the suite runs on cannot answer for a fixture's corpus.
     box_dirs: crate::leticode_config::BoxDirs,
+    /// The session's substrate: the corpus is read through it, so the fixture has to be rooted
+    /// where the notes are, as a session's own backend is.
+    backend: letibot_tools::backend::HostBackend,
 }
 
 impl Fixture {
@@ -23,15 +26,24 @@ impl Fixture {
         let global = base.join("global");
         std::fs::create_dir_all(ws.join(".letibot/notes")).expect("ws");
         std::fs::create_dir_all(&global).expect("global");
+        // The reader spells the workspace as its backend does, which is the resolved path.
+        let ws = ws.canonicalize().expect("a real path");
         let box_dirs = crate::leticode_config::BoxDirs {
             config: base.join("box-config"),
             home: base.join("box-home"),
         };
+        let backend = letibot_tools::backend::HostBackend::new(&ws).expect("a fixture root");
         Fixture {
             ws,
             global,
             box_dirs,
+            backend,
         }
+    }
+
+    /// The corpus as a session reads it: through its backend, rooted where it works.
+    fn reader(&self) -> crate::standing_notes::Reader<'_> {
+        crate::standing_notes::Reader::new(&self.backend, &self.ws)
     }
 
     /// The one note the fixtures offer: an abstract and headings about the offer design, which is
@@ -138,7 +150,7 @@ fn the_offer_is_at_the_tail_and_never_in_the_transcript() {
 
     let mut offers = Offers::new();
     assert!(
-        offers.compose(&f.ws, &f.global, &f.box_dirs, "", &items),
+        offers.compose(&f.reader(), &f.global, &f.box_dirs, "", &items),
         "the note earns a hint"
     );
 
@@ -197,7 +209,7 @@ fn an_untaken_offer_is_dropped_and_not_repeated() {
     let items = prompt(ABOUT);
     let mut offers = Offers::new();
 
-    assert!(offers.compose(&f.ws, &f.global, &f.box_dirs, "", &items));
+    assert!(offers.compose(&f.reader(), &f.global, &f.box_dirs, "", &items));
     assert_eq!(offers.tail().len(), 1);
 
     // The round runs and does something else entirely.
@@ -223,7 +235,7 @@ fn an_untaken_offer_is_dropped_and_not_repeated() {
     // And the next round composes nothing: the note is spent for this turn, and the request the
     // model would see carries no offer at all.
     assert!(
-        !offers.compose(&f.ws, &f.global, &f.box_dirs, "", &items),
+        !offers.compose(&f.reader(), &f.global, &f.box_dirs, "", &items),
         "a note is offered once per turn"
     );
     assert!(offers.tail().is_empty(), "and then the tail is empty");
@@ -242,7 +254,7 @@ fn a_read_of_the_offered_path_is_the_take_up() {
     // the offer names the absolute one.
     let relative = ".letibot/notes/the-offer-and-the-tail.md";
     let mut offers = Offers::new();
-    assert!(offers.compose(&f.ws, &f.global, &f.box_dirs, "", &items));
+    assert!(offers.compose(&f.reader(), &f.global, &f.box_dirs, "", &items));
     let settled = offers
         .settle(
             &f.ws,
@@ -261,7 +273,7 @@ fn a_read_of_the_offered_path_is_the_take_up() {
 
     // A `notes` read counts too, by name: the other door to the same note.
     let mut offers = Offers::new();
-    assert!(offers.compose(&f.ws, &f.global, &f.box_dirs, "", &items));
+    assert!(offers.compose(&f.reader(), &f.global, &f.box_dirs, "", &items));
     offers.settle(
         &f.ws,
         "s-test",
@@ -276,7 +288,7 @@ fn a_read_of_the_offered_path_is_the_take_up() {
     // And a search that merely mentions the path is not: `grep` finds the note without putting it
     // in the conversation, and counting it would measure interest rather than use.
     let mut offers = Offers::new();
-    assert!(offers.compose(&f.ws, &f.global, &f.box_dirs, "", &items));
+    assert!(offers.compose(&f.reader(), &f.global, &f.box_dirs, "", &items));
     offers.settle(
         &f.ws,
         "s-test",
@@ -307,14 +319,14 @@ fn nothing_is_said_when_nothing_is_earned() {
     // A subject about something else entirely.
     let mut offers = Offers::new();
     assert!(
-        !offers.compose(&f.ws, &f.global, &f.box_dirs, "", &prompt(UNRELATED)),
+        !offers.compose(&f.reader(), &f.global, &f.box_dirs, "", &prompt(UNRELATED)),
         "the floor is a floor"
     );
     assert!(offers.tail().is_empty());
 
     // An empty subject: no prompt at all.
     let mut offers = Offers::new();
-    assert!(!offers.compose(&f.ws, &f.global, &f.box_dirs, "", &[]));
+    assert!(!offers.compose(&f.reader(), &f.global, &f.box_dirs, "", &[]));
     assert!(offers.tail().is_empty());
 
     // A note already in the conversation is not offered: an offer to fetch what the model is
@@ -331,7 +343,7 @@ fn nothing_is_said_when_nothing_is_earned() {
     items.push(result("the note's own text, now permanent"));
     let mut offers = Offers::new();
     assert!(
-        !offers.compose(&f.ws, &f.global, &f.box_dirs, "", &items),
+        !offers.compose(&f.reader(), &f.global, &f.box_dirs, "", &items),
         "{} was already read",
         path.display()
     );
@@ -341,15 +353,15 @@ fn nothing_is_said_when_nothing_is_earned() {
     // round under the notes budget, where the best-matching note is the one already in front of
     // the model.
     let vocab = letibot_tokencore::Vocab::bytes([], []);
-    let section =
-        standing_notes::section(&f.ws, &f.global, &f.box_dirs, &vocab).expect("the notes section");
+    let section = standing_notes::section(&f.reader(), &f.global, &f.box_dirs, &vocab)
+        .expect("the notes section");
     assert!(
         section.contains(&format!("### {}", path.display())),
         "the fixture's section carries the note verbatim: {section}"
     );
     let mut offers = Offers::new();
     assert!(
-        !offers.compose(&f.ws, &f.global, &f.box_dirs, &section, &prompt(ABOUT)),
+        !offers.compose(&f.reader(), &f.global, &f.box_dirs, &section, &prompt(ABOUT)),
         "a note already in the prompt is not offered back"
     );
 
@@ -361,7 +373,7 @@ fn nothing_is_said_when_nothing_is_earned() {
     );
     let mut offers = Offers::new();
     assert!(
-        offers.compose(&f.ws, &f.global, &f.box_dirs, &indexed, &prompt(ABOUT)),
+        offers.compose(&f.reader(), &f.global, &f.box_dirs, &indexed, &prompt(ABOUT)),
         "an indexed note is one a `read` would add something to"
     );
 }
@@ -459,7 +471,7 @@ fn a_note_offered_in_an_earlier_turn_is_not_offered_again() {
     // A fresh turn offers it, because nothing in THIS turn has yet.
     let mut fresh = Offers::new();
     assert!(
-        fresh.compose(&f.ws, &f.global, &f.box_dirs, "", &items),
+        fresh.compose(&f.reader(), &f.global, &f.box_dirs, "", &items),
         "the fixture note earns a hint"
     );
 
@@ -480,7 +492,7 @@ fn a_note_offered_in_an_earlier_turn_is_not_offered_again() {
     let mut said = Offers::new();
     said.recall(&f.ws, "s-mine");
     assert!(
-        !said.compose(&f.ws, &f.global, &f.box_dirs, "", &items),
+        !said.compose(&f.reader(), &f.global, &f.box_dirs, "", &items),
         "an offer already made to this session is not made again"
     );
 
@@ -489,7 +501,7 @@ fn a_note_offered_in_an_earlier_turn_is_not_offered_again() {
     let mut other = Offers::new();
     other.recall(&f.ws, "s-other");
     assert!(
-        other.compose(&f.ws, &f.global, &f.box_dirs, "", &items),
+        other.compose(&f.reader(), &f.global, &f.box_dirs, "", &items),
         "another session's offer is not this session's memory"
     );
 }
@@ -505,7 +517,7 @@ fn a_note_this_session_wrote_is_not_offered_back() {
     // Without the write, it is offered.
     let mut fresh = Offers::new();
     assert!(
-        fresh.compose(&f.ws, &f.global, &f.box_dirs, "", &prompt(ABOUT)),
+        fresh.compose(&f.reader(), &f.global, &f.box_dirs, "", &prompt(ABOUT)),
         "the fixture note earns a hint"
     );
 
@@ -522,7 +534,7 @@ fn a_note_this_session_wrote_is_not_offered_back() {
     });
     let mut offers = Offers::new();
     assert!(
-        !offers.compose(&f.ws, &f.global, &f.box_dirs, "", &wrote_it),
+        !offers.compose(&f.reader(), &f.global, &f.box_dirs, "", &wrote_it),
         "a note this session wrote is not offered back to it"
     );
 
@@ -539,7 +551,7 @@ fn a_note_this_session_wrote_is_not_offered_back() {
     });
     let mut other = Offers::new();
     assert!(
-        other.compose(&f.ws, &f.global, &f.box_dirs, "", &wrote_another),
+        other.compose(&f.reader(), &f.global, &f.box_dirs, "", &wrote_another),
         "writing a different note does not silence this one"
     );
 
@@ -555,7 +567,7 @@ fn a_note_this_session_wrote_is_not_offered_back() {
     });
     let mut offers2 = Offers::new();
     assert!(
-        !offers2.compose(&f.ws, &f.global, &f.box_dirs, "", &appended),
+        !offers2.compose(&f.reader(), &f.global, &f.box_dirs, "", &appended),
         "an append is a write too"
     );
 }

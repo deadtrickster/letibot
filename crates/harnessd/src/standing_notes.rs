@@ -6,10 +6,11 @@ use std::path::{Path, PathBuf};
 
 use letibot_sessionlog::protocol::{NoteEntry, NoteForm};
 use letibot_tokencore::Vocab;
+use letibot_tools::backend::{DirEntry, ExecBackend};
 use letibot_tools::builtins::skill::SkillRegistry;
 // The writer's conventions, used by the reader - a second implementation here would be a report
 // that can disagree with the index it describes.
-use letibot_tools::builtins::notes::{abstract_of, first_sentence, sort_newest_first};
+use letibot_tools::builtins::notes::{abstract_of, first_sentence};
 
 /// How many tokens of standing notes are injected verbatim - the operator's *"verbatim up to
 /// certain size and above it - summarized with references"*. Anchored to the smallest prompt budget
@@ -24,71 +25,153 @@ const MAX_INDEX_HEADINGS: usize = 200;
 const BEGIN: &str = "[standing-notes-begin]";
 const END: &str = "[standing-notes-end]";
 
+/// The session's files, read through the substrate its tools use. A placed session's notes are on
+/// that host, so a read of the daemon's own path for the workspace is a read of a tree the session
+/// cannot see - the one thing the writer never did.
+pub struct Reader<'a> {
+    backend: &'a dyn ExecBackend,
+    /// The workspace in the BACKEND's spelling: on a placed session that is the host's path for
+    /// the checkout, which is where the notes it wrote are.
+    root: PathBuf,
+}
+
+impl<'a> Reader<'a> {
+    pub fn new(backend: &'a dyn ExecBackend, workspace: &Path) -> Reader<'a> {
+        // A substrate with no host path (a VM holding a copy) has nothing to compare a path
+        // against, so the workspace the caller gave is what there is.
+        let root = backend
+            .workspace_path()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| workspace.to_path_buf());
+        Reader { backend, root }
+    }
+
+    /// The workspace as this reader spells it - the backend's own path for it.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// The path in the backend's own spelling, when the backend is what holds it. That test is
+    /// the whole rule: under the workspace is the session's, and everything else - the box-wide
+    /// notes, the seat's files in the config dir - is this box's.
+    fn on_backend(&self, path: &Path) -> Option<String> {
+        let rest = path.strip_prefix(&self.root).ok()?;
+        let rel = rest.to_string_lossy().replace('\\', "/");
+        Some(if rel.is_empty() { ".".to_string() } else { rel })
+    }
+
+    /// One file's text. A note that cannot be read is not injected, the same silence a missing one
+    /// gets: the section is best effort, and a file nobody can read is one no prompt can carry.
+    fn read(&self, path: &Path) -> Option<String> {
+        match self.on_backend(path) {
+            Some(rel) => String::from_utf8(self.backend.read(&rel).ok()?).ok(),
+            None => std::fs::read_to_string(path).ok(),
+        }
+    }
+
+    fn list(&self, dir: &Path) -> Vec<DirEntry> {
+        match self.on_backend(dir) {
+            Some(rel) => self.backend.list(&rel).unwrap_or_default(),
+            None => local_list(dir),
+        }
+    }
+}
+
+/// One directory on this box, in the shape a backend's `list` answers in and the order it answers
+/// in, so a reader cannot tell which of the two it was given.
+fn local_list(dir: &Path) -> Vec<DirEntry> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut out: Vec<DirEntry> = entries
+        .flatten()
+        .filter_map(|e| {
+            let meta = e.metadata().ok()?;
+            Some(DirEntry {
+                path: e.path().display().to_string(),
+                name: e.file_name().to_string_lossy().to_string(),
+                is_dir: meta.is_dir(),
+                bytes: meta.len(),
+                modified: meta
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs()),
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
+}
+
 /// Read every source that exists, in the order the section carries them - the order is a rule
 /// and this is where it lives, because a file spends the budget by being whole: a rule that
 /// arrives as an index is a rule the model must fetch before it can follow it. Public for the offer.
 pub fn gather(
-    workspace: &Path,
+    reader: &Reader<'_>,
     global: &Path,
     box_dirs: &leticode_config::BoxDirs,
 ) -> Vec<(PathBuf, String)> {
+    let workspace = reader.root();
     let mut out = Vec::new();
     // 1. The operator's instructions for this project - its own file, then the seat's, whose
     // names and scopes are the config layer's answer.
     let agents = workspace.join("AGENTS.md");
-    if let Ok(text) = std::fs::read_to_string(&agents) {
+    if let Some(text) = reader.read(&agents) {
         out.push((agents, text));
     }
     for path in leticode_config::instructions(workspace, box_dirs) {
-        if let Ok(text) = std::fs::read_to_string(&path) {
+        if let Some(text) = reader.read(&path) {
             out.push((path, text));
         }
     }
-    out.extend(md_in(global));
-    out.extend(md_in(&workspace.join(".letibot").join("notes")));
+    out.extend(md_in(reader, global));
+    out.extend(md_in(reader, &workspace.join(".letibot").join("notes")));
     out
 }
 
 /// Every `*.md` file in `dir`, newest first, read. A directory that is absent or unreadable is no
-/// files rather than an error, and so is a file that is not valid UTF-8.
-fn md_in(dir: &Path) -> Vec<(PathBuf, String)> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    let mut paths: Vec<PathBuf> = entries
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.is_file() && p.extension().is_some_and(|e| e == "md"))
-        .collect();
-    sort_newest_first(&mut paths);
-    paths
+/// files rather than an error, and so is a file that is not valid UTF-8. The age is the LISTING's,
+/// so a placed session pays no round trip per note for it.
+fn md_in(reader: &Reader<'_>, dir: &Path) -> Vec<(PathBuf, String)> {
+    let mut entries: Vec<DirEntry> = reader
+        .list(dir)
         .into_iter()
-        .filter_map(|p| std::fs::read_to_string(&p).ok().map(|text| (p, text)))
+        .filter(|e| !e.is_dir && e.name.ends_with(".md"))
+        .collect();
+    entries.sort_by(|a, b| b.modified.cmp(&a.modified).then_with(|| a.name.cmp(&b.name)));
+    entries
+        .into_iter()
+        .filter_map(|e| {
+            let path = dir.join(&e.name);
+            reader.read(&path).map(|text| (path, text))
+        })
         .collect()
 }
 
 /// The assembled standing-notes section, or `None` when no source exists. One section for all
 /// sources together: they are one thing to the model, and one thing to [`replace`].
 pub fn section(
-    workspace: &Path,
+    reader: &Reader<'_>,
     global: &Path,
     box_dirs: &leticode_config::BoxDirs,
     vocab: &Vocab,
 ) -> Option<String> {
-    section_with_skills(workspace, global, box_dirs, vocab, None, None)
+    section_with_skills(reader, global, box_dirs, vocab, None, None)
 }
 
 /// [`section`] plus the skills index, which rides the same block and the same schedule
 /// re-read where the notes are re-read, and never a body - the model asks for one with `skill`.
 /// One section, because both halves are material read off disk by the harness.
 pub fn section_with_skills(
-    workspace: &Path,
+    reader: &Reader<'_>,
     global: &Path,
     box_dirs: &leticode_config::BoxDirs,
     vocab: &Vocab,
     skills: Option<&SkillRegistry>,
     preloaded: Option<&str>,
 ) -> Option<String> {
-    let files = gather(workspace, global, box_dirs);
+    let files = gather(reader, global, box_dirs);
     let index = skills.and_then(|r| r.index(vocab));
     if files.is_empty() && index.is_none() && preloaded.is_none() {
         return None;
@@ -200,12 +283,12 @@ fn plan(files: &[(PathBuf, String)], vocab: &Vocab) -> Vec<NoteForm> {
 /// deliberately absent is the file's size, mtime and whether it is still there: those are the
 /// disk's facts, they change while a pane is open, and the head reads them where it draws.
 pub fn rows(
-    workspace: &Path,
+    reader: &Reader<'_>,
     global: &Path,
     box_dirs: &leticode_config::BoxDirs,
     vocab: &Vocab,
 ) -> Vec<NoteEntry> {
-    let files = gather(workspace, global, box_dirs);
+    let files = gather(reader, global, box_dirs);
     let forms = plan(&files, vocab);
     files
         .iter()

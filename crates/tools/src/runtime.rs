@@ -1348,7 +1348,7 @@ impl Registry {
 /// The runtime proper.
 pub struct ToolRuntime {
     pub registry: Registry,
-    pub backend: Box<dyn ExecBackend>,
+    pub backend: std::sync::Arc<dyn ExecBackend>,
     pub spiller: Spiller,
     /// Behind a mutex because the runtime is shared and the gate is the one field that mutates
     /// in place. The mutex is the gate's, held only across the decision, and the ungated path
@@ -1408,10 +1408,13 @@ board with `todo` - `cargo test --offline <the test>` - and the operator runs it
 what it said.";
 
 impl ToolRuntime {
+    /// The backend is shared rather than owned: a reader that outlives the call which opened the
+    /// session - the standing notes' own source, answered on another thread - must reach the same
+    /// substrate the tools use, and a second connection would be a second session's view of it.
     pub fn new(registry: Registry, backend: Box<dyn ExecBackend>) -> Self {
         ToolRuntime {
             registry,
-            backend,
+            backend: std::sync::Arc::from(backend),
             spiller: Spiller::unset(),
             // Fail closed by default: a runtime nobody configured refuses every
             // non-read call rather than allowing it.

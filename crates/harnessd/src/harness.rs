@@ -2747,10 +2747,14 @@ impl Harness {
         // engine's, because the pane's read happens on the server's thread and must not measure with the
         // vocabulary the session OPENED on.
         let vocab = self.note_vocab.clone();
+        // The session's own backend, shared: the pane reads the notes where the session's `notes`
+        // tool wrote them, and this closure outlives the call that opened the session.
+        let backend = self.runtime.backend.clone();
         self.session_registry.set_notes_source(
             &self.cfg.session_id,
             std::sync::Arc::new(move || {
-                crate::standing_notes::rows(&workspace, &global, &box_dirs, &vocab)
+                let files = crate::standing_notes::Reader::new(&*backend, &workspace);
+                crate::standing_notes::rows(&files, &global, &box_dirs, &vocab)
             }),
         );
     }

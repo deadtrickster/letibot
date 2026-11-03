@@ -1541,8 +1541,12 @@ impl Harness {
             // turn's results and handed to the engine as a trailing item `session.items` never sees. Not on a
             // compaction turn, where an offer would be settled against calls the summary never made.
             if !self.compacting {
+                // The corpus is read through the session's own backend: a note it wrote on a placed
+                // host is the one worth offering, and the daemon's copy of the tree is not.
+                let notes =
+                    crate::standing_notes::Reader::new(&*self.runtime.backend, &self.cfg.workspace);
                 offers.compose(
-                    &self.cfg.workspace,
+                    &notes,
                     &self.cfg.global_notes(),
                     &self.cfg.box_dirs,
                     &self.prefix.system,

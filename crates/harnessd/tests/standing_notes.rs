@@ -245,7 +245,10 @@ fn a_note_the_tool_writes_is_one_the_reader_injects() {
     // And the reader - the same `section` the prompt is composed with - picks
     // it up, verbatim, under its path.
     let vocab = letibot_tokencore::Vocab::bytes([], []);
-    let s = standing_notes::section(ws.path(), global.path(), &no_box(global.path()), &vocab)
+    // Through the session's own backend: that is where the tool above wrote, and the reader has
+    // to be looking at the same tree the writer used.
+    let files = standing_notes::Reader::new(&*rt.backend, ws.path());
+    let s = standing_notes::section(&files, global.path(), &no_box(global.path()), &vocab)
         .expect("the reader sees the note");
     assert!(
         s.contains(".letibot/notes/qwen-tail.md"),
@@ -265,7 +268,7 @@ fn a_note_the_tool_writes_is_one_the_reader_injects() {
     let r = call(r#"{"action":"append","name":"qwen-tail","text":"re-measured: still true"}"#);
     assert!(r.is_grounded(), "{}", r.render());
     let s =
-        standing_notes::section(ws.path(), global.path(), &no_box(global.path()), &vocab).unwrap();
+        standing_notes::section(&files, global.path(), &no_box(global.path()), &vocab).unwrap();
     assert!(
         s.contains("re-measured: still true"),
         "the appended text is what the reader reads: {s}"

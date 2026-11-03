@@ -94,7 +94,7 @@ impl Offers {
     /// read or wrote it, or when the prompt already carries it whole - the purest nag of all.
     pub fn compose(
         &mut self,
-        workspace: &Path,
+        files: &standing_notes::Reader<'_>,
         global: &Path,
         box_dirs: &leticode_config::BoxDirs,
         system: &str,
@@ -105,7 +105,7 @@ impl Offers {
         if text.trim().is_empty() {
             return false;
         }
-        let files = standing_notes::gather(workspace, global, box_dirs);
+        let files = standing_notes::gather(files, global, box_dirs);
         if files.is_empty() {
             return false;
         }
