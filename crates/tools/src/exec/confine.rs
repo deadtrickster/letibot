@@ -909,6 +909,85 @@ impl Boundary {
         s
     }
 
+    /// The same view told to the MODEL, before anything fails: what a command can reach, that
+    /// `~` is the view's own home and not this machine's, and what a path outside it is. The
+    /// absence note is the second half of this; a model with only that half reads a hermetic
+    /// view as a broken box.
+    pub fn model_brief(&self) -> String {
+        let v = &self.view;
+        // Top-level roots only: `/etc/ssl` and `/etc/ld.so.cache` are one answer to "what is
+        // under /etc", and the full table is 19 lines of prompt bytes for one fact.
+        let mut roots: Vec<String> = Vec::new();
+        for p in &v.system {
+            let Some(top) = p.components().nth(1) else {
+                continue;
+            };
+            let name = format!("/{}", top.as_os_str().to_string_lossy());
+            if !roots.contains(&name) {
+                roots.push(name);
+            }
+        }
+        let home = match &v.home {
+            HomeView::Tmpfs => format!(
+                "`{TMPFS_HOME}`, a home this view makes for itself and not this machine's — \
+                 so a build cache kept under `~` is empty when a command starts"
+            ),
+            HomeView::Dir(d) => format!(
+                "`{}`, a directory letibot owns rather than this machine's home",
+                d.display()
+            ),
+        };
+        let tmp = match &v.tmp {
+            TmpView::PerCommand => {
+                "a fresh tmpfs for each command, so a file one call writes is gone in the next"
+                    .to_string()
+            }
+            TmpView::Session(_) => "this session's own directory, so a file one call writes is \
+                                    there for the next"
+                .to_string(),
+        };
+        let mut s = format!(
+            "Commands here run inside a filesystem view, not on this machine's disk: `{}` is \
+             writable at its own path; the {} read-only system paths a shell needs are bound \
+             ({}); `$HOME` is {home}; `/tmp` is {tmp}.",
+            v.project.display(),
+            v.system.len(),
+            roots.join(", "),
+        );
+        s.push_str(&match &self.egress {
+            Egress::Denied => {
+                " There is no network either: no interfaces, no routes, no DNS.".to_string()
+            }
+            Egress::Host { why } => {
+                format!(" The network is this machine's, by a decision — {why}.")
+            }
+        });
+        s.push_str(match self.platform {
+            Mechanism::Namespaces => {
+                " Anything else is absent from the view rather than forbidden: a command that \
+                 fails on a path outside it has hit the boundary, and no other spelling of the \
+                 path reaches further."
+            }
+            Mechanism::Policy => {
+                " Anything else is denied by the policy: a command that fails on a path outside \
+                 the view has hit the boundary, and no other spelling of the path reaches \
+                 further."
+            }
+        });
+        s.push_str(
+            " `ReadOnly` on such a path is the grant that binds it in, and its contents can then \
+             reach the transcript; `ReadWrite` is the same and writable. Whether one is given is \
+             the operator's to decide, and the failing call raises the question.",
+        );
+        if !v.grants.is_empty() {
+            s.push_str(" Bound in beyond that already:");
+            for g in &v.grants {
+                s.push_str(&format!(" {}.", g.line()));
+            }
+        }
+        s
+    }
+
     /// The paths this command could not see, as paths rather than as prose: the same finding
     /// [`Boundary::absence_notes`] gives in a sentence, for a caller that raises a grant
     /// decision from it instead of only reporting it.
@@ -1038,14 +1117,15 @@ impl Boundary {
                 self.view.summary().lines().next().unwrap_or("the project"),
                 self.refusal_clause(),
             );
-            // The grant is the only thing that changes the answer, so the note names it and
-            // the consequence the operator weighs: a path readable in the view is readable
-            // into the transcript.
+            // The grant is the only thing that changes the answer, so the note names both
+            // spellings the card offers and the consequence the operator weighs: a path readable
+            // in the view is readable into the transcript.
             for p in &outside {
                 note.push_str(&format!(
-                    " A grant would change that for `{}`: `ReadOnly` on it is the grant that \
-                     binds the path into the view, and its consequence is that the contents \
-                     can reach the transcript, which is why the operator decides it.",
+                    " A grant would change that for `{}`: `ReadOnly` binds the path into the \
+                     view, and its contents can then reach the transcript; `ReadWrite` is the \
+                     same and writable too. Which one it is, and whether, is the operator's to \
+                     decide.",
                     p.display()
                 ));
             }
@@ -2551,6 +2631,69 @@ mod tests {
     }
 
     #[test]
+    fn the_failure_note_names_both_grants_that_would_let_the_path_through() {
+        // The card offers a read-only and a read-write answer, so a note naming only the first
+        // sends a model that needs to WRITE to ask for a grant that cannot let it through.
+        let b = boundary_with(vec![]);
+        let notes = b.absence_notes("cat: /home/dead/.cargo/bin/cargo: No such file or directory");
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        let n = &notes[0];
+        assert!(n.contains("`/home/dead/.cargo/bin/cargo`"), "{n}");
+        assert!(
+            n.contains("`ReadOnly`"),
+            "the read-only grant is named: {n}"
+        );
+        assert!(
+            n.contains("`ReadWrite`"),
+            "the write spelling the card offers is named too: {n}"
+        );
+        assert!(n.contains("the transcript"), "{n}");
+        assert!(n.contains("the operator's to decide"), "{n}");
+    }
+
+    #[test]
+    fn the_model_is_told_what_its_view_holds_before_anything_fails() {
+        // The failure note used to be the only disclosure, so a hermetic view read as a broken
+        // toolchain. The brief is what the prompt carries at open: the paths, and what `~` is.
+        let b = boundary_with(vec![]);
+        let t = b.model_brief();
+        assert!(t.contains("`/proj`"), "the project is named: {t}");
+        assert!(t.contains("/usr"), "the system roots are named: {t}");
+        assert!(
+            t.contains(TMPFS_HOME),
+            "the home inside the view is named: {t}"
+        );
+        assert!(
+            t.contains("not this machine's"),
+            "and it says the home is the view's own: {t}"
+        );
+        assert!(
+            t.contains("absent"),
+            "a path outside is absent, not forbidden: {t}"
+        );
+        assert!(
+            t.contains("no network") && t.contains("no routes"),
+            "egress is stated: {t}"
+        );
+        assert!(t.contains("`ReadOnly`") && t.contains("`ReadWrite`"), "{t}");
+        assert!(t.contains("the operator's to decide"), "{t}");
+        // Nothing is granted in a plain view, and a brief that listed one would be a claim.
+        assert!(!t.contains("Bound in"), "{t}");
+
+        // A path bound in on purpose is in the brief, with the consequence the grant carries.
+        let granted = Boundary {
+            view: ViewSpec::project_only("/proj").granting(Grant::ReadOnly {
+                path: PathBuf::from("/home/dead/.cargo"),
+                why: "the registry, so a build does not re-download".into(),
+            }),
+            ..boundary_with(vec![])
+        };
+        let t = granted.model_brief();
+        assert!(t.contains("/home/dead/.cargo"), "{t}");
+        assert!(t.contains("READABLE INTO CONTEXT"), "{t}");
+    }
+
+    #[test]
     fn a_session_tmp_is_bound_at_tmp_and_nothing_replaces_it() {
         // The two-call scratch idiom: a file one call wrote was gone in the next, and nothing
         // announces it. This is the argv half, `--tmpfs /tmp` gone and `--bind <dir> /tmp` there.
@@ -2792,7 +2935,7 @@ mod tests {
         assert_eq!(notes.len(), 1, "{notes:?}");
         let n = &notes[0];
         assert!(n.contains(&file.display().to_string()), "{n}");
-        assert!(n.contains("`ReadOnly` on it"), "{n}");
+        assert!(n.contains("`ReadOnly` binds"), "{n}");
         assert!(n.contains("reach the transcript"), "{n}");
 
         // A granted path is in the view, so there is nothing absent to report about it.
@@ -2823,7 +2966,7 @@ mod tests {
             assert_eq!(notes.len(), 1, "{said}: {notes:?}");
             let n = &notes[0];
             assert!(n.contains(&program.display().to_string()), "{said}: {n}");
-            assert!(n.contains("`ReadOnly` on it"), "{said}: {n}");
+            assert!(n.contains("`ReadOnly` binds"), "{said}: {n}");
             assert!(n.contains("reach the transcript"), "{said}: {n}");
         }
         // A name this host does not have is a typo, and a typo must not become a claim about
