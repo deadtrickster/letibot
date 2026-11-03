@@ -391,6 +391,49 @@ fn a_host_placement_never_asks_for_a_guest() {
     assert!(!said.contains("firecode VM"), "{said}");
 }
 
+/// The checkout a VM placement makes is a CLONE, not a linked worktree: the guest works on a copy of
+/// the directory, and a worktree's `.git` is a file naming a path in the mirror the copy does not carry.
+#[test]
+fn a_vm_placements_checkout_is_a_clone_and_a_host_placements_is_a_worktree() {
+    let _turn = turns();
+    let vm = Rig::new("clonevm", true);
+    let placed = SshBackend::place(&vm.spec(true)).expect("the placement is arranged");
+    assert!(
+        vm.worktree.join(".git").is_dir(),
+        "a VM's checkout holds its own repository: {}",
+        vm.worktree.display()
+    );
+    let dir = git(&vm.worktree, &["rev-parse", "--absolute-git-dir"])
+        .trim()
+        .to_string();
+    assert!(
+        Path::new(&dir).starts_with(&vm.worktree),
+        "and that repository is inside the checkout, so the copy the guest works on is one: {dir}"
+    );
+    assert_eq!(
+        git(&vm.worktree, &["rev-parse", "--abbrev-ref", "HEAD"]).trim(),
+        format!("remote/{SHORT}"),
+        "on the branch the bundle went over as"
+    );
+    placed.close().expect("a close says where the work went");
+
+    // The other arm, because a build that made everything a clone would pass the assertions above.
+    let host = Rig::new("clonehost", false);
+    let placed = SshBackend::place(&host.spec(false)).expect("the placement is arranged");
+    assert!(
+        host.worktree.join(".git").is_file(),
+        "a host's checkout is a linked worktree, and its `.git` is the file that says so"
+    );
+    let dir = git(&host.worktree, &["rev-parse", "--absolute-git-dir"])
+        .trim()
+        .to_string();
+    assert!(
+        !Path::new(&dir).starts_with(&host.worktree),
+        "and its repository is the mirror's, which is the path a guest's copy cannot carry: {dir}"
+    );
+    placed.close().expect("a close says where the work went");
+}
+
 /// A background job starts in a guest whose client forwards no stdin. The launcher is staged by
 /// `Ssh::write_abs`, whose payload travels on the ssh's stdin, so the guest would wait for an end that
 /// cannot come.
