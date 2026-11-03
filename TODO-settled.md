@@ -6888,3 +6888,92 @@ this entry's subject — a settlement whose turn has NOT run is the one the stor
 news — and re-saying history is what a `/clear` explicitly refuses ("nothing said before this point
 is carried") and what a compaction already carries, in its summary and its verbatim tail.
 
+
+---
+
+## T13 — §4.5's event enum is insufficient for a real head — **SETTLED 2026-11-03: all five gaps are closed, the last two facts of item 2 on branch `remote/84814000`**
+
+Found by building one, then by fixing T12. Listed with what was done about each.
+
+**Gap 1 is not a footnote.** T14 argues that an addressable record is the fallback if
+composable KV proves impossible on hybrid models — and a log whose transcript events
+carry no content cannot be that record. Treat it as blocking for the "sessions that
+do not forget" goal, not as a schema nicety.
+
+1. **`TranscriptAppended{item_id, kind, ledger_head}` carries no content**, and
+   `EventSink` has no channel for it — so **a head cannot reconstruct a conversation
+   from the log at all**. The daemon must reconcile items into the view out of band
+   (`Hub::record_item`). W8 kept the event exactly as specified and made the gap
+   explicit rather than widening it unilaterally. This is the structural one and it
+   needs a decision: either the event carries content, or the log is formally not a
+   sufficient record of a session.
+   — ✓ fixed in 4b7a99af, test `a_head_that_was_already_attached_is_sent_the_body_it_was_promised`:
+   the body travels as its own event (`SessionEvent::TranscriptContent`, `crates/sessionlog/src/event.rs:1033`).
+2. **`TurnFinished{usage, timings}` is lossy against `turn_metrics`.** Not carried:
+   `prefix_check`, `id_slot`, `n_busy_slots`, `cost`, `dialect_template_sha` — and
+   §18.2 says **`id_slot` is exactly what distinguishes a scheduling fact from a
+   prefix divergence**, so a head cannot today tell those apart. W8 widened `usage`
+   to carry `cached_tokens` on the argument that a harness whose point is cache reuse
+   must be able to display it.
+   — ✓ CLOSED: `usage.served` carries `id_slot` and `n_busy_slots`, `usage.cost_micros_usd`
+   carries the cost, and `TurnFinished` now carries `prefix_check` (the wire twin of
+   `letibot_turn::PrefixCheck`) and `dialect_template_sha` — `PROTOCOL_VERSION` 60.
+3. **No event announces who issued a command**, which §13.2 requires twice. Added as
+   `CommandIssued`, labelled as an addition rather than smuggled into `Warning`.
+   — ✓ fixed in e3354641, test `a_second_heads_prompt_is_queued_not_rejected_and_says_who`
+   (it asserts the issuer and the verb, `crates/sessionlog/src/hub.rs:2358`).
+4. `ToolStarted` / `ToolProgress` are given by name only in §4.5; their shapes are
+   W8's invention and **W9 will find out whether they are right**.
+   — ✓ fixed in 66077505, test `a_real_call_reaches_a_head_with_everything_the_runtime_knew`
+   (`ToolStarted` carries `turn_id` and `access`, `crates/sessionlog/src/event.rs:965-971`).
+5. **`DeltaTarget` is `Text | Reasoning` — there is no channel for a tool call.**
+   Found while fixing T12. A tool call's argument text streams as `Text` while
+   `items::produce` puts it in `ToolCall{arguments}` and excludes it from the
+   Assistant row, so T12's new per-channel equality assertion **would fail on a
+   tool-calling turn — correctly**, as a real live/stored disagreement rather than a
+   test defect. No test exercises it yet because `live_e2e`'s prompt makes no calls.
+   This is T12's defect, unfixed, in a third channel. The enum was not widened
+   unilaterally.
+   — ✓ fixed in 0a77c5fb, test `the_raw_markup_of_a_tool_call_is_never_on_the_screen_by_default`:
+   `DeltaTarget::ToolCall` exists on both sides (`crates/turn/src/events.rs:19-26`,
+   `crates/sessionlog/src/event.rs:32-36`).
+
+### Status against `main`, 2026-11-02 (`wt-t22`)
+
+Re-checked because many events were added after W8. Five of the five are closed:
+
+1. **CLOSED.** `SessionEvent::TranscriptContent { item_id, item }`
+   (`crates/sessionlog/src/event.rs:1064`) is published by `Hub::record_item`
+   (`crates/sessionlog/src/hub.rs:902`) and applied by the head
+   (`crates/sessionlog/src/view.rs:647`), so a head reconstructs a conversation from the log.
+   The event the plan named kept its shape and the body travels beside it.
+2. **CLOSED.** `Usage::served` (`crates/sessionlog/src/event.rs:499`) carries
+   `id_slot` and `n_busy_slots` lifted from `turn_metrics` (`crates/sessionlog/src/lift.rs:116`),
+   defaulted and skipped on the wire, and `prefix_check` and `dialect_template_sha` travel on
+   `TurnFinished`, so §18.2's scheduling-or-divergence question is answerable by a head.
+3. **CLOSED.** `CommandIssued` (`crates/sessionlog/src/event.rs:1155`).
+4. **CLOSED as shapes.** `ToolStarted { turn_id, call_id, name, access }` and
+   `ToolProgress { turn_id, call_id, note }`, both published
+   (`crates/harnessd/src/answers.rs:140`, `crates/harnessd/src/harness.rs:4069`).
+5. **CLOSED.** `DeltaTarget::ToolCall` (`crates/sessionlog/src/event.rs:33`), emitted by the
+   engine (`crates/turn/src/engine.rs:1734`) and drawn by the head
+   (`crates/tui/src/app/events/turn.rs:218`).
+
+**Landed on this branch: item 2's last two facts.** `SessionEvent::PrefixCheck` is the wire twin
+of `letibot_turn::PrefixCheck` — `FirstTurn`, `Held { expected_cached_min, cached, shortfall }`,
+`Violated { detail }`, `Skipped { reason }` — and it and `dialect_template_sha` are fields on
+`TurnFinished`, both defaulted and skipped when absent so a 59 head and a 60 daemon still parse
+each other's frames. `PROTOCOL_VERSION` is 60, with its signpost note in `protocol.rs`. They are
+filled where the ending is published (`letibot_sessionlog::lift::from_turn_event`, the one door
+the daemon's sink goes through) and read at two heads:
+
+- `crates/tui/src/ui/status.rs` draws `prefix` and `dialect` on `/status`: `held` with its
+  shortfall, `DIVERGED` with the engine's own sentence, `not run` with the backend's reason, and
+  `not told` for a daemon older than the fields — test
+  `the_status_names_the_last_turns_prefix_check_and_dialect`.
+- `leticode_status` answers `prefix_check` and `dialect_template_sha`, under keys named once in
+  `State::measured_keys` — test `an_endings_prefix_check_and_dialect_reach_the_status`.
+
+The frame itself is covered by `an_endings_prefix_check_and_dialect_sha_survive_the_wire` (all
+four verdicts through JSON, and an older daemon's ending parsing as *nothing measured*) and by
+`a_turns_prefix_check_and_dialect_reach_a_head` (the engine's verdict lifted to the wire).
