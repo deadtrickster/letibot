@@ -651,7 +651,7 @@ impl Seat {
                                 .as_ref()
                                 .map(|s| s.id.clone())
                                 .unwrap_or_default(),
-                            drafts: row.drafts.len(),
+                            drafts: row.drafts.iter().map(DraftView::of).collect(),
                         })
                         .collect(),
                 })
@@ -738,8 +738,44 @@ pub struct PullView {
     pub age_ms: u64,
     #[serde(default)]
     pub session: String,
+    /// **What would be sent, in full.** The operator's decision is about these words, so a pane
+    /// that only counted them would be asking for a decision it does not show.
     #[serde(default)]
-    pub drafts: usize,
+    pub drafts: Vec<DraftView>,
+}
+
+/// One draft as the pane draws it: what it is, and the words that would go out.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct DraftView {
+    /// `review` or `reply`.
+    pub kind: String,
+    /// The head a review was made on; empty for a reply.
+    #[serde(default)]
+    pub for_sha: String,
+    /// The comment a reply answers; 0 for a review.
+    #[serde(default)]
+    pub comment: u64,
+    pub body: String,
+}
+
+impl DraftView {
+    /// The wire's spelling of one draft.
+    fn of(draft: &Draft) -> DraftView {
+        match draft {
+            Draft::Review { for_sha, review } => DraftView {
+                kind: "review".into(),
+                for_sha: for_sha.clone(),
+                comment: 0,
+                body: review.body.clone(),
+            },
+            Draft::Reply { comment, body } => DraftView {
+                kind: "reply".into(),
+                for_sha: String::new(),
+                comment: *comment,
+                body: body.clone(),
+            },
+        }
+    }
 }
 
 #[cfg(test)]

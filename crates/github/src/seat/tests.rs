@@ -417,7 +417,16 @@ fn the_snapshot_is_the_panes_rows() {
     );
     assert_eq!(pull.age_ms, 60_000);
     assert_eq!(pull.session, "s-stroppy-io-letibot-12");
-    assert_eq!(pull.drafts, 1);
+    // **The draft itself is on the wire, not only a count**: the pane draws what would be sent,
+    // because a draft nobody can read is not a review the operator can decide about.
+    assert_eq!(pull.drafts.len(), 1, "{pull:#?}");
+    assert_eq!(pull.drafts[0].kind, "review");
+    assert_eq!(pull.drafts[0].for_sha, "c1");
+    assert!(
+        pull.drafts[0].body.contains("a review of"),
+        "{}",
+        pull.drafts[0].body
+    );
     // The wire a pane reads round-trips, so a renamed field breaks a compilation and not a pane.
     let wire = serde_json::to_value(&snapshot).unwrap();
     assert_eq!(serde_json::from_value::<Snapshot>(wire).unwrap(), snapshot);
