@@ -91,13 +91,13 @@ pub use intent::{
     ALWAYS_ASK, AlwaysAskRule, Baseline, BaselineVerdict, Intent, Region, ScopedIntent, SecretFlow,
     ShellTrust, Surroundings,
 };
+pub use recall::{Evicted, Recall};
 pub use result::{Envelope, Propagation, ToolResult, propagate};
 pub use runtime::{
     DEFAULT_MAX_TOOLS, Gate, GateCall, GateDecision, Invocation, InvokeCtx, Limits, NoBoundary,
     RegisterError, Registry, Role, RoleError, Tool, ToolRuntime, command_of_argv, roles,
 };
 pub use schema::{Access, DescriptionFinding, ToolSchema, lint_description};
-pub use recall::{Evicted, Recall};
 pub use spill::{
     FixedBudget, InlineBudget, MemoryStore, NoBudget, PerToolBudget, PredictedBudget, SpillContext,
     SpillEntry, SpillRef, SpillStore, Spiller,

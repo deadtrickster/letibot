@@ -76,10 +76,7 @@ impl Recall {
 
     /// Every unit the map names, oldest first: what a refusal lists so the next call can be right.
     pub fn held(&self) -> Vec<(String, Evicted)> {
-        self.units
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
+        self.units.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 }
 

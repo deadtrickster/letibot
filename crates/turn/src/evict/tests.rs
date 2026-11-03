@@ -458,13 +458,19 @@ fn every_evicted_unit_is_named_in_the_map_and_kept() {
         .units
         .first()
         .unwrap_or_else(|| panic!("the earlier read must go: {:?}", out.units));
-    assert!(!unit.id.is_empty(), "a unit without an id is not addressable");
+    assert!(
+        !unit.id.is_empty(),
+        "a unit without an id is not addressable"
+    );
     assert_eq!(
         kept.of(&unit.id).as_deref(),
         payload_of(&items, "c1"),
         "the store holds the body exactly, under the id the map names"
     );
-    assert_eq!(unit.named, "src/a.rs", "the map says what the unit was about");
+    assert_eq!(
+        unit.named, "src/a.rs",
+        "the map says what the unit was about"
+    );
 
     // The stub in the reduced span names the same id, so the summariser's own copy of the span
     // points at the same body the map does.
@@ -499,7 +505,11 @@ fn a_body_the_store_refuses_is_not_evicted() {
         read("c2", "src/a.rs", 4_000),
     ]);
     let out = reduce(&items, &[], &Refuses);
-    assert!(out.units.is_empty(), "nothing could be kept: {:?}", out.units);
+    assert!(
+        out.units.is_empty(),
+        "nothing could be kept: {:?}",
+        out.units
+    );
     assert_eq!(out.items, items, "so the span is whole");
     assert_eq!(out.map(), "", "and there is no map to write");
 }

@@ -380,7 +380,12 @@ fn the_summary_turn_is_shown_the_evicted_span() {
         let body = kept
             .of(&unit.id)
             .unwrap_or_else(|| panic!("`{}` is in the map and not in the store", unit.id));
-        assert_eq!(body.len(), unit.bytes, "the body under `{}` is whole", unit.id);
+        assert_eq!(
+            body.len(),
+            unit.bytes,
+            "the body under `{}` is whole",
+            unit.id
+        );
         assert!(!unit.named.is_empty(), "a map line names what it was about");
     }
 

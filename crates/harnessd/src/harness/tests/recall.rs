@@ -7,9 +7,9 @@
 
 use super::*;
 use crate::harness::wall::Spilled;
+use letibot_tools::NullToolSink;
 use letibot_transcript::ToolOutcome;
 use letibot_turn::evict;
-use letibot_tools::NullToolSink;
 
 /// A harness over a store of its own, or `None` when this box has no vocabulary GGUF.
 fn a_harness(id: &str) -> Option<(Harness, std::path::PathBuf)> {
@@ -129,7 +129,10 @@ fn the_new_base_names_what_was_evicted_and_recall_opens_it() {
         .unwrap_or_else(|| panic!("the superseded read must go: {:?}", reduced.units))
         .clone();
     assert_eq!(unit.tool, "read");
-    assert_eq!(unit.named, "src/a.rs", "the map line says what it was about");
+    assert_eq!(
+        unit.named, "src/a.rs",
+        "the map line says what it was about"
+    );
 
     // The body is in the store the tool reads, under the id the map prints, byte for byte.
     let held = runtime
