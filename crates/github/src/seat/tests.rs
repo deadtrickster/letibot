@@ -1,0 +1,412 @@
+//! The seat's behaviour, with no network, no token and no `gh`.
+//!
+//! Every test here is one sentence of the operator's ask: a new pull request gets one draft, a push
+//! gets a review of the new commits only, a mention gets an answer, a fork gets a review and runs
+//! nothing, and with `post = false` nothing leaves the box.
+
+use std::path::PathBuf;
+
+use super::*;
+use crate::fake::{Commit, FakeSource};
+use crate::source::{Event, Inline};
+
+/// One review the seat asked for, as the fake reviewer saw it.
+#[derive(Debug, Clone, PartialEq)]
+struct Asked {
+    key: String,
+    session: String,
+    diff: String,
+    since: Option<String>,
+    standing: Standing,
+}
+
+/// The review machinery, faked: it records what it was asked and answers a fixed review, which is
+/// the whole claim "the seat ran a review" can be tested with offline.
+#[derive(Debug, Default)]
+struct FakeReviewer {
+    opened: Vec<(String, Standing)>,
+    jobs: Vec<Asked>,
+    answers: Vec<(String, String)>,
+    /// A refusal for the next `review`, so the retry path has a way to be reached.
+    refuse: Option<String>,
+}
+
+impl Reviewer for FakeReviewer {
+    fn open(&mut self, pull: &Pull, standing: Standing) -> Result<Session, String> {
+        self.opened.push((pull.key(), standing));
+        Ok(Session {
+            id: format!("s-{}-{}", pull.repo.replace('/', "-"), pull.number),
+            worktree: PathBuf::from(format!("/worktrees/{}", pull.number)),
+        })
+    }
+
+    fn review(&mut self, job: &Job<'_>) -> Result<Review, String> {
+        if let Some(why) = self.refuse.take() {
+            return Err(why);
+        }
+        self.jobs.push(Asked {
+            key: job.pull.key(),
+            session: job.session.id.clone(),
+            diff: job.diff.to_string(),
+            since: job.since.map(str::to_string),
+            standing: job.standing,
+        });
+        Ok(Review {
+            body: format!("a review of {} changed lines", job.diff.lines().count()),
+            event: Event::Comment,
+            comments: vec![Inline {
+                path: "src/lib.rs".into(),
+                line: 3,
+                body: "this leaks".into(),
+            }],
+        })
+    }
+
+    fn answer(&mut self, session: &Session, question: &str) -> Result<String, String> {
+        self.answers
+            .push((session.id.clone(), question.to_string()));
+        Ok(format!("because: {question}"))
+    }
+}
+
+fn a_pull(number: u64, head: &str) -> Pull {
+    Pull {
+        repo: "stroppy-io/letibot".into(),
+        number,
+        head_sha: head.into(),
+        base_sha: "b0".into(),
+        branch: format!("topic-{number}"),
+        from_fork: false,
+        title: "a fix".into(),
+        author: "someone".into(),
+        updated_ms: 1_000,
+    }
+}
+
+fn a_source() -> FakeSource {
+    let fake = FakeSource::new();
+    fake.open(
+        &a_pull(12, "c1"),
+        vec![Commit::new("c1", "-first\n+first change")],
+    );
+    fake
+}
+
+fn a_seat() -> Seat {
+    Seat::new(vec![Scope::Org("stroppy-io".into())], Config::default())
+}
+
+/// **A new pull request gets one review draft and nothing is sent**: that is the shipped state until
+/// the operator's identity exists.
+#[test]
+fn a_new_pull_request_gets_one_draft_and_nothing_is_sent() {
+    let source = a_source();
+    let mut reviewer = FakeReviewer::default();
+    let mut seat = a_seat();
+    seat.poll(&source, &mut reviewer, 1_000);
+
+    assert_eq!(reviewer.jobs.len(), 1, "{reviewer:#?}");
+    assert_eq!(reviewer.jobs[0].diff, "-first\n+first change");
+    assert_eq!(reviewer.jobs[0].since, None, "the whole pull request");
+    assert_eq!(reviewer.jobs[0].key, "stroppy-io/letibot#12");
+    assert!(source.reviews().is_empty(), "posting is off by default");
+
+    let rows = seat.rows();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].state, ReviewState::Drafted);
+    assert_eq!(rows[0].reviewed_sha.as_deref(), Some("c1"));
+    let drafts = seat.drafts();
+    assert_eq!(drafts.len(), 1);
+    assert!(matches!(&drafts[0], Draft::Review { for_sha, review }
+        if for_sha == "c1" && review.comments.len() == 1));
+
+    // A second poll with no push asks for nothing: one review per push.
+    seat.poll(&source, &mut reviewer, 2_000);
+    assert_eq!(reviewer.jobs.len(), 1);
+    assert_eq!(seat.drafts().len(), 1);
+}
+
+/// **A push is reviewed as the commits it added**, and the review it makes is a second review - not
+/// a second review of the whole pull request.
+#[test]
+fn a_push_is_reviewed_as_the_new_commits_only() {
+    let source = a_source();
+    let mut reviewer = FakeReviewer::default();
+    let mut seat = a_seat();
+    seat.poll(&source, &mut reviewer, 1_000);
+    source.push(
+        "stroppy-io/letibot",
+        12,
+        Commit::new("c2", "-second\n+second change"),
+    );
+    seat.poll(&source, &mut reviewer, 2_000);
+
+    assert_eq!(reviewer.jobs.len(), 2, "{reviewer:#?}");
+    assert_eq!(reviewer.jobs[1].since.as_deref(), Some("c1"));
+    assert_eq!(reviewer.jobs[1].diff, "-second\n+second change");
+    assert!(
+        !reviewer.jobs[1].diff.contains("first change"),
+        "the reviewed commit must not be reviewed again"
+    );
+    assert_eq!(
+        source.diffs_asked(),
+        vec![
+            ("stroppy-io/letibot".to_string(), 12, None),
+            ("stroppy-io/letibot".to_string(), 12, Some("c1".to_string()))
+        ]
+    );
+    assert_eq!(seat.rows()[0].reviewed_sha.as_deref(), Some("c2"));
+    assert_eq!(seat.rows()[0].state, ReviewState::Drafted);
+    assert_eq!(seat.drafts().len(), 2, "one review per push");
+    assert!(
+        seat.rows()[0].last_action.contains("new commits"),
+        "{}",
+        seat.rows()[0].last_action
+    );
+}
+
+/// **A mention is answered by that pull request's session**, once, and by nobody else.
+#[test]
+fn a_mention_is_answered_by_the_pull_requests_session() {
+    let source = a_source();
+    let mut reviewer = FakeReviewer::default();
+    let mut seat = a_seat();
+    seat.poll(&source, &mut reviewer, 1_000);
+    let session = reviewer.jobs[0].session.clone();
+
+    source.comment(
+        "stroppy-io/letibot",
+        12,
+        Comment {
+            id: 7,
+            author: "someone".into(),
+            body: "@letibot is this safe to merge?".into(),
+            created_ms: 2_000,
+            in_review: false,
+        },
+    );
+    seat.poll(&source, &mut reviewer, 3_000);
+    assert_eq!(reviewer.answers.len(), 1, "{reviewer:#?}");
+    assert_eq!(reviewer.answers[0].0, session);
+    assert!(reviewer.answers[0].1.contains("is this safe to merge?"));
+    let drafts = seat.drafts();
+    assert_eq!(drafts.len(), 2, "the review and the answer");
+    assert!(
+        matches!(&drafts[1], Draft::Reply { comment, body } if *comment == 7 && body.contains("because"))
+    );
+    assert!(source.replies().is_empty(), "posting is off");
+    assert_eq!(seat.rows()[0].state, ReviewState::Drafted);
+
+    // The same comment is not answered twice.
+    seat.poll(&source, &mut reviewer, 4_000);
+    assert_eq!(reviewer.answers.len(), 1);
+}
+
+/// **A fork is reviewed and nothing of it is run**: its session and its job are read-only.
+#[test]
+fn a_fork_is_reviewed_read_only_and_nothing_runs() {
+    let source = FakeSource::new();
+    let mut pull = a_pull(31, "f1");
+    pull.from_fork = true;
+    pull.branch = "patch-1".into();
+    source.open(&pull, vec![Commit::new("f1", "-theirs\n+theirs")]);
+    let mut reviewer = FakeReviewer::default();
+    let mut seat = a_seat();
+    seat.poll(&source, &mut reviewer, 1_000);
+
+    assert_eq!(reviewer.opened[0].1, Standing::ReadOnly, "{reviewer:#?}");
+    assert_eq!(reviewer.jobs.len(), 1, "it is still reviewed");
+    assert_eq!(reviewer.jobs[0].standing, Standing::ReadOnly);
+    assert!(!reviewer.jobs[0].standing.may_run());
+    assert_eq!(seat.rows()[0].standing, Standing::ReadOnly);
+    assert_eq!(seat.drafts().len(), 1);
+    assert!(seat.snapshot().scopes[0].pulls[0].fork);
+}
+
+/// Posting is on only when a token is there, and with it the review is sent and no draft is kept.
+#[test]
+fn posting_needs_a_token_and_then_the_review_is_sent() {
+    let source = a_source();
+    let mut reviewer = FakeReviewer::default();
+    let mut seat = Seat::new(
+        vec![Scope::Org("stroppy-io".into())],
+        Config {
+            post: true,
+            ..Config::default()
+        },
+    );
+    seat.poll(&source, &mut reviewer, 1_000);
+    assert_eq!(
+        reviewer.jobs.len(),
+        0,
+        "nothing is attempted without a token"
+    );
+    assert_eq!(seat.snapshot().scopes[0].state, "token missing");
+    assert!(source.reviews().is_empty());
+    assert_eq!(seat.drafts().len(), 0);
+
+    let mut posting = Seat::new(
+        vec![Scope::Org("stroppy-io".into())],
+        Config {
+            post: true,
+            token: Some("/run/secrets/github.token".into()),
+            ..Config::default()
+        },
+    );
+    posting.poll(&source, &mut reviewer, 2_000);
+    assert_eq!(source.reviews().len(), 1);
+    assert_eq!(posting.rows()[0].state, ReviewState::Posted);
+    assert!(posting.drafts().is_empty(), "a sent review is not a draft");
+    assert!(
+        posting.rows()[0].last_action.contains("posted review"),
+        "{}",
+        posting.rows()[0].last_action
+    );
+}
+
+/// The cap is per repository per hour: past it a row waits, and the scope says why.
+#[test]
+fn a_spent_cap_leaves_the_rest_queued() {
+    let source = a_source();
+    source.open(
+        &a_pull(13, "d1"),
+        vec![Commit::new("d1", "-another\n+another change")],
+    );
+    let mut reviewer = FakeReviewer::default();
+    let mut seat = Seat::new(
+        vec![Scope::Org("stroppy-io".into())],
+        Config {
+            reviews_per_hour: 1,
+            ..Config::default()
+        },
+    );
+    seat.poll(&source, &mut reviewer, 1_000);
+    assert_eq!(reviewer.jobs.len(), 1, "{reviewer:#?}");
+    assert_eq!(seat.rows()[0].state, ReviewState::Drafted);
+    assert_eq!(seat.rows()[1].state, ReviewState::Queued);
+    assert_eq!(seat.snapshot().scopes[0].state, "rate-limited");
+}
+
+/// A source that cannot be listed says so on the scope, and one the operator paused is not asked.
+#[test]
+fn a_refused_list_is_a_state_and_a_pause_stops_the_asking() {
+    struct Refusing;
+    impl Source for Refusing {
+        fn list_open(&self, _: &Scope) -> Result<Vec<Pull>, String> {
+            Err("`gh` is not installed".into())
+        }
+        fn diff(&self, _: &Pull, _: Option<&str>) -> Result<String, String> {
+            unreachable!()
+        }
+        fn comments(&self, _: &Pull) -> Result<Vec<Comment>, String> {
+            unreachable!()
+        }
+        fn post_review(&self, _: &Pull, _: &Review) -> Result<u64, String> {
+            unreachable!()
+        }
+        fn reply(&self, _: &Pull, _: &Comment, _: &str) -> Result<u64, String> {
+            unreachable!()
+        }
+    }
+    let mut reviewer = FakeReviewer::default();
+    let mut seat = a_seat();
+    seat.poll(&Refusing, &mut reviewer, 1_000);
+    let scope = &seat.snapshot().scopes[0];
+    assert_eq!(scope.state, "failed");
+    assert!(scope.why.contains("gh` is not installed"), "{scope:#?}");
+
+    let source = a_source();
+    let mut seat = a_seat();
+    seat.pause("stroppy-io");
+    seat.poll(&source, &mut reviewer, 1_000);
+    assert_eq!(reviewer.jobs.len(), 0);
+    assert_eq!(seat.snapshot().scopes[0].state, "paused");
+    seat.resume("stroppy-io");
+    seat.poll(&source, &mut reviewer, 2_000);
+    assert_eq!(reviewer.jobs.len(), 1);
+}
+
+/// A review that could not be made stays owed, with the reason on the row, and the next poll tries
+/// again rather than losing the push.
+#[test]
+fn a_review_that_failed_is_retried() {
+    let source = a_source();
+    let mut reviewer = FakeReviewer {
+        refuse: Some("the model is down".into()),
+        ..FakeReviewer::default()
+    };
+    let mut seat = a_seat();
+    seat.poll(&source, &mut reviewer, 1_000);
+    let row = &seat.rows()[0];
+    assert_eq!(row.state, ReviewState::Queued);
+    assert_eq!(row.failure, "the model is down");
+    assert!(
+        row.last_action.contains("could not review"),
+        "{}",
+        row.last_action
+    );
+    assert!(seat.drafts().is_empty());
+
+    seat.poll(&source, &mut reviewer, 2_000);
+    assert_eq!(seat.rows()[0].state, ReviewState::Drafted);
+    assert_eq!(seat.rows()[0].failure, "");
+    assert_eq!(seat.drafts().len(), 1);
+}
+
+/// The snapshot is what the pane draws: one line per scope, one row per pull request, with the
+/// review's state, the last action, the age, and the session Enter attaches to.
+#[test]
+fn the_snapshot_is_the_panes_rows() {
+    let source = a_source();
+    let mut reviewer = FakeReviewer::default();
+    let mut seat = a_seat();
+    seat.poll(&source, &mut reviewer, 1_000);
+    seat.poll(&source, &mut reviewer, 61_000);
+    let snapshot = seat.snapshot();
+    assert!(!snapshot.posting);
+    assert_eq!(snapshot.identity, "letibot");
+    assert_eq!(snapshot.scopes.len(), 1);
+    let scope = &snapshot.scopes[0];
+    assert_eq!(scope.scope, "stroppy-io");
+    assert_eq!(scope.state, "polling");
+    assert_eq!(scope.pulls.len(), 1);
+    let pull = &scope.pulls[0];
+    assert_eq!(pull.repo, "stroppy-io/letibot");
+    assert_eq!(pull.number, 12);
+    assert_eq!(pull.review, "drafted");
+    assert!(
+        pull.last_action.contains("drafted a review"),
+        "{}",
+        pull.last_action
+    );
+    assert_eq!(pull.age_ms, 60_000);
+    assert_eq!(pull.session, "s-stroppy-io-letibot-12");
+    assert_eq!(pull.drafts, 1);
+    // The wire a pane reads round-trips, so a renamed field breaks a compilation and not a pane.
+    let wire = serde_json::to_value(&snapshot).unwrap();
+    assert_eq!(serde_json::from_value::<Snapshot>(wire).unwrap(), snapshot);
+}
+
+/// A pull request that is closed and no longer listed is dropped: the pane draws what is open.
+#[test]
+fn a_closed_pull_request_is_dropped() {
+    let source = a_source();
+    let mut reviewer = FakeReviewer::default();
+    let mut seat = Seat::new(
+        vec![Scope::Repo("stroppy-io/letibot".into())],
+        Config::default(),
+    );
+    seat.poll(&source, &mut reviewer, 1_000);
+    assert_eq!(seat.rows().len(), 1);
+    let other = Seat::new(
+        vec![Scope::Repo("stroppy-io/nothing".into())],
+        Config::default(),
+    );
+    assert!(other.rows().is_empty());
+    // A scope that lists nothing keeps no row, even though the seat has met one.
+    let mut seat = a_seat();
+    seat.poll(&source, &mut reviewer, 1_000);
+    source.close("stroppy-io/letibot", 12);
+    seat.poll(&source, &mut reviewer, 2_000);
+    assert!(seat.rows().is_empty());
+}

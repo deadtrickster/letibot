@@ -75,6 +75,15 @@ impl FakeSource {
         inner.comments.push((repo.to_string(), number, comment));
     }
 
+    /// The pull request is closed, so it is no longer listed - which is how the seat learns it is
+    /// gone: it draws what is open, and a row nobody lists any more is dropped.
+    pub fn close(&self, repo: &str, number: u64) {
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        inner
+            .pulls
+            .retain(|(p, _)| !(p.repo == repo && p.number == number));
+    }
+
     /// Every review posted, oldest first.
     pub fn reviews(&self) -> Vec<(String, u64, Review)> {
         self.inner
