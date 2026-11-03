@@ -90,9 +90,9 @@ fn silent(r: &mut FrameReader<UnixStream>) {
     }
 }
 
-/// The ticket's own scene, one layer down: two heads on one session, one of them asks, and the
-/// other is told anyway. The rows are the harness's answer, so the connection that did not ask
-/// has no request to correlate an unprompted answer with - it takes it as the new truth.
+/// The scene one layer down: two heads on one session, one of them asks, and the other is told
+/// anyway. The rows are the harness's answer, so the connection that did not ask has no request
+/// to correlate an unprompted answer with - it takes it as the new truth.
 #[test]
 fn a_settings_change_reaches_the_head_that_did_not_ask() {
     let registry = Registry::new();

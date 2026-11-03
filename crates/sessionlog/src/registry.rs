@@ -2019,14 +2019,19 @@ mod tests {
             tools: Vec::new(),
         };
         // A probe of the head's own, so a read has something to answer even when nothing was said.
+        // A settings publish rides the side channel ahead of it, and the events are the subject.
         let said = |hub: &Hub| -> Vec<(String, String)> {
             hub.publish(crate::SessionEvent::Warning {
                 code: "prefix_current".into(),
                 detail: String::new(),
                 compaction: None,
             });
-            let Delivery::Events(batch) = hub.next_batch(&head.head_id, 64) else {
-                panic!("a batch, not a resync")
+            let batch = loop {
+                match hub.next_batch(&head.head_id, 64) {
+                    Delivery::Events(batch) => break batch,
+                    Delivery::Frames(_) => {}
+                    other => panic!("a batch, not a {other:?}"),
+                }
             };
             batch
                 .events()
