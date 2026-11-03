@@ -13,6 +13,49 @@ pub struct SeatView {
     pub grants: Vec<Grant>,
     pub egress: Egress,
     pub env: Vec<(String, String)>,
+    /// The operator's own home as the view's `$HOME`, for a top-level session: the filesystem is
+    /// readable and the home writable, and the deny list is the only fence. `None` is the tight
+    /// view with a throwaway home.
+    pub home: Option<PathBuf>,
+}
+
+/// How much of the machine a session's commands see. A session nobody started on the operator's
+/// behalf (a child) gets the tight view, so it cannot push or land itself and its work returns
+/// through its branch and the review queue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Level {
+    Wide,
+    Tight,
+}
+
+impl Level {
+    pub fn of(parent_session: Option<&str>) -> Level {
+        if parent_session.is_none() {
+            Level::Wide
+        } else {
+            Level::Tight
+        }
+    }
+}
+
+/// The view for a session at `level`. Wide needs neither toolchain grants nor redirected `*_HOME`
+/// variables, since the real home already makes them right.
+pub fn seat_for_level<S: AsRef<str>>(
+    level: Level,
+    mode: &crate::mode::Mode,
+    place: &str,
+    present: &[S],
+    operator_home: &Path,
+) -> SeatView {
+    match level {
+        Level::Tight => seat_view(mode, place, present),
+        Level::Wide => SeatView {
+            grants: Vec::new(),
+            egress: network_rule(mode, place),
+            env: Vec::new(),
+            home: Some(operator_home.to_path_buf()),
+        },
+    }
 }
 
 /// The session's network rule: denied unless the mode seats network calls. `Ask` counts as
@@ -60,6 +103,29 @@ pub fn grants_for<S: AsRef<str>>(present: &[S]) -> Vec<Grant> {
             }
         })
         .collect()
+}
+
+/// A worktree's `.git` is a file naming a directory outside the checkout, and objects and refs
+/// live in that repository's common dir. Without a read-write grant on it a confined `git commit`
+/// cannot write, and the branch is the whole deliverable.
+pub fn worktree_git_grants(project: &Path) -> Vec<Grant> {
+    let Ok(text) = std::fs::read_to_string(project.join(".git")) else {
+        return Vec::new();
+    };
+    let Some(dir) = text.trim().strip_prefix("gitdir:").map(str::trim) else {
+        return Vec::new();
+    };
+    let dir = project.join(dir);
+    let common = std::fs::read_to_string(dir.join("commondir"))
+        .map(|c| dir.join(c.trim()))
+        .unwrap_or_else(|_| dir.clone());
+    let common = common.canonicalize().unwrap_or(common);
+    vec![Grant::ReadWrite {
+        path: common,
+        why: "this worktree's repository: its objects and refs, so `git commit` works in the \
+              checkout"
+            .to_string(),
+    }]
 }
 
 /// The variables that point a tool at a granted path, since the view's `$HOME` is fresh.
@@ -121,11 +187,22 @@ pub fn present_under(home: &Path) -> Vec<String> {
 /// The whole view for a session on a machine where `present` exists under its home.
 pub fn seat_view<S: AsRef<str>>(mode: &crate::mode::Mode, place: &str, present: &[S]) -> SeatView {
     let grants = grants_for(present);
-    let env = env_for_grants(grants.iter().map(|g| g.path()));
+    let mut env = env_for_grants(grants.iter().map(|g| g.path()));
+    // A confined view has no business with the operator's credential helpers: a child commits and
+    // its work returns through the review queue.
+    env.extend(
+        [
+            ("GIT_CONFIG_COUNT", "1"),
+            ("GIT_CONFIG_KEY_0", "credential.helper"),
+            ("GIT_CONFIG_VALUE_0", ""),
+        ]
+        .map(|(k, v)| (k.to_string(), v.to_string())),
+    );
     SeatView {
         grants,
         egress: network_rule(mode, place),
         env,
+        home: None,
     }
 }
 
@@ -152,9 +229,27 @@ mod tests {
                 ("CARGO_HOME".to_string(), "/h/.cargo".to_string()),
                 ("RUSTUP_HOME".to_string(), "/h/.rustup".to_string()),
                 ("GIT_CONFIG_GLOBAL".to_string(), "/h/.gitconfig".to_string()),
+                ("GIT_CONFIG_COUNT".to_string(), "1".to_string()),
+                (
+                    "GIT_CONFIG_KEY_0".to_string(),
+                    "credential.helper".to_string()
+                ),
+                ("GIT_CONFIG_VALUE_0".to_string(), String::new()),
             ]
         );
         assert!(!seat_view(&Mode::READ_ONLY, "x", &present).egress.allowed());
+    }
+
+    #[test]
+    fn a_top_level_session_is_wide_and_a_child_is_tight() {
+        assert_eq!(Level::of(None), Level::Wide);
+        assert_eq!(Level::of(Some("s-1")), Level::Tight);
+        let h = Path::new("/h");
+        let wide = seat_for_level(Level::Wide, &Mode::WRITES_ALLOWED, "x", &["/h/.cargo"], h);
+        assert_eq!(wide.home.as_deref(), Some(h));
+        assert!(wide.grants.is_empty() && wide.env.is_empty() && wide.egress.allowed());
+        let tight = seat_for_level(Level::Tight, &Mode::WRITES_ALLOWED, "x", &["/h/.cargo"], h);
+        assert!(tight.home.is_none() && !tight.grants.is_empty());
     }
 
     #[test]

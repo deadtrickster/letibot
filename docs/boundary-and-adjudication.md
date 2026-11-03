@@ -785,8 +785,30 @@ unconfined with `boundary_absent`, exactly as above. Every widening re-probes th
 `grant_into_view_impl`), so what is described is what runs. `bash`, background jobs and the persistent
 shell all go through `Confinement::wrap`, which for this mechanism is `sandbox-exec -f <profile>
 /bin/sh -c 'export HOME=… TMPDIR=…; exec "$@"'` - the shim exists because a profile cannot set an
-environment variable and `wrap` returns an argv: `HOME` must be the session's own directory, `TMPDIR`
-the session's own, and `CARGO_HOME`/`RUSTUP_HOME` the operator's read-only toolchain.
+environment variable and `wrap` returns an argv: `HOME` is the session's own directory in the tight view and the operator's in the wide one,
+`TMPDIR` the session's own, and `CARGO_HOME`/`RUSTUP_HOME` the operator's read-only toolchain in the
+tight view only.
+
+**Two levels of the default seat** (`exec::seat::Level`, decided by the session's parent):
+
+- **Top-level session: wide.** `$HOME` is the operator's own, read-write, and the whole filesystem is
+  readable. No toolchain list and no `CARGO_HOME`/`GIT_CONFIG_GLOBAL` redirection, because the real
+  home makes them right. Network follows the session mode. `DENY_UNDER_HOME` (less `.config/gh`) is the
+  only fence, still emitted last, so `~/.ssh`, browser profiles, `~/.aws`, shell profiles and
+  letibot's own store stay unreadable and unwritable. This restores what a Mac session could do before
+  R98 half 2 (`git push` asks and works) without opening the credential stores.
+- **Child (subagent): tight.** The throwaway home, the project and the toolchain read-only, the
+  operator's `.gitconfig` for the commit identity (`GIT_CONFIG_GLOBAL`), `credential.helper` reset
+  through `GIT_CONFIG_*`, and `.config/gh` added to the deny list (`NARROW_DENY_UNDER_HOME`). A
+  worktree checkout also gets its repository's common git dir read-write
+  (`seat::worktree_git_grants`), so `git commit` works. A child cannot push or land itself. Its work
+  comes back through its branch and the review queue.
+
+Measured open point: gh on macOS keeps its token in the login keychain, and the Security client
+library reads `~/Library/Keychains/login.keychain-db` itself (the `com.apple.SecurityServer` lookup is
+already allowed and is not enough). With `Library/Keychains` denied, `gh auth token` fails inside; with
+that one path readable it succeeds. This cannot be scoped to gh's item, so the deny stays and the test
+`gh_is_logged_in_in_a_wide_seat_and_prints_no_token` is `#[ignore]`d until the operator decides.
 
 Measured on a Mac (Darwin 25.6, 2026-11-03): `cargo test --offline -p letibot-tools --test seatbelt
 --test seatbelt_no_helper` passes 8/8 (the toolchain runs, the checkout is written, a write outside is

@@ -74,7 +74,6 @@ pub const DENY_UNDER_HOME: &[&str] = &[
     ".aws",
     ".netrc",
     ".docker/config.json",
-    ".config/gh",
     ".cargo/credentials.toml",
     "Library/Keychains",
     "Library/Cookies",
@@ -92,6 +91,9 @@ pub const DENY_UNDER_HOME: &[&str] = &[
     ".profile",
     ".config/fish",
 ];
+
+/// Denied only in the tight (child) view, relative to the operator's home.
+pub const NARROW_DENY_UNDER_HOME: &str = ".config/gh";
 
 /// A file this module creates inside the session's `$HOME` so that the deny rule can be
 /// measured winning over an allow: the directory is read-write in the profile and the file is
@@ -129,6 +131,10 @@ pub struct Layout {
     pub deny: Vec<PathBuf>,
     /// The per-user temporary directory, where the macOS toolchain's `xcrun` cache lives.
     pub user_temp: PathBuf,
+    /// The view's `$HOME` is the operator's own: the filesystem is readable and the home
+    /// writable, and [`DENY_UNDER_HOME`] is the only fence. No toolchain list and no redirected
+    /// `*_HOME`, because the real home already makes them right.
+    pub wide: bool,
     /// Unix sockets and files the command may not connect to, read or write, in both the
     /// `/var` and `/private/var` spellings: the host room coordinator's, and the view's own
     /// `hidden` paths. Seatbelt names a unix socket by `network-outbound`, not by file access.
@@ -160,11 +166,15 @@ impl Layout {
             TmpView::PerCommand => dir.join("tmp"),
             TmpView::Session(d) => d.clone(),
         };
+        // A letibot-owned home is a directory of its own; the operator's home as `$HOME` is the
+        // wide seat.
+        let wide = matches!(&view.home, HomeView::Dir(d)
+            if d == operator_home || d.canonicalize().ok() == operator_home.canonicalize().ok());
         let mut toolchain = Vec::new();
         let mut cargo_home = None;
         let mut rustup_home = None;
         let mut git_config = None;
-        for rel in TOOLCHAIN_UNDER_HOME {
+        for rel in TOOLCHAIN_UNDER_HOME.iter().filter(|_| !wide) {
             let p = operator_home.join(rel);
             if !p.exists() {
                 continue;
@@ -179,7 +189,7 @@ impl Layout {
         // The dotfile wins: with `GIT_CONFIG_GLOBAL` set git reads that one file alone.
         for rel in [".gitconfig", ".config/git/config"] {
             let p = operator_home.join(rel);
-            if p.is_file() {
+            if !wide && p.is_file() {
                 git_config = Some(p);
                 break;
             }
@@ -188,6 +198,11 @@ impl Layout {
             .iter()
             .map(|rel| operator_home.join(rel))
             .collect();
+        // A tight view cannot authenticate to GitHub, so a child session lands nothing itself;
+        // the wide one reads gh's config and reaches its token through the keychain service.
+        if !wide {
+            deny.push(operator_home.join(NARROW_DENY_UNDER_HOME));
+        }
         deny.sort();
         deny.dedup();
         let mut user_temp = std::env::temp_dir();
@@ -215,6 +230,7 @@ impl Layout {
             git_config,
             deny,
             user_temp,
+            wide,
         }
     }
 
@@ -261,6 +277,10 @@ pub fn render_profile(view: &ViewSpec, egress: &Egress, l: &Layout) -> String {
     s.push_str("  (literal \"/\")\n");
     for p in SYSTEM_ROOTS {
         s.push_str(&format!("  (subpath \"{p}\")\n"));
+    }
+    if l.wide {
+        // The whole filesystem is readable; the denies at the end are the fence.
+        s.push_str("  (subpath \"/\")\n");
     }
     for p in &l.toolchain {
         s.push_str(&format!("  (subpath \"{}\")\n", p.display()));
@@ -561,6 +581,10 @@ impl Seatbelt {
         let probe = read_probe(&printed);
         let _ = std::fs::remove_file(&outside);
         let _ = std::fs::remove_file(&inside);
+        // The operator's own home is not a place to leave a marker in.
+        if layout.wide {
+            let _ = std::fs::remove_file(&canary);
+        }
 
         if probe.facts.is_empty() {
             return Err(ExecError::NoConfinement(format!(
@@ -1025,6 +1049,7 @@ mod tests {
                 PathBuf::from("/Users/x/.zshrc"),
             ],
             user_temp: PathBuf::from("/private/var/folders/aa/bb/T"),
+            wide: false,
             hidden: Vec::new(),
         }
     }

@@ -445,3 +445,177 @@ fn the_xdg_git_config_is_the_identity_when_there_is_no_dotfile() {
     let (_, out) = run_in(&s, &f.project(), "git config user.email");
     assert_eq!(out.trim(), "xdg@example.test", "{out}");
 }
+
+// ------------------------------------------------------ the two levels
+
+/// The wide seat over a fake operator home: `$HOME` is that directory, with a fixture `.ssh` and
+/// Chrome profile in it, and nothing real is opened.
+fn wide(f: &Fixture) -> (Seatbelt, PathBuf) {
+    let op = f.root.join("operator");
+    std::fs::create_dir_all(op.join(".ssh")).expect("fake .ssh");
+    std::fs::create_dir_all(op.join("Library/Application Support/Google/Chrome/Default"))
+        .expect("fake chrome");
+    std::fs::write(op.join(".ssh/id_rsa"), SECRET).expect("fake key");
+    std::fs::write(
+        op.join("Library/Application Support/Google/Chrome/Default/Cookies"),
+        SECRET,
+    )
+    .expect("fake cookies");
+    std::fs::write(op.join("note.txt"), "plain\n").expect("a note");
+    let view = ViewSpec::project_only(f.project())
+        .with_home(HomeView::Dir(op.clone()))
+        .with_tmp(TmpView::Session(f.root.join("tmp")));
+    let s = Seatbelt::probe_as(view, Egress::Denied, vec![], op.clone())
+        .unwrap_or_else(|e| panic!("the macOS boundary did not measure on this box: {e}"));
+    (s, op)
+}
+
+#[test]
+fn a_wide_seat_sees_and_writes_the_real_home_and_the_deny_list_is_the_fence() {
+    let f = Fixture::new("wide");
+    let (s, op) = wide(&f);
+    let cwd = f.project();
+    let (rc, out) = run_in(
+        &s,
+        &cwd,
+        "echo \"home=$HOME\" && cat \"$HOME/note.txt\" && cat /etc/hosts >/dev/null && \
+         echo new > \"$HOME/written.txt\"",
+    );
+    assert_eq!(rc, 0, "{out}");
+    assert!(out.contains(&format!("home={}", op.display())), "{out}");
+    assert!(out.contains("plain"), "{out}");
+    assert!(
+        op.join("written.txt").is_file(),
+        "the real home is writable"
+    );
+    assert!(
+        !op.join(CANARY).exists(),
+        "the probe left no marker in the home"
+    );
+    let (rc, out) = run_in(&s, &cwd, "cat \"$HOME/.ssh/id_rsa\"");
+    assert_ne!(rc, 0, "{out}");
+    assert!(!out.contains("letibot-fixture-line"), "{out}");
+    let (rc, out) = run_in(
+        &s,
+        &cwd,
+        "cat \"$HOME/Library/Application Support/Google/Chrome/Default/Cookies\"",
+    );
+    assert_ne!(rc, 0, "{out}");
+    assert!(!out.contains("letibot-fixture-line"), "{out}");
+    let outside = f.root.join("outside/x");
+    let (rc, _) = run_in(&s, &cwd, &format!("echo x > {}", outside.display()));
+    assert_ne!(rc, 0, "a write outside home and checkout");
+}
+
+fn real_home() -> PathBuf {
+    PathBuf::from(std::env::var_os("HOME").expect("HOME"))
+}
+
+fn gh_logged_in_outside() -> bool {
+    std::process::Command::new("/opt/homebrew/bin/gh")
+        .args(["auth", "status"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+// Measured: with `Library/Keychains` denied, `gh auth token` fails inside (the Security client
+// library reads `login.keychain-db` itself, not only through `securityd`), and with that one path
+// allowed it succeeds. The deny stays, so this is the open question, not a regression.
+#[test]
+#[ignore = "gh's keychain item needs ~/Library/Keychains/login.keychain-db readable"]
+fn gh_is_logged_in_in_a_wide_seat_and_prints_no_token() {
+    if !gh_logged_in_outside() {
+        eprintln!("skipped: gh is not logged in on this machine");
+        return;
+    }
+    let f = Fixture::new("wide-gh");
+    let view = ViewSpec::project_only(f.project())
+        .with_home(HomeView::Dir(real_home()))
+        .with_tmp(TmpView::Session(f.root.join("tmp")));
+    // `gh auth status` asks GitHub whether the token works, so the network is on.
+    let net = Egress::Host {
+        why: "gh checks its token online".into(),
+    };
+    let s = Seatbelt::probe_as(view, net, vec![], real_home())
+        .unwrap_or_else(|e| panic!("the macOS boundary did not measure on this box: {e}"));
+    let (rc, out) = run_in(&s, &f.project(), "/opt/homebrew/bin/gh auth status 2>&1");
+    assert_eq!(rc, 0, "{out}");
+    assert!(out.contains("Logged in"), "{out}");
+    assert!(
+        !out.contains("gho_") && !out.contains("ghp_"),
+        "token printed"
+    );
+}
+
+#[test]
+fn gh_is_not_logged_in_in_a_tight_seat() {
+    if !gh_logged_in_outside() {
+        eprintln!("skipped: gh is not logged in on this machine");
+        return;
+    }
+    let f = Fixture::new("tight-gh");
+    let s = Seatbelt::probe_as(f.view(), Egress::Denied, vec![f.denied()], real_home())
+        .unwrap_or_else(|e| panic!("the macOS boundary did not measure on this box: {e}"));
+    let (rc, out) = run_in(&s, &f.project(), "/opt/homebrew/bin/gh auth status 2>&1");
+    assert_ne!(rc, 0, "a child is logged in to GitHub: {out}");
+    let (rc, _) = run_in(&s, &f.project(), "cat \"$HOME/.config/gh/hosts.yml\"");
+    assert_ne!(rc, 0);
+}
+
+#[test]
+fn a_child_commits_in_a_worktree_with_the_operators_identity_and_has_no_credentials() {
+    let f = Fixture::new("child");
+    let git = |dir: &Path, args: &[&str]| {
+        let o = std::process::Command::new("/usr/bin/git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_AUTHOR_NAME", "f")
+            .env("GIT_AUTHOR_EMAIL", "f@x.test")
+            .env("GIT_COMMITTER_NAME", "f")
+            .env("GIT_COMMITTER_EMAIL", "f@x.test")
+            .output()
+            .expect("git");
+        assert!(o.status.success(), "{args:?}: {o:?}");
+    };
+    let repo = f.root.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "-q", "."]);
+    git(&repo, &["commit", "-q", "--allow-empty", "-m", "root"]);
+    let wt = f.root.join("wt");
+    git(&repo, &["worktree", "add", "-q", wt.to_str().unwrap()]);
+    let op = f.root.join("operator");
+    std::fs::create_dir_all(&op).unwrap();
+    std::fs::write(
+        op.join(".gitconfig"),
+        "[user]\n\tname = Fixture Op\n\temail = op@example.test\n",
+    )
+    .unwrap();
+    let mut view = ViewSpec::project_only(&wt)
+        .with_home(HomeView::Dir(f.home()))
+        .with_tmp(TmpView::Session(f.root.join("tmp")));
+    for g in letibot_tools::exec::seat::worktree_git_grants(&wt) {
+        view = view.granting(g);
+    }
+    let s = Seatbelt::probe_as(view, Egress::Denied, vec![f.denied()], op)
+        .unwrap_or_else(|e| panic!("the macOS boundary did not measure on this box: {e}"));
+    let (rc, out) = run_in(
+        &s,
+        &wt,
+        "git commit -q --allow-empty -m child && git log -1 --format=%an,%ae",
+    );
+    assert_eq!(rc, 0, "{out}");
+    assert!(out.contains("Fixture Op,op@example.test"), "{out}");
+    // No helper answers for GitHub, and prompting is off.
+    let (rc, out) = run_in(
+        &s,
+        &wt,
+        "printf 'protocol=https\\nhost=github.com\\n\\n' | \
+         GIT_TERMINAL_PROMPT=0 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=credential.helper \
+         GIT_CONFIG_VALUE_0= git credential fill 2>&1",
+    );
+    assert_ne!(rc, 0, "a child got a credential: {out}");
+    assert!(!out.contains("password="), "{out}");
+}

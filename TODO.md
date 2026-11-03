@@ -256,6 +256,14 @@ Two halves, the first smaller and first:
    is printed on the boundary's own description as `ABSENT` / `NOT APPLICABLE`, never omitted.
    Reaping stays the process-group tree (`exec::scope::ProcessGroups`), as it already was. — ✓ fixed in 5442b7c8, test the_probe_measures_a_boundary_and_says_what_macos_cannot_give
 
+   **Two levels (2026-11-04).** The tight view alone made `git push` and `gh` fail in a top-level
+   Mac session ("could not read Username", "not logged into any GitHub hosts"). A top-level session
+   is now wide (real `$HOME` read-write, filesystem readable, `DENY_UNDER_HOME` less `.config/gh` as
+   the only fence). A child keeps the tight view plus the operator's git identity and its worktree's
+   git dir, with no credentials, so it commits and cannot push. Open: gh's keychain token needs
+   `login.keychain-db` readable, which cannot be scoped to gh's item, so gh is not logged in inside
+   until the operator decides (`gh_is_logged_in_in_a_wide_seat_and_prints_no_token`, ignored). See §4k.
+
    **What half 2 still needs: a Mac.** `crates/tools/src/exec/seatbelt.rs` and
    `crates/tools/tests/seatbelt.rs` are in the tree now, and nothing on a Linux box can run
    `sandbox-exec` or a `#![cfg(target_os = "macos")]` test, so the profile has never been read by

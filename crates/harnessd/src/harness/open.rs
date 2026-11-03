@@ -698,6 +698,22 @@ impl Harness {
         seat::seat_view(&cfg.mode, "this machine", &seat::present_under(&home))
     }
 
+    /// The default seat's view: wide for a top-level session, tight for a child.
+    #[cfg(target_os = "macos")]
+    fn default_seat(cfg: &Config) -> letibot_tools::exec::seat::SeatView {
+        use letibot_tools::exec::seat;
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_default();
+        seat::seat_for_level(
+            seat::Level::of(cfg.parent_session_id.as_deref()),
+            &cfg.mode,
+            "this machine",
+            &seat::present_under(&home),
+            &home,
+        )
+    }
+
     /// The default local seat on a Mac: commands inside the seatbelt boundary over the checkout,
     /// file tools still rooted at `/`. `None` where the seat asks for no command, off a Mac, or
     /// where the probe refuses (said on the hub, and the caller falls back to unconfined).
@@ -714,7 +730,7 @@ impl Harness {
             "/",
             &cfg.workspace,
             confined_grants(cfg, cfg.landing_root.as_deref()),
-            Self::local_seat(cfg),
+            Self::default_seat(cfg),
         )
         .and_then(|b| b.with_cwd(&cfg.workspace));
         match built {
@@ -3859,6 +3875,11 @@ pub fn confined_grants(
                   readable so the gate's evidence can be inspected, never writable"
                 .into(),
         });
+    }
+    for g in letibot_tools::exec::seat::worktree_git_grants(&cfg.workspace) {
+        if !out.iter().any(|h| h.path() == g.path()) {
+            out.push(g);
+        }
     }
     out
 }
