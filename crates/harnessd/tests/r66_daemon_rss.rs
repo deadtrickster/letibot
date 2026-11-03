@@ -323,28 +323,38 @@ fn authority(url: &str) -> String {
         .to_string()
 }
 
-/// What the daemon's own `memwatch` line says ONE session holds, in the units the census uses. This
-/// is the retained-item count the test asserts on: resident memory is the kernel's opinion and moves
-/// with the allocator, while these four numbers are the rows, the region, the hub's log and the view.
+/// What the daemon's own `memwatch` summary line says it holds. Every byte figure on it is a SUM
+/// over every session the daemon serves, and each is printed rounded - so a figure is only as exact
+/// as the grain beside it. Resident memory is not on it: that is the kernel's, and the line prints it
+/// separately.
 #[derive(Clone, Copy, Default, Debug)]
 struct Held {
     harness: u64,
+    /// The unit `harness` was printed in: the reading is worth `harness` give or take half of this.
+    harness_grain: u64,
     log: u64,
     view: usize,
     heap: u64,
+    /// The sessions the sums above cover.
+    sessions: usize,
 }
 
 impl Held {
     /// Read off a line of the watch; zeroes on a line that has not got the parts yet, which is every
     /// reading before the daemon's first tick.
     fn of(watch: &str) -> Self {
+        let (harness, harness_grain) = after(watch, "harness ").and_then(printed).unwrap_or((0, 0));
         Held {
-            harness: after(watch, "harness ").map(bytes).unwrap_or(0),
+            harness,
+            harness_grain,
             log: after(watch, "logs ").map(bytes).unwrap_or(0),
             view: after(watch, "view ")
                 .and_then(|n| n.split_whitespace().next()?.parse().ok())
                 .unwrap_or(0),
             heap: after(watch, "heap live ").map(bytes).unwrap_or(0),
+            sessions: after(watch, "threads · ")
+                .and_then(|n| n.split_whitespace().next()?.parse().ok())
+                .unwrap_or(0),
         }
     }
 }
@@ -356,16 +366,23 @@ fn after<'a>(line: &'a str, marker: &str) -> Option<&'a str> {
 
 /// `<n> KiB` / `<n> MiB` / `<n> B`, as `human_bytes` writes it, in bytes.
 fn bytes(rest: &str) -> u64 {
+    printed(rest).map(|(b, _)| b).unwrap_or(0)
+}
+
+/// A byte figure off the watch, and the grain the print rounded it to: `human_bytes` writes whole
+/// units and one decimal above a gibibyte, so a figure carries half a grain of doubt either way.
+fn printed(rest: &str) -> Option<(u64, u64)> {
     let mut it = rest.split_whitespace();
-    let n: f64 = it.next().and_then(|n| n.parse().ok()).unwrap_or(0.0);
-    let unit = it.next().unwrap_or("B");
-    let k = match unit {
+    let num = it.next()?;
+    let n: f64 = num.parse().ok()?;
+    let unit = match it.next().unwrap_or("B") {
         "GiB" => 1u64 << 30,
         "MiB" => 1 << 20,
         "KiB" => 1 << 10,
         _ => 1,
     };
-    (n * k as f64) as u64
+    let grain = if num.contains('.') { unit / 10 } else { unit };
+    Some(((n * unit as f64) as u64, grain))
 }
 
 /// One turn's reading.
@@ -566,21 +583,25 @@ fn forty_turns_with_a_failed_compaction_each_keep_the_daemon_bounded() {
     // token where a byte vocabulary spends a token a byte, and the region's capacity doubles - so a
     // row can cost eight times its text in the turn the region doubles, and ten is the allowance.
     let rows_added = (spanned * (prompt_bytes + instruction)) as u64;
-    let allowed = rows_added * 10 + (512 << 10);
+    // The line sums every session the daemon serves, so the bound is one session's rows times the
+    // sessions the sum covers; and each figure is printed rounded, so both grains are spent too.
+    let sessions = last.held.sessions.max(first.held.sessions).max(1) as u64;
+    let allowed =
+        rows_added * 10 * sessions + (first.held.harness_grain + last.held.harness_grain) / 2;
     let grew = last.held.harness.saturating_sub(first.held.harness);
     assert!(
         grew <= allowed,
-        "{spanned} turns appending {} left the session holding {} more — past the {} its own rows \
-         and region cost, which is a term nobody has accounted for",
+        "{spanned} turns appending {} left the daemon holding {} more across {sessions} session(s) \
+         — past the {} its own rows and region cost, which is a term nobody has accounted for",
         mb(rows_added as f64),
         mb(grew as f64),
         mb(allowed as f64)
     );
 
     // Printed and not asserted: a per-turn slope over the census is a sawtooth while the region is
-    // doubling, so a turn that lands on a doubling looks ten times a turn that does not. What a
-    // per-turn copy of the conversation would do is quadratic, and that fails the total above by two
-    // orders of magnitude; this line is here so a person reading a failing run sees which it was.
+    // doubling, so a turn that lands on a doubling looks ten times a turn that does not. A copy of
+    // the conversation per turn is what the total above rejects, and its excess grows with the turn
+    // count; this line is here so a person reading a failing run sees which it was.
     let mid = readings[readings.len() / 2];
     let early = (mid.held.harness.saturating_sub(first.held.harness)) as f64
         / (mid.turn - first.turn).max(1) as f64;
