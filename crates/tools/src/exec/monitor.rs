@@ -1265,6 +1265,17 @@ impl Condition for LogTailCondition {
     }
 }
 
+/// The poller a message pings, named rather than printed: a closure's contents are not a
+/// [`Debug`] a reader can use.
+#[derive(Clone)]
+struct Pinger(Arc<dyn Fn() + Send + Sync>);
+
+impl std::fmt::Debug for Pinger {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the poller to ping")
+    }
+}
+
 /// A channel-fed condition: each message from the `Sender` is a firing, which is the push
 /// case where the condition pings the poller instead of being polled.
 #[derive(Debug)]
@@ -1272,6 +1283,9 @@ pub struct ChannelCondition {
     /// The receiver, moved into the notifier thread by [`Condition::install`]. It is `Send`
     /// but not `Sync`, and a `Mutex` would hold a lock for the whole of a blocking `recv`.
     rx: Mutex<Option<std::sync::mpsc::Receiver<String>>>,
+    /// The poller to ping, which a second `install` REPLACES: the notifier thread is already
+    /// draining the receiver for the giver, and a handed monitor must wake the heir instead.
+    signal: Mutex<Option<Pinger>>,
     /// Messages the notifier has received and the poller has not yet drained.
     pending: Mutex<VecDeque<String>>,
 }
@@ -1285,6 +1299,7 @@ impl ChannelCondition {
         (
             Arc::new(ChannelCondition {
                 rx: Mutex::new(Some(rx)),
+                signal: Mutex::new(None),
                 pending: Mutex::new(VecDeque::new()),
             }),
             tx,
@@ -1298,6 +1313,9 @@ impl Condition for ChannelCondition {
     }
 
     fn install(self: Arc<Self>, signal: Arc<dyn Fn() + Send + Sync>) {
+        // The poller as it stands NOW, so a second install - the handover - is not lost to the
+        // thread the first one started, which has held the receiver since.
+        *self.signal.lock().expect("channel signal") = Some(Pinger(Arc::clone(&signal)));
         // Take the receiver out and move it into a notifier thread that pings the
         // poller per message, so the monitor fires the instant one lands.
         let Some(rx) = self.rx.lock().expect("channel rx").take() else {
@@ -1310,7 +1328,10 @@ impl Condition for ChannelCondition {
                 for m in rx {
                     let Some(me) = weak.upgrade() else { return };
                     me.pending.lock().expect("channel pending").push_back(m);
-                    signal();
+                    let now = me.signal.lock().expect("channel signal").clone();
+                    if let Some(Pinger(ping)) = now {
+                        ping();
+                    }
                 }
             });
     }
@@ -1868,5 +1889,38 @@ mod tests {
         assert_eq!(again.len(), 1);
         assert_eq!(ms.firings().len(), 2);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A handed channel monitor must ping the HEIR's poller. `install` moved the receiver out on
+    /// its first call and returned early on every later one, so the handover's install was a no-op
+    /// and each message waited out `TICK` on the heir instead of arriving at once.
+    #[test]
+    fn a_channel_condition_installed_twice_pings_the_second_poller() {
+        let (cond, tx) = ChannelCondition::channel();
+        let giver = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let heir = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (g, h) = (Arc::clone(&giver), Arc::clone(&heir));
+        cond.clone().install(Arc::new(move || {
+            g.fetch_add(1, Ordering::SeqCst);
+        }));
+        // The second install is the handover's, and it is the poller a message must wake.
+        cond.clone().install(Arc::new(move || {
+            h.fetch_add(1, Ordering::SeqCst);
+        }));
+        tx.send("handed".into()).unwrap();
+        let began = Instant::now();
+        while heir.load(Ordering::SeqCst) == 0 && began.elapsed() < Duration::from_secs(2) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(
+            heir.load(Ordering::SeqCst),
+            1,
+            "the poller installed last is the one a message pings"
+        );
+        assert_eq!(
+            giver.load(Ordering::SeqCst),
+            0,
+            "and the one it replaced - the giver's dead poller - is not pinged"
+        );
     }
 }
