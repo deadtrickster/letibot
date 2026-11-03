@@ -1,0 +1,155 @@
+# Skills
+
+A skill is a directory holding a `SKILL.md`: a name, one line saying what it is for, and a body of
+instructions. The prompt never carries a body. It carries the names the operator pinned, and the
+model loads a body when it decides it needs one. A skill can also offer itself: the harness notices
+that what a session is doing looks like a skill's subject and says so once, in a line that costs the
+prompt two lines and disappears next round.
+
+```text
+<workspace>/.letibot/skills/latex-presentation/SKILL.md
+```
+
+```markdown
+---
+name: latex-presentation
+description: Build a slide deck with beamer, one idea per slide
+when_to_use: The operator asks for slides, a deck, a talk or a presentation
+keywords: beamer, latex, slides, deck, talk, presentation
+allowed-tools: read, write, bash
+---
+
+Everything below the second `---` is the body. It is what the model reads when it loads the skill.
+```
+
+| frontmatter key | |
+|---|---|
+| `name` | required. The name every door keys by: a pin, `skill load`, an offer |
+| `description` | the one line the listing shows |
+| `when_to_use` | optional. The sentence a reader decides by, and the words a ranker needs, since a description is often a title |
+| `keywords` | optional. Comma or space separated, either a list or one line |
+| `allowed-tools` | optional. Tool names only. It can narrow what a session may call, never grant anything |
+| `origin` | optional. Where an installed skill came from, shown as its label |
+
+A file with no `name`, or with no frontmatter at all, is skipped rather than loaded half way. Keys
+this build does not know are ignored. `Bash(git:*)` is read as `bash`: the qualifier is Claude
+Code's spelling of a narrower thing and this tree's tools answer to the bare name.
+
+## Where skills are read from
+
+| source | directory | label in a listing |
+|---|---|---|
+| this project | `<workspace>/.letibot/skills`, then `<workspace>/.claude/skills` | `this project` |
+| the operator's | `$XDG_CONFIG_HOME/letibot/skills`, `~/.config/letibot/skills` | `the operator's` |
+| installed | `~/.claude/skills` | `installed`, or `installed from <origin>` when the folder names one |
+| written by a model | `<data dir>/skills` | `written by a model` |
+| this build | compiled in: `plugin-pane`, `plugin-hooks` | `this build` |
+| the fabric | another seat's shelf, over the node | `the fabric` |
+
+One name found twice is held once, by the higher row of that table. A directory that cannot be read
+is skipped, not fatal, and a session with no skills at all simply has no skills section.
+
+The project half follows the session's workspace, so a child opened in another tree reads that
+tree's skills. The box's half travels on the session's config.
+
+## The prompt carries pins, not a catalogue
+
+The prompt's skills section opens with how many skills are pinned out of how many this box holds,
+then one line per pinned skill: its name, where it was found, and its description. Everything
+unpinned is a count, `and N more that skill list holds`. No source is ever listed in full: a box
+with two hundred installed skills would spend the prompt's first screen on names nobody asked for.
+
+The caps are 60 rows, 4000 bytes and 800 tokens of the session's own counter. With pins only they
+are rarely reached; the count line says what was left out.
+
+The rest is reached by asking: `skill list` is every skill, `skill find` with a query loads the
+nearest one and names the next two.
+
+## `[skills] pin`
+
+```toml
+# leticode.toml, in the project, or ~/.config/letibot/leticode.toml
+[skills]
+pin = ["latex-presentation", "release"]
+```
+
+**Both levels apply.** The operator's names come first, then the project's new ones, each once: a
+pin is a request to have a skill in hand, so a project file, which a session with `write` can edit,
+must not be able to unsay what the operator pinned for every project on the box.
+`--no-project-config` leaves only the operator's list.
+
+A pin is not a load. The body still arrives only when something asks for it, so pinning a large
+skill costs one line of prompt, not its text.
+
+A pin may name a skill, or a shelf row by the id a listing leads with. A pin that answers to nothing
+is the operator's typo and is said twice, so silence never reads as a pin that took effect: once as
+a session warning at open, and once in the prompt's own skills section.
+
+```text
+a pinned skill nothing on this box answers to: `latex-pres`. `[skills] pin` takes the names
+`skill list` reports; the rest of the pins are in force.
+```
+
+The warning's code is `skills_pin`. A key this build does not know inside `[skills]` is refused at
+load, by name.
+
+## The offer
+
+Every round, before the request is sent, the harness scores the skills this box holds against a
+subject: the plan's rows (the ones the model wrote, not the queue's), the person's latest prompt,
+and the model's latest text and latest reasoning, read from the newest end until 8000 characters
+are used. The plan is taken first and outside that budget, because the work in hand is what a long
+tool result would otherwise cut away.
+
+A skill is offered when its score reaches 0.18. At most two are offered per round, each once per
+session, and a skill whose body is already in the conversation is not offered at all. The offer is a
+line at the tail of the request, never a row in the session log, so it is composed for one round
+and gone from the next. It says the score and the one verb that loads the body:
+
+```text
+[skill offer - the harness's own line, not the operator's] `latex-presentation` looks relevant to
+what you are doing now (similarity 0.42 of 1.00, lexical over its frontmatter: description,
+when-to-use and keywords). Its body is not in this prompt. If it is worth the context, load it -
+`skill` action="load", name="latex-presentation". This line is composed for this round and is gone
+from the next one; the skill, once loaded, is not.
+```
+
+Nothing has to be switched on. The score is lexical over the skill's whole frontmatter, so a subject
+reaches a skill by its description, its `when_to_use` and its keywords, not its body. With
+[embeddings](embeddings.md) on, the score is blended with meaning and the line says so.
+
+What was offered and whether it was taken is logged once per offer, so the floor can be tuned from
+measurement rather than by guess:
+
+```text
+<logs root>/<session id>/skills-offers.jsonl
+{"at":1767225600,"session":"s-...","skill":"latex-presentation","score":0.421,"taken":true}
+```
+
+`taken` is true when the round that was offered the skill loaded it. The log is also the session's
+memory of what it has been offered, so the rule survives a restart.
+
+## Handing a skill over
+
+- **`/skills`** opens the pane of everything this box holds, one row each. `enter`, or
+  `/skills NAME`, hands that skill's body to the session as the operator's message;
+  `/skills NAME and also fix the build` sends the body and then that line as the prompt.
+- **`task { "skills": ["release"] }`** starts a child with those bodies already in its prompt, on
+  top of the index every session gets. A name nothing answers to is refused before anything is
+  spawned, with the names that do.
+
+## What it says when it fails
+
+- `skill` with no action: `skill needs an action`, and the three actions.
+- A name nothing answers to: `no skill named `x``, then where it looked: `no skill named `x` on
+  disk, and no shelf is attached (the daemon holds no seat, so the fabric's skills are not
+  reachable from here). On disk: <the names there are>`. A shelf that is away is reported as the
+  shelf's own words, never as an empty shelf.
+- `find` with nothing close: `nothing in the skills index is close to `q` (the nearest is `x` at
+  0.10, under 0.15)`. Below the floor the body is not loaded at all, because a weak match spends
+  the model's context on a page about something else.
+- A bad pin: the `skills_pin` warning above, and one line in the prompt.
+
+See also [cookbook.md](cookbook.md) for the fabric shelf, [embeddings.md](embeddings.md) for the
+second similarity tier, and [plugins-plan.md](plugins-plan.md) for the two skills this build
+carries.

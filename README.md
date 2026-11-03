@@ -59,8 +59,12 @@ is how to put a session in a VM instead.
 
 - [docs/design-brief.md](docs/design-brief.md) - the thesis, and the constraints it puts on the code.
 - [docs/boundary-and-adjudication.md](docs/boundary-and-adjudication.md) - the gate: what is read, what is refused, and why.
+- [docs/socket.md](docs/socket.md) - the daemon socket, and what a tool call may and may not do through it.
 - [docs/gate.md](docs/gate.md) - the merge gate: what a branch is judged by, here and on the fleet, and how to run it.
 - [docs/compaction.md](docs/compaction.md) and [docs/closed-loop.md](docs/closed-loop.md) - the two subsystems with the most measurement behind them.
+- [docs/skills.md](docs/skills.md) - what a session can be handed, and how a skill offers itself; [docs/embeddings.md](docs/embeddings.md) - the second similarity tier, and which callers use it.
+- [docs/providers.md](docs/providers.md) - keys, prices, and where a session goes when its model is out.
+- [docs/github-reviewer.md](docs/github-reviewer.md) - the reviewer seat on a GitHub scope: what it watches, and what it will not send.
 - [docs/room.md](docs/room.md) - coordination between sessions; [docs/plugins-plan.md](docs/plugins-plan.md) - panes and hooks.
 - [docs/cookbook.md](docs/cookbook.md) - recipes; [docs/remote-hosts.md](docs/remote-hosts.md) - running a session on another machine.
 - [agents.md](agents.md) - the conventions a change is held to.

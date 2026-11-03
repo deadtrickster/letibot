@@ -43,29 +43,98 @@ contract price. A model neither prices is **unpriced**, not free: the turn repor
 
 ## When the model you are on is OUT
 
-A 429 that names money - a quota, a credit balance - is not weather: no backoff lifts it, so the
-retry policy (`crates/http/src/retry.rs`) classes it as a refusal and asks once. A 5xx, a 408 and a
-429 that does not name money are weather, and are waited out. `[fallback]` says where else this box
-may go, in the order to try:
+Four things can be wrong with the provider side, and they are four different facts. Each one is a
+typed event, so a program can branch on it without reading English:
+
+| `kind` | what happened | a wait lifts it? |
+|---|---|---|
+| `rate_limit` | the provider said *not now*: a 429 or a 408 whose body is not about money | yes, and the event carries `reset_ms` when the provider said when |
+| `quota` | the account behind the key cannot pay | no |
+| `timeout` | the request never answered | maybe: the route may be fine a minute later |
+| `stall` | a cloud round produced nothing for fifteen seconds | not by its own: a slow provider and a gone one look the same |
+
+A 429 that names money is a refusal and is asked once, with no backoff: no wait lifts it. A 5xx, a 408
+and a 429 that does not name money are weather, and are waited out by the retry ladder. A stall is
+raised by the daemon's own clock and only on a cloud round, because a local round is legitimately
+silent for half a minute while it reloads a model.
+
+### The event
+
+`ProviderTrouble` is published where the daemon knows the round is over for good, not once per
+attempt, so a ladder of five calls against one 429 is one fact. It carries the kind, the model the
+round was on, the provider's own words on one line, `reset_ms` when the provider said when, a `count`
+of how many of this kind in a row, and `switched_to` when the daemon's own policy moved the session.
+A caller that sees `switched_to` absent knows the session is still where it was, which is a different
+answer from *moved*.
+
+Where an automation reads it:
+
+- `leticode_events` shows it as a `provider` entry, in order with the calls and turns, carrying the
+  kind as its code and the lift instant when there is one; a move the daemon made itself is one more
+  entry, `model switched`, naming the model it went to.
+- `leticode_status` carries the current `model` and the last one as `last_trouble`, `null` for a
+  session whose provider has not failed since the bridge attached.
+- `letibot-mcp wait <worktree> <session> --until attention` wakes on it and exits `40` with the event
+  itself, so the caller's next move (sleep until `reset_ms`, or move the session) needs no second
+  question. The other codes are `0` ended, `10` an ask, `20` failed and `30` the deadline passed.
+
+A person sees the same fact as a warning on the session's log: `model_slow_first_byte` for a stall,
+and the retry and recovery lines for a failed round.
+
+A 5xx that is not a quota is the one case with no `kind`: it moves the session all the same, and the
+switch itself is the announcement, so a caller reading only `ProviderTrouble` hears nothing about it and
+a caller reading `leticode_status.model` sees the move.
+
+### Moving the session
+
+Three doors to the same verb, and all of them take at the **next turn boundary**: a switch that
+arrives mid-turn cannot re-issue the round already in flight.
+
+| door | |
+|---|---|
+| `leticode_model {session, model}` | the MCP verb. Answers with the daemon's own sentence, which says when the switch takes |
+| `--models NAME` | the head flag: prints that sentence, exit `0` switched and `1` refused. The name is the whole flag, since a bare `/models` is a listing and not a switch |
+| `/models NAME` | the same verb typed in a session |
+
+The name is one `/models` takes: a provider (`deepseek`), `provider/model`, a `[model."…"]` fleet name,
+or `local` for this box's own server. A name this box cannot serve is refused by name and nothing
+changes.
+
+### The daemon moving it by itself
+
+`[fallback]` says where else this box may go, in the order to try. It is read from `leticode.toml`,
+and a project's list replaces the operator's rather than joining it, because a project that names two
+models must not inherit a third.
 
 ```toml
 [fallback]
-models = ["deepseek/deepseek-flash", "dense78"]
+models = ["deepseek/deepseek-chat", "glm-coding/glm-5.3"]
+fallback_after_timeouts = 3
 ```
 
-Names are the ones `/models` takes (`provider/model`, a `[model."…"]` fleet name, `local`), resolved
-through the same door the verb uses, so a name here cannot be one `/models` would refuse.
+| key | default | |
+|---|---|---|
+| `models` | none | the list, tried in this order. Empty or absent means the turn fails |
+| `fallback_after_timeouts` | `3` | how many consecutive model timeouts earn a move. `0` is refused: a move on the first timeout is written `1` |
 
-The refused round is not re-issued: a model's first request has to follow a user message. Instead a
-new turn opens on the model the list names, with the refusal as its user item - `[fallback]
-deepseek-chat refused (http 429); continuing this task on …` - so the work goes on with its tool
-results above it. The switch is announced, written to the session row and shown in the header, as
-`/models` would have done it; `/models` moves it back.
+What moves the session: a refusal by the provider, a spent account, a 5xx, and a run of timeouts long
+enough to stop reading as weather. What never does: a transport failure (the model may be fine and the
+route to it down), a context-length refusal, and a stall on its own, since a slow round may still
+answer. Only a **metered** name is taken automatically: a local server or a fleet model can re-render
+the conversation into a fork, which is not something an unbidden switch should do mid-turn.
 
-The list is the whole policy: empty or absent means the turn fails. Only a **metered** name is taken
-automatically (a local server or a fleet model can re-render the conversation into a fork, which an
-unbidden switch should not do mid-turn), and a **transport** failure never moves it: the model may
-be fine and the route to it down.
+The refused round is not re-issued, because a model's first request has to follow a user message.
+Instead a new turn opens on the model the list names, with the notice as its user item:
+
+```text
+[fallback] deepseek/deepseek-chat refused (http 429); continuing this task on glm-coding/glm-5.3.
+The turn before this one ended on that refusal and nothing it did was lost ...
+```
+
+so the work goes on with its tool results above it. The switch is announced, written to the session
+row and shown in the header, as `/models` would have done it, and `/models` moves it back. A name
+that could not be taken is said rather than skipped in silence, with the reason and that the next name
+is being tried. Each name is tried once, and never the one that just refused the round.
 
 ## What crosses the seam
 

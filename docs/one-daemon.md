@@ -36,16 +36,13 @@ Three things follow from the key being the worktree:
   busy daemons; the ones with nothing to do are meant to be gone.
 
 **Who connected is a kernel fact, not a frame.** The socket is `0600` on the operator's user, and a
-model's `bash` call runs as that user with `LETIBOT_SOCKET` and `LETIBOT_SESSION` in its
-environment, for `sudo`'s askpass helper - so the mode cannot tell a head from a command, and a
-frame's `kind` and `identity` are claims a command can type. The server therefore reads the peer's
-pid at `connect` (`SO_PEERCRED`, or `LOCAL_PEERPID` on macOS), walks the parent chain up to this
-daemon and, on Linux, reads `/proc/<pid>/cgroup` for the `letibot.<daemon pid>.<n>` tree a tool call
-runs in. A connection from inside either is a tool call: it is served the askpass question and
-nothing else, and every operator door - `!term`, `!` lines, `/mode`, `/` verbs, prompts, decisions,
-settings, Stop - is refused by name (`crates/sessionlog/src/peer.rs`). A head is launched by the
-operator and is not a descendant of the daemon, which is what keeps its doors open; R75 in
-`TODO-settled.md` carries the decision, the tmux caveat and the rule's two limits.
+model's `bash` call runs as that user with `LETIBOT_SOCKET` and `LETIBOT_SESSION` in its environment,
+for `sudo`'s askpass helper, so the mode cannot tell a head from a command and a frame's `kind` and
+`identity` are claims a command can type. The server reads the peer's pid at `connect`
+(`SO_PEERCRED`, or `LOCAL_PEERPID` on macOS) and classifies it: a connection from inside this daemon's
+own tree is a tool call, is served the password ask and nothing else, and every operator door is
+refused by name. [socket.md](socket.md) is the rule, the refusal and the three things it does not
+close.
 
 The runtime directory holds **three kinds** of record, and only one is named by a workspace key:
 `<12 hex>.json` is a folder's daemon, `room-<host key>.json` is the box's room, and

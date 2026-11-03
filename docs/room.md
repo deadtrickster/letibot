@@ -1,7 +1,108 @@
 # The room - one host's agents, one queue per tag
 
-The long form of `crates/room`. The crate's docs are the map; this is the reasoning, the wire, and what
-is still owed.
+Every top-level session on this host has a `room` tool and a room to use it in. It is a queue per
+**tag**, shared by the sessions of one project, for the things only one of them may have at a time: RAM,
+a port, the staging database, a reviewer. The first half of this page is how to use it. The rest is the
+long form of `crates/room`: the reasoning, the wire, and what is still owed.
+
+## Using the room
+
+### Two sessions, one queue
+
+Two sessions of one repository (two worktrees, a package and its reviewer, a session and a subagent's
+parent) are in one room because a room is the project's: its name is derived from the root of the
+session's chain, so nothing has to be joined or configured.
+
+One of them wants the scarce thing and posts a need. The room never parses the body; it is the
+person's or the model's own words.
+
+```text
+room {"verb": "post", "tag": "ram", "body": "8 GB, ~10 min"}
+  -> posted #3 under `ram`, open
+```
+
+The other reads the queue and claims its head. A tag is a lock, so a claim is refused while somebody
+else holds it, and the refusal names the item, the holder, and how long it has been held, then says
+that a tag is a lock and the caller should wait for it or post under another tag:
+
+```text
+room {"verb": "queue", "tag": "ram"}
+room {"verb": "claim", "tag": "ram"}
+```
+
+A claim is a lease with a beat, so a holder that dies does not keep the tag. While a turn runs the
+daemon beats on the claim's behalf; a session whose turn is not running beats with `beat`. A claim
+whose beat stops for ninety seconds is taken back, and the item returns to the head of its tag with its
+abandonment count up.
+
+While it works, the holder says what it is waiting for, which is the difference between *this is mine*
+and *something outside moves this*:
+
+```text
+room {"verb": "waiting", "item": 3, "text": "the build to finish"}
+room {"verb": "done", "item": 3}          # finished
+room {"verb": "abandon", "item": 3, "why": "the box ran out of disk"}
+```
+
+And the other session is told. A post, a claim, a finish, an abandonment, a raised question and a
+ruling each arrive as a sentence and **start a turn**, with nobody typing: that is what makes the room
+a way for two sessions to talk rather than a table they both happen to look at. A beat is not worth
+waking anybody for, and does not. A session reads back what it was woken about with a plain read:
+
+```text
+room {"verb": "queue", "tag": "ram"}
+room {"verb": "holding"}                  # every item this session holds
+room {"verb": "reminders"}                # what the room is waiting on, and from whom
+```
+
+An answer is a `post` under the same tag, which is why the item and its tag are the thread: there are
+no direct messages between sessions in the room. One session asks, another answers under the same tag,
+and the asker is woken by the answer.
+
+### What only one of them may do
+
+- **A tag is a resource, not a category.** Two jobs that may run at once need two tags (`merge-a`,
+  `merge-b`). There is no priority number, because a number invites every session to claim `0`; urgent
+  work gets a tag of its own (`ram-urgent`), which a person can read.
+- **The head is first come, first served.** `claim` takes the head of a tag, and `claim_item` takes a
+  named item only while it is still the head.
+- **An abandonment is not a withdrawal.** It counts, it goes on the item, and the arbiter reads it. A
+  voluntary release from the pane is the same verb with a gentler sentence, so it counts too.
+- **Three abandonments raise a question** for the room's arbiter, which rules `retry` (keep the count),
+  `drop` (take the item out for good) or `hand` (give the claim to a named session, now). A raised item
+  freezes and its tag's queue moves past it, so one bad item cannot hold a queue.
+- **A dispute** is the way a claimant says *I am still on this* after its beat went stale and the item
+  was given to somebody else. It asks the arbiter which of the two has it, and the room refuses the late
+  beat by name rather than silently dropping it.
+- **A subagent has no room.** `Harness::open` gives a session with a parent no link at all, the room
+  refuses a subagent at its door, and a subagent's words go through the session that spawned it. Two
+  projects never share a queue either: routing is filtered by room, and a question says which room asked
+  it.
+
+### Watching it
+
+`/pane` lists what this session can open; **`/pane room/room`** is the room's: one line per tag, one row
+per item, with the claimant, the age of its beat and its abandonment count; the open questions; which
+model is the arbiter and who is connected; and the room's own identity sentence, *started T ago and
+holding N item(s)*, which also says that the room keeps no store, so a restart begins with nothing in
+it.
+
+A row offers only the verbs that would do something there: `claim` on the head, `release` and `abandon`
+on a claim this session holds, `rule` on a frozen item whose question is open. The bar under the pane
+names the key each one is bound to, so the letters are read off the screen rather than remembered. The
+pane also carries the room's restart, which is not a room verb at all: it asks the supervisor that
+starts coordinators, because a control that killed its own feed could not say what happened.
+
+A holder also sees its work on its own todo board: one row per item it holds, which says *you hold
+`ram` #3* and what the item is for, and carries the room's edge. When the claim is ready to act on
+(nothing outside is going to move it, or its beat stopped) the row is loud and the idle check names it
+and tells the holder to finish the item or release it. When the holder has declared a wait and its beat
+is fresh, the row is quiet, because the room is the thing that has to move next.
+
+The coordinator is a whole `harnessd --room`, started by the launcher before any session opens:
+`letibot --room` makes sure one is serving and says what it is, `letibot --room --stop` stops it, and
+its log is `~/logs/room-<host key>.log`. A box with no coordinator is a box where the tool is not
+seated, and a session there is a session that coordinates with nobody.
 
 ## The brief
 
