@@ -1184,7 +1184,7 @@ impl Harness {
 
     /// `submit_items`, with `opened` called once the rows are in the transcript AND the store, the point past
     /// which the model reads them whatever the rounds come to. Not called when the turn never got there.
-    fn submit_items_then(
+    pub(crate) fn submit_items_then(
         &mut self,
         items: Vec<TranscriptItem>,
         opened: impl FnOnce(&mut Self),

@@ -209,11 +209,15 @@ impl Harness {
         self.compact_if_at_the_wall();
         self.trail.begin_turn();
         self.trail.say(Speaker::Agent, &text, Some(Instant::now()));
-        let out = self.submit_item(TranscriptItem::User {
-            speaker: letibot_transcript::Speaker::Agent,
-            parts: vec![UserPart::Text { text }],
-        });
-        self.the_batch_arrived(told, out.is_ok());
+        let mut opened = false;
+        let out = self.submit_items_then(
+            vec![TranscriptItem::User {
+                speaker: letibot_transcript::Speaker::Agent,
+                parts: vec![UserPart::Text { text }],
+            }],
+            |_| opened = true,
+        );
+        self.the_batch_arrived(told, opened);
         out.map(Some)
     }
 
