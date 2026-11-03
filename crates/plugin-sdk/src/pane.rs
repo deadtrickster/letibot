@@ -38,11 +38,15 @@ pub enum Feed {
     /// the age of that claim's beat, its abandonment count, the open questions the arbiter is being
     /// asked, and the room's own identity. Fed by `plugins/builtin/room`.
     Room,
+    /// The GitHub reviewer seat: the scopes it is polling, each pull request's review state, what
+    /// it last did, and whether anything is posted or kept as a draft. Fed by
+    /// `plugins/builtin/github`.
+    Github,
 }
 
 impl Feed {
     /// Every feed this contract names, in the order a document lists them.
-    pub const ALL: [Feed; 7] = [
+    pub const ALL: [Feed; 8] = [
         Feed::Sessions,
         Feed::Monitors,
         Feed::Jobs,
@@ -50,6 +54,7 @@ impl Feed {
         Feed::Git,
         Feed::Queue,
         Feed::Room,
+        Feed::Github,
     ];
 
     /// The wire's spelling - the same word in `plugin.toml` and in `Input::feeds`.
@@ -62,6 +67,7 @@ impl Feed {
             Feed::Git => "git",
             Feed::Queue => "queue",
             Feed::Room => "room",
+            Feed::Github => "github",
         }
     }
 
@@ -362,7 +368,7 @@ mod tests {
         assert!(why.contains("monitors"), "and the ones it does know: {why}");
         // Every feed the plan names is here, so a later pane adds no mechanism.
         for name in [
-            "sessions", "monitors", "jobs", "todos", "git", "queue", "room",
+            "sessions", "monitors", "jobs", "todos", "git", "queue", "room", "github",
         ] {
             assert!(Feed::parse(name).is_ok(), "{name}");
         }
@@ -370,6 +376,14 @@ mod tests {
         assert_eq!(Feed::Queue.name(), "queue");
         assert_eq!(Feed::parse("room"), Ok(Feed::Room));
         assert_eq!(Feed::Room.name(), "room");
+        // The reviewer seat's feed, which `plugins/builtin/github` declares.
+        assert_eq!(Feed::parse("github"), Ok(Feed::Github));
+        assert_eq!(Feed::Github.name(), "github");
+        // `ALL` is the list the refusal prints, so a feed missing from it is a feed nobody can use.
+        assert_eq!(Feed::ALL.len(), 8);
+        for feed in Feed::ALL {
+            assert_eq!(Feed::parse(feed.name()), Ok(feed), "{}", feed.name());
+        }
     }
 
     #[test]
