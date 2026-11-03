@@ -172,11 +172,10 @@ fn an_empty_restart_is_one_row_and_never_a_turn() {
     // The fixture stages a stopped life row, so `latest_box_stop` finds it: the stop is dated from that row even though
     // the session's own rows name no daemon, since the down time is a fact about the box and every stopped life counts.
     assert!(
-        text.contains("stopped at "),
+        text.starts_with("[restart] The daemon restarted (down "),
         "the stop is dated from a stopped life row, not invented: {text}"
     );
-    assert!(text.contains("the daemon came back at "), "{text}");
-    assert!(text.ends_with(": nothing was running"), "{text}");
+    assert!(text.ends_with(". Nothing was running."), "{text}");
     // **The model has it**, as a row of the transcript.
     assert_eq!(restart_rows(&h), vec![text.clone()], "{:?}", h.items());
     // **And nothing is waiting for a turn to be spent on it.**
@@ -248,8 +247,7 @@ fn a_session_mid_turn_reads_the_line_at_its_next_round_boundary() {
     // The one state a single-threaded test cannot reach by running a turn: a turn holds the
     // harness for its whole life, so nothing else can call in while one runs.
     h.hold_a_turn_open_for_test(true);
-    let text = "[restart] the daemon came back at 2026-10-12 12:00:01 UTC (down 1s, stopped at \
-                2026-10-12 12:00:00 UTC): nothing was running";
+    let text = "[restart] The daemon restarted (down 1s). Nothing was running.";
     h.say_without_a_turn(text).expect("the sentence is filed");
     // **Not a row yet**: it waits for the boundary of the turn that is already running.
     assert!(restart_rows(&h).is_empty(), "{:?}", h.items());
@@ -291,7 +289,7 @@ fn a_plan_with_rows_owed_makes_the_restart_a_turn() {
     };
     let text = h.restore_after_restart().expect("a restart is said");
     assert!(
-        text.starts_with("[restart] the daemon came back at "),
+        text.starts_with("[restart] The daemon restarted (down "),
         "{text}"
     );
     assert!(
@@ -409,7 +407,7 @@ fn a_session_that_answered_last_is_told_in_a_row_and_not_woken() {
     drop(h);
     let mut h = reopened(&dir, id);
     let text = h.restore_after_restart().expect("a restart is said");
-    assert!(text.ends_with(": nothing was running"), "{text}");
+    assert!(text.ends_with(". Nothing was running."), "{text}");
     assert!(
         h.restart_notices.is_empty(),
         "a session with nothing owed must not spend a call: {:?}",
@@ -444,7 +442,7 @@ fn the_restart_row_it_filed_is_not_work_it_owes() {
         again.restart_notices
     );
     assert!(
-        second.ends_with(": nothing was running"),
+        second.ends_with(". Nothing was running."),
         "no clause, because nothing is owed: {second}"
     );
 }

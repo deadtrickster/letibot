@@ -1,2 +1,2 @@
-[restart] the daemon restarted at 2026-10-12 08:10:56 UTC; when the previous one stopped is unknown (it kept no record — a build before this one, or a crash before its first heartbeat). An unknown down time counts as longer than the 1h00m restore threshold, so NOTHING was restored automatically. This is what you were running; decide what still matters and bring back only that:
+[restart] The daemon restarted (stop time unknown). Nothing was restored automatically; this is what you were running when it stopped — bring back only what still matters:
   - job `j46`: reminded (not re-run)

@@ -443,7 +443,8 @@ fn a_restart_card_opens_with_its_header_once() {
         let whole = popup_text(&mut a);
         let flat = whole.split_whitespace().collect::<Vec<_>>().join(" ");
         assert_eq!(
-            flat.matches("[restart] the daemon restarted at").count(),
+            flat.matches("[restart] The daemon restarted")
+                .count(),
             1,
             "warning first: {warning_first} — the header twice:\n{whole}"
         );

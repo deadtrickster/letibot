@@ -19,6 +19,10 @@ use crate::ui::transcript::line_cards::{CLICK, Card, SessionKind, WarningKind};
 
 /// What every restart notice opens with.
 const OPENS: &str = "[restart] the daemon ";
+/// **The opening a notice after `R93.E12` carries**: what happened, then the clock in brackets.
+const RESTARTED: &str = "[restart] The daemon restarted";
+/// The empty restart's own end, which is a card with no list beneath it.
+const NOTHING_RUNNING: &str = "Nothing was running.";
 /// A known down time: `… was down for 4m12s (stopped at …; back at …) - …`.
 const DOWN_FOR: &str = "[restart] the daemon was down for ";
 /// **A restart with nothing to restore**: `… came back at 21:28:20 (down 1s, stopped at …):
@@ -128,6 +132,25 @@ impl Restart {
 
 /// **The header line, read** - `None` for an opening this head does not know.
 fn down_of(header: &str) -> Option<Down> {
+    // **The shape every notice carries now** (`R93.E12`): `(down 4m12s)`, `(down ~3h12m)` or
+    // `(stop time unknown)`.
+    if let Some(r) = header.strip_prefix(RESTARTED) {
+        let inside = r.strip_prefix(" (")?.split(')').next()?;
+        let Some(span) = inside.strip_prefix("down ") else {
+            return inside.starts_with("stop time unknown").then_some(Down::Unknown);
+        };
+        let (estimated, span) = match span.strip_prefix('~') {
+            Some(s) => (true, s),
+            None => (false, span),
+        };
+        if span.is_empty() || span.contains(' ') || !span.ends_with(['s', 'm']) {
+            return None;
+        }
+        return Some(Down::Known {
+            span: span.to_string(),
+            estimated,
+        });
+    }
     // **The empty restart**, whose down time is a clause after the return time: `(down 1s,
     // stopped at …)` or `(down unknown, and no record says …)`.
     if let Some(r) = header.strip_prefix(CAME_BACK) {
@@ -205,7 +228,7 @@ pub(crate) fn warning_restart(detail: &str) -> Option<Restart> {
     // **A header with nothing under it is a card only for the empty restart**, which has no list
     // to have: every other opening is a list that came back empty, and a shape this head cannot
     // count is left to the popup rather than drawn as *"restarted"* and nothing else.
-    (any || head.starts_with(CAME_BACK)).then_some(r)
+    (any || head.starts_with(CAME_BACK) || head.contains(NOTHING_RUNNING)).then_some(r)
 }
 
 /// **A session's `[restart] …` notice, read** - the model's words for the same counts.
@@ -226,15 +249,21 @@ pub(crate) fn notice_restart(text: &str) -> Option<Restart> {
             }
             continue;
         }
-        if let Some(s) = l.strip_prefix("[restart] subagent ") {
+        if let Some(s) = l.strip_prefix("- subagent ") {
+            // `R93.E13`: a bullet, not a second `[restart]` notice inside this one. The old
+            // spellings stay readable for every stored transcript.
+            if s.contains(": resumed") || s.contains("has been resumed") {
+                r.restored.add(Kind::Subagent);
+            } else if s.contains(": not resumed") || s.contains("could NOT be") {
+                r.not_restored.add(Kind::Subagent);
+            } else if s.contains("was NOT resumed") {
+                r.reminded.add(Kind::Subagent);
+            }
+        } else if let Some(s) = l.strip_prefix("[restart] subagent ") {
             if s.contains("has been resumed") {
                 r.restored.add(Kind::Subagent);
             } else if s.contains("could NOT be") {
                 r.not_restored.add(Kind::Subagent);
-            }
-        } else if let Some(s) = l.strip_prefix("- subagent ") {
-            if s.contains("was NOT resumed") {
-                r.reminded.add(Kind::Subagent);
             }
         } else if let Some(s) = l.strip_prefix("- monitor `") {
             if s.contains("` was re-armed") {

@@ -322,54 +322,32 @@ pub fn header(
             estimated_from,
         } => (*at_ms, *estimated_from),
         Stopped::Unknown { .. } => {
-            return format!(
-                "[restart] the daemon restarted at {}; when the previous one stopped is unknown \
-                 (it kept no record — a build before this one, or a crash before its first \
-                 heartbeat). An unknown down time counts as longer than the {} restore threshold, \
-                 so NOTHING was restored automatically. This is what you were running; decide \
-                 what still matters and bring back only that:",
-                crate::subagent_record::utc(back_ms),
-                span(threshold)
-            );
+            return "[restart] The daemon restarted (stop time unknown). Nothing was restored \
+                    automatically; this is what you were running when it stopped — bring back \
+                    only what still matters:"
+                .to_string();
         }
     };
     let down = Duration::from_millis(back_ms.saturating_sub(at_ms));
-    let waited = Duration::from_millis(opened_ms.saturating_sub(at_ms));
-    let estimate = match estimated_from {
-        Some(from) => format!(", estimated from {from}"),
-        None => String::new(),
-    };
-    // The open is the moment the threshold was measured at, so when it is later than
-    // the daemon's own return the sentence says both - the fact the person is living through
-    // (`opened`) and the fact the daemon's row holds (`back`).
-    let opened = match opened_ms.saturating_sub(back_ms) >= OPENED_LATE_MS {
-        true => format!("; this session is opened {} after the stop", span(waited)),
-        false => String::new(),
-    };
-    let when = format!(
-        "stopped at {}{estimate}; back at {}{opened}",
-        crate::subagent_record::utc(at_ms),
-        crate::subagent_record::utc(back_ms)
-    );
+    // R93.E12: what happened leads, and the clock is one bracket - the sentence a reader needs is
+    // the same whether the daemon can name its stop time or not. `~` is an inference from a
+    // heartbeat rather than a recorded stop.
+    let est = if estimated_from.is_some() { "~" } else { "" };
+    let _ = (opened_ms, threshold);
     match outcome {
         Outcome::Restored => format!(
-            "[restart] the daemon was down for {} ({when}) — under the {} restore threshold, so \
-             what this session was running has been restored where it could be:",
-            span(down),
-            span(threshold)
+            "[restart] The daemon restarted (down {est}{}). Restored:",
+            span(down)
         ),
         Outcome::NothingRestorable => format!(
-            "[restart] the daemon was down for {} ({when}) — under the {} restore threshold, but \
-             nothing could be restored automatically. This is what you were running:",
-            span(down),
-            span(threshold)
+            "[restart] The daemon restarted (down {est}{}). Nothing could be restored; this is \
+             what you were running:",
+            span(down)
         ),
         Outcome::Reminded => format!(
-            "[restart] the daemon was down for {} ({when}) — longer than the {} restore \
-             threshold, so NOTHING was restored automatically. This is what you were running \
-             when it stopped; decide what still matters and bring back only that:",
-            span(down),
-            span(threshold)
+            "[restart] The daemon restarted (down {est}{}). Nothing was restored automatically; \
+             this is what you were running when it stopped — bring back only what still matters:",
+            span(down)
         ),
         // Unreachable - the empty restart returned above - and written out rather than as an
         // `unreachable!` so that a later arm cannot make this function lie.
@@ -378,34 +356,23 @@ pub fn header(
 }
 
 /// A restart that had nothing to restore, said anyway - the operator: *"mb always tell
-/// agent about restart? with the current time lol"*. The return time leads it because the
-/// time IS this case: how long the model was away is the one fact only the daemon has.
+/// agent about restart? with the current time lol"*. It carries the down time and says there was
+/// nothing to bring back, which is the whole of the news.
 pub fn nothing_running(stop: &Stopped, back_ms: u64) -> String {
     let down = match stop {
         Stopped::At {
             at_ms,
             estimated_from,
-        } => {
-            let span = span(Duration::from_millis(back_ms.saturating_sub(*at_ms)));
-            let estimate = match estimated_from {
-                Some(from) => format!(", estimated from {from}"),
-                None => String::new(),
-            };
-            format!(
-                "down {span}, stopped at {}{estimate}",
-                crate::subagent_record::utc(*at_ms)
-            )
-        }
+        } => format!(
+            "down {}{}",
+            if estimated_from.is_some() { "~" } else { "" },
+            span(Duration::from_millis(back_ms.saturating_sub(*at_ms)))
+        ),
         // Not "down 0s": nobody knows when it stopped, and a restart with nothing running is
         // exactly the one with no record to read it from - see the module docs.
-        Stopped::Unknown { .. } => {
-            "down unknown, and no record says when the previous one stopped".to_string()
-        }
+        Stopped::Unknown { .. } => "stop time unknown".to_string(),
     };
-    format!(
-        "[restart] the daemon came back at {} ({down}): nothing was running",
-        crate::subagent_record::utc(back_ms)
-    )
+    format!("[restart] The daemon restarted ({down}). Nothing was running.")
 }
 
 /// Whether a session's last row is a turn that was still going when its rows stopped - an
@@ -568,7 +535,10 @@ pub fn notice(header: &str, lines: &[String], outcome: Outcome) -> String {
         text.push('\n');
         text.push_str(&lines.join("\n"));
     }
-    if outcome != Outcome::Restored {
+    // R93.E16: a restored restart still leaves every background job dead - its process was the
+    // old daemon's - so a job line means the closing is owed whatever the outcome says.
+    let any_job = lines.iter().any(|l| l.starts_with("- job "));
+    if outcome != Outcome::Restored || any_job {
         text.push_str(
             "\nNothing above is running now. Bring back only what still matters: \
              `task_resume` for a subagent, `monitor` for a watch, `bash` for a job.",
@@ -919,11 +889,10 @@ mod tests {
 
     const AT: u64 = 1_791_806_400_000;
 
-    /// A restart with nothing running is said anyway, and the time leads it. The whole
-    /// sentence is pinned: the return time is the one fact the case exists for, and a fragment
-    /// test would let it go missing.
+    /// A restart with nothing running is said anyway. The whole sentence is pinned: what
+    /// happened and the one clock, and nothing about how it stopped.
     #[test]
-    fn an_empty_restart_says_when_the_daemon_came_back() {
+    fn an_empty_restart_says_the_daemon_restarted_and_nothing_was_running() {
         let back = AT + 1_000;
         let orderly = Stopped::At {
             at_ms: AT,
@@ -931,26 +900,22 @@ mod tests {
         };
         assert_eq!(
             nothing_running(&orderly, back),
-            "[restart] the daemon came back at 2026-10-12 12:00:01 UTC (down 1s, stopped at \
-             2026-10-12 12:00:00 UTC): nothing was running"
+            "[restart] The daemon restarted (down 1s). Nothing was running."
         );
-        // A crash: the time is the last heartbeat, and the sentence says so rather than claiming
-        // an orderly stop.
+        // A crash: the time is the last heartbeat, and the `~` says so rather than claiming an
+        // orderly stop.
         let crash = Stopped::At {
             at_ms: AT,
             estimated_from: Some("its last heartbeat (it did not stop in an orderly way)"),
         };
         assert_eq!(
             nothing_running(&crash, back),
-            "[restart] the daemon came back at 2026-10-12 12:00:01 UTC (down 1s, stopped at \
-             2026-10-12 12:00:00 UTC, estimated from its last heartbeat (it did not stop in an \
-             orderly way)): nothing was running"
+            "[restart] The daemon restarted (down ~1s). Nothing was running."
         );
         // And a stop nobody dated is still said to be unknown - not `down 0s`.
         assert_eq!(
             nothing_running(&Stopped::Unknown { seen_ms: 0 }, back),
-            "[restart] the daemon came back at 2026-10-12 12:00:01 UTC (down unknown, and no \
-             record says when the previous one stopped): nothing was running"
+            "[restart] The daemon restarted (stop time unknown). Nothing was running."
         );
     }
 
@@ -978,7 +943,7 @@ mod tests {
         assert_eq!(Outcome::Nothing.code(), "restart_nothing");
     }
 
-    /// The case with records is untouched - same opening, same threshold clause, same list.
+    /// The case with records: what happened first, the clock in one bracket, and the list.
     #[test]
     fn a_restart_with_records_keeps_its_own_sentence() {
         let stop = Stopped::At {
@@ -993,11 +958,11 @@ mod tests {
             RESTORE_WITHIN,
             Outcome::NothingRestorable,
         );
-        assert!(
-            h.starts_with("[restart] the daemon was down for 4s (stopped at "),
-            "{h}"
+        assert_eq!(
+            h,
+            "[restart] The daemon restarted (down 4s). Nothing could be restored; this is what \
+             you were running:"
         );
-        assert!(h.contains("back at 2026-10-12 12:00:04 UTC"), "{h}");
         let text = notice(
             &h,
             &["- job `j9` was reminded".into()],
@@ -1007,7 +972,7 @@ mod tests {
     }
 
     #[test]
-    fn the_header_says_how_long_and_which_side_of_the_threshold() {
+    fn the_header_says_what_happened_and_how_long_it_was_down() {
         let stop = Stopped::At {
             at_ms: AT,
             estimated_from: None,
@@ -1015,8 +980,7 @@ mod tests {
         let back = AT + 5 * 60_000;
         assert!(stop.restores(back, RESTORE_WITHIN));
         let h = header(&stop, back, back, RESTORE_WITHIN, Outcome::Restored);
-        assert!(h.contains("down for 5m00s"), "{h}");
-        assert!(h.contains("under the 1h00m restore threshold"), "{h}");
+        assert_eq!(h, "[restart] The daemon restarted (down 5m00s). Restored:");
         let crash = Stopped::At {
             at_ms: AT,
             estimated_from: Some("its last heartbeat (it did not stop in an orderly way)"),
@@ -1024,14 +988,18 @@ mod tests {
         let late = AT + 2 * 3_600_000;
         assert!(!crash.restores(late, RESTORE_WITHIN));
         let h = header(&crash, late, late, RESTORE_WITHIN, Outcome::Reminded);
-        assert!(h.contains("down for 2h00m"), "{h}");
-        assert!(h.contains("estimated from its last heartbeat"), "{h}");
-        assert!(h.contains("NOTHING was restored"), "{h}");
+        assert!(
+            h.starts_with("[restart] The daemon restarted (down ~2h00m)."),
+            "{h}"
+        );
+        assert!(h.contains("Nothing was restored automatically"), "{h}");
+        // The threshold decides the outcome; it is not a clause in every sentence.
+        assert!(!h.contains("threshold"), "{h}");
     }
 
-    /// The threshold is measured to the OPEN, not to the daemon's return - the
-    /// session's gap, not the daemon's. Five minutes down, four hours before anyone opened it
-    /// under the hour by one clock, four hours late by the other.
+    /// The threshold is measured to the OPEN, not to the daemon's return - the session's gap,
+    /// not the daemon's - and the sentence says the down time only, because the open is the
+    /// daemon's reckoning rather than something the model acts on.
     #[test]
     fn a_session_opened_hours_after_the_stop_is_measured_from_the_open() {
         let stop = Stopped::At {
@@ -1049,25 +1017,16 @@ mod tests {
             "the session was opened four hours after the stop, so nothing is restored"
         );
         let h = header(&stop, back, opened, RESTORE_WITHIN, Outcome::Reminded);
-        assert!(h.contains("down for 5m00s"), "{h}");
-        assert!(
-            h.contains("; this session is opened 4h00m after the stop"),
-            "the sentence has to name the interval the threshold used: {h}"
+        assert_eq!(
+            h,
+            "[restart] The daemon restarted (down 5m00s). Nothing was restored automatically; \
+             this is what you were running when it stopped — bring back only what still matters:"
         );
-        assert!(h.contains("longer than the 1h00m restore threshold"), "{h}");
-        assert!(h.contains("NOTHING was restored"), "{h}");
-        // A late open still under the threshold says when it was, and still restores.
+        // A late open still under the threshold restores, and says the same thing.
         let soon = AT + 20 * 60_000;
         assert!(stop.restores(soon, RESTORE_WITHIN));
         let h = header(&stop, back, soon, RESTORE_WITHIN, Outcome::Restored);
-        assert!(
-            h.contains("this session is opened 20m00s after the stop"),
-            "{h}"
-        );
-        assert!(h.contains("under the 1h00m restore threshold"), "{h}");
-        // And the ordinary case - opened as the daemon starts - has no such clause at all.
-        let h = header(&stop, back, back, RESTORE_WITHIN, Outcome::Restored);
-        assert!(!h.contains("this session is opened"), "{h}");
+        assert_eq!(h, "[restart] The daemon restarted (down 5m00s). Restored:");
     }
 
     /// No record of the stop is said as no record - *"these gray walls are hilarious"* about
@@ -1081,28 +1040,13 @@ mod tests {
         assert!(!stop.restores(back, Duration::from_secs(u64::MAX / 2_000)));
         assert_eq!(stop.at_ms(), None);
         let h = header(&stop, back, back, RESTORE_WITHIN, Outcome::Reminded);
-        assert!(
-            h.starts_with("[restart] the daemon restarted at 2026-"),
-            "{h}"
+        assert_eq!(
+            h,
+            "[restart] The daemon restarted (stop time unknown). Nothing was restored \
+             automatically; this is what you were running when it stopped — bring back only what \
+             still matters:"
         );
-        assert!(
-            h.contains(
-                "when the previous one stopped is unknown (it kept no record — a build before \
-                 this one, or a crash before its first heartbeat)"
-            ),
-            "{h}"
-        );
-        assert!(
-            h.contains("An unknown down time counts as longer than the 1h00m restore threshold"),
-            "{h}"
-        );
-        assert!(h.contains("NOTHING was restored automatically"), "{h}");
-        for wrong in [
-            "down for",
-            "0s",
-            "estimated from nothing",
-            "no record said when",
-        ] {
+        for wrong in ["down for", "0s", "estimated from nothing", "no record said when"] {
             assert!(!h.contains(wrong), "`{wrong}` in {h}");
         }
     }
@@ -1146,11 +1090,8 @@ mod tests {
             RESTORE_WITHIN,
             Outcome::NothingRestorable,
         );
-        assert!(h.contains("down for 4s"), "{h}");
-        assert!(
-            h.contains("under the 1h00m restore threshold, but nothing could be restored"),
-            "{h}"
-        );
+        assert!(h.contains("down 4s"), "{h}");
+        assert!(h.contains("Nothing could be restored"), "{h}");
         assert!(!h.contains("has been restored"), "{h}");
         assert_eq!(Outcome::NothingRestorable.code(), "restart_reminded");
         assert_eq!(Outcome::Reminded.code(), "restart_reminded");
