@@ -495,10 +495,9 @@ a heredoc terminator that never comes), and for those the gate is right. The res
 inspection found two more shapes: `%(…)` in a word, and a pair of backquotes inside an *unquoted*
 here-document body, whose prose the shell would expand.
 
-The grammar's three, each reproduced minimally and **not filed**. Each is one node away from a class of
-commands rather than one command - `3<>/dev/tcp` is how this operator probes whether a port is open
-and `<<'SQL' 2>&1 | head` is how they run a query and look at its head - so a fix upstream would
-retire 78% of what is left on lab2x1:
+The grammar's three, each reproduced minimally, and what this tree does with each. Each is one node
+away from a class of commands rather than one command - `3<>/dev/tcp` is how this operator probes
+whether a port is open and `<<'SQL' 2>&1 | head` is how they run a query and look at its head:
 
 ```sh
 # 1. The read-write redirect. This grammar's `file_redirect` has < > >> <& >& &> &>> and no
@@ -514,6 +513,28 @@ EOF
 # 3. `%(…)` in a word: a MISSING `;` is inserted at the end of the command.
 git for-each-ref --format=%(refname)
 ```
+
+**Read now: the read-write redirect.** The recovery is sound when the redirect is whole - the
+descriptor and the destination both land where bash puts them, the `>` ERROR between them is the
+operator's second character - so `crates/code/src/shell.rs` reads the operator from the text and
+credits the recovery, and `exec 3<>/dev/tcp/…` (this tree's own fleet port probe) resolves. Two
+spellings are still refused, and the refusal names the operator: with no descriptor (`<>file`) the
+tree holds two redirects where the shell opens one, and a destination the recovery swallowed as a
+second word (`exec 3<>file cat`) is not credited either.
+
+**Refused with the shape named: the other two.** Neither is text anybody can be talked out of, but
+a refusal that says "the grammar could not read this" tells a model nothing it can act on, so each
+now carries its own sentence:
+
+- The here-document one is the grammar hanging the rest of the line off the redirect: the pipeline's
+  `|` arrives inside the `2>&1`. The same redirect written before the `<<`
+  (`cat 2>&1 <<'EOF' | tail`) is the same command and parses, and the refusal says so.
+- `%(…)` is not a command bash runs either: `(` after an unquoted `%` is a syntax error, and the
+  grammar's recovery lists the bracketed word as a command that runs. The refusal says what the
+  shell says and names the quoted word (`--format='%(refname)'`), which both read.
+
+Both are still worth filing upstream - a fix there retires the refusal rather than rewording it.
+The counts in §4i.7 are the ones taken before this and are not re-measured here.
 
 ## 4j. The session's environment, as it is observed
 

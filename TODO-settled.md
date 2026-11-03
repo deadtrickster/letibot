@@ -5854,3 +5854,74 @@ they are placed from.
 been run, and cannot be inside a sandbox.
 
 ---
+
+---
+
+## R94 — What the parser still cannot read, and the parts of it a parser can fix — **CLOSED on branch `remote/97868000`, filed 2026-10-27; items 1–4 were already in the tree and the three grammar-limit shapes of §4i.7 are now read or refused by name**
+
+After G3 and G4 (on main since 2026-10-27), 10,065 of 161,099 recorded `bash` decisions (6.2%)
+still have a construct the resolver cannot read, so no shape and no session grant can settle them
+and the oracle is asked about text it does not understand. The census, per construct and per host,
+is `docs/boundary-and-adjudication.md` §4i.2 and §4i.4; the instrument is
+`crates/tools/src/corpus_replay.rs` with `examples/gate_corpus.rs`, and the corpus is
+`scratch/corpus` on the Mac and `~/letibot-corpus/{mac,lab2x1,lubuntu1}.json` on lab2x1.
+
+**Still open?** Run the corpus gate (`cargo run --offline -p letibot-tools --example gate_corpus
+-- --home <home> --workspace <dir> <corpus.json>`, per host, as the example's doc says) and read
+the per-construct table; an item below is open while its construct still
+appears as a sole reason.
+
+What a parser change can fix, smallest first. Each must keep the replay's **"commands that
+stopped being readable" at 0** on every host:
+
+1. **Brace expansion** (`brace_expansion`: 36 commands on lab2x1, 38 on the mac). `{a,b}` and
+   `{1..3}` are decidable from the text. Expand literal lists and ranges into the words the
+   shell will produce; leave a brace containing an expansion unread. Bound it (as the `for`
+   unrolling is bounded at 32 values).
+2. **ANSI-C quoting** (`ansi_c_escapes`: 24 on lab2x1, 16 on the mac). `$'…'` is a literal
+   with escapes; decode it (`\n`, `\t`, `\xHH`, `\NNN`, `\u`, `\'`) into the word it is.
+3. **`$(pwd)`** — exactly `$PWD`, which already resolves (§4i.4 calls it the one safe
+   substitution). Small, but it is the idiom `cd "$(pwd)/…"` that agents write.
+4. **`parse_error`** (577 on lab2x1, 64 on the mac): collect the distinct shapes (a heredoc
+   operator followed by `&& for`, a `;` after a heredoc, missing nodes at a line end), and for
+   each say whether it is the grammar's limit (report upstream to tree-sitter-bash, do not
+   work around) or our splitter's. Fix only ours.
+
+**Not parser gaps, and not to be "fixed" here**: `$(…)` output (the inner command is read; its
+bytes are not in the text), `process_substitution_path` (`/dev/fd/N` exists only at runtime),
+`arithmetic_expansion` (reads variables). **Variables a previous command assigned** are R95
+(decided: D14); **`$PATH`** is R96 (decided: D15).
+
+**Done when**: items 1–3 are read, item 4 is classified, the replay table in §4i.2 is re-run and
+updated with the new numbers on all three hosts, and nothing that was readable became unread.
+
+**Landed on this branch: the three grammar-limit shapes of §4i.7 have their own tests and their own
+answers** (`crates/code/src/shell.rs`, all measured RED first).
+
+- The read-write redirect is READ, not refused (6f415a8e). `<>` has no token in this grammar, so the
+  `>` arrives as an ERROR inside the `file_redirect` whose `<` it follows, with the descriptor and
+  the destination both where bash puts them; the operator is read from the text and the recovery is
+  credited - only when the redirect is whole, since `exec 3<>file cat` hides `cat` in a second
+  destination. `a_read_write_redirect_is_read_rather_than_refused` also holds this tree's own fleet
+  port probe (`if (exec 3<>/dev/tcp/127.0.0.1/<port>) 2>/dev/null; then …`), which was unreadable
+  until now. Two spellings keep the refusal and it names the operator:
+  `a_read_write_redirect_with_no_descriptor_names_the_writing_that_reads`.
+- The here-document shape stays a grammar limit and its refusal names the shape and the rewrite
+  (ec8fd318): the grammar hangs the rest of the line off the redirect, so `| tail` in
+  `cat <<'EOF' 2>&1 | tail` arrives inside the `2>&1`, and `cat 2>&1 <<'EOF' | tail` is the same
+  command that parses -
+  `a_here_document_followed_by_a_redirect_and_a_pipe_names_the_writing_that_reads`.
+- `%(…)` stays a limit and is refused as the text bash refuses (b9317bd0): bash answers
+  `syntax error near unexpected token '('` to `git for-each-ref --format=%(refname)`, and the
+  grammar's recovery would list `refname` as a command that runs. The refusal says what the shell
+  says and names the quoted word, which reads -
+  `a_percent_before_a_bracket_is_refused_as_the_text_bash_refuses`.
+
+§4i.7 now carries the same three answers. The three shapes are still worth filing upstream
+(tree-sitter-bash has no `<>`, loses the pipeline after a here-document operator, and reads `%(…)`
+as a subshell), because a fix there retires the refusals rather than rewording them; nothing in
+this tree depends on it.
+
+**What is left is the three-host re-measure, and it needs the operator**: the corpus gate has to
+run on the Mac and on lab2x1 over `scratch/corpus` and `~/letibot-corpus/{mac,lab2x1,lubuntu1}.json`,
+which this branch cannot reach. Every number in §4i.2 and §4i.7 is the pre-change one.

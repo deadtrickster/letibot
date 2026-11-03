@@ -156,7 +156,7 @@ Record: `docs/review/2026-11-01-ab5f7841-90dd9c84.md` (three reviewers, two roun
 6. Deslop per `hands-off/templates/deslop.md`: comments to the 2-3 line rule, `.letibot/notes` merged into rewritten topic docs.
 7. Structure: split `open_with_registry`, `rounds`, `run_to_completion`; break `harness.rs` into modules.
 8. Plugins: script layers (`docs/plugins-plan.md` step 11).
-9. Backlog, unchanged: R94, R95, R98 half 1, R104, R89-R93, R64-R67 and the older open entries below.
+9. Backlog, unchanged: R95, R98 half 1, R104, R89-R93, R64-R67 and the older open entries below.
 
 **Status 2026-11-03, each step re-checked against main.** 1, 2, 3, 5 and 7 are closed. 4 is built and owes a live run on lab2x1. 6 is half: the docs and the reviewed range's code are deslopped, the tree-wide comment rule is not. 8 is not built and stops on a decision. 9 is the backlog further down.
 
@@ -171,46 +171,6 @@ Record: `docs/review/2026-11-01-ab5f7841-90dd9c84.md` (three reviewers, two roun
 9. **Unchanged**: the backlog entries further down this file are their own work.
 
 **Done when**: steps 1-8 are closed or moved to their own entries. **Still open?** step 4's live run, step 6's comment rule, step 8's two decisions, and step 9's backlog.
-
----
-
-## R94 — What the parser still cannot read, and the parts of it a parser can fix — **filed 2026-10-27; left: items 1–4 and the three-host re-measure are in the tree, but the three grammar-limit shapes reproduced in §4i.7 are still not filed upstream with tree-sitter-bash**
-
-After G3 and G4 (on main since 2026-10-27), 10,065 of 161,099 recorded `bash` decisions (6.2%)
-still have a construct the resolver cannot read, so no shape and no session grant can settle them
-and the oracle is asked about text it does not understand. The census, per construct and per host,
-is `docs/boundary-and-adjudication.md` §4i.2 and §4i.4; the instrument is
-`crates/tools/src/corpus_replay.rs` with `examples/gate_corpus.rs`, and the corpus is
-`scratch/corpus` on the Mac and `~/letibot-corpus/{mac,lab2x1,lubuntu1}.json` on lab2x1.
-
-**Still open?** Run the corpus gate (`cargo run --offline -p letibot-tools --example gate_corpus
--- --home <home> --workspace <dir> <corpus.json>`, per host, as the example's doc says) and read
-the per-construct table; an item below is open while its construct still
-appears as a sole reason.
-
-What a parser change can fix, smallest first. Each must keep the replay's **"commands that
-stopped being readable" at 0** on every host:
-
-1. **Brace expansion** (`brace_expansion`: 36 commands on lab2x1, 38 on the mac). `{a,b}` and
-   `{1..3}` are decidable from the text. Expand literal lists and ranges into the words the
-   shell will produce; leave a brace containing an expansion unread. Bound it (as the `for`
-   unrolling is bounded at 32 values).
-2. **ANSI-C quoting** (`ansi_c_escapes`: 24 on lab2x1, 16 on the mac). `$'…'` is a literal
-   with escapes; decode it (`\n`, `\t`, `\xHH`, `\NNN`, `\u`, `\'`) into the word it is.
-3. **`$(pwd)`** — exactly `$PWD`, which already resolves (§4i.4 calls it the one safe
-   substitution). Small, but it is the idiom `cd "$(pwd)/…"` that agents write.
-4. **`parse_error`** (577 on lab2x1, 64 on the mac): collect the distinct shapes (a heredoc
-   operator followed by `&& for`, a `;` after a heredoc, missing nodes at a line end), and for
-   each say whether it is the grammar's limit (report upstream to tree-sitter-bash, do not
-   work around) or our splitter's. Fix only ours.
-
-**Not parser gaps, and not to be "fixed" here**: `$(…)` output (the inner command is read; its
-bytes are not in the text), `process_substitution_path` (`/dev/fd/N` exists only at runtime),
-`arithmetic_expansion` (reads variables). **Variables a previous command assigned** are R95
-(decided: D14); **`$PATH`** is R96 (decided: D15).
-
-**Done when**: items 1–3 are read, item 4 is classified, the replay table in §4i.2 is re-run and
-updated with the new numbers on all three hosts, and nothing that was readable became unread.
 
 ---
 
