@@ -486,6 +486,9 @@ struct Entry {
     /// What this session's harness said about its frozen prefix, or `None` when it had nothing to
     /// say. The sentence and not a flag: only the harness can judge it.
     stale_prefix: Option<String>,
+    /// The same finding in the model's own voice: the head's sentence names the session and its
+    /// clock, which a model can act on neither of. Set and cleared with `stale_prefix`.
+    stale_for_model: Option<String>,
     /// Who this session is for. Set by the door that knows: a head's `NewSession`, the daemon's
     /// queue, or a one-shot.
     origin: SessionOrigin,
@@ -911,6 +914,7 @@ impl Registry {
                     parent_session_id: None,
                     settings: Vec::new(),
                     stale_prefix: None,
+                    stale_for_model: None,
                     origin: SessionOrigin::Operator,
                 },
             );
@@ -972,6 +976,7 @@ impl Registry {
                 parent_session_id: parent,
                 settings: Vec::new(),
                 stale_prefix: None,
+                stale_for_model: None,
                 origin: SessionOrigin::Operator,
             },
         );
@@ -1025,6 +1030,7 @@ impl Registry {
                 parent_session_id: parent,
                 settings: Vec::new(),
                 stale_prefix: None,
+                stale_for_model: None,
                 origin: SessionOrigin::Operator,
             },
         );
@@ -1457,13 +1463,15 @@ impl Registry {
     }
 
     /// Publish what this session's harness found about its frozen prefix: the sentence an
-    /// attaching head is handed, once, and never a flag.
-    pub fn set_stale_prefix(&self, session_id: &str, said: Option<String>) {
+    /// attaching head is handed, once, and never a flag. `for_model` is the same finding in the
+    /// voice the model can act on - it is set and cleared here so the two cannot disagree.
+    pub fn set_stale_prefix(&self, session_id: &str, said: Option<String>, for_model: Option<String>) {
         let (hub, was) = {
             let mut g = self.lock();
             match g.entry_mut(session_id) {
                 Some(e) => {
                     let was = std::mem::replace(&mut e.stale_prefix, said.clone());
+                    e.stale_for_model = for_model;
                     (e.hub.clone(), was)
                 }
                 None => return,
@@ -1496,6 +1504,13 @@ impl Registry {
     pub fn stale_prefix(&self, session_id: &str) -> Option<String> {
         let g = self.lock();
         g.entry(session_id).and_then(|e| e.stale_prefix.clone())
+    }
+
+    /// The same finding as the MODEL is told it: what it can and cannot call, and whose decision
+    /// the fix is. `None` with [`Registry::stale_prefix`].
+    pub fn stale_for_model(&self, session_id: &str) -> Option<String> {
+        let g = self.lock();
+        g.entry(session_id).and_then(|e| e.stale_for_model.clone())
     }
 
     /// Say that this daemon's binary is older than the store it serves: the sentence every head is

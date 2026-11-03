@@ -158,10 +158,9 @@ impl Harness {
         };
         // And the prompt this session is speaking, when it is not this daemon's: the sentence is composed once at open
         // for the attach path, and the model cannot see it either, so a session can spend an evening speaking a prompt
-        // its daemon would not compose. Told once, as information, since the person has the choice on their screen.
-        let stale = self
-            .stale_untold()
-            .map(|said| stale_notice_for_the_model(&said));
+        // its daemon would not compose. Told once, as information: the sentence is the model's
+        // own and the person has the choice on their screen (R93.E9).
+        let stale = self.stale_untold();
         let text = match (plan, stale) {
             (None, None) => None,
             (Some(plan), None) => Some(plan),
@@ -172,10 +171,11 @@ impl Harness {
     }
 
     /// The stale-prompt sentence, when the model has not been told it yet: `None` when the prompt
-    /// is current or the model already heard this very sentence.
+    /// is current or the model already heard this very sentence. `R93.E9`: the model's own copy,
+    /// which names no session and no clock.
     fn stale_untold(&self) -> Option<String> {
         self.session_registry
-            .stale_prefix(&self.cfg.session_id)
+            .stale_for_model(&self.cfg.session_id)
             .filter(|said| self.stale_told.as_deref() != Some(said.as_str()))
     }
 

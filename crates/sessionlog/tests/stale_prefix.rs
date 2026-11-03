@@ -41,10 +41,20 @@ const SAID: &str = "session s was seated 10-08 21:14 with a prompt this daemon w
                     this conversation across as it is; a new session gets the seated one \
                     from the start.";
 
+/// The same finding in the model's own voice (`R93.E9`): no session id and no clock, because a
+/// model can act on neither.
+const FOR_MODEL: &str = "[stale prompt] Your tool list is out of date: bash exist but you cannot \
+                        call them. Updating it is the person's call: don't ask. Mention a missing \
+                        tool only when you need it.";
+
 #[test]
 fn a_head_attaching_to_a_stale_session_is_told_while_it_watches() {
     let (registry, _hub, _server, path) = up("told");
-    registry.set_stale_prefix("s", Some(SAID.to_string()));
+    registry.set_stale_prefix("s", Some(SAID.to_string()), Some(FOR_MODEL.to_string()));
+    // Two voices, one finding: the head reads the sentence with the session in it, and the model
+    // reads the one it can act on. A registry holding one of them would let the pair disagree.
+    assert_eq!(registry.stale_prefix("s").as_deref(), Some(SAID));
+    assert_eq!(registry.stale_for_model("s").as_deref(), Some(FOR_MODEL));
 
     let (_client, hello, mut reader) =
         HeadClient::attach(&path, "s", 0, "tui", "operator", Caps::default()).expect("attach");
@@ -83,7 +93,7 @@ fn a_head_attaching_to_a_stale_session_is_told_while_it_watches() {
 fn a_head_attaching_to_a_session_that_speaks_the_seated_prompt_is_told_nothing() {
     let (registry, hub, _server, path) = up("silent");
     // The ordinary case: the harness found the two prefixes equal, or never ran at all.
-    registry.set_stale_prefix("s", None);
+    registry.set_stale_prefix("s", None, None);
 
     let (_client, _hello, mut reader) =
         HeadClient::attach(&path, "s", 0, "tui", "operator", Caps::default()).expect("attach");
@@ -161,7 +171,7 @@ fn a_head_already_watching_when_the_sentence_is_stored_is_told_then() {
     }
 
     // The harness finishing its open, in the boot window.
-    registry.set_stale_prefix("s", Some(SAID.to_string()));
+    registry.set_stale_prefix("s", Some(SAID.to_string()), Some(FOR_MODEL.to_string()));
     hub.publish(letibot_sessionlog::testing::warn("marker"));
 
     let mut told = false;
@@ -203,7 +213,7 @@ fn a_head_already_watching_when_the_sentence_is_stored_is_told_then() {
 #[test]
 fn a_head_watching_is_told_when_the_stale_prompt_is_cleared() {
     let (registry, hub, _server, path) = up("cleared");
-    registry.set_stale_prefix("s", Some(SAID.to_string()));
+    registry.set_stale_prefix("s", Some(SAID.to_string()), Some(FOR_MODEL.to_string()));
 
     let (_client, _hello, mut reader) =
         HeadClient::attach(&path, "s", 0, "tui", "operator", Caps::default()).expect("attach");
@@ -219,8 +229,8 @@ fn a_head_watching_is_told_when_the_stale_prompt_is_cleared() {
     }
 
     // The re-seat's fork, and then a second clear that has nothing to clear.
-    registry.set_stale_prefix("s", None);
-    registry.set_stale_prefix("s", None);
+    registry.set_stale_prefix("s", None, None);
+    registry.set_stale_prefix("s", None, None);
     hub.publish(letibot_sessionlog::testing::warn("marker"));
 
     for reader in [&mut reader, &mut reader2] {

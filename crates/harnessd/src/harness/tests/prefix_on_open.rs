@@ -6,6 +6,36 @@ use super::*;
 use letibot_tokencore::ledger::{chain, hash_tokens};
 use letibot_tokencore::store::StablePrefixRecord;
 
+/// **What the model is told about a stale prompt** (`R93.E9`): the tools it cannot call, and whose
+/// decision the fix is - not the head's sentence about a session and the clock it was seated at.
+#[test]
+fn the_models_stale_prompt_names_tools_and_no_session() {
+    let said = stale_prompt_for_the_model(
+        &["task_resume".into()],
+        &["job_wait".into()],
+        &["todo_write".into()],
+    );
+    assert_eq!(
+        said,
+        "[stale prompt] Your tool list is out of date: task_resume exist but you cannot call \
+         them; job_wait will refuse; todo_write changed. Updating it is the person's call: don't \
+         ask. Mention a missing tool only when you need it."
+    );
+    // The instructions alone still have a sentence, and it names no tool.
+    let bare = stale_prompt_for_the_model(&[], &[], &[]);
+    assert!(
+        bare.contains("the instructions changed")
+            && !bare.contains("exist but you cannot call them"),
+        "{bare}"
+    );
+    for hidden in ["s-", "was seated", "`/reseat`"] {
+        assert!(
+            !said.contains(hidden),
+            "the model's copy carries nothing it cannot act on (`{hidden}`): {said}"
+        );
+    }
+}
+
 /// A scratch directory that removes itself.
 struct Scratch(std::path::PathBuf);
 

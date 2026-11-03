@@ -1605,8 +1605,8 @@ pub(crate) use open::{
 };
 pub use open::{
     VerbatimFit, build_provider, engine_for, instructions_of, mode_in_vm, prefix_fingerprint,
-    scratch_dir, stale_prefix_sentence, surroundings_for, verbatim_fit, vm_copy_for,
-    worktree_build_env,
+    scratch_dir, stale_prefix_sentence, stale_prompt_for_the_model, surroundings_for, verbatim_fit,
+    vm_copy_for, worktree_build_env,
 };
 #[cfg(test)]
 pub(crate) use open::{
@@ -1619,10 +1619,7 @@ pub use turns::abandoned_calls;
 #[cfg(test)]
 pub(crate) use turns::reconcile_rows;
 pub(crate) use turns::{CapturingSink, MAX_HTTP_RETRIES, Outage, one_line, provider_refusal};
-pub use wall::{
-    CompactReport, ForkReport, ForkTail, ReseatReport, reseated_for_the_model,
-    stale_notice_for_the_model,
-};
+pub use wall::{CompactReport, ForkReport, ForkTail, ReseatReport, reseated_for_the_model};
 #[cfg(test)]
 pub(crate) use wall::{
     Resident, grown_with_how, roll_resident, schema_change, smaller_tail, wall_stops_round,

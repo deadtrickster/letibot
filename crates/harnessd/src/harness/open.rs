@@ -271,6 +271,30 @@ pub fn stale_prefix_sentence(
     say
 }
 
+/// **What the MODEL is told about a stale prompt** (R93.E9): what it can and cannot call, and
+/// whose the decision is. The head's sentence names the session and the clock it was seated at,
+/// and a model can act on neither, so this is its own sentence over the same lists.
+pub fn stale_prompt_for_the_model(added: &[String], gone: &[String], grew: &[String]) -> String {
+    let mut said: Vec<String> = Vec::new();
+    if !added.is_empty() {
+        said.push(format!("{} exist but you cannot call them", added.join(", ")));
+    }
+    if !gone.is_empty() {
+        said.push(format!("{} will refuse", gone.join(", ")));
+    }
+    if !grew.is_empty() {
+        said.push(format!("{} changed", grew.join(", ")));
+    }
+    if said.is_empty() {
+        said.push("the instructions changed".into());
+    }
+    format!(
+        "[stale prompt] Your tool list is out of date: {}. Updating it is the person's call: \
+         don't ask. Mention a missing tool only when you need it.",
+        said.join("; ")
+    )
+}
+
 /// When a session was seated, in the launcher's own spelling: `10-08 21:14`. An unreadable clock is
 /// SAID rather than rendered as the epoch, because `0` is *nobody recorded when*.
 fn seated_at(ms: i64) -> String {
@@ -1106,6 +1130,7 @@ impl Harness {
             StablePrefix,
             String,
             Option<String>,
+            Option<String>,
         ),
         HarnessError,
     > {
@@ -1291,6 +1316,7 @@ impl Harness {
                         // Re-rendered onto the prefix this daemon composes, so the session
                         // speaks it: nothing to say to a head that attaches.
                         None,
+                        None,
                     )
                 } else {
                     // A transcript whose rows do not rebuild is repaired, not refused for ever:
@@ -1327,8 +1353,10 @@ impl Harness {
                         },
                     };
                     // What a head attaching to this session should be told, or `None` when the
-                    // session speaks the prompt this daemon would compose now.
+                    // session speaks the prompt this daemon would compose now - and the same
+                    // finding in the model's own voice, set and cleared with it.
                     let mut stale: Option<String> = None;
+                    let mut stale_for_model: Option<String> = None;
 
                     // The prefix the session's own tokens came from - the store's
                     // record, not the daemon's current render. A compaction fork keeps
@@ -1401,8 +1429,9 @@ impl Harness {
                         );
                         // On the session's own log, and said AT ATTACH rather than here: a warning published before a
                         // head attaches is filed `Placed::Before` and not drawn. So it goes into the registry, which also
-                        // tells a head already watching.
+                        // tells a head already watching. R93.E9: the model gets its own, shorter sentence.
                         stale = Some(say);
+                        stale_for_model = Some(stale_prompt_for_the_model(&added, &gone, &grew));
                     }
 
                     let rows = session.ledger.rows().len();
@@ -1422,6 +1451,7 @@ impl Harness {
                         own_prefix,
                         seated_prefix_id,
                         stale,
+                        stale_for_model,
                     )
                 }
             }
@@ -1515,6 +1545,7 @@ impl Harness {
                     None,
                     prefix.clone(),
                     prefix_id,
+                    None,
                     None,
                 )
             }
@@ -2730,8 +2761,16 @@ impl Harness {
         };
         let dialect_sha = hex32(&parts.wiring.spec().template_sha);
 
-        let (transcript_id, session, persisted, resume, prefix, prefix_id, stale) =
-            Self::open_the_conversation(
+        let (
+            transcript_id,
+            session,
+            persisted,
+            resume,
+            prefix,
+            prefix_id,
+            stale,
+            stale_for_model,
+        ) = Self::open_the_conversation(
                 &store,
                 &stored,
                 &mut engine,
@@ -2956,7 +2995,7 @@ impl Harness {
             // Nothing evicted yet: a session's first compaction is what fills this.
             recall_map: Vec::new(),
         };
-        h.announce_the_open(stale);
+        h.announce_the_open(stale, stale_for_model);
         h.import_the_foreign_conversation();
         Ok(h)
     }
@@ -2964,7 +3003,7 @@ impl Harness {
     /// Say that the session is open, once everything it is made of exists: the board's first settings, the activity
     /// and footprint sources, the reads a head attaches for, and the resume's own republish. Split out so the last step
     /// is a sentence rather than a hundred lines between the struct literal and `Ok`.
-    fn announce_the_open(&mut self, stale: Option<String>) {
+    fn announce_the_open(&mut self, stale: Option<String>, stale_for_model: Option<String>) {
         // The recovered anchor rolled forward to the ledger as rebuilt, so the pair
         // every `Config` reader converts with is the count of THIS conversation from the
         // first thing that reads it - a `/reseat` before any turn included.
@@ -3017,7 +3056,7 @@ impl Harness {
         // harness has opened has no entry, and this is a no-op. HERE, after the republish, because a live note is filed
         // at the seam it arrives at, and said before the rows it would be drawn above the whole conversation.
         self.session_registry
-            .set_stale_prefix(&self.cfg.session_id, stale);
+            .set_stale_prefix(&self.cfg.session_id, stale, stale_for_model);
     }
 
     /// **A session whose id marks somebody else's conversation reads it in** - an opencode

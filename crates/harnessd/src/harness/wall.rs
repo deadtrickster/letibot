@@ -227,18 +227,6 @@ fn grown_schemas(was: &[String], is: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// What the MODEL is told about a stale prompt, once, as information: the person owns the decision through a
-/// card on their head, so the model's copy no longer asks it to keep saying so, which was the nagging reported.
-/// It ends with whose decision it is, and it is delivered once per sentence, in the plan-check's turn.
-pub fn stale_notice_for_the_model(said: &str) -> String {
-    format!(
-        "{said} For your information, said once: the person sees this on their screen as a \
-         card offering `/reseat`, and whether to re-seat is their decision. Do not ask them to \
-         re-seat and do not repeat this; carry on with the work, and if a tool you need is \
-         missing from your prompt, say that plainly when it matters."
-    )
-}
-
 /// What the model is told when a reseat lands: one line, and the three things it must not say - no token
 /// count, no request to restate the re-seat (a restatement is not work), and no stop asking for `/reseat`,
 /// which planted the word it forbade.
@@ -1823,7 +1811,7 @@ impl Harness {
             eprintln!("  store: the fork's prefix fingerprint: {e}");
         }
         self.session_registry
-            .set_stale_prefix(&self.cfg.session_id, None);
+            .set_stale_prefix(&self.cfg.session_id, None, None);
         // And the model may be told about a LATER staleness, once, as it was about this one.
         self.stale_told = None;
     }
