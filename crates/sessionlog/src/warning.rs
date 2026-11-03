@@ -207,6 +207,9 @@ pub const TABLE: &[(&str, Class)] = &[
     // handling, nothing is lost (the rows are in memory), and if the store stays wedged the
     // turn fails under its own name.
     ("store_busy_wait", Class::Routine),
+    // Another session of this daemon is waiting on the store, so this one waits behind it:
+    // the same wait seen from the next session in line.
+    ("store_busy_queue", Class::Routine),
     // The operator typed a provider key on the masked card and it was saved - the ask
     // working, said once so the file it went to is on the record.
     ("provider_key_saved", Class::Routine),
