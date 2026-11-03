@@ -842,7 +842,9 @@ fn settle_scope(tree: &dyn ScopeTree, kept: &Mutex<Vec<ScopeId>>, scope: &ScopeI
     if release_settled_scope(tree, scope) {
         return;
     }
-    kept.lock().unwrap_or_else(|e| e.into_inner()).push(scope.clone());
+    kept.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(scope.clone());
 }
 
 impl HostProcesses {
@@ -2555,8 +2557,11 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
             .expect("a scope");
         // A command that left something behind: this test's own pid stands in for the child, and
         // the process has to be a live one, or the scope is empty and goes at once.
-        std::fs::write(scope.path.join("cgroup.procs"), std::process::id().to_string())
-            .expect("a member");
+        std::fs::write(
+            scope.path.join("cgroup.procs"),
+            std::process::id().to_string(),
+        )
+        .expect("a member");
         settle_scope(tree.as_ref(), &h.kept_scopes, &scope);
         assert!(
             scope.path.exists(),

@@ -2269,12 +2269,7 @@ impl Ssh {
     /// The one ssh this process does not start: `git fetch` builds it from `core.sshCommand` and
     /// multiplexes over the git socket, so it takes a slot on that gate by hand. A refused session
     /// never reached the remote, so a full master costs a round trip and not a session's branch.
-    fn fetch_back(
-        &self,
-        repo: &Path,
-        url: &str,
-        refspec: &str,
-    ) -> Result<FetchEnded, String> {
+    fn fetch_back(&self, repo: &Path, url: &str, refspec: &str) -> Result<FetchEnded, String> {
         self.fetch_within(Path::new("git"), repo, url, refspec, GIT_BOUND)
     }
 
@@ -4216,20 +4211,24 @@ impl ExecBackend for SshBackend {
         if paths.is_empty() {
             return Ok(Vec::new());
         }
-        batched_page(paths, |p| self.in_view(p), |asked| {
-            let (out, _, exit) = self.ssh.sh_step(
-                &format!("reading {} file(s)", asked.len()),
-                &crate::firecode::batched_read_command(asked),
-            )?;
-            if exit != 0 {
-                return Err(BackendError::Io(format!(
-                    "reading {} file(s) on {}: exit {exit}",
-                    asked.len(),
-                    self.host
-                )));
-            }
-            crate::firecode::parse_batched_reads(out.as_bytes(), asked)
-        })
+        batched_page(
+            paths,
+            |p| self.in_view(p),
+            |asked| {
+                let (out, _, exit) = self.ssh.sh_step(
+                    &format!("reading {} file(s)", asked.len()),
+                    &crate::firecode::batched_read_command(asked),
+                )?;
+                if exit != 0 {
+                    return Err(BackendError::Io(format!(
+                        "reading {} file(s) on {}: exit {exit}",
+                        asked.len(),
+                        self.host
+                    )));
+                }
+                crate::firecode::parse_batched_reads(out.as_bytes(), asked)
+            },
+        )
     }
 
     fn write(&self, path: &str, bytes: &[u8]) -> Result<(), BackendError> {
