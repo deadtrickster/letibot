@@ -393,3 +393,41 @@ fn the_counts_add_up_to_the_payload_at_every_page() {
         a.key(Key::PageDown);
     }
 }
+
+/// **The quit card owns the arrows and Esc even over an open window.** The card is the question
+/// the operator asked by pressing ctrl-c twice, and its bar promises `1/2 or up/down then enter`;
+/// the window's paging under it left the mark where it was, and Enter then answered the row
+/// nobody chose.
+#[test]
+fn the_quit_card_takes_the_arrows_and_esc_from_an_open_window() {
+    let mut a = long_result(97);
+    a.key(Key::CtrlV);
+    a.screen(100, 47);
+    assert!(a.payload_sel.is_some(), "the window is open");
+
+    a.clock(1_000);
+    a.key(Key::CtrlC);
+    a.key(Key::CtrlC);
+    assert!(a.quit_card, "the second ctrl-c opens the quit card");
+
+    a.key(Key::Down);
+    assert_eq!(a.quit_sel, 1, "the card's mark moved, as its bar says");
+    assert_eq!(a.payload_page, 0, "and the window under it did not page");
+
+    // Esc cancels the card rather than closing the window behind it.
+    a.key(Key::Esc);
+    assert!(!a.quit_card, "Esc closed the card");
+    assert!(
+        a.payload_sel.is_some(),
+        "and left the window the operator was reading"
+    );
+    // And opening it again starts at the top, so Esc really was "I did not mean to leave".
+    a.clock(3_000);
+    a.key(Key::CtrlC);
+    a.key(Key::CtrlC);
+    assert!(a.quit_card, "the card comes back up");
+    assert_eq!(
+        a.quit_sel, 0,
+        "at its own first row, not the one meant a moment ago"
+    );
+}

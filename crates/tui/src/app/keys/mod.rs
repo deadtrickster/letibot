@@ -232,19 +232,21 @@ impl App {
         if let ControlFlow::Break(r) = self.key_chords(&k) {
             return r;
         }
-        // **An open ctrl-v window keeps the arrows and Esc** - its own seam prints `esc closes`, so a
-        // decision arriving over it must not take the row being read away (see
-        // [`App::key_payload_window`]).
-        if let ControlFlow::Break(r) = self.key_payload_window(&k) {
-            return r;
-        }
         // The cards in the chrome, in front of the surface: a decision, the quit card and a setting card are
         // questions drawn by the composer, on the screen whatever holds the rectangle above them, so their keys
         // come first.
         if let ControlFlow::Break(r) = self.key_decision(&k) {
             return r;
         }
+        // **The quit card takes the arrows from an open window too**: its bar promises `1/2 or
+        // up/down then enter`, and a mark that did not move answered a row nobody chose.
         if let ControlFlow::Break(r) = self.key_quit_card(&k) {
+            return r;
+        }
+        // **An open ctrl-v window keeps the arrows and Esc** - its own seam prints `esc closes`, so a
+        // decision arriving over it must not take the row being read away (see
+        // [`App::key_payload_window`]).
+        if let ControlFlow::Break(r) = self.key_payload_window(&k) {
             return r;
         }
         if let ControlFlow::Break(r) = self.key_pick(&k) {
