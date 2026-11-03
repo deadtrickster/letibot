@@ -575,6 +575,93 @@ fn a_question_a_resync_drops_takes_its_draft_with_it() {
     assert_eq!(b.input(), "half a line", "not the card's to take");
 }
 
+/// **A switch carries the line being typed.** `load` is the switch path as well as the resync
+/// path, and the question it read as gone was the OUTGOING session's card: nothing about that
+/// card's answer is in this line, so leaving takes nothing with it.
+#[test]
+fn a_switch_away_from_a_question_keeps_the_typed_line() {
+    let hub = Hub::new("s");
+    hub.publish(testing::turn_started("t1"));
+    let mut a = app();
+    a.apply(hello("s", vec![brief("s", "one", false)], hub.snapshot()));
+    ask(
+        &mut a,
+        1,
+        testing::asked("q1", "which branch?", &["main"], ""),
+    );
+    typed(&mut a, "the release one");
+    let two = Hub::new("two");
+    a.apply(hello(
+        "two",
+        vec![brief("s", "one", false), brief("two", "two", false)],
+        two.snapshot(),
+    ));
+    assert_eq!(a.session_id, "two", "the switch happened");
+    assert!(
+        a.open.is_empty(),
+        "the other session's card did not come along"
+    );
+    assert_eq!(
+        a.input(),
+        "the release one",
+        "leaving a session is not the card's answer going away"
+    );
+    assert!(
+        !a.notice.as_deref().unwrap_or("").contains("was cleared"),
+        "and nothing says the line was cleared: {:?}",
+        a.notice
+    );
+}
+
+/// The control for the switch rule: a switch with no question up carries the line, which is what
+/// the head did before the draft rule and must keep doing.
+#[test]
+fn a_switch_with_no_question_up_keeps_the_typed_line() {
+    let hub = Hub::new("s");
+    let mut a = app();
+    a.apply(hello("s", vec![brief("s", "one", false)], hub.snapshot()));
+    typed(&mut a, "half a line");
+    let two = Hub::new("two");
+    a.apply(hello(
+        "two",
+        vec![brief("s", "one", false), brief("two", "two", false)],
+        two.snapshot(),
+    ));
+    assert_eq!(a.input(), "half a line", "the line is the operator's");
+}
+
+/// **A command is never a card's answer**: `/`, `!`, `!term` and `!send` are taken by
+/// [`App::submit`] before the open card is consulted, so a verb typed under a question that goes
+/// is the operator's line and stays.
+#[test]
+fn a_command_under_a_dropped_question_stays_in_the_composer() {
+    let hub = Hub::new("s");
+    hub.publish(testing::turn_started("t1"));
+    let mut a = app();
+    a.apply(hello("s", vec![brief("s", "one", false)], hub.snapshot()));
+    ask(
+        &mut a,
+        1,
+        testing::asked("q1", "which branch?", &["main"], ""),
+    );
+    typed(&mut a, "/queue");
+    a.apply(ServerFrame::Resync {
+        reason: "test".into(),
+        dropped: 0,
+        snapshot: Box::new(hub.snapshot()),
+        scrubbed: Default::default(),
+    });
+    assert!(
+        a.open.is_empty(),
+        "the snapshot no longer holds the question"
+    );
+    assert_eq!(
+        a.input(),
+        "/queue",
+        "a verb is the operator's line, not the card's answer"
+    );
+}
+
 /// A model's question notifies as a question, a todo card as a todo row asking.
 #[test]
 fn a_notification_names_the_kind_of_card() {

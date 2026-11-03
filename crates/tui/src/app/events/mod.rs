@@ -295,7 +295,7 @@ impl App {
         self.open = open;
         // **The question the operator was answering went while they typed it** - a deadline, or
         // another head answering it - and its draft would be sent as a prompt by the next Enter.
-        self.drop_a_gone_questions_draft(was_asking);
+        self.drop_a_gone_questions_draft(was_asking, same_session);
         // A snapshot can replace the open set wholesale; the highlight is reset only if the
         // front card changed (`App::sync_front`), and kept in range here when it did not.
         if let Some(d) = self.open.first() {

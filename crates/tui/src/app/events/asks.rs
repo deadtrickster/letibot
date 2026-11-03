@@ -10,16 +10,30 @@ impl App {
     /// truth about what is still open, and the words typed on a card that went are an answer, not
     /// a prompt: left in the composer, the next Enter sent them to the model. Said, not silent,
     /// and undoable - a permission's words are the operator's own and are never touched.
-    pub(crate) fn drop_a_gone_questions_draft(&mut self, was_asking: Option<OpenDecision>) {
+    pub(crate) fn drop_a_gone_questions_draft(
+        &mut self,
+        was_asking: Option<OpenDecision>,
+        same_session: bool,
+    ) {
         let Some(d) = was_asking else {
             return;
         };
-        if d.kind != "question" || d.req_id.starts_with(crate::app::todos::TODO_ASK) {
+        // A switch is not a card going away: the question is the outgoing session's, and a line
+        // typed there is the operator's own, so leaving takes nothing with it.
+        if !same_session
+            || d.kind != "question"
+            || d.req_id.starts_with(crate::app::todos::TODO_ASK)
+        {
             return;
         }
-        if self.open.iter().any(|o| o.req_id == d.req_id)
+        // A command is never an answer: `App::submit` takes `/` and `!` before it reads the card.
+        let typed = self.editor.text();
+        let command = typed.starts_with('/') || typed.starts_with('!');
+        let empty = typed.is_empty();
+        if command
+            || empty
+            || self.open.iter().any(|o| o.req_id == d.req_id)
             || self.away.iter().any(|a| a.decision.req_id == d.req_id)
-            || self.editor.text().is_empty()
         {
             return;
         }
