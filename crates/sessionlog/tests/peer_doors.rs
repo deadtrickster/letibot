@@ -10,6 +10,7 @@
 //! The head is this test process, which is also the process `serve` runs in: a process is not
 //! inside its own tree, and that is why it keeps every door.
 
+use std::io::{BufRead, Write};
 use std::sync::mpsc::channel;
 use std::time::{Duration, Instant};
 
@@ -17,7 +18,8 @@ use letibot_sessionlog::client::{HeadClient, pump};
 use letibot_sessionlog::event::SessionEvent;
 use letibot_sessionlog::hub::Hub;
 use letibot_sessionlog::protocol::{Caps, ServerFrame};
-use letibot_sessionlog::server::{ServerHandle, serve};
+use letibot_sessionlog::registry::{Registry, SessionWiring};
+use letibot_sessionlog::server::{ServerHandle, serve, serve_registry};
 use letibot_sessionlog::wire::FrameReader;
 
 /// How long one refused door may take to answer, in the child.
@@ -29,6 +31,8 @@ const CHILD_PATIENCE: Duration = Duration::from_secs(150);
 
 /// Set in the child's environment, so the helper test knows it was re-executed as one.
 const CHILD: &str = "LETIBOT_PEER_DOORS_CHILD";
+/// Set in the seat child's environment, the same way.
+const SEAT_CHILD: &str = "LETIBOT_PEER_SEAT_CHILD";
 /// The socket the child connects to.
 const CHILD_SOCKET: &str = "LETIBOT_PEER_DOORS_SOCKET";
 
@@ -46,6 +50,39 @@ fn socket_path(tag: &str) -> std::path::PathBuf {
 fn start(tag: &str) -> ServerHandle {
     let hub = Hub::new("s");
     serve(hub, socket_path(tag)).expect("bind")
+}
+
+/// The same, over a session that is attached to something: a seat's wiring can only be told from
+/// an empty one when the session has one.
+fn start_wired(tag: &str) -> ServerHandle {
+    let registry = Registry::new();
+    let wiring = SessionWiring {
+        model: "qwen-3.8-flash-next".into(),
+        dialect: "qwen3.8".into(),
+        endpoint: "127.0.0.1:8080".into(),
+        workspace: "/home/dead/Projects/letibot".into(),
+    };
+    registry
+        .create("s", "a session", wiring)
+        .expect("a session");
+    serve_registry(registry, socket_path(tag)).expect("bind")
+}
+
+/// The next line the child printed under `prefix`: a test binary prints libtest's own banner to
+/// the same stdout, so the first line is never the one that was asked for.
+fn next_line(
+    prefix: &str,
+    lines: &mut std::io::Lines<std::io::BufReader<std::process::ChildStdout>>,
+) -> String {
+    loop {
+        let line = lines
+            .next()
+            .expect("a line from the child")
+            .expect("readable stdout");
+        if line.starts_with(prefix) {
+            return line;
+        }
+    }
 }
 
 /// Read frames until one is a refusal, and answer what the daemon said. Bounded, because a door
@@ -143,6 +180,104 @@ fn the_tool_trees_child() {
         .expect("the ask is written");
     let (secret, why) = secret(&mut reader);
     println!("ASKED {secret:?} why={why:?}");
+}
+
+/// **The child.** Re-executed as this, it attaches asking for a head's caps and prints what the
+/// seat it was given holds, then blocks until the parent says a head has arrived.
+#[test]
+fn the_seat_a_tool_call_is_given() {
+    if std::env::var(SEAT_CHILD).as_deref() != Ok("1") {
+        return;
+    }
+    let socket = std::env::var(CHILD_SOCKET).expect("the socket to connect to");
+    let caps = Caps {
+        can_decide: true,
+        ..Caps::default()
+    };
+    let (_client, hello, reader) =
+        HeadClient::attach(&socket, "s", 0, "tui", "dead", caps).expect("attach");
+    let ServerFrame::Hello {
+        snapshot,
+        sessions,
+        wiring,
+        ..
+    } = hello
+    else {
+        panic!("the first frame was not a Hello: {hello:?}");
+    };
+    println!(
+        "SEAT snapshot={} sessions={} wiring_empty={}",
+        snapshot.is_some(),
+        sessions.len(),
+        wiring.workspace.is_empty() && wiring.model.is_empty()
+    );
+    let mut line = String::new();
+    std::io::stdin()
+        .read_line(&mut line)
+        .expect("a line from the parent");
+    // A second is a thousand times what a pump needs to write a frame it already holds, so the
+    // bound says "nothing arrived" rather than "nothing had arrived yet".
+    let (tx, rx) = channel();
+    std::thread::spawn(move || {
+        let mut reader = reader;
+        let _ = tx.send(reader.read::<ServerFrame>().is_ok());
+    });
+    match rx.recv_timeout(Duration::from_secs(1)) {
+        Ok(true) => println!("EVENT arrived"),
+        Ok(false) => println!("EVENT unreadable"),
+        Err(_) => println!("EVENT none"),
+    }
+}
+
+/// **The seat.** A connection from a tool call is given none of a head's estate - no snapshot, no
+/// session list, no wiring, no vote and no events - because the askpass door needs none of them.
+#[test]
+fn a_tool_calls_seat_holds_none_of_a_heads_estate() {
+    let server = start_wired("seat");
+    let socket = server.path().to_path_buf();
+
+    let mut child = std::process::Command::new(std::env::current_exe().expect("this test binary"))
+        .args(["--exact", "the_seat_a_tool_call_is_given", "--nocapture"])
+        .env(SEAT_CHILD, "1")
+        .env(CHILD_SOCKET, &socket)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("the child starts");
+    let mut to_child = child.stdin.take().expect("the child's stdin");
+    let mut said = std::io::BufReader::new(child.stdout.take().expect("its stdout")).lines();
+
+    let seat = next_line("SEAT ", &mut said);
+    assert_eq!(
+        seat, "SEAT snapshot=false sessions=0 wiring_empty=true",
+        "a tool call's seat carried a head's estate: {seat}"
+    );
+    let hub = server.registry().resolve("s").expect("the session's hub");
+    assert!(
+        hub.deciding_heads().is_empty(),
+        "a tool call is not a head that can decide: {:?}",
+        hub.deciding_heads()
+    );
+
+    // A real head arriving is an event fanned to every seat, so it is what the child waits for.
+    let _second = HeadClient::attach(&socket, "s", 0, "tui", "second", Caps::default())
+        .expect("a second head attaches");
+    to_child
+        .write_all(b"go\n")
+        .expect("the child is told to look");
+    let event = next_line("EVENT ", &mut said);
+    assert_eq!(
+        event, "EVENT none",
+        "a tool call was subscribed to the session's events: {event}"
+    );
+
+    let out = child.wait_with_output().expect("the child ends");
+    assert!(
+        out.status.success(),
+        "the child failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 /// **The rule.** A connection from inside this daemon's tree is refused every operator door, by

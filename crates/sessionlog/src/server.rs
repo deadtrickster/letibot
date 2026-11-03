@@ -533,7 +533,9 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
         return Ok(());
     };
 
-    let mut seat = seat_in(&registry, hub, since_seq, &kind, &identity, &caps, &writer)?;
+    let mut seat = seat_in(
+        &registry, hub, peer, since_seq, &kind, &identity, &caps, &writer,
+    )?;
 
     // The reader loop. Ends on Detach or on the peer closing - and a TCP close is detach,
     // never abort: nothing below cancels a turn.
@@ -996,8 +998,9 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                     Some(next) => {
                         leave(&mut seat);
                         registry.set_default(&next.session_id());
-                        seat =
-                            seat_in(&registry, next, since_seq, &kind, &identity, &caps, &writer)?;
+                        seat = seat_in(
+                            &registry, next, peer, since_seq, &kind, &identity, &caps, &writer,
+                        )?;
                     }
                 }
             }
@@ -1738,13 +1741,22 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
 fn seat_in(
     registry: &Arc<Registry>,
     hub: Arc<Hub>,
+    peer: crate::peer::Peer,
     since_seq: u64,
     kind: &str,
     identity: &str,
     caps: &crate::protocol::Caps,
     writer: &Arc<Mutex<FrameWriter<UnixStream>>>,
 ) -> Result<Seat, WireError> {
-    let a = hub.attach(kind, identity, caps.clone(), since_seq);
+    // A tool call's command attaches only to reach `sudo`'s askpass door, and a seat is the way
+    // there. The rest of a head's estate is not the password's business: no snapshot, no session
+    // list, no wiring, no events and no vote.
+    let inside = peer.inside;
+    let mut held = caps.clone();
+    if inside {
+        held.can_decide = false;
+    }
+    let a = hub.attach(kind, identity, held, since_seq);
     let head_id = a.head_id.clone();
     let session_id = hub.session_id();
     // What this session's harness found about its frozen prefix, said NOW: the comparison is
@@ -1775,13 +1787,21 @@ fn seat_in(
                 session_id: session_id.clone(),
                 head_id: head_id.clone(),
                 dropped: a.dropped,
-                snapshot: a.snapshot.map(Box::new),
+                snapshot: if inside { None } else { a.snapshot.map(Box::new) },
                 resumed_from: a.resumed_from,
                 scrubbed: a.scrubbed,
-                wiring: registry.wiring(&session_id),
-                sessions: registry.list(),
+                wiring: if inside {
+                    Default::default()
+                } else {
+                    registry.wiring(&session_id)
+                },
+                sessions: if inside { Vec::new() } else { registry.list() },
             })
             .and_then(|()| {
+                // A tool call is handed no backlog: it is not a head, so there is no history for it.
+                if inside {
+                    return Ok(());
+                }
                 let mut out = Ok(());
                 for env in &a.backlog {
                     out = w.write(&ServerFrame::Event(env.clone()));
@@ -1804,7 +1824,10 @@ fn seat_in(
     }
 
     let switching = Arc::new(AtomicBool::new(false));
-    let pump = {
+    // A tool call gets no pump: every event here belongs to a head, and this seat is not one.
+    let pump = if inside {
+        None
+    } else {
         let hub = hub.clone();
         let writer = writer.clone();
         let head_id = head_id.clone();
