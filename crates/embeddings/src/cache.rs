@@ -27,12 +27,6 @@ pub fn db_path(data_dir: &Path) -> PathBuf {
 pub enum CacheError {
     Sqlite(rusqlite::Error),
     Io(std::io::Error),
-    /// A vector whose blob does not divide into `f32`s: a `f32` is `DIM_BYTES`.
-    Corrupt {
-        model: String,
-        dim: i64,
-        bytes: usize,
-    },
 }
 
 impl std::fmt::Display for CacheError {
@@ -40,11 +34,6 @@ impl std::fmt::Display for CacheError {
         match self {
             CacheError::Sqlite(e) => write!(f, "embeddings.db: {e}"),
             CacheError::Io(e) => write!(f, "embeddings.db: {e}"),
-            CacheError::Corrupt { model, dim, bytes } => write!(
-                f,
-                "embeddings.db: a {dim}-dimension vector for {model} is {bytes} bytes, which is \
-                 not a whole number of f32s; the row is dropped"
-            ),
         }
     }
 }
@@ -160,17 +149,14 @@ impl Cache {
         match unpack(&blob, dim) {
             Some(v) => Ok(Some(v)),
             None => {
-                // A row this build cannot read is a row that must not poison every
-                // search: drop it and let the caller embed the text again.
+                // A row this build cannot read is a row that must not poison every search:
+                // drop it and answer *not cached*, so the caller embeds the text again instead
+                // of losing the round's score to one stale row.
                 self.conn.execute(
                     "DELETE FROM embedding WHERE model = ?1 AND hash = ?2",
                     (model, &hash),
                 )?;
-                Err(CacheError::Corrupt {
-                    model: model.to_string(),
-                    dim,
-                    bytes: blob.len(),
-                })
+                Ok(None)
             }
         }
     }
@@ -408,10 +394,12 @@ mod tests {
         assert_eq!((v, hit, calls), (vec![0.5, 0.5], Hit::Cached, 1));
     }
 
-    /// A blob that is not a whole number of `f32`s is dropped rather than read as a
-    /// shorter vector, and the caller is told.
+    /// **A blob that is not a whole number of `f32`s costs one embedding, not the round's score.**
+    /// The row is dropped and the answer is *not cached*, so the caller embeds the text again; a
+    /// refusal here sent an embeddable document to the lexical tier and told the operator the box
+    /// was corrupt.
     #[test]
-    fn a_corrupt_blob_is_dropped_and_said() {
+    fn a_corrupt_blob_is_dropped_and_the_text_embedded_again() {
         let dir = Dir::new("corrupt");
         let cache = Cache::open_at(&db_path(dir.path()), 1_000).unwrap();
         cache.put("m", "text", &[1.0, 2.0], 1_000).unwrap();
@@ -419,10 +407,16 @@ mod tests {
             .conn
             .execute("UPDATE embedding SET vector = x'0102'", [])
             .unwrap();
-        assert!(matches!(
-            cache.get("m", "text", 1_000),
-            Err(CacheError::Corrupt { .. })
-        ));
-        assert_eq!(cache.len().unwrap(), 0);
+        assert_eq!(cache.get("m", "text", 1_000).unwrap(), None);
+        assert_eq!(cache.len().unwrap(), 0, "the row went with the read");
+
+        let mut calls = 0;
+        let (v, hit) = cache
+            .embed_or_get("m", "text", 1_000, |_| {
+                calls += 1;
+                Ok(vec![0.5, 0.5])
+            })
+            .unwrap();
+        assert_eq!((v, hit, calls), (vec![0.5, 0.5], Hit::Embedded, 1));
     }
 }
