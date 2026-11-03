@@ -1016,6 +1016,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "letibot-github"
+version = "0.5.1"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "letibot-harnessd"
 version = "0.5.1"
 dependencies = [

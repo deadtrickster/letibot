@@ -1,0 +1,16 @@
+[package]
+name = "letibot-github"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "the GitHub reviewer seat's first half: pull requests behind one trait, and the seat that reviews them"
+
+# **Two dependencies, and neither is a runtime.** The source is a trait so the seat can be tested
+# with a fake, and the real implementation is `gh api` as a subprocess - not an HTTP client with a
+# token that a test would then have to keep out of a log. `serde_json` is here because a review is
+# posted as a JSON body and the seat's state is what the pane is drawn from.
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true

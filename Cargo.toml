@@ -21,6 +21,10 @@ members = [
     # state machine and a wire — no store, no socket, no clock — because the coordinator daemon
     # that owns the socket is a later slice, and the semantics are what must be right first.
     "crates/room",
+    # **The GitHub reviewer seat**: a pull request's facts behind one trait (real: `gh api` as a
+    # subprocess; fake: memory), and the seat that turns each open one into a review. No token, no
+    # client and no network in the crate, so every test of it is offline.
+    "crates/github",
     "crates/provider",
     "crates/websearch",
     "crates/webfetch",
