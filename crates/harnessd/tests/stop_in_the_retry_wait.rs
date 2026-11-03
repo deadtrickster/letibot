@@ -166,6 +166,19 @@ fn a_stop_during_a_retry_wait_stops_the_children_first() {
         warned,
         "the operator was told which children the stop took: no `subagents_stopped` was published"
     );
+
+    // A failure whose turn id is stale is a failure the head cannot place: the pane keeps its
+    // last finished turn and the sentence is never drawn, while the bridge says the turn failed.
+    let second_turn = last_turn_started(&hub);
+    assert!(
+        !second_turn.is_empty() && second_turn != first_turn,
+        "the second turn published no id of its own, so this fixture measured nothing"
+    );
+    assert_eq!(
+        h.last_turn_id(),
+        second_turn,
+        "the failure names the turn it happened in, not the last one that finished"
+    );
 }
 
 /// The `turn_id` of the newest `TurnStarted` on this session's log - the turn that is running.

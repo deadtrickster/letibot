@@ -1628,6 +1628,9 @@ impl Harness {
                         // here is the same act arriving at a different door.
                         stop_children_first(Some(&self.subagents), &self.hub);
                         self.stopped.store(true, Ordering::SeqCst);
+                        // This turn's own id, before the early return: the failure it becomes is
+                        // published from this field, and a stale one is a failure no head can place.
+                        self.last_turn_id = sink.turn_id.clone().unwrap_or_default();
                         self.settle_outage(false);
                         return Err(HarnessError::Endpoint {
                             said: stopped_in_the_wait(&reason, &ladder, &e),
