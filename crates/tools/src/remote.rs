@@ -4107,6 +4107,47 @@ fn guest_line(host: &str, project: &str, out: &str, exit: i32) -> String {
     }
 }
 
+/// One page of reads, with the paths this box can reach over the wire and an answer for the rest. A
+/// path outside the view is that path's answer and never the page's: an `Err` for the page means the
+/// channel failed and says nothing about any file, which sends every path in it back to one round
+/// trip of its own.
+fn batched_page(
+    paths: &[&str],
+    in_view: impl Fn(&str) -> Result<String, BackendError>,
+    fetch: impl FnOnce(&[&str]) -> Result<Vec<Result<Vec<u8>, BackendError>>, BackendError>,
+) -> Result<Vec<Result<Vec<u8>, BackendError>>, BackendError> {
+    let mut asked: Vec<String> = Vec::with_capacity(paths.len());
+    let mut outside: Vec<Option<BackendError>> = Vec::with_capacity(paths.len());
+    for path in paths {
+        match in_view(path) {
+            Ok(abs) => {
+                asked.push(abs);
+                outside.push(None);
+            }
+            Err(e) => outside.push(Some(e)),
+        }
+    }
+    let mut read = if asked.is_empty() {
+        Vec::new().into_iter()
+    } else {
+        let refs: Vec<&str> = asked.iter().map(|s| s.as_str()).collect();
+        fetch(&refs)?.into_iter()
+    };
+    Ok(outside
+        .into_iter()
+        .map(|refused| match refused {
+            Some(e) => Err(e),
+            // The parser answers one slot per path it was given, or refuses the page.
+            None => read.next().unwrap_or_else(|| {
+                Err(BackendError::Io(format!(
+                    "reading {} file(s): the answer came back short",
+                    paths.len()
+                )))
+            }),
+        })
+        .collect())
+}
+
 impl ExecBackend for SshBackend {
     fn boundary(&self) -> Option<crate::exec::Boundary> {
         self.confinement()
@@ -4175,23 +4216,20 @@ impl ExecBackend for SshBackend {
         if paths.is_empty() {
             return Ok(Vec::new());
         }
-        let abs: Vec<String> = paths
-            .iter()
-            .map(|p| self.in_view(p))
-            .collect::<Result<_, _>>()?;
-        let asked: Vec<&str> = abs.iter().map(|s| s.as_str()).collect();
-        let (out, _, exit) = self.ssh.sh_step(
-            &format!("reading {} file(s)", paths.len()),
-            &crate::firecode::batched_read_command(&asked),
-        )?;
-        if exit != 0 {
-            return Err(BackendError::Io(format!(
-                "reading {} file(s) on {}: exit {exit}",
-                paths.len(),
-                self.host
-            )));
-        }
-        crate::firecode::parse_batched_reads(out.as_bytes(), paths)
+        batched_page(paths, |p| self.in_view(p), |asked| {
+            let (out, _, exit) = self.ssh.sh_step(
+                &format!("reading {} file(s)", asked.len()),
+                &crate::firecode::batched_read_command(asked),
+            )?;
+            if exit != 0 {
+                return Err(BackendError::Io(format!(
+                    "reading {} file(s) on {}: exit {exit}",
+                    asked.len(),
+                    self.host
+                )));
+            }
+            crate::firecode::parse_batched_reads(out.as_bytes(), asked)
+        })
     }
 
     fn write(&self, path: &str, bytes: &[u8]) -> Result<(), BackendError> {
@@ -6109,5 +6147,41 @@ user     = "root"
             other => panic!("a git that never answers is killed at its deadline: {other:?}"),
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// One path outside the view used to be the whole page's answer, which the trait reads as *the
+    /// channel failed and says nothing about any file* - so every path in a page of 64 went back to
+    /// one round trip of its own, for a verb's whole budget.
+    #[test]
+    fn a_page_with_one_path_outside_the_view_still_reads_the_rest() {
+        let seen = std::cell::RefCell::new(Vec::new());
+        let answers = batched_page(
+            &["in/a.md", "/etc/passwd", "in/b.md"],
+            |p| {
+                if p.starts_with('/') {
+                    Err(BackendError::Outside(p.to_string()))
+                } else {
+                    Ok(format!("/w/{p}"))
+                }
+            },
+            |asked| {
+                *seen.borrow_mut() = asked.iter().map(|s| s.to_string()).collect();
+                Ok(vec![Ok(b"a".to_vec()), Ok(b"b".to_vec())])
+            },
+        )
+        .expect("a path outside the view is not a failed page");
+        assert_eq!(
+            seen.borrow().as_slice(),
+            ["/w/in/a.md", "/w/in/b.md"],
+            "the page went over the wire once, with only the paths that are in the view"
+        );
+        assert_eq!(answers.len(), 3, "one answer per path asked, in order");
+        assert!(matches!(&answers[0], Ok(b) if b == b"a"));
+        assert!(
+            matches!(&answers[1], Err(BackendError::Outside(p)) if p == "/etc/passwd"),
+            "the path outside the view is its own refusal: {:?}",
+            answers[1]
+        );
+        assert!(matches!(&answers[2], Ok(b) if b == b"b"));
     }
 }
