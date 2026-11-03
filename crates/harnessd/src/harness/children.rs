@@ -303,13 +303,18 @@ impl TaskSlot {
 /// **What a child's thread leaves behind when `run_to_completion` returns**: a refusal that came
 /// before the child's own [`AnswerOnce`] existed becomes the slot's answer, because nothing else
 /// will ever settle it. A slot already settled keeps what it has.
-pub(crate) fn finish_child_thread(slot: &TaskSlot, ran: Result<String, String>) {
+pub(crate) fn finish_child_thread(
+    slot: &TaskSlot,
+    ran: Result<String, String>,
+    registry: &letibot_sessionlog::registry::Registry,
+) {
     if let Err(why) = ran {
         slot.settle_if_running(letibot_tools::builtins::task::TaskStatus::Failed { why });
     }
     // **A failed child's tree is debris**: the branch keeps whatever it committed, and the removal
-    // keeps a tree that still holds uncommitted work, so nothing that matters goes.
-    if slot.failed() {
+    // keeps a tree that still holds uncommitted work, so nothing that matters goes. A stop during
+    // an orderly shutdown is not the child's ending: the next daemon resumes it INTO this tree.
+    if slot.failed() && !registry.is_stopping() {
         let d = slot.deliverable.lock().expect("task slot").clone();
         let _ = deliverable::reap_failed(d.as_ref());
     }
@@ -1670,7 +1675,7 @@ impl HarnessTaskRunner {
                     &mut |n| slot2.note(n),
                     restart.as_deref(),
                 );
-                finish_child_thread(&slot, ran);
+                finish_child_thread(&slot, ran, &me.registry);
                 // **And this is where the child's thread ends - the fact stopping needs.** See
                 // [`TaskSlot::exited`]: a child that answered is still alive (it parks and can be
                 // asked more), so `stop_all` cannot read "has an answer" as "is gone".

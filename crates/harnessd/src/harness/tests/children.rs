@@ -366,9 +366,15 @@ fn a_failed_child_leaves_no_worktree_and_keeps_its_branch() {
         String::from_utf8_lossy(&made.stderr)
     );
     let head = super::git_in(&path, &["rev-parse", "HEAD"]).expect("its head");
+    // A daemon that is not stopping: this child's failure is its own, so its tree is debris.
+    let registry = letibot_sessionlog::registry::Registry::new();
     let slot = TaskSlot::new("s-parent");
     slot.set_deliverable(deliverable::Deliverable::of(&placement));
-    finish_child_thread(&slot, Err("the provider refused the request".into()));
+    finish_child_thread(
+        &slot,
+        Err("the provider refused the request".into()),
+        &registry,
+    );
     assert!(
         matches!(
             slot.status(),
@@ -406,10 +412,68 @@ fn a_failed_child_leaves_no_worktree_and_keeps_its_branch() {
             main_tree: false,
         },
     ));
-    finish_child_thread(&kept, Err("a turn that blew up".into()));
+    finish_child_thread(&kept, Err("a turn that blew up".into()), &registry);
     assert!(
         std::path::Path::new(&path2).exists(),
         "a tree with uncommitted work is not reaped"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// **A child the daemon's orderly stop ended keeps its tree.** The stop is the daemon's ending and
+/// not the child's: its row stays `running`, and the next daemon resumes it into this worktree, so a
+/// reap here would resume a child into a directory that is gone.
+#[test]
+fn a_child_the_orderly_stop_ended_keeps_its_worktree() {
+    let root = std::env::temp_dir().join(format!("letibot-keep-{}-{}", std::process::id(), {
+        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("mkdir");
+    let git = |args: &[&str]| {
+        let out = letibot_tools::testing::git(&root)
+            .args(["-c", "commit.gpgsign=false"])
+            .args(args)
+            .output()
+            .expect("git");
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    };
+    git(&["init", "-q", "-b", "main"]);
+    std::fs::write(root.join("a.txt"), "one\n").expect("write");
+    git(&["add", "-A"]);
+    git(&["commit", "-qm", "first"]);
+    let path = root.join("wt-stopped");
+    let path = path.to_str().expect("utf-8 path").to_string();
+    let branch = letibot_tools::builtins::task::worktree_branch("stopped");
+    super::git_in(
+        root.to_str().unwrap(),
+        &["worktree", "add", "-q", &path, "-b", &branch, "HEAD"],
+    )
+    .expect("the worktree is created");
+    let placement = letibot_tools::builtins::task::WorktreePlacement {
+        path: path.clone(),
+        branch,
+        base_sha: super::git_in(root.to_str().unwrap(), &["rev-parse", "HEAD"]).expect("base"),
+        main_tree: false,
+    };
+
+    let slot = TaskSlot::new("s-parent");
+    slot.set_deliverable(deliverable::Deliverable::of(&placement));
+    let registry = letibot_sessionlog::registry::Registry::new();
+    // The orderly stop, before the child's turn winds down: the same order `Registry::close` keeps
+    // and the one the record's own `settled` reads.
+    registry.close();
+    finish_child_thread(&slot, Err("the daemon is stopping".into()), &registry);
+    assert!(
+        slot.failed(),
+        "the turn was ended by the stop, so the slot is not an answer: {:?}",
+        slot.status()
+    );
+    assert!(
+        std::path::Path::new(&path).exists(),
+        "a child the next daemon resumes keeps the tree it is resumed into"
     );
 
     let _ = std::fs::remove_dir_all(&root);
@@ -422,9 +486,11 @@ fn a_failed_child_leaves_no_worktree_and_keeps_its_branch() {
 fn a_child_refused_before_it_opened_settles_its_slot_with_the_reason() {
     use letibot_tools::builtins::task::TaskStatus;
     let refused = TaskSlot::new("s-parent");
+    let registry = letibot_sessionlog::registry::Registry::new();
     finish_child_thread(
         &refused,
         Err("model `nope` is not one this daemon can run".into()),
+        &registry,
     );
     match refused.status() {
         TaskStatus::Failed { why } => assert!(why.contains("nope"), "{why}"),
@@ -438,7 +504,7 @@ fn a_child_refused_before_it_opened_settles_its_slot_with_the_reason() {
         answer: "the child's own answer".into(),
         child: None,
     });
-    finish_child_thread(&answered, Err("a later error".into()));
+    finish_child_thread(&answered, Err("a later error".into()), &registry);
     assert!(
         matches!(answered.status(), TaskStatus::Done { ref answer, .. } if answer == "the child's own answer"),
         "{:?}",
@@ -450,7 +516,7 @@ fn a_child_refused_before_it_opened_settles_its_slot_with_the_reason() {
     ok.settle(TaskStatus::Failed {
         why: "the child's own failure".into(),
     });
-    finish_child_thread(&ok, Ok(String::new()));
+    finish_child_thread(&ok, Ok(String::new()), &registry);
     assert!(
         matches!(ok.status(), TaskStatus::Failed { ref why } if why == "the child's own failure"),
         "{:?}",
