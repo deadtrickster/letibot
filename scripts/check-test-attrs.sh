@@ -49,3 +49,20 @@ else
   echo "check-test-attrs: a test attribute does not sit on a function of its own" >&2
   exit 1
 fi
+
+# A test may not clear the gate's demand for the apparatus. `LETIBOT_REQUIRE_APPARATUS=1`
+# is what turns an absent fixture into a failure, and a file that unsets it from a
+# fixture's own environment makes every skip in that binary green again - the one thing
+# the gate step exists to prevent.
+if awk '
+  /remove_var\("LETIBOT_REQUIRE_(APPARATUS|MODEL)"\)/ {
+    printf "%s:%d: a fixture clears the gate demand for the apparatus, so its skips stay green\n", FILENAME, FNR > "/dev/stderr"
+    bad = 1
+  }
+  END { exit bad ? 1 : 0 }
+' "$@"; then
+  echo "check-test-attrs: $# file(s) checked, no fixture clears the gate demand"
+else
+  echo "check-test-attrs: a fixture clears LETIBOT_REQUIRE_APPARATUS or LETIBOT_REQUIRE_MODEL" >&2
+  exit 1
+fi

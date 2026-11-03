@@ -182,7 +182,8 @@ impl World {
             std::env::remove_var("GLM_API_KEY");
             std::env::remove_var("LETIBOT_MODE");
             std::env::remove_var("LETIBOT_SOCKET");
-            std::env::remove_var("LETIBOT_REQUIRE_APPARATUS");
+            // Never the gate's own demand: `LETIBOT_REQUIRE_APPARATUS` stays whatever the run
+            // set, so a fixture here cannot turn this binary's skips green.
         }
         let worktree = root.join("worktree");
         std::fs::create_dir_all(&worktree).expect("worktree");
