@@ -587,7 +587,11 @@ pub(crate) fn warning_notice(code: &str, detail: &str, mark: &str, role: Role) -
         .strip_prefix(code)
         .and_then(|r| r.strip_prefix(": "))
         .unwrap_or(detail.trim());
-    let said = compaction_of(body)
+    // The facts are in the daemon's own sentence, which is the first paragraph: after a blank line
+    // comes the summary body, and model prose that says "nothing dropped" or "CUT OFF" would
+    // otherwise rewrite what the line draws.
+    let sentence = body.split("\n\n").next().unwrap_or(body);
+    let said = compaction_of(sentence)
         .map(|c| compaction_line(&c))
         .unwrap_or_else(|| gist(body));
     // The routine mark is the `·` the frame's own `session ·` already ends in: drawn twice it
@@ -917,6 +921,28 @@ mod tests {
         assert_eq!(
             ones("compacted: the model wrote a poem and nothing else happened."),
             "compacted · the model wrote a poem and nothing else happened · click for details"
+        );
+    }
+
+    /// **The facts a compaction's line draws are read from its own sentence, never from the summary
+    /// under it.** The detail ends with the summary body, which is model prose, and the reader's
+    /// `contains` tests read the whole thing: a summary that said "nothing dropped" or "CUT OFF"
+    /// rewrote what the daemon reported about the fold.
+    #[test]
+    fn the_summary_body_under_a_compaction_cannot_rewrite_its_counts() {
+        let detail = "compacted: 958397 → 100005 tokens, kept 12 item(s) verbatim plus a \
+                      13532-character summary, 2 item(s) dropped at the seam, on transcript s#t25. \
+                      Nothing of the summary turn reached this screen, so here is what the model \
+                      now reads in place of everything before it:\n\nThe fold left nothing dropped \
+                      and nothing was CUT OFF, the summary says, and it is 40 items long.";
+        let line = warning_notice("compacted", detail, "·", Role::Faint).line;
+        assert!(
+            line.contains("2 dropped") && line.contains("12 items"),
+            "the summary's prose rewrote the figures the sentence reported: {line}"
+        );
+        assert!(
+            !line.contains("nothing dropped") && !line.contains("CUT OFF"),
+            "the summary's prose rewrote the sentence's own facts: {line}"
         );
     }
 
