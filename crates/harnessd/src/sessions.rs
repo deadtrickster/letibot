@@ -4734,7 +4734,7 @@ impl letibot_sessionlog::registry::RowSource for StoreSessions {
         session_id: &str,
         from: usize,
         count: usize,
-    ) -> Vec<letibot_sessionlog::view::SnapshotItem> {
+    ) -> Vec<(usize, letibot_sessionlog::view::SnapshotItem)> {
         let (Ok(from), Ok(count)) = (u32::try_from(from), u32::try_from(count)) else {
             return Vec::new();
         };
@@ -4750,20 +4750,23 @@ impl letibot_sessionlog::registry::RowSource for StoreSessions {
             .rows_json_from(&transcript_id, from, count)
             .unwrap_or_default();
         rows.into_iter()
-            .filter_map(|(_, item_id, kind, json)| {
+            .filter_map(|(seq, item_id, kind, json, created_at)| {
                 // A row whose JSON this build cannot read is left out rather than answered as
-                // empty: the page is short, which a head reads as *nothing further above*.
+                // empty: the page is short, and the row's own `seq` travels with the ones that
+                // follow it so a skipped row does not slide the page.
                 let item: letibot_transcript::TranscriptItem = serde_json::from_str(&json).ok()?;
-                Some(letibot_sessionlog::view::SnapshotItem {
-                    item_id,
-                    kind,
-                    // A paging head draws these rows and asks nothing about their ledger or
-                    // their clock, and the store keeps neither per row here.
-                    ledger_head: String::new(),
-                    ts: 0,
-                    item: Some(item),
-                    citations: Vec::new(),
-                })
+                Some((
+                    seq as usize,
+                    letibot_sessionlog::view::SnapshotItem {
+                        item_id,
+                        kind,
+                        // A paging head draws these rows and asks nothing about their ledger.
+                        ledger_head: String::new(),
+                        ts: created_at,
+                        item: Some(item),
+                        citations: Vec::new(),
+                    },
+                ))
             })
             .collect()
     }

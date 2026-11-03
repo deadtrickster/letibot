@@ -2457,18 +2457,18 @@ impl Store {
             .optional()?)
     }
 
-    /// A page of rows by ordinal, in order: `(seq, item_id, kind, item_json)`. The read behind a
-    /// head scrolling above its own window, and one query because a page asked for a row at a time
-    /// is a page of round trips.
+    /// A page of rows by ordinal, in order: `(seq, item_id, kind, item_json, created_at)`. The read
+    /// behind a head scrolling above its own window, and one query because a page asked for a row at
+    /// a time is a page of round trips.
     pub fn rows_json_from(
         &self,
         transcript_id: &str,
         from: u32,
         count: u32,
-    ) -> Result<Vec<(u32, String, String, String)>> {
+    ) -> Result<Vec<(u32, String, String, String, u64)>> {
         let conn = self.conn();
         let mut st = conn.prepare(
-            "SELECT seq, item_id, kind, item_json FROM transcript_item\n              WHERE transcript_id = ?1 AND seq >= ?2 ORDER BY seq ASC LIMIT ?3",
+            "SELECT seq, item_id, kind, item_json, created_at FROM transcript_item\n              WHERE transcript_id = ?1 AND seq >= ?2 ORDER BY seq ASC LIMIT ?3",
         )?;
         let rows = st.query_map(params![transcript_id, from as i64, count as i64], |r| {
             Ok((
@@ -2476,6 +2476,7 @@ impl Store {
                 r.get::<_, String>(1)?,
                 r.get::<_, String>(2)?,
                 r.get::<_, String>(3)?,
+                r.get::<_, i64>(4)? as u64,
             ))
         })?;
         let mut out = Vec::new();

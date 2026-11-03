@@ -220,14 +220,19 @@ fn a_page_of_rows_is_read_in_order_with_its_ids_and_kinds() {
     }
 
     let page = s.rows_json_from(&tr, 1, 2).unwrap();
-    let ids: Vec<&str> = page.iter().map(|(_, id, _, _)| id.as_str()).collect();
+    let ids: Vec<&str> = page.iter().map(|(_, id, _, _, _)| id.as_str()).collect();
     assert_eq!(ids, ["it-1", "it-2"], "the page is the ordinals asked for");
     assert!(
-        page.iter().all(|(_, _, kind, _)| kind == "assistant"),
+        page.iter().all(|(_, _, kind, _, _)| kind == "assistant"),
         "the kind rides with the row: a head draws it, it does not read the JSON to find out"
     );
     let back: TranscriptItem = serde_json::from_str(&page[0].3).unwrap();
     assert!(matches!(back, TranscriptItem::Assistant { ref text, .. } if text == "row 1"));
+    // The clock the row was written at, so a paged row draws the time every other row does.
+    assert!(
+        page.iter().all(|(_, _, _, _, at)| *at > 0),
+        "a paged row came back with no clock"
+    );
 
     // A page that starts past the end is empty, and a short one is short rather than padded.
     assert!(s.rows_json_from(&tr, 9, 4).unwrap().is_empty());

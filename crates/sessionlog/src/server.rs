@@ -282,6 +282,11 @@ pub const MAX_FETCH_ROW: usize = 64 * 1024;
 /// two of scrollback, and the cap is the daemon's because the rows are read in the daemon.
 pub const MAX_FETCH_ROWS: usize = 256;
 
+/// The most bytes of row text one `FetchRows` may answer, whatever the head asked for - the same
+/// reason [`MAX_FETCH_ROW`] has one, one frame up: a page of 256 rows of a megabyte each is a
+/// quarter-gigabyte frame, and the memory it is built in is the daemon's.
+pub const MAX_FETCH_BYTES: usize = 1024 * 1024;
+
 /// The nearest character boundary at or below `at`, for slicing a body: a byte window can land
 /// inside a multi-byte character.
 fn clamp_char(s: &str, at: usize) -> usize {
@@ -1281,7 +1286,7 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                     continue;
                 };
                 let want = count.min(MAX_FETCH_ROWS);
-                let mut rows: Vec<crate::view::SnapshotItem> = Vec::new();
+                let mut rows: Vec<(usize, crate::view::SnapshotItem)> = Vec::new();
                 let mut row = from;
                 while rows.len() < want {
                     let Some(item) = hub.row_at(row) else {
@@ -1290,13 +1295,30 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                         rows.extend(registry.rows_from_store(&session_id, row, want - rows.len()));
                         break;
                     };
-                    rows.push(item);
+                    rows.push((row, item));
                     row += 1;
                 }
+                // **The page is bounded in BYTES as well as rows, and it gives up its OLDEST rows.**
+                // The rows nearest the window are the ones the reader scrolling up is next to, and a
+                // page that kept its head would no longer join the window it was asked for.
+                let mut bytes = 0;
+                let mut keep = 0;
+                for (_, it) in rows.iter().rev() {
+                    let b = it.item.as_ref().map_or(0, |i| i.bytes());
+                    if keep > 0 && bytes + b > MAX_FETCH_BYTES {
+                        break;
+                    }
+                    bytes += b;
+                    keep += 1;
+                }
+                rows.drain(..rows.len().saturating_sub(keep));
+                // The ordinal the page really starts at: a source that could not hand over its first
+                // row answered from a later one, and the head places a page by what it is told here.
+                let starts = rows.first().map(|(at, _)| *at).unwrap_or(from);
                 let f = ServerFrame::RowsFetched {
                     session_id: hub.session_id(),
-                    from,
-                    rows,
+                    from: starts,
+                    rows: rows.into_iter().map(|(_, r)| r).collect(),
                 };
                 writer.lock().unwrap().write(&f)?;
             }

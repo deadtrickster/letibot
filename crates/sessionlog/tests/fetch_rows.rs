@@ -60,8 +60,19 @@ impl RowSource for Stored {
             .map(letibot_sessionlog::body_of)
     }
 
-    fn row_items(&self, _session_id: &str, from: usize, count: usize) -> Vec<SnapshotItem> {
-        self.0.iter().skip(from).take(count).cloned().collect()
+    fn row_items(
+        &self,
+        _session_id: &str,
+        from: usize,
+        count: usize,
+    ) -> Vec<(usize, SnapshotItem)> {
+        self.0
+            .iter()
+            .enumerate()
+            .skip(from)
+            .take(count)
+            .map(|(at, r)| (at, r.clone()))
+            .collect()
     }
 }
 
@@ -192,6 +203,110 @@ fn a_row_the_view_trimmed_comes_from_the_store() {
     let (_, rows) = page(&mut w, &mut r, 2, 2);
     let ids: Vec<&str> = rows.iter().map(|r| r.item_id.as_str()).collect();
     assert_eq!(ids, ["i2", "i3"]);
+}
+
+/// **A page is bounded in bytes as well as in rows.** `MAX_FETCH_ROWS` alone let four rows of a
+/// megabyte each into one frame, and the memory a frame is built in is the daemon's.
+#[test]
+fn a_page_is_bounded_in_bytes_and_keeps_the_rows_nearest_the_window() {
+    let registry = start();
+    let big = "x".repeat(1024 * 1024);
+    for i in 0..4 {
+        a_row_with_a_body(&registry, "s-1", &format!("i{i}"), &big);
+    }
+    let (mut w, mut r) = attach(&registry);
+
+    let (from, rows) = page(&mut w, &mut r, 0, 4);
+    let bytes: usize = rows
+        .iter()
+        .map(|row| row.item.as_ref().map_or(0, |i| i.bytes()))
+        .sum();
+    assert!(
+        bytes <= letibot_sessionlog::server::MAX_FETCH_BYTES,
+        "{} bytes of row text in one page, over the {} byte cap",
+        bytes,
+        letibot_sessionlog::server::MAX_FETCH_BYTES
+    );
+    // And what it gave up is its OLDEST rows: a page that kept its head would no longer join the
+    // window the reader asked above.
+    assert_eq!(
+        rows.len(),
+        1,
+        "the fixture's page is not one row: {}",
+        rows.len()
+    );
+    assert_eq!(from, 3, "the page does not say which ordinal it starts at");
+    assert_eq!(rows[0].item_id, "i3");
+}
+
+/// **A page says the ordinal it really starts at.** A source that cannot hand over the first row it
+/// was asked for answers from a later one, and echoing the request labels every row of the page one
+/// place to the left.
+#[test]
+fn a_page_that_starts_late_names_the_row_it_starts_at() {
+    struct Late(Vec<SnapshotItem>);
+
+    impl RowSource for Late {
+        fn row_body(&self, _session_id: &str, row: usize) -> Option<String> {
+            self.0
+                .get(row)
+                .and_then(|r| r.item.as_ref())
+                .map(letibot_sessionlog::body_of)
+        }
+
+        /// The first row is one this source cannot read, so it is left out and the rest stand.
+        fn row_items(
+            &self,
+            _session_id: &str,
+            from: usize,
+            count: usize,
+        ) -> Vec<(usize, SnapshotItem)> {
+            self.0
+                .iter()
+                .enumerate()
+                .skip(from)
+                .take(count)
+                .filter(|(at, _)| *at != 0)
+                .map(|(at, r)| (at, r.clone()))
+                .collect()
+        }
+    }
+
+    let registry = Registry::with_bounds(
+        letibot_sessionlog::LogBounds::default(),
+        ViewBounds {
+            items: 0,
+            ..ViewBounds::default()
+        },
+    );
+    registry
+        .create("s-1", "one", SessionWiring::default())
+        .expect("create");
+    let all: Vec<SnapshotItem> = (0..3)
+        .map(|i| SnapshotItem {
+            item_id: format!("i{i}"),
+            kind: "user".into(),
+            ledger_head: String::new(),
+            ts: 0,
+            item: Some(TranscriptItem::User {
+                speaker: Default::default(),
+                parts: vec![letibot_transcript::UserPart::Text {
+                    text: format!("body {i}"),
+                }],
+            }),
+            citations: Vec::new(),
+        })
+        .collect();
+    registry.set_row_source(Arc::new(Late(all)));
+
+    let (mut w, mut r) = attach(&registry);
+    let (from, rows) = page(&mut w, &mut r, 0, 3);
+    let ids: Vec<&str> = rows.iter().map(|row| row.item_id.as_str()).collect();
+    assert_eq!(ids, ["i1", "i2"], "the page is the rows the source had");
+    assert_eq!(
+        from, 1,
+        "the page was labelled from the request, not from the row it starts at"
+    );
 }
 
 /// A session the daemon does not hold is refused by name, the rule `FetchRow` follows: an empty

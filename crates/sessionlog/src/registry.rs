@@ -489,15 +489,17 @@ pub trait RowSource: Send + Sync {
     /// Not an empty string for a row that exists and is empty - the two must not look alike.
     fn row_body(&self, session_id: &str, row: usize) -> Option<String>;
 
-    /// Whole rows from `from`, at most `count`, in ordinal order, stopping at the first ordinal
-    /// this source cannot answer. A default of none, so a registry with no store answers an empty
-    /// page rather than pretending the conversation began there.
+    /// Whole rows from `from`, at most `count`, each with the ordinal it was read at, in ordinal
+    /// order, stopping at the first ordinal this source cannot answer. The ordinal travels with the
+    /// row because a source may skip one - a row it cannot read - and the page is placed by the
+    /// ordinal it starts at, not by the one it was asked for. A default of none, so a registry with
+    /// no store answers an empty page rather than pretending the conversation began there.
     fn row_items(
         &self,
         _session_id: &str,
         _from: usize,
         _count: usize,
-    ) -> Vec<crate::view::SnapshotItem> {
+    ) -> Vec<(usize, crate::view::SnapshotItem)> {
         Vec::new()
     }
 }
@@ -1104,7 +1106,7 @@ impl Registry {
         session_id: &str,
         from: usize,
         count: usize,
-    ) -> Vec<crate::view::SnapshotItem> {
+    ) -> Vec<(usize, crate::view::SnapshotItem)> {
         // Cloned out for `row_body_from_store`'s reason: no lock is held across a SQLite read.
         let source = self.rows.lock().unwrap_or_else(|e| e.into_inner()).clone();
         source
