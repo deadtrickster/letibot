@@ -280,6 +280,47 @@ mod tests {
         }
     }
 
+    /// The same fact on the pair that matters: the payload comes from `ToolRuntime`, not from a
+    /// fixture, and it is the model's bytes whole and once. A renderer that wrapped it again
+    /// would put one envelope around another.
+    #[test]
+    fn the_model_reads_the_runtime_s_payload_once() {
+        let result = letibot_tools::ToolResult::new(
+            "call-7",
+            "bash",
+            letibot_transcript::ToolOutcome::Failed {
+                reason: "exit 2".into(),
+            },
+        )
+        .with_payload("ls: /nope: No such file or directory");
+        let item = letibot_tools::ToolRuntime::transcript_item(&result);
+        let TranscriptItem::ToolResult { payload, .. } = &item else {
+            unreachable!("transcript_item builds a tool result")
+        };
+        let prefix = StablePrefix {
+            system: "be terse".into(),
+            tools_json: vec![],
+        };
+        for d in [Dialect::Glm, Dialect::Qwen] {
+            let got = spans_to_string(
+                &d.wiring(None)
+                    .renderer
+                    .render(&prefix, std::slice::from_ref(&item)),
+            );
+            assert_eq!(
+                got.matches(payload.as_str()).count(),
+                1,
+                "{}: the runtime's payload is not the model's bytes once: {got}",
+                d.name()
+            );
+            assert!(
+                !got.contains("NO_RESULT"),
+                "{}: a second envelope was wrapped around the payload: {got}",
+                d.name()
+            );
+        }
+    }
+
     #[test]
     fn a_system_update_is_renderable_on_both() {
         // On Qwen a `System` item past position 0 makes the shipped template raise.
