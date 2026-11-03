@@ -6815,6 +6815,7 @@ turn arms a wake (`crates/harnessd/src/cli.rs:1708`), so the line a reader sees 
 whatever it will become, and the live view asked for mid-session (`crates/harnessd/src/facts.rs`,
 the model's own `harness_view`) carries the state as it happened.
 ## A wake that has not run yet does not survive its transcript being replaced — **CLOSED on branch `wake-fork-rearm`, filed 2026-10-04, split out of the stall entry; a fork is a second door into the open's own recovery, so a settlement nobody was told is re-armed into the transcript the fork opened**
+## A wake that has not run yet does not survive its transcript being replaced — **CLOSED on branch `remote/63162000`, filed 2026-10-04, split out of the stall entry; a fork is a second door into the open's own recovery, so a settlement nobody was told is re-armed into the transcript the fork opened**
 
 `j19` and `j56` are the two measured cases: both settled while `s-1791017230755743833#t2` was current,
 neither notice is in `#t2`, and neither is in `#t3` either. The daemon's wake submits the notice as a
