@@ -6476,3 +6476,69 @@ has not come down to rather than at the session's end, and the head's one door f
 `FetchRows` by ordinal. Nothing about the daemon changed. The one thing in this entry that was
 written down and not built is the **log-ring tier** (b.2): the store answers, and the middle tier
 was an optimisation nobody measured the need for.
+
+---
+
+## T20 — Where the assembled parts did not fit — **CLOSED on branch `remote/80877000`, filed 2026-09-09; all eight findings are fixed, and the three that were in code with no test naming them now have one, each proved red by reverting the fix**
+
+**integration findings, several serious; items 2, 6 and 7 are fixed with their tests, and item 5's
+fourth trait method is built (`PromptRenderer::render_incremental_by_item`, called from
+`crates/turn/src/engine.rs:460`, so Qwen's consecutive tool results merge into one user turn with
+each item's end recorded); items 1, 3 and 4 were in code with no test naming them, and now are.**
+
+1. **Double envelope.** `ToolRuntime::transcript_item` renders §8.2's `NO_RESULT`
+   envelope into `payload`, and **both** dialect renderers wrapped it again — the model
+   received two. Fixed: renderers emit `payload` verbatim.
+   — fixed in d81863e8, tests `a_tool_result_is_wrapped_exactly_once`
+   (`crates/harnessd/src/dialect.rs:250`, the renderer against a hand-written envelope) and
+   `the_model_reads_the_runtime_s_payload_once` (`:287`, the payload taken from
+   `ToolRuntime::transcript_item`, so the runtime and the renderer are held together). Restoring
+   the wrap in the two renderers fails both tests, with the model's own prompt printed carrying two.
+2. **`Registry::tools_json()` is not prompt-ready** and this one was nearly invisible.
+   It emits `,`/`:`; both templates use HF `tojson`'s `, `/`: `. Using it directly for
+   `StablePrefix::tools_json` differs in **the first bytes of the stable prefix** — a
+   cold prefill every single turn, with nothing in the tree to catch it. Now routed
+   through the dialect's own tool-JSON function, with a test asserting the two differ.
+   — ✓ fixed in e2c00056, test `separators_match_the_shipped_template`
+   (`crates/dialect-glm/src/json.rs:87` pins HF's `, ` / `: `, which `serde_json` does not emit).
+3. **C10 was unmeasurable as specified** — `prompt_tokens − cached_tokens` from
+   `TurnMetrics` alone is a tautology. Needed the server's own frame numbers.
+   — fixed in d81863e8, test `the_two_prompt_counts_are_the_server_s_frame_numbers`
+   (`crates/turn/tests/engine_decisions.rs:516`). It submits 18 tokens to a canned frame that
+   counted 501, and asserts `prompt_tokens_server` is 501 and `prompt_processed` is the frame's
+   `prompt_n`; reading either off our own count and our own subtraction fails it (18 against 501).
+4. ~~**`ToolRuntime` is not `Send`** — `Gate` lacks `Send + Sync`~~ — **FIXED, verified
+   2026-09-10:** `crates/tools/src/runtime.rs:275` reads `pub trait Gate: Send + Sync`.
+   — fixed in 229555bf; the bound is at `crates/tools/src/runtime.rs:621` now, and
+   `a_runtime_and_its_gate_cross_a_thread_boundary` (`:2119`) names it. Dropping `Send + Sync` from
+   the trait fails that test with four `E0277`s and nothing else in the crate.
+5. **`Session::append_items` renders one item at a time**, so Qwen's consecutive tool
+   results cannot merge into one user turn without a fourth trait method. Declared as a
+   gate divergence.
+   — ✓ fixed: the fourth method is `PromptRenderer::render_incremental_by_item`
+   (`crates/turn/src/renderer.rs:47`), which returns each item's span `ends`, and the engine
+   calls it (`crates/turn/src/engine.rs:460, :590`); `QwenRenderer::render_incremental_by_item`
+   (`crates/dialect-qwen/src/render.rs:138`) writes one user turn per run of results and its own
+   tests assert the run and the ends (`:873`, `:945`), so the ledger keeps one row per item
+   under a prompt that carries one turn per run.
+6. **Qwen's `SystemUpdateMode` is `Envelope`, not `InHistory`** — its template *raises*
+   on a mid-history system message, so §5.3's conservative default is the only
+   renderable form. The model can and did argue with it.
+   — ✓ fixed in d81863e8, test `a_mid_history_system_change_is_not_a_system_message_here`
+   (it asserts `system_update_mode == Envelope`, `crates/dialect-qwen/src/lib.rs:242`).
+7. **`ask_code`/`ask_corpus` return `NotRun`, not `Abstained`** — nothing ran, which is
+   a different fact. The daemon's startup disclosure says so.
+   — ✓ fixed in 66077505, test `with_an_adjudicator_and_nothing_attached_the_tool_names_what_is_missing`
+   (the refusal is `ToolOutcome::NotRun`, `crates/tools/tests/external.rs:117-160`).
+8. The `/apply-template` oracle caught a renderer bug **no unit test would have**: an
+   `Assistant` following a `Reasoning` opened a second message.
+   — fixed in e2c00056: the Assistant arm closes the think block in place rather than opening a
+   second message (`crates/dialect-glm/src/render.rs:246-256`), and the corpus gates it —
+   `python3 tests/fidelity/run_gate.py --only assistant-reasoning` renders every prefix of
+   `tests/fidelity/fixtures/assistant-reasoning.json` against CPython Jinja2 and answers 10/10
+   byte-identical with no server, no model and no GPU. Only the `--interop` diff against
+   `/apply-template` needs one.
+
+**Landed on `remote/80877000`:** three tests, one commit per crate (tools, harnessd, turn), each
+measured RED first by reverting the line it holds and then restored. No behaviour changed with
+them: the three reverts were the only edits, and each was undone before its commit.
