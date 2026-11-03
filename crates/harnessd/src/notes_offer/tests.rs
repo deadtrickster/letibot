@@ -361,7 +361,13 @@ fn nothing_is_said_when_nothing_is_earned() {
     );
     let mut offers = Offers::new();
     assert!(
-        !offers.compose(&f.reader(), &f.global, &f.box_dirs, &section, &prompt(ABOUT)),
+        !offers.compose(
+            &f.reader(),
+            &f.global,
+            &f.box_dirs,
+            &section,
+            &prompt(ABOUT)
+        ),
         "a note already in the prompt is not offered back"
     );
 
@@ -373,7 +379,13 @@ fn nothing_is_said_when_nothing_is_earned() {
     );
     let mut offers = Offers::new();
     assert!(
-        offers.compose(&f.reader(), &f.global, &f.box_dirs, &indexed, &prompt(ABOUT)),
+        offers.compose(
+            &f.reader(),
+            &f.global,
+            &f.box_dirs,
+            &indexed,
+            &prompt(ABOUT)
+        ),
         "an indexed note is one a `read` would add something to"
     );
 }

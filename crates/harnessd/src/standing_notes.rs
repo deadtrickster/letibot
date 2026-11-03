@@ -139,7 +139,11 @@ fn md_in(reader: &Reader<'_>, dir: &Path) -> Vec<(PathBuf, String)> {
         .into_iter()
         .filter(|e| !e.is_dir && e.name.ends_with(".md"))
         .collect();
-    entries.sort_by(|a, b| b.modified.cmp(&a.modified).then_with(|| a.name.cmp(&b.name)));
+    entries.sort_by(|a, b| {
+        b.modified
+            .cmp(&a.modified)
+            .then_with(|| a.name.cmp(&b.name))
+    });
     entries
         .into_iter()
         .filter_map(|e| {

@@ -2093,8 +2093,7 @@ impl Harness {
         let declared = crate::standing_notes::preloaded(parts.skills.as_ref(), &cfg.skills);
         // Through the backend the session's tools use: a placed session's notes are on that host,
         // and this is the first prompt they have to reach.
-        let notes_files =
-            crate::standing_notes::Reader::new(&*runtime.backend, &cfg.workspace);
+        let notes_files = crate::standing_notes::Reader::new(&*runtime.backend, &cfg.workspace);
         let standing = crate::standing_notes::section_with_skills(
             &notes_files,
             &cfg.global_notes(),

@@ -267,8 +267,7 @@ fn a_note_the_tool_writes_is_one_the_reader_injects() {
     // directions of the verb set, not just on the happy path.
     let r = call(r#"{"action":"append","name":"qwen-tail","text":"re-measured: still true"}"#);
     assert!(r.is_grounded(), "{}", r.render());
-    let s =
-        standing_notes::section(&files, global.path(), &no_box(global.path()), &vocab).unwrap();
+    let s = standing_notes::section(&files, global.path(), &no_box(global.path()), &vocab).unwrap();
     assert!(
         s.contains("re-measured: still true"),
         "the appended text is what the reader reads: {s}"

@@ -163,7 +163,10 @@ impl<'a> NoteFs<'a> {
 const READ_PAGE: usize = 64;
 
 /// One answer from the substrate, as a note reader needs it: absent, text, or why neither.
-fn text_of(path: &Path, answer: Result<Vec<u8>, crate::backend::BackendError>) -> Result<Option<String>, String> {
+fn text_of(
+    path: &Path,
+    answer: Result<Vec<u8>, crate::backend::BackendError>,
+) -> Result<Option<String>, String> {
     match answer {
         Ok(bytes) => match String::from_utf8(bytes) {
             Ok(text) => Ok(Some(text)),
@@ -749,7 +752,10 @@ impl NotesTool {
             return Invocation::ok(out);
         }
         Invocation::failed(
-            format!("the standing notes could not be read: {}", unread.join("; ")),
+            format!(
+                "the standing notes could not be read: {}",
+                unread.join("; ")
+            ),
             format!(
                 "{out}\nThis is not a report that the notes are empty: the source(s) named above \
                  could not be read at all, so what they hold is unknown. A read verb here \
@@ -905,7 +911,10 @@ impl NotesTool {
             let text = match text {
                 Ok(Some(text)) => text,
                 Ok(None) => {
-                    unread.push(format!("`{}` moved while it was being read", note.path.display()));
+                    unread.push(format!(
+                        "`{}` moved while it was being read",
+                        note.path.display()
+                    ));
                     continue;
                 }
                 Err(why) => {
