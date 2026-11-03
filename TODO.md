@@ -2190,7 +2190,7 @@ session. The count is there to say it with; no seam prints it yet.
 
 ---
 
-## R13 — cloud GLM, DeepSeek and Grok as turn backends — **SETTLED 2026-09-14 (claude-lab2x1), one knob open**
+## R13 — cloud GLM, DeepSeek and Grok as turn backends — **SETTLED 2026-09-14 (claude-lab2x1); left: nothing in the tree has run against a real provider — every provider test is a fake server (`crates/provider/tests/fake_provider.rs`), and the entry's `Done when` asks for live tests behind the key — and the providers' prompt caches are still only relied on, `PrefixGuarantee::Asserted` (`crates/backend/src/lib.rs:224`) being the whole claim**
 
 Done: `crates/provider`, `MessagesBackend` in `letibot-backend`,
 `TurnEngine::run_turn_messages`, `--provider/--api-key/--thinking`, the `provider`
