@@ -1272,8 +1272,7 @@ mod tests {
         assert!(
             lines
                 .iter()
-                .any(|l| l
-                    .starts_with("mine  the gate is red · 1 waiting · unserved")),
+                .any(|l| l.starts_with("mine  the gate is red · 1 waiting · unserved")),
             "{said}"
         );
         assert!(
@@ -1641,10 +1640,7 @@ mod tests {
             .lines()
             .find(|l| l.starts_with("other  "))
             .unwrap_or_else(|| panic!("{said}"));
-        assert_eq!(
-            quiet, "other  no target · 1 waiting · unserved",
-            "{said}"
-        );
+        assert_eq!(quiet, "other  no target · 1 waiting · unserved", "{said}");
         drop(gate::step_guard(&wt));
     }
 
