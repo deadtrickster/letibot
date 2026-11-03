@@ -224,9 +224,10 @@ fn corpus(rows: &[OpenRow]) -> Vec<(PathBuf, String)> {
         .collect()
 }
 
-/// The brief in hand: the person's latest prompt, and the model's own latest words since, with
-/// every `task` prompt that row proposed. Newest first for the cap, because the work being written
-/// down now is at the new end of both.
+/// The brief in hand: every `task` prompt the model's latest row proposed, the person's latest
+/// prompt, and the model's own latest words. The subagent prompt leads because it is the most
+/// specific brief of the three, and the cap falls at the oldest end so the brief being written now
+/// is what survives it.
 pub fn draft(items: &[TranscriptItem]) -> String {
     let mut prompt = String::new();
     let mut said = String::new();
@@ -265,9 +266,9 @@ pub fn draft(items: &[TranscriptItem]) -> String {
             _ => {}
         }
     }
-    let mut out = prompt;
+    let mut out = asked;
+    out.push_str(&prompt);
     out.push_str(&said);
-    out.push_str(&asked);
     // The cut lands on a character boundary, never through one: this string is the person's
     // words plus a subagent prompt, both of which carry multi-byte characters.
     let cut = DRAFT_CHARS.min(out.len());

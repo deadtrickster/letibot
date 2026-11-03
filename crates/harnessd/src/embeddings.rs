@@ -208,4 +208,27 @@ mod tests {
         assert_eq!(a, b);
         assert_eq!(skills.cosine("a-note", &a), None);
     }
+
+    /// The box's own file is where the section comes from, so the path from `leticode.toml` to an
+    /// embedder is the thing this proves: a table the seat's reader refuses would leave the mode
+    /// unwritable, however correct the embeddings parser is.
+    #[test]
+    fn a_project_file_carrying_the_section_loads_and_opens_it() {
+        let dir = Dir::new("file");
+        let model = dir.path().join("model");
+        letibot_embeddings::testing::tiny_bert(&model).expect("the fixture model");
+        let file = section(
+            &dir,
+            &format!(
+                "[embeddings]\nmode = \"internal\"\nmodel = \"{}\"\n",
+                model.display()
+            ),
+        );
+        let config = leticode_config::LeticodeConfig::load(&file).expect("the file loads");
+        assert_eq!(config.path.as_deref(), Some(file.as_path()));
+        let embedder = build(config.path.as_deref().expect("a path"), Some(dir.path()))
+            .expect("no fault")
+            .expect("an embedder");
+        assert_eq!(embedder.model(), model.display().to_string());
+    }
 }

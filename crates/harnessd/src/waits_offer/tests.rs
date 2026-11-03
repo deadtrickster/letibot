@@ -204,13 +204,7 @@ fn a_settled_row_is_not_open() {
         TodoStatus::Cancelled,
         TodoStatus::Postponed,
     ] {
-        assert!(
-            !open(&TodoItem {
-                status: status.clone(),
-                ..row(ROW)
-            }),
-            "{status:?}"
-        );
+        assert!(!open(&TodoItem { status, ..row(ROW) }), "{status:?}");
     }
 }
 

@@ -1577,7 +1577,11 @@ impl Harness {
         let mut done = crate::done_offer::Offers::new().with_tier(self.cfg.tier());
         done.recall(&self.cfg.daemon_logs(), &self.cfg.session_id);
         // Read once per turn, not per round: the log is a fork, and a turn cannot change history.
-        let done_records = crate::done_offer::records(&self.cfg.workspace);
+        // Only read when the box has an embedder, so a box without one forks nothing.
+        let done_records = match self.cfg.embedder.is_some() {
+            true => crate::done_offer::records(&self.cfg.workspace),
+            false => Vec::new(),
+        };
         // The bodies this session was STARTED with are not news to it. The ones its own rounds load
         // are read per round, below, because they are in the transcript only once that round ran.
         skill_offers.skip_names(self.cfg.skills.iter());
