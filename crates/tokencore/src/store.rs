@@ -2301,6 +2301,23 @@ impl Store {
     where
         I: IntoIterator<Item = (&'a TranscriptItem, &'a LedgerRow, &'a [TokenId])>,
     {
+        self.append_items_with_context(transcript_id, first_seq, rows, None)
+    }
+
+    /// [`Store::append_items`], and the session's context row in the last chunk's commit when
+    /// `context` is given: `(session id, tokens, cached, ledger)`, as [`Store::set_context`] takes
+    /// them. One fsync instead of two per round. A missing session row is not an error here, as
+    /// the rows are the record and the context is a measurement.
+    pub fn append_items_with_context<'a, I>(
+        &self,
+        transcript_id: &str,
+        first_seq: u32,
+        rows: I,
+        context: Option<(&str, Option<u64>, Option<u64>, Option<u64>)>,
+    ) -> Result<()>
+    where
+        I: IntoIterator<Item = (&'a TranscriptItem, &'a LedgerRow, &'a [TokenId])>,
+    {
         let rows: Vec<_> = rows.into_iter().collect();
         // The same anchor [`Store::append_item`] checks, once for the run: the rows inside a
         // chunk continue each other by the trigger's rule, and every later chunk continues
@@ -2308,8 +2325,10 @@ impl Store {
         if let Some((_, row, _)) = rows.first() {
             self.assert_anchored(transcript_id, first_seq, row.tok_offset)?;
         }
+        let chunks = rows.chunks(Self::APPEND_CHUNK).count();
         for (c, chunk) in rows.chunks(Self::APPEND_CHUNK).enumerate() {
             let base = first_seq + (c * Self::APPEND_CHUNK) as u32;
+            let last = c + 1 == chunks;
             // Serialised once, outside the retry: a busy retry re-runs only SQL.
             let mut encoded = Vec::with_capacity(chunk.len());
             for (item, row, tokens) in chunk {
@@ -2345,6 +2364,18 @@ impl Store {
                             ))
                         }
                     })?;
+                }
+                if let (true, Some((id, tokens, cached, ledger))) = (last, context) {
+                    tx.execute(
+                        "UPDATE session SET context_tokens = ?2, context_cached = ?3, \
+                         context_ledger = ?4 WHERE id = ?1",
+                        params![
+                            id,
+                            tokens.map(|t| t as i64),
+                            cached.map(|c| c as i64),
+                            ledger.map(|l| l as i64)
+                        ],
+                    )?;
                 }
                 Ok(())
             })?;

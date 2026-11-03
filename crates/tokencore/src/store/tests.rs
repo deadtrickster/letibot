@@ -2069,6 +2069,52 @@ fn a_run_takes_the_write_lock_once_per_chunk_not_once_per_row() {
     );
 }
 
+/// **The round's context row rides the round's last chunk: one commit, not two.** The pair is read
+/// back whole, and a session row that is not there does not refuse the rows.
+#[test]
+fn the_context_row_rides_the_rows_commit() {
+    let s = store();
+    let (tr, _) = seeded(&s);
+    let commits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    {
+        let commits = commits.clone();
+        s.connection()
+            .commit_hook(Some(move || {
+                commits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                false
+            }))
+            .expect("the commit hook installs");
+    }
+    let count = || commits.load(std::sync::atomic::Ordering::Relaxed);
+
+    let mut ledger = TokenLedger::new(&tr, &[1, 2, 3, 4]).unwrap();
+    let rows = rows_for(&mut ledger, 0, 3);
+    let before = count();
+    s.append_items_with_context(
+        &tr,
+        0,
+        borrowed(&rows),
+        Some(("sess-1", Some(900), Some(400), Some(77))),
+    )
+    .unwrap();
+    assert_eq!(count() - before, 1, "rows and context are one commit");
+    let row = s.session("sess-1").unwrap().unwrap();
+    assert_eq!(
+        (row.context_tokens, row.context_cached, row.context_ledger),
+        (Some(900), Some(400), Some(77))
+    );
+
+    let more = rows_for(&mut ledger, 3, 2);
+    s.append_items_with_context(
+        &tr,
+        3,
+        borrowed(&more),
+        Some(("no-such-session", Some(1), None, None)),
+    )
+    .unwrap();
+    assert_eq!(s.item_count(&tr).unwrap(), 5);
+}
+
 fn job_store(tag: &str) -> (std::path::PathBuf, Store) {
     let dir = std::env::temp_dir().join(format!(
         "letibot-jobs-{tag}-{}-{}",
