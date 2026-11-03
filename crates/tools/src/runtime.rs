@@ -791,8 +791,8 @@ pub struct Role {
 
 /// The default ceiling on a role's tools. Past a handful of tools small models get worse at
 /// choosing between them, so the ceiling is a hard stop rather than a guideline, and it was
-/// raised once for a seat that carries a dozen.
-pub const DEFAULT_MAX_TOOLS: usize = 16;
+/// raised for a seat that carries a dozen and again for `recall`, the compacted base's door.
+pub const DEFAULT_MAX_TOOLS: usize = 17;
 
 impl Role {
     pub fn new(name: &str, tools: &[&str]) -> Self {
@@ -1056,7 +1056,7 @@ pub mod roles {
                 "task_start",
                 // `hosts`, beside `task`: this seat can place a child on another machine, so it
                 // has to be able to see which machines there are. Read-only, and the seat has the
-                // room to the last one: sixteen tools against `DEFAULT_MAX_TOOLS` (16).
+                // room for it: sixteen tools against `DEFAULT_MAX_TOOLS` (17).
                 "hosts",
             ],
         )
