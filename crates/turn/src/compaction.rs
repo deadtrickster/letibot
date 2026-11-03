@@ -772,6 +772,7 @@ fn compact_turn(
         summary,
         tool_calls,
         truncated,
+        ..
     } = record;
     let reusable = match &ok.metrics.prefix_check {
         crate::prefix::PrefixCheck::Held {
@@ -803,6 +804,10 @@ pub struct Harvest {
     pub summary: String,
     pub tool_calls: usize,
     pub truncated: bool,
+    /// How many whole units the span lost before this record was asked for, and the bytes of body
+    /// they cost: what the summariser was never shown, and so what the record cannot name.
+    pub evicted: usize,
+    pub gone: usize,
 }
 
 pub fn harvest(items: &[TranscriptItem]) -> Harvest {
@@ -1646,13 +1651,15 @@ mod overrun_planning {
 }
 
 /// Summarise an over-budget conversation into a scratchpad, in two halves: `plan_overrun` decides
-/// when, and this is the two summary turns that make the new base.
+/// when, and this is the two summary turns that make the new base. `rows` is the plan the session
+/// is working from, which is what the eviction may not touch.
 pub fn summarise_overrun(
     engine: &mut TurnEngine,
     prefix: &StablePrefix,
     scratch_id: &str,
     items: &[TranscriptItem],
     plan: &OverrunPlan,
+    rows: &[String],
     sink: &mut dyn EventSink,
     answerer: &Answerer<'_>,
 ) -> Result<Harvest, TurnFailure> {
@@ -1665,6 +1672,7 @@ pub fn summarise_overrun(
         prefix,
         &format!("{scratch_id}-tail"),
         &items[*tail_from..],
+        rows,
         1,
         2,
         sink,
@@ -1675,6 +1683,7 @@ pub fn summarise_overrun(
         prefix,
         &format!("{scratch_id}-old"),
         &items[..*cut],
+        rows,
         2,
         2,
         sink,
@@ -1704,6 +1713,8 @@ pub fn summarise_overrun(
         summary,
         tool_calls: old.tool_calls + tail.tool_calls,
         truncated: old.truncated || tail.truncated,
+        evicted: old.evicted + tail.evicted,
+        gone: old.gone + tail.gone,
     })
 }
 
@@ -1777,12 +1788,17 @@ impl EventSink for CompactionSink<'_> {
 
 /// One summary turn over one slice, in a throwaway session. `half` and `halves` are what the
 /// caller knows, and the progress line is built from them.
+///
+/// The slice is REDUCED first: the bodies whose units cannot be current, whose subagent answered,
+/// or whose call is finished go as stubs before the record is asked about anything. What the
+/// record is asked, then, is what cannot be evicted.
 #[allow(clippy::too_many_arguments)] // the slice and its place among the halves are the caller's facts
 fn summarise_one(
     engine: &mut TurnEngine,
     prefix: &StablePrefix,
     scratch_id: &str,
     slice: &[TranscriptItem],
+    plan: &[String],
     half: u64,
     halves: u64,
     sink: &mut dyn EventSink,
@@ -1791,9 +1807,10 @@ fn summarise_one(
     // The rows go to a `NullSink` and stay there; see `CompactionSink` for why that is
     // the right answer for the slice and the wrong one for the progress.
     let mut quiet = NullSink;
+    let reduced = crate::evict::reduce(slice, plan);
     let mut scratch = engine.open(scratch_id, prefix).map_err(TurnFailure::from)?;
     scratch
-        .append_items(engine, slice, &mut quiet)
+        .append_items(engine, &reduced.items, &mut quiet)
         .map_err(TurnFailure::from)?;
     let instruction = TranscriptItem::System {
         text: SUMMARY_INSTRUCTION.to_string(),
@@ -1831,7 +1848,11 @@ fn summarise_one(
             }
         })
     })?;
-    Ok(harvest(&ok.items))
+    Ok(Harvest {
+        evicted: reduced.units.len(),
+        gone: reduced.gone(),
+        ..harvest(&ok.items)
+    })
 }
 
 /// One half's life on the progress line: published as it begins, carried while the body runs,
@@ -1909,13 +1930,15 @@ pub fn plan_fold(
 }
 
 /// Carry out `plan_fold`: one summary turn over `items[..split]`, returned as the record that
-/// stands in for those items.
+/// stands in for those items. `row` is the plan the session is working from, which is what the
+/// eviction may not touch.
 pub fn summarise_first_half(
     engine: &mut TurnEngine,
     prefix: &StablePrefix,
     scratch_id: &str,
     items: &[TranscriptItem],
     split: usize,
+    rows: &[String],
     sink: &mut dyn EventSink,
     answerer: &Answerer<'_>,
 ) -> Result<Harvest, TurnFailure> {
@@ -1924,6 +1947,7 @@ pub fn summarise_first_half(
         prefix,
         scratch_id,
         &items[..split],
+        rows,
         1,
         1,
         sink,

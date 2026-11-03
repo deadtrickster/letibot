@@ -1022,6 +1022,19 @@ impl Harness {
         out
     }
 
+    /// The rows still owed, as text: what an eviction may not take a body from.
+    fn plan_rows(&self) -> Vec<String> {
+        self.todos
+            .snapshot()
+            .iter()
+            .filter(|r| {
+                use letibot_tokencore::store::TodoStatus;
+                matches!(r.status, TodoStatus::Pending | TodoStatus::InProgress)
+            })
+            .map(|r| r.content.clone())
+            .collect()
+    }
+
     /// Compaction is one summary turn appended to the conversation itself, unless the conversation arrived with
     /// no room to hold one. OVERRUN is arriving over the budget: then the history is summarised somewhere else,
     /// at 200-375 tok/s, which is ten minutes of silence on a local server, and a clean fold a cloud can afford.
@@ -1034,12 +1047,14 @@ impl Harness {
         let prefix = self.prefix.clone();
         let scratch = format!("{}#overrun", self.transcript_id);
         let answerer = Self::answerer(&self.provider, &self.prefix);
+        let rows = self.plan_rows();
         let harvest = summarise_first_half(
             &mut self.engine,
             &prefix,
             &scratch,
             items,
             split,
+            &rows,
             sink,
             &answerer,
         )
@@ -1071,6 +1086,7 @@ impl Harness {
         let prefix_tokens = self.session.ledger.prefix_len() as u64;
         // Ledger units: `per_item` and `prefix_tokens` below are the ledger's.
         let window = self.cfg.planning_window().unwrap_or(u64::MAX);
+        let rows = self.plan_rows();
 
         // The fold the controller named. The ordinary one is the fold the size calls for; the sliced fold is the
         // two-half plan asked for by NAME, since a history that fits one summary call never reaches it by size.
@@ -1324,6 +1340,7 @@ impl Harness {
                                 &scratch,
                                 &items,
                                 &plan,
+                                &rows,
                                 &mut sink,
                                 &answerer,
                             )
@@ -1357,6 +1374,7 @@ impl Harness {
                         &scratch,
                         &items,
                         &plan,
+                        &rows,
                         &mut sink,
                         &answerer,
                     )
