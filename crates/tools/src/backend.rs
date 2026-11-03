@@ -396,7 +396,15 @@ impl HostBackend {
     /// rooted at this project, a PID namespace, a network namespace with no route out, and a
     /// user namespace. Two independent ways to fail, and the error says which.
     pub fn confined(root: impl AsRef<Path>) -> Result<Self, BackendError> {
-        Self::confined_granting(root, Vec::new())
+        Self::confined_granting(
+            root,
+            Vec::new(),
+            crate::exec::seat::SeatView {
+                grants: Vec::new(),
+                egress: crate::exec::confine::Egress::Denied,
+                env: Vec::new(),
+            },
+        )
     }
 
     /// A confined backend whose view also holds `grants`. A grant is a decision with a
@@ -405,34 +413,40 @@ impl HostBackend {
     pub fn confined_granting(
         root: impl AsRef<Path>,
         grants: Vec<crate::exec::confine::Grant>,
+        seat: crate::exec::seat::SeatView,
     ) -> Result<Self, BackendError> {
-        Self::confined_over(
-            root.as_ref(),
-            root.as_ref(),
-            grants,
-            crate::exec::confine::Egress::Denied,
-        )
+        Self::confined_over(root.as_ref(), root.as_ref(), grants, seat)
     }
 
     /// Commands confined to `project`'s view while the file tools keep their reach from
     /// `files_root`. For a seat whose file tools are the whole host by design and whose
-    /// commands still get the boundary. `egress` is the caller's network decision.
+    /// commands still get the boundary. `seat` is the view every platform is threaded with:
+    /// its grants join the caller's, its egress is the network rule, its env points tools at them.
     pub fn confined_over(
         files_root: impl AsRef<Path>,
         project: impl AsRef<Path>,
         grants: Vec<crate::exec::confine::Grant>,
-        egress: crate::exec::confine::Egress,
+        seat: crate::exec::seat::SeatView,
     ) -> Result<Self, BackendError> {
         let base = Self::writable(files_root)?;
         let project = Self::writable(project)?.root;
         let mut view = crate::exec::confine::ViewSpec::project_only(project.clone());
-        for g in grants {
+        let seat_grants = seat
+            .grants
+            .into_iter()
+            .filter(|g| !grants.iter().any(|h| h.path() == g.path()));
+        for g in grants
+            .iter()
+            .cloned()
+            .chain(seat_grants.collect::<Vec<_>>())
+        {
             view = view.granting(g);
         }
-        let confine = crate::exec::confine::probe(view, egress)
+        let confine = crate::exec::confine::probe(view, seat.egress)
             .map_err(|e| BackendError::Io(e.to_string()))?;
         let host = crate::exec::HostProcesses::confined(base.root.clone(), confine)
             .map_err(|e| BackendError::Io(e.to_string()))?;
+        host.set_confined_env(seat.env);
         Ok(HostBackend {
             processes: Some(std::sync::Arc::new(host)),
             ..base

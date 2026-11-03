@@ -2807,34 +2807,10 @@ fn confine_a_checkout(
         Ok(p) => p,
         Err(why) => return (None, Some(why)),
     };
-    // What the host said is there, in the order [`crate::exec::confine::GRANT_CANDIDATES`] lists it:
-    // the probe answers in the shell's glob order, which a reader cannot reason about, and a view
-    // that listed `.gitconfig` before `.cargo` would read as though something had been decided.
-    let mut ordered: Vec<&String> = probe.toolchains.iter().collect();
-    let rank = |p: &str| {
-        crate::exec::confine::GRANT_CANDIDATES
-            .iter()
-            .position(|c| {
-                let leaf = c.trim_start_matches("$HOME");
-                p.ends_with(leaf)
-            })
-            .unwrap_or(usize::MAX)
-    };
-    ordered.sort_by_key(|p| rank(p));
+    // What the host said is there, in the order [`crate::exec::confine::GRANT_CANDIDATES`] lists it.
     let mut view = provisional;
-    for path in ordered {
-        let why = if path.ends_with(".gitconfig") {
-            "the identity a commit is recorded under — without it every `git commit` in this \
-             view fails, and the branch is the whole deliverable"
-        } else {
-            "the toolchain on that machine, so a build does not re-download what is already \
-             installed — READABLE INTO CONTEXT, and read-only: a new dependency cannot be \
-             fetched into it from inside the boundary"
-        };
-        view = view.granting(Grant::ReadOnly {
-            path: PathBuf::from(path),
-            why: why.to_string(),
-        });
+    for g in crate::exec::seat::grants_for(&probe.toolchains) {
+        view = view.granting(g);
     }
     match crate::exec::confine::measured_from_probe(&probe, view, egress.clone()) {
         Ok(b) => (Some(b), None),
@@ -2852,26 +2828,7 @@ fn toolchain_env(confine: Option<&crate::exec::Bwrap>) -> Vec<(String, String)> 
     let Some(boundary) = crate::exec::Confinement::boundary(b) else {
         return Vec::new();
     };
-    env_for_grants(boundary.view.grants.iter().map(|g| g.path()))
-}
-
-/// The variables that point a tool at a granted path, since the view's `$HOME` is fresh.
-fn env_for_grants<'a>(grants: impl Iterator<Item = &'a Path> + Clone) -> Vec<(String, String)> {
-    let mut out = Vec::new();
-    for (var, leaf) in [
-        ("CARGO_HOME", ".cargo"),
-        ("RUSTUP_HOME", ".rustup"),
-        // mise keeps its installs and its state apart, and `mise` itself reads both.
-        ("MISE_DATA_DIR", ".local/share/mise"),
-        ("MISE_STATE_DIR", ".local/state/mise"),
-        // Without it git reads the empty `$HOME` and commits under `user@host`.
-        ("GIT_CONFIG_GLOBAL", ".gitconfig"),
-    ] {
-        if let Some(p) = grants.clone().find(|p| p.ends_with(leaf)) {
-            out.push((var.to_string(), p.display().to_string()));
-        }
-    }
-    out
+    crate::exec::seat::env_for_grants(boundary.view.grants.iter().map(|g| g.path()))
 }
 
 /// The `key=value` lines of [`facts_script`] as a [`Facts`]. Unknown keys are ignored and missing
@@ -6026,10 +5983,11 @@ user     = "root"
             Path::new("/home/dead/.cargo"),
             Path::new("/home/dead/.gitconfig"),
         ];
-        let env = env_for_grants(grants.iter().copied());
+        let env = crate::exec::seat::env_for_grants(grants.iter().copied());
         assert!(env.contains(&("GIT_CONFIG_GLOBAL".into(), "/home/dead/.gitconfig".into())));
         assert!(env.contains(&("CARGO_HOME".into(), "/home/dead/.cargo".into())));
-        let none = env_for_grants([Path::new("/home/dead/.cargo")].iter().copied());
+        let none =
+            crate::exec::seat::env_for_grants([Path::new("/home/dead/.cargo")].iter().copied());
         assert!(none.iter().all(|(k, _)| k != "GIT_CONFIG_GLOBAL"));
     }
 

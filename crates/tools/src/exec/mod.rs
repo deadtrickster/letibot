@@ -19,6 +19,7 @@ pub mod predicate;
 pub mod procs;
 pub mod pty;
 pub mod scope;
+pub mod seat;
 pub mod seatbelt;
 pub mod shell;
 pub mod term;

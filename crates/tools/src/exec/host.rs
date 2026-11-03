@@ -651,6 +651,8 @@ pub struct HostProcesses {
     /// this session's id (so a helper the command runs can find its way back), `SUDO_ASKPASS`
     /// and `HOME`. The request's own pairs come after and win; not the process environment.
     standing_env: Mutex<Vec<(String, String)>>,
+    /// The seat's toolchain pointers: also handed to the boundary, which may clear the environment.
+    confined_env: Mutex<Vec<(String, String)>>,
     /// A directory put in FRONT of the pinned `PATH`: the daemon's shims, so a
     /// `sudo` the session runs is the one that asks the head instead of a tty.
     path_prefix: Mutex<Option<String>>,
@@ -951,6 +953,7 @@ impl HostProcesses {
                 "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".into()
             }),
             standing_env: Mutex::new(Vec::new()),
+            confined_env: Mutex::new(Vec::new()),
             path_prefix: Mutex::new(None),
             monitors: Arc::new(Monitors::new()),
             protected: Mutex::new(Vec::new()),
@@ -1143,6 +1146,10 @@ impl HostProcesses {
 
     /// The pairs every command of this session carries (see the field). Later calls replace
     /// earlier ones wholesale.
+    pub fn set_confined_env(&self, pairs: Vec<(String, String)>) {
+        *self.confined_env.lock().unwrap_or_else(|e| e.into_inner()) = pairs;
+    }
+
     pub fn set_standing_env(&self, pairs: Vec<(String, String)>) {
         *self.standing_env.lock().unwrap_or_else(|e| e.into_inner()) = pairs;
     }
@@ -1351,12 +1358,19 @@ impl ProcessHost for HostProcesses {
         // confinement and has none refuses here, and refusing after the `mkdir` would leave an
         // empty scope directory that a later listing reads as somebody's work.
         let confined = self.confine.read().expect("confinement");
+        let seat_env = self
+            .confined_env
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let plan_env: Vec<(String, String)> =
+            seat_env.iter().chain(req.env.iter()).cloned().collect();
         let planned = if req.tty && confined.spares_operator() {
             Ok(Vec::new())
         } else {
             confined.wrap(&ConfinePlan {
                 cwd: &cwd,
-                env: &req.env,
+                env: &plan_env,
             })
         };
         let wrap = match planned {
@@ -1478,7 +1492,7 @@ impl ProcessHost for HostProcesses {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone();
-        for (k, v) in standing.iter().chain(req.env.iter()) {
+        for (k, v) in standing.iter().chain(plan_env.iter()) {
             if !matches!(
                 k.as_str(),
                 "BASH_ENV" | "ENV" | "SHELLOPTS" | "BASHOPTS" | "PATH"
