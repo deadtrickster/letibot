@@ -17,7 +17,7 @@ use crate::room::{
 /// The room's protocol version, and the room's alone - see the module header. The number moves at
 /// RELEASE POINTS: a frame added mid-series rides the next number with whatever else lands before it,
 /// because the room has no users outside this tree to be compatible with.
-pub const ROOM_PROTOCOL_VERSION: u16 = 5;
+pub const ROOM_PROTOCOL_VERSION: u16 = 6;
 
 /// The sentence a protocol mismatch is refused with, or `None` when the two agree. One function because
 /// two doors refuse it - a [`crate::Server`]'s and [`crate::Room::answer_traced`]'s - and two sentences
@@ -50,7 +50,65 @@ pub enum Request {
         speaker: Speaker,
         #[serde(default)]
         room: String,
+        /// Who is connecting: a session (the default), the operator, or a named external.
+        #[serde(default)]
+        seat: crate::chat::Seat,
     },
+    /// The rooms this connection may see, with unread counts.
+    Rooms,
+    /// Say something. `room` empty means the session's project room, or the host's if it has none.
+    Say {
+        id: String,
+        #[serde(default)]
+        room: String,
+        text: String,
+        #[serde(default)]
+        to: Option<String>,
+        #[serde(default)]
+        thread: Option<u64>,
+        #[serde(default)]
+        refs: Vec<crate::chat::Ref>,
+    },
+    /// A direct message: read by its author and `to` only.
+    Dm {
+        id: String,
+        to: String,
+        text: String,
+        #[serde(default)]
+        thread: Option<u64>,
+    },
+    /// The harness reports a fact. Only a session connection (a daemon) may send it, into the host
+    /// room or that session's project room, authored by `source` with kind `system`.
+    Notify {
+        id: String,
+        #[serde(default)]
+        room: String,
+        source: String,
+        text: String,
+        #[serde(default)]
+        refs: Vec<crate::chat::Ref>,
+    },
+    /// A room's messages after `since`. Moves no cursor. `room` `dm` reads this principal's DMs.
+    Read {
+        room: String,
+        #[serde(default)]
+        since: u64,
+        #[serde(default)]
+        last: Option<u32>,
+        #[serde(default)]
+        thread: Option<u64>,
+    },
+    /// Who is in a room.
+    Roster { room: String },
+    /// What this principal missed since its cursor, through an attention filter. Moves nothing.
+    Inbox {
+        #[serde(default)]
+        attention: crate::chat::Attention,
+        #[serde(default)]
+        limit: Option<u32>,
+    },
+    /// Move this principal's inbox cursor to `seq`.
+    Ack { seq: u64 },
     /// Post a need under a tag. `body` is the need, in the poster's words.
     Post {
         id: String,
@@ -110,13 +168,21 @@ impl Request {
     pub fn request_id(&self) -> Option<&str> {
         match self {
             Request::Hello { .. }
+            | Request::Rooms
+            | Request::Read { .. }
+            | Request::Roster { .. }
+            | Request::Inbox { .. }
+            | Request::Ack { .. }
             | Request::Queue { .. }
             | Request::Holding { .. }
             | Request::Reminders
             | Request::Questions
             | Request::Members { .. }
             | Request::Room => None,
-            Request::Post { id, .. }
+            Request::Say { id, .. }
+            | Request::Dm { id, .. }
+            | Request::Notify { id, .. }
+            | Request::Post { id, .. }
             | Request::Claim { id, .. }
             | Request::ClaimItem { id, .. }
             | Request::Beat { id, .. }
@@ -246,6 +312,34 @@ pub enum Response {
     Members {
         count: u64,
     },
+    Rooms {
+        rows: Vec<crate::chat::RoomInfo>,
+    },
+    Said {
+        id: String,
+        message: crate::chat::Message,
+    },
+    History(crate::chat::History),
+    Roster {
+        room: String,
+        rows: Vec<crate::chat::Presence>,
+    },
+    Inbox {
+        rows: Vec<crate::chat::Message>,
+        /// Messages the attention filter left out.
+        skipped: u64,
+        cursor: u64,
+        head: u64,
+    },
+    Acked {
+        cursor: u64,
+    },
+    /// A chat message pushed to a connection that may see it. Never sent to its author.
+    /// `names_you` says the message names this reader (addressed or `@`-mentioned).
+    Chat {
+        message: crate::chat::Message,
+        names_you: bool,
+    },
     /// The bell - an unsolicited event. A client that only ever answers a prompt cannot be woken by
     /// this.
     Event {
@@ -313,6 +407,7 @@ impl Room {
                 protocol,
                 speaker,
                 room: _,
+                seat: _,
             } => {
                 if let Some(why) = protocol_refusal(*protocol) {
                     return Answer::quiet(Response::Bye { why });
@@ -442,6 +537,17 @@ impl Room {
                     why,
                 }),
             },
+            Request::Rooms
+            | Request::Say { .. }
+            | Request::Dm { .. }
+            | Request::Notify { .. }
+            | Request::Read { .. }
+            | Request::Roster { .. }
+            | Request::Inbox { .. }
+            | Request::Ack { .. } => Answer::quiet(Response::Refused {
+                id: request.request_id().map(str::to_string),
+                why: Refused::ChatIsTheServers,
+            }),
             Request::Queue { tag } => Answer::quiet(Response::Queue {
                 tag: tag.trim().to_lowercase(),
                 rows: self.queue(tag).into_iter().cloned().collect(),

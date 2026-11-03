@@ -230,6 +230,32 @@ pub enum Refused {
     UnknownRoom {
         project: String,
     },
+    /// Chat frames are the server's, not the queue's.
+    ChatIsTheServers,
+    ChatEmpty,
+    ChatTooLong {
+        max: u64,
+        got: u64,
+    },
+    /// A chat room this connection may not see, or that does not exist.
+    UnknownChatRoom {
+        room: String,
+    },
+    /// Nobody answers to this name, so the message would be told to no one.
+    UnknownAddressee {
+        name: String,
+    },
+    UnknownThread {
+        thread: u64,
+    },
+    /// A name the connection may not speak under: the operator's, or a malformed handle.
+    ReservedName {
+        name: String,
+    },
+    /// Only a head's operator seat may do this.
+    NotTheOperator,
+    /// A ref names something other than a todo or a queue row, or is empty.
+    BadRef,
 }
 
 impl fmt::Display for Refused {
@@ -309,6 +335,34 @@ impl fmt::Display for Refused {
                 "`{project}` is not a project key — a room is named by twelve hex characters \
                  derived from a project's path, and a room made for anything else could never be \
                  found again"
+            ),
+            Refused::ChatIsTheServers => write!(f, "chat is answered by the coordinator's server"),
+            Refused::ChatEmpty => write!(f, "a message with no text says nothing"),
+            Refused::ChatTooLong { max, got } => write!(
+                f,
+                "a message is at most {max} bytes and this is {got} - say it shorter, or file the \
+                 long part as a row and send its id"
+            ),
+            Refused::UnknownChatRoom { room } => write!(
+                f,
+                "`{room}` is not a room you can see - list the rooms for the ones you can"
+            ),
+            Refused::UnknownAddressee { name } => write!(
+                f,
+                "nobody on this host answers to `{name}` - a message to a typo tells no one"
+            ),
+            Refused::UnknownThread { thread } => write!(
+                f,
+                "#{thread} is not in this room's history, so a reply cannot hang from it"
+            ),
+            Refused::ReservedName { name } => {
+                write!(f, "`{name}` is not a name this connection may speak under")
+            }
+            Refused::NotTheOperator => write!(f, "only the operator's seat may do this"),
+            Refused::BadRef => write!(
+                f,
+                "a ref is `todo` or `queue` with a row id, at most {} per message",
+                crate::chat::MAX_REFS
             ),
         }
     }

@@ -5,6 +5,7 @@
 //! before the coordinator is wired to them.
 
 pub mod agent;
+pub mod chat;
 pub mod client;
 pub mod item;
 pub mod lease;
@@ -15,6 +16,10 @@ pub mod tree;
 pub mod wire;
 
 pub use agent::{AgentLedger, TagAgent};
+pub use chat::{
+    Attention, Chat, DM_ROOM, HOST_ROOM, History, MAX_TEXT, Message, OPERATOR, Presence, RING, Ref,
+    RoomInfo, Seat, project_room,
+};
 pub use item::{Abandonment, Claim, Item, Speaker, State, Wait, Why, duration};
 pub use lease::{
     Acquired, COORDINATOR_LEASE_TTL_MS, CoordinatorLease, Held, Holder, LEASE_BEAT_EVERY_MS,

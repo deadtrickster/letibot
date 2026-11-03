@@ -24,6 +24,7 @@ fn every_frame_round_trips_through_json() {
             protocol: ROOM_PROTOCOL_VERSION,
             speaker: speaker.clone(),
             room: "lab2x1".to_string(),
+            seat: Default::default(),
         },
         Request::Post {
             id: "r1".to_string(),
@@ -156,6 +157,7 @@ fn the_hello_hands_out_the_lease_and_refuses_a_subagent_at_the_door() {
             protocol: ROOM_PROTOCOL_VERSION,
             speaker: a.clone(),
             room: String::new(),
+            seat: Default::default(),
         },
         1_000,
     );
@@ -185,6 +187,7 @@ fn the_hello_hands_out_the_lease_and_refuses_a_subagent_at_the_door() {
             protocol: ROOM_PROTOCOL_VERSION,
             speaker: child.clone(),
             room: String::new(),
+            seat: Default::default(),
         },
         1_001,
     ) {
@@ -201,6 +204,7 @@ fn the_hello_hands_out_the_lease_and_refuses_a_subagent_at_the_door() {
             protocol: ROOM_PROTOCOL_VERSION + 1,
             speaker: a.clone(),
             room: String::new(),
+            seat: Default::default(),
         },
         1_002,
     ) {

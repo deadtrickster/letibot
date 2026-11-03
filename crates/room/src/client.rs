@@ -64,6 +64,9 @@ impl Default for Welcome {
     }
 }
 
+/// What a client does with a pushed chat message: the message, and whether it names this reader.
+pub type ChatHook = Arc<dyn Fn(&crate::chat::Message, bool) + Send + Sync>;
+
 /// What a client does when the room rings it - the wake, as a callback.
 pub type Wake = Arc<dyn Fn(&Event) + Send + Sync>;
 
@@ -78,6 +81,9 @@ struct Shared {
     /// reconnect's: a session moved to another box must not keep talking to the one it opened on.
     room: String,
     wake: Wake,
+    seat: crate::chat::Seat,
+    /// Called for every chat message pushed to this connection. Runs on the reader thread.
+    chat: Mutex<Option<ChatHook>>,
     live: Mutex<Option<Live>>,
     /// One round trip at a time: the reply channel below is a single slot, and two calls in flight
     /// on one connection would have no way to say which reply is whose.
@@ -135,12 +141,26 @@ impl Client {
         room: impl Into<String>,
         wake: Wake,
     ) -> Result<Client, ClientError> {
+        Self::connect_as(path, speaker, room, crate::chat::Seat::Session, wake)
+    }
+
+    /// [`Client::connect_named`] in a given seat: the operator's (speaker `operator`) or an
+    /// external's, which see every room.
+    pub fn connect_as(
+        path: impl Into<PathBuf>,
+        speaker: Speaker,
+        room: impl Into<String>,
+        seat: crate::chat::Seat,
+        wake: Wake,
+    ) -> Result<Client, ClientError> {
         let client = Client {
             inner: Arc::new(Shared {
                 path: path.into(),
                 speaker,
                 room: room.into(),
                 wake,
+                seat,
+                chat: Mutex::new(None),
                 live: Mutex::new(None),
                 call: Mutex::new(()),
                 waiting: Mutex::new(None),
@@ -150,6 +170,11 @@ impl Client {
         };
         client.open()?;
         Ok(client)
+    }
+
+    /// Hear pushed chat. Replaces any earlier hook.
+    pub fn on_chat(&self, hook: ChatHook) {
+        *self.inner.chat.lock().expect("the chat lock") = Some(hook);
     }
 
     pub fn session(&self) -> &str {
@@ -280,6 +305,7 @@ impl Client {
             protocol: ROOM_PROTOCOL_VERSION,
             speaker: self.inner.speaker.clone(),
             room: self.inner.room.clone(),
+            seat: self.inner.seat,
         };
         write_frame(&mut writer, &hello)?;
         let first = read_frame(&mut reader)
@@ -370,6 +396,12 @@ impl Client {
                     };
                     match frame {
                         Some(Response::Event { event }) => (me.inner.wake)(&event),
+                        Some(Response::Chat { message, names_you }) => {
+                            let hook = me.inner.chat.lock().expect("the chat lock").clone();
+                            if let Some(hook) = hook {
+                                hook(&message, names_you);
+                            }
+                        }
                         Some(Response::Bye { why }) => {
                             me.drop_connection(&why);
                             break;

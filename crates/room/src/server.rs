@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use crate::chat::{self, Chat, Seat};
 use crate::item::Speaker;
 use crate::lease::{CoordinatorLease, LEASE_BEAT_EVERY_MS};
 use crate::room::{Event, Room};
@@ -27,6 +28,7 @@ pub const DEFAULT_SWEEP_EVERY_MS: u64 = 5_000;
 /// goes out on.
 struct Conn {
     who: Speaker,
+    seat: Seat,
     /// **Which project's room this connection is in** - resolved once, at the `Hello`, and the key
     /// every frame from this connection is answered under. A connection that moved rooms would be a
     /// session in two projects; there is no verb for that and there does not need to be one.
@@ -65,6 +67,10 @@ struct Inner {
     /// of them, per session, taken (and cleared) by that session's next `Hello`. The room keeps no
     /// log, so this is how a session learns it was away rather than reading a plain `Welcome`.
     missed: Mutex<BTreeMap<String, Missed>>,
+    /// The chat log, its rings and every principal's inbox cursor. Memory only, like the queue.
+    chat: Mutex<Chat>,
+    /// Names of externals that have connected, so a message to one that is away is not refused.
+    externals: Mutex<BTreeSet<String>>,
 }
 
 /// **How long a session was out of earshot, and how much it missed while it was** - see
@@ -125,6 +131,8 @@ impl Server {
                 agents: Mutex::new(None),
                 lease: Mutex::new(None),
                 missed: Mutex::new(BTreeMap::new()),
+                chat: Mutex::new(Chat::new()),
+                externals: Mutex::new(BTreeSet::new()),
                 stop: AtomicBool::new(false),
                 served: AtomicU64::new(0),
             }),
@@ -263,6 +271,7 @@ impl Server {
             .lock()
             .expect("the connections lock")
             .values()
+            .filter(|c| c.seat == Seat::Session)
             .filter(|c| project.is_none_or(|p| c.project == p))
             .map(|c| c.who.session.clone())
             .collect();
@@ -301,7 +310,14 @@ impl Server {
     /// One frame, answered: the room's dispatch with this server's own facts filled in, plus the two
     /// refusals that need a fact the state machine has not got - the version, and which room this is.
     /// `project` is the connection's room, resolved once at the `Hello`.
-    fn answer_frame(&self, project: &str, who: &Speaker, frame: &Request, now: u64) -> Answer {
+    fn answer_frame(
+        &self,
+        project: &str,
+        seat: Seat,
+        who: &Speaker,
+        frame: &Request,
+        now: u64,
+    ) -> Answer {
         // **The door, and it is answered before the room sees the frame.** A skew or a wrong room
         // must not be half-obeyed: the room would vouch for a session that is not going to be
         // spoken to again, and a `post` after a `Bye` is a post in a queue nobody reads.
@@ -312,12 +328,38 @@ impl Server {
                     events: Vec::new(),
                 };
             }
+            if let Some(refused) = self.hello_name_refusal(seat, who) {
+                return Answer {
+                    response: refused,
+                    events: Vec::new(),
+                };
+            }
+            if seat.is_wide() {
+                return Answer {
+                    response: Response::Welcome {
+                        protocol: ROOM_PROTOCOL_VERSION,
+                        lease_ms: self.inner.lease_ms,
+                        beat_every_ms: crate::room::DEFAULT_BEAT_EVERY_MS,
+                        threshold: crate::room::ABANDON_THRESHOLD,
+                        identity: self.identity_at(crate::DEFAULT_PROJECT, now),
+                        missed: 0,
+                        missed_since_ms: 0,
+                    },
+                    events: Vec::new(),
+                };
+            }
             if let Err(why) = self.project_of_hello(room) {
                 return Answer {
                     response: Response::Bye { why },
                     events: Vec::new(),
                 };
             }
+        }
+        if is_chat_frame(frame) {
+            return Answer {
+                response: self.chat_frame(project, seat, who, frame, now),
+                events: Vec::new(),
+            };
         }
         // A `rule` is the one frame that may name another room: two rooms number their questions
         // from 1, so a ruling that names its project is answered there, and one that does not is
@@ -514,6 +556,382 @@ impl Server {
         }
     }
 
+    // ===== Chat =====
+
+    /// Why this `Hello` may not speak under this name in this seat, as the reply to send.
+    fn hello_name_refusal(&self, seat: Seat, who: &Speaker) -> Option<Response> {
+        let name = who.session.as_str();
+        let ok = match seat {
+            Seat::Session => name != chat::OPERATOR && !name.is_empty(),
+            Seat::Operator => name == chat::OPERATOR && who.is_top_level(),
+            Seat::External => chat::valid_handle(name) && who.is_top_level(),
+            Seat::System => false,
+        };
+        (!ok).then(|| Response::Refused {
+            id: None,
+            why: crate::Refused::ReservedName {
+                name: name.to_string(),
+            },
+        })
+    }
+
+    fn conn_list(&self) -> Vec<Arc<Conn>> {
+        self.inner
+            .conns
+            .lock()
+            .expect("the connections lock")
+            .values()
+            .cloned()
+            .collect()
+    }
+
+    /// May a principal in `seat` and `project` see chat room `room`?
+    fn may_see(&self, seat: Seat, project: &str, room: &str) -> bool {
+        if room == chat::HOST_ROOM {
+            return true;
+        }
+        let Some(key) = chat::project_of_room(room) else {
+            return false;
+        };
+        if seat.is_wide() {
+            self.inner
+                .rooms
+                .lock()
+                .expect("the rooms lock")
+                .contains_key(key)
+        } else {
+            !project.is_empty() && project == key
+        }
+    }
+
+    /// Is this message one `name` (in `seat`, `project`) may read?
+    fn visible(&self, name: &str, seat: Seat, project: &str, m: &chat::Message) -> bool {
+        if m.room == chat::DM_ROOM {
+            return m.author == name || m.to.as_deref() == Some(name);
+        }
+        self.may_see(seat, project, &m.room)
+    }
+
+    /// Does anybody on this host answer to `name`?
+    fn is_known(&self, name: &str) -> bool {
+        if name == chat::OPERATOR
+            || self
+                .inner
+                .externals
+                .lock()
+                .expect("externals")
+                .contains(name)
+            || self.conn_list().iter().any(|c| c.who.session == name)
+        {
+            return true;
+        }
+        let rooms = self.inner.rooms.lock().expect("the rooms lock");
+        rooms.values().any(|r| {
+            r.members()
+                .iter()
+                .any(|m| m.group == crate::Group::Top && m.session == name)
+        })
+    }
+
+    /// The room a message goes to when the sender names none.
+    fn default_chat_room(seat: Seat, project: &str) -> String {
+        if seat.is_wide() || project.is_empty() {
+            chat::HOST_ROOM.to_string()
+        } else {
+            chat::project_room(project)
+        }
+    }
+
+    /// Who is in a chat room: the tree's top-level sessions, whoever is connected, and the wide
+    /// seats, which are in every room.
+    pub fn roster_of(&self, room: &str) -> Vec<chat::Presence> {
+        let key = chat::project_of_room(room);
+        let mut rows: BTreeMap<String, chat::Presence> = BTreeMap::new();
+        {
+            let rooms = self.inner.rooms.lock().expect("the rooms lock");
+            for (project, r) in rooms.iter() {
+                if project.is_empty() || key.is_some_and(|k| k != project) {
+                    continue;
+                }
+                for m in r.members().iter().filter(|m| m.group == crate::Group::Top) {
+                    rows.insert(
+                        m.session.clone(),
+                        chat::Presence {
+                            name: m.session.clone(),
+                            kind: Seat::Session,
+                            connected: false,
+                            project: project.clone(),
+                            label: m.label.clone(),
+                        },
+                    );
+                }
+            }
+        }
+        for c in self.conn_list() {
+            let name = c.who.session.clone();
+            let in_room = c.seat.is_wide() || key.is_none_or(|k| k == c.project);
+            if !in_room {
+                continue;
+            }
+            let row = rows.entry(name.clone()).or_insert(chat::Presence {
+                name,
+                kind: c.seat,
+                connected: false,
+                project: c.project.clone(),
+                label: String::new(),
+            });
+            row.connected = true;
+            row.kind = c.seat;
+        }
+        rows.into_values().collect()
+    }
+
+    /// The chat messages in the log, for a test.
+    pub fn chat_head(&self) -> u64 {
+        self.inner.chat.lock().expect("the chat lock").head()
+    }
+
+    fn chat_frame(
+        &self,
+        project: &str,
+        seat: Seat,
+        who: &Speaker,
+        frame: &Request,
+        now: u64,
+    ) -> Response {
+        let name = who.session.as_str();
+        let refuse = |id: Option<&String>, why: crate::Refused| Response::Refused {
+            id: id.cloned(),
+            why,
+        };
+        match frame {
+            Request::Rooms => {
+                let mut ids = vec![chat::HOST_ROOM.to_string()];
+                if seat.is_wide() {
+                    ids.extend(
+                        self.projects()
+                            .into_iter()
+                            .filter(|p| !p.is_empty())
+                            .map(|p| chat::project_room(&p)),
+                    );
+                } else if !project.is_empty() {
+                    ids.push(chat::project_room(project));
+                }
+                let chat = self.inner.chat.lock().expect("the chat lock");
+                let rows = ids
+                    .into_iter()
+                    .map(|id| {
+                        let key = chat::project_of_room(&id).unwrap_or("").to_string();
+                        chat::RoomInfo {
+                            kind: if key.is_empty() { "host" } else { "project" }.into(),
+                            members: self.roster_of(&id).len() as u64,
+                            last_seq: chat.last_in(&id),
+                            unread: chat.unread(name, &id, |_| true),
+                            project: key,
+                            id,
+                        }
+                    })
+                    .collect();
+                Response::Rooms { rows }
+            }
+            Request::Say {
+                id,
+                room,
+                text,
+                to,
+                thread,
+                refs,
+            } => {
+                let room = match room.trim() {
+                    "" => Self::default_chat_room(seat, project),
+                    r => r.to_string(),
+                };
+                if !self.may_see(seat, project, &room) {
+                    return refuse(Some(id), crate::Refused::UnknownChatRoom { room });
+                }
+                let to = to
+                    .as_deref()
+                    .map(|t| t.trim().trim_start_matches('@').to_string())
+                    .filter(|t| !t.is_empty());
+                if let Some(t) = &to
+                    && !self.is_known(t)
+                {
+                    return refuse(
+                        Some(id),
+                        crate::Refused::UnknownAddressee { name: t.clone() },
+                    );
+                }
+                self.append_and_push(id, &room, name, seat, to, *thread, refs.clone(), text, now)
+            }
+            Request::Dm {
+                id,
+                to,
+                text,
+                thread,
+            } => {
+                let to = to.trim().trim_start_matches('@').to_string();
+                if to.is_empty() || to == name || !self.is_known(&to) {
+                    return refuse(Some(id), crate::Refused::UnknownAddressee { name: to });
+                }
+                self.append_and_push(
+                    id,
+                    chat::DM_ROOM,
+                    name,
+                    seat,
+                    Some(to),
+                    *thread,
+                    Vec::new(),
+                    text,
+                    now,
+                )
+            }
+            Request::Notify {
+                id,
+                room,
+                source,
+                text,
+                refs,
+            } => {
+                // Only a daemon's session connection reports facts, and into rooms it is in.
+                let room = match room.trim() {
+                    "" => Self::default_chat_room(seat, project),
+                    r => r.to_string(),
+                };
+                if seat != Seat::Session
+                    || !matches!(source.as_str(), "todo" | "queue")
+                    || room == chat::DM_ROOM
+                    || !self.may_see(seat, project, &room)
+                {
+                    return refuse(
+                        Some(id),
+                        crate::Refused::ReservedName {
+                            name: source.clone(),
+                        },
+                    );
+                }
+                self.append_and_push(
+                    id,
+                    &room,
+                    source,
+                    Seat::System,
+                    None,
+                    None,
+                    refs.clone(),
+                    text,
+                    now,
+                )
+            }
+            Request::Read {
+                room,
+                since,
+                last,
+                thread,
+            } => {
+                let room = match room.trim() {
+                    "" => Self::default_chat_room(seat, project),
+                    r => r.to_string(),
+                };
+                if room != chat::DM_ROOM && !self.may_see(seat, project, &room) {
+                    return refuse(None, crate::Refused::UnknownChatRoom { room });
+                }
+                let chat = self.inner.chat.lock().expect("the chat lock");
+                Response::History(chat.read(
+                    &room,
+                    *since,
+                    last.map(|n| n as usize),
+                    *thread,
+                    |m| self.visible(name, seat, project, m),
+                ))
+            }
+            Request::Roster { room } => {
+                let room = match room.trim() {
+                    "" => Self::default_chat_room(seat, project),
+                    r => r.to_string(),
+                };
+                if !self.may_see(seat, project, &room) {
+                    return refuse(None, crate::Refused::UnknownChatRoom { room });
+                }
+                Response::Roster {
+                    rows: self.roster_of(&room),
+                    room,
+                }
+            }
+            Request::Inbox { attention, limit } => {
+                let chat = self.inner.chat.lock().expect("the chat lock");
+                let (rows, skipped) = chat.inbox(
+                    name,
+                    *attention,
+                    limit.map_or(chat::MAX_READ, |n| n as usize),
+                    |m| self.visible(name, seat, project, m),
+                );
+                Response::Inbox {
+                    rows,
+                    skipped,
+                    cursor: chat.cursor(name),
+                    head: chat.head(),
+                }
+            }
+            Request::Ack { seq } => Response::Acked {
+                cursor: self
+                    .inner
+                    .chat
+                    .lock()
+                    .expect("the chat lock")
+                    .ack(name, *seq),
+            },
+            _ => refuse(None, crate::Refused::ChatIsTheServers),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn append_and_push(
+        &self,
+        id: &str,
+        room: &str,
+        author: &str,
+        kind: Seat,
+        to: Option<String>,
+        thread: Option<u64>,
+        refs: Vec<chat::Ref>,
+        text: &str,
+        now: u64,
+    ) -> Response {
+        let appended = self
+            .inner
+            .chat
+            .lock()
+            .expect("the chat lock")
+            .append(now, id, room, author, kind, to, thread, refs, text);
+        let message = match appended {
+            Ok(m) => m,
+            Err(why) => {
+                return Response::Refused {
+                    id: Some(id.to_string()),
+                    why,
+                };
+            }
+        };
+        // Pushed after the log lock is released. A repeat of `id` pushes again: a reader that
+        // already has the seq drops it, and one that missed it gets it.
+        for c in self.conn_list() {
+            let name = c.who.session.as_str();
+            if name == message.author || !self.visible(name, c.seat, &c.project, &message) {
+                continue;
+            }
+            let _ = write_to(
+                &c,
+                &Response::Chat {
+                    names_you: message.names(name),
+                    message: message.clone(),
+                },
+            );
+        }
+        Response::Said {
+            id: id.to_string(),
+            message,
+        }
+    }
+
     // ===== The threads =====
 
     fn spawn_accept(&self, listener: UnixListener) {
@@ -566,27 +984,29 @@ impl Server {
                         return;
                     }
                 };
-                let speaker = match &hello {
-                    Request::Hello { speaker, .. } => speaker.clone(),
+                let (speaker, seat) = match &hello {
+                    Request::Hello { speaker, seat, .. } => (speaker.clone(), *seat),
                     _ => return,
                 };
                 // **Which room this connection is in, resolved ONCE** - the `Hello`'s name, and
                 // every frame from this connection is answered in it. A connection that could move
                 // rooms would be one session in two projects.
                 let project = match &hello {
+                    // A wide seat is in no project's queue: it sees rooms, it does not hold items.
+                    _ if seat.is_wide() => Some(crate::DEFAULT_PROJECT.to_string()),
                     Request::Hello { room, .. } => me.project_of_hello(room).ok(),
                     _ => None,
                 };
                 let Some(project) = project else {
                     // The `Hello` below answers the refusal, with both names in it.
                     let answer =
-                        me.answer_frame(crate::DEFAULT_PROJECT, &speaker, &hello, now_ms());
+                        me.answer_frame(crate::DEFAULT_PROJECT, seat, &speaker, &hello, now_ms());
                     let mut w = writer;
                     let _ = write_frame(&mut w, &answer.response);
                     let _ = w.shutdown(std::net::Shutdown::Both);
                     return;
                 };
-                let answer = me.answer_frame(&project, &speaker, &hello, now_ms());
+                let answer = me.answer_frame(&project, seat, &speaker, &hello, now_ms());
                 let mut w = writer;
                 if write_frame(&mut w, &answer.response).is_err() {
                     return;
@@ -602,6 +1022,7 @@ impl Server {
                 let id = me.inner.next_conn.fetch_add(1, Ordering::SeqCst) + 1;
                 let conn = Arc::new(Conn {
                     who: speaker.clone(),
+                    seat,
                     project: project.clone(),
                     writer: Mutex::new(w),
                 });
@@ -611,6 +1032,18 @@ impl Server {
                     .expect("the connections lock")
                     .insert(id, Arc::clone(&conn));
                 me.inner.served.fetch_add(1, Ordering::SeqCst);
+                me.inner
+                    .chat
+                    .lock()
+                    .expect("the chat lock")
+                    .arm(&speaker.session);
+                if seat == Seat::External {
+                    me.inner
+                        .externals
+                        .lock()
+                        .expect("the externals lock")
+                        .insert(speaker.session.clone());
+                }
 
                 // **The read loop.** Every frame is answered, and every event the answer carries
                 // is routed to the connections it is about - including this one, because a claim
@@ -623,7 +1056,8 @@ impl Server {
                         Ok(Some(f)) => f,
                         _ => break,
                     };
-                    let answer: Answer = me.answer_frame(&project, &speaker, &frame, now_ms());
+                    let answer: Answer =
+                        me.answer_frame(&project, seat, &speaker, &frame, now_ms());
                     if write_to(&conn, &answer.response).is_err() {
                         break;
                     }
@@ -649,6 +1083,9 @@ impl Server {
                     .lock()
                     .expect("the connections lock")
                     .remove(&id);
+                if seat.is_wide() {
+                    return;
+                }
                 let events = me.with_room(&project, |room| {
                     room.note_gone(
                         &speaker.session,
@@ -817,6 +1254,20 @@ impl Server {
     }
 }
 
+fn is_chat_frame(frame: &Request) -> bool {
+    matches!(
+        frame,
+        Request::Rooms
+            | Request::Say { .. }
+            | Request::Dm { .. }
+            | Request::Notify { .. }
+            | Request::Read { .. }
+            | Request::Roster { .. }
+            | Request::Inbox { .. }
+            | Request::Ack { .. }
+    )
+}
+
 fn write_to(conn: &Conn, response: &Response) -> std::io::Result<()> {
     let mut w = conn.writer.lock().expect("a writer");
     write_frame(&mut *w, response)
@@ -894,6 +1345,7 @@ mod tests {
             protocol: ROOM_PROTOCOL_VERSION,
             speaker: Speaker::top_level("s-a"),
             room: server.name(),
+            seat: Default::default(),
         })
         .unwrap();
         a.write_all(format!("{hello}\n").as_bytes()).unwrap();
@@ -952,11 +1404,13 @@ mod tests {
         let me = Speaker::top_level("s-a");
         let answer = server.answer_frame(
             crate::DEFAULT_PROJECT,
+            Seat::Session,
             &me,
             &Request::Hello {
                 protocol: ROOM_PROTOCOL_VERSION,
                 speaker: me.clone(),
                 room: "the-other-box".to_string(),
+                seat: Default::default(),
             },
             now_ms(),
         );
@@ -975,11 +1429,13 @@ mod tests {
         // version check refuses by name instead of pretending it said something it did not.
         let quiet = server.answer_frame(
             crate::DEFAULT_PROJECT,
+            Seat::Session,
             &me,
             &Request::Hello {
                 protocol: ROOM_PROTOCOL_VERSION,
                 speaker: me.clone(),
                 room: String::new(),
+                seat: Default::default(),
             },
             now_ms(),
         );
@@ -1005,11 +1461,13 @@ mod tests {
         let now = now_ms();
         let answer = server.answer_frame(
             crate::DEFAULT_PROJECT,
+            Seat::Session,
             &me,
             &Request::Hello {
                 protocol: ROOM_PROTOCOL_VERSION,
                 speaker: me.clone(),
                 room: String::new(),
+                seat: Default::default(),
             },
             now,
         );
@@ -1043,7 +1501,9 @@ mod tests {
         let mut at = now;
         let frame = |f: Request, at: &mut u64| {
             *at += 1;
-            server.answer_frame(project, &me, &f, *at).response
+            server
+                .answer_frame(project, Seat::Session, &me, &f, *at)
+                .response
         };
         // A tag claimed and abandoned three times raises question #1 in project `a`.
         frame(
@@ -1082,6 +1542,7 @@ mod tests {
         let arbiter = Speaker::top_level("s-arbiter");
         let answer = server.answer_frame(
             crate::DEFAULT_PROJECT,
+            Seat::Session,
             &arbiter,
             &Request::Rule {
                 id: "r1".into(),
@@ -1119,6 +1580,7 @@ mod tests {
         let server = Server::serve(&path, Room::new()).expect("a socket");
         let answer = server.answer_frame(
             crate::DEFAULT_PROJECT,
+            Seat::Session,
             &Speaker::top_level("s-a"),
             &Request::Rule {
                 id: "r1".into(),
@@ -1147,14 +1609,14 @@ mod tests {
     /// spells the number rather than the constant, so a wire change that misses a pin is a quiet lie
     /// about what two binaries share.
     #[test]
-    fn the_room_speaks_protocol_five() {
-        assert_eq!(ROOM_PROTOCOL_VERSION, 5);
+    fn the_room_speaks_protocol_six() {
+        assert_eq!(ROOM_PROTOCOL_VERSION, 6);
         // And the refusal names which side is older, in both directions.
-        let old = crate::wire::protocol_refusal(4).expect("4 is not 5");
+        let old = crate::wire::protocol_refusal(5).expect("5 is not 6");
         assert!(old.contains("the client is the older"), "{old}");
-        let new = crate::wire::protocol_refusal(6).expect("6 is not 5");
+        let new = crate::wire::protocol_refusal(7).expect("7 is not 6");
         assert!(new.contains("this room is the older"), "{new}");
-        assert_eq!(crate::wire::protocol_refusal(5), None);
+        assert_eq!(crate::wire::protocol_refusal(6), None);
     }
 
     /// The pane's read: the room's half from the room, the server's three from the server. What is
@@ -1168,7 +1630,13 @@ mod tests {
         let server = Server::serve(&path, Room::new()).expect("a socket");
         server.with_arbiter("s-arbiter");
         let me = Speaker::top_level("s-a");
-        let answer = server.answer_frame(crate::DEFAULT_PROJECT, &me, &Request::Room, now_ms());
+        let answer = server.answer_frame(
+            crate::DEFAULT_PROJECT,
+            Seat::Session,
+            &me,
+            &Request::Room,
+            now_ms(),
+        );
         let Response::Room {
             identity,
             arbiter,
@@ -1212,6 +1680,7 @@ mod tests {
         server.with_agents(Arc::clone(&ledger));
         let answer = server.answer_frame(
             crate::DEFAULT_PROJECT,
+            Seat::Session,
             &Speaker::top_level("s-a"),
             &Request::Room,
             now_ms(),
