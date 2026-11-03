@@ -2948,6 +2948,10 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
                 pid,
                 identity: format!("start:{start}"),
                 scope: "session.test".into(),
+                // What a daemon's record can say: the cgroup died with that process, so the
+                // directory is re-derived from the scope's name, and the job is found by id.
+                scope_dir: None,
+                owner_dir: None,
             })
             .expect("a recorded job is adopted");
         let row = h
