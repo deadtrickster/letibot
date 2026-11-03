@@ -1917,10 +1917,10 @@ fn concurrent_calls_to_one_host_queue_at_the_session_bound() {
     let host = format!("busy-{}", std::process::id());
     let fake = Fake::new(
         "busy",
-        "n=$(cat @DIR@/live 2>/dev/null || echo 0); n=$((n+1)); echo $n > @DIR@/live\n\
-         m=$(cat @DIR@/most 2>/dev/null || echo 0); if [ \"$n\" -gt \"$m\" ]; then echo $n > @DIR@/most; fi\n\
+        "d=@DIR@/live; mkdir -p \"$d\"; : > \"$d/$$\"\n\
+         echo $(ls \"$d\" | wc -l) >> @DIR@/counts\n\
          sleep 0.3\n\
-         n=$(cat @DIR@/live); echo $((n-1)) > @DIR@/live\n\
+         rm -f \"$d/$$\"\n\
          exec bash -lc \"$last\"",
     );
     let (repo, paths) = repo_and_paths(&fake.dir.join("rig"));
@@ -1950,10 +1950,13 @@ fn concurrent_calls_to_one_host_queue_at_the_session_bound() {
         letibot_tools::rpc::MAX_SESSIONS_PER_HOST * 2,
         "every call answered inside its own deadline"
     );
-    let most: usize = std::fs::read_to_string(fake.path("most"))
+    // One file per call in flight and one appended line each: a `cat`-then-`echo` counter loses a
+    // decrement under load, and an inflated count reads as more sessions than the gate let through.
+    let most: usize = std::fs::read_to_string(fake.path("counts"))
         .expect("the fake counted")
-        .trim()
-        .parse()
+        .lines()
+        .filter_map(|l| l.trim().parse().ok())
+        .max()
         .expect("a number");
     assert!(
         most <= letibot_tools::rpc::MAX_SESSIONS_PER_HOST,
