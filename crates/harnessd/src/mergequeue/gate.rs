@@ -585,6 +585,20 @@ fn shows_a_kill(out: &str) -> bool {
     shown_kill(out).is_some()
 }
 
+/// Output that carries a verdict of its own, which a kill elsewhere in the same run cannot take
+/// away: a rustc diagnostic or a failing test, as opposed to cargo's report that one child it ran
+/// did not succeed - the very lines a killed child makes cargo print.
+fn shows_a_verdict(out: &str) -> bool {
+    super::setup::step_words(out).any(|l| {
+        let t = l.trim_start();
+        t.starts_with("error[")
+            || t.starts_with("test result: FAILED")
+            || t.contains("panicked at")
+            || t.starts_with("Diff in ")
+            || t.starts_with("failures:")
+    })
+}
+
 /// Read a red step ([`RedCause`]). Pure, so the measured case is a unit test: `exit` is how the
 /// leader ended, `memory` what its cgroup's counters said, `out` the end of its output.
 fn red_cause(out: &str, exit: StepExit, memory: &StepMemory) -> RedCause {
@@ -614,8 +628,11 @@ fn red_cause(out: &str, exit: StepExit, memory: &StepMemory) -> RedCause {
     }
     // A child killed far from the cap - the box's OOM killer took a rustc - leaves cargo answering
     // with a code of its own and the kill in its output. The step's leader is not the thing that
-    // ended without judging, so the output's signal is the answer.
-    if !code_failed && let Some(sig) = shown_kill(out) {
+    // ended without judging, so the output's signal is the answer - unless the output also shows
+    // code failing, which no kill beside it turns back into an absence of a verdict.
+    if !shows_a_verdict(out)
+        && let Some(sig) = shown_kill(out)
+    {
         return RedCause::KilledBySignal(sig);
     }
     match exit {
@@ -2300,6 +2317,33 @@ mod tests {
         );
         assert_eq!(
             red_cause(ENDED_IN_WARNINGS, StepExit::Signal(9), &uncapped),
+            RedCause::KilledBySignal(9)
+        );
+    }
+
+    /// A kill somewhere in the output does not un-fail a test that failed: the workspace run the
+    /// gate makes with `--no-fail-fast` goes on after one target fails, so a child the box's own
+    /// OOM killer took must not turn a real red into a step the queue re-gates for ever.
+    #[test]
+    fn a_failing_test_beside_a_kill_is_still_red() {
+        let out = "test result: FAILED. 3 passed; 1 failed\n\nerror: test failed, to rerun pass \
+                   `-p letibot-tui --lib`\n\nCaused by:\n  process didn't exit successfully: \
+                   `rustc --crate-name letibot_ui src/lib.rs` (signal: 9, SIGKILL: kill)\n";
+        let far = StepMemory::Used(MemoryUse {
+            cap: Some(24 * GIB),
+            peak: 6 * GIB,
+            oom_kills: 0,
+        });
+        assert_eq!(
+            red_cause(out, StepExit::Code(101), &far),
+            RedCause::Code,
+            "the failing test is the verdict, and a kill beside it is the box's business"
+        );
+        // And with nothing failing on its own, the same kill is still an unjudged step.
+        let killed = "Caused by:\n  process didn't exit successfully: `rustc` (signal: 9, SIGKILL: \
+                      kill)\n";
+        assert_eq!(
+            red_cause(killed, StepExit::Code(101), &far),
             RedCause::KilledBySignal(9)
         );
     }
