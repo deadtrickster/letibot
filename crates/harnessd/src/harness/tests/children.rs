@@ -1330,3 +1330,41 @@ fn a_delivered_answer_is_not_kept_for_the_daemons_life() {
     again.hand_over_answer();
     assert_eq!(owed_answers(&slots), 0);
 }
+
+fn reply(text: &str) -> Reply {
+    Reply {
+        text: text.into(),
+        metrics: Vec::new(),
+        rounds: 1,
+        tool_calls: 0,
+        truncated: false,
+    }
+}
+
+/// A turn the child runs inside its hold ends before the slot has settled: it is part of the
+/// answer the hold ends with, and a failure of it must not settle the slot as failed (the tree
+/// the answer names would be reaped).
+#[test]
+fn a_failing_turn_of_the_hold_does_not_settle_the_slot() {
+    let out = Some(Err(HarnessError::Setup("provider refused".into())));
+    assert!(
+        crate::harness::children::later_news(true, false, &out).is_none(),
+        "a hold turn's failure settled a Running slot"
+    );
+    assert!(
+        crate::harness::children::later_news(true, true, &out).is_some(),
+        "a later turn's failure after the answer is still news"
+    );
+}
+
+/// The same hold turn answering is not the child finishing: the parent would be told
+/// an intermediate answer was the task's.
+#[test]
+fn an_answering_turn_of_the_hold_is_not_handed_up_as_the_child_finishing() {
+    let out = Some(Ok(reply("waiting on two more files")));
+    assert!(
+        crate::harness::children::later_news(true, false, &out).is_none(),
+        "a hold turn's answer was handed up"
+    );
+    assert!(crate::harness::children::later_news(true, true, &out).is_some());
+}
