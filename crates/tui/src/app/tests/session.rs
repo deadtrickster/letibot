@@ -2764,3 +2764,36 @@ fn a_session_list_does_not_move_the_head_without_seating_it() {
         "the ordinary answer was read as a disagreement"
     );
 }
+
+/// **A replayed `model_set` is history, not news.** A snapshot's warning window carries switches from
+/// before the head attached; stamped as if they had just arrived, an old one outranked the settings
+/// row the head already held, and the header drew the model the session had left.
+#[test]
+fn a_replayed_model_set_does_not_outrank_the_settings_row() {
+    let mut a = app();
+    let mut hub = Hub::new("s");
+    a.apply(hello("s", vec![brief("s", "one", false)], hub.snapshot()));
+    a.apply(model_settings("glm/glm-4.6", &["local"]));
+    assert!(
+        a.header_line(200).contains("glm-4.6"),
+        "the premise: {}",
+        a.header_line(200)
+    );
+    // The switch it moved AWAY from, still inside the snapshot's window.
+    hub.publish(SessionEvent::Warning {
+        code: "model_set".into(),
+        detail: "deepseek/deepseek-chat".into(),
+        compaction: None,
+    });
+    a.apply(ServerFrame::Resync {
+        reason: "test".into(),
+        dropped: 0,
+        snapshot: Box::new(hub.snapshot()),
+        scrubbed: Default::default(),
+    });
+    let h = a.header_line(200);
+    assert!(
+        h.contains("glm-4.6") && !h.contains("deepseek"),
+        "a switch from before the attach outranked the row the head holds: {h}"
+    );
+}

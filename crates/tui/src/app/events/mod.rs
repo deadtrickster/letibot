@@ -345,7 +345,7 @@ impl App {
             // The model is state too, and a snapshot replays the switch that named it: taken the
             // same way the live arm takes it, and never filed as a note.
             if w.code == letibot_sessionlog::protocol::MODEL_SET {
-                self.model_set(&w.detail);
+                self.model_set(&w.detail, self.model_from_live_at);
                 continue;
             }
             let n = Note::Warned(w);

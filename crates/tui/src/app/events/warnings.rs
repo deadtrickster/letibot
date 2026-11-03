@@ -37,11 +37,15 @@ impl App {
     /// **The model the daemon says answers now** - the `model` row's value, which may be a local
     /// alias in the config pane's spelling. One door for the live arm and for a snapshot, and no
     /// note either way: a name is what the header draws, not a finding to read.
-    pub(crate) fn model_set(&mut self, value: &str) {
+    ///
+    /// `at` is when this head HEARD it, which for a replayed row is when it heard the last one: a
+    /// snapshot's window is history, and stamped as news it outranks the settings row it is older
+    /// than.
+    pub(crate) fn model_set(&mut self, value: &str, at: u64) {
         let model = crate::ui::header::header_model(value);
         if !model.is_empty() {
             self.model = model;
-            self.model_from_live_at = self.seq;
+            self.model_from_live_at = at;
             self.redraw = true;
         }
     }
@@ -164,7 +168,7 @@ impl App {
                 // The model answering NOW, on the daemon's word rather than a request: the `model`
                 // row moved on somebody else's act, and a name is state, not a finding to file.
                 if code == letibot_sessionlog::protocol::MODEL_SET {
-                    self.model_set(&detail);
+                    self.model_set(&detail, self.seq);
                     return Disposition::Filtered;
                 }
                 // A slash LISTING opens the pane and a slash sentence stays a note. Both
