@@ -1663,7 +1663,6 @@ impl Harness {
             appended.extend(ok.items.iter().cloned());
             appended.extend(ok.steering_applied.iter().cloned());
             self.reconcile(&mut sink, &appended);
-            self.persist()?;
             // The last round's prompt size is the session's context size, and the row is the only place it survives
             // a restart. Measured every round and for a local session too, and paired with the ledger the PROMPT had
             // rather than the one after the reply, or the ratio is of two moments and mostly reasoning.
@@ -1676,6 +1675,16 @@ impl Harness {
                     None => self.session.ledger.len() as u64,
                 }
             };
+            // The pair rides the rows' own commit: a second fsync per round for one UPDATE was the larger half of the
+            // round's write volume.
+            let context_carried = self.persist_rows(
+                &mut |_, _| {},
+                Some((
+                    ok.metrics.prompt_tokens,
+                    ok.metrics.cached_tokens,
+                    rendered_at,
+                )),
+            )?;
             if ok.metrics.prompt_tokens > 0 {
                 self.wall_anchor = Some(WallAnchor {
                     transcript: self.session.transcript_id.clone(),
@@ -1702,7 +1711,7 @@ impl Harness {
             // Persisted beside the count, so a restart recovers the pair instead of pairing the count with whatever
             // ledger it has then. Not fatal: a measurement a busy store refused used to end the whole turn, and the
             // next round writes a fresh one.
-            if let Err(e) = self.persist_context(&ok.metrics, rendered_at) {
+            if !context_carried && let Err(e) = self.persist_context(&ok.metrics, rendered_at) {
                 eprintln!("  store: {e}");
                 self.hub.publish(SessionEvent::Warning {
                     code: "context_not_stored".into(),
@@ -3254,12 +3263,23 @@ impl Harness {
         &mut self,
         progress: &mut dyn FnMut(u64, u64),
     ) -> Result<(), HarnessError> {
+        self.persist_rows(progress, None).map(|_| ())
+    }
+
+    /// [`Harness::persist_reporting`], with the round's context pair written in the last chunk's commit. `true` when
+    /// that commit carried it; `false` when there was no row or no store to carry it, and the caller writes it alone.
+    fn persist_rows(
+        &mut self,
+        progress: &mut dyn FnMut(u64, u64),
+        context: Option<(u64, u64, u64)>,
+    ) -> Result<bool, HarnessError> {
         let Some(store) = &self.store else {
             self.persisted = self.session.ledger.rows().len();
-            return Ok(());
+            return Ok(false);
         };
         let rows = self.session.ledger.rows();
         let start = self.persisted;
+        let mut carried = false;
         let total = rows.len().saturating_sub(start) as u64;
         // The patience is measured from the FIRST busy chunk, not from the call: a long transcript
         // that wrote for twenty minutes before the store wedged has not spent its budget.
@@ -3285,8 +3305,16 @@ impl Harness {
                     .ok_or_else(|| HarnessError::Store(format!("no tokens for row {i}")))?;
                 chunk.push((item, row, tokens));
             }
-            match store.append_items(&self.transcript_id, from as u32, chunk) {
+            let with = context.filter(|_| to == rows.len());
+            let sid = self.cfg.session_id.as_str();
+            match store.append_items_with_context(
+                &self.transcript_id,
+                from as u32,
+                chunk,
+                with.map(|(t, c, l)| (sid, Some(t), Some(c), Some(l))),
+            ) {
                 Ok(()) => {
+                    carried |= with.is_some();
                     self.persisted = to;
                     first_busy = None;
                     progress((to - start) as u64, total);
@@ -3347,7 +3375,7 @@ impl Harness {
             }
         }
         self.seal_fork();
-        Ok(())
+        Ok(carried)
     }
 
     /// The round's prompt size onto the session row. See the call in `run_rounds`
