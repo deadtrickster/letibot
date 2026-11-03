@@ -1192,10 +1192,23 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         )));
     }
     // The pane's pty, owned by this daemon. (`!term`.) Installed unconditionally, and
-    // deliberately not behind a capability check
-    registry.set_terminal(std::sync::Arc::new(crate::term::Terminals::new(
-        std::sync::Arc::downgrade(&registry),
-    )));
+    // deliberately not behind a capability check. A pane is capped by the same policy a `bash`
+    // call in its session gets, and it outlives its session only until the next daemon starts.
+    let terminals = crate::term::Terminals::new(std::sync::Arc::downgrade(&registry)).with_memory(
+        crate::term::PaneMemory::new(
+            cfg.memory,
+            cfg.leticode_user.clone(),
+            cfg.read_project_config,
+        ),
+    );
+    if let Some(record) = crate::term::record_path(&cfg.workspace) {
+        // Before any head can ask for a pane: what the daemon this one replaced left running is
+        // ended here, and this tree is recorded for whoever replaces this daemon.
+        for line in terminals.begin(&record) {
+            eprintln!("  {line}");
+        }
+    }
+    registry.set_terminal(std::sync::Arc::new(terminals));
     // The stored row's parent and name come in with the first session, read once
     // here at startup
     let stored = registry.resumable(&cfg.session_id);
