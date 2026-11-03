@@ -4932,7 +4932,7 @@ documents. Small enough to re-embed rather than manage; lubuntu3's corpus, our c
 
 ---
 
-## T17 — harnessd — **BUILT 2026-09-09. M1's exit criterion is NOT met as written; the per-clause status below says what is measured and what cannot be.**
+## T17 — harnessd — **BUILT 2026-09-09. M1's exit criterion is NOT met as written; left: the 30-turn re-measurement under D11's metric, M0's opencode baseline (the comparison has no left side), C7's server half and C8's `length`, and C2 run as part of the exit — the per-clause status below says what is measured and what cannot be.**
 
 `crates/harnessd`. Scripted 30-turn session against `qwen-3.8-flash-next`: 53
 submissions, 25 tool calls, 161 persisted rows, 22,201 final prompt tokens, 85 s.
