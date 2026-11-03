@@ -241,7 +241,7 @@ same command.
 
 ---
 
-## R98 — macOS has no boundary for a command, so tests there must ask (D16, amended) — **half 2 BUILT 2026-10-27 (branch `mac-seatbelt`), half 1 OPEN**
+## R98 — macOS has no boundary for a command, so tests there must ask (D16, amended) — **half 1 BUILT 2026-10-27 (the policy), half 2 BUILT on branch `mac-seatbelt` and still to be proved on a Mac**
 
 D16 admits a command without a card only inside a measured boundary, and its amendment says
 that on a raw host a command that executes code the agent wrote (a test runner) must keep
@@ -257,7 +257,19 @@ Two halves, the first smaller and first:
    `go test`, `npm test`, `make`, a script the session wrote) is not settled by a session or
    durable grant when the backend is unconfined; it asks every time, and the card says why
    (*"runs code the agent wrote, on a host with no boundary"*). Measure what this costs on the
-   corpus replay (how many past grants would no longer settle) before landing. — **STILL OPEN.** — OPEN: the rule is built and tested but OFF by default: `runs_project_code_unconfined` returns early unless the switch is set (`crates/tools/src/adjudicate.rs:1769`) and `ask_unconfined_code()` is false unless a `leticode.toml` says so (`crates/leticode-config/src/lib.rs:508`), so a default config still lets an approved shape settle `cargo test`; turning it on is the operator's ruling (R97, `docs/boundary-and-adjudication.md:909`).
+   corpus replay (how many past grants would no longer settle) before landing. — **BUILT.** — The
+   rule is the policy now, and it has no setting: `runs_project_code_unconfined` reads one fact,
+   `has_measured_boundary`, which `Harness::open` hands it off the backend — so a Linux test
+   constructs the Mac's case by handing the gate `None`, and nothing in the gate probes a platform.
+   `[permissions] ask_unconfined_code`, `with_unconfined_code_asks` and the startup note that
+   disclosed it are gone with the switch — in `crates/leticode-config`, and in
+   `crates/harnessd/src/harness/open.rs`. Tests:
+   `a_host_with_no_measured_boundary_asks_with_nothing_switched_on`,
+   `the_same_runner_is_admitted_inside_the_boundary` (unchanged) and
+   `the_card_narrows_the_ladder_and_says_why`, whose note must say *no boundary*. The cost was
+   measured on the corpus before it was turned on — `docs/boundary-and-adjudication.md` §R98 (1),
+   **171** of the mac's 834 standing settles would ask, 137 of them the session's own programs and
+   24 `cargo test`.
 2. **Give the Mac a boundary** — **BUILT 2026-10-27**, `crates/tools/src/exec/seatbelt.rs`, and
    written up in `docs/boundary-and-adjudication.md` §4k. Seatbelt (`sandbox-exec -f <profile>`)
    renders the same `ViewSpec` the Linux side renders as a bubblewrap argv, and the probe measures
@@ -275,16 +287,25 @@ Two halves, the first smaller and first:
    is printed on the boundary's own description as `ABSENT` / `NOT APPLICABLE`, never omitted.
    Reaping stays the process-group tree (`exec::scope::ProcessGroups`), as it already was. — ✓ fixed in 5442b7c8, test the_probe_measures_a_boundary_and_says_what_macos_cannot_give
 
+   **What half 2 still needs: a Mac.** `crates/tools/src/exec/seatbelt.rs` and its test live on
+   `mac-seatbelt` alone, and nothing on a Linux box can run `sandbox-exec` or a
+   `#![cfg(target_os = "macos")]` test, so the profile has never been read by the kernel that
+   enforces it and D16's admit *inside* a Mac boundary has never run.
+
 **Done when**: (1) on an unconfined backend no grant settles a test run, with a test; (2) a Mac
 session's commands run inside a measured boundary that `~/.ssh` and the profiles are absent
-from, and D16 admits them there. — **(2) is done**: they are *denied* rather than absent (macOS
-has no mount namespace to make them absent), the probe measures the denial, and the description
-says which of the two it is holding. (1) is not built.
+from, and D16 admits them there. — **(1) is done**: the rule is the policy and
+`a_host_with_no_measured_boundary_asks_with_nothing_switched_on` proves it from the injected fact,
+with the ladder narrowed and no grant recorded. **(2) is done on its Linux side**: macOS has no
+mount namespace to make `.ssh` and the profiles *absent*, so they are **denied** rather than absent,
+the probe measures the denial, and the description says which of the two it is holding. The
+`bwrap` half is measured on this box; the seatbelt half is not.
 
-**Still open?** (1) run `cargo test` in a macOS session at writes-allowed with a session grant
-for it: if no card appears, (1) is not built — and on this branch that is expected, since (1) is
-the half nobody has written. (2) `cargo test -p letibot-tools --test seatbelt` on the Mac: seven
-real measurements, no skip.
+**Still open?** One run, on a Mac: `cargo test -p letibot-tools --test seatbelt` (seven real
+measurements, no skip), then a session at `writes-allowed` — inside the seatbelt boundary `cargo
+test` must be admitted with no card (D16), and on a Mac whose boundary cannot be built it must ask
+every time with the card saying *no boundary* (R98 (1)). Half 1's half of that sentence is proved on
+Linux; half 2's is a reading of a profile until that run happens.
 
 ---
 
