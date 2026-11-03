@@ -2030,13 +2030,6 @@ impl Harness {
         &self.cfg.workspace
     }
 
-    /// This session's connection to the box's room, when it has one: the `room` tool's half, and what a
-    /// room pane is drawn from. `None` on a box with no coordinator and on a subagent, which speaks
-    /// through its parent, and both are ordinary states rather than failures.
-    pub fn room_link(&self) -> Option<Arc<crate::room::link::SessionRoom>> {
-        self.room.clone()
-    }
-
     /// Turn the guard model on or off on the running session, and read whether it gets a turn now.
     /// The gate is reached rather than a setting persisted, which is the difference from `/mode`:
     /// supervision decides only whether the model gets a turn, so nothing seated depends on it.
@@ -3270,38 +3263,11 @@ impl Harness {
         served.started
     }
 
-    /// **Whether this session speaks in the box's room** - the daemon's own question, and the one
-    /// the room pass's clock asks before it makes itself a reason to wake.
-    pub fn has_room(&self) -> bool {
-        self.room.is_some()
-    }
-
     /// Whose subagent this session is, as the open settled it: resolved once by `Registry::parent_for`,
     /// so a child stays a child for the life of the process and the room's door, the settings row and
     /// the store row cannot disagree.
     pub fn parent_session(&self) -> Option<&str> {
         self.cfg.parent_session_id.as_deref()
-    }
-
-    /// The room's reminders, onto this session's own board: one row per item it holds, carried by the
-    /// idle check so a holder is reminded without a model call. A subagent returns 0 first, because the
-    /// room's rule is top-level sessions only. A room that does not answer clears the rows.
-    pub fn fill_room_board(&mut self) -> usize {
-        // **The room's rule, said here as well as at the door.** See this function's own doc.
-        if self.cfg.parent_session_id.is_some() {
-            return 0;
-        }
-        let Some(room) = self.room.clone() else {
-            return 0;
-        };
-        let me = self.hub.session_id();
-        let rows = match room.reminders() {
-            Ok(all) => crate::room::remind::rows(&me, &all),
-            Err(_) => Vec::new(),
-        };
-        let n = self.todos.set_room_rows(rows);
-        self.flush_todos_or_say("the room's reminders");
-        n
     }
 
     /// Whether this harness is the review queue's own session - the one
@@ -4069,6 +4035,7 @@ mod nags;
 mod open;
 mod opshell;
 mod prefix_repair;
+mod room;
 mod turns;
 mod wall;
 #[cfg(test)]
