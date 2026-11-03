@@ -3812,8 +3812,8 @@ pub fn collect(spec: &CollectSpec) -> Result<String, BackendError> {
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .ok_or_else(|| refuse(format!("{} has no name", local_repo.display())))?;
-    let ssh = Ssh::connect(spec.host.clone(), spec.ssh.clone(), spec.paths.clone())
-        .map_err(|why| refuse(why))?;
+    let ssh =
+        Ssh::connect(spec.host.clone(), spec.ssh.clone(), spec.paths.clone()).map_err(refuse)?;
     let root = resolved_root(&ssh, &spec.host.root, false).map_err(|e| refuse(e.to_string()))?;
     let short = short_branch_id(&spec.session);
     let branch = format!("remote/{short}");
