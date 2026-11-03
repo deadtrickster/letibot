@@ -1178,6 +1178,11 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         registry.set_row_source(src.clone());
         registry.set_source(src);
     }
+    // The operator's seat on the host coordinator, opened on a head's first chat request. The
+    // coordinator may start later than the daemon, so nothing connects here.
+    if let Some(socket) = crate::room::socket_path() {
+        registry.set_room_chat(crate::room::operator::OperatorSeat::new(socket).handler());
+    }
     // The smart `!`'s model half, attached whenever there is a local model to ask. The
     // endpoint is `cfg.oracle` - the `[gatekeeper]` endpoint read at startup, the LOCAL model
     // - and the suggester is installed on exactly that condition, the same one the guard is

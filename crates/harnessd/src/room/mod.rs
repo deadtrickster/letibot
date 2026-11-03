@@ -7,6 +7,7 @@ use std::path::PathBuf;
 pub mod agents;
 pub mod coordinator;
 pub mod link;
+pub mod operator;
 pub mod remind;
 pub mod roster;
 pub mod supervise;
