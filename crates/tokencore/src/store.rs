@@ -1234,6 +1234,10 @@ fn file_id(path: &Path) -> Option<(u64, u64)> {
     }
 }
 
+/// One row of a page: its `seq`, id, kind, JSON and when it was written - the five facts a head
+/// draws a paged row from. A named type so the page's shape is said once.
+pub type RowJson = (u32, String, String, String, u64);
+
 impl Store {
     /// The process's one connection to this store file: SQLite caches a descriptor per inode inside
     /// the process and releases it only when the last connection closes, so a connection per caller
@@ -2457,15 +2461,15 @@ impl Store {
             .optional()?)
     }
 
-    /// A page of rows by ordinal, in order: `(seq, item_id, kind, item_json, created_at)`. The read
-    /// behind a head scrolling above its own window, and one query because a page asked for a row at
-    /// a time is a page of round trips.
+    /// A page of rows by ordinal, in order, as [`RowJson`]. The read behind a head scrolling above
+    /// its own window, and one query because a page asked for a row at a time is a page of round
+    /// trips.
     pub fn rows_json_from(
         &self,
         transcript_id: &str,
         from: u32,
         count: u32,
-    ) -> Result<Vec<(u32, String, String, String, u64)>> {
+    ) -> Result<Vec<RowJson>> {
         let conn = self.conn();
         let mut st = conn.prepare(
             "SELECT seq, item_id, kind, item_json, created_at FROM transcript_item\n              WHERE transcript_id = ?1 AND seq >= ?2 ORDER BY seq ASC LIMIT ?3",
