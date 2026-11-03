@@ -1546,16 +1546,21 @@ impl Harness {
         // A fork that summarised says so; one that did not must not: an empty summary is `reingest`, and telling
         // the model everything before is replaced by a summary it is not shown contradicts what it can see. The
         // sentence also changed when a tail arrived, for the same reason: `CompactionTail::why_line` words it.
-        let tail_why_text = (!tail.because.is_empty()).then(|| {
-            letibot_sessionlog::event::CompactionTail {
-                turns: Vec::new(),
-                carried: tail_items.len() as u64,
-                because: tail.because.to_string(),
-                dropped: 0,
-            }
-            .why_line()
-            .unwrap_or_default()
-        });
+        // R93.E6: a local model's reason is a rule id and a cache rule - the operator's question,
+        // and nothing the model can act on - so that one is left out of the row it reads.
+        let tail_why_text = match tail.because {
+            "" | "local_model" => None,
+            because => Some(
+                letibot_sessionlog::event::CompactionTail {
+                    turns: Vec::new(),
+                    carried: tail_items.len() as u64,
+                    because: because.to_string(),
+                    dropped: 0,
+                }
+                .why_line()
+                .unwrap_or_default(),
+            ),
+        };
         let carried = match tail_items.len() {
             // WHY there is no tail, said in the row itself, because an absence with two causes and one appearance
             // cannot be told apart otherwise. Here and not only on the wire, since this is the durable one: the store

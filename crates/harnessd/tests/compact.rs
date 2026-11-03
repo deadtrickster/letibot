@@ -827,9 +827,11 @@ fn the_compaction_note_says_why_it_has_no_tail() {
     let dir = TempDir::new("harnessd-compact-why");
     let path = dir.path().join("sessions.db");
     for (because, want) in [
-        ("local_model", "LOCAL model"),
-        ("nothing_fits", "larger than the whole tail budget"),
-        ("no_turns", "nothing to carry"),
+        // R93.E6: a local model's reason is a rule id and a cache rule, which is the operator's
+        // question; the model is told nothing about it.
+        ("local_model", None),
+        ("nothing_fits", Some("larger than the whole tail budget")),
+        ("no_turns", Some("nothing to carry")),
     ] {
         // A fresh session per case, because a fork replaces the transcript and the second
         // fork would be reading the first one's note.
@@ -859,10 +861,16 @@ fn the_compaction_note_says_why_it_has_no_tail() {
         let letibot_transcript::TranscriptItem::System { text, .. } = &words[0].0 else {
             panic!("the base's first item is the note");
         };
-        assert!(
-            text.contains(want),
-            "a compaction with no tail did not say why ({because}): {text}"
-        );
+        match want {
+            Some(want) => assert!(
+                text.contains(want),
+                "a compaction with no tail did not say why ({because}): {text}"
+            ),
+            None => assert!(
+                !text.contains("No verbatim tail") && !text.contains("LOCAL model"),
+                "a local model's tail rule is the operator's, not the model's ({because}): {text}"
+            ),
+        }
         assert!(
             !text.contains("follow verbatim"),
             "the note claims a tail it does not have: {text}"
