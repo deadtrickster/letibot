@@ -83,7 +83,7 @@ pub(crate) fn note_view(n: &Note) -> view::Note {
             view::Note::Decided {
                 summary: d.summary.clone(),
                 outcome: match &d.outcome {
-                    O::Selected { option_id } if option_id.starts_with("allow") => {
+                    O::Selected { option_id } if is_allow(option_id) => {
                         Settled::Allowed(option_id.clone())
                     }
                     O::Selected { option_id } => Settled::Refused(option_id.clone()),
@@ -199,6 +199,12 @@ pub(crate) fn note_card(
     }
 }
 
+/// The answers that let the call or the grant through: `allow_*` on a permission card,
+/// `grant_*` on a filesystem-view or memory card.
+fn is_allow(option_id: &str) -> bool {
+    option_id.starts_with("allow") || option_id.starts_with("grant")
+}
+
 /// A width no note wraps at, so [`rano::agent::notes::Note::unfolded`] answers its one sentence.
 const UNBOUNDED: usize = 1_000_000;
 
@@ -208,7 +214,7 @@ fn settled(outcome: &letibot_sessionlog::event::DecisionOutcome) -> (String, ran
     use letibot_sessionlog::event::DecisionOutcome as O;
     use rano::style::Role;
     match outcome {
-        O::Selected { option_id } if option_id.starts_with("allow") => {
+        O::Selected { option_id } if is_allow(option_id) => {
             (format!("allowed ({option_id})"), Role::Success)
         }
         O::Selected { option_id } => (format!("REFUSED ({option_id})"), Role::Failure),
@@ -344,6 +350,27 @@ pub(crate) fn note_lines_unfolded(cfg: &RenderConfig, n: &Note) -> Vec<String> {
 mod tests {
     use super::*;
     use letibot_sessionlog::view::Warned;
+
+    /// A view or memory grant the operator chose is an allow, not a refusal.
+    #[test]
+    fn a_chosen_grant_is_drawn_as_allowed_and_a_deny_as_refused() {
+        use letibot_sessionlog::event::DecisionOutcome as O;
+        let pick = |id: &str| {
+            settled(&O::Selected {
+                option_id: id.into(),
+            })
+            .0
+        };
+        for id in [
+            "grant_ro",
+            "grant_rw",
+            "grant_memory",
+            "grant_memory_session",
+        ] {
+            assert_eq!(pick(id), format!("allowed ({id})"));
+        }
+        assert_eq!(pick("deny"), "REFUSED (deny)");
+    }
 
     fn warned(code: &str, detail: &str) -> Note {
         Note::Warned(Warned {
