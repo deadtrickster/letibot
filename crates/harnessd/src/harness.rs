@@ -1582,6 +1582,7 @@ pub(crate) use deliveries::{
     completion_notice, completion_notices, meanwhile_notice, subagent_notice,
 };
 pub use error::HarnessError;
+pub(crate) use error::said_failure;
 pub use hub_io::{HubAdmissions, HubDenials, HubSteering};
 pub use job_window::{JobFate, JobWindow};
 pub(crate) use job_window::{

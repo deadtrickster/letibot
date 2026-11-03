@@ -101,6 +101,15 @@ impl std::fmt::Display for HarnessError {
 
 impl std::error::Error for HarnessError {}
 
+/// **What a child tells its parent about a turn that failed**: the wall's own `Display` is a page of
+/// token numbers the parent cannot act on, and the move it CAN make is to resume the child.
+pub(crate) fn said_failure(e: &HarnessError) -> String {
+    match e {
+        HarnessError::ContextWall { .. } => "ran out of room; resume it with task_message".into(),
+        other => other.to_string(),
+    }
+}
+
 impl From<TurnFailure> for HarnessError {
     fn from(e: TurnFailure) -> Self {
         HarnessError::Turn(e)

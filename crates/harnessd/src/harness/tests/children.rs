@@ -2,6 +2,27 @@
 
 use super::*;
 
+/// **A child that ran out of room says so, and not in token numbers**: the wall's own Display is a
+/// page about ledgers and compaction that the parent can neither read nor act on.
+#[test]
+fn a_child_that_hit_the_wall_hands_its_parent_a_move_and_not_its_numbers() {
+    let wall = HarnessError::ContextWall {
+        rounds: 41,
+        resident: 980_112,
+        window: 1_000_000,
+        unit: "tokens".into(),
+        ledger: (980_112, 1_000_000),
+    };
+    let said = said_failure(&wall);
+    assert_eq!(said, "ran out of room; resume it with task_message", "{said}");
+    assert!(!said.contains("980"), "no token number: {said}");
+    assert!(!said.contains("context wall"), "and not the words the check forbids: {said}");
+
+    // Anything else is still its own sentence: the wall is the one that cannot be read.
+    let refused = HarnessError::Setup("the store refused the row".into());
+    assert_eq!(said_failure(&refused), "the store refused the row");
+}
+
 /// A real worktree is arranged the way `task_start` arranges it: the branch is `agent/<slug>`, cut from the base, and
 /// the main tree is untouched. It drives the same `git_in` door in a throwaway repo, so the branch name and the main
 /// tree's cleanliness are facts on disk rather than a claim in the answer.

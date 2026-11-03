@@ -1224,7 +1224,9 @@ pub(crate) fn later_news(
             answer: reply.text.clone(),
             child: None,
         },
-        Err(e) => letibot_tools::builtins::task::TaskStatus::Failed { why: e.to_string() },
+        Err(e) => letibot_tools::builtins::task::TaskStatus::Failed {
+            why: said_failure(e),
+        },
     })
 }
 
@@ -3830,7 +3832,7 @@ impl HarnessTaskRunner {
                 // answer to carry the line. The tree goes FIRST: a survivor handed to the parent
                 // keeps the directory it stands in, and the reap that follows this call removes
                 // that tree.
-                let mut why = e.to_string();
+                let mut why = said_failure(&e);
                 let heir = self.heir();
                 let said = a_failed_childs_ending(
                     || deliverable::reap_failed(the_deliverable.as_ref()),
