@@ -334,29 +334,10 @@ fn c1(vectors: &[Vec<TokenId>]) -> String {
     )
 }
 
-fn judge(
-    rows: &[Row],
-    vectors: &[Vec<TokenId>],
-    prefix_at_open: &[TokenId],
-    harness: &Harness,
-    failures: &[String],
-) -> Vec<String> {
-    let mut out = Vec::new();
-
-    // ---- C1: exact prefix extension of the token array -------------------
-    out.push(c1(vectors));
-
-    // ---- C2: the fidelity gate, which needs no model ---------------------
-    out.push(
-        "C2  NOT RUN  renderer fidelity is tests/fidelity/run_gate.py (GLM 139/139) and \
-         crates/dialect-qwen/fidelity.py (Qwen 56/56 gating, 1 declared divergence). \
-         Neither needs a model, so neither is re-run here."
-            .to_string(),
-    );
-
-    // ---- C3: the generation-inclusive prefix invariant -------------------- Read off
-    // `PrefixCheck`, which the engine computed at the moment it had the evidence, rather than
-    // recomputed from `prompt + predicted`
+/// C3: the generation-inclusive prefix invariant, read off the engine's `PrefixCheck`. A
+/// `Violated` is the only verdict here that is a defect in us; a shortfall is a measurement of
+/// the server, so it is reported apart and named `PASS*` rather than folded into a pass.
+fn c3(rows: &[Row]) -> String {
     let mut c3_held = 0;
     let mut c3_short: Vec<String> = Vec::new();
     // Every shortfall is compared against the previous submission's generation, because one shape
@@ -398,38 +379,71 @@ fn judge(
         }
         prev_predicted = r.m.predicted_tokens;
     }
-    out.push(if !c3_violated.is_empty() {
-        // The only verdict here that is a defect in us.
-        format!(
+    if !c3_violated.is_empty() {
+        return format!(
             "C3  FAIL  {} submission(s) VIOLATED the generation-inclusive prefix \
              invariant:\n      {}",
             c3_violated.len(),
             c3_violated.join("\n      ")
-        )
-    } else if c3_short.is_empty() {
-        format!(
+        );
+    }
+    let comparable = c3_held + c3_short.len();
+    if comparable == 0 {
+        return format!(
+            "C3  NOT RUN  no submission was compared with the one before it ({c3_first} \
+             first-turn, {} skipped)",
+            c3_skipped.len()
+        );
+    }
+    if c3_short.is_empty() {
+        return format!(
             "C3  PASS  the invariant held with zero shortfall on all {c3_held} comparable \
              submissions ({c3_first} first-turn, {} skipped)",
             c3_skipped.len()
-        )
-    } else {
-        format!(
-            "C3  PASS*  the invariant was never violated — our prompt always extended the \
-             previous one plus its generation — but the SERVER reused less than it could \
-             have on {} of {} comparable submissions. A structural divergence cannot be \
-             intermittent, so a shortfall on some turns and not others is a cache event \
-             on the server, not a prefix bug here.\n      \
-             {} of them carry one exact signature: shortfall = previous generation + 3, \
-             i.e. the server reused everything up to the end of the last committed item \
-             and discarded BOTH the 4-token generation prompt AND the whole generation. \
-             {} do not fit that shape.\n      {}",
-            c3_short.len(),
-            c3_held + c3_short.len(),
-            c3_signature,
-            c3_other,
-            c3_short.join("\n      ")
-        )
-    });
+        );
+    }
+    format!(
+        "C3  PASS*  the invariant was never violated, so our prompt always extended the \
+         previous one plus its generation, but the SERVER reused less than it could have on \
+         {} of {} comparable submissions. A structural divergence cannot be intermittent, so \
+         a shortfall on some turns and not others is a cache event on the server, not a \
+         prefix bug here.\n      \
+         {} of them carry one exact signature: shortfall = previous generation + 3, i.e. \
+         the server reused everything up to the end of the last committed item and \
+         discarded BOTH the 4-token generation prompt AND the whole generation. {} do not \
+         fit that shape.\n      {}",
+        c3_short.len(),
+        comparable,
+        c3_signature,
+        c3_other,
+        c3_short.join("\n      ")
+    )
+}
+
+fn judge(
+    rows: &[Row],
+    vectors: &[Vec<TokenId>],
+    prefix_at_open: &[TokenId],
+    harness: &Harness,
+    failures: &[String],
+) -> Vec<String> {
+    let mut out = Vec::new();
+
+    // ---- C1: exact prefix extension of the token array -------------------
+    out.push(c1(vectors));
+
+    // ---- C2: the fidelity gate, which needs no model ---------------------
+    out.push(
+        "C2  NOT RUN  renderer fidelity is tests/fidelity/run_gate.py (GLM 139/139) and \
+         crates/dialect-qwen/fidelity.py (Qwen 56/56 gating, 1 declared divergence). \
+         Neither needs a model, so neither is re-run here."
+            .to_string(),
+    );
+
+    // ---- C3: the generation-inclusive prefix invariant -------------------- Read off
+    // `PrefixCheck`, which the engine computed at the moment it had the evidence, rather than
+    // recomputed from `prompt + predicted`
+    out.push(c3(rows));
 
     // ---- C4: the f_keep distribution -------------------------------------- D11
     out.extend(c4(rows));
@@ -856,6 +870,57 @@ mod tests {
         assert!(
             line.contains("C1  NOT RUN"),
             "zero pairs compared was reported as a pass: {line}"
+        );
+    }
+
+    /// C3's three verdicts, which are three different claims: a `Violated` is a defect in us, a
+    /// shortfall is the server reusing less than it could, and a shortfall carrying the exact
+    /// signature the 30-turn run showed is the server dropping our generation.
+    #[test]
+    fn c3_fails_only_where_our_own_prompt_diverged() {
+        let mut first = row(1, 500, 400, 400);
+        first.m.predicted_tokens = 97;
+        first.m.prefix_check = PrefixCheck::Held {
+            expected_cached_min: 400,
+            cached: 400,
+            shortfall: 0,
+        };
+        let line = c3(std::slice::from_ref(&first));
+        assert!(line.contains("C3  PASS"), "{line}");
+        assert!(line.contains("all 1 comparable"), "{line}");
+
+        // The next submission's shortfall is exactly this one's generation plus 3.
+        let mut short = row(2, 520, 400, 400);
+        short.m.prefix_check = PrefixCheck::Held {
+            expected_cached_min: 400,
+            cached: 300,
+            shortfall: 100,
+        };
+        let line = c3(&[first, short]);
+        assert!(line.contains("C3  PASS*"), "{line}");
+        assert!(line.contains("short by 100"), "{line}");
+        assert!(
+            line.contains("1 of them carry one exact signature"),
+            "{line}"
+        );
+
+        let mut violated = row(3, 600, 0, 0);
+        violated.m.prefix_check = PrefixCheck::Violated {
+            detail: "prompt 600 does not begin with 520 plus 20".into(),
+        };
+        let line = c3(&[violated]);
+        assert!(line.contains("C3  FAIL"), "{line}");
+        assert!(line.contains("turn 3: prompt 600"), "{line}");
+    }
+
+    /// A run that recorded no submission has measured no submission, so the invariant was not
+    /// held over zero turns: it was never tried.
+    #[test]
+    fn a_run_with_no_submission_does_not_pass_c3_by_vacancy() {
+        let line = c3(&[]);
+        assert!(
+            line.contains("C3  NOT RUN"),
+            "an empty run was reported as a pass: {line}"
         );
     }
 }
