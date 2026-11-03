@@ -1804,103 +1804,31 @@ impl Tool for TodoWriteTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(
             "todo_write",
-            "Write the session's todo list: one entry per step, the step being \
-             worked on marked in_progress, finished steps marked completed. Send the \
-             WHOLE list every time — and a row you leave out STAYS on the board: \
-             nothing this tool sends removes a row, because only the operator \
-             deletes, and only through their own `/todo rm`. Retire a row by marking \
-             it `completed`. To mark ONE row without re-sending the list, name it in \
-             `update`, quoting its `content` exactly.\n\n**A row is a TITLE, and a title is at most 135 \
-             characters.** The todos pane draws a row at the width of the operator's terminal less the \
-             gutter and the row's own mark, number and `— model`, which leaves 135 — so a longer title \
-             is cut off at the pane's right edge and read by nobody, and a `todos` entry whose title is \
-             over that is REFUSED by name, with nothing written. **The rest of a row goes after ` — ` \
-             in the same `content`**: `title — the detail`. That part is the row's DETAIL, it is not \
-             capped, and the pane draws it after the title — so put anything long there rather than in \
-             the title: `Fix the flaky test — it fails when the store is busy; see the gate run`. A row \
-             already on the board is never refused for its length: the cap binds the words a call \
-             WRITES, so an old long row can still be restated, or moved by quoting it in `update`.\n\nA row the OPERATOR has POSTPONED comes \
-             back marked `[p]`: it stays on the board, it is still theirs, and it is \
-             not work you are being asked for — do not propose it again. `postponed` \
-             is not a status you may send; setting one aside and lifting it again are \
-             the operator's own acts.\n\n`operator` is for rows the OPERATOR \
-             wrote — the ones the reply marks `— the operator's` — and changes their \
-             STATE only: quote `content` EXACTLY as the reply shows it. A quote that \
-             does not match exactly one of their rows is refused and nothing is \
-             written, because a guessed row is a row changing state under you. You \
-             cannot delete their row; if you think it should not be done, say so in \
-             your reply.\n\n`update` moves ONE OR MORE of YOUR OWN rows — the way to mark \
-             rows without re-sending the list. It takes `content` (the row's \
-             own words, quoted exactly as the reply shows them) and `status`, and \
-             sets the status and nothing else: it cannot add a row, cannot change \
-             one's edges, and cannot remove one. A quote that matches no row is \
-             refused with the rows you do have; one that matches more than one is \
-             refused with the candidates named; and either refusal writes NOTHING — \
-             not even the `todos` beside it.\n\n`target` names a session YOU spawned with `task` and \
-             writes YOUR rows onto THAT session's board instead of your own. There the \
-             whole-list contract is OFF: your `todos` are the rows you are adding or \
-             updating as the parent — a row whose text matches one of yours there \
-             moves its state, a new text is added — and the child's rows, the \
-             operator's rows and every other author's rows are UNTOUCHED. Omitting \
-             one of your rows leaves it on the child's board; there is no delete, so \
-             retire a row by marking it completed. The child is told through the usual \
-             todo nags, and rows you write there show as `Parent <your session id>`. \
-             `target` and `operator` do not mix: name one child, your own rows only.\n\nA row \
-              may WAIT ON other rows: `needs` names them by their exact `content`, and the row \
-              cannot start until every row it names is `completed`. The plan is then a graph \
-              rather than a queue — the check asks about what can actually start, and says what \
-              cannot and what it is waiting for — so an order you mean should be written down \
-              rather than implied by position. A name that matches no row, or two rows, blocks \
-              the row that needs it and the check says so; a need that is satisfied is silent.\n\nA \
-              row may also WAIT ON A CHILD you started with `task`: `needs` takes \
-              {\"kind\": \"child\", \"id\": \"<the session id `task` handed back>\"}, and the row \
-              cannot start until that child has finished. While the child is young the check is \
-              SILENT about the row — you are given room to work on other things — and once it has \
-              been running a while the check tells you where the child has got to and says to \
-              look at it if it has gone quiet. Use it for a dispatch: a row that collects a \
-              subagent's work is not work you can do yet.\n\nA row \
-               may also WAIT ON A BACKGROUND JOB: `needs` takes \
-               {\"kind\": \"job\", \"handle\": \"<the handle `bash` with `background: true`, or \
-               `job_list`, printed>\"}, and the row cannot start until that job has ENDED, any \
-               ending. While the job runs the check is SILENT about the row — its completion \
-               reaches you as soon as it ends, so there is nothing to watch and nothing to look at \
-               — and the row is asked about once it is over. Use it for work that has to land \
-               first: a row that pushes a branch waits on the job that tests it. This is an EDGE \
-               and not a clock: a row that FIRES when a job ends is the operator's `when`, which \
-               is not yours to write.\n\n`wait_on` marks a row ALREADY on the board — yours OR \
-               the operator's — as waiting on a running job or a subagent, without restating it: \
-               {\"wait_on\": [{\"content\": \"<the row, quoted exactly>\", \"job\": \"j123\"}]} \
-               (the handle or the name `job_list` prints), or \"child\": \"<the session id `task` \
-               handed back>\" in place of `job`. Use it when the check names a row you can only \
-               answer with *the job is still running*: while that job or subagent runs the check \
-               is SILENT about the row, and once it ends the row is asked about again. It changes \
-               no row's words or status — on the operator's row it only says *not now*. \
-               {\"content\": \"…\", \"detach\": true} takes the row's job and subagent waits \
-               off again. The job must be one of this session's and still running, the child one \
-               you spawned; anything else is refused by name. `wait_on` goes in a call of its own.\n\nA \
-               row may also WAIT ON THE OPERATOR — a decision only they can make. Give them a \
-               CHOICE: `needs` takes {\"kind\": \"operator\", \"question\": \"<one question>\", \
-               \"options\": [\"<choice>\", \"<choice>\"]} with at least TWO options, or `wait_on` \
-               takes {\"content\": \"<the row>\", \"operator\": {\"question\": …, \"options\": \
-               […]}} for a row already on the board. Their screen then says LOUDLY that you are \
-               waiting on them and shows the question as a card: they pick an option (with a note \
-               if they like), type their own answer, or abstain. That row is NOT asked about while \
-               it waits, and THE REST OF THE PLAN KEEPS GOING — the check keeps asking about every \
-               other row that can start, so carry on with them. Meanwhile try to work the question \
-               out yourself; if you can, take the wait off with {\"content\": \"…\", \"detach\": \
-               true} and say what you decided. Their answer reaches you at once as an `[answer]` \
-               line, the row is unblocked, and the reply stays on the row. An abstention is an \
-               answer too and unblocks the row: they will not decide, so proceed and state the \
-               assumption you proceed on.",
+            "Write the session's todo list: one row per step, in order, the step being worked \
+             on marked `in_progress` and finished ones `completed`. Send the WHOLE list every \
+             time — a row you leave out STAYS on the board, and only the operator can remove \
+             one, so retire a row by marking it `completed`. A row whose trimmed text matches \
+             one already there moves that row's state and its edges; a new text adds a row. To \
+             move ONE row without re-sending the list, name it in `update`.\n\n\
+             **A row is a TITLE, and a title is at most 135 characters**: the pane cuts a longer \
+             one at its right edge, and an entry over it is REFUSED by name, with nothing \
+             written. The rest of a row goes after ` — ` in the same `content` — `title — the \
+             detail` — where it is uncapped.\n\n\
+             A row the OPERATOR postponed comes back `[p]`: it is theirs, not work you are asked \
+             for, and `postponed` is not a status you may send.\n\n\
+             A row may WAIT — on another row, a child, a job, a monitor or the operator's answer \
+             (`needs`), and `wait_on` attaches a wait to a row already on the board. An operator \
+             wait is a card on their screen: they pick an option, type their own answer, or \
+             abstain — and an abstention is an answer, so proceed and state the assumption you \
+             proceed on.",
             json!({
                 "type": "object",
                 "properties": {
                     "operator": {
                         "type": "array",
-                        "description": "Rows the OPERATOR wrote, whose STATE you are \
-                                        changing. Quote `content` exactly as the reply \
-                                        shows it. Sets state and never membership: it \
-                                        can neither add a row nor remove one.",
+                        "description": "Rows the OPERATOR wrote, whose STATE you change: \
+                                        quote `content` exactly as the reply shows it. It \
+                                        never adds a row and never removes one.",
                         "items": {
                             "type": "object",
                             "properties": {
@@ -1915,16 +1843,11 @@ impl Tool for TodoWriteTool {
                     },
                     "update": {
                         "type": "array",
-                        "description": "ONE OR MORE OF YOUR OWN ROWS, moved by quoting \
-                                        each one's `content` exactly as the reply shows \
-                                        it — the way to mark a single row without \
-                                        re-sending `todos`. Sets `status` and nothing \
-                                        else: it never adds a row, never changes one's \
-                                        edges and never removes one. A quote that \
-                                        matches no row of yours is refused with the \
-                                        rows you do have, and one that matches two is \
-                                        refused with both named; either refusal writes \
-                                        nothing at all.",
+                        "description": "ONE OR MORE OF YOUR OWN ROWS, by exact quote \
+                                        of `content` — the way to mark a single row \
+                                        without re-sending `todos`. Status only: it \
+                                        never adds a row, changes an edge or removes \
+                                        one.",
                         "items": {
                             "type": "object",
                             "properties": {
@@ -1939,14 +1862,11 @@ impl Tool for TodoWriteTool {
                     },
                     "todos": {
                         "type": "array",
-                        "description": "Your plan, in the order to do them. A row whose \
-                                        trimmed text matches one you already wrote moves \
-                                        that row's state (and its edges); a new text is \
-                                        added; and a row you leave OUT stays on the board \
-                                        — there is no delete. With `target`: the rows you \
-                                        are adding to or state-updating on that child's \
-                                        board — not a replace; the child's own rows and \
-                                        everyone else's are untouched.",
+                        "description": "Your plan, in the order to do them: a matching \
+                                        text moves that row (and its edges), a new text \
+                                        adds one, and a row you leave out stays. With \
+                                        `target`, an upsert of your rows on that \
+                                        child's board, never a replace.",
                         "items": {
                             "type": "object",
                             "properties": {
@@ -1954,9 +1874,8 @@ impl Tool for TodoWriteTool {
                                     "type": "string",
                                     "description": "The step, as a TITLE of at most 135 \
                                                     characters. Anything longer goes after ` — ` \
-                                                    in this same string — that part is the row's \
-                                                    DETAIL, it is not capped, and the pane draws \
-                                                    it after the title."
+                                                    in this same string, uncapped; the pane \
+                                                    draws it as the row's detail."
                                 },
                                 "status": {
                                     "type": "string",
@@ -1979,33 +1898,16 @@ impl Tool for TodoWriteTool {
                                             "options": {"type": "array", "items": {"type": "string"}}
                                         }, "required": ["kind"]}
                                     ]},
-                                    "description": "What this row waits for. A plain string is \
-                                                    the exact `content` of another row on this \
-                                                    list that must be COMPLETED before this one \
-                                                    can start. The tagged form \
-                                                    {\"kind\": \"child\", \"id\": \"s-…\"} names a \
-                                                    CHILD you started with `task` — the session id \
-                                                    it handed back — and waits for that child to \
-                                                    finish. {\"kind\": \"job\", \"handle\": \"j…\"} names a \
-                                                     BACKGROUND JOB by the handle `job_list` \
-                                                     prints, and waits for it to END, any ending — \
-                                                     the check is silent about the row while the \
-                                                     job runs. {\"kind\": \"monitor\", \
-                                                     \"name\": \"…\"} names a MONITOR you armed \
-                                                     with `monitor` and waits for it to fire or \
-                                                     end, silently while it watches — a one-shot \
-                                                     timer monitor is how a row says come back \
-                                                     to this later. {\"kind\": \"operator\", \
-                                                     \"question\": \"…\", \"options\": [\"…\", \
-                                                     \"…\"]} waits on the OPERATOR's answer to a \
-                                                     question (at least two options; they can \
-                                                     also type their own answer or abstain) — the \
-                                                     rest of the plan keeps going meanwhile. \
-                                                     Optional, and empty is the ordinary \
-                                                    row: a row that names nothing is ready as soon \
-                                                    as it is open. A row name that matches no \
-                                                    row, or two, blocks this row and the check says \
-                                                    which one it could not place."
+                                    "description": "What this row waits for: a plain string \
+                                                    is another row's exact `content`; the tagged \
+                                                    form names a `child` (\"id\": \"s-…\"), a \
+                                                    `job` (\"handle\": \"j…\", any ending), a \
+                                                    `monitor` (\"name\": \"…\", its firing), or \
+                                                    the `operator` (\"question\": …, \"options\": \
+                                                    […], at least two) for their answer. A row \
+                                                    that names nothing is ready at once; a name \
+                                                    matching no row, or two, blocks the row and \
+                                                    the check says which."
                                 }
                             },
                             "required": ["content", "status"]
@@ -2013,20 +1915,11 @@ impl Tool for TodoWriteTool {
                     },
                     "wait_on": {
                         "type": "array",
-                        "description": "Rows ALREADY on the board — yours or the operator's, \
-                                        quoted exactly — that wait on a running job or a \
-                                        subagent you spawned, or on the operator's answer to a \
-                                        question. The check is silent about such a row until \
-                                        the job or subagent ends or the operator answers; the \
-                                        rest of the plan keeps being asked about. Each entry has \
-                                        `content` and exactly one of `job` (a handle or name \
-                                        `job_list` prints), `child` (a session id `task` handed \
-                                        back), `operator` ({\"question\": \"…\", \"options\": \
-                                        [at least two choices]}) or `detach: true` (take its \
-                                        waits off, the operator's question included). Several \
-                                        entries quoting one row make it wait on ALL of them — \
-                                        two jobs, a job and a child, any mix. Words and status \
-                                        are never changed. A call of its own.",
+                        "description": "Rows already on the board, quoted exactly, that \
+                                        wait on a `job` (a handle or a name), a `child` (an \
+                                        id `task` handed back), the `operator`'s answer, \
+                                        or `detach: true` to take the waits off. A call of \
+                                        its own.",
                         "items": {
                             "type": "object",
                             "properties": {
@@ -2052,17 +1945,11 @@ impl Tool for TodoWriteTool {
                     },
                     "target": {
                         "type": "string",
-                        "description": "Write onto a CHILD session's board instead of \
-                                        your own: the child's session id, its slug, or the \
-                                        short `…tail` form the subagent pane and \
-                                        `task_result` show. Only a session YOU spawned \
-                                        with `task` may be named; anything else — a \
-                                        sibling, your own parent, yourself — is refused \
-                                        by name. With `target`, `todos` is an upsert of \
-                                        your own rows there (matched by exact text) \
-                                        and NEVER a replace: the child's rows, the \
-                                        operator's rows and other authors' rows are \
-                                        untouched, and there is no delete."
+                        "description": "A child of yours instead of your own board, by \
+                                        the id `task` handed back: an upsert of your rows \
+                                        there, never a replace — its own rows, the \
+                                        operator's and every other author's are \
+                                        untouched."
                     }
                 },
                 "required": []

@@ -147,6 +147,39 @@ fn the_argument_list_does_not_call_wait_on_job_or_subagent_only() {
     );
 }
 
+/// **B13: the description is a line per field, not a manual.** Tool description and field
+/// descriptions together ran to about 1,100 words, read on every call. The bounds are the guard:
+/// what a field does, once, and the examples only where a shape cannot be said in words.
+#[test]
+fn the_description_is_one_short_paragraph_per_field() {
+    let s = TodoWriteTool::new(Arc::new(TodoBoard::new(Vec::new()))).schema();
+    let words = |t: &str| t.split_whitespace().count();
+    assert!(
+        words(&s.description) <= 240,
+        "the tool's own text is {} words",
+        words(&s.description)
+    );
+    let props = &s.parameters["properties"];
+    for field in ["todos", "update", "operator", "target", "wait_on"] {
+        let d = props[field]["description"].as_str().unwrap_or_default();
+        assert!(words(d) <= 60, "`{field}` is {} words: {d}", words(d));
+    }
+    let needs = &props["todos"]["items"]["properties"]["needs"]["description"];
+    let needs = needs.as_str().unwrap_or_default();
+    assert!(
+        words(needs) <= 90,
+        "`needs` is {} words: {needs}",
+        words(needs)
+    );
+    let content = &props["todos"]["items"]["properties"]["content"]["description"];
+    let content = content.as_str().unwrap_or_default();
+    assert!(
+        words(content) <= 45,
+        "a row's `content` is {} words: {content}",
+        words(content)
+    );
+}
+
 /// **B11: one rule for an abstention.** `ask_user_question` and an operator wait on a
 /// `todo_write` row say the same thing - an abstention is an answer, and the model proceeds on
 /// an assumption it states - where one used to call it "not permission to proceed".
