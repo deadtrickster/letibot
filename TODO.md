@@ -5527,7 +5527,7 @@ lost, more disk reads), or make the RAM tier write-through (survives the kill, c
 NVMe bandwidth that is measurably spare). Not a letibot change either way — it is
 `~/bin/glm-flash-server` and llama.cpp's `server_prompt_cache`.
 
-## T20 — Where the assembled parts did not fit — **integration findings, several serious; left: item 5 — no fourth trait method merges Qwen's consecutive tool results, and the divergence is declared only in the renderer's header (items 1, 3, 4 and 8 landed in code with no test naming them)**
+## T20 — Where the assembled parts did not fit — **integration findings, several serious; items 2, 6 and 7 are fixed with their tests, and item 5's fourth trait method is built (`PromptRenderer::render_incremental_by_item`, called from `crates/turn/src/engine.rs:460`, so Qwen's consecutive tool results merge into one user turn with each item's end recorded); left: items 1, 3 and 4 landed in code with no test naming them**
 
 1. **Double envelope.** `ToolRuntime::transcript_item` renders §8.2's `NO_RESULT`
    envelope into `payload`, and **both** dialect renderers wrapped it again — the model
@@ -5554,10 +5554,12 @@ NVMe bandwidth that is measurably spare). Not a letibot change either way — it
 5. **`Session::append_items` renders one item at a time**, so Qwen's consecutive tool
    results cannot merge into one user turn without a fourth trait method. Declared as a
    gate divergence.
-   — OPEN: the divergence is declared in the renderer's own header
-   (`crates/dialect-qwen/src/render.rs:5-14`), not in the fidelity gate's declarations (only
-   `tests/fidelity/fixtures/reasoning-leak.json` declares one), and merging still needs a fourth
-   trait method (`crates/turn/src/renderer.rs:14-40`).
+   — ✓ fixed: the fourth method is `PromptRenderer::render_incremental_by_item`
+   (`crates/turn/src/renderer.rs:47`), which returns each item's span `ends`, and the engine
+   calls it (`crates/turn/src/engine.rs:460, :590`); `QwenRenderer::render_incremental_by_item`
+   (`crates/dialect-qwen/src/render.rs:138`) writes one user turn per run of results and its own
+   tests assert the run and the ends (`:873`, `:945`), so the ledger keeps one row per item
+   under a prompt that carries one turn per run.
 6. **Qwen's `SystemUpdateMode` is `Envelope`, not `InHistory`** — its template *raises*
    on a mid-history system message, so §5.3's conservative default is the only
    renderable form. The model can and did argue with it.
