@@ -511,6 +511,109 @@ impl Harness {
         })
     }
 
+    /// **This session's point, and the two facts that ride the config rather than the mode store**:
+    /// the per-project point (longest ancestor wins, with the recorded consent disclosed where one
+    /// applies), whether the session is unconfined, and whose child it is. Answers the settings row's
+    /// own field: where the point came from.
+    fn resolve_the_point(
+        parts: &Parts,
+        cfg: &mut Config,
+        store: &Option<Store>,
+        stored: Option<&letibot_tokencore::store::StoredSession>,
+        session_registry: &Arc<letibot_sessionlog::registry::Registry>,
+        notes: &mut Vec<String>,
+    ) -> String {
+    // The mode is a session property, resolved after the workspace is final: the per-project
+    // point is looked up now (longest ancestor wins), so a project with no row keeps the
+    // daemon's default and one with a row takes its own.
+    let mut mode_source = String::from("daemon flag / default");
+    {
+        // **Read fresh**: another daemon may have written a row since this one started.
+        let mut store = parts.mode_store.write().unwrap();
+        store.refresh();
+        let store = &*store;
+        // **The session's own point first** - the one it was put at, which a restart or
+        // a reseat must bring back whatever the project row says now. The operator:
+        // *"and again peerdb allow-all lost after restart/reseat"*.
+        let own = cfg
+            .parent_session_id
+            .is_none()
+            .then(|| store.session(&cfg.session_id))
+            .flatten();
+        // A subagent keeps its parent's point and never re-reads the row: it must not differ
+        // from its parent in either direction, and a row naming a point the child cannot carry
+        // killed it before its first turn. The row is for a session somebody opened there.
+        if let Some((own, when)) = own {
+            cfg.mode = own;
+            mode_source = "this session's own (set with /mode)".into();
+            if own.name == letibot_tools::mode::Mode::ALLOW_ALL.name
+                && let Some(when) = when
+            {
+                cfg.mode = letibot_tools::mode::Mode::ALLOW_ALL_HERE;
+                mode_source = format!("this session's own, at your word of {when}");
+                notes.push(format!(
+                    "`allow-all` for this session — on this box, with nothing confining it, \
+                     because you said so on {when}. `/mode <other>` takes it back."
+                ));
+            } else {
+                notes.push(format!(
+                    "mode is `{}` for this session (set with /mode)",
+                    cfg.mode.name
+                ));
+            }
+        } else if cfg.parent_session_id.is_some() {
+            // The point itself is the parent's, read live by the spawn and carried in
+            // `cfg.mode`; whether this seat can carry it is decided below, where the
+            // seat's own supplies exist. Here is where the row says where it came from.
+            mode_source = child_mode_source(None);
+        } else if store.is_set(&cfg.workspace) {
+            let before = cfg.mode.name;
+            cfg.mode = store.for_project(&cfg.workspace);
+            mode_source = "project store".into();
+            // And the recorded consent, when the row names the point that needs one: the
+            // operator's answer is in the store so a restart stops throwing it away, and it is
+            // DISCLOSED here, because a point that came back silently is the failure.
+            if cfg.mode.name == letibot_tools::mode::Mode::ALLOW_ALL.name
+                && let Some(when) = store.consent(&cfg.workspace)
+            {
+                cfg.mode = letibot_tools::mode::Mode::ALLOW_ALL_HERE;
+                mode_source = format!("project store, at your word of {when}");
+                notes.push(format!(
+                    "`allow-all` for {} — on this box, with nothing confining it, because you \
+                     said so on {when}. Nothing is asked here and the always-ask list is \
+                     admitted; `/mode <other>` takes it back and forgets the answer.",
+                    cfg.workspace.display()
+                ));
+            } else if cfg.mode.name != before {
+                notes.push(format!(
+                    "mode is `{}` for {} (from the project store), not the daemon default `{before}`",
+                    cfg.mode.name, cfg.workspace.display()
+                ));
+            }
+        }
+    }
+
+    // leticode's opencode parity, and a subagent's inheritance of it, is a fact of the SESSION and
+    // not of the seat: a subagent re-seats to `coder`, so the seat alone would re-confine it. It
+    // is also read back from the store, because the row a spawn leaves says only the SEAT.
+    cfg.unconfined = cfg.unconfined
+        || cfg.seat == Seat::Leticode
+        || match (&store, &stored) {
+            (Some(store), Some(st)) => unconfined_by_inheritance(store, st),
+            _ => false,
+        };
+
+    // A session a session started has that session as its parent: every open passes through
+    // here, and only here are the caller's word, the registry's entry and the row in one hand.
+    // After the mode block, which asks whether this session inherits a LIVE parent's point.
+    cfg.parent_session_id = session_registry.parent_for(
+        &cfg.session_id,
+        cfg.parent_session_id.clone(),
+        stored.as_ref().and_then(|s| s.parent_session_id.as_deref()),
+    );
+        mode_source
+    }
+
     pub fn open_with_registry(
         parts: &Parts,
         mut cfg: Config,
@@ -530,93 +633,13 @@ impl Harness {
             writer,
         } = Self::open_the_stored(&mut cfg, &mut notes)?;
 
-        // The mode is a session property, resolved after the workspace is final: the per-project
-        // point is looked up now (longest ancestor wins), so a project with no row keeps the
-        // daemon's default and one with a row takes its own.
-        let mut mode_source = String::from("daemon flag / default");
-        {
-            // **Read fresh**: another daemon may have written a row since this one started.
-            let mut store = parts.mode_store.write().unwrap();
-            store.refresh();
-            let store = &*store;
-            // **The session's own point first** - the one it was put at, which a restart or
-            // a reseat must bring back whatever the project row says now. The operator:
-            // *"and again peerdb allow-all lost after restart/reseat"*.
-            let own = cfg
-                .parent_session_id
-                .is_none()
-                .then(|| store.session(&cfg.session_id))
-                .flatten();
-            // A subagent keeps its parent's point and never re-reads the row: it must not differ
-            // from its parent in either direction, and a row naming a point the child cannot carry
-            // killed it before its first turn. The row is for a session somebody opened there.
-            if let Some((own, when)) = own {
-                cfg.mode = own;
-                mode_source = "this session's own (set with /mode)".into();
-                if own.name == letibot_tools::mode::Mode::ALLOW_ALL.name
-                    && let Some(when) = when
-                {
-                    cfg.mode = letibot_tools::mode::Mode::ALLOW_ALL_HERE;
-                    mode_source = format!("this session's own, at your word of {when}");
-                    notes.push(format!(
-                        "`allow-all` for this session — on this box, with nothing confining it, \
-                         because you said so on {when}. `/mode <other>` takes it back."
-                    ));
-                } else {
-                    notes.push(format!(
-                        "mode is `{}` for this session (set with /mode)",
-                        cfg.mode.name
-                    ));
-                }
-            } else if cfg.parent_session_id.is_some() {
-                // The point itself is the parent's, read live by the spawn and carried in
-                // `cfg.mode`; whether this seat can carry it is decided below, where the
-                // seat's own supplies exist. Here is where the row says where it came from.
-                mode_source = child_mode_source(None);
-            } else if store.is_set(&cfg.workspace) {
-                let before = cfg.mode.name;
-                cfg.mode = store.for_project(&cfg.workspace);
-                mode_source = "project store".into();
-                // And the recorded consent, when the row names the point that needs one: the
-                // operator's answer is in the store so a restart stops throwing it away, and it is
-                // DISCLOSED here, because a point that came back silently is the failure.
-                if cfg.mode.name == letibot_tools::mode::Mode::ALLOW_ALL.name
-                    && let Some(when) = store.consent(&cfg.workspace)
-                {
-                    cfg.mode = letibot_tools::mode::Mode::ALLOW_ALL_HERE;
-                    mode_source = format!("project store, at your word of {when}");
-                    notes.push(format!(
-                        "`allow-all` for {} — on this box, with nothing confining it, because you \
-                         said so on {when}. Nothing is asked here and the always-ask list is \
-                         admitted; `/mode <other>` takes it back and forgets the answer.",
-                        cfg.workspace.display()
-                    ));
-                } else if cfg.mode.name != before {
-                    notes.push(format!(
-                        "mode is `{}` for {} (from the project store), not the daemon default `{before}`",
-                        cfg.mode.name, cfg.workspace.display()
-                    ));
-                }
-            }
-        }
-
-        // leticode's opencode parity, and a subagent's inheritance of it, is a fact of the SESSION and
-        // not of the seat: a subagent re-seats to `coder`, so the seat alone would re-confine it. It
-        // is also read back from the store, because the row a spawn leaves says only the SEAT.
-        cfg.unconfined = cfg.unconfined
-            || cfg.seat == Seat::Leticode
-            || match (&store, &stored) {
-                (Some(store), Some(st)) => unconfined_by_inheritance(store, st),
-                _ => false,
-            };
-
-        // A session a session started has that session as its parent: every open passes through
-        // here, and only here are the caller's word, the registry's entry and the row in one hand.
-        // After the mode block, which asks whether this session inherits a LIVE parent's point.
-        cfg.parent_session_id = session_registry.parent_for(
-            &cfg.session_id,
-            cfg.parent_session_id.clone(),
-            stored.as_ref().and_then(|s| s.parent_session_id.as_deref()),
+        let mut mode_source = Self::resolve_the_point(
+            parts,
+            &mut cfg,
+            &store,
+            stored.as_ref(),
+            &session_registry,
+            &mut notes,
         );
 
         // The backend the seat needs, and the constructor is the disclosure: choosing
