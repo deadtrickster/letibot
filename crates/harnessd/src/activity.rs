@@ -367,6 +367,7 @@ mod tests {
             elapsed_ms: 1_000,
             detail: String::new(),
             arrived: SystemTime::now(),
+            later: false,
         }]);
         // A turn that finished on its own rang for the result it held, and takes that turn.
         watch.turn_ended(TurnEnd::Done);

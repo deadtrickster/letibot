@@ -228,6 +228,7 @@ fn a_batch_a_turn_said_and_then_failed_is_not_owed_again() {
         elapsed_ms: 1500,
         detail: String::new(),
         arrived: std::time::SystemTime::now(),
+        later: false,
     }]);
     // The row goes in and the rounds then fail: this box has no model, so the round after the
     // appends answers with an error rather than with words.
