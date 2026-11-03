@@ -121,6 +121,91 @@ fn a_head_answers_a_decision_the_daemons_stdin_could_not() {
     );
 }
 
+/// The memory card above the ceiling, answered by a person in a head: the ask the model made is
+/// the card, the option they pick is the grant, and what they granted the session covers the next
+/// ask without a second card.
+#[test]
+fn a_head_answers_the_memory_card_above_the_ceiling() {
+    use letibot_tools::exec::memory::{MemoryAsk, MemoryGrant};
+    use letibot_tools::{AdjudicatedGate, Gate as _};
+    const GIB: u64 = 1 << 30;
+    let ask = |gib: u64| MemoryAsk {
+        command: "cargo test --workspace --no-fail-fast".into(),
+        bytes: Some(gib * GIB),
+        ceiling: 8 * GIB,
+        available: 60 * GIB,
+        total: 128 * GIB,
+    };
+
+    let hub = Hub::new("s");
+    let answers = Arc::new(Answers::new());
+    hub.set_answer_sink(answers.clone());
+    let head = hub.attach("tui", "deadtrickster", Caps::default(), 0);
+    let budget = Duration::from_secs(10);
+    let adj = HeadAdjudicator::new(hub.clone(), answers.clone()).with_budget(budget);
+    let mut gate = AdjudicatedGate::new(Box::new(adj));
+
+    // The head's side: one answer, and it counts the cards it was shown, so a second ask that
+    // needed one would be a second card here.
+    let cards = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (hub2, head_id) = (hub.clone(), head.head_id.clone());
+    let (seen, stop2) = (cards.clone(), stop.clone());
+    let answerer = std::thread::spawn(move || {
+        while !stop2.load(std::sync::atomic::Ordering::SeqCst) {
+            if let Some(d) = hub2.snapshot().open_decisions.first() {
+                // The card carries the amount and the box, and the options are the two grants.
+                assert!(d.summary.contains("16 GiB of memory"), "{}", d.summary);
+                assert!(
+                    d.options
+                        .iter()
+                        .any(|o| o.option_id == "grant_memory_session"),
+                    "{:?}",
+                    d.options
+                );
+                seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                hub2.submit(
+                    &head_id,
+                    "c1",
+                    0,
+                    letibot_sessionlog::hub::CommandKind::Answer {
+                        req_id: d.req_id.clone(),
+                        reply: Reply::Permission {
+                            option_id: "grant_memory_session".into(),
+                            pattern: None,
+                            note: None,
+                        },
+                    },
+                );
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    });
+
+    assert_eq!(
+        gate.grant_memory(&ask(16)),
+        MemoryGrant::Granted,
+        "the person granted what the model asked for"
+    );
+    assert_eq!(
+        gate.grant_memory(&ask(12)),
+        MemoryGrant::Granted,
+        "the session grant covers a smaller ask, so a build is not asked about twice"
+    );
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    answerer.join().expect("the answerer thread");
+    assert_eq!(
+        cards.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "one card for the pair: the second ask never reached a head"
+    );
+    assert!(
+        open_of(&hub).is_empty(),
+        "the answered card is off the screen"
+    );
+}
+
 // ---- `ask_user_question`: the other vocabulary, the same rendezvous -----
 
 fn a_question() -> Question {
