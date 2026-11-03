@@ -133,7 +133,7 @@ refuse() { # refuse NAME OUTPUT PATTERN -- the output must not match
 # an empty array under `set -u` — `EXTRA_ARGS[@]: unbound variable`, which killed the first
 # macOS start — and no grep can see that, so the `--help` run at the end is what covers it.
 BASH32="scripts/letibot scripts/leticode scripts/etalon-snapshot scripts/headwatch.sh scripts/rrun tests/launcher.sh"
-POSIX_SH="scripts/check-dist-names.sh scripts/check-fmt.sh scripts/check-host-runtime.sh scripts/check-provider-models.sh scripts/check-tag.sh scripts/install-gate-build.sh scripts/make-dist.sh scripts/refresh-models-snapshot.sh install.sh"
+POSIX_SH="scripts/check-dist-names.sh scripts/check-fmt.sh scripts/check-host-runtime.sh scripts/check-provider-models.sh scripts/check-tag.sh scripts/check-test-attrs.sh scripts/clippy-gate.sh scripts/install-gate-build.sh scripts/make-dist.sh scripts/refresh-models-snapshot.sh install.sh"
 # The bash-4 spellings as one extended regex: associative arrays (`declare`/`local`/`typeset`
 # `-A`), namerefs (`-n`), `declare -g`, `mapfile`/`readarray`, `coproc`, `wait -n`, `[[ -v ]]`,
 # case fallthrough (`;;&`, `;&`), `&>>`, `|&`, and the case-modifying expansions
@@ -211,6 +211,92 @@ refuse "  ...with no local endpoint invented for it" "$out" "--endpoint"
 
 out="$(run "$DEFAULT_ONLY" --status)"
 expect "--status says there is no local home rather than refusing" "$out" "^local +none"
+
+# ---------------------------------------------------------------------------------------
+# **HELP AND MISTAKES, WHICH NEED NO DAEMON.**
+#
+# `--help` after a verb answered with the whole list of twenty commands, so a person asking about
+# `--delete` read everything and found their verb in the middle of it; and a verb left without its
+# argument answered with a usage line that never said what was missing. Both are asserted as shape
+# rather than as wording where they can be: non-zero exit, the mistake named, that verb's own page
+# named, and no wall printed after either.
+refusal() { # refusal NAME RC OUTPUT FIRST SECOND -- a mistake, in two lines and no wall
+  local name="$1" rc="$2" out="$3" first="$4" second="$5" why=""
+  if [ "$rc" -eq 0 ]; then why="exited 0"
+  elif ! printf '%s\n' "$out" | grep -qE -- "$first"; then why="wanted /$first/ as the first line"
+  elif ! printf '%s\n' "$out" | grep -qE -- "$second"; then why="wanted /$second/ after it"
+  elif printf '%s\n' "$out" | grep -q "one command to start chatting"; then why="printed the usage wall"
+  fi
+  if [ -z "$why" ]; then echo "ok   $name"
+  else
+    echo "FAIL $name: $why in:"; printf '%s\n' "$out" | sed 's/^/     /'; fails=$((fails + 1))
+  fi
+}
+
+# --- a verb left without its argument: what is missing, and where that verb is explained ---
+for spec in "a delete with no id|--delete|ID" "a session with no id|--session|ID" \
+  "a rename with no id|--rename|ID" "a handover with no session|--handover|SESSION DIR" \
+  "a revert with no backup|--revert|TRANSCRIPT BACKUP" "a note with no text|--note|TRANSCRIPT TEXT" \
+  "a reattach with no id|--reattach|ID"; do
+  name="${spec%%|*}"; rest="${spec#*|}"; verb="${rest%%|*}"; what="${rest#*|}"
+  out="$(run "$DEFAULT_ONLY" "$verb")"; rc=$?
+  refusal "$name names the $what and the verb's help" "$rc" "$out" \
+    "^letibot: $verb needs $what" "run \`letibot $verb --help\`"
+done
+
+# --- and `attach`, which has two words to be left without --------------------------------
+out="$(run "$DEFAULT_ONLY" attach)"; rc=$?
+refusal "attach with no source names the source" "$rc" "$out" \
+  "^letibot: attach needs a source" "letibot attach github <org\\|owner/repo>"
+out="$(run "$DEFAULT_ONLY" attach github)"; rc=$?
+refusal "attach with no scope names the scope" "$rc" "$out" \
+  "^letibot: attach needs a scope" "letibot attach github <org\\|owner/repo>"
+out="$(run "$DEFAULT_ONLY" attach gitlab stroppy-io)"; rc=$?
+refusal "attach with another source names the one it knows" "$rc" "$out" \
+  "^letibot: attach knows one source and it is \`github\`, not gitlab" \
+  "letibot attach github <org\\|owner/repo>"
+
+# --- a flag nobody has, and a directory that is not there --------------------------------
+out="$(run "$DEFAULT_ONLY" --halp)"; rc=$?
+refusal "an unknown flag is named, not run as a prompt" "$rc" "$out" \
+  "^letibot: unknown flag: --halp" "letibot --help"
+out="$(run "$DEFAULT_ONLY" --stop /no/such/folder)"; rc=$?
+refusal "--stop with a directory that is not there says so" "$rc" "$out" \
+  "^letibot: no such directory: /no/such/folder" "letibot --ls"
+
+# --- a daemon that is not running: what is missing, and the command that starts one ------
+out="$(run "$DEFAULT_ONLY" --attach)"; rc=$?
+refusal "--attach with no daemon says so and names the command that starts one" "$rc" "$out" \
+  "^letibot: no harnessd for" "run \`letibot\` there to start one"
+
+# --- a verb's own page, not the wall ------------------------------------------------------
+for spec in "--delete|letibot --delete ID" "--session|letibot --session ID" \
+  "--rename|letibot --rename ID" "--migrate|--to HOST" "--reattach|letibot --reattach SESSION" \
+  "--stop|--force" "--room|--stop" "--handover|letibot --handover SESSION DIR" \
+  "--note-continued|letibot --note-continued" "--list-claude|letibot --list-claude" \
+  "--ls|letibot --ls" "--daemons|letibot --daemons" "--attach|letibot --attach" \
+  "--status|letibot --status" "attach|letibot attach github"; do
+  verb="${spec%%|*}"; want="${spec#*|}"
+  out="$(run "$DEFAULT_ONLY" "$verb" --help)"; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "FAIL $verb --help exited $rc:"; printf '%s\n' "$out" | sed 's/^/     /'; fails=$((fails + 1))
+  elif ! printf '%s\n' "$out" | grep -qF -- "$want"; then
+    echo "FAIL $verb --help should say '$want':"; printf '%s\n' "$out" | sed 's/^/     /'; fails=$((fails + 1))
+  elif ! printf '%s\n' "$out" | grep -q "example"; then
+    echo "FAIL $verb --help gives no example:"; printf '%s\n' "$out" | sed 's/^/     /'; fails=$((fails + 1))
+  elif printf '%s\n' "$out" | grep -q "one command to start chatting"; then
+    echo "FAIL $verb --help printed the wall instead of its own page"; fails=$((fails + 1))
+  else echo "ok   $verb --help is that verb's page, with an example"; fi
+done
+
+# --- and the wall itself lists every verb it answers for ----------------------------------
+out="$(run "$DEFAULT_ONLY" --help)"
+for verb in --continue --session --sessions --new --rename --delete --migrate --reattach \
+  --handover --note --note-continued --revert --list-claude --stop --room --status \
+  --ls --daemons --attach --glm --provider --host --vm --tsv; do
+  if printf '%s\n' "$out" | grep -q -- "$verb"; then echo "ok   --help names $verb"
+  else echo "FAIL --help does not name $verb, which the launcher accepts"; fails=$((fails + 1)); fi
+done
 
 # **No provider, no local model block, nothing serving: started, not refused.** The daemon
 # keeps its own default endpoint, and is handed no vocabulary to send ids from — a daemon with

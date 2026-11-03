@@ -418,6 +418,248 @@ restart_advice() {
   fi
 }
 
+# `need WHAT VERB`: the argument a verb was left without, and where the rest of the sentence is.
+# One shape for every missing argument, so the next step is never the thing that is missing.
+need() { # need WHAT VERB
+  die "$2 needs $1
+         run \`$ME $2 --help\` for what it takes"
+}
+
+# **`<verb> --help` answers for that verb.** One wall of text for every question is what this
+# was: a person asking about `--delete` read twenty commands to find the one they typed.
+verb_help() { # verb_help VERB
+  case "$1" in
+    --continue|-c) cat <<'EOF'
+letibot --continue
+  Reopen the newest session in THIS workspace. The only verb that reopens anything
+  without being asked which; it takes no argument.
+
+  --continue s-ID   an id is read as `--session s-ID` and the reading is said out loud
+
+  example:
+    letibot --continue
+EOF
+      ;;
+    --session|-s) cat <<'EOF'
+letibot --session ID
+  Reopen one stored session, starting this folder's daemon if none is up.
+
+  ID   the session id (`letibot --sessions` lists them, and so does ctrl-s in the head)
+
+  example:
+    letibot --session s-1789919514688401228
+EOF
+      ;;
+    --sessions) cat <<'EOF'
+letibot --sessions
+  What is on disk, grouped: your conversations first, then the harness's own work
+  (subagents, the review queue, packages, one-shots), one line each with a count.
+
+  no arguments; `--tsv` is the plain five-column form
+
+  example:
+    letibot --sessions
+EOF
+      ;;
+    --new|-n) cat <<'EOF'
+letibot --new [TITLE]
+  Start a fresh session in the running daemon. With none up, the session the plain
+  start opens IS this fresh one.
+
+  TITLE   what to name it (default: unnamed until `--rename`)
+
+  example:
+    letibot --new 'the queue wedge'
+EOF
+      ;;
+    --rename) cat <<'EOF'
+letibot --rename ID [TITLE]
+  Name a stored session.
+
+  ID      the session id (`letibot --sessions` lists them)
+  TITLE   the new name; an empty title clears the name
+
+  example:
+    letibot --rename s-1789919514688401228 'gate red'
+EOF
+      ;;
+    --delete) cat <<'EOF'
+letibot --delete ID
+  Remove a stored session that has no rows. A session with rows is refused by name,
+  never deleted.
+
+  ID   the session id (`letibot --sessions` lists them)
+
+  example:
+    letibot --delete s-1789919514688401228
+EOF
+      ;;
+    --migrate) cat <<'EOF'
+letibot --migrate SESSION --to HOST [--copy-keys]
+  Move a session's whole daemon - its rows, its checkout and a harnessd - to a host,
+  and leave a marked copy here. `--to local` brings it back.
+
+  SESSION        the session to move
+  --to HOST      a `[host.NAME]` from hosts.toml, or `local` (required)
+  --copy-keys    send this box's providers.toml too, mode 600, never printed
+
+  example:
+    letibot --migrate s-1789919514688401228 --to lab2x1      (`letibot migrate --help`
+                                                            has every flag)
+EOF
+      ;;
+    --reattach) cat <<'EOF'
+letibot --reattach SESSION
+  Re-establish a moved session's daemon and its forwarded socket, when a head
+  cannot reach it. `--migrate SESSION --to local` brings the session back instead.
+
+  SESSION   the moved session's id
+
+  example:
+    letibot --reattach s-1789919514688401228
+EOF
+      ;;
+    attach-github|attach) cat <<'EOF'
+letibot attach github <org|owner/repo>
+  The GitHub reviewer seat: poll the scope's open pull requests, one session per
+  pull request, one review per push. Drafts until `[github] post` and a token are set.
+
+  <org|owner/repo>   `stroppy-io` for a whole org, `stroppy-io/letibot` for one
+
+  example:
+    letibot attach github stroppy-io/letibot
+EOF
+      ;;
+    --stop) cat <<'EOF'
+letibot --stop [N|DIR] [--all] [--force]
+  Interrupt this folder's daemon's turns, then stop it.
+
+  N|DIR   another folder's daemon: the number `letibot --ls` prints, or its directory
+          (default: this folder's)
+  --all   every folder's daemon on this box
+  --force SIGKILL one still there 5s after SIGTERM (the last resort, and it says so)
+
+  example:
+    letibot --stop
+EOF
+      ;;
+    --room) cat <<'EOF'
+letibot --room [--stop [--force]]
+  The BOX'S ROOM: one coordinator per machine, shared by every folder, where tags and
+  the queue's asks are arbitrated. Bare, it makes sure one is serving and says what it is.
+
+  --stop    stop it
+
+  example:
+    letibot --room
+EOF
+      ;;
+    --status) cat <<'EOF'
+letibot --status
+  Is this folder's daemon up, on what model, and which binary it was started from.
+
+  no arguments
+
+  example:
+    letibot --status
+EOF
+      ;;
+    --ls|--list-all) cat <<'EOF'
+letibot --ls
+  Every folder's daemon and the live sessions inside it, numbered: the number is what
+  `letibot --stop N` and `letibot --attach N` take.
+
+  no arguments
+
+  example:
+    letibot --ls
+EOF
+      ;;
+    --daemons) cat <<'EOF'
+letibot --daemons
+  Which folders have a daemon on this box, and whether anything is listening on each
+  one's socket — the one-line answer to "what is running here".
+
+  no arguments; `--ls` adds the live sessions inside each daemon, numbered
+
+  example:
+    letibot --daemons
+EOF
+      ;;
+    --attach) cat <<'EOF'
+letibot --attach [N|DIR]
+  Connect to a daemon that is already up, and never start one: bare `letibot` starts a
+  daemon when nothing is there, and this refuses instead.
+
+  N|DIR   another folder's daemon: the number `letibot --ls` prints, or its directory
+          (default: this folder's)
+
+  example:
+    letibot --attach
+EOF
+      ;;
+    --list-claude|--claude-sessions) cat <<'EOF'
+letibot --list-claude
+  What Claude Code has on this box: the id `letibot --session cc-<id>` takes, its model,
+  its directory and its first line. Reading one in makes it an ordinary session.
+
+  no arguments; `--tsv` is the plain data form
+
+  example:
+    letibot --list-claude
+EOF
+      ;;
+    --handover) cat <<'EOF'
+letibot --handover SESSION DIR
+  Write a letibot session out as a transcript `claude --resume <path>` opens, plus a
+  Markdown copy a person can read.
+
+  SESSION   the session to write out
+  DIR       where both files go (created if missing)
+
+  example:
+    letibot --handover s-1789919514688401228 ~/tmp/handover
+EOF
+      ;;
+    --note) cat <<'EOF'
+letibot --note TRANSCRIPT TEXT
+  Append one line to a Claude Code transcript, after a backup of it.
+
+  TRANSCRIPT   the .jsonl path
+  TEXT         the line's text
+
+  example:
+    letibot --note ~/.claude/projects/x/abc.jsonl 'moved to letibot'
+EOF
+      ;;
+    --note-continued) cat <<'EOF'
+letibot --note-continued SESSION TRANSCRIPT [DIR]
+  The same line, composed: where the session continued, its git branch and sha. It also
+  writes the handover it names.
+
+  SESSION      the letibot session it continued into
+  TRANSCRIPT   the Claude Code .jsonl to write the line into
+  DIR          where the handover goes (default: beside the transcript)
+
+  example:
+    letibot --note-continued s-1789919514688401228 ~/.claude/projects/x/abc.jsonl
+EOF
+      ;;
+    --revert) cat <<'EOF'
+letibot --revert TRANSCRIPT BACKUP
+  Put a transcript back from the backup `--note` took, byte for byte.
+
+  TRANSCRIPT   the .jsonl to restore
+  BACKUP       the backup path that was written
+
+  example:
+    letibot --revert ~/.claude/projects/x/abc.jsonl ~/.claude/projects/x/abc.jsonl.bak
+EOF
+      ;;
+    *) usage ;;
+  esac
+}
+
 # HELP BEFORE ANYTHING. No network, no daemon probe, no vocabulary: a question
 # about the command must not cost a model turn to answer.
 #
@@ -445,7 +687,7 @@ already up, then attaches the TUI head to it.
   letibot --session ID        reopen a particular one
   letibot --sessions          what is on disk, grouped: your conversations first, then the
                               harness's own work (subagents, the review queue, packages,
-                              one-shots) one line each with a count
+                              one-shots) one line each with a count. `--tsv` is the plain form
   letibot --list-claude       what Claude Code has on this box: the id `--session cc-<id>`
                               takes, its model, its directory and its first line. Reading
                               one in makes it an ordinary session, so --continue works on it
@@ -483,6 +725,11 @@ already up, then attaches the TUI head to it.
                               sure one exists before it opens a session. `--room --stop` stops
                               it (`--force` SIGKILLs one still there)
   letibot --status            is it up, and on what
+  letibot --ls                every folder's daemon and the live sessions inside it, numbered: the
+                              number is what `--stop N` and `--attach N` take
+  letibot --daemons           which folders have a daemon, and whether anything is listening on it
+  letibot --attach [N|DIR]    connect to this folder's daemon — or another folder's, by its number
+                              from `--ls` or by directory — and never start one
 
   letibot                     the leticode seat: opencode's tools and bash, on this host
                               (LETIBOT_ROLE=coder for the namespace-confined seat, Linux)
@@ -553,6 +800,24 @@ from what that server has loaded (letibot --status reports it); explicit
 EOF
 }
 
+# **`--help` AFTER A VERB IS THAT VERB'S** (see `verb_help`). The wall above answers *what can I
+# run*; a person who typed `--delete --help` asked a narrower question, and reading twenty commands
+# to find their own is not an answer to it. Only a first word that IS a verb is read this way: a
+# prompt is not a verb, and `letibot 'x' --help` still runs the prompt.
+case "${1:-}" in
+  --help|-h|help) usage; exit 0 ;;
+  --*|-c|-s|-n|attach)
+    if [ $# -ge 2 ]; then
+      for a in "${@:2}"; do
+        case "$a" in
+          --help|-h) verb_help "$1"; exit 0 ;;
+          --*) : ;;
+          *) break ;; # the verb's own argument has started; nothing after it asks for help
+        esac
+      done
+    fi ;;
+esac
+
 for a in "$@"; do
   case "$a" in
     --help|-h|help) usage; exit 0 ;;
@@ -577,7 +842,7 @@ for a in "$@"; do
     --list-claude|--claude-sessions|--handover|--note|--note-continued|--revert|--tsv|\
     --web-search|--brave-key|--oracle|--oracle-budget-ms|--ls|--list-all) ;;
     --*) die "unknown flag: $a
-         ('letibot --help' lists the flags; a bare prompt needs no flag)" ;;
+         ('$ME --help' lists the flags; a bare prompt needs no flag)" ;;
     *) break ;;
   esac
 done
@@ -1374,7 +1639,11 @@ retarget() {
   case "$want" in
     ''|.) return 0 ;;
     *[!0-9]*)
-      WORKSPACE="$(cd "$want" && pwd -P)" || die "no such directory: $want"
+      # `cd`'s own message names a shell and a line number, so it is suppressed: the next two lines
+      # are the mistake and where the numbers come from.
+      WORKSPACE="$(cd "$want" 2>/dev/null && pwd -P)" ||
+        die "no such directory: $want
+         \`letibot --ls\` numbers the daemons; a directory names another folder's"
       ;;
     *)
       for r in "$RUNDIR"/*.json; do
@@ -1847,13 +2116,13 @@ case "${1:-}" in
   # `--note TRANSCRIPT TEXT` appends one line after taking a proven backup;
   # `--revert TRANSCRIPT BACKUP` puts it back, byte for byte.
   --handover)
-    [ $# -ge 3 ] || die "--handover SESSION DIR"
+    [ $# -ge 3 ] || need "SESSION DIR" --handover
     exec "${NOGPU[@]}" "$BIN/harnessd" --store "$STORE" --handover "$2" "$3" ;;
   --note)
-    [ $# -ge 3 ] || die "--note TRANSCRIPT TEXT"
+    [ $# -ge 3 ] || need "TRANSCRIPT TEXT" --note
     exec "${NOGPU[@]}" "$BIN/harnessd" --note "$2" "$3" ;;
   --note-continued)
-    [ $# -ge 3 ] || die "--note-continued SESSION TRANSCRIPT [DIR]"
+    [ $# -ge 3 ] || need "SESSION TRANSCRIPT" --note-continued
     # No empty trailing argument: an empty DIR is a path that is not there, not "the
     # default", and the daemon would try to write into it.
     if [ $# -ge 4 ]; then
@@ -1862,13 +2131,13 @@ case "${1:-}" in
       exec "${NOGPU[@]}" "$BIN/harnessd" --store "$STORE" --note-continued "$2" "$3"
     fi ;;
   --revert)
-    [ $# -ge 3 ] || die "--revert TRANSCRIPT BACKUP"
+    [ $# -ge 3 ] || need "TRANSCRIPT BACKUP" --revert
     exec "${NOGPU[@]}" "$BIN/harnessd" --revert "$2" "$3" ;;
   --rename)
-    [ $# -ge 2 ] || die "--rename ID [TITLE]  (an empty title clears the name)"
+    [ $# -ge 2 ] || need "ID [TITLE]" --rename
     exec "${NOGPU[@]}" "$BIN/harnessd" --store "$STORE" --rename "$2" "${3:-}" ;;
   --delete)
-    [ $# -ge 2 ] || die "--delete ID"
+    [ $# -ge 2 ] || need "ID" --delete
     exec "${NOGPU[@]}" "$BIN/harnessd" --store "$STORE" --delete "$2" ;;
   --migrate)
     # **The whole daemon, on a host and back** (`docs/remote-hosts.md` RH4). A verb and not a
@@ -1879,10 +2148,12 @@ case "${1:-}" in
     exec "$BIN/letibot" migrate "$@" --store "$STORE" ;;
   --reattach)
     # What this script runs itself when a moved session's forward has dropped; here so an
-    # operator can ask for it by hand when a head refuses to connect.
+    # operator can ask for it by hand when a head refuses to connect. **The argument comes first**:
+    # a missing ID is a mistake about this line, where a missing binary is a fact about the install,
+    # and the one the person can act on is the one they just typed.
+    [ $# -ge 2 ] || need "ID" --reattach
     [ -x "$BIN/letibot" ] || die "no letibot at $BIN"
     shift
-    [ $# -ge 1 ] || die "--reattach ID"
     exec "$BIN/letibot" migrate --reattach "$1" --store "$STORE" ;;
   --ls|--list-all)
     # **The byobu view: every folder's daemon, and what is live inside it.**
@@ -2250,8 +2521,17 @@ SESSIONS_EOF
     # **The GitHub reviewer seat**: one long-lived poll of one scope. It drafts until
     # `[github] post` and a token are set, so this verb posts nothing by itself; the seat is the
     # binary's, because a poll that opens sessions belongs next to the sessions.
-    [ "$#" -ge 3 ] || die "attach takes a source and a scope: letibot attach github <org|owner/repo>"
-    [ "${2:-}" = github ] || die "attach knows one source and it is \`github\`, not ${2:-}"
+    #
+    # **Each word is named separately, and the second line is the command.** A line that already
+    # said `github` was told it needed "a source and a scope", and the binary is looked for after
+    # the argument: a missing word is the mistake the person can act on.
+    ATTACH_USAGE="\`$ME attach github <org|owner/repo>\` — an org, or one repository"
+    [ "$#" -ge 2 ] || die "attach needs a source: github
+         $ATTACH_USAGE"
+    [ "$2" = github ] || die "attach knows one source and it is \`github\`, not $2
+         $ATTACH_USAGE"
+    [ "$#" -ge 3 ] || die "attach needs a scope: <org|owner/repo>
+         $ATTACH_USAGE"
     [ -x "$BIN/letibot" ] || die "no letibot at $BIN (the reviewer seat lives there)"
     shift
     exec "$BIN/letibot" attach "$@" ;;
@@ -2320,12 +2600,10 @@ case "${1:-}" in
       SESSION="$1"; shift
     fi
     if [ $# -gt 0 ]; then
+      # Two lines, the second carrying both doors. The wall that followed this refusal is the same
+      # defect as `--help` printing twenty commands: a person reads none of it.
       echo "letibot: --continue takes no argument, and '$1' is not a session id.
-         '--continue' reopens the NEWEST session in THIS workspace. To name one:
-             $ME --session ID        (--sessions lists them)
-         To run a prompt instead, put it FIRST — nothing after a flag is a prompt:
-             $ME 'some prompt'" >&2
-      usage >&2
+         to name one: $ME --session ID (--sessions lists them); to run a prompt, put it first" >&2
       exit 1
     fi
     # Scoped to this workspace by default. A session's workspace is a stored fact,
@@ -2348,7 +2626,7 @@ case "${1:-}" in
     fi
     ;;
   --session|-s)
-    [ $# -ge 2 ] || die "--session ID   (\`letibot --sessions\` lists them)"
+    [ $# -ge 2 ] || need "ID" --session
     SESSION="$2"; shift 2 ;;
   --new|-n)
     shift
