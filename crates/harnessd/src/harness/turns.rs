@@ -2,6 +2,7 @@
 //! results and resubmit - with the retry ladder, outage and fallback handling
 //! around it, and the restart restore that starts a turn nobody typed for.
 use super::*;
+use letibot_tools::exec::memory::{Holds, Meminfo};
 
 /// How a wait ended: the time passed, the session is going away, or the operator asked for a stop.
 /// A retry ends at a stop; a store write is the caller's to keep or leave, and `busy_after` says which.
@@ -1675,6 +1676,19 @@ impl Harness {
             tail.extend(skill_offers.tail());
             tail.extend(waits.tail());
             tail.extend(done.tail());
+            // What is free, said where the model chooses a call's cap. It cannot be in the schema:
+            // that is the session's stable prefix, and these numbers move every second.
+            if !self.compacting
+                && let Some(mem) = Meminfo::read()
+            {
+                let holds = self
+                    .runtime
+                    .backend
+                    .processes()
+                    .map(Holds::of)
+                    .unwrap_or_default();
+                tail.push(memory::memory_tail(&self.cfg.memory, &mem, holds));
+            }
             // Take the round again when the endpoint is what failed: an inner loop, so a retry does not spend a
             // `max_tool_rounds`, since it produced nothing. And `/models` is ANSWERED here but not APPLIED, because a
             // re-issued round carries the rest of the old turn, which a thinking-mode provider refuses.
