@@ -74,11 +74,46 @@ impl<'a> NoteFs<'a> {
         Some(if rel.is_empty() { ".".to_string() } else { rel })
     }
 
-    fn read(&self, path: &Path) -> Option<String> {
+    /// The note at `path`: `Ok(None)` is a path that is not there, and every other failure is a
+    /// corpus nobody read. The two are not the same fact and no verb here may conflate them.
+    fn read(&self, path: &Path) -> Result<Option<String>, String> {
         match self.on_backend(path) {
-            Some(rel) => String::from_utf8(self.backend.read(&rel).ok()?).ok(),
-            None => std::fs::read_to_string(path).ok(),
+            Some(rel) => text_of(path, self.backend.read(&rel)),
+            None => match std::fs::read_to_string(path) {
+                Ok(text) => Ok(Some(text)),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                Err(e) => Err(format!("`{}`: {e}", path.display())),
+            },
         }
+    }
+
+    /// Every note's text in one go, in pages through [`ExecBackend::read_many`]: over a substrate
+    /// where a read is a round trip that is one call per page rather than one per note, and a
+    /// backend that does not batch answers the trait's per-file default.
+    fn read_all(&self, notes: &[Note]) -> Vec<Result<Option<String>, String>> {
+        let mut out: Vec<Option<Result<Option<String>, String>>> = vec![None; notes.len()];
+        for (start, page) in notes.chunks(READ_PAGE).enumerate() {
+            let on: Vec<(usize, String)> = page
+                .iter()
+                .enumerate()
+                .filter_map(|(i, n)| self.on_backend(&n.path).map(|rel| (start + i, rel)))
+                .collect();
+            if on.len() < 2 {
+                continue;
+            }
+            let rels: Vec<&str> = on.iter().map(|(_, rel)| rel.as_str()).collect();
+            // A failed channel says nothing about any path, so the per-file read below is the
+            // answer for every note in the page rather than a failure of the corpus.
+            if let Ok(answers) = self.backend.read_many(&rels) {
+                for ((i, _), answer) in on.iter().zip(answers) {
+                    out[*i] = Some(text_of(&notes[*i].path, answer));
+                }
+            }
+        }
+        out.into_iter()
+            .enumerate()
+            .map(|(i, answer)| answer.unwrap_or_else(|| self.read(&notes[i].path)))
+            .collect()
     }
 
     fn stat(&self, path: &Path) -> Option<DirEntry> {
@@ -100,10 +135,16 @@ impl<'a> NoteFs<'a> {
         }
     }
 
-    fn list(&self, dir: &Path) -> Vec<DirEntry> {
+    /// One directory's entries, or why they could not be read. A directory that is not there holds
+    /// no notes - a fact - and anything else is the substrate not answering, which is not.
+    fn list(&self, dir: &Path) -> Result<Vec<DirEntry>, String> {
         match self.on_backend(dir) {
-            Some(rel) => self.backend.list(&rel).unwrap_or_default(),
-            None => local_list(dir),
+            Some(rel) => match self.backend.list(&rel) {
+                Ok(entries) => Ok(entries),
+                Err(crate::backend::BackendError::NotFound(_)) => Ok(Vec::new()),
+                Err(e) => Err(format!("{}: {e}", dir.display())),
+            },
+            None => Ok(local_list(dir)),
         }
     }
 
@@ -114,6 +155,22 @@ impl<'a> NoteFs<'a> {
             Some(rel) => self.backend.write(&rel, bytes).map_err(|e| e.to_string()),
             None => write_atomic(path, bytes).map_err(|e| e.to_string()),
         }
+    }
+}
+
+/// How many notes one [`ExecBackend::read_many`] page carries: the seam's own page, and small
+/// enough that one unreadable note does not cost the page.
+const READ_PAGE: usize = 64;
+
+/// One answer from the substrate, as a note reader needs it: absent, text, or why neither.
+fn text_of(path: &Path, answer: Result<Vec<u8>, crate::backend::BackendError>) -> Result<Option<String>, String> {
+    match answer {
+        Ok(bytes) => match String::from_utf8(bytes) {
+            Ok(text) => Ok(Some(text)),
+            Err(_) => Err(format!("`{}` is not UTF-8", path.display())),
+        },
+        Err(crate::backend::BackendError::NotFound(_)) => Ok(None),
+        Err(e) => Err(format!("`{}`: {e}", path.display())),
     }
 }
 
@@ -165,19 +222,28 @@ impl Source {
     /// The `*.md` files this source contributes, newest first, in the reader's own order
     /// ([`sort_newest_first`]). A single-file source contributes its file only when it is
     /// there, because the reader skips an absent `AGENTS.md`.
-    fn notes(&self, fs: &NoteFs<'_>) -> Vec<Note> {
+    fn notes(&self, fs: &NoteFs<'_>) -> Result<Vec<Note>, String> {
         if let Some(f) = &self.file {
-            return match fs.stat(f) {
-                Some(e) if !e.is_dir => vec![Note {
-                    path: f.clone(),
+            // A listing rather than a stat: `stat` answers `None` for a host that cannot be
+            // reached, which is the same answer as a file that is not there, and only one of the
+            // two is a fact about the workspace.
+            let name = f
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            return Ok(fs
+                .list(&self.dir)?
+                .into_iter()
+                .filter(|e| !e.is_dir && e.name == name)
+                .map(|e| Note {
+                    path: self.dir.join(&e.name),
                     bytes: e.bytes,
                     modified: e.modified,
-                }],
-                _ => Vec::new(),
-            };
+                })
+                .collect());
         }
         let mut notes: Vec<Note> = fs
-            .list(&self.dir)
+            .list(&self.dir)?
             .into_iter()
             .filter(|e| !e.is_dir && Path::new(&e.name).extension().is_some_and(|x| x == "md"))
             .map(|e| Note {
@@ -193,7 +259,7 @@ impl Source {
                 .cmp(&a.modified)
                 .then_with(|| a.path.cmp(&b.path))
         });
-        notes
+        Ok(notes)
     }
 }
 
@@ -224,12 +290,18 @@ fn sources(fs: &NoteFs<'_>, global: &Path) -> Vec<Source> {
 /// Every note the harness injects, as `(path, text)`: the corpus a score is computed
 /// over, in the same sources and order the injected section is assembled from, so no
 /// score is ever about a note the reader would not inject.
-fn corpus(fs: &NoteFs<'_>, global: &Path) -> Vec<(PathBuf, String)> {
-    sources(fs, global)
-        .iter()
-        .flat_map(|s| s.notes(fs))
-        .filter_map(|n| fs.read(&n.path).map(|text| (n.path, text)))
-        .collect()
+fn corpus(fs: &NoteFs<'_>, global: &Path) -> Result<Vec<(PathBuf, String)>, String> {
+    let mut notes: Vec<Note> = Vec::new();
+    for src in sources(fs, global) {
+        notes.extend(src.notes(fs)?);
+    }
+    let mut out = Vec::with_capacity(notes.len());
+    for (note, text) in notes.iter().zip(fs.read_all(&notes)) {
+        if let Some(text) = text? {
+            out.push((note.path.clone(), text));
+        }
+    }
+    Ok(out)
 }
 
 /// Newest first, ties by name: the order the reader assembles each notes directory in
@@ -611,16 +683,21 @@ impl NotesTool {
     /// The gate's question about the bytes that are about to become durable: `after` is the
     /// whole file as it would land, because half a note has no score, and `target` is left
     /// out of its own corpus so an `append` is never refused for resembling what it grows.
-    fn duplicate(&self, fs: &NoteFs<'_>, target: &Path, after: &str) -> Option<(PathBuf, f64)> {
-        let corpus = similarity::Corpus::new(&corpus(fs, &self.scope.global_dir()));
+    fn duplicate(
+        &self,
+        fs: &NoteFs<'_>,
+        target: &Path,
+        after: &str,
+    ) -> Result<Option<(PathBuf, f64)>, String> {
+        let corpus = similarity::Corpus::new(&corpus(fs, &self.scope.global_dir())?);
         if corpus.is_empty() {
-            return None;
+            return Ok(None);
         }
         let candidate = similarity::index_text(target, after);
-        corpus
+        Ok(corpus
             .nearest(&candidate, Some(target))
             .filter(|(_, score)| *score >= DUPLICATE_FLOOR)
-            .map(|(path, score)| (path.to_path_buf(), score))
+            .map(|(path, score)| (path.to_path_buf(), score)))
     }
 
     /// Every note the harness reads, in the order the injected block carries
@@ -629,8 +706,18 @@ impl NotesTool {
     fn list(&self, fs: &NoteFs<'_>) -> Invocation {
         let mut out = String::from("the standing notes the harness reads, in prompt order:\n");
         let mut total = 0usize;
+        let mut unread: Vec<String> = Vec::new();
         for src in sources(fs, &self.scope.global_dir()) {
-            let notes = src.notes(fs);
+            let notes = match src.notes(fs) {
+                Ok(notes) => notes,
+                Err(why) => {
+                    // An empty listing and an unreadable one look the same to a reader of this
+                    // answer, so the difference is said here rather than implied by a blank line.
+                    out.push_str(&format!("\n{} — could not be read: {why}\n", src.label));
+                    unread.push(format!("{} ({why})", src.label));
+                    continue;
+                }
+            };
             if notes.is_empty() {
                 out.push_str(&format!(
                     "\n{} — none ({}).\n",
@@ -658,17 +745,39 @@ impl NotesTool {
             "\n{total} note(s). A note records what was true when it was written and may be \
              outdated — check the tree before relying on one as a fact about now.\n"
         ));
-        Invocation::ok(out)
+        if unread.is_empty() {
+            return Invocation::ok(out);
+        }
+        Invocation::failed(
+            format!("the standing notes could not be read: {}", unread.join("; ")),
+            format!(
+                "{out}\nThis is not a report that the notes are empty: the source(s) named above \
+                 could not be read at all, so what they hold is unknown. A read verb here \
+                 answers about a corpus it has read."
+            ),
+        )
     }
 
     /// One note's text with the caveat line above it. A bare name looks in the project notes
     /// first (where `add` writes, so the two agree), then the box-wide notes, then
     /// `AGENTS.md`; a path matches exactly or by its trailing components.
     fn read(&self, fs: &NoteFs<'_>, path: Option<&str>, name: Option<&str>) -> Invocation {
-        let all: Vec<Note> = sources(fs, &self.scope.global_dir())
-            .iter()
-            .flat_map(|s| s.notes(fs))
-            .collect();
+        let mut all: Vec<Note> = Vec::new();
+        for src in sources(fs, &self.scope.global_dir()) {
+            match src.notes(fs) {
+                Ok(notes) => all.extend(notes),
+                // A miss is an answer about the corpus, so it may not come from a reader that
+                // could not read it: "no such note" is a claim, and this one would be false.
+                Err(why) => {
+                    return Invocation::failed(
+                        format!("the standing notes could not be read: {why}"),
+                        "Nothing was searched, so this is not a report that the note does not \
+                         exist. The source named above did not answer."
+                            .to_string(),
+                    );
+                }
+            }
+        }
         let found: Vec<&Note> = if let Some(name) = name {
             let stem = name.trim().trim_end_matches(".md");
             all.iter()
@@ -701,7 +810,7 @@ impl NotesTool {
         };
         match found.as_slice() {
             [one] => match fs.read(&one.path) {
-                Some(text) => Invocation::ok(format!(
+                Ok(Some(text)) => Invocation::ok(format!(
                     "### {} — {}\n\n{}\n\n{}\n",
                     one.path.display(),
                     match one.modified {
@@ -721,10 +830,15 @@ impl NotesTool {
                     caveat(one.modified),
                     text.trim_end()
                 )),
-                None => Invocation::failed(
+                Ok(None) => Invocation::failed(
                     format!("`{}` could not be read", one.path.display()),
                     "it was listed a moment ago, so it moved or its permissions changed. \
                      `notes` action=\"list\" re-reads the directory.",
+                ),
+                Err(why) => Invocation::failed(
+                    format!("`{}` could not be read: {why}", one.path.display()),
+                    "the substrate did not answer, so this says nothing about the note's text. \
+                     `notes` action=\"list\" asks it again.",
                 ),
             },
             [] => {
@@ -766,20 +880,38 @@ impl NotesTool {
             );
         };
         let needle = query.to_lowercase();
-        let all: Vec<Note> = sources(fs, &self.scope.global_dir())
-            .iter()
-            .flat_map(|s| s.notes(fs))
-            .collect();
+        let mut all: Vec<Note> = Vec::new();
+        for src in sources(fs, &self.scope.global_dir()) {
+            match src.notes(fs) {
+                Ok(notes) => all.extend(notes),
+                Err(why) => {
+                    return Invocation::failed(
+                        format!("the standing notes could not be read: {why}"),
+                        "No line was searched, so this is not a report that the query is in no \
+                         note. The source named above did not answer."
+                            .to_string(),
+                    );
+                }
+            }
+        }
         let mut out = String::new();
         let mut found = 0usize;
         let mut printed = 0usize;
         let mut notes_hit = 0usize;
-        for note in &all {
-            // A note that cannot be read is not a note that does not match: the
-            // corpus this answers over is the one that could be read, and the
-            // count of what was searched is what the answer is worth.
-            let Some(text) = fs.read(&note.path) else {
-                continue;
+        let mut unread: Vec<String> = Vec::new();
+        for (note, text) in all.iter().zip(fs.read_all(&all)) {
+            // A note that cannot be read is not a note that does not match, and it is not silence
+            // either: the answer says which notes it never saw.
+            let text = match text {
+                Ok(Some(text)) => text,
+                Ok(None) => {
+                    unread.push(format!("`{}` moved while it was being read", note.path.display()));
+                    continue;
+                }
+                Err(why) => {
+                    unread.push(why);
+                    continue;
+                }
             };
             let hits: Vec<(usize, &str)> = text
                 .lines()
@@ -799,6 +931,21 @@ impl NotesTool {
                     out.push_str(&format!("  {n}: {}\n", clip_line_counted(line, 400)));
                 }
             }
+        }
+        if !unread.is_empty() {
+            let mut tell = format!(
+                "{} note(s) could not be read, so this is not a search of the corpus: {}. The \
+                 notes that exist:\n",
+                unread.len(),
+                unread.join("; ")
+            );
+            for n in &all {
+                tell.push_str(&format!("- {}\n", n.path.display()));
+            }
+            return Invocation::failed(
+                format!("`{query}` was searched in a corpus that could not all be read"),
+                tell,
+            );
         }
         if found == 0 {
             let mut tell = format!(
@@ -895,7 +1042,19 @@ impl NotesTool {
         }
         let dir = fs.root.join(NOTES_DIR);
         let target = dir.join(format!("{stem}.md"));
-        let existing = fs.read(&target);
+        // A note that cannot be read is not an absent one: an `add` over it would overwrite text
+        // nobody saw, and an `append` would grow a note from a guess at what it holds.
+        let existing = match fs.read(&target) {
+            Ok(existing) => existing,
+            Err(why) => {
+                return Invocation::failed(
+                    format!("`{stem}` could not be read, so {action} did not happen: {why}"),
+                    "Nothing was written. Whether the note exists, and what it holds, is unknown \
+                     to this call, so it neither created nor grew one."
+                        .to_string(),
+                );
+            }
+        };
         // The abstract is the author's to set and the one part of a note the text cannot be
         // asked for: absent, the harness derives it ([`abstract_of`]); supplied, it goes in as
         // the marker line above the text.
@@ -926,16 +1085,28 @@ impl NotesTool {
                 // `append` and `replace` both refuse to create: a typo'd name
                 // that silently grows a new note is a note nobody meant, and
                 // the refusal is where the near-miss belongs.
-                let near = sources(fs, &self.scope.global_dir())[2]
-                    .notes(fs)
-                    .iter()
-                    .map(|n| {
-                        n.path
-                            .file_stem()
-                            .map(|s| s.to_string_lossy().to_string())
-                            .unwrap_or_default()
-                    })
-                    .collect::<Vec<_>>();
+                let near: Vec<String> = match sources(fs, &self.scope.global_dir())[2].notes(fs) {
+                    Ok(notes) => notes
+                        .iter()
+                        .map(|n| {
+                            n.path
+                                .file_stem()
+                                .map(|s| s.to_string_lossy().to_string())
+                                .unwrap_or_default()
+                        })
+                        .collect(),
+                    Err(why) => {
+                        return Invocation::failed(
+                            format!(
+                                "no note named `{stem}` to {action}, and the project notes could \
+                                 not be listed: {why}"
+                            ),
+                            "Nothing was written, and no near miss is named because the directory \
+                             that would hold one did not answer."
+                                .to_string(),
+                        );
+                    }
+                };
                 let near_names = super::near_names(
                     &stem,
                     &near
@@ -1017,7 +1188,19 @@ impl NotesTool {
         // The similarity gate on both write triggers, after the bytes are computed and before
         // they are durable: a near-copy is a defect wherever it arrives from, the `add` that
         // creates it and the `append`/`replace` that grows one into it.
-        if let Some((other, score)) = self.duplicate(fs, &target, &after) {
+        let near = match self.duplicate(fs, &target, &after) {
+            Ok(near) => near,
+            Err(why) => {
+                return Invocation::failed(
+                    format!("the notes it would be compared against could not be read: {why}"),
+                    "Nothing was written. The near-copy gate reads the whole corpus before a note \
+                     becomes durable, and a corpus it could not read is not one it may report a \
+                     score against."
+                        .to_string(),
+                );
+            }
+        };
+        if let Some((other, score)) = near {
             return Invocation::failed(
                 format!(
                     "`{stem}` would be a near-copy of `{}` (score {score:.2} of 1.00)",

@@ -901,6 +901,79 @@ fn a_note_lands_in_the_backends_tree_and_not_the_scopes_workspace() {
     assert!(r.render().contains("placed.md"), "{}", r.render());
 }
 
+/// A session whose files are on a host that has stopped answering: every call fails, and that is
+/// not the same answer as a directory with nothing in it.
+struct Unreachable;
+
+fn unreachable() -> crate::backend::BackendError {
+    crate::backend::BackendError::Io(
+        "ssh: connect to host gone.invalid port 22: Connection refused".into(),
+    )
+}
+
+impl crate::backend::ExecBackend for Unreachable {
+    fn run(
+        &self,
+        _cmd: &crate::backend::Command,
+    ) -> Result<crate::backend::Output, crate::backend::BackendError> {
+        Err(unreachable())
+    }
+    fn read(&self, _path: &str) -> Result<Vec<u8>, crate::backend::BackendError> {
+        Err(unreachable())
+    }
+    fn write(&self, _path: &str, _bytes: &[u8]) -> Result<(), crate::backend::BackendError> {
+        Err(unreachable())
+    }
+    fn processes_arc(&self) -> Option<Arc<dyn crate::exec::ProcessHost>> {
+        None
+    }
+    fn is_writable(&self) -> bool {
+        true
+    }
+    fn workspace_path(&self) -> Option<String> {
+        Some("/home/remote/letibot-remote/letibot/1a2b3c4d".into())
+    }
+    fn list(&self, _path: &str) -> Result<Vec<DirEntry>, crate::backend::BackendError> {
+        Err(unreachable())
+    }
+    fn stat(&self, _path: &str) -> Option<DirEntry> {
+        None
+    }
+    fn describe(&self) -> String {
+        "a host that does not answer".into()
+    }
+}
+
+/// **A corpus that could not be read is not an empty corpus.** The three read verbs answered a
+/// host that had stopped answering with "none", "no note matches" and "is in no note" - a claim
+/// about the notes, made by a reader that had read nothing.
+#[test]
+fn an_unreadable_corpus_is_reported_rather_than_called_empty() {
+    let ws = crate::backend::tempdir::TempDir::new();
+    let global = crate::backend::tempdir::TempDir::new();
+    let mut h = crate::testing::harness_over(
+        Box::new(Unreachable),
+        ws.path().to_path_buf(),
+        global.path().to_path_buf(),
+    );
+    for args in [
+        r#"{"action":"list"}"#,
+        r#"{"action":"read","name":"any"}"#,
+        r#"{"action":"search","query":"anything"}"#,
+    ] {
+        let r = h.call("notes", args);
+        let said = r.render();
+        assert!(
+            !r.is_grounded(),
+            "{args}: an unreadable corpus is a failure, not an answer: {said}"
+        );
+        assert!(
+            said.contains("could not be read") && said.contains("Connection refused"),
+            "{args}: the answer names what could not be read and why: {said}"
+        );
+    }
+}
+
 struct FixtureScope {
     workspace: PathBuf,
     global: PathBuf,
