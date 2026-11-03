@@ -135,10 +135,9 @@ pub(crate) struct TaskSlot {
     /// The child's name: what a handle may be given as, and what every sentence about the child labels it
     /// by. `None` for a slot made without a spec, whose name is in its record.
     slug: Option<String>,
-    /// The answers of the child's turns AFTER the one this slot settled, oldest first: the parent's
-    /// watcher stopped at the first answer, so each of these is a settlement of its own. `task_result`
-    /// reads the newest, since the first answer is no longer the child's last word.
-    again: std::sync::Mutex<Vec<String>>,
+    /// The newest answer of the child's turns AFTER the one this slot settled: `task_result` reads
+    /// it, since the first answer is no longer the child's last word.
+    again: std::sync::Mutex<Option<String>>,
     /// **The tree this child's branch lives in**, when it has one. `finish_child_thread` reaps it
     /// once the child has failed: nothing else removes a refused, failed or killed child's tree, and
     /// a tree left behind is a copy of a branch that already holds the work.
@@ -193,7 +192,7 @@ impl TaskSlot {
         TaskSlot {
             record: None,
             slug: None,
-            again: std::sync::Mutex::new(Vec::new()),
+            again: std::sync::Mutex::new(None),
             deliverable: std::sync::Mutex::new(None),
             state: std::sync::Mutex::new(letibot_tools::builtins::task::TaskStatus::Running {
                 note: None,
@@ -408,21 +407,18 @@ impl TaskSlot {
         if let Some(record) = &self.record {
             record.answered_again(answer);
         }
-        self.again
-            .lock()
-            .expect("task slot")
-            .push(answer.to_string());
+        *self.again.lock().expect("task slot") = Some(answer.to_string());
     }
 
     /// How many later answers the slot keeps.
     #[cfg(test)]
     pub(crate) fn answers_kept(&self) -> usize {
-        self.again.lock().expect("task slot").len()
+        usize::from(self.again.lock().expect("task slot").is_some())
     }
 
     /// The newest answer of the child's later turns, `None` for a child that has run none.
     pub(crate) fn newest_again(&self) -> Option<String> {
-        self.again.lock().expect("task slot").last().cloned()
+        self.again.lock().expect("task slot").clone()
     }
 }
 
