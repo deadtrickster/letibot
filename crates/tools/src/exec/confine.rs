@@ -1155,6 +1155,12 @@ pub trait Confinement: Send + Sync {
         Ok(self.wrap(plan)?.into_iter().map(Piece::Literal).collect())
     }
 
+    /// Whether the operator's own `!` line runs outside this boundary. It is their console, with
+    /// their rights and the daemon socket `sudo -A` needs; the boundary is for the model's commands.
+    fn spares_operator(&self) -> bool {
+        false
+    }
+
     /// Is this path outside the view? `false` when there is no view, because
     /// "outside" is meaningless then and answering `true` would produce a note
     /// claiming a boundary that is not there.

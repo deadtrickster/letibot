@@ -781,6 +781,10 @@ impl Confinement for Seatbelt {
         Some(&self.boundary)
     }
 
+    fn spares_operator(&self) -> bool {
+        true
+    }
+
     fn wrap(&self, _plan: &ConfinePlan<'_>) -> Result<Vec<String>, ExecError> {
         // The cwd is not the profile's business: the caller sets it on the `Command`, and the
         // profile names the checkout as writable wherever the command starts from.

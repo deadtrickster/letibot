@@ -1351,10 +1351,15 @@ impl ProcessHost for HostProcesses {
         // confinement and has none refuses here, and refusing after the `mkdir` would leave an
         // empty scope directory that a later listing reads as somebody's work.
         let confined = self.confine.read().expect("confinement");
-        let wrap = match confined.wrap(&ConfinePlan {
-            cwd: &cwd,
-            env: &req.env,
-        }) {
+        let planned = if req.tty && confined.spares_operator() {
+            Ok(Vec::new())
+        } else {
+            confined.wrap(&ConfinePlan {
+                cwd: &cwd,
+                env: &req.env,
+            })
+        };
+        let wrap = match planned {
             Ok(w) => w,
             Err(e) => {
                 let _ = self.tree.end(&cgroup);
