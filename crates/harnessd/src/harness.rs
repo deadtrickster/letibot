@@ -1563,8 +1563,8 @@ pub use children::{
     subagent_model, subagent_model_in,
 };
 pub(crate) use children::{
-    HarnessTaskRunner, TaskSlots, a_child_turn_ended, a_failed_childs_ending, child_mode_source,
-    git_in, steer_for_turn_over, stop_children_first, visible_text,
+    HarnessTaskRunner, TaskSlots, a_child_turn_ended, child_mode_source, git_in,
+    steer_for_turn_over, stop_children_first, visible_text,
 };
 pub(crate) use deliveries::{
     Deliveries, OPERATOR_RETIRE, graced_endings, human_secs, monitor_entries_of, monitor_facts,
