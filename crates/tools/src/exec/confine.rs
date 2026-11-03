@@ -875,6 +875,13 @@ impl Boundary {
                     outside.push(tok);
                 }
             }
+            // The same fold [`Boundary::absence_notes`] makes: a missing program names no path,
+            // and the note it produces promises a grant, so the grant has to be asked about.
+            if let Some(p) = self.missing_program(line)
+                && !outside.contains(&p)
+            {
+                outside.push(p);
+            }
             if outside.len() >= MAX_ABSENCE_PATHS {
                 break;
             }
@@ -2673,6 +2680,33 @@ mod tests {
         // the boundary.
         assert!(
             b.absence_notes("nosuchtool_xyz: command not found")
+                .is_empty()
+        );
+    }
+
+    /// The note promises a grant, so the door that raises grants must name the same path. A
+    /// missing program folded into the note and not into the ask leaves the model waiting for a
+    /// decision nobody was asked for.
+    #[test]
+    fn a_missing_program_is_a_path_the_grant_card_is_raised_for() {
+        let project =
+            std::env::temp_dir().join(format!("letibot-view-grant-{}", std::process::id()));
+        std::fs::create_dir_all(&project).expect("fixture project");
+        let b = a_boundary_over(&project);
+        let Some(cargo) = on_path("cargo").filter(|p| b.view.outside(p)) else {
+            eprintln!("no cargo outside the fixture's view; nothing to assert");
+            return;
+        };
+        for said in ["cargo: command not found", "/bin/sh: 1: cargo: not found"] {
+            assert_eq!(
+                b.outside_paths(said),
+                vec![cargo.clone()],
+                "{said}: the note names the program, so the grant door has to ask about it"
+            );
+        }
+        // A typo is not a path: nothing is asked about it, and nothing is said.
+        assert!(
+            b.outside_paths("nosuchtool_xyz: command not found")
                 .is_empty()
         );
     }
