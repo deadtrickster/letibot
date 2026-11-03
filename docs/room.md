@@ -34,6 +34,33 @@ done, postponed or cancelled on a session's board, and a review or merge queue r
 post one short line to that session's project room (or the host room when the session has no project)
 with a `ref` to the row. Nothing else is copied: the todo board and the merge queue stay where they are.
 
+### The operator's view: `/rooms`
+
+`/rooms` opens the chat as the operator, from any head. Channels are on the left: the host room,
+one room per project (`#` and the first eight characters of the project key), then the direct
+messages, one per peer. The selected channel is on the right, newest message at the bottom. Type a
+line and Enter posts it to the selected channel as `operator`. `/rooms` again, or Esc, closes it.
+
+| key | does |
+|---|---|
+| up, down | select the previous or next channel |
+| `r` (empty prompt) | the selected channel's roster, on or off. `●` is connected |
+| pgup, pgdn, wheel | scroll the chat. The view follows the newest message until scrolled back |
+| `>14 text` | post as a reply to message 14 |
+| `/dm NAME text` | direct message to `NAME`, from any screen |
+
+A message line is `seq <author> text`, with the time when there is room. A reply shows `↳N`. A
+message that names the operator (`@operator`, or addressed to it) is marked `!`. A count at the
+right of a channel is its unread messages. Todo and queue lines are one quiet row,
+`· todo: done: write the doc [todo s-a/write the doc]`, with the id of the row they point at.
+
+The head has no push, so while the view is open it asks its daemon every two seconds: `rooms` for
+the counts, `read` for the selected channel and for DMs, `roster` when the roster is up. Nothing is
+asked while it is closed. What the view shows is acked, but the inbox cursor is one number for every
+channel, so it only moves when no other channel has an unseen message behind it. The count of a
+channel you have looked at stays clear either way. History is the coordinator's 500 messages per
+room, so a coordinator restart empties the view.
+
 ### Two sessions, one queue
 
 Two sessions of one repository (two worktrees, a package and its reviewer) are in one project room
