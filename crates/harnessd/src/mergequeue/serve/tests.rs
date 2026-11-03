@@ -768,6 +768,89 @@ fn a_merge_row_landed_by_hand_settles() {
     assert_eq!(row.state, MergeState::Withdrawn, "{row:?}");
 }
 
+/// A branch already on the target is recognised ONCE - one move and one line, not a `landed <sha>`
+/// written again on every pass, which is what the queue's log was full of.
+#[test]
+fn a_branch_already_on_the_target_is_recognised_once_and_not_on_every_pass() {
+    let w = World::new("already");
+    let (wt, base, head) = branch(&w.repo, "al", "al.txt");
+    w.enqueue("al", &wt, &base, &head);
+    let q = w.worker(Arc::new(GreenGate), "a");
+    run(&q, 1);
+    let m = w.accept("al", "test/a");
+    // Landed some other way - a hand `git merge --ff-only` - before the queue got to it.
+    sh(&w.repo, &["merge", "-q", "--ff-only", "agent/al"]);
+    run(&q, 2);
+    let s = w.store();
+    let moves = |s: &Store| s.transitions("merge", &m).unwrap();
+    let recognised: Vec<String> = moves(&s)
+        .into_iter()
+        .filter(|t| t.to_state == "withdrawn" && t.from_state.as_deref() != Some("withdrawn"))
+        .map(|t| t.why)
+        .collect();
+    assert_eq!(recognised.len(), 1, "one move: {recognised:?}");
+    assert!(
+        recognised[0].contains("it landed some other way"),
+        "the sentence says why there was nothing to merge: {}",
+        recognised[0]
+    );
+    // The passes after it have nothing to say: the log is one line, not one per pass.
+    let before = moves(&s).len();
+    run(&q, 3);
+    assert_eq!(
+        moves(&w.store()).len(),
+        before,
+        "a row already on the target is recognised once"
+    );
+}
+
+/// The other route to the same fact: the row was TAKEN and the branch is on the target by the time
+/// the landing looks. One conditional move to `landed` - and calling it again lands nothing.
+#[test]
+fn a_landing_that_finds_its_branch_on_the_target_moves_once() {
+    let w = World::new("landing-already");
+    let (wt, base, head) = branch(&w.repo, "la", "la.txt");
+    w.enqueue("la", &wt, &base, &head);
+    let q = w.worker(Arc::new(GreenGate), "a");
+    run(&q, 1);
+    let m = w.accept("la", "test/a");
+    let s = w.store();
+    // Taken, and the branch went onto the target while the landing was in its way.
+    s.move_merge(
+        &m,
+        MergeState::Queued,
+        MergeState::Gating,
+        &Move::new("test/a", "taken").set("owner", "test/a"),
+        gate::now_ms(),
+    )
+    .unwrap();
+    sh(&w.repo, &["merge", "-q", "--ff-only", "agent/la"]);
+    let tip = w.tip();
+    let landings = |s: &Store| -> Vec<String> {
+        s.transitions("merge", &m)
+            .unwrap()
+            .into_iter()
+            .filter(|t| t.to_state == "landed")
+            .map(|t| t.why)
+            .collect()
+    };
+    q.land(&s.merge_row(&m).unwrap().unwrap()).unwrap();
+    let row = s.merge_row(&m).unwrap().unwrap();
+    assert_eq!(row.state, MergeState::Landed, "{row:?}");
+    assert_eq!(row.landed_sha.as_deref(), Some(tip.as_str()));
+    let said = landings(&s);
+    assert_eq!(said.len(), 1, "one landing: {said:?}");
+    assert!(said[0].contains("already on `main`"), "{}", said[0]);
+    assert!(said[0].contains("nothing to rebase"), "{}", said[0]);
+    // The same call on the landed row is not a second landing.
+    q.land(&s.merge_row(&m).unwrap().unwrap()).unwrap();
+    assert_eq!(
+        landings(&s).len(),
+        1,
+        "a landing is one conditional move, not a line per pass"
+    );
+}
+
 /// A daemon that stops kills its gate and puts the row back in line - never left `taken`
 /// for a restart to call `stale` while the orphan holds the build lock (defect 6).
 #[test]
@@ -2641,7 +2724,9 @@ fn a_store_that_will_not_open_is_waited_out_and_the_worker_goes_on() {
         work(db, repo, env, &stop);
     });
     // It ends by itself: with no lease of this repository it serves one pass and gives up.
-    worked.join().expect("the worker returns after a store error");
+    worked
+        .join()
+        .expect("the worker returns after a store error");
     let said = w.door.warnings("merge_queue_store_error");
     assert_eq!(said.len(), 1, "one outage, one line: {said:?}");
     assert!(said[0].contains("opening the store"), "{}", said[0]);
