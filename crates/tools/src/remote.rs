@@ -1338,13 +1338,6 @@ impl Ssh {
         flags(&self.key, &self.control, &self.paths)
     }
 
-    /// The same flags, pointed at the git master: what `core.sshCommand` is built from. A fetch is an
-    /// ssh this process never sees, so it takes no place in [`rpc::enter`]'s queue and would be the
-    /// ninth session on the master the calls are bounded on.
-    pub fn git_flags(&self) -> Vec<String> {
-        flags(&self.key, &self.git_control, &self.paths)
-    }
-
     /// The socket this connection's own calls multiplex over. A test asks this, production does not:
     /// it is the one fact that says *one master per daemon*.
     pub fn control_socket(&self) -> &Path {
@@ -2174,16 +2167,15 @@ impl Ssh {
         let _ = std::fs::remove_file(&self.control);
     }
 
-    /// Drop the socket git's own ssh multiplexes over. A refused session came from a master with no
-    /// free slot, and a retry through the same socket would ask that same full master.
-    fn drop_git_socket(&self) {
-        let _ = std::fs::remove_file(&self.git_control);
-    }
-
     /// The one ssh this process does not start: `git fetch` builds it from `core.sshCommand` and
     /// multiplexes over the git socket, so it takes a slot on that gate by hand. A refused session
     /// never reached the remote, so a full master costs a round trip and not a session's branch.
-    fn fetch_back(&self, argv: &[String]) -> Result<Option<std::process::Output>, String> {
+    fn fetch_back(
+        &self,
+        repo: &Path,
+        url: &str,
+        refspec: &str,
+    ) -> Result<Option<std::process::Output>, String> {
         let budget = FetchBudget::new();
         let mut last: Option<std::process::Output> = None;
         for attempt in 0..2 {
@@ -2204,9 +2196,10 @@ impl Ssh {
                     });
                 }
             };
+            let argv = self.fetch_argv(attempt, repo, url, refspec);
             // Bounded, because this fetch's transport is an ssh connection: a close that waits for
             // ever on a dead host is the same defect as a `read` that does.
-            let out = run_bounded(Path::new("git"), argv, budget.left());
+            let out = run_bounded(Path::new("git"), &argv, budget.left());
             let refused = out.as_ref().is_some_and(|o| {
                 !o.status.success() && mux_refusal(&String::from_utf8_lossy(&o.stderr)).is_some()
             });
@@ -2214,9 +2207,54 @@ impl Ssh {
             if !refused || attempt == 1 {
                 break;
             }
-            self.drop_git_socket();
         }
         Ok(last)
+    }
+
+    /// `git fetch`'s argv for one attempt. The socket is the attempt's own: attempt 0 rides the
+    /// daemon's shared git master, and a retry dials a socket beside it, because the shared master may
+    /// be the one that refused and that socket belongs to every session of this daemon.
+    fn fetch_argv(&self, attempt: u32, repo: &Path, url: &str, refspec: &str) -> Vec<String> {
+        let mut argv: Vec<String> = vec![
+            "-C".into(),
+            repo.display().to_string(),
+            "-c".into(),
+            format!("core.sshCommand={}", self.git_ssh_command(attempt)),
+            "fetch".into(),
+            "--no-tags".into(),
+        ];
+        // The far side's `git-upload-pack` is a remote command, and a login shell reads no profile
+        // for it, so a host whose `git` is not on the default `PATH` needs the prefix here too.
+        if let Some(prefix) = self.upload_pack_prefix() {
+            argv.push("--upload-pack".into());
+            argv.push(format!("{prefix} git-upload-pack"));
+        }
+        argv.push(url.to_string());
+        argv.push(refspec.to_string());
+        argv
+    }
+
+    /// What `core.sshCommand` is for one attempt: this program, the connection's flags, and that
+    /// attempt's `ControlPath`. The retry's name comes from the counter so two fetches retrying at
+    /// once never share one, and through [`control_path_for`] so a long path still falls back.
+    fn git_ssh_command(&self, attempt: u32) -> String {
+        let socket = match attempt {
+            0 => self.git_control.clone(),
+            _ => {
+                static RETRIES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                let n = RETRIES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                control_path_for(
+                    &self.host.name,
+                    std::process::id(),
+                    &format!("git-retry-{n}"),
+                )
+            }
+        };
+        std::iter::once(self.program.display().to_string())
+            .chain(flags(&self.key, &socket, &self.paths))
+            .map(|a| quote(&a))
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 
     /// A file's bytes, base64 over the wire - binary-safe, which a `cat` is not once the connection
@@ -3492,34 +3530,10 @@ impl SshBackend {
             }
         );
         let refspec = format!("+{}:refs/heads/{}", self.branch, self.back_branch);
-        // `git fetch` over ssh, with this backend's ssh and the GIT ControlMaster rather than the
-        // one the calls are multiplexed on: git starts that ssh itself, so it takes no slot in the
-        // gate that keeps a daemon's calls under `MaxSessions` and is held back by [`Ssh::fetch_back`].
-        let ssh_command = std::iter::once(self.ssh.program().display().to_string())
-            .chain(self.ssh.git_flags())
-            .map(|a| quote(&a))
-            .collect::<Vec<_>>()
-            .join(" ");
-        let fetched = {
-            let mut argv: Vec<String> = vec![
-                "-C".into(),
-                self.local_repo.display().to_string(),
-                "-c".into(),
-                format!("core.sshCommand={ssh_command}"),
-                "fetch".into(),
-                "--no-tags".into(),
-            ];
-            // The far side's `git-upload-pack` is a remote command, and a login shell reads no
-            // profile for it, so a host whose `git` is not on the default `PATH` needs the prefix
-            // here too. `--upload-pack` takes it as a prefix assignment, not an `export`.
-            if let Some(prefix) = self.ssh.upload_pack_prefix() {
-                argv.push("--upload-pack".into());
-                argv.push(format!("{prefix} git-upload-pack"));
-            }
-            argv.push(url.clone());
-            argv.push(refspec.clone());
-            self.ssh.fetch_back(&argv)
-        };
+        // The ssh this fetch starts is git's own, so it rides the daemon's git master rather than the
+        // one the calls are multiplexed on. The argv is built per attempt by [`Ssh::fetch_back`],
+        // because a retry must not dial the socket that refused it.
+        let fetched = self.ssh.fetch_back(&self.local_repo, &url, &refspec);
         let mut said = match fetched {
             Ok(Some(out)) if out.status.success() => {
                 let commit = git(

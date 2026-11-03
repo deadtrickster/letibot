@@ -758,3 +758,53 @@ fn a_fetch_waits_for_a_git_slot_as_long_as_the_connection_is_given() {
         "the report says it never got a slot: {said}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// A refused fetch and the socket it dials
+// ---------------------------------------------------------------------------
+
+/// A fake that refuses the first `git-upload-pack` session only, and answers everything else: the
+/// transport a retry is for.
+fn refuses_the_first_pack(tag: &str) -> Fake {
+    Fake::new(
+        tag,
+        "if [[ $last == *git-upload-pack* ]] && first_time refused; then\n\
+           mark refused\n\
+           echo 'mux_client_request_session: session request failed' >&2\n\
+           exit 255\n\
+         fi",
+    )
+}
+
+/// The git socket belongs to the DAEMON: every session on that host multiplexes over it, so a fetch
+/// that was refused must not remove it. The name is planted where ssh would have left it, and a
+/// refused fetch that retried must leave it where it was.
+#[test]
+fn a_refused_fetch_leaves_the_shared_git_socket_alone() {
+    let fake = refuses_the_first_pack("git-socket-kept");
+    let (repo, paths) = repo_and_paths(&fake.dir.join("rig"));
+    let b = SshBackend::place(&spec_for(
+        &repo,
+        &paths,
+        &fake.program,
+        Duration::from_secs(30),
+    ))
+    .expect("placed");
+    // A plain file, because the fake is no ssh: this test is about who removes the name, and the
+    // name is the one the daemon's own fetches multiplex over.
+    let socket = letibot_tools::remote::git_control_path("fake", std::process::id());
+    std::fs::write(&socket, b"the socket every session of this daemon shares").expect("planted");
+
+    let said = b.close().expect("a close says where the work went");
+    assert_eq!(fake.refusals(), 1, "exactly one fetch was refused");
+    assert!(
+        socket.exists(),
+        "the daemon's git socket is still there, not removed by one fetch: {}",
+        socket.display()
+    );
+    assert!(
+        said.contains("came back here"),
+        "and the refused fetch was retried, so the branch came back: {said}"
+    );
+    git(&repo, &["rev-parse", "--verify", b.back_branch()]);
+}
