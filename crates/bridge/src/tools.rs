@@ -613,7 +613,7 @@ fn tools_run(placement: Option<&Placement>) -> String {
 /// objects because MCP requires `inputSchema` to be one, and `required` is stated rather than
 /// inferred: a client that omits a field should be told which, not have it defaulted.
 pub fn list() -> Value {
-    json!({ "tools": [
+    let mut tools = vec![
         tool("leticode_start",
              "Start leticode on a worktree and hold the session. Starts or joins that \
               folder's daemon, opens a session, sets the approval point, sends the brief as \
@@ -822,7 +822,9 @@ pub fn list() -> Value {
               whether each is only watched (`leticode_attach`'s default) or driven. It lists \
               what this process holds, not what the daemon has on disk.",
              json!({ "type": "object", "properties": {} })),
-    ].into_iter().chain(crate::rooms::tool_list()).collect::<Vec<_>>()})
+    ];
+    tools.extend(crate::rooms::tool_list());
+    json!({ "tools": tools })
 }
 
 fn tool(name: &str, description: &str, schema: Value) -> Value {
