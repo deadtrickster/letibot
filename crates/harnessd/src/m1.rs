@@ -42,6 +42,11 @@
 //! context filled on a production box. The policy is exercised exhaustively offline in
 //! `letibot_turn::length`; what is measured here is the server half, that `finish_reason` arrives.
 //!
+//! The run ends with one `M1 EXIT` line and exits 1 unless that line says `MET`. The criterion is
+//! that the checks pass, so `NOT RUN` and `PARTIAL` count against it - the exit status used to be
+//! "nothing said FAIL", which a run that measured nothing passed - and the two checks this
+//! instrument cannot produce are named on the line rather than counted as failures.
+//!
 //! # `f_keep` here is D11's, and `f_sim` is printed beside it
 //!
 //! §18.2's C4 originally read `cached_tokens / prompt_tokens`, whose denominator is the *new*
@@ -188,6 +193,8 @@ pub fn run(args: &[String]) -> i32 {
     for v in &verdicts {
         println!("{v}");
     }
+    let (met, line) = exit_verdict(&verdicts);
+    println!("\n{line}");
 
     if let Some(path) = json_out {
         let payload = serde_json::json!({
@@ -226,10 +233,79 @@ pub fn run(args: &[String]) -> i32 {
         println!("\nrows written to {}", path.display());
     }
 
-    let failed = verdicts
+    std::process::exit(if met { 0 } else { 1 });
+}
+
+/// The checks this instrument cannot produce, and where each is answered instead. Naming them is
+/// what keeps the verdict honest: a run that is silent about C2 and C7 reads as if it ran them.
+const MEASURED_ELSEWHERE: [(&str, &str); 2] = [
+    (
+        "C2",
+        "the renderer gate, tests/fidelity, which needs no model",
+    ),
+    (
+        "C7",
+        "a truncated tool argument, which needs a server `length` and no n_predict cap exists",
+    ),
+];
+
+/// Whether M1's exit criterion is met, and the line that says so. The criterion is that C1-C10
+/// pass, so a check that never ran has not passed: `NOT RUN`, `PARTIAL` and a check that is
+/// missing are all not-passes here, which is the one place the whole run is allowed to be strict.
+fn exit_verdict(verdicts: &[String]) -> (bool, String) {
+    let mut seen: Vec<&str> = Vec::new();
+    let mut not_pass: Vec<String> = Vec::new();
+    for v in verdicts {
+        let mut words = v.split_whitespace();
+        let Some(check) = words.next() else { continue };
+        let digits = &check[1..];
+        if !check.starts_with('C')
+            || digits.is_empty()
+            || !digits.chars().all(|c| c.is_ascii_digit())
+        {
+            continue;
+        }
+        if MEASURED_ELSEWHERE.iter().any(|(c, _)| *c == check) {
+            continue;
+        }
+        seen.push(check);
+        let state = words.next().unwrap_or("");
+        if !state.starts_with("PASS") {
+            let state = if state == "NOT" { "NOT RUN" } else { state };
+            not_pass.push(format!("{check} {state}"));
+        }
+    }
+    let elsewhere: Vec<String> = MEASURED_ELSEWHERE
         .iter()
-        .any(|v| v.starts_with("C") && v.contains(" FAIL"));
-    std::process::exit(if failed { 1 } else { 0 });
+        .map(|(c, why)| format!("{c} ({why})"))
+        .collect();
+    let elsewhere = elsewhere.join(", ");
+    if seen.is_empty() {
+        return (
+            false,
+            format!("M1 EXIT  NOT MET  the run produced no C1-C10 verdict at all. {elsewhere}."),
+        );
+    }
+    if not_pass.is_empty() {
+        return (
+            true,
+            format!(
+                "M1 EXIT  MET  all {} checks this run can produce passed. Not measured here: \
+                 {elsewhere}.",
+                seen.len()
+            ),
+        );
+    }
+    (
+        false,
+        format!(
+            "M1 EXIT  NOT MET  {} of {} checks are not a pass: {}. Not measured here either: \
+             {elsewhere}.",
+            not_pass.len(),
+            seen.len(),
+            not_pass.join(", ")
+        ),
+    )
 }
 
 enum Step {
@@ -957,6 +1033,58 @@ mod tests {
 
         let unread = c5(&[row(0, 1_000, 990, 1_000)]);
         assert!(unread.contains("C5  NOT RUN"), "{unread}");
+    }
+
+    /// M1's exit is "C1-C10 pass", which a run's exit status has to mean. Every verdict line the
+    /// instrument can print is a state, and only a pass is one of the passes.
+    #[test]
+    fn a_failed_check_fails_the_run_however_the_line_is_spaced() {
+        // The two-space form is how C1 and C3 print a failure.
+        let (met, line) = exit_verdict(&[
+            "C1  PASS  exact prefix extension over 29 submissions".to_string(),
+            "C3  FAIL  1 submission(s) VIOLATED the invariant".to_string(),
+        ]);
+        assert!(!met, "a divergent prompt left the run exiting 0: {line}");
+        assert!(line.contains("C3 FAIL"), "{line}");
+        assert!(!line.contains("C1 C1"), "{line}");
+    }
+
+    /// A check that never ran has not passed, which is why the run has a verdict of its own: the
+    /// exit status used to be "nothing said FAIL", and NOT RUN passed it.
+    #[test]
+    fn a_check_that_never_ran_is_not_a_pass() {
+        let (met, line) = exit_verdict(&[
+            "C1  PASS  exact prefix extension over 29 submissions".to_string(),
+            "C6  NOT RUN  the session produced no tool-call-only assistant turn".to_string(),
+        ]);
+        assert!(
+            !met,
+            "a check that never ran left the run exiting 0: {line}"
+        );
+        assert!(line.contains("C6 NOT RUN"), "{line}");
+    }
+
+    /// The two checks this instrument cannot produce are named on the line and not counted as
+    /// failures, and `PASS*` is a pass: C3's shortfall is a measurement of the server.
+    #[test]
+    fn the_verdict_names_what_this_run_can_never_measure() {
+        let all: Vec<String> = ["C1", "C3", "C4", "C5", "C6", "C8", "C9", "C10"]
+            .iter()
+            .map(|c| format!("{c}  PASS*  held"))
+            .collect();
+        let (met, line) = exit_verdict(&all);
+        assert!(met, "{line}");
+        assert!(line.contains("all 8 checks"), "{line}");
+        assert!(
+            line.contains("C2 ("),
+            "the renderer gate is not named: {line}"
+        );
+        assert!(
+            line.contains("C7 ("),
+            "the truncated call is not named: {line}"
+        );
+        let (met, line) = exit_verdict(&[]);
+        assert!(!met, "a run that measured nothing was called met: {line}");
     }
 
     /// C10's two ways of disagreeing with the server, which are different facts: a count that is
