@@ -503,6 +503,35 @@ mod tests {
         assert_eq!(shipped.sources(), Pin::shipped().sources());
     }
 
+    /// **A changed pin fetches its own files.** The directory is keyed by the revision, so a box
+    /// that moved the pin never serves another revision's bytes under the new commit's name.
+    #[test]
+    fn a_changed_pin_fetches_its_own_files_and_not_another_revisions() {
+        let files = Checkpoint::new();
+        let fake = Fake::new(files.route());
+        let data = Dir::new("two-revisions");
+        let first = files.pin(&fake.base());
+        ensure(&first, data.path(), Policy::none(), &mut |_| {}).expect("the first revision");
+        assert_eq!(fake.requests(), 3);
+
+        let second = Pin::new(
+            fake.base(),
+            "1111111111111111111111111111111111111111",
+            first.sources().to_vec(),
+        );
+        assert_ne!(second.dir(data.path()), first.dir(data.path()));
+        assert!(
+            !second.present(&second.dir(data.path())),
+            "the first revision's files are not the second's"
+        );
+        ensure(&second, data.path(), Policy::none(), &mut |_| {}).expect("the second revision");
+        assert_eq!(fake.requests(), 6, "fresh files, and none of them reused");
+        assert!(
+            first.present(&first.dir(data.path())),
+            "and the first revision is still whole"
+        );
+    }
+
     /// **The first use fetches the three files and the second start does not.** The bytes
     /// served are a checkpoint this build opens, so the assertion is not that files appeared
     /// but that the model underneath them works.

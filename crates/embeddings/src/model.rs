@@ -31,7 +31,8 @@ pub const MAX_TOKENS: usize = 256;
 const BERT_FAMILY: [&str; 2] = ["bert", "nomic_bert"];
 
 /// Where the built-in model lives once it has been fetched: one directory per pinned
-/// revision, so a moved pin never shares a directory with the files it replaced.
+/// revision, so a moved pin never shares a directory with the files it replaced. This is the
+/// SHIPPED pin's revision; a section that pinned another one names its own, `Pin::dir`.
 pub fn builtin_dir(data_dir: &Path) -> PathBuf {
     data_dir
         .join("models")
@@ -108,8 +109,9 @@ impl Model {
         Model::load(dir, dir.display().to_string())
     }
 
-    /// Open the built-in model out of the data directory. A box that has never been given
-    /// one is refused with the directory's name, which is the line to act on.
+    /// Open the built-in model out of the data directory, at the shipped pin's revision. A box
+    /// that has never been given one is refused with the directory's name, which is the line to
+    /// act on; a section that pinned another revision opens `Pin::dir` instead.
     pub fn open_builtin(data_dir: &Path) -> Result<Model, ModelError> {
         Model::load(&builtin_dir(data_dir), BUILTIN_MODEL.to_string())
     }

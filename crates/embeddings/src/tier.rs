@@ -212,8 +212,12 @@ impl Embedder {
                         Model::open_named(&dir, BUILTIN_MODEL).map_err(TierError::Model)?,
                     ))
                 }
+                // A box that may not reach the network is not fetched for, but the pin is still
+                // the pin: the directory it names is the one looked in, and the old refusal is
+                // what a box with nothing there gets.
                 None => Engine::Internal(Box::new(
-                    Model::open_builtin(data_dir).map_err(TierError::Model)?,
+                    Model::open_named(&pin.dir(data_dir), BUILTIN_MODEL)
+                        .map_err(TierError::Model)?,
                 )),
             },
             Mode::Remote { url, model } => {
