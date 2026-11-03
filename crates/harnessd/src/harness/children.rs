@@ -3196,6 +3196,37 @@ impl HarnessTaskRunner {
         )
     }
 
+    /// **A tree with nothing in it is nobody's deliverable.** A child that ended without answering -
+    /// a refusal, a failed first turn - leaves a worktree of its own behind, and nothing reaps it.
+    /// [`git::retire_if_empty`] is the whole rule: a commit over the base is the only copy of that
+    /// work and a dirty tree may hold what was never committed, so both are kept and only the empty
+    /// clean tree goes.
+    pub(crate) fn retire_an_empty_tree(&self, handle: &str) {
+        let Some(child) = self
+            .placed
+            .lock()
+            .expect("placed children")
+            .iter()
+            .find(|c| c.handle == handle)
+            .cloned()
+        else {
+            return;
+        };
+        if child.placement.main_tree {
+            return;
+        }
+        let tree = std::path::Path::new(&child.placement.path);
+        let Some(repo) = crate::mergequeue::git::repo_of_worktree(tree) else {
+            return;
+        };
+        let _ = crate::mergequeue::git::retire_if_empty(
+            &repo,
+            &child.placement.base_sha,
+            &child.placement.branch,
+            Some(&child.placement.path),
+        );
+    }
+
     /// **Where the child's tools run, and the tree a VM copies** - the two answers a `task`
     /// gives before anything is minted or opened.
     fn child_placement(
@@ -3822,6 +3853,9 @@ impl HarnessTaskRunner {
                 // The backend is closed on this exit too - the other two close it below - so a
                 // child whose first turn failed does not leave its watchers and cgroups behind.
                 sub.close_backend();
+                // And its tree, when the branch carries nothing and the tree is clean: a failed
+                // child leaves a worktree nobody lands and nothing else looked at.
+                self.retire_an_empty_tree(&sub_id);
                 return Err(fail(why));
             }
         };

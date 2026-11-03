@@ -486,6 +486,72 @@ fn a_child_of_the_main_tree_leaves_no_entry() {
     assert!(warning(&fx.parent, "merge_not_queued").is_none());
 }
 
+/// **A tree with nothing in it is nobody's deliverable.** A child that failed leaves a worktree of
+/// its own behind; when its branch carries nothing over its base and the tree is clean there is
+/// nothing in it to lose, and it is retired - while a child that left a commit keeps its tree, that
+/// commit being the only copy of the work.
+#[test]
+fn a_failed_childs_empty_tree_is_retired_and_one_with_work_is_kept() {
+    let Some(fx) = Fixture::new("reap-empty") else {
+        return;
+    };
+    let (root, base_sha, branches) =
+        repo_with_children(fx.dir.path(), &[(SLUG, "ONE\ntwo\nthree\n")]);
+    // A child that failed before it committed anything: its branch is at its base.
+    let empty = root.join("worktrees").join("never-committed");
+    git(
+        &root,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            empty.to_str().expect("a utf-8 temp path"),
+            "-b",
+            "agent/never-committed",
+            "main",
+        ],
+    );
+    let placed: Vec<PlacedChild> = [
+        PlacedChild::of(
+            "s-parent-sub-1",
+            "work that never landed",
+            &WorktreePlacement {
+                path: empty.display().to_string(),
+                branch: "agent/never-committed".into(),
+                base_sha: base_sha.clone(),
+                main_tree: false,
+            },
+        ),
+        PlacedChild::of(
+            "s-parent-sub-2",
+            "work that did land",
+            &branches[0].placement(&base_sha),
+        ),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let runner = fx.runner(placed);
+    runner.retire_an_empty_tree("s-parent-sub-1");
+    runner.retire_an_empty_tree("s-parent-sub-2");
+    assert!(!empty.exists(), "a tree with nothing in it is retired");
+    assert!(
+        !git_ok(
+            &root,
+            &["rev-parse", "--verify", "--quiet", "agent/never-committed"]
+        ),
+        "and its branch goes with it"
+    );
+    assert!(
+        branches[0].worktree.exists(),
+        "a child that left a commit keeps its tree: that commit is the only copy"
+    );
+    assert!(git_ok(
+        &root,
+        &["rev-parse", "--verify", "--quiet", &branches[0].branch]
+    ));
+}
+
 /// A branch with nothing on it is refused by name, and leaves no row: a child in a VM commits inside the VM's copy and
 /// one whose work was never committed leaves the branch where it started, and reading the head with a default made
 /// either a review row whose `head_sha` was the base.
