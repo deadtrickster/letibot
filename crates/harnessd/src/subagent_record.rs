@@ -826,14 +826,6 @@ pub fn parent_reminded_line(
     )
 }
 
-/// The build a notice names: the commit when the build recorded one, else the crate version.
-pub fn build() -> String {
-    match option_env!("LETIBOT_BUILD_SHA") {
-        Some(sha) if !sha.is_empty() => sha.to_string(),
-        _ => format!("v{}", env!("CARGO_PKG_VERSION")),
-    }
-}
-
 /// Milliseconds since the epoch as `YYYY-MM-DD HH:MM:SS UTC` - civil-from-days, so no clock
 /// crate for one sentence.
 pub fn utc(ms: u64) -> String {
