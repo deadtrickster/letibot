@@ -724,6 +724,15 @@ fn bound_records<T>(records: &mut Vec<T>, limit: usize) {
     }
 }
 
+/// How many FINISHED jobs one host keeps: a row is about 1.1 KB, nothing else ever removed one, and a
+/// session's table grew with every `bash` it ran for as long as it lived. The newest are the ones a
+/// model pages back through, and a running job is never dropped however many there are.
+pub const KEPT_FINISHED_JOBS: usize = 32;
+
+/// How long a finished job is kept whatever the window says. A watcher polls its settlement every
+/// five seconds, and a row that went before the poll is a completion nobody was told about.
+pub const FINISHED_JOB_GRACE: Duration = Duration::from_secs(120);
+
 /// A job this host did not start: a restarted daemon's record of one, or a peer's, as this layer
 /// needs it. See [`HostProcesses::adopt`] and [`hand_over`].
 #[derive(Debug, Clone)]
@@ -840,6 +849,41 @@ impl HostProcesses {
                 held += here;
             }
         }
+    }
+
+    /// Drop the finished jobs past a window of `keep`, oldest first ([`KEPT_FINISHED_JOBS`]), and any
+    /// finished one settled less than `grace` before `now`. Both tables lose the row together: `find`
+    /// reads `by_id` and `jobs()` reads `jobs`, and one without the other is a row nobody can reach.
+    /// The clock is handed in so a test can age a finish without sleeping. Returns how many rows went.
+    fn prune_finished(&self, keep: usize, grace: Duration, now: SystemTime) -> usize {
+        let aged = |job: &Arc<Job>| {
+            !job.state().is_running()
+                && job
+                    .settled_at()
+                    .is_some_and(|at| now.duration_since(at).is_ok_and(|d| d >= grace))
+        };
+        let mut jobs = self.jobs.lock().expect("jobs");
+        // Newest first, because what stays is the window the model is most likely to read again.
+        let mut kept = 0usize;
+        let mut doomed: Vec<JobId> = Vec::new();
+        for job in jobs.iter().rev() {
+            if !aged(job) {
+                continue;
+            }
+            kept += 1;
+            if kept > keep {
+                doomed.push(job.id.clone());
+            }
+        }
+        if doomed.is_empty() {
+            return 0;
+        }
+        jobs.retain(|job| !doomed.contains(&job.id));
+        let mut by_id = self.by_id.lock().expect("jobs by id");
+        for id in &doomed {
+            by_id.remove(id);
+        }
+        doomed.len()
     }
 
     /// A host with a real cgroup tree, rooted under `root` on the filesystem. Returns the
@@ -1595,6 +1639,7 @@ impl ProcessHost for HostProcesses {
             .insert(job.id.clone(), Arc::clone(&job));
         self.jobs.lock().expect("jobs").push(job);
         self.release_settled_captures(SETTLED_CAPTURE_BUDGET);
+        self.prune_finished(KEPT_FINISHED_JOBS, FINISHED_JOB_GRACE, SystemTime::now());
         Ok(id)
     }
 
@@ -2593,6 +2638,105 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
         );
         let _ = h.kill_job_as(&running, "test");
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// **A row is about 1.1 KB and nothing ever removed one**, so a session's job table grew with
+    /// every `bash` it ran. What is kept is the running jobs and the newest window of finished
+    /// ones, and a finish younger than the grace is kept whatever the window says: a watcher polls
+    /// its settlement every five seconds and would lose the news of a job whose row had gone.
+    /// Counted, never measured - the question is how many rows the host still holds.
+    #[test]
+    fn finished_jobs_are_kept_to_a_window_and_a_running_one_is_never_dropped() {
+        let h = HostProcesses::with_tree(
+            "/tmp",
+            Box::new(crate::exec::scope::NoScopes::new(
+                "this test starts no process: the rows are made by hand",
+            )),
+        );
+        let add = |id: &str, settle: Option<JobState>| {
+            let scope = ScopeId {
+                kind: ScopeKind::Session,
+                name: format!("s-{id}"),
+                path: PathBuf::from(format!("/nonexistent/{id}")),
+            };
+            let job = Arc::new(Job::new(
+                JobId(id.into()),
+                "true".into(),
+                None,
+                Lifetime {
+                    scope: scope.clone(),
+                    owner: scope,
+                    background: None,
+                },
+                "/".into(),
+                0,
+                1024,
+                crate::exec::jobs::Stdin::none(),
+            ));
+            if let Some(state) = settle {
+                job.settle(state);
+            }
+            h.jobs.lock().expect("jobs").push(Arc::clone(&job));
+            h.by_id
+                .lock()
+                .expect("jobs by id")
+                .insert(job.id.clone(), job);
+        };
+        // Three hundred commands a session ran, and five still going.
+        for i in 0..300 {
+            add(&format!("done-{i}"), Some(JobState::Exited { code: 0 }));
+        }
+        for i in 0..5 {
+            add(&format!("running-{i}"), None);
+        }
+
+        // A job that has only just finished is kept whatever the window says.
+        assert_eq!(
+            h.prune_finished(KEPT_FINISHED_JOBS, FINISHED_JOB_GRACE, SystemTime::now()),
+            0,
+            "a fresh finish is kept: a watcher has not read its settlement yet"
+        );
+        assert_eq!(h.jobs().len(), 305);
+
+        // An hour later the window is the rule, and it is counted from the newest.
+        let later = SystemTime::now() + Duration::from_secs(3600);
+        let dropped = h.prune_finished(KEPT_FINISHED_JOBS, FINISHED_JOB_GRACE, later);
+        assert_eq!(
+            dropped,
+            300 - KEPT_FINISHED_JOBS,
+            "the finished rows past the window"
+        );
+        assert_eq!(
+            h.jobs().len(),
+            KEPT_FINISHED_JOBS + 5,
+            "the window and the running five"
+        );
+        assert_eq!(
+            h.by_id.lock().expect("jobs by id").len(),
+            h.jobs().len(),
+            "the two tables name the same jobs, or `find` answers about rows `jobs()` has not got"
+        );
+        for i in 0..5 {
+            assert!(
+                h.find(&JobId(format!("running-{i}"))).is_some(),
+                "a running job is never dropped"
+            );
+        }
+        for i in 299 - KEPT_FINISHED_JOBS + 1..300 {
+            assert!(
+                h.find(&JobId(format!("done-{i}"))).is_some(),
+                "the newest finished rows are the window"
+            );
+        }
+        assert!(
+            h.find(&JobId("done-0".into())).is_none(),
+            "the oldest finished row went"
+        );
+        // And a second pass at the same clock drops nothing: the bound is the state, not a count.
+        assert_eq!(
+            h.prune_finished(KEPT_FINISHED_JOBS, FINISHED_JOB_GRACE, later),
+            0
+        );
     }
 
     /// A run with no deadline has its file from the spawn, and `from` is 0 because nothing had
