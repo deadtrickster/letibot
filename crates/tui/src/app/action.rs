@@ -165,19 +165,10 @@ pub enum Action {
     /// Read a subagent's output without leaving this session: the daemon answers with `Peeked`
     /// and the pane is built from it. Lazy - nothing is read until this is sent.
     Peek(String),
-    /// Ask the daemon for one row's body, by session ordinal. Sent for a snapshot row it announced
-    /// and never filled: only the door that reads the STORE can say whether that is a hole in the
-    /// snapshot or in the world, and a guess would send the operator to run a verb on it.
-    FetchRow {
-        session: String,
-        /// The row's position in the session — `items_dropped` plus the index the head holds
-        /// it at, which is the only name for a row a head can construct.
-        row: usize,
-        at: usize,
-        len: usize,
-    },
-    /// Ask for a page of whole rows by ordinal: the rows above the window this head holds, so a
-    /// reader who scrolls past the oldest row on the screen reaches the conversation behind it.
+    /// Ask the daemon for a page of whole rows by session ordinal: what a reader who scrolls past
+    /// the oldest row this head holds, or back down toward a tail it let go of, is missing. The one
+    /// door for rows: a window inside one row's body does not carry the row's kind, and a head that
+    /// holds a window can only ask by ordinal.
     FetchRows {
         session: String,
         /// The first ordinal wanted, oldest first.

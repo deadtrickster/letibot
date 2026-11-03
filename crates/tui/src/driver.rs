@@ -657,23 +657,15 @@ impl Link {
                     Action::WithdrawPrompts => {
                         self.client.withdraw_prompts(app.seq)?;
                     }
+                    // A snapshot announced a row it never filled, or the reader has scrolled past the
+                    // window: the head asks for whole rows by ordinal, and the page joins the window
+                    // where it ends. The one door for rows.
                     Action::FetchRows {
                         session,
                         from,
                         count,
                     } => {
                         self.client.fetch_rows(&session, from, count)?;
-                    }
-                    // A snapshot announced a row it never filled, so the head asks the daemon for that row by
-                    // name: the store is the truth and the answer arrives as `RowFetched` and fills the position
-                    // the head named.
-                    Action::FetchRow {
-                        session,
-                        row,
-                        at,
-                        len,
-                    } => {
-                        self.client.fetch_row(&session, row, at, len)?;
                     }
                     // The person's half of the board, on its way out: the head sends the WHOLE list, since
                     // there is no per-row frame and no delta, so a head cannot accumulate a difference between

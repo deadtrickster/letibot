@@ -245,8 +245,8 @@ pub(crate) struct Bulk {
     pub(crate) announced: usize,
     /// When the snapshot landed, on this head's clock — [`BODY_PATIENCE`]'s origin.
     pub(crate) at_ms: u64,
-    /// What the STORE said about each position, asked by session ordinal through `FetchRow` - the door
-    /// that falls through to the store when the view cannot answer. A snapshot is cut from the daemon's
+    /// What the STORE said about each position, asked by session ordinal through `FetchRows` - the
+    /// door that falls through to the store when the view cannot answer. A snapshot is cut from the daemon's
     /// in-memory view, so a resync re-cuts the same body-less row; only a re-seat rebuilds it.
     pub(crate) held: std::collections::HashSet<String>,
     /// The ids the store answered **nothing** for — a row nothing the daemon can reach holds.

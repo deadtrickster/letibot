@@ -287,9 +287,9 @@ impl App {
                 self.push_surface(Surface::Listing);
                 Disposition::Control
             }
-            // The head does not send `FetchRow`: its paging works over the rows the snapshot gave
-            // it, so this arm stays explicit rather than a wildcard, and an answer that arrives one
-            // day is visible here instead of swallowed.
+            // The head has no door to this frame: its paging works over whole rows by ordinal
+            // (`RowsFetched`), because a window inside one row's body does not carry the row's kind.
+            // The arm stays explicit rather than a wildcard, so an answer is visible here.
             ServerFrame::RowFetched { .. } => Disposition::Control,
             // The rows above the window, or the ones filling the gap to the tail: a page names the
             // ordinal it starts at, so the window stays one contiguous run of the session, and the
