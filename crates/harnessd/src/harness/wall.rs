@@ -1092,9 +1092,8 @@ impl Harness {
                 // The room a fold's verbatim tail may spend: the number `plan_fold` plans against
                 // itself, halved where the smaller-tail fold halves its budget.
                 let fold_room = {
-                    let room = window
-                        .saturating_sub(prefix_tokens)
-                        .saturating_sub(self.cfg.headroom());
+                    let room =
+                        letibot_turn::fold_tail_room(window, prefix_tokens, self.cfg.headroom());
                     if smaller { room / 2 } else { room }
                 };
                 // The first choice when a remote backend can afford it: the fold is the cleanest of the three

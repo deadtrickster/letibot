@@ -1861,6 +1861,14 @@ fn run_half<T>(
     Ok(out)
 }
 
+/// The room a fold's verbatim tail may spend: what `plan_fold` leaves it after the prefix and
+/// the fold's own reserve for the record, halved by the caller where the tail is.
+pub fn fold_tail_room(window: u64, prefix_tokens: u64, headroom: u64) -> u64 {
+    window
+        .saturating_sub(prefix_tokens)
+        .saturating_sub(headroom)
+}
+
 /// Summarise the first half, then continue on `summary ++ second half`: the operator's design
 /// for a conversation that must be folded without losing its tail.
 pub fn plan_fold(
@@ -2168,6 +2176,36 @@ mod compaction_sink {
             rec.seen.is_empty(),
             "a scratch turn's rows belong to no head: {:?}",
             rec.seen
+        );
+    }
+}
+
+#[cfg(test)]
+mod fold_room {
+    use super::*;
+
+    /// `plan_fold` bounds the verbatim tail by `window - prefix - WRITE_ROOM - CUT_MARGIN` whatever
+    /// the headroom, so a window whose headroom is smaller must not be offered the larger room.
+    #[test]
+    fn a_tail_is_never_offered_more_than_the_fold_planned_for() {
+        let (window, prefix) = (200_000u64, 5_000u64);
+        let headroom = window / 16;
+        assert!(headroom < WRITE_ROOM + CUT_MARGIN);
+        assert_eq!(
+            fold_tail_room(window, prefix, headroom),
+            window - prefix - WRITE_ROOM - CUT_MARGIN,
+            "the record's reserve is the fold's own, not the door's headroom"
+        );
+    }
+
+    #[test]
+    fn a_larger_headroom_still_wins() {
+        let (window, prefix) = (1_000_000u64, 5_000u64);
+        let headroom = window / 16;
+        assert!(headroom > WRITE_ROOM + CUT_MARGIN);
+        assert_eq!(
+            fold_tail_room(window, prefix, headroom),
+            window - prefix - headroom
         );
     }
 }
