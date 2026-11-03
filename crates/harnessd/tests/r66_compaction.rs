@@ -17,7 +17,7 @@ use letibot_sessionlog::hub::Hub;
 use letibot_sessionlog::log::LogBounds;
 use letibot_sessionlog::view::ViewBounds;
 use letibot_transcript::TranscriptItem;
-use letibot_turn::compaction::SUMMARY_INSTRUCTION;
+use letibot_turn::compaction::SUMMARY_SECTIONS;
 
 #[global_allocator]
 static ALLOC: Counting = Counting;
@@ -32,6 +32,13 @@ const PROPOSE_A_TOOL: u8 = 2;
 
 /// Bytes one history row carries.
 const ROW_BYTES: usize = 64 * 1024;
+
+/// What one `System` row costs the ledger beyond its own bytes: role framing and a separator.
+const ROW_FRAMING: usize = 64;
+
+/// The most two attempts asking the same words may differ by: the first row of a run carries a role
+/// boundary the ones after it do not.
+const ROLE_BOUNDARY: usize = 8;
 
 /// The answer the fake gives when it is asked for a summary.
 const SUMMARY: &str = "## Objective\n- measure what a failed compaction leaves\n";
@@ -260,16 +267,21 @@ fn history(h: &mut Harness, rows: usize, tag: &str) {
     }
 }
 
-fn instructions(h: &Harness) -> usize {
+/// The rows that ASK for a record, found by what they ask for and not by their bytes: the
+/// instruction names the room it has, so two attempts need not spell it the same way. The eight
+/// sections are what makes a row that ask, and nothing else this fixture writes names one.
+fn instructions(h: &Harness) -> Vec<String> {
     h.items()
         .iter()
-        .filter(|i| {
-            matches!(
-                i,
-                TranscriptItem::System { text, .. } if text == SUMMARY_INSTRUCTION
-            )
+        .filter_map(|i| match i {
+            TranscriptItem::System { text, .. }
+                if SUMMARY_SECTIONS.iter().all(|s| text.contains(s)) =>
+            {
+                Some(text.clone())
+            }
+            _ => None,
         })
-        .count()
+        .collect()
 }
 
 /// What ONE refused compaction attempt leaves behind, measured over `attempts` of them on a
@@ -302,6 +314,7 @@ fn a_refused_compaction_leaves_one_instruction_row_and_nothing_it_rendered() {
     fake.answer_with(REFUSE);
     let asked_before = fake.asked.load(Ordering::Relaxed);
     let mut per: Vec<Held> = Vec::new();
+    let mut said: Vec<String> = Vec::new();
     let mut prev = base;
     for i in 0..40 {
         let out = h.compact();
@@ -321,15 +334,26 @@ fn a_refused_compaction_leaves_one_instruction_row_and_nothing_it_rendered() {
         }
         per.push(now);
         prev = now;
+        let mut left = instructions(&h);
+        assert_eq!(
+            left.len(),
+            i + 1,
+            "attempt {} must leave its instruction and nothing else that asks for a record",
+            i + 1
+        );
+        said.push(left.pop().expect("the attempt's own instruction"));
     }
     let end = *per.last().expect("forty attempts");
     let asked = fake.asked.load(Ordering::Relaxed) - asked_before;
 
-    // (1) One item per attempt, and it is the instruction, byte for byte.
-    assert_eq!(instructions(&h), 40, "one instruction row per attempt");
+    // (1) One item per attempt, and it is the instruction: the rows that ASK for a record are
+    // exactly the text the attempts added, and each is the size of an ask rather than of a
+    // conversation.
+    assert_eq!(said.len(), 40, "one instruction row per attempt");
+    let asked_bytes: usize = said.iter().map(String::len).sum();
     assert_eq!(
         end.text - base.text,
-        40 * SUMMARY_INSTRUCTION.len(),
+        asked_bytes,
         "the only text 40 refused attempts added is the 40 instructions"
     );
     assert_eq!(
@@ -338,24 +362,45 @@ fn a_refused_compaction_leaves_one_instruction_row_and_nothing_it_rendered() {
         "a refused attempt appends the instruction and nothing else"
     );
     assert_eq!(asked, 40, "each attempt reached the model exactly once");
+    let biggest = said.iter().map(String::len).max().unwrap_or(0);
+    assert!(
+        biggest < 8 * 1024,
+        "the largest instruction is {biggest} byte(s), which on a {} conversation is a copy of \
+         something rather than an ask",
+        mb(base.text as f64)
+    );
 
-    // (2) The token region grows by one instruction's rendering, the same number every time.
-    // The first is two tokens longer: the instruction is rendered against the row before it, and
-    // a `System` row after an `Assistant` one carries a boundary the later ones do not.
-    let deltas: Vec<usize> = per.windows(2).map(|w| w[1].tokens - w[0].tokens).collect();
-    let first = per[0].tokens - base.tokens;
-    let steady = deltas[0];
-    assert!(
-        deltas.iter().all(|d| *d == steady),
-        "every attempt must render the instruction to the same {steady} tokens, got {deltas:?}"
-    );
-    assert!(
-        first.abs_diff(steady) <= 8,
-        "the first attempt rendered {first} token(s) against {steady} for the rest"
-    );
+    // (2) The token region grows by one instruction's rendering: attempts that asked the same words
+    // rendered the same number of tokens, and no attempt grew the ledger by more than its own ask.
+    let mut seen: Vec<(&str, usize)> = Vec::new();
+    for (i, now) in per.iter().enumerate() {
+        let before = if i == 0 {
+            base.tokens
+        } else {
+            per[i - 1].tokens
+        };
+        let added = now.tokens - before;
+        let text = said[i].as_str();
+        assert!(
+            added <= text.len() + ROW_FRAMING,
+            "attempt {} grew the ledger by {added} token(s) for an instruction of {} byte(s)",
+            i + 1,
+            text.len()
+        );
+        match seen.iter().find(|(t, _)| *t == text) {
+            Some((_, was)) => assert!(
+                added.abs_diff(*was) <= ROLE_BOUNDARY,
+                "two attempts asking the same words rendered {added} and {was} token(s)"
+            ),
+            None => seen.push((text, added)),
+        }
+    }
+    let steady = per[1].tokens - per[0].tokens;
     println!(
-        "per attempt: +1 item, +{} byte(s) of text, +{steady} token(s) of ledger",
-        SUMMARY_INSTRUCTION.len()
+        "per attempt: +1 item, +{} byte(s) of text, +{steady} token(s) of ledger, {} distinct ask(s) \
+         in 40",
+        said[1].len(),
+        seen.len()
     );
 
     // (3) The heap cost per attempt is flat, and it is nothing like a copy of the conversation.
@@ -435,23 +480,32 @@ fn a_compaction_that_ran_and_was_refused_leaves_its_own_answer_too() {
         12,
         "instruction + answer, six times"
     );
-    let per_attempt = (end.text - base.text) / 6;
+    let said = instructions(&h);
+    assert_eq!(said.len(), 6, "one instruction row per attempt");
+    let asked_bytes: usize = said.iter().map(String::len).sum();
+    let answers = end.text - base.text - asked_bytes;
     println!(
-        "per attempt: +2 item(s), +{per_attempt} byte(s) of text (instruction {} + the answer)",
-        SUMMARY_INSTRUCTION.len()
+        "per attempt: +2 item(s), +{} byte(s) of instruction and {answers} byte(s) of answers in all",
+        said[0].len()
     );
     assert!(
-        per_attempt < SUMMARY_INSTRUCTION.len() + 4096,
-        "a refused-but-ran attempt left {per_attempt} bytes, which is more than the instruction \
-         and a short answer"
+        answers < 6 * 4096,
+        "six refused-but-ran attempts left {answers} byte(s) beside their instructions, which is \
+         more than a short answer apiece"
     );
-    // And the residue does not grow from attempt to attempt: nothing keys it by attempt.
-    let first = per[0].text - base.text;
-    let last = per[5].text - per[4].text;
-    assert_eq!(
-        first, last,
-        "each attempt leaves the same bytes as the last"
-    );
+    // And the residue does not grow from attempt to attempt: each attempt left its own instruction
+    // plus the same answer, so nothing in it is keyed by the attempt number.
+    let answer = answers / 6;
+    assert_eq!(answers, answer * 6, "six attempts, six short answers");
+    for (i, text) in said.iter().enumerate() {
+        let before = if i == 0 { base.text } else { per[i - 1].text };
+        assert_eq!(
+            per[i].text - before,
+            text.len() + answer,
+            "attempt {} left its instruction and one answer",
+            i + 1
+        );
+    }
     assert_eq!(
         end.census, end.text,
         "the census must have walked the rows the attempts left"
