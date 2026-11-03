@@ -29,7 +29,11 @@ fn a_burst_of_firings_is_one_line_a_monitor_that_counts_the_rest() {
     burst.push(fired("build", "j1 exited 0"));
     let text = monitor_notice(&burst).expect("a firing is news");
     let lines: Vec<&str> = text.lines().collect();
-    assert_eq!(lines.len(), 2, "one line a monitor, not one a firing: {text}");
+    assert_eq!(
+        lines.len(),
+        2,
+        "one line a monitor, not one a firing: {text}"
+    );
     assert!(
         lines[0].contains("`chatty`") && lines[0].contains("(and 19 firings since)"),
         "the burst says what it stands for: {text}"
@@ -49,7 +53,10 @@ fn a_burst_of_firings_is_one_line_a_monitor_that_counts_the_rest() {
 /// they never said.
 #[test]
 fn a_firing_is_a_notice_and_never_a_row_of_somebodys_words() {
-    let row = notice_row(letibot_transcript::NoticeKind::Monitor, "[monitor] a firing");
+    let row = notice_row(
+        letibot_transcript::NoticeKind::Monitor,
+        "[monitor] a firing",
+    );
     match &row {
         TranscriptItem::Notice { kind, text } => {
             assert_eq!(

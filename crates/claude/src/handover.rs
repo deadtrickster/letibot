@@ -386,9 +386,9 @@ fn markdown_for(item: &TranscriptItem) -> String {
         }
         // The session's own voice, named as such - the same caption a `User` row with
         // `Speaker::Agent` is given, since a firing is the same kind of utterance.
-        TranscriptItem::Notice { text, .. } => format!(
-            "**letibot (the session's own voice, not the operator's)**\n\n{text}\n\n"
-        ),
+        TranscriptItem::Notice { text, .. } => {
+            format!("**letibot (the session's own voice, not the operator's)**\n\n{text}\n\n")
+        }
         TranscriptItem::SegmentMark { label, .. } => format!("> *{label}*\n\n"),
     }
 }
