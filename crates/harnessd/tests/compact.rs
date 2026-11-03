@@ -638,8 +638,10 @@ fn the_fork_says_what_it_carried_verbatim_and_never_claims_it_was_replaced() {
         "the tail is stated: {text}"
     );
     assert!(
-        text.contains("The verbatim part starts mid-exchange; its first message answers \
-                      something not shown."),
+        text.contains(
+            "The verbatim part starts mid-exchange; its first message answers \
+                      something not shown."
+        ),
         "a mid-exchange start is disclosed: {text}"
     );
     assert!(!text.contains("VERBATIM"), "no shouting: {text}");

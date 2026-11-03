@@ -152,12 +152,10 @@ impl App {
         // `conversation` rung, so the click on the note is where a reader looks for it.
         if text.starts_with("Continue from the summary above")
             && let Some(summary) = self.items[..k].iter().rev().find_map(|it| {
-                system_row_text(it)
-                    .map(|(t, _)| t)
-                    .filter(|t| {
-                        t.starts_with("This conversation was compacted")
-                            || t.starts_with("Earlier conversation is replaced by this summary")
-                    })
+                system_row_text(it).map(|(t, _)| t).filter(|t| {
+                    t.starts_with("This conversation was compacted")
+                        || t.starts_with("Earlier conversation is replaced by this summary")
+                })
             })
         {
             text = format!("{text}\n\n── the summary it continues from ──\n\n{summary}");

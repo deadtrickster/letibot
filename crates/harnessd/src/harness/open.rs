@@ -277,7 +277,10 @@ pub fn stale_prefix_sentence(
 pub fn stale_prompt_for_the_model(added: &[String], gone: &[String], grew: &[String]) -> String {
     let mut said: Vec<String> = Vec::new();
     if !added.is_empty() {
-        said.push(format!("{} exist but you cannot call them", added.join(", ")));
+        said.push(format!(
+            "{} exist but you cannot call them",
+            added.join(", ")
+        ));
     }
     if !gone.is_empty() {
         said.push(format!("{} will refuse", gone.join(", ")));
@@ -2761,16 +2764,8 @@ impl Harness {
         };
         let dialect_sha = hex32(&parts.wiring.spec().template_sha);
 
-        let (
-            transcript_id,
-            session,
-            persisted,
-            resume,
-            prefix,
-            prefix_id,
-            stale,
-            stale_for_model,
-        ) = Self::open_the_conversation(
+        let (transcript_id, session, persisted, resume, prefix, prefix_id, stale, stale_for_model) =
+            Self::open_the_conversation(
                 &store,
                 &stored,
                 &mut engine,

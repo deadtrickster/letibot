@@ -318,13 +318,13 @@ mod tests {
         let r = repo("dead");
         std::fs::write(Path::new(&r.wt.path).join("half.rs"), "fn half(").unwrap();
         let why = with_the_line(Some(&r.wt), "the provider refused the request");
-        assert!(why.starts_with("the provider refused the request\n\n"), "{why}");
+        assert!(
+            why.starts_with("the provider refused the request\n\n"),
+            "{why}"
+        );
         assert!(why.contains("?? half.rs"), "{why}");
         assert!(
-            why.ends_with(&format!(
-                "salvage: uncommitted work of {}\"`.",
-                r.wt.branch
-            )),
+            why.ends_with(&format!("salvage: uncommitted work of {}\"`.", r.wt.branch)),
             "{why}"
         );
     }

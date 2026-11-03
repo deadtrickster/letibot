@@ -137,7 +137,9 @@ fn down_of(header: &str) -> Option<Down> {
     if let Some(r) = header.strip_prefix(RESTARTED) {
         let inside = r.strip_prefix(" (")?.split(')').next()?;
         let Some(span) = inside.strip_prefix("down ") else {
-            return inside.starts_with("stop time unknown").then_some(Down::Unknown);
+            return inside
+                .starts_with("stop time unknown")
+                .then_some(Down::Unknown);
         };
         let (estimated, span) = match span.strip_prefix('~') {
             Some(s) => (true, s),

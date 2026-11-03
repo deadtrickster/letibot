@@ -1465,7 +1465,12 @@ impl Registry {
     /// Publish what this session's harness found about its frozen prefix: the sentence an
     /// attaching head is handed, once, and never a flag. `for_model` is the same finding in the
     /// voice the model can act on - it is set and cleared here so the two cannot disagree.
-    pub fn set_stale_prefix(&self, session_id: &str, said: Option<String>, for_model: Option<String>) {
+    pub fn set_stale_prefix(
+        &self,
+        session_id: &str,
+        said: Option<String>,
+        for_model: Option<String>,
+    ) {
         let (hub, was) = {
             let mut g = self.lock();
             match g.entry_mut(session_id) {

@@ -416,7 +416,10 @@ pub(crate) fn subagent_notice(done: &[JobCompletion], mine: bool) -> String {
     } else {
         s.push_str(&stopped_closing(
             done,
-            &format!("answer is still here: `task_result` {}.", handles_as("task", done)),
+            &format!(
+                "answer is still here: `task_result` {}.",
+                handles_as("task", done)
+            ),
         ));
     }
     s

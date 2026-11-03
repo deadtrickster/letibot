@@ -1046,7 +1046,12 @@ mod tests {
              automatically; this is what you were running when it stopped — bring back only what \
              still matters:"
         );
-        for wrong in ["down for", "0s", "estimated from nothing", "no record said when"] {
+        for wrong in [
+            "down for",
+            "0s",
+            "estimated from nothing",
+            "no record said when",
+        ] {
             assert!(!h.contains(wrong), "`{wrong}` in {h}");
         }
     }

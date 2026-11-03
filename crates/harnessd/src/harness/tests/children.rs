@@ -14,9 +14,15 @@ fn a_child_that_hit_the_wall_hands_its_parent_a_move_and_not_its_numbers() {
         ledger: (980_112, 1_000_000),
     };
     let said = said_failure(&wall);
-    assert_eq!(said, "ran out of room; resume it with task_message", "{said}");
+    assert_eq!(
+        said, "ran out of room; resume it with task_message",
+        "{said}"
+    );
     assert!(!said.contains("980"), "no token number: {said}");
-    assert!(!said.contains("context wall"), "and not the words the check forbids: {said}");
+    assert!(
+        !said.contains("context wall"),
+        "and not the words the check forbids: {said}"
+    );
 
     // Anything else is still its own sentence: the wall is the one that cannot be read.
     let refused = HarnessError::Setup("the store refused the row".into());

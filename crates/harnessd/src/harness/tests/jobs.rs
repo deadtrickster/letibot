@@ -31,7 +31,10 @@ fn a_firing_names_its_rows_and_no_count() {
     );
     assert!(said.contains("  - cut the release — `j13`"), "{said}");
     assert!(!said.contains("2 row"), "no count: {said}");
-    assert!(!said.contains("is due"), "no singular verb to disagree: {said}");
+    assert!(
+        !said.contains("is due"),
+        "no singular verb to disagree: {said}"
+    );
 }
 
 /// A condition is met by a job that is GONE, including one this daemon never knew: the restart case. Three fates and

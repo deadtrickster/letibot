@@ -176,10 +176,7 @@ fn a_tagged_parent_message_is_one_row_at_eighty_columns() {
                 refusal is final. Second, the notes go in a commit of their own.";
     let (rows, glass, popup) = drawn(text);
     assert_eq!(rows, 1, "{glass}");
-    assert!(
-        glass.contains("parent · Two new constraints"),
-        "{glass}"
-    );
+    assert!(glass.contains("parent · Two new constraints"), "{glass}");
     assert!(!glass.contains("s-"), "no session id on the row: {glass}");
     assert_eq!(popup, text);
 }
