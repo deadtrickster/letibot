@@ -614,8 +614,9 @@ fn tools_run(placement: Option<&Placement>) -> String {
 /// inferred: a client that omits a field should be told which, not have it defaulted.
 pub fn list() -> Value {
     let mut tools = vec![
-        tool("leticode_start",
-             "Start leticode on a worktree and hold the session. Starts or joins that \
+        tool(
+            "leticode_start",
+            "Start leticode on a worktree and hold the session. Starts or joins that \
               folder's daemon, opens a session, sets the approval point, sends the brief as \
               the first prompt, and stays attached so the gate's asks reach this bridge. \
               Answers the session id every other tool takes. Run the `wait` verb as a \
@@ -624,20 +625,22 @@ pub fn list() -> Value {
               another machine: a daemon already running for this folder with a different \
               placement is refused, naming where it runs and how to stop it, because a \
               package must never end up running locally when its caller asked for a host.",
-             json!({
-                 "type": "object",
-                 "properties": {
-                     "worktree": { "type": "string", "description": "Absolute path to the checkout the work happens in." },
-                     "brief": { "type": "string", "description": "The task, in full: what to build, the hard rules, and what to report." },
-                     "model": { "type": "string", "description": "What answers THIS session's turns: a provider name (`deepseek`, `glm`, `grok`), `provider/model`, or a local model alias. Omitted: the daemon's own choice. It is set on the session, so it holds over a daemon already serving another provider, and a name this box cannot serve is refused before the brief is sent." },
-                     "mode": { "type": "string", "description": "The approval point. Default `writes-allowed`: writes go through, commands and the network ask. `allow-all` needs the operator's confirmation and is refused by the daemon without it." },
-                     "host": { "type": "string", "description": "Where this session's TOOLS run: a machine the operator declared in `~/.config/letibot/hosts.toml` — call the `hosts` tool or read that file for the names. Then bash, read, write, edit and jobs run there while the model, the store and the gate stay here. Omitted: on this box. An undeclared name is refused before anything starts." },
-                     "vm": { "type": "boolean", "description": "Run this session's tools inside a firecode VM. With `host`, the VM is booted on THAT machine by its own firecode, over this session's ssh link, on a copy of the checkout; the guest is the boundary, so builds and tests run there without asking. Omitted: false. A host with no firecode, or no `/dev/kvm` this connection's user may open, is refused by name." }
-                 },
-                 "required": ["worktree", "brief"]
-             })),
-        tool("leticode_attach",
-             "Join a session that is already running — this folder's review queue, a \
+            json!({
+                "type": "object",
+                "properties": {
+                    "worktree": { "type": "string", "description": "Absolute path to the checkout the work happens in." },
+                    "brief": { "type": "string", "description": "The task, in full: what to build, the hard rules, and what to report." },
+                    "model": { "type": "string", "description": "What answers THIS session's turns: a provider name (`deepseek`, `glm`, `grok`), `provider/model`, or a local model alias. Omitted: the daemon's own choice. It is set on the session, so it holds over a daemon already serving another provider, and a name this box cannot serve is refused before the brief is sent." },
+                    "mode": { "type": "string", "description": "The approval point. Default `writes-allowed`: writes go through, commands and the network ask. `allow-all` needs the operator's confirmation and is refused by the daemon without it." },
+                    "host": { "type": "string", "description": "Where this session's TOOLS run: a machine the operator declared in `~/.config/letibot/hosts.toml` — call the `hosts` tool or read that file for the names. Then bash, read, write, edit and jobs run there while the model, the store and the gate stay here. Omitted: on this box. An undeclared name is refused before anything starts." },
+                    "vm": { "type": "boolean", "description": "Run this session's tools inside a firecode VM. With `host`, the VM is booted on THAT machine by its own firecode, over this session's ssh link, on a copy of the checkout; the guest is the boundary, so builds and tests run there without asking. Omitted: false. A host with no firecode, or no `/dev/kvm` this connection's user may open, is refused by name." }
+                },
+                "required": ["worktree", "brief"]
+            }),
+        ),
+        tool(
+            "leticode_attach",
+            "Join a session that is already running — this folder's review queue, a \
               package a person resumed, any session a folder's daemon holds — and hold it \
               the way `leticode_start` holds one, without a brief. It JOINS a running daemon and \
               never starts one: with nothing listening on that folder's socket it refuses and \
@@ -649,29 +652,33 @@ pub fn list() -> Value {
               reviewers are child sessions and `leticode_events` shows each of them starting \
               and ending; following one into its own turns needs a second `leticode_attach` on \
               that child's id.",
-             json!({
-                 "type": "object",
-                 "properties": {
-                     "worktree": { "type": "string", "description": "Absolute path to a folder of the checkout whose daemon holds the session — the daemon is found by the workspace's hash, so a worktree of the same repository is the same daemon." },
-                     "session": { "type": "string", "description": "The session id, or the name `gatekeeper` for THIS folder's review queue — one session per daemon now, so the name resolves through the folder it attaches to (`s-gatekeeper-<workspace key>`)." },
-                     "watch_only": { "type": "boolean", "description": "Default true: watch and never act — no prompt, no answer, no interrupt. False drives the session as `leticode_start` would, and takes over answering its asks." }
-                 },
-                 "required": ["worktree", "session"]
-             })),
-        tool("leticode_send",
-             "Send an operator line into a running session. Queued behind a running turn as \
+            json!({
+                "type": "object",
+                "properties": {
+                    "worktree": { "type": "string", "description": "Absolute path to a folder of the checkout whose daemon holds the session — the daemon is found by the workspace's hash, so a worktree of the same repository is the same daemon." },
+                    "session": { "type": "string", "description": "The session id, or the name `gatekeeper` for THIS folder's review queue — one session per daemon now, so the name resolves through the folder it attaches to (`s-gatekeeper-<workspace key>`)." },
+                    "watch_only": { "type": "boolean", "description": "Default true: watch and never act — no prompt, no answer, no interrupt. False drives the session as `leticode_start` would, and takes over answering its asks." }
+                },
+                "required": ["worktree", "session"]
+            }),
+        ),
+        tool(
+            "leticode_send",
+            "Send an operator line into a running session. Queued behind a running turn as \
               the head's own prompt, so it never loses a race with what the model is doing; \
               the daemon starts a turn for it when the current one ends.",
-             json!({
-                 "type": "object",
-                 "properties": {
-                     "session": { "type": "string", "description": "The id `leticode_start` answered." },
-                     "text": { "type": "string", "description": "What to say to the session." }
-                 },
-                 "required": ["session", "text"]
-             })),
-        tool("leticode_status",
-             "What the session is doing: `running`, `idle`, `asking` or `failed`, the last \
+            json!({
+                "type": "object",
+                "properties": {
+                    "session": { "type": "string", "description": "The id `leticode_start` answered." },
+                    "text": { "type": "string", "description": "What to say to the session." }
+                },
+                "required": ["session", "text"]
+            }),
+        ),
+        tool(
+            "leticode_status",
+            "What the session is doing: `running`, `idle`, `asking` or `failed`, the last \
               assistant message, the todos, the last turn's tokens and cost, and which asks \
               are pending. `model` is what answers this session's turns, as `/models` spells it, \
                and `last_trouble` is the last time the provider itself was stuck — a rate \
@@ -684,15 +691,17 @@ pub fn list() -> Value {
               `report.contracts` and the `report.commits` it named — the newest report, \
               with `report_is_last` false when words came after it. `spent` sums every \
               round since the bridge attached; `cost_usd` and `tokens` are the last round.",
-             json!({
-                 "type": "object",
-                 "properties": {
-                     "session": { "type": "string", "description": "The session id." }
-                 },
-                 "required": ["session"]
-             })),
-        tool("leticode_events",
-             "The session's progress since a cursor, folded to one line each: tool calls (name \
+            json!({
+                "type": "object",
+                "properties": {
+                    "session": { "type": "string", "description": "The session id." }
+                },
+                "required": ["session"]
+            }),
+        ),
+        tool(
+            "leticode_events",
+            "The session's progress since a cursor, folded to one line each: tool calls (name \
               and what they act on), their outcomes, background jobs starting and ending, \
               turns, permission asks opening and being answered, the reviewer subagents a \
               session spawns (their slug, the branch they were given, and how they ended — the \
@@ -701,58 +710,66 @@ pub fn list() -> Value {
               watcher or a payload — for those, read the transcript. Pass the `next` of one \
               answer as the `since` of the next; a cursor the ring has outlived is answered \
               with what remains plus `dropped`, the count it can no longer show you.",
-             json!({
-                 "type": "object",
-                 "properties": {
-                     "session": { "type": "string", "description": "The session id." },
-                     "since": { "type": "integer", "minimum": 0, "description": "The `next` cursor of the last answer. Omitted: everything the ring still holds." },
-                     "limit": { "type": "integer", "minimum": 1, "description": "How many entries to answer with. Default 50; the ring holds 500." }
-                 },
-                 "required": ["session"]
-             })),
-        tool("leticode_asks",
-             "The permission asks still owed an answer: the ask id, the call (tool and \
+            json!({
+                "type": "object",
+                "properties": {
+                    "session": { "type": "string", "description": "The session id." },
+                    "since": { "type": "integer", "minimum": 0, "description": "The `next` cursor of the last answer. Omitted: everything the ring still holds." },
+                    "limit": { "type": "integer", "minimum": 1, "description": "How many entries to answer with. Default 50; the ring holds 500." }
+                },
+                "required": ["session"]
+            }),
+        ),
+        tool(
+            "leticode_asks",
+            "The permission asks still owed an answer: the ask id, the call (tool and \
               target), the sentence the gate wrote, and the options the ladder offers. \
               Answer one with `leticode_answer`; a turn stopped on a card does not continue \
               without one.",
-             json!({
-                 "type": "object",
-                 "properties": {
-                     "session": { "type": "string", "description": "The session id." }
-                 },
-                 "required": ["session"]
-             })),
-        tool("leticode_answer",
-             "Answer an open ask. A PERMISSION ask takes one of the option ids it offered, sent \
+            json!({
+                "type": "object",
+                "properties": {
+                    "session": { "type": "string", "description": "The session id." }
+                },
+                "required": ["session"]
+            }),
+        ),
+        tool(
+            "leticode_answer",
+            "Answer an open ask. A PERMISSION ask takes one of the option ids it offered, sent \
               as the protocol's Answer frame, so the decision lands in the corpus attributed to \
               this bridge exactly as the operator's own. A QUESTION ask (the model's own \
               ask_user_question) takes one of its `choices` by exact text or 1-based number, \
               `free:<words>` for a typed reply, or `abstain`; `note` qualifies a chosen option.",
-             json!({
-                 "type": "object",
-                 "properties": {
-                     "session": { "type": "string", "description": "The session id." },
-                     "ask": { "type": "string", "description": "The ask id from `leticode_asks` (its `ask` field)." },
-                     "option": { "type": "string", "description": "For a permission: one option id it offered (`allow_once`, `allow_session`, `allow_always`, `reject_once`, `reject_always` — the ask says which). For a question: a choice's text or number, `free:<words>`, or `abstain`." },
-                     "note": { "type": "string", "description": "What the model is told: for a `deny_and_tell` option, or a qualification of a question's chosen option." }
-                 },
-                 "required": ["session", "ask", "option"]
-             })),
-        tool("leticode_diff",
-             "The worktree's branch against its merge base: the commits it added \
+            json!({
+                "type": "object",
+                "properties": {
+                    "session": { "type": "string", "description": "The session id." },
+                    "ask": { "type": "string", "description": "The ask id from `leticode_asks` (its `ask` field)." },
+                    "option": { "type": "string", "description": "For a permission: one option id it offered (`allow_once`, `allow_session`, `allow_always`, `reject_once`, `reject_always` — the ask says which). For a question: a choice's text or number, `free:<words>`, or `abstain`." },
+                    "note": { "type": "string", "description": "What the model is told: for a `deny_and_tell` option, or a qualification of a question's chosen option." }
+                },
+                "required": ["session", "ask", "option"]
+            }),
+        ),
+        tool(
+            "leticode_diff",
+            "The worktree's branch against its merge base: the commits it added \
               (`git log --oneline`) and the shape of the change (`git diff --stat`). The \
               full diff only when `full` is true — it is large and belongs in a review, not \
               in a status check.",
-             json!({
-                 "type": "object",
-                 "properties": {
-                     "session": { "type": "string", "description": "The session id; its worktree is where git runs." },
-                     "full": { "type": "boolean", "description": "Include the whole diff. Default false." }
-                 },
-                 "required": ["session"]
-             })),
-        tool("leticode_transcript",
-             "The session's CONVERSATION, row by row, as the daemon serves it to a head — the \
+            json!({
+                "type": "object",
+                "properties": {
+                    "session": { "type": "string", "description": "The session id; its worktree is where git runs." },
+                    "full": { "type": "boolean", "description": "Include the whole diff. Default false." }
+                },
+                "required": ["session"]
+            }),
+        ),
+        tool(
+            "leticode_transcript",
+            "The session's CONVERSATION, row by row, as the daemon serves it to a head — the \
               same rows a terminal attached to that session is drawing. Full text: the \
               operator's prompts, the model's answers, every tool call (name and arguments) and \
               every tool result (outcome and payload). Long strings are cut only beyond the cap \
@@ -760,18 +777,20 @@ pub fn list() -> Value {
               the `next` of the last answer as `since` and you get only what is new. It reads \
               the daemon, never the session store; it works on a session this bridge holds and \
               on one it only watches.",
-             json!({
-                 "type": "object",
-                 "properties": {
-                     "session": { "type": "string", "description": "The session id." },
-                     "since": { "type": "integer", "minimum": 0, "description": "The `next` cursor of the last answer — how many rows you have already read. Omitted: from the oldest row the daemon still holds (which says `dropped` for the ones it does not)." },
-                     "limit": { "type": "integer", "minimum": 1, "description": "How many rows to answer with. Default 100, at most 1000." },
-                     "reasoning": { "type": "boolean", "description": "Include the model's own reasoning blocks as rows. Default false: they are the one part of a transcript nothing downstream reads." }
-                 },
-                 "required": ["session"]
-             })),
-        tool("leticode_mode",
-             "Move the session's approval point. A point that needs nobody is applied at once \
+            json!({
+                "type": "object",
+                "properties": {
+                    "session": { "type": "string", "description": "The session id." },
+                    "since": { "type": "integer", "minimum": 0, "description": "The `next` cursor of the last answer — how many rows you have already read. Omitted: from the oldest row the daemon still holds (which says `dropped` for the ones it does not)." },
+                    "limit": { "type": "integer", "minimum": 1, "description": "How many rows to answer with. Default 100, at most 1000." },
+                    "reasoning": { "type": "boolean", "description": "Include the model's own reasoning blocks as rows. Default false: they are the one part of a transcript nothing downstream reads." }
+                },
+                "required": ["session"]
+            }),
+        ),
+        tool(
+            "leticode_mode",
+            "Move the session's approval point. A point that needs nobody is applied at once \
               (`writes-allowed`, `read-only`, `allow-all` inside a VM). `allow-all` on a box with \
               no boundary needs the OPERATOR's confirmation: the daemon puts the same card a \
               terminal shows for `/mode allow-all` in front of the heads attached to that \
@@ -779,49 +798,56 @@ pub fn list() -> Value {
               consents on its own. With nobody attached to ask, nothing is changed and the \
               answer is `needs the operator's confirmation in a head: run leticode --session \
               <id>`.",
-             json!({
-                 "type": "object",
-                 "properties": {
-                     "session": { "type": "string", "description": "The session id." },
-                     "mode": { "type": "string", "description": "The approval point: `writes-allowed`, `read-only`, `allow-all`, … The daemon's own set decides which; a name it does not know is refused by name." }
-                 },
-                 "required": ["session", "mode"]
-             })),
-         tool("leticode_model",
-             "Move a RUNNING session to another model without restarting anything. The switch is the \
+            json!({
+                "type": "object",
+                "properties": {
+                    "session": { "type": "string", "description": "The session id." },
+                    "mode": { "type": "string", "description": "The approval point: `writes-allowed`, `read-only`, `allow-all`, … The daemon's own set decides which; a name it does not know is refused by name." }
+                },
+                "required": ["session", "mode"]
+            }),
+        ),
+        tool(
+            "leticode_model",
+            "Move a RUNNING session to another model without restarting anything. The switch is the \
               daemon's own `/models` verb: it is per session, it is written to the session's row so a \
               restart restores it, and a switch that arrives mid-turn takes effect when the turn ends \
               - never inside one, because the rest of a half-finished turn belongs to the model that \
               started it. Works on a session this bridge started and on one it joined, including a \
               session of a daemon another session started. The answer's `said` is the daemon's own \
               sentence, which says when the switch takes.",
-             json!({
-                 "type": "object",
-                 "properties": {
-                     "session": { "type": "string", "description": "The session id." },
-                     "model": { "type": "string", "description": "What should answer from now on: a provider name (`deepseek`, `glm`, `grok`), `provider/model`, or `local` for this box's own server. A name this box cannot serve is refused by name and nothing changes." }
-                 },
-                 "required": ["session", "model"]
-             })),
-        tool("leticode_stop",
-             "Interrupt a running turn, close the session here and detach this bridge from it. \
+            json!({
+                "type": "object",
+                "properties": {
+                    "session": { "type": "string", "description": "The session id." },
+                    "model": { "type": "string", "description": "What should answer from now on: a provider name (`deepseek`, `glm`, `grok`), `provider/model`, or `local` for this box's own server. A name this box cannot serve is refused by name and nothing changes." }
+                },
+                "required": ["session", "model"]
+            }),
+        ),
+        tool(
+            "leticode_stop",
+            "Interrupt a running turn, close the session here and detach this bridge from it. \
               Closing it is what settles a PLACEMENT: what a host session committed comes home \
               as the branch `remote/<host>/<short id>` (`branch` in the answer) as the session \
               closes, and the daemon's log names the commit it landed at. The rows stay on \
               disk, so `letibot --session <id>` or another head can reopen it.",
-             json!({
-                 "type": "object",
-                 "properties": {
-                     "session": { "type": "string", "description": "The session id." }
-                 },
-                 "required": ["session"]
-             })),
-        tool("leticode_list",
-             "The sessions this bridge is holding, with their state, pending ask count, \
+            json!({
+                "type": "object",
+                "properties": {
+                    "session": { "type": "string", "description": "The session id." }
+                },
+                "required": ["session"]
+            }),
+        ),
+        tool(
+            "leticode_list",
+            "The sessions this bridge is holding, with their state, pending ask count, \
               where each one's tools run (`placement`) and \
               whether each is only watched (`leticode_attach`'s default) or driven. It lists \
               what this process holds, not what the daemon has on disk.",
-             json!({ "type": "object", "properties": {} })),
+            json!({ "type": "object", "properties": {} }),
+        ),
     ];
     tools.extend(crate::rooms::tool_list());
     json!({ "tools": tools })
