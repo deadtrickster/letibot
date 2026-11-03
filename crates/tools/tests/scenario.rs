@@ -232,7 +232,12 @@ fn after_orders_the_starts_and_a_roles_facts_resolve() {
             && lines[1].contains("exited 0"),
         "`${{web.host}}` and `${{web.port}}` were substituted:\n{text}"
     );
-    assert!(!listening(port), "the service was torn down");
+    // The teardown's stop is a signal and the row is written before the socket closes, so the
+    // port is a fact to wait for and not something the call returned with.
+    assert!(
+        until(Duration::from_secs(10), || !listening(port)),
+        "the service was left listening on {port}"
+    );
 }
 
 /// Every role and the run are supervised records, a `process` row with its host, so a session
