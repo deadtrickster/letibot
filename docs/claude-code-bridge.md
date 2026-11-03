@@ -69,7 +69,7 @@ one head connection per session it started or attached to, so asks reach it.
 | `leticode_asks` | `{session}` - the pending asks: id, the call, the options offered |
 | `leticode_answer` | `{session, ask, option, note}` - sent as the protocol's `Answer`, so it lands in the decision corpus |
 | `leticode_diff` | `{session, full}` - the branch against its merge base: `git log --oneline`, `git diff --stat`, and the diff when `full` |
-| `leticode_stop` | `{session}` - interrupts a running turn and detaches; the session stays on disk |
+| `leticode_stop` | `{session}` - interrupts a running turn, closes the session here and detaches; a placement settles as it closes (`branch` names the branch the work comes home on), and the rows stay on disk |
 | `leticode_list` | - the sessions this bridge holds, with `placement`, watched or driven |
 
 ### `letibot-mcp wait`: the wake-up
