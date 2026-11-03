@@ -359,7 +359,7 @@ has not been run, and cannot be inside a sandbox: it needs a real sshd and a rea
 
 ---
 
-## R100 — A remote session cannot run in a firecode VM: `--host` and `--vm` are two placements, not one — **BUILT on branch `firecode-remote`, live proof pending; filed 2026-10-28, operator's ask**
+## R100 — A remote session cannot run in a firecode VM: `--host` and `--vm` are two placements, not one — **BUILT and on main (`ad447d53`, `46949113`, `e4c69ac2`); left: the live proof - the four facts the 2026-11-02 lab2x1 run did not reach (a real `firecode` copy of a clone carrying a commit out, a resumed session keeping its clone, the guest's `cargo test` with no card, and the copy-out's cost off the daemon's own line); filed 2026-10-28, operator's ask**
 
 The operator: *"how to run those remote letibots in firecode"*, and *"lab2x1 has firecode, it even
 has source code for it"*. It does: `~/bin/firecode` (login `PATH`), the source in
