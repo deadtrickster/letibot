@@ -1543,7 +1543,6 @@ mod error;
 mod hub_io;
 mod job_window;
 mod jobs;
-mod memory;
 mod models;
 mod nags;
 mod open;
