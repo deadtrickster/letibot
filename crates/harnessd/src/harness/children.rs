@@ -1134,6 +1134,26 @@ pub(crate) fn serve_child_with(
     }
 }
 
+/// What a turn after the child's first settles its slot with, `None` when the turn is not news.
+/// A turn that answered nothing is not news: the slot already holds the child's last word.
+pub(crate) fn later_news(
+    somebody_spoke: bool,
+    settled_before: bool,
+    out: &Option<Result<Reply, HarnessError>>,
+) -> Option<letibot_tools::builtins::task::TaskStatus> {
+    let silent = settled_before && matches!(out, Some(Ok(reply)) if reply.text.trim().is_empty());
+    if !somebody_spoke || silent {
+        return None;
+    }
+    Some(match out.as_ref()? {
+        Ok(reply) => letibot_tools::builtins::task::TaskStatus::Done {
+            answer: reply.text.clone(),
+            child: None,
+        },
+        Err(e) => letibot_tools::builtins::task::TaskStatus::Failed { why: e.to_string() },
+    })
+}
+
 /// A turn of a child after its first: `run_turn`, with the child's record moved to `running` for its
 /// length and put back when it ends, or left running when it ended because the daemon is stopping.
 /// Its answer settles the parent's slot again too - see [`ChildTurns::slot`].
@@ -1161,22 +1181,9 @@ fn later_turn(
     if let (Some(r), Some(prior)) = (&record, &prior) {
         r.later_turn_ended(prior);
     }
-    // **A later turn that answered nothing is not news.** The slot already holds the child's last
-    // word, and settling again would replace it with silence and wake the parent for a turn with
-    // nothing in it. Only a turn that ends having said something is a settlement.
-    let silent = settled_before && matches!(&out, Some(Ok(reply)) if reply.text.trim().is_empty());
     if let Some(slot) = &turns.slot
-        && somebody_spoke
-        && let Some(ended) = &out
-        && !silent
+        && let Some(status) = later_news(somebody_spoke, settled_before, &out)
     {
-        let status = match ended {
-            Ok(reply) => letibot_tools::builtins::task::TaskStatus::Done {
-                answer: reply.text.clone(),
-                child: None,
-            },
-            Err(e) => letibot_tools::builtins::task::TaskStatus::Failed { why: e.to_string() },
-        };
         let (state, detail) = match &status {
             letibot_tools::builtins::task::TaskStatus::Failed { why } => {
                 ("failed", crate::jobwatch::first_line(why))
