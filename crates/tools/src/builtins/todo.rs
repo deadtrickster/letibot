@@ -2091,8 +2091,9 @@ impl TodoWriteTool {
                         format!("`{key}` is not an argument of `todo_write`"),
                         "**nothing was written.** The arguments are `todos` (the whole list), \
                          `update` (one of YOUR rows, quoted), `operator` (one of the OPERATOR's \
-                         rows, quoted), `target` (a child's board) and `wait_on` (a row, \
-                         quoted, that waits on a job or a subagent).",
+                         rows, quoted), `target` (a child's board) and `wait_on` (rows already on \
+                         the board, quoted, that wait on a `job`, a `child`, the `operator`'s \
+                         answer, or `detach: true` to take the waits off).",
                     );
                 }
             }

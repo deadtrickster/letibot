@@ -123,6 +123,30 @@ fn a_queue_row_is_quiet_while_its_review_is_in_flight() {
     assert!(!queue_review_in_flight(&mine, &ChildSessions::none()));
 }
 
+/// **B8: the refusal that lists the arguments describes `wait_on` as it is.** It said *a row,
+/// quoted, that waits on a job or a subagent*, which hides the operator wait and `detach` - the
+/// two doors a model most needs named, because neither is a handle it can guess.
+#[test]
+fn the_argument_list_does_not_call_wait_on_job_or_subagent_only() {
+    let (rt, _board) = runtime();
+    let mut sink = RecordingToolSink::new();
+    let r = rt.invoke("t1", &call(r#"{"steps": []}"#), &mut sink);
+    assert!(
+        matches!(r.outcome, letibot_transcript::ToolOutcome::Failed { .. }),
+        "a field the tool has not got is refused: {:?}",
+        r.outcome
+    );
+    let said = r.payload;
+    assert!(
+        said.contains("`child`") && said.contains("detach"),
+        "the list names every door `wait_on` has: {said}"
+    );
+    assert!(
+        !said.contains("a job or a subagent"),
+        "and does not claim it has two: {said}"
+    );
+}
+
 /// **B11: one rule for an abstention.** `ask_user_question` and an operator wait on a
 /// `todo_write` row say the same thing - an abstention is an answer, and the model proceeds on
 /// an assumption it states - where one used to call it "not permission to proceed".
