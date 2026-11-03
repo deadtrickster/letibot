@@ -126,6 +126,28 @@ fn the_dispatcher_answers_for_itself_and_refuses_a_typo() {
     );
 }
 
+/// **A typo is two lines: the mistake, and what to type next.** The sentence used to end
+/// "or see <the path this binary was run from>", which is not a command a person can use.
+#[test]
+fn a_typo_is_refused_in_two_lines_and_never_echoes_the_binary_path() {
+    let (code, _, stderr) = run(&["nonsense"]);
+    assert_eq!(code, Some(2), "a typo is not a run: {stderr}");
+    let lines: Vec<&str> = stderr.lines().collect();
+    assert_eq!(lines.len(), 2, "two lines, not a paragraph: {stderr:?}");
+    assert!(
+        lines[0].contains("no such role: nonsense"),
+        "the first line names the mistake: {stderr:?}"
+    );
+    assert!(
+        lines[1].contains("letibot --help"),
+        "the second names the next step: {stderr:?}"
+    );
+    assert!(
+        !stderr.contains(env!("CARGO_BIN_EXE_letibot")),
+        "the binary's own path is not something to run: {stderr:?}"
+    );
+}
+
 /// Every role answers to its own NAME, through a symlink - the shape an install creates, and what
 /// `sudo` and the launcher reach by PATH. **Exit 127 is the assertion worth having**: the multicall
 /// links `libllama`, so every one of these names needs the rpath, and 127 is the loader refusing.

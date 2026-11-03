@@ -313,10 +313,7 @@ fn main() -> ExitCode {
                     migrate::run(&line)
                 } else {
                     eprintln!("letibot: no such role: {word}");
-                    eprintln!(
-                        "         run `letibot --help` for the roles, or see {}",
-                        arg0.to_string_lossy()
-                    );
+                    eprintln!("         run `letibot --help` for the roles and the verbs");
                     ExitCode::from(2)
                 }
             }
