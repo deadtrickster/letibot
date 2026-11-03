@@ -45,7 +45,51 @@ pub struct SessionRoom {
     /// a gap in the connection is the one thing no event can carry, because the events are exactly
     /// what it did not hear.
     bell: Arc<dyn Fn(&str) + Send + Sync>,
+    /// The newest chat this session heard, for the pane and for `room read`'s tail. Bounded.
+    recent: Arc<Mutex<std::collections::VecDeque<letibot_room::Message>>>,
+    /// Each todo row's last seen status, by content. `None` until the first update, which is
+    /// the board as it was and not news.
+    todo_seen: Mutex<Option<std::collections::BTreeMap<String, String>>>,
+    /// Plain sessions of this daemon, so a daemon-level fact is reported through one of them.
+    plain: bool,
 }
+
+fn links() -> &'static Mutex<std::collections::BTreeMap<String, Weak<SessionRoom>>> {
+    static LINKS: std::sync::OnceLock<
+        Mutex<std::collections::BTreeMap<String, Weak<SessionRoom>>>,
+    > = std::sync::OnceLock::new();
+    LINKS.get_or_init(Default::default)
+}
+
+/// A merge-queue or review-queue row moved: say so in the room of this daemon's project. The
+/// move is broadcast to every session, so one live session reports it and the coordinator
+/// drops a repeat of the same request id.
+pub fn report_queue_move(queue: &str, id: &str, to: &str, why: &str) {
+    let link = links()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .values()
+        .filter_map(Weak::upgrade)
+        .find(|l| l.plain);
+    let Some(link) = link else { return };
+    let text = if why.trim().is_empty() {
+        format!("{queue} queue: {id} -> {to}")
+    } else {
+        format!("{queue} queue: {id} -> {to} ({})", why.trim())
+    };
+    link.notify(
+        "queue",
+        format!("queue:{}:{queue}:{id}:{to}:{why}", link.project),
+        text,
+        vec![letibot_room::Ref {
+            kind: "queue".into(),
+            id: id.to_string(),
+        }],
+    );
+}
+
+/// Chat lines the daemon keeps per session for its feed.
+pub const RECENT_CHAT: usize = 100;
 
 impl std::fmt::Debug for SessionRoom {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -121,7 +165,34 @@ impl SessionRoom {
         let named = letibot_room::room_name(&key, project);
         let client = Client::connect_named(socket, Speaker::top_level(session), named, wake)
             .map_err(|e| e.to_string())?;
+        // Chat: always kept for the feed; a message that names this session, or the operator's
+        // unaddressed broadcast, also wakes a turn. Other sessions' chatter does not. A tag's agent
+        // and the arbiter work the queue and are never woken by chat.
+        let recent: Arc<Mutex<std::collections::VecDeque<letibot_room::Message>>> = Arc::default();
+        {
+            let recent = Arc::clone(&recent);
+            let bell = Arc::clone(&bell);
+            let me = me.clone();
+            let plain = letibot_room::tag_of_session(&key, session).is_none() && !arbiter;
+            client.on_chat(Arc::new(move |m: &letibot_room::Message, _names: bool| {
+                {
+                    let mut r = recent.lock().unwrap_or_else(|e| e.into_inner());
+                    r.push_back(m.clone());
+                    while r.len() > RECENT_CHAT {
+                        r.pop_front();
+                    }
+                }
+                if plain && m.attends(&me, letibot_room::Attention::ToMe) {
+                    wake::push(&me, wake::chat_sentence(m));
+                    bell(&me);
+                }
+            }));
+        }
+        let plain = letibot_room::tag_of_session(&key, session).is_none() && !arbiter;
         let room = Arc::new(SessionRoom {
+            recent,
+            todo_seen: Mutex::new(None),
+            plain,
             client,
             session: session.to_string(),
             socket: socket.to_path_buf(),
@@ -136,6 +207,10 @@ impl SessionRoom {
             bell,
         });
         SessionRoom::reader(&room);
+        links()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(session.to_string(), Arc::downgrade(&room));
         Ok(room)
     }
 
@@ -184,6 +259,79 @@ impl SessionRoom {
         let _ = self.client.request(&Request::Members { rows });
     }
 
+    /// Report a fact into this session's project room (or the host's when it has none), off the
+    /// caller's thread: a wedged coordinator must not stall a turn.
+    fn notify(&self, source: &str, id: String, text: String, refs: Vec<letibot_room::Ref>) {
+        let client = self.client.clone();
+        let source = source.to_string();
+        let _ = std::thread::Builder::new()
+            .name("room-notify".into())
+            .spawn(move || {
+                let _ = client.request(&Request::Notify {
+                    id,
+                    room: String::new(),
+                    source,
+                    text,
+                    refs,
+                });
+            });
+    }
+
+    /// The todo board changed: a new row is *filed*, a row whose status moved says what it
+    /// became. At most five lines per update. The first update only records the board.
+    pub fn todos_changed(&self, todos: &[letibot_sessionlog::event::TodoEntry]) {
+        use letibot_sessionlog::event::{TodoStatus, todo_title};
+        let now: std::collections::BTreeMap<String, String> = todos
+            .iter()
+            .map(|t| {
+                let word = match t.status {
+                    TodoStatus::Pending => "pending",
+                    TodoStatus::InProgress => "started",
+                    TodoStatus::Completed => "done",
+                    TodoStatus::Postponed => "postponed",
+                    TodoStatus::Cancelled => "cancelled",
+                };
+                (t.content.clone(), word.to_string())
+            })
+            .collect();
+        let before = self
+            .todo_seen
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .replace(now.clone());
+        let Some(before) = before else { return };
+        let mut lines = Vec::new();
+        for (content, status) in &now {
+            let said = match before.get(content) {
+                None => "filed",
+                Some(was) if was != status => status.as_str(),
+                Some(_) => continue,
+            };
+            let title: String = todo_title(content).chars().take(100).collect();
+            lines.push((said, title));
+        }
+        let extra = lines.len().saturating_sub(5);
+        for (said, title) in lines.into_iter().take(5) {
+            self.notify(
+                "todo",
+                format!("todo:{}:{said}:{title}", self.session),
+                format!("todo {said}: {title}"),
+                vec![letibot_room::Ref {
+                    kind: "todo".into(),
+                    id: format!("{}/{title}", self.session),
+                }],
+            );
+        }
+        if extra > 0 {
+            self.notify(
+                "todo",
+                format!("todo:{}:more:{}", self.session, now.len()),
+                format!("{extra} more todo row(s) moved"),
+                Vec::new(),
+            );
+        }
+    }
+
     /// Which project's room this is - the key half of its name.
     pub fn project(&self) -> &str {
         &self.project
@@ -201,6 +349,13 @@ impl SessionRoom {
             // of: queues drawn without saying the room had just begun again would be the opaque
             // screen the feature exists to remove.
             restart: self.restart_view(),
+            chat: self
+                .recent
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .cloned()
+                .collect(),
             ..RoomSnapshot::default()
         };
         match self.client.request(&Request::Room) {
@@ -652,6 +807,33 @@ fn request_of(verb: &str, args: &serde_json::Value) -> Result<Request, String> {
                 project: None,
             }
         }
+        "say" => {
+            let mut refs = Vec::new();
+            for kind in ["todo", "queue"] {
+                let id = s(kind);
+                if !id.is_empty() {
+                    refs.push(letibot_room::Ref {
+                        kind: kind.to_string(),
+                        id,
+                    });
+                }
+            }
+            Request::Say {
+                id,
+                room: chat_room(&s("room")),
+                text: s("text"),
+                to: Some(s("to")).filter(|x| !x.is_empty()),
+                thread: n("thread"),
+                refs,
+            }
+        }
+        "read" => Request::Read {
+            room: chat_room(&s("room")),
+            since: n("since").unwrap_or(0),
+            // A bare read is the tail, not the whole ring.
+            last: Some(n("last").unwrap_or(20).min(200) as u32),
+            thread: n("thread"),
+        },
         "queue" => Request::Queue { tag: s("tag") },
         "holding" => Request::Holding {
             session: Some(s("session")).filter(|x| !x.is_empty()),
@@ -661,10 +843,18 @@ fn request_of(verb: &str, args: &serde_json::Value) -> Result<Request, String> {
         other => {
             return Err(format!(
                 "`{other}` is not a room verb — the verbs are post, claim, claim_item, beat, \
-                 waiting, done, abandon, dispute, rule, queue, holding, reminders and questions"
+                 waiting, done, abandon, dispute, rule, queue, holding, reminders, questions, say and read"
             ));
         }
     })
+}
+
+/// The room a model names: `host` is the host's, empty or `project` is its own project's.
+fn chat_room(named: &str) -> String {
+    match named {
+        "project" => String::new(),
+        other => other.to_string(),
+    }
 }
 
 /// What the model reads back. Every arm names the item and the state, because a reply a model
@@ -811,6 +1001,48 @@ fn answer_sentence(response: &Response, me: &str) -> Result<String, String> {
             )
         }
         Response::Event { event } => format!("the room said: {event:?}"),
+        Response::Said { message, .. } => format!("said: {}", message.line()),
+        Response::History(h) => {
+            if h.rows.is_empty() {
+                format!(
+                    "nothing in `{}` after that point (newest is #{})",
+                    h.room, h.last_seq
+                )
+            } else {
+                let mut s = h
+                    .rows
+                    .iter()
+                    .map(|m| m.line())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if h.trimmed {
+                    s.push_str("\n(older messages were dropped from the room's history)");
+                }
+                s
+            }
+        }
+        Response::Chat { message, .. } => message.line(),
+        Response::Rooms { rows } => rows
+            .iter()
+            .map(|r| {
+                format!(
+                    "{} - {} here, newest #{}, {} unread",
+                    r.id, r.members, r.last_seq, r.unread
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        Response::Roster { room, rows } => format!(
+            "in `{room}`: {}",
+            rows.iter()
+                .map(|p| p.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        Response::Inbox { rows, skipped, .. } => {
+            format!("{} message(s), {skipped} left out", rows.len())
+        }
+        Response::Acked { cursor } => format!("read up to #{cursor}"),
     })
 }
 

@@ -3085,9 +3085,11 @@ impl Harness {
             self.asks_said = waiting;
             self.publish_settings();
         }
-        self.hub.publish(SessionEvent::TodosUpdated {
-            todos: items.into_iter().map(Self::todo_entry).collect(),
-        });
+        let todos: Vec<TodoEntry> = items.into_iter().map(Self::todo_entry).collect();
+        if let Some(room) = self.room_link() {
+            room.todos_changed(&todos);
+        }
+        self.hub.publish(SessionEvent::TodosUpdated { todos });
         Ok(())
     }
 

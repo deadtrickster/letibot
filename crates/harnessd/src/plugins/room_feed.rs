@@ -66,6 +66,8 @@ pub struct RoomSnapshot {
     /// The project's tree - every session in this room, in the order the tree draws them. A snapshot
     /// from a room nobody has described holds nobody.
     pub members: Vec<letibot_room::Member>,
+    /// The newest chat this session heard, oldest first.
+    pub chat: Vec<letibot_room::Message>,
     /// Why the room could not be read, when it could not. The pane draws this instead of an empty
     /// room: *nothing is queued* and *nobody answered* are two facts, and a screen that shows one for
     /// the other is a screen a person cannot act on.
@@ -164,6 +166,8 @@ pub fn room(source: &dyn RoomFeed, here: &str, now: u64) -> Value {
             "up": snap.connected.iter().any(|c| c == session),
         })),
         "connected": snap.connected,
+        // The newest chat this session heard, for a pane that draws it.
+        "chat": snap.chat,
         "lease_ms": snap.lease_ms,
         "threshold": snap.threshold,
         "unreadable": snap.unreadable,
@@ -366,6 +370,7 @@ mod tests {
             items,
             questions: Vec::new(),
             members: Vec::new(),
+            chat: Vec::new(),
             // No tag has an agent unless a test says so - the room's own answer for a daemon whose
             // upkeep has seated none.
             agents: Vec::new(),
@@ -520,6 +525,26 @@ mod tests {
         snap.connected.push("s-room-abc".to_string());
         let value = room(&Fixed(snap), "s-a", NOW);
         assert_eq!(value["arbiter"]["up"], json!(true));
+    }
+
+    /// The chat a session heard rides in the feed, beside the queues.
+    #[test]
+    fn the_feed_carries_the_chat_a_session_heard() {
+        let mut snap = RoomSnapshot::default();
+        snap.chat.push(letibot_room::Message {
+            seq: 4,
+            ts: 1,
+            room: "host".into(),
+            author: "operator".into(),
+            kind: letibot_room::Seat::Operator,
+            to: None,
+            thread: None,
+            refs: Vec::new(),
+            text: "hello".into(),
+        });
+        let value = feed(snap);
+        assert_eq!(value["chat"][0]["text"], json!("hello"));
+        assert_eq!(value["chat"][0]["author"], json!("operator"));
     }
 
     /// A room that could not be read says so rather than drawing an empty queue.

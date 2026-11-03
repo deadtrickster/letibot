@@ -69,13 +69,13 @@ impl Tool for RoomTool {
             TOOL,
             format!(
                 "The host's room: a queue per TAG shared by every top-level session on this machine, \
-                 for coordinating scarce things (RAM, a port, the staging database) and for saying \
-                 what you are working on. A tag is a LOCK — one live claim per tag, and anybody \
+                 for coordinating scarce things (RAM, a port, the staging database). A tag is a LOCK — one live claim per tag, and anybody \
                  else is refused with the holder's name — so two jobs that may run at once need two \
                  tags, and urgent work gets its own tag rather than a priority number. `post` a \
                  need, `claim` a tag's head, `beat` what you hold, `waiting` what you are waiting \
                  on, `done`, `abandon`, `dispute`, `queue`, `holding`, `questions`, and `rule` — the \
-                 arbiter's verb — to answer with `retry`, `hand` or `drop`. {beat}"
+                 arbiter's verb — to answer with `retry`, `hand` or `drop`. `say` and `read` talk to the \
+                 operator and other sessions in room `project` or `host`. {beat}"
             ),
             json!({
                 "type": "object",
@@ -84,9 +84,10 @@ impl Tool for RoomTool {
                         "type": "string",
                         "enum": [
                             "post", "claim", "claim_item", "beat", "waiting", "done", "abandon",
-                            "dispute", "rule", "queue", "holding", "reminders", "questions"
+                            "dispute", "rule", "queue", "holding", "reminders", "questions",
+                            "say", "read"
                         ],
-                        "description": "What to do. `post` needs `tag` and `body`; `claim` needs `tag`; `claim_item`, `beat`, `done` need `item`; `waiting` needs `item` and `text`; `abandon` needs `item` and `why`; `dispute` needs `item` and `says`; `rule` needs `question` and `decision`; `queue` needs `tag`; `holding` takes an optional `session`; `reminders` and `questions` take nothing."
+                        "description": "What to do. `post` needs `tag` and `body`; `claim` needs `tag`; `claim_item`, `beat`, `done` need `item`; `waiting` needs `item` and `text`; `abandon` needs `item` and `why`; `dispute` needs `item` and `says`; `rule` needs `question` and `decision`; `queue` needs `tag`; `holding` takes an optional `session`; `reminders` and `questions` take nothing; `say` needs `text` and takes `room`, `to`, `thread`, `todo`, `queue`; `read` takes `room`, `since`, `last`, `thread`."
                     },
                     "tag": {
                         "type": "string",
@@ -124,6 +125,30 @@ impl Tool for RoomTool {
                     "to": {
                         "type": "string",
                         "description": "For `rule` with `decision: \"hand\"`: the session that gets the claim. It must be a top-level session the room has met."
+                    },
+                    "room": {
+                        "type": "string",
+                        "description": "For `say` and `read`: `project` (the default) is the room of your project, `host` is the room every session on this machine is in, `dm` (read only) is your direct messages."
+                    },
+                    "since": {
+                        "type": "integer",
+                        "description": "For `read`: only messages after this number."
+                    },
+                    "last": {
+                        "type": "integer",
+                        "description": "For `read`: how many of the newest messages, default 20."
+                    },
+                    "thread": {
+                        "type": "integer",
+                        "description": "For `say`: the number of the message you answer. For `read`: that message and its replies."
+                    },
+                    "todo": {
+                        "type": "string",
+                        "description": "For `say`: a todo row id this message is about."
+                    },
+                    "queue": {
+                        "type": "string",
+                        "description": "For `say`: a merge-queue row id this message is about."
                     },
                     "session": {
                         "type": "string",
@@ -202,6 +227,7 @@ fn dispatch(link: &dyn RoomLink, args: &Value) -> Result<String, Invocation> {
                 None
             }
         }
+        "say" if !nonempty(args, "text") => Some("text"),
         "rule" => {
             if args.get("question").and_then(|v| v.as_u64()).is_none() {
                 Some("question")

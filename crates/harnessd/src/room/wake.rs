@@ -28,6 +28,21 @@ pub fn waiting(session: &str) -> usize {
     q.get(session).map(|v| v.len()).unwrap_or(0)
 }
 
+/// The sentence a chat message that names a session becomes. Bounded: a long message is cut for
+/// the turn's notice, and `room read` has the whole.
+pub fn chat_sentence(m: &letibot_room::Message) -> String {
+    let mut line = m.line();
+    if line.len() > 600 {
+        let mut end = 600;
+        while !line.is_char_boundary(end) {
+            end -= 1;
+        }
+        line.truncate(end);
+        line.push_str(" ...");
+    }
+    format!("[chat] {line} - answer with `room say` (room `host` or `project`, optional `to`).")
+}
+
 /// The sentence one room event becomes, in the words a model reads. `None` for an event a
 /// session does not need to be woken by. A beat is not worth a ring - a bell that rings five
 /// times a minute is a bell nobody listens to, and the room sends no beat event anyway.
