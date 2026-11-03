@@ -520,7 +520,7 @@ fn one_outage_is_one_row_with_a_counter() {
     endpoint.refuse(1);
     let cfg = config(&scratch, "second", 2);
     let ep = endpoint.clone();
-    let rec = drive(&parts, cfg, move |client, rx, _hub, rec| {
+    let rec = drive(&parts, cfg, move |client, rx, hub, rec| {
         client.prompt(0, PROMPT).expect("the prompt is accepted");
         watch(rx, rec, |rec| answers(hub) >= 1 && !rec.answered.is_empty());
         // The second outage, in the same session and against the same endpoint.
