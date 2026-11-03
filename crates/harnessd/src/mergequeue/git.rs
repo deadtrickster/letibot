@@ -1151,5 +1151,185 @@ pub fn retire_if_empty(
     retire_branch(repo, branch, worktree)
 }
 
+/// How long a directory under a worktrees home is left alone: a child's tree is made before its
+/// branch is registered, and a sweep that ran between the two would delete a live child's work.
+pub const ORPHAN_GRACE: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// What a worktree sweep found: the debris it took, and what it left with a reason.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Reaped {
+    /// Registrations git held for a directory that is not there, now pruned.
+    pub pruned: Vec<String>,
+    /// Directories under a worktrees home that are no checkout's worktree any more.
+    pub orphans: Vec<String>,
+    /// Directories left alone, and the sentence saying why.
+    pub kept: Vec<(String, String)>,
+}
+
+impl Reaped {
+    /// Whether anything went - a sweep that took nothing says nothing.
+    pub fn took_anything(&self) -> bool {
+        !self.pruned.is_empty() || !self.orphans.is_empty()
+    }
+
+    /// One line for the daemon's log: what went, and what was kept and why.
+    pub fn words(&self) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        if !self.pruned.is_empty() {
+            parts.push(format!(
+                "pruned {} registration(s) for trees that are gone ({})",
+                self.pruned.len(),
+                self.pruned.join(", ")
+            ));
+        }
+        if !self.orphans.is_empty() {
+            parts.push(format!(
+                "removed {} orphaned tree(s) ({})",
+                self.orphans.len(),
+                self.orphans.join(", ")
+            ));
+        }
+        for (dir, why) in &self.kept {
+            parts.push(format!("{dir} kept: {why}"));
+        }
+        parts.join("; ")
+    }
+}
+
+/// **The debris nothing else reaps**: a registration git holds for a directory that is not there,
+/// and a directory under a worktrees home whose `.git` names a gitdir that is not - a tree of a
+/// checkout that is gone. Neither can hold a commit, so neither is the resource sweep's rule
+/// ([`remove_worktree`] keeps what it cannot prove is released): there is nothing inside to prove.
+/// A tree that is there, a directory that is a repository of its own, and another checkout's living
+/// worktree under the same folder are all kept, and said.
+pub fn reap_worktrees(repo: &Path, now: std::time::SystemTime) -> Result<Reaped, String> {
+    let listed = git(repo, &["worktree", "list", "--porcelain"])?;
+    let mut registered: Vec<(String, bool)> = Vec::new();
+    for block in listed.split("\n\n") {
+        let (mut path, mut locked, mut bare) = (None, false, false);
+        for line in block.lines() {
+            if let Some(p) = line.strip_prefix("worktree ") {
+                path = Some(p.trim().to_string());
+            } else if line == "locked" || line.starts_with("locked ") {
+                locked = true;
+            } else if line == "bare" {
+                bare = true;
+            }
+        }
+        if let Some(p) = path.filter(|_| !bare) {
+            registered.push((p, locked));
+        }
+    }
+    let main = std::fs::canonicalize(repo).unwrap_or_else(|_| repo.to_path_buf());
+    let mut out = Reaped::default();
+    for (path, locked) in &registered {
+        let dir = Path::new(path);
+        let itself = dir == repo || std::fs::canonicalize(dir).is_ok_and(|c| c == main);
+        if itself || dir.exists() {
+            continue;
+        }
+        // Locked is why `git worktree prune` alone would leave it: it refuses a locked entry, and
+        // an entry for a directory that is gone is a lock over nothing.
+        if *locked {
+            let _ = git(repo, &["worktree", "unlock", path]);
+        }
+        out.pruned.push(path.clone());
+    }
+    if !out.pruned.is_empty() {
+        // `--expire now` is the point of this call: by default a missing entry is kept for months.
+        git(repo, &["worktree", "prune", "--expire", "now"])?;
+    }
+    for home in worktree_homes(repo) {
+        let Ok(entries) = std::fs::read_dir(&home) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let dir = entry.path();
+            if !dir.is_dir() {
+                continue;
+            }
+            let name = dir.display().to_string();
+            if registered.iter().any(|(p, _)| Path::new(p) == dir) {
+                continue;
+            }
+            match worktree_gitdir(&dir) {
+                GitDir::OwnRepository => out.kept.push((name, "it is a repository of its own".into())),
+                GitDir::OfAnotherCheckout(where_) => out.kept.push((
+                    name,
+                    format!("its `.git` names {where_}, which is there: it is that checkout's"),
+                )),
+                GitDir::Nothing => out.kept.push((name, "it has no `.git`".into())),
+                GitDir::RegistrationGone(gone) => {
+                    let young = std::fs::metadata(&dir)
+                        .and_then(|m| m.modified())
+                        .ok()
+                        .and_then(|m| now.duration_since(m).ok())
+                        .is_some_and(|age| age < ORPHAN_GRACE);
+                    if young {
+                        out.kept.push((name, format!("younger than {} s", ORPHAN_GRACE.as_secs())));
+                    } else {
+                        std::fs::remove_dir_all(&dir)
+                            .map_err(|e| format!("removing {}: {e}", dir.display()))?;
+                        out.orphans.push(format!("{} (its `.git` names {gone}, which is not there)", name));
+                    }
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The folders a repository's agent worktrees are made in - [`worktree_home`]'s answer, and the
+/// repository's own `.claude/worktrees` (the shape `task_start` uses when the layout says nothing).
+fn worktree_homes(repo: &Path) -> Vec<PathBuf> {
+    let mut homes = vec![repo.join(".claude").join("worktrees")];
+    if let Some(home) = letibot_tools::builtins::task::worktree_home(repo) {
+        homes.push(home);
+    }
+    homes.sort();
+    homes.dedup();
+    homes
+}
+
+/// What a directory's `.git` says it is, for the sweep's decision.
+enum GitDir {
+    /// A `.git` directory inside it: a repository of its own, never a worktree's.
+    OwnRepository,
+    /// Its registration exists: another checkout's worktree, alive where it is written.
+    OfAnotherCheckout(String),
+    /// Its registration is gone - a tree of a checkout that is not there any more.
+    RegistrationGone(String),
+    /// No `.git` at all, or one this build cannot read.
+    Nothing,
+}
+
+fn worktree_gitdir(dir: &Path) -> GitDir {
+    let dot = dir.join(".git");
+    if dot.is_dir() {
+        return GitDir::OwnRepository;
+    }
+    let Ok(text) = std::fs::read_to_string(&dot) else {
+        return GitDir::Nothing;
+    };
+    let Some(named) = text.trim().strip_prefix("gitdir:") else {
+        return GitDir::Nothing;
+    };
+    let named = named.trim();
+    if named.is_empty() {
+        return GitDir::Nothing;
+    }
+    let path = Path::new(named);
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        dir.join(path)
+    };
+    if path.exists() {
+        GitDir::OfAnotherCheckout(path.display().to_string())
+    } else {
+        GitDir::RegistrationGone(path.display().to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests;

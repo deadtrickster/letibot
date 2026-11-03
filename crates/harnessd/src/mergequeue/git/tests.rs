@@ -814,3 +814,114 @@ fn a_remote_that_is_not_github_is_pushed_to_origin() {
     sh(&repo, &["remote", "remove", "origin"]);
     assert_eq!(push(&repo, "main", &sha), Pushed::NoRemote);
 }
+
+/// **The debris nothing else reaps.** A registration git holds for a directory that is not there -
+/// locked or not - goes on a sweep, and so does a directory under the worktrees home whose `.git`
+/// names a gitdir that is gone. A live tree (dirty included) and another checkout's living worktree
+/// in the same folder stay, and the tree a child has only just made stays for the grace window.
+#[test]
+fn the_worktree_sweep_takes_the_debris_and_keeps_the_living() {
+    let dir = TempDir::new("worktree-sweep");
+    let repo = repo(&dir.0);
+    let home = repo.join(".claude").join("worktrees");
+    std::fs::create_dir_all(&home).unwrap();
+    let add = |name: &str| {
+        let wt = home.join(name);
+        sh(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                &wt.to_string_lossy(),
+                "-b",
+                &format!("agent/{name}"),
+                "main",
+            ],
+        );
+        wt
+    };
+    let live = add("agent-live");
+    // Uncommitted work: the sweep has no business in a tree that is there.
+    std::fs::write(live.join("a.txt"), "uncommitted\n").unwrap();
+    let gone = add("agent-gone");
+    std::fs::remove_dir_all(&gone).unwrap();
+    let locked = add("agent-locked");
+    sh(
+        &repo,
+        &[
+            "worktree",
+            "lock",
+            "--reason",
+            "a build is in it",
+            &locked.to_string_lossy(),
+        ],
+    );
+    std::fs::remove_dir_all(&locked).unwrap();
+    // Another checkout's worktree, alive, under this repository's folder.
+    let under = dir.0.join("elsewhere");
+    std::fs::create_dir_all(&under).unwrap();
+    let other = crate::mergequeue::serve::tests::repo(&under);
+    let elsewhere = home.join("agent-elsewhere");
+    sh(
+        &other,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            &elsewhere.to_string_lossy(),
+            "-b",
+            "agent/elsewhere",
+            "main",
+        ],
+    );
+    // A tree whose registration is gone: a child of a checkout that is not there any more.
+    let orphan = home.join("agent-a1b2c3d4");
+    std::fs::create_dir_all(&orphan).unwrap();
+    std::fs::write(
+        orphan.join(".git"),
+        "gitdir: /nowhere/checkout/.git/worktrees/agent-a1b2c3d4\n",
+    )
+    .unwrap();
+    std::fs::write(orphan.join("work.txt"), "the dead child's notes\n").unwrap();
+
+    // The first sweep takes the registrations - a lock over a directory that is not there is one
+    // over nothing - and leaves the tree that may be a child's mid-spawn.
+    let now = std::time::SystemTime::now();
+    let first = reap_worktrees(&repo, now).unwrap();
+    let mut pruned = first.pruned.clone();
+    pruned.sort();
+    assert_eq!(
+        pruned,
+        vec![gone.display().to_string(), locked.display().to_string()],
+        "{first:?}"
+    );
+    let listed = sh(&repo, &["worktree", "list", "--porcelain"]);
+    assert!(!listed.contains("agent-gone"), "{listed}");
+    assert!(!listed.contains("agent-locked"), "{listed}");
+    assert!(orphan.exists(), "a tree younger than the grace stays");
+    assert!(
+        first.kept.iter().any(|(k, _)| k.ends_with("agent-a1b2c3d4")),
+        "{first:?}"
+    );
+
+    // An hour later it is nobody's: the sweep takes it, and only it.
+    let later = reap_worktrees(&repo, now + std::time::Duration::from_secs(60 * 60)).unwrap();
+    assert!(later.pruned.is_empty(), "{later:?}");
+    assert_eq!(later.orphans.len(), 1, "{later:?}");
+    assert!(
+        later.orphans[0].starts_with(&orphan.display().to_string())
+            && later.orphans[0].contains("not there"),
+        "the log line names the tree and the registration it lost: {later:?}"
+    );
+    assert!(!orphan.exists());
+    assert_eq!(
+        std::fs::read_to_string(live.join("a.txt")).unwrap(),
+        "uncommitted\n",
+        "a live tree's work is not the sweep's"
+    );
+    assert!(
+        elsewhere.join(".git").exists(),
+        "another checkout's live worktree stays"
+    );
+}

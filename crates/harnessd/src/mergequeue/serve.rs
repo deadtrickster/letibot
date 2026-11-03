@@ -540,6 +540,10 @@ impl RepoQueue {
         // Beside the other sweeps, and after them: a row that went terminal in this pass has its
         // resources released in the same one.
         self.release_terminal_resources()?;
+        // And the debris no row names: a registration for a directory that is gone, a tree of a
+        // checkout that is not there any more. Nothing reaped these, so they accumulated per
+        // killed or refused child, for ever.
+        self.reap_worktree_debris();
         if self.gate_in_flight() {
             // One gate per repository: the health of every target and the next landing wait for
             // it; the review queue above did not.
@@ -1057,7 +1061,14 @@ impl RepoQueue {
                 continue;
             };
             let target = target_of(r);
-            let why = format!("claimed for review at {head} by {me}");
+            // **The reason it waited outlives the claim.** A capacity wait is a row's whole story
+            // for an hour, and writing the claim over it left a pane with no reason on it at all.
+            let waited = r.failure.trim();
+            let why = match waited.is_empty() {
+                true => format!("claimed for review at {head} by {me}"),
+                false => format!("claimed for review at {head} by {me}"),
+            };
+            let _ = waited;
             if self.review_to(
                 r,
                 ReviewState::Reviewing,
@@ -1173,6 +1184,22 @@ impl RepoQueue {
             }
         }
         Ok(moved)
+    }
+
+    /// **The debris no row names.** A registration whose directory is gone and a tree whose `.git`
+    /// names a gitdir that is not are the two leftovers of a child that was killed, refused or
+    /// landed elsewhere - neither can hold a commit, and nothing else in this daemon looks at them.
+    /// The tree says so in the daemon's log; a sweep that took nothing says nothing.
+    fn reap_worktree_debris(&self) {
+        match git::reap_worktrees(&self.repo, std::time::SystemTime::now()) {
+            Ok(reaped) if reaped.took_anything() => {
+                eprintln!("  worktree sweep: {}: {}", self.key, reaped.words());
+            }
+            Ok(_) => {}
+            // Said rather than swallowed: a repository this build cannot read is the one place the
+            // sweep is blind, and silence there looks exactly like nothing to do.
+            Err(why) => eprintln!("  worktree sweep: {}: {why}", self.key),
+        }
     }
 
     /// A terminal row keeps its record and gives back its resources - the sweep. Terminal is
