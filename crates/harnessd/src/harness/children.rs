@@ -1151,14 +1151,15 @@ pub(crate) fn serve_child_with(
 }
 
 /// What a turn after the child's first settles its slot with, `None` when the turn is not news.
-/// A turn that answered nothing is not news: the slot already holds the child's last word.
+/// A turn before the slot settled is the hold's, part of the answer it ends with. A turn that
+/// answered nothing is not news either: the slot already holds the child's last word.
 pub(crate) fn later_news(
     somebody_spoke: bool,
     settled_before: bool,
     out: &Option<Result<Reply, HarnessError>>,
 ) -> Option<letibot_tools::builtins::task::TaskStatus> {
     let silent = settled_before && matches!(out, Some(Ok(reply)) if reply.text.trim().is_empty());
-    if !somebody_spoke || silent {
+    if !somebody_spoke || !settled_before || silent {
         return None;
     }
     Some(match out.as_ref()? {
