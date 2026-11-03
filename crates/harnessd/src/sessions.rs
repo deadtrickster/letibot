@@ -2571,6 +2571,13 @@ impl<'a> Sessions<'a> {
             f,
         );
         if let (Some(r), Some(prior)) = (&record, &prior) {
+            // The answer of THIS turn is recorded where a later one is on a child's own thread: the
+            // row already says what the first turn said, and a restart reads the row.
+            if let Some(Ok(reply)) = &out
+                && !reply.text.trim().is_empty()
+            {
+                r.answered_again(reply.text.trim());
+            }
             r.later_turn_ended(prior);
         }
         self.open.insert(session_id.to_string(), h);

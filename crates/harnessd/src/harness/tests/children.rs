@@ -280,6 +280,87 @@ fn a_killed_subagent_settles_as_stopped_rather_than_as_an_answer() {
     ));
 }
 
+/// **A child's later answer is written where a restart reads it.** The slot holds the newest one, and
+/// the daemon that heard it is not the one that answers `task_result` afterwards; the row already said
+/// what the first turn said, so the later answer goes beside it rather than over it.
+#[test]
+fn a_later_turns_answer_is_written_beside_the_first_one() {
+    use crate::subagent_record::{RunStore, SubagentRecord};
+    use letibot_tokencore::store::{Store, SubagentRun};
+    use letibot_tools::builtins::task::TaskStatus;
+
+    let dir = std::env::temp_dir().join(format!(
+        "letibot-later-answer-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let path = dir.join("sessions.db");
+    let store = Store::open(&path).expect("the store");
+    store
+        .put_subagent_run(&SubagentRun {
+            child_id: "s-1-sub-1".into(),
+            parent_id: "s-1".into(),
+            state: "running".into(),
+            prompt: "do the thing".into(),
+            spec_json: "{}".into(),
+            instance: "i-1".into(),
+            resumes: 0,
+            outcome: None,
+            later_answer: None,
+            delivered: false,
+            started_ms: 1,
+            updated_ms: 1,
+        })
+        .expect("the child's row");
+
+    let record = SubagentRecord {
+        store: RunStore {
+            path: path.clone(),
+            cell: Default::default(),
+        },
+        child: "s-1-sub-1".into(),
+        registry: letibot_sessionlog::registry::Registry::new(),
+        pending: None,
+    };
+    let slot = TaskSlot::recorded("s-1", Some(record));
+    slot.settle(TaskStatus::Done {
+        answer: "the first answer".into(),
+        child: None,
+    });
+    store.deliver_subagent_run("s-1-sub-1").expect("told");
+    slot.spoke_again("the second answer");
+
+    let row = store
+        .subagent_run("s-1-sub-1")
+        .expect("the read")
+        .expect("the child's row");
+    assert_eq!(
+        row.later_answer.as_deref(),
+        Some("the second answer"),
+        "the answer of a turn after the settled one is the parent's last news of it, and it has to \
+         outlive the daemon that heard it"
+    );
+    assert_eq!(
+        row.outcome.as_deref(),
+        Some("the first answer"),
+        "the first answer stays where it was"
+    );
+    assert!(
+        !row.delivered,
+        "nobody has been handed this one: it is a settlement of its own"
+    );
+    assert_eq!(
+        slot.newest_again().as_deref(),
+        Some("the second answer"),
+        "and this daemon still answers from the slot"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// **A child nobody gave a model runs on its parent's** - *"so if no local config, and no
 /// model - default to the same"*. `local` only for a parent that is itself local.
 #[test]

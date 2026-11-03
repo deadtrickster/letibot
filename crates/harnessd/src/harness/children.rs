@@ -332,8 +332,12 @@ impl TaskSlot {
     }
 
     /// A turn of the child AFTER the settled one answered `answer`: kept for `task_result`, which
-    /// would otherwise hand a parent the first answer for ever under the name of its last word.
+    /// would otherwise hand a parent the first answer for ever under the name of its last word. The
+    /// record goes with it, because the daemon that heard this one may not be the one asked next.
     pub(crate) fn spoke_again(&self, answer: &str) {
+        if let Some(record) = &self.record {
+            record.answered_again(answer);
+        }
         self.again
             .lock()
             .expect("task slot")

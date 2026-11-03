@@ -265,6 +265,23 @@ impl SubagentRecord {
         }
     }
 
+    /// **A turn of the child AFTER the one this record settled answered `answer`**: kept beside the
+    /// first answer, which stays, so a daemon that was not running when the child spoke again still
+    /// hands its parent the last word.
+    pub fn answered_again(&self, answer: &str) {
+        self.ensure_written();
+        if let Err(why) = self.store.with(|s| {
+            s.settle_subagent_run_again(&self.child, answer)
+                .map_err(|e| e.to_string())
+        }) {
+            eprintln!(
+                "  {} · its later answer was not recorded ({why}); a restart reads the one before \
+                 it",
+                self.child
+            );
+        }
+    }
+
     /// A later turn of this child begins - a parent's `task_message`, a later prompt, a wake.
     /// The row goes back to `running` for the length of the turn, so a daemon that stops
     /// mid-turn leaves a child the next one resumes
