@@ -88,6 +88,13 @@ impl Bell {
         self.cv.notify_all();
     }
 
+    /// Take back a wake this session has not been served: it was rung for something with no
+    /// command behind it, and a turn that was stopped or failed must not be followed by one the
+    /// settlement started. What it was rung for stays queued, for the next turn.
+    pub fn drop_wakes(&self, session_id: &str) {
+        self.lock().wakes.retain(|w| w != session_id);
+    }
+
     /// Say that `session_id` exists and nothing has opened it yet.
     pub fn ring_open(&self, session_id: &str) {
         {

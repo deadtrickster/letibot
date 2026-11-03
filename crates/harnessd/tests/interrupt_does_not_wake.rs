@@ -16,7 +16,7 @@ use letibot_harnessd::turn_tail::{Bare, Door, run_turn};
 use letibot_harnessd::{Dialect, Parts};
 use letibot_sessionlog::CommandKind;
 use letibot_sessionlog::hub::{DAEMON_SUBMITTER, Hub};
-use letibot_sessionlog::registry::{Registry, SessionWiring, Work, WorkOrIdle};
+use letibot_sessionlog::registry::{Bell, Registry, SessionWiring, Work, WorkOrIdle};
 
 /// How long the turn runs before the test calls it a hang.
 const PATIENCE: Duration = Duration::from_secs(20);
@@ -94,6 +94,7 @@ fn a_stopped_or_failed_turn_does_not_wake_the_session_for_its_held_results() {
         fake.arrived.clone(),
         None,
         None,
+        None,
     );
     let out = run_turn(&mut answered, &mut Bare, Door::Prompt, |h| {
         h.submit("answer me").map(Some)
@@ -129,6 +130,7 @@ fn a_stopped_or_failed_turn_does_not_wake_the_session_for_its_held_results() {
         fake.arrived.clone(),
         Some(hub.clone()),
         None,
+        None,
     );
     let out = run_turn(&mut stopped, &mut Bare, Door::Prompt, |h| {
         h.submit(LONG_STORY).map(Some)
@@ -137,14 +139,7 @@ fn a_stopped_or_failed_turn_does_not_wake_the_session_for_its_held_results() {
     // The turn ran, and the tree reports a stopped one as a turn failure whose words are the
     // interrupt's own - which is why the stop is read off the log below rather than off `out`.
     assert!(out.is_some(), "the turn ran");
-    let interrupted: Vec<String> = hub
-        .retained()
-        .into_iter()
-        .filter_map(|e| match e.event {
-            letibot_sessionlog::SessionEvent::TurnInterrupted { reason, .. } => Some(reason),
-            _ => None,
-        })
-        .collect();
+    let interrupted = interrupted_reasons(&hub);
     assert!(
         interrupted.iter().any(|r| r == "steering_urgent"),
         "the premise: the turn was stopped by the operator's interrupt, not by the stream: \
@@ -175,6 +170,7 @@ fn a_stopped_or_failed_turn_does_not_wake_the_session_for_its_held_results() {
         fake.arrived.clone(),
         None,
         Some(fake.holds.clone()),
+        None,
     );
     let out = run_turn(&mut refused, &mut Bare, Door::Prompt, |h| {
         h.submit(REFUSED).map(Some)
@@ -199,7 +195,97 @@ fn a_stopped_or_failed_turn_does_not_wake_the_session_for_its_held_results() {
         "a failed turn rang a wake nobody asked for: its next turn is the one somebody types"
     );
 
+    // ----------------------------------------------------------------------
+    // And a stop, with the settlement arriving the way a watcher hands one over: queued, and rung
+    // on the bell. The wake is standing when the turn ends, nothing can un-ring it, so the stop has
+    // to take it back rather than let the court run the turn it just ended.
+    // ----------------------------------------------------------------------
+    let bell = registry.bell().clone();
+    let mut rung_stopped = open(&parts, &cfg, &registry, "s-rang", &workspace, &fake.url);
+    let watch = rung_stopped
+        .job_watchers()
+        .expect("every session has a watcher");
+    let hub: Arc<Hub> = registry.get("s-rang").expect("the session's hub");
+    let landing = while_the_turn_streams(
+        watch.clone(),
+        "s-rang",
+        fake.arrived.clone(),
+        Some(hub.clone()),
+        None,
+        Some(bell.clone()),
+    );
+    let out = run_turn(&mut rung_stopped, &mut Bare, Door::Prompt, |h| {
+        h.submit(LONG_STORY).map(Some)
+    });
+    landing.join().expect("the thread that stopped the turn");
+    assert!(out.is_some(), "the turn ran");
+    let interrupted = interrupted_reasons(&hub);
+    assert!(
+        interrupted.iter().any(|r| r == "steering_urgent"),
+        "the premise: the turn was stopped by the operator's interrupt: {interrupted:?}"
+    );
+    assert!(
+        matches!(
+            registry.next_work_until(Some(Instant::now() + Duration::from_secs(2))),
+            WorkOrIdle::Idle
+        ),
+        "R91.4: a settlement that landed in a stopped turn rang a turn of its own"
+    );
+    assert!(
+        watch.pending(),
+        "the settlement the stopped turn rang for is still owed to the next turn a person types"
+    );
+
+    // ----------------------------------------------------------------------
+    // And the same delivery into a turn that fails: nobody asked for the next one either.
+    // ----------------------------------------------------------------------
+    let mut rung_refused = open(
+        &parts,
+        &cfg,
+        &registry,
+        "s-rang-failed",
+        &workspace,
+        &fake.url,
+    );
+    let watch = rung_refused
+        .job_watchers()
+        .expect("every session has a watcher");
+    let landing = while_the_turn_streams(
+        watch.clone(),
+        "s-rang-failed",
+        fake.arrived.clone(),
+        None,
+        Some(fake.holds.clone()),
+        Some(bell.clone()),
+    );
+    let out = run_turn(&mut rung_refused, &mut Bare, Door::Prompt, |h| {
+        h.submit(REFUSED).map(Some)
+    });
+    landing.join().expect("the thread that held the result");
+    assert!(
+        matches!(&out, Some(Err(_))),
+        "the premise: the provider refused this turn"
+    );
+    assert!(
+        matches!(
+            registry.next_work_until(Some(Instant::now() + Duration::from_secs(2))),
+            WorkOrIdle::Idle
+        ),
+        "R91.4: a settlement that landed in a failed turn rang a turn of its own"
+    );
+
     let _ = std::fs::remove_dir_all(dir.path());
+}
+
+/// Every reason the hub published for a turn this session had interrupted.
+fn interrupted_reasons(hub: &Hub) -> Vec<String> {
+    hub.retained()
+        .into_iter()
+        .filter_map(|e| match e.event {
+            letibot_sessionlog::SessionEvent::TurnInterrupted { reason, .. } => Some(reason),
+            _ => None,
+        })
+        .collect()
 }
 
 /// One session, opened the way the daemon opens one.
@@ -233,13 +319,15 @@ fn open(
 
 /// What happens while the turn streams: a job's ending lands - so the turn cannot open with it,
 /// and it is still held when the turn ends - and, when `stop` is given, the operator stops the turn.
-/// `held` is signalled once the result is held, so a stub that breaks the stream can wait for it.
+/// `ring` delivers it the way a watcher does, queued and rung, where `hold` is a door that does not
+/// ring. `held` is signalled once the result landed, so a stub can wait for it.
 fn while_the_turn_streams(
     watch: Arc<JobWatchers>,
     owner: &str,
     arrived: Arc<Mutex<Receiver<()>>>,
     stop: Option<Arc<Hub>>,
     held: Option<Sender<()>>,
+    ring: Option<Arc<Bell>>,
 ) -> std::thread::JoinHandle<()> {
     let owner = owner.to_string();
     std::thread::spawn(move || {
@@ -248,7 +336,14 @@ fn while_the_turn_streams(
             .unwrap_or_else(|e| e.into_inner())
             .recv_timeout(PATIENCE)
             .expect("the turn reached the model");
-        watch.hold(vec![a_settlement(&owner)]);
+        let landed = a_settlement(&owner);
+        match ring {
+            Some(bell) => {
+                watch.queue_for_test(landed);
+                bell.ring_wake(&owner);
+            }
+            None => watch.hold(vec![landed]),
+        }
         if let Some(said) = held {
             let _ = said.send(());
         }

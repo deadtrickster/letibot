@@ -643,18 +643,19 @@ impl JobWatchers {
 
     /// A turn of this session has ended - counted after its rounds have run, whatever they came
     /// to, by the harness's two doors into `run_rounds`. A turn that ends with results held rings
-    /// this session's own wake, unless it was stopped or failed - see [`TurnEnd`].
+    /// this session's own wake, and one that was stopped or failed takes back the wake a settlement
+    /// rang during it: nothing asked for the turn that wake would start.
     pub fn turn_ended(&self, how: TurnEnd) {
         {
             let mut r = self.read.lock().expect("read record");
             r.turns_ended += 1;
             r.ended_at = Some(SystemTime::now());
         }
-        if how == TurnEnd::Done
-            && self.held_count() > 0
-            && let Some(bell) = &self.bell
-        {
-            bell.ring_wake(&self.me);
+        let Some(bell) = &self.bell else { return };
+        match how {
+            TurnEnd::Interrupted | TurnEnd::Failed => bell.drop_wakes(&self.me),
+            TurnEnd::Done if self.held_count() > 0 => bell.ring_wake(&self.me),
+            TurnEnd::Done => {}
         }
     }
 
