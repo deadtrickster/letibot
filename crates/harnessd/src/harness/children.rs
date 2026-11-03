@@ -152,10 +152,10 @@ pub(crate) struct TaskSlot {
     handed_over: std::sync::atomic::AtomicBool,
 }
 
-/// What a slot's answer becomes once a reader has it: the body is in the child's own session, and this
-/// is the sentence a second reader is owed instead of a copy the tree kept for nobody.
-pub(crate) const ANSWER_HANDED_OVER: &str = "this answer was handed over and the tree does not keep a copy of it — `transcript` with this \
-     handle reads the child's own session, which holds everything it said";
+/// What a slot's answer becomes once a reader has it, and what a second reader falls back to when the
+/// store holds no record of the child: the child's own session is where the text still is.
+pub(crate) const ANSWER_HANDED_OVER: &str = "this answer was handed over and the tree does not keep a copy of it: \
+     `transcript` with this handle reads the child's own session, which holds everything it said";
 
 /// The handles one runner has handed out, with the slot each knocks on, in the order the
 /// children were started.
@@ -236,9 +236,15 @@ impl TaskSlot {
         }
     }
 
+    /// Whether the body this slot settled with has been handed to a reader, so the text a second one
+    /// is owed has to come from the child's record rather than from here.
+    pub(crate) fn handed_over(&self) -> bool {
+        self.handed_over.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     #[cfg(test)]
     pub(crate) fn holds_answer(&self) -> bool {
-        !self.handed_over.load(std::sync::atomic::Ordering::SeqCst)
+        !self.handed_over()
             && matches!(
                 &*self.state.lock().expect("task slot"),
                 letibot_tools::builtins::task::TaskStatus::Done { .. }
@@ -2518,21 +2524,28 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
                 .expect("task slot");
             g.clone()
         };
-        let Some(child) = self.live_reading(handle, &status, &slot) else {
-            return status;
+        let status = match self.live_reading(handle, &status, &slot) {
+            None => status,
+            Some(child) => match status {
+                TaskStatus::Running { note, .. } => TaskStatus::Running {
+                    note,
+                    child: Some(child),
+                },
+                TaskStatus::Done { answer, .. } => TaskStatus::Done {
+                    // **The last word, not the first.** A child that answered again after the slot
+                    // settled said something newer, and every notice of it promises `task_result`.
+                    answer: slot.newest_again().unwrap_or(answer),
+                    child: Some(child),
+                },
+                other => other,
+            },
         };
-        match status {
-            TaskStatus::Running { note, .. } => TaskStatus::Running {
-                note,
-                child: Some(child),
-            },
-            TaskStatus::Done { answer, .. } => TaskStatus::Done {
-                // **The last word, not the first.** A child that answered again after the slot
-                // settled said something newer, and every notice of it promises `task_result`.
-                answer: slot.newest_again().unwrap_or(answer),
-                child: Some(child),
-            },
-            other => other,
+        // A body the slot has handed to a reader is not gone: the child's RECORD keeps the answer
+        // every lifetime of this handle reads, so a second reader is answered from there rather
+        // than from the sentence the slot holds where its copy used to be.
+        match slot.handed_over() {
+            true => self.answer_from_the_record(handle, status),
+            false => status,
         }
     }
 
@@ -2547,17 +2560,7 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
         if self.slot(handle).is_some() {
             return self.collect(handle, timeout);
         }
-        let me = self.base.session_id.clone();
-        let run = self
-            .run_store()
-            .and_then(|store| {
-                store
-                    .with(|s| s.subagent_run(handle).map_err(|e| e.to_string()))
-                    .ok()
-            })
-            .flatten()
-            .filter(|r| r.parent_id == me);
-        match run {
+        match self.record_of(handle) {
             Some(run) => crate::subagent_record::recorded_status(&run, self.registry.instance()),
             // No record: its own session is the witness. A spawn whose row the store refused still opened a
             // session, and that session is the only thing left saying this child existed, so the sentence it
@@ -2810,6 +2813,43 @@ pub(crate) fn subagent_ask_target(
 }
 
 impl HarnessTaskRunner {
+    /// The answer a slot no longer holds, read from the child's record. A child the store never
+    /// wrote keeps the sentence the slot carries, which names the session that does hold the text.
+    fn answer_from_the_record(
+        &self,
+        handle: &str,
+        status: letibot_tools::builtins::task::TaskStatus,
+    ) -> letibot_tools::builtins::task::TaskStatus {
+        use letibot_tools::builtins::task::TaskStatus;
+        let TaskStatus::Done { answer, child } = status else {
+            return status;
+        };
+        let kept = self
+            .record_of(handle)
+            .map(|run| crate::subagent_record::recorded_status(&run, self.registry.instance()));
+        match kept {
+            Some(TaskStatus::Done { answer: kept, .. }) if !kept.is_empty() => TaskStatus::Done {
+                answer: kept,
+                child,
+            },
+            _ => TaskStatus::Done { answer, child },
+        }
+    }
+
+    /// This session's record of one of its children, and nothing for a child of another session: the
+    /// store is the whole daemon's and the upward edge is what makes an answer this session's to read.
+    fn record_of(&self, handle: &str) -> Option<letibot_tokencore::store::SubagentRun> {
+        let me = self.base.session_id.clone();
+        self.run_store()
+            .and_then(|store| {
+                store
+                    .with(|s| s.subagent_run(handle).map_err(|e| e.to_string()))
+                    .ok()
+            })
+            .flatten()
+            .filter(|r| r.parent_id == me)
+    }
+
     /// A runner with only the ENQUEUE half wired: the seam the end-to-end test needs, since the struct is
     /// private and its one builder needs a vocabulary, a live host and a gate while the enqueue reads four
     /// facts. `#[cfg(test)]`, so a test reaches it without widening the type.

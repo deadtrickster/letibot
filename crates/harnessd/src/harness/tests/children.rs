@@ -1313,7 +1313,8 @@ fn a_delivered_answer_is_not_kept_for_the_daemons_life() {
             "child {i}'s answer was read, so the tree keeps none of it"
         );
     }
-    // The state survives the body: a second `task_result` is told where the text is.
+    // The state survives the body, and what a recordless child's reader gets in its place is the
+    // sentence naming the session that does hold the text.
     let held = slots[123].1.status();
     assert!(
         matches!(&held, TaskStatus::Done { answer, .. } if answer.contains("transcript")),
