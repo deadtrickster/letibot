@@ -921,6 +921,10 @@ which platform it is on, which is also what makes it provable on a Linux box: ha
 IS the Mac's case. `a_host_with_no_measured_boundary_asks_with_nothing_switched_on` does that, and then
 hands the same gate a measured boundary and shows the same command admitted by `gate:boundary` instead.
 
+A `leticode.toml` that still carries the retired `[permissions] ask_unconfined_code` is refused by
+name, the way every key this build does not know is: the key did nothing the boundary fact does not
+already decide, so a file keeping it would be a file believing it still had a say.
+
 What counts (`crates/tools/src/project_code.rs`): `cargo test|run|build|bench|check|clippy`
 `|nextest|miri|doc-test` (a build script is project code and runs on `check` too), `pytest`, `py.test`,
 `tox`, `nox` and `python -m pytest|unittest|tox|nose|nose2|doctest`, `go test`,
