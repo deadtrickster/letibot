@@ -2247,7 +2247,7 @@ SESSIONS_EOF
     fi
     exit 0 ;;
   attach)
-    # **The GitHub reviewer seat** (R118): one long-lived poll of one scope. It drafts until
+    # **The GitHub reviewer seat**: one long-lived poll of one scope. It drafts until
     # `[github] post` and a token are set, so this verb posts nothing by itself; the seat is the
     # binary's, because a poll that opens sessions belongs next to the sessions.
     [ "$#" -ge 3 ] || die "attach takes a source and a scope: letibot attach github <org|owner/repo>"

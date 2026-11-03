@@ -843,6 +843,17 @@ out="$(run "$DEFAULT_ONLY" --reattach s-4242)"
 expect "--reattach is the same verb's other spelling" "$out" \
   "^letibot migrate --reattach s-4242 --store "
 
+# `attach github S` is a verb too, and the reason is the same: a word the launcher does not
+# know is sent to the model as a prompt, which is a billed turn for a typo.
+out="$(run "$DEFAULT_ONLY" attach github stroppy-io)"
+expect "attach github is handed to the reviewer seat" "$out" \
+  "^letibot attach github stroppy-io$"
+refuse "  ...and the launcher starts nothing for it" "$out" "^harnessd "
+
+out="$(run "$DEFAULT_ONLY" attach gitlab stroppy-io)"
+expect "  ...and a source that is not github is refused by name" "$out" \
+  "attach knows one source and it is .github"
+
 # The record a move writes, beside this folder's own daemon records. Its socket does not
 # exist here (nothing forwards in a test), so the launcher re-establishes first and THEN
 # hands the head the forwarded socket — which is the order that makes a dropped forward
