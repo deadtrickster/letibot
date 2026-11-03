@@ -391,33 +391,7 @@ impl Tool for JobList {
         // THE REAP LOG. This is the part that makes the zero falsifiable: a scope
         // that ended and killed nothing and a scope that ended and killed three
         // are different rows, and neither of them is silence.
-        let reaps = host.reap_log();
-        body.push_str(&format!(
-            "\n{} {} ended this session",
-            counted(reaps.len(), "scope", "scopes"),
-            have(reaps.len())
-        ));
-        if reaps.is_empty() {
-            body.push_str(
-                " — so this session has reaped nothing yet. That is a fact about the \
-                 reaper, not evidence that nothing leaked.\n",
-            );
-        } else {
-            body.push_str(", and each recorded what it killed:\n");
-            for r in &reaps {
-                body.push_str(&format!("  {}\n", r.summary()));
-                if !r.survivors.is_empty() {
-                    body.push_str(&format!(
-                        "    SURVIVORS: {} — this reap did not finish the job\n",
-                        r.survivors
-                            .iter()
-                            .map(|p| p.to_string())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ));
-                }
-            }
-        }
+        body.push_str(&reaps_section(&host.reap_log()));
 
         if all.is_empty() {
             return Invocation::ok(body).with_note(
@@ -1135,6 +1109,39 @@ fn counted(n: usize, one: &str, many: &str) -> String {
     }
 }
 
+/// The reap log's section, the count and its verb included. Pure, for `job_list_summary`'s
+/// reason: a kill records a reaping, so the sentence a model reads after one is assertable
+/// without a host or a cgroup tree.
+fn reaps_section(reaps: &[crate::exec::Reaping]) -> String {
+    let mut out = format!(
+        "\n{} {} ended this session",
+        counted(reaps.len(), "scope", "scopes"),
+        have(reaps.len())
+    );
+    if reaps.is_empty() {
+        out.push_str(
+            " — so this session has reaped nothing yet. That is a fact about the \
+             reaper, not evidence that nothing leaked.\n",
+        );
+        return out;
+    }
+    out.push_str(", and each recorded what it killed:\n");
+    for r in reaps {
+        out.push_str(&format!("  {}\n", r.summary()));
+        if !r.survivors.is_empty() {
+            out.push_str(&format!(
+                "    SURVIVORS: {} — this reap did not finish the job\n",
+                r.survivors
+                    .iter()
+                    .map(|p| p.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+    }
+    out
+}
+
 /// A scope name from the model to a scope this host has open.
 pub(crate) fn resolve_scope(host: &dyn ProcessHost, name: &str) -> Option<ScopeId> {
     let open = host.scopes();
@@ -1473,6 +1480,39 @@ mod tests {
         let rest = job_list_summary(None, false, 2, 2, 1);
         assert!(rest.contains("1 job settled and not listed"), "{rest}");
         assert!(!rest.contains("1 have"), "{rest}");
+    }
+
+    /// The line the reap log opens with: a kill ends the job's cgroup and records one reaping, so
+    /// the listing says one scope has ended rather than that nothing was reaped.
+    #[test]
+    fn one_reaping_is_one_scope_that_has_ended() {
+        let one = crate::exec::Reaping {
+            scope: ScopeId {
+                kind: ScopeKind::Session,
+                name: "s".into(),
+                path: std::path::PathBuf::from("/sys/fs/cgroup/x"),
+            },
+            at: std::time::SystemTime::now(),
+            mechanism: crate::exec::HOST_KILL,
+            observed: Vec::new(),
+            survivors: Vec::new(),
+            waited: Duration::ZERO,
+            removed: true,
+            note: None,
+        };
+        let said = reaps_section(std::slice::from_ref(&one));
+        assert!(
+            said.starts_with("\n1 scope has ended this session"),
+            "{said}"
+        );
+        assert!(said.contains("recorded what it killed"), "{said}");
+
+        let none = reaps_section(&[]);
+        assert!(
+            none.starts_with("\n0 scopes have ended this session"),
+            "{none}"
+        );
+        assert!(none.contains("reaped nothing yet"), "{none}");
     }
 
     /// A count the tool already knows is said in words. `job(s)` is a form for a writer who
