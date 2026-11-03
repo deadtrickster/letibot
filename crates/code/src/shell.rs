@@ -1749,9 +1749,12 @@ fn resolve<'t>(node: &'t Node, source: &str, binds: &[(String, String)]) -> Reso
             let mut lit = String::new();
             for c in kids(node) {
                 match c.kind.as_str() {
-                    "\"" | "$" => {}
-                    "string_content" => lit.push_str(src(c, source)),
-                    "escape_sequence" => lit.push_str(src(c, source)),
+                    "\"" => {}
+                    // A `$` the grammar hands back alone has nothing to expand: `"x$"` is `x$`.
+                    "$" => lit.push('$'),
+                    "string_content" | "escape_sequence" => {
+                        lit.push_str(&double_quoted(src(c, source)))
+                    }
                     other => {
                         // A loop variable the walk has bound: `for f in a b` makes `$f`
                         // THIS value on this pass, inside quotes as much as outside.
@@ -2038,8 +2041,11 @@ fn brace_source(node: &Node, source: &str) -> Option<(String, Vec<bool>)> {
             let mut lit = String::new();
             for c in kids(node) {
                 match c.kind.as_str() {
-                    "\"" | "$" => {}
-                    "string_content" | "escape_sequence" => lit.push_str(src(c, source)),
+                    "\"" => {}
+                    "$" => lit.push('$'),
+                    "string_content" | "escape_sequence" => {
+                        lit.push_str(&double_quoted(src(c, source)))
+                    }
                     _ => return None,
                 }
             }
@@ -2062,6 +2068,29 @@ fn brace_source(node: &Node, source: &str) -> Option<(String, Vec<bool>)> {
         }
         _ => None,
     }
+}
+
+/// The bytes one double-quoted run delivers: a backslash goes away before `$`, a backquote, `"`
+/// and itself, a backslash-newline is a line continuation, and before anything else it stays.
+fn double_quoted(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut it = text.chars();
+    while let Some(c) = it.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match it.next() {
+            Some(kept @ ('$' | '`' | '"' | '\\')) => out.push(kept),
+            Some('\n') => {}
+            Some(other) => {
+                out.push('\\');
+                out.push(other);
+            }
+            None => out.push('\\'),
+        }
+    }
+    out
 }
 
 /// One quoted part, and one flag per character: every character of a quoted run is quoted.
@@ -2581,6 +2610,29 @@ mod tests {
                 Word::Literal("a b.txt".into()),
                 Word::Literal("plain".into()),
                 Word::Literal("e f.txt".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_double_quoted_part_is_the_bytes_bash_makes_of_it() {
+        // Measured with `set --`: inside `"…"` a backslash goes before `$`, a backquote, `"` and
+        // itself, a backslash-newline is a line continuation, every other backslash stays, and a
+        // `$` with nothing to expand is a dollar.
+        let x = n(r#"rm -rf "/w/$"{a,b}"#);
+        assert_eq!(
+            x.stages[0].argv[1..].to_vec(),
+            vec![Word::Literal("/w/$a".into()), Word::Literal("/w/$b".into())]
+        );
+        let y = n("rm -rf \"a\\$b\" \"c\\\\d\" \"e\\\"f\" \"g\\nh\" \"i\\\nj\"");
+        assert_eq!(
+            y.stages[0].argv[1..].to_vec(),
+            vec![
+                Word::Literal("a$b".into()),
+                Word::Literal("c\\d".into()),
+                Word::Literal("e\"f".into()),
+                Word::Literal("g\\nh".into()),
+                Word::Literal("ij".into()),
             ]
         );
     }
