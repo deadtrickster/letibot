@@ -326,6 +326,37 @@ fn line(a: &mut App) -> String {
     a.waiting_line(200).join("")
 }
 
+/// **A row that waits on the operator notifies with no card open.** Opening the card is a key
+/// nobody away presses, so the board is the only thing that can tell them - and the card opening
+/// afterwards is the same ask, said once.
+#[test]
+fn a_todo_row_that_waits_with_no_card_open_notifies() {
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.set_features(rano::term::Features::ALL);
+    assert_eq!(a.take_notification(), None, "the first look is a baseline");
+    a.key(Key::FocusOut);
+    // A row with its wait taken off asks nobody anything.
+    board(&mut a, vec![taken_back("deploy")]);
+    assert_eq!(a.take_notification(), None, "nothing waits on you");
+
+    board(&mut a, vec![asking("deploy", "which db?")]);
+    let n = a
+        .take_notification()
+        .expect("a row waiting on an absent operator");
+    assert!(
+        n.contains("which db?") && n.contains("deploy"),
+        "the question and its row: {n}"
+    );
+    assert_eq!(a.take_notification(), None, "an edge, not a level");
+
+    // alt-a opens it, and the card is that same ask: one notification, not two.
+    a.key(Key::AltA);
+    let n = a.take_notification().expect("the card opening");
+    assert!(n.contains("a todo row asks you"), "{n}");
+    assert_eq!(a.take_notification(), None, "the row was already said");
+}
+
 /// A question the head has READ the board for does not outlive its row: a `detach` takes the wait
 /// off the row and the board comes back without it, so a line still saying `WAITING ON YOU` can only
 /// be the `asks` settings row read at attach. A completed row is the same fact by another route.

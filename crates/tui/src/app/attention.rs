@@ -42,6 +42,15 @@ impl App {
     /// What needs the person right now, as counts and ids — compared tick to tick by
     /// [`App::take_notification`], so a notification is an EDGE and never a level.
     pub(crate) fn attention_now(&self) -> Attention {
+        // The rows whose card is already up, or put away: both are counted in `asks`, and a row
+        // that has one has been said. Only a row nobody opened a card for is the board's to say.
+        let carded: Vec<&str> = self
+            .open
+            .iter()
+            .map(|d| d.req_id.as_str())
+            .chain(self.away.iter().map(|a| a.decision.req_id.as_str()))
+            .filter_map(|id| id.strip_prefix(crate::app::todos::TODO_ASK))
+            .collect();
         Attention {
             busy: self.turn_busy(),
             // Put away is still asking: counted here, so bringing a card back is not a new ask
@@ -61,12 +70,20 @@ impl App {
                 .collect(),
             // A reseat this head already sent is not waiting on the person any more.
             stale: self.reseat.as_ref().is_some_and(|c| !c.asked),
+            // **A row that waits with no card open**: alt-a is the only door to it and nobody
+            // away presses it, so the board is the only thing that can tell them.
+            board: self
+                .operator_asks()
+                .into_iter()
+                .filter(|a| !carded.contains(&a.content.as_str()))
+                .map(|a| (a.content, a.question))
+                .collect(),
         }
     }
 
     /// A desktop notification when something just started needing the person, and they are not
-    /// looking. Four edges, in order: a permission card, a key or password card, a subagent
-    /// answering, the turn ending. The snapshot moves every call, so nothing replays.
+    /// looking. An edge apiece: a card, a key or password, a subagent answering, a stale prompt, a
+    /// row that started waiting, the turn ending. The snapshot moves every call, so nothing replays.
     pub fn take_notification(&mut self) -> Option<String> {
         let now = self.attention_now();
         let before = self.attention.replace(now.clone())?;
@@ -107,6 +124,15 @@ impl App {
         // card - so it says so once, when the fact arrives.
         if now.stale && !before.stale {
             return Some(format!("{who}: the prompt is stale — alt-r reseats"));
+        }
+        // Before the turn's ending: a row that started waiting is what they come back to, and a
+        // `done` on top of it is a screen that says the work finished and nothing else.
+        if let Some((content, question)) = now.board.iter().find(|b| !before.board.contains(b)) {
+            return Some(format!(
+                "{who}: a todo row asks you — \"{}\" on `{}`",
+                question.trim(),
+                letibot_sessionlog::event::todo_title(content)
+            ));
         }
         if before.busy && !now.busy && now.asks.is_empty() && now.secret.is_none() {
             let how = match self.turn.as_ref().and_then(|t| t.state.as_ref()) {
@@ -315,4 +341,7 @@ pub(crate) struct Attention {
     /// A stale prompt is a level, and the edge is it coming true: the card is this head's own and
     /// nothing else tells the person it is waiting.
     pub(crate) stale: bool,
+    /// The rows that wait on the person with no card open for them, by their own words and their
+    /// question: the card is one door to a row and the board is the other.
+    pub(crate) board: Vec<(String, String)>,
 }
