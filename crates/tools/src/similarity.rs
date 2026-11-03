@@ -21,7 +21,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use letibot_embeddings::Tier;
+use letibot_embeddings::{Filled, Tier, TierError};
 
 use crate::builtins::notes::abstract_of;
 
@@ -75,10 +75,12 @@ pub fn similarity(a: &Weights, b: &Weights) -> f64 {
     (dot / den).clamp(0.0, 1.0)
 }
 
-/// A note, as the corpus holds it: where it is and what it weighs.
+/// A note, as the corpus holds it: where it is, what it weighs, and the text it was weighed
+/// on - the last so a caller's tier can be filled with the very text this scored.
 struct Note {
     path: PathBuf,
     weights: Weights,
+    text: String,
 }
 
 /// The corpus, with the `idf` that makes a common word cheap. Built from the same list the injected
@@ -107,7 +109,8 @@ impl Corpus {
     /// note has none of the three.
     pub fn of_texts(files: &[(PathBuf, String)]) -> Corpus {
         let n = files.len().max(1) as f64;
-        let mut counts: Vec<(PathBuf, BTreeMap<String, f64>)> = Vec::with_capacity(files.len());
+        let mut counts: Vec<(PathBuf, String, BTreeMap<String, f64>)> =
+            Vec::with_capacity(files.len());
         let mut df: BTreeMap<String, f64> = BTreeMap::new();
         for (path, text) in files {
             let mut tf: BTreeMap<String, f64> = BTreeMap::new();
@@ -117,7 +120,7 @@ impl Corpus {
             for term in tf.keys() {
                 *df.entry(term.clone()).or_insert(0.0) += 1.0;
             }
-            counts.push((path.clone(), tf));
+            counts.push((path.clone(), text.clone(), tf));
         }
         let idf: BTreeMap<String, f64> =
             df.iter().map(|(t, d)| (t.clone(), (n / d).ln())).collect();
@@ -127,9 +130,10 @@ impl Corpus {
         let unseen = n.ln();
         let notes = counts
             .into_iter()
-            .map(|(path, tf)| Note {
+            .map(|(path, text, tf)| Note {
                 path,
                 weights: weigh(&tf, &idf, unseen),
+                text,
             })
             .collect();
         Corpus { notes, idf, unseen }
@@ -150,6 +154,21 @@ impl Corpus {
             *tf.entry(term).or_insert(0.0) += 1.0;
         }
         weigh(&tf, &self.idf, self.unseen)
+    }
+
+    /// **Put this corpus into a caller's tier**, keyed as the `*_with` doors read it. A caller
+    /// that filled a tier by hand would key it by the text it happened to have rather than the
+    /// text this scored, and every cosine would be `None`.
+    pub fn fill(&self, tier: Option<&Tier>) -> Result<Filled, TierError> {
+        let Some(tier) = tier else {
+            return Ok(Filled::default());
+        };
+        tier.fill(
+            self.notes
+                .iter()
+                .map(|n| (n.path.to_string_lossy().into_owned(), n.text.clone())),
+            now_ms(),
+        )
     }
 
     /// The documents most like `text`, best first - [`Corpus::best`]'s arithmetic with the
@@ -362,17 +381,17 @@ mod tests {
             model.path().display()
         ))
         .expect("settings");
-        let mut tier = Tier::open(&settings, data.path())
+        let tier = Tier::open(&settings, data.path())
             .expect("open")
             .expect("a tier");
-        tier.fill(
-            corpus
-                .iter()
-                .map(|(p, t)| (p.to_string_lossy().to_string(), index_text(p, t))),
-            letibot_metrics::now_ms() as i64,
-        )
-        .expect("fill");
+        corpus_fill(&tier, corpus);
         (model, data, tier)
+    }
+
+    /// The corpus in the tier, through the one door that keys it right: the failing test this
+    /// helper was written for was a tier filled with a name the door did not read.
+    fn corpus_fill(tier: &Tier, corpus: &[(PathBuf, String)]) {
+        Corpus::new(corpus).fill(Some(tier)).expect("fill");
     }
 
     /// **Off is the lexical score, exactly.** A box that never wrote `[embeddings]` scores
@@ -483,17 +502,11 @@ mod tests {
         let settings =
             Settings::from_toml("[embeddings]\nmode = \"http://127.0.0.1:1\"\nmodel = \"m\"\n")
                 .expect("settings");
-        let mut broken = Tier::open(&settings, dir.path())
+        let broken = Tier::open(&settings, dir.path())
             .expect("open")
             .expect("a tier");
-        broken
-            .fill(
-                docs.iter()
-                    .map(|(p, t)| (p.to_string_lossy().to_string(), index_text(p, t))),
-                letibot_metrics::now_ms() as i64,
-            )
-            .ok();
         let corpus = Corpus::new(&docs);
+        corpus.fill(Some(&broken)).ok();
         assert_eq!(
             corpus.best("merging a branch"),
             corpus.best_with("merging a branch", Some(&broken))
@@ -505,6 +518,41 @@ mod tests {
         // And the reason is available exactly once, for the caller that says it.
         assert!(broken.take_fault().is_some());
         assert_eq!(broken.take_fault(), None);
+    }
+
+    /// **A paraphrase that shares no word with its note.** The words alone score it zero against
+    /// both notes - a floor no one can tune - and the tier's cosine, over words planted as
+    /// synonyms, carries it over the offer's floor. Filled through [`Corpus::fill`], so the keys
+    /// are the ones the door reads.
+    #[test]
+    fn a_corpus_in_a_tier_lifts_a_paraphrase_with_no_shared_word() {
+        let docs = vec![
+            (
+                PathBuf::from("a-merge.md"),
+                "# Branch merging\nhow a branch is merged\n".to_string(),
+            ),
+            (
+                PathBuf::from("b-docker.md"),
+                "# Docker\na container in a sandbox\n".to_string(),
+            ),
+        ];
+        let dir = Dir::new("planted");
+        let groups: &[&[&str]] = &[
+            &["merge", "merging", "landing", "integrate"],
+            &["docker", "container", "sandbox"],
+        ];
+        let tier = fixture::planted(dir.path(), groups);
+        let corpus = Corpus::new(&docs);
+        corpus.fill(Some(&tier)).expect("fill");
+        let paraphrase = "landing an integrate";
+        let words = corpus.best(paraphrase).map(|(_, s)| s).unwrap_or(0.0);
+        assert!(words < 0.18, "the words alone scored {words}");
+        let (path, score) = corpus.best_with(paraphrase, Some(&tier)).expect("a best");
+        assert_eq!(path, Path::new("a-merge.md"));
+        assert!(
+            score > 0.18,
+            "the blend scored {score}, under the notes offer's floor"
+        );
     }
 
     /// Each caller keeps its own floor: one blended score answers two questions
