@@ -1642,7 +1642,7 @@ retarget() {
       # are the mistake and where the numbers come from.
       WORKSPACE="$(cd "$want" 2>/dev/null && pwd -P)" ||
         die "no such directory: $want
-         \`letibot --ls\` numbers the daemons; a directory names another folder's"
+         pass one that is there, or the number \`letibot --ls\` prints beside a daemon"
       ;;
     *)
       for r in "$RUNDIR"/*.json; do
