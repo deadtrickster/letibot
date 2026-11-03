@@ -2136,37 +2136,6 @@ That is N4's answer too — see `TODO-settled.md`'s N4 for why a shaped runner w
 
 ---
 
-## N3 — a refusal claims "the operator has been told" without knowing it; left: the larger half — a pending or expired decision is still unrecoverable, so "what decision" has no answer after the window, and it waits on N1 (open); the delivery claim itself is fixed, 9676492b and 37e6cf8b
-
-From the same refusal, verbatim:
-
-    The operator has been told, with this: grant `adj-…-0001` (edit) for this session,
-    or answer the pending decision.
-
-The operator had **not** been told: they were away from the keyboard, the 300-second
-window expired, and when they came back they asked *"what decision"*. The prompt was
-gone and the question was unrecoverable — the ask is not a transcript row, only the
-refusal is.
-
-This is the fleet's own rule inverted. *Guard the fact, not the proxy*: "a prompt was
-emitted" is not "the operator saw it", and the sentence states the second while knowing
-only the first.
-
-**Why this needs a nod rather than a fix.** The minimal change is honest and small —
-say what is true (*"a decision was raised and timed out unanswered"*) instead of
-asserting delivery. The larger change is the one that would actually help: make a
-pending or expired decision **recoverable**, so `what decision` has an answer after the
-window closes. That is a question about what the transcript records, which is N1's
-territory, and it should be decided with N1 rather than beside it.
-
-**Still open?** `grep -rn 'has been told' crates/tools/src/` — the payload builder.
-
-**The question:** does an ask become a transcript row, or does the head keep a durable
-list of expired decisions? Either answers *"what decision"*; they differ in whether the
-model sees it too.
-
----
-
 
 ---
 

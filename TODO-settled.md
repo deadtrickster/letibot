@@ -6037,3 +6037,37 @@ turn end; `wait_on` on an ended job refused; restored subagents keep their id; a
 is abandoned with the reason; same-daemon reopen does not double-restore; two heads reseating.
 
 ---
+## N3 — a refusal claims "the operator has been told" without knowing it — **DONE 2026-11-03: `Reach` says what a person will see of a refusal (a screen holding it, an ask still open for the head that attaches, or neither), every sentence names the row `/gate` reads, and a session with no store says so instead, 162163df, ff5d6785, 3fb009de, 9b59b174; tools' a_refusal_nobody_was_shown_says_where_the_decision_is_recorded, a_refusal_whose_ask_is_still_open_says_an_answer_given_then_is_read and a_refusal_with_no_store_says_nothing_keeps_it_rather_than_naming_a_verb, harnessd's a_refusal_says_a_person_was_told_only_when_a_head_is_attached**
+
+From the same refusal, verbatim:
+
+    The operator has been told, with this: grant `adj-…-0001` (edit) for this session,
+    or answer the pending decision.
+
+The operator had **not** been told: they were away from the keyboard, the 300-second
+window expired, and when they came back they asked *"what decision"*. The prompt was
+gone and the question was unrecoverable — the ask is not a transcript row, only the
+refusal is.
+
+This is the fleet's own rule inverted. *Guard the fact, not the proxy*: "a prompt was
+emitted" is not "the operator saw it", and the sentence states the second while knowing
+only the first.
+
+**Why this needs a nod rather than a fix.** The minimal change is honest and small —
+say what is true (*"a decision was raised and timed out unanswered"*) instead of
+asserting delivery. The larger change is the one that would actually help: make a
+pending or expired decision **recoverable**, so `what decision` has an answer after the
+window closes. That is a question about what the transcript records, which is N1's
+territory, and it should be decided with N1 rather than beside it.
+
+**Still open?** `grep -rn 'has been told' crates/tools/src/` — the payload builder.
+
+**The question:** does an ask become a transcript row, or does the head keep a durable
+list of expired decisions? Either answers *"what decision"*; they differ in whether the
+model sees it too.
+
+**Answered:** neither. The decision is already a corpus row in the session's store, and
+what was missing was its name on the refusal. Every refusal now names the row it is,
+says `/gate recent` lists it and `/gate grant <id>` rules on it, so "what decision" is
+one verb away after the window closes; N1's event stays a question of its own.
+
