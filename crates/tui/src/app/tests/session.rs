@@ -2771,7 +2771,7 @@ fn a_session_list_does_not_move_the_head_without_seating_it() {
 #[test]
 fn a_replayed_model_set_does_not_outrank_the_settings_row() {
     let mut a = app();
-    let mut hub = Hub::new("s");
+    let hub = Hub::new("s");
     a.apply(hello("s", vec![brief("s", "one", false)], hub.snapshot()));
     a.apply(model_settings("glm/glm-4.6", &["local"]));
     assert!(
