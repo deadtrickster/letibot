@@ -1156,8 +1156,8 @@ impl PluginHost {
                 "  {:<10} {:<10} {:<26} {:<28} {:<12} {}{}\n",
                 layer.id,
                 layer.scope.to_string(),
-                truncate(&layer.manifest.name, 26),
-                truncate(&layer.manifest.hooks.join(","), 28),
+                clip_chars_within(&layer.manifest.name, 26),
+                clip_chars_within(&layer.manifest.hooks.join(","), 28),
                 format!(
                     "[{}]",
                     layer
@@ -1673,11 +1673,6 @@ fn pane_list(panes: &[String]) -> String {
     } else {
         format!("the panes of this session are: {}", panes.join(", "))
     }
-}
-
-/// A field in the stack view: long enough to recognise, short enough to line up.
-fn truncate(text: &str, width: usize) -> String {
-    clip_chars_within(text, width)
 }
 
 impl PaneDriver for PluginHost {

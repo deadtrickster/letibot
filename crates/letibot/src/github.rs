@@ -8,10 +8,11 @@
 
 use std::path::Path;
 use std::process::ExitCode;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use letibot_github::seat::{Config, Job, Reviewer, Seat, Session};
 use letibot_github::{Pull, Review, Scope, Standing};
+// The seat is asked the tree's own clock, so a poll's instant and an event's `ts_ms` are one clock.
+use letibot_metrics::now_ms;
 
 /// How often a scope is asked. Polling rather than webhooks, because a webhook is an endpoint
 /// exposed on this box and a poll is not.
@@ -79,14 +80,6 @@ impl Reviewer for Unwired {
             session.id
         ))
     }
-}
-
-/// The clock the seat is asked about: milliseconds since the epoch, as `Pull::updated_ms` is.
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or_default()
 }
 
 /// `letibot attach github <scope>`, with the scope and the source already named.
