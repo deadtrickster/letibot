@@ -584,6 +584,58 @@ fn a_note_this_session_wrote_is_not_offered_back() {
     );
 }
 
+/// **A paraphrase that shares no word with the note it is about.** The words alone score it
+/// zero against every note, which is a floor nobody can tune; the second tier's cosine, over
+/// words planted as synonyms, carries it over [`OFFER_FLOOR`] - and with no tier the offer is
+/// the one it was before.
+#[test]
+fn a_paraphrase_with_no_shared_word_is_offered_by_the_second_tier() {
+    let f = Fixture::new("paraphrase");
+    corpus(&f);
+    let path = f.note(
+        "vessel-rollout",
+        "a vessel sails into production",
+        &["Shipping", "The fleet"],
+    );
+    // Every word of the subject is a word the note does not have: `container` and
+    // `deployment` share no term with the title, the abstract or the headings.
+    let items = prompt("container deployment");
+
+    let mut lexical = Offers::new();
+    assert!(
+        !lexical.compose(&f.reader(), &f.global, &f.box_dirs, "", &items),
+        "the words alone have nothing to go on"
+    );
+
+    let tier = letibot_embeddings::testing::planted(
+        &f.ws.parent().expect("a fixture base").join("data"),
+        &[
+            &["vessel", "container"],
+            &["rollout", "deployment"],
+            &["sails", "ships"],
+            &["production", "live"],
+        ],
+    );
+    let mut offers = Offers::new().with_tier(Some(tier));
+    assert!(
+        offers.compose(&f.reader(), &f.global, &f.box_dirs, "", &items),
+        "the meaning earns the hint"
+    );
+    let offered = offers.tail();
+    let text = match &offered[0] {
+        TranscriptItem::User { parts, .. } => match &parts[0] {
+            UserPart::Text { text } => text.clone(),
+            other => panic!("a text part, not {other:?}"),
+        },
+        other => panic!("a user-side row, not {other:?}"),
+    };
+    assert!(text.contains(&path.display().to_string()), "{text}");
+    assert!(
+        text.contains("their meaning"),
+        "the line says what the score is: {text}"
+    );
+}
+
 /// The log, parsed: one JSON object per line, in the order they were written.
 fn log_lines(ws: &Path) -> Vec<serde_json::Value> {
     let text = std::fs::read_to_string(ws.join(LOG)).expect("the log exists");

@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use letibot_transcript::{Speaker, ToolCall, TranscriptItem, UserPart};
 
 use crate::standing_notes;
+use letibot_embeddings::Tier;
 use letibot_tools::similarity::Corpus;
 
 /// The score a note has to reach before it is offered at all - the hint's floor, because *the
@@ -24,11 +25,14 @@ pub const SUBJECT_CHARS: usize = 8_000;
 /// `<workspace>/.letibot/`, which made every child's worktree look dirty.
 pub const LOG: &str = "notes-offers.jsonl";
 
-/// One note, offered, with the score that earned it.
+/// One note, offered, with the score that earned it and whether the meaning was part of that
+/// score - a line that claimed meaning over a box with no embedder would be describing an
+/// arithmetic it did not use.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Offer {
     pub path: PathBuf,
     pub score: f64,
+    pub blended: bool,
 }
 
 impl Offer {
@@ -42,12 +46,16 @@ impl Offer {
                 text: format!(
                     "[standing-notes offer — the harness's own line, not the operator's] `{}` \
                      looks relevant to what you are doing now (similarity {:.2} of 1.00, \
-                     lexical over its abstract, title and headings). It is not in this prompt. \
+                     {}). It is not in this prompt. \
                      If it is worth the context, open it — `read` that path, or `notes` \
                      action=\"read\". This line is composed for this round and is gone from \
                      the next one; the note itself, once read, is not.",
                     self.path.display(),
-                    self.score
+                    self.score,
+                    match self.blended {
+                        true => "over its abstract, title and headings, and their meaning",
+                        false => "lexical over its abstract, title and headings",
+                    }
                 ),
             }],
         }
@@ -62,11 +70,21 @@ pub struct Offers {
     offered: HashSet<PathBuf>,
     open: Option<Offer>,
     last: Option<Offer>,
+    /// The box's second tier, when it has one: this offer's corpus's vectors, and nothing of
+    /// another caller's. `None` is the lexical score exactly, which is the default.
+    tier: Option<Tier>,
 }
 
 impl Offers {
     pub fn new() -> Offers {
         Offers::default()
+    }
+
+    /// Score with the box's second tier. Off is `None`, and then this offer is the one it was
+    /// before the tier existed; the floor is this caller's either way.
+    pub fn with_tier(mut self, tier: Option<Tier>) -> Offers {
+        self.tier = tier;
+        self
     }
 
     /// Seed the memory with what this SESSION has already been offered. The memory used to be the
@@ -110,6 +128,9 @@ impl Offers {
             return false;
         }
         let corpus = Corpus::new(&files);
+        // The tier is filled from THIS corpus, through the one door that keys it as the score
+        // reads it. A fill that cannot answer leaves no vectors, so the words stand alone.
+        let _ = corpus.fill(self.tier.as_ref());
         let already: HashSet<PathBuf> = items
             .iter()
             .filter_map(|i| match i {
@@ -133,7 +154,7 @@ impl Offers {
         // The best note over the floor that is neither spent, nor already in the conversation, nor
         // already in the prompt. `best` answers with ONE, so a note that is skipped is skipped for
         // good this round: if the top match must not be offered, the round says nothing.
-        let Some((path, score)) = corpus.best(&text) else {
+        let Some((path, score)) = corpus.best_with(&text, self.tier.as_ref()) else {
             return false;
         };
         if score < OFFER_FLOOR
@@ -148,6 +169,7 @@ impl Offers {
         self.open = Some(Offer {
             path: path.to_path_buf(),
             score,
+            blended: self.tier.is_some(),
         });
         true
     }

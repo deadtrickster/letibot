@@ -290,6 +290,17 @@ pub struct Tier {
     index: RwLock<Index>,
 }
 
+impl std::fmt::Debug for Tier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Tier({}, {} document(s))",
+            self.embedder.model(),
+            self.read().len()
+        )
+    }
+}
+
 impl Tier {
     /// Build the tier the mode asks for, or `None` when the mode is `off` - which is the
     /// whole of "lexical only".

@@ -29,6 +29,9 @@ letibot-turn.workspace = true
 # that owns the rule rather than borrowing it through `letibot-turn`.
 letibot-http.workspace = true
 letibot-tools.workspace = true
+# The second similarity tier every scoring caller shares: one embedder on the box, built
+# from `[embeddings]`, and the vectors are the caller's own.
+letibot-embeddings.workspace = true
 # The tree-sitter shape of a command, for the etalon map (`--etalon-map`).
 letibot-code.workspace = true
 # The flowy seat the daemon holds, and the `flowy` tool a root session gets.
@@ -97,6 +100,8 @@ required-features = ["local"]
 
 [dev-dependencies]
 letibot-tools = { workspace = true, features = ["testing"] }
+# The fixture tier: a caller's test says which texts mean the same thing, with no model.
+letibot-embeddings = { workspace = true, features = ["testing"] }
 
 [[bin]]
 name = "letibot-askpass"
