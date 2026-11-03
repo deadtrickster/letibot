@@ -355,7 +355,8 @@ pub(crate) struct Standings {
 impl Standings {
     /// The words, and a count of nothing is not a word: a repository whose only live fact is a red
     /// target reads `1 red` and not four zeros. The order is the pane's and `red` leads it, because
-    /// the edge is cut from its right end. The step is parenthesised and last, so it is lost first.
+    /// the edge is cut from its right end. The gate's step rides in the merge column, and the edge
+    /// drops it rather than the counts when the whole does not fit ([`App::box_bottom`]).
     ///
     /// **What the numbers are about is the first thing said**, because the edge is a person's only
     /// sight of the queue until they open the pane: `queue:` and then one noun per count, and the

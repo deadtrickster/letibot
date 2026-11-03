@@ -924,6 +924,60 @@ fn the_edge_names_the_gates_step_at_eighty_columns() {
     );
 }
 
+/// **The step is spent only when the whole stand fits.** With all six columns non-zero the step
+/// pushes the line past an eighty-column edge, and the edge is cut from its right end: `stuck` and
+/// `done` went first, and the click target, read off words drawn whole, went with them.
+#[test]
+fn the_gate_step_is_dropped_rather_than_the_counts_at_eighty_columns() {
+    let mut a = app();
+    let mut snap = queues(
+        vec![queue_review_row("one", "waiting")],
+        vec![
+            queue_merge_row("m-a", "gating"),
+            queue_merge_row("m-b", "failed"),
+            queue_merge_row("m-c", "landed"),
+            queue_merge_row("m-d", "landed"),
+        ],
+    );
+    snap.targets.push(target(LETIBOT, "red"));
+    snap.targets.push(target(LETIBOT, "timed_out"));
+    snap.targets.push(gating_target(LETIBOT, 3, 4));
+    snap.here = Some(here_in(LETIBOT));
+    a.apply(queue_frame(snap));
+    let rows = a.screen(80, 24);
+    let edge = edge_row(&rows);
+    assert!(
+        edge.contains("1 stuck · 2 done"),
+        "the counts a person acts on were cut off the edge: {edge:?}"
+    );
+    assert!(
+        !edge.contains("(gate step"),
+        "the step was drawn into a line it does not fit: {edge:?}"
+    );
+    // **And the stand is still the door**: the words were drawn whole, so a click acts on them.
+    let rect = standings_rect(&a);
+    assert_eq!(
+        column_of(&edge, "queue: 1 red"),
+        rect.x,
+        "the target does not start where the stand does: {edge:?}"
+    );
+    assert_eq!(
+        rect.w,
+        "queue: 1 red · 1 unjudged · 1 in review · 1 to land · 1 stuck · 2 done"
+            .chars()
+            .count(),
+        "the target is not the whole stand"
+    );
+    assert_eq!(
+        a.key(Key::Click {
+            x: rect.x as u16,
+            y: rect.y as u16
+        }),
+        Some(Action::ListMergeQueue),
+        "the stand stopped being a door at eighty columns"
+    );
+}
+
 /// **A target that is not gating reads as it always did** - a green target leaves `1 to land`
 /// alone, and a `gating` target whose snapshot carries no step does not invent one.
 #[test]

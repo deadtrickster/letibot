@@ -738,15 +738,29 @@ impl App {
             rung: self.rung_state(),
         };
         let standings = self.queue_standings();
-        // **The words, kept for the record below** - the same string `bottom_markers` draws, so
-        // the search for it on the finished row can only find what this frame put there.
-        let words = standings.words();
-        let right = bottom_markers(
+        let mut right = bottom_markers(
             &bottom,
             &standings,
             self.asks_folded_count(),
             self.plugin_badge(),
         );
+        // **The step is what the edge can spare.** rano cuts the block's tail to `w - 5` cells, so a
+        // step that does not fit would take `stuck` and `done` with it, and the click target, which
+        // is read off words drawn whole, with them. The six counts keep their columns instead.
+        let mut words = standings.words();
+        if standings.gate.is_some() && right.as_ref().is_some_and(|r| r.width() > w.max(4) - 5) {
+            let bare = Standings {
+                gate: None,
+                ..standings
+            };
+            words = bare.words();
+            right = bottom_markers(
+                &bottom,
+                &bare,
+                self.asks_folded_count(),
+                self.plugin_badge(),
+            );
+        }
         let p = self.cfg.palette();
         let edge = match completions.filter(|l| l.width() > 0) {
             // One builder for both paths: rano's `BoxBottom::line` composes the same right side, and using the
