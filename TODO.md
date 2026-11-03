@@ -287,10 +287,10 @@ Two halves, the first smaller and first:
    is printed on the boundary's own description as `ABSENT` / `NOT APPLICABLE`, never omitted.
    Reaping stays the process-group tree (`exec::scope::ProcessGroups`), as it already was. — ✓ fixed in 5442b7c8, test the_probe_measures_a_boundary_and_says_what_macos_cannot_give
 
-   **What half 2 still needs: a Mac.** `crates/tools/src/exec/seatbelt.rs` and its test live on
-   `mac-seatbelt` alone, and nothing on a Linux box can run `sandbox-exec` or a
-   `#![cfg(target_os = "macos")]` test, so the profile has never been read by the kernel that
-   enforces it and D16's admit *inside* a Mac boundary has never run.
+   **What half 2 still needs: a Mac.** `crates/tools/src/exec/seatbelt.rs` and
+   `crates/tools/tests/seatbelt.rs` are in the tree now, and nothing on a Linux box can run
+   `sandbox-exec` or a `#![cfg(target_os = "macos")]` test, so the profile has never been read by
+   the kernel that enforces it and D16's admit *inside* a Mac boundary has never run.
 
 **Done when**: (1) on an unconfined backend no grant settles a test run, with a test; (2) a Mac
 session's commands run inside a measured boundary that `~/.ssh` and the profiles are absent
