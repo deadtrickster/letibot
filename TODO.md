@@ -734,6 +734,13 @@ it and cannot see it: the only account of the view is the manifest the model is 
    code reaches main is the review queue and its gate. The main session keeps its credentials
    and can push directly: the operator's "manual" mode, kept on purpose as the fallback for when
    the queue itself is the thing that is broken.
+8. The file tools obey the same perimeter as the shell. Today the default seat's shell cannot
+   reach `~/.local/share/letibot` (DENY_UNDER_HOME), but its file tools are rooted at `/` and
+   reach the daemon's store, other sessions' folders and their plugins; a session was seen
+   writing its own plugin under `sessions/<id>/plugins/` that way. Session plugins only narrow
+   (they sit before the gate and can pass, rewrite, refuse or answer, and a rewrite is gated),
+   so that one was harmless, but a session's file tools should reach its own `sessions/<id>/`
+   and nothing else of letibot's store.
 
 ---
 
