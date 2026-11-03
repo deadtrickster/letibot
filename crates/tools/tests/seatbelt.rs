@@ -332,10 +332,11 @@ fn a_session_tmp_spelled_through_a_symlink_is_writable() {
 
 #[test]
 fn a_command_inside_the_profile_cannot_connect_to_a_hidden_unix_socket() {
-    // UNRUN: written on Linux. A listener in the project stands in for the coordinator; the
-    // profile must refuse the connect even though the project is writable and egress is on.
+    // A listener stands in for the coordinator; the profile must refuse the connect even with
+    // egress on. It lives in /tmp because a macOS socket path is capped at 104 bytes.
     let f = Fixture::new("hidden-socket");
-    let sock = f.project().join("room-test.sock");
+    let sock = std::path::PathBuf::from(format!("/tmp/lb-hs-{}.sock", std::process::id()));
+    let _ = std::fs::remove_file(&sock);
     let _listener = std::os::unix::net::UnixListener::bind(&sock).expect("a stand-in");
     let view = f.view().hiding(&sock);
     let s = Seatbelt::probe_with(
@@ -355,5 +356,6 @@ fn a_command_inside_the_profile_cannot_connect_to_a_hidden_unix_socket() {
             sock.display()
         ),
     );
+    let _ = std::fs::remove_file(&sock);
     assert!(!out.contains("CONNECTED"), "{out}");
 }
