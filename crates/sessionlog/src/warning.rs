@@ -795,8 +795,8 @@ mod the_register_census {
         // **The census, kept where it cannot drift.** Each assert below is a register's count;
         // a code moved or added without a thought fails here rather than silently changing what
         // a reader is taught by the colour of the screen.
-        assert_eq!(TABLE.len(), 177, "the table's size");
-        assert_eq!(count(Class::Routine), 71);
+        assert_eq!(TABLE.len(), 178, "the table's size");
+        assert_eq!(count(Class::Routine), 72);
         assert_eq!(count(Class::Refused), 15, "the fifteen in READER_INPUT");
         assert_eq!(count(Class::Failure), 91);
         // A code with an id is read by its family.
