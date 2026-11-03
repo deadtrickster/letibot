@@ -1513,7 +1513,7 @@ impl Harness {
         // And a model that stops because its context is full when it is not: the same budget, one line telling it
         // the measured fill and then a warning to the operator rather than a second line. Gated by a measurement
         // and not by the prose heuristic.
-        let mut context_check = crate::context_claim::Check::new();
+        let mut context_check = crate::context_claim::Check::new().with_tier(self.cfg.tier());
         // The encoder for whether this turn is getting anywhere, per user turn because already-seen is a claim
         // about THIS turn: a file read earlier is a legitimate thing to read again. `max_tool_rounds` below is the
         // backstop it demotes.
@@ -1521,11 +1521,11 @@ impl Harness {
         // The turn's standing-notes offers: per ROUND for the round's own offer and per SESSION for the memory,
         // since a note never read won the same slot turn after turn. `recall` reads back what this session was
         // offered, from the log; the offer lives in the request assembly, because a row cannot be un-said.
-        let mut offers = crate::notes_offer::Offers::new();
+        let mut offers = crate::notes_offer::Offers::new().with_tier(self.cfg.tier());
         offers.recall(&self.cfg.daemon_logs(), &self.cfg.session_id);
         // The turn's skill offers, by the same delivery and the same memory: a name in the tail, once
         // per session, settled against the round's own `skill` loads.
-        let mut skill_offers = crate::skills_offer::Offers::new();
+        let mut skill_offers = crate::skills_offer::Offers::new().with_tier(self.cfg.tier());
         skill_offers.recall(&self.cfg.daemon_logs(), &self.cfg.session_id);
         // The bodies this session was STARTED with are not news to it. The ones its own rounds load
         // are read per round, below, because they are in the transcript only once that round ran.
@@ -1562,6 +1562,11 @@ impl Harness {
                     &self.skills,
                     &crate::skills_offer::subject(&self.session.items, &self.todos.snapshot()),
                 );
+                // The box's embedder answers for every caller, so its first failure is said ONCE
+                // here - and each caller has already fallen back to its own words by then.
+                if let Some(said) = crate::embeddings::fault_note(self.cfg.embedder.as_ref()) {
+                    self.warn("embeddings_unavailable", said);
+                }
             }
             let mut tail = offers.tail();
             tail.extend(skill_offers.tail());

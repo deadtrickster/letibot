@@ -1523,6 +1523,7 @@ dependencies = [
  "letibot-dialect",
  "letibot-dialect-glm",
  "letibot-dialect-qwen",
+ "letibot-embeddings",
  "letibot-flowy",
  "letibot-http",
  "letibot-llama",

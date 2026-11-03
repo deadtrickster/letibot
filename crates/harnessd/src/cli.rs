@@ -1363,6 +1363,9 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // at each read is what makes a project that sets one key keep the user's others.
     cfg.leticode = user_level.overridden_by(&project_level);
     cfg.leticode_user = user_level.clone();
+    // And the box's one embedder, here and not in `Config::for_the_daemon`: `[embeddings]` is read
+    // off these two files, so it waits for them. One model, loaded once, shared by every caller.
+    cfg.read_embeddings();
 
     // `main_model`, through the one function that states the precedence. The command line
     // is the flag level when it chose WHO ANSWERS - `--provider`, and not `--model`, which is

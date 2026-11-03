@@ -34,6 +34,8 @@ pub mod daemon;
 pub mod decision_source;
 pub mod delivery;
 pub mod dialect;
+/// The box's one embedder: `[embeddings]`, the model loaded once, and a tier per caller.
+pub mod embeddings;
 pub mod etalon;
 pub mod etalon_map;
 pub mod etalon_oracle;

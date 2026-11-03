@@ -584,6 +584,38 @@ fn a_note_this_session_wrote_is_not_offered_back() {
     );
 }
 
+/// **A tier that cannot answer leaves the offer exactly as the words scored it**, and the reason
+/// is there once for the caller that says it. A box whose endpoint is down keeps its hint, not a
+/// silent one and not a crash.
+#[test]
+fn a_tier_that_cannot_answer_leaves_the_offer_as_the_words_scored_it() {
+    let f = Fixture::new("tier-down");
+    corpus(&f);
+    let data = f.ws.parent().expect("a fixture base").join("data");
+    let settings = letibot_embeddings::Settings::from_toml(
+        "[embeddings]\nmode = \"http://127.0.0.1:1\"\nmodel = \"m\"\n",
+    )
+    .expect("settings");
+    let embedder = letibot_embeddings::Embedder::open(&settings, &data)
+        .expect("open")
+        .expect("an embedder");
+    let mut with_tier =
+        Offers::new().with_tier(Some(letibot_embeddings::Tier::over(embedder.clone())));
+    assert!(
+        with_tier.compose(&f.reader(), &f.global, &f.box_dirs, "", &prompt(ABOUT)),
+        "the note the words earn is still offered"
+    );
+    let mut without = Offers::new();
+    assert!(without.compose(&f.reader(), &f.global, &f.box_dirs, "", &prompt(ABOUT)));
+    assert_eq!(
+        with_tier.last().map(|o| o.score),
+        without.last().map(|o| o.score),
+        "and it is the lexical score"
+    );
+    let said = crate::embeddings::fault_note(Some(&embedder)).expect("the failure is said");
+    assert!(said.contains("127.0.0.1:1"), "{said}");
+}
+
 /// **A paraphrase that shares no word with the note it is about.** The words alone score it
 /// zero against every note, which is a floor nobody can tune; the second tier's cosine, over
 /// words planted as synonyms, carries it over [`OFFER_FLOOR`] - and with no tier the offer is

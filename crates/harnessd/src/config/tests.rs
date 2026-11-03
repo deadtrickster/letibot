@@ -1,3 +1,38 @@
+/// **`[embeddings]` is read off the two `leticode.toml` levels**, the project's over the user's: a
+/// level that wrote none leaves the other's standing, and a section that cannot be built is a
+/// sentence kept for the next session's open rather than a silence.
+#[test]
+fn the_embedder_section_is_read_from_the_project_level_then_the_users() {
+    let base = std::env::temp_dir().join(format!("config-embeddings-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).expect("a scratch dir");
+    let project = base.join("project.toml");
+    let user = base.join("user.toml");
+    // The project says nothing about embeddings; the user wrote a section that would do nothing,
+    // which the reader refuses by name.
+    std::fs::write(&project, "[default]\nmain_model = \"m\"\n").expect("the project file");
+    std::fs::write(
+        &user,
+        "[embeddings]\nmode = \"off\"\nmodel = \"/tmp/nowhere\"\n",
+    )
+    .expect("the user file");
+
+    let mut cfg = Config::for_this_box(&base);
+    assert!(
+        cfg.embedder.is_none() && cfg.embedder_fault.is_none(),
+        "a fixture scores the words alone and has nothing to say"
+    );
+    assert!(cfg.tier().is_none());
+
+    cfg.leticode.path = Some(project);
+    cfg.leticode_user.path = Some(user);
+    cfg.read_embeddings();
+    assert!(cfg.embedder.is_none(), "the section asked for no tier");
+    let said = cfg.embedder_fault.expect("and the refusal is kept");
+    assert!(said.contains("mode = \"off\""), "{said}");
+    let _ = std::fs::remove_dir_all(&base);
+}
+
 /// The tree a VM placement copies is the session's own copy source where it has one, and the
 /// repository it is about otherwise - the one spelling `Harness::open` reads when it boots the VM
 /// and the only thing a test can read on a box it must not boot one on. `None` means the workspace.

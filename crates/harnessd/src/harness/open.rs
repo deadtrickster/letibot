@@ -395,6 +395,14 @@ impl Harness {
                 .map_err(|e| HarnessError::Store(e.to_string()))?,
         };
         let mut notes: Vec<String> = Vec::new();
+        // A `[embeddings]` section the box WROTE and did not get is said here, once per session:
+        // silently scoring the words alone would leave nobody able to fix the key.
+        if let Some(why) = cfg.embedder_fault.clone() {
+            notes.push(format!(
+                "the `[embeddings]` section did not produce an embedder, so every score this \
+                 session makes is the words alone: {why}"
+            ));
+        }
         // One process appends to one transcript, and this is where that is decided: the claim is a
         // row naming this process, taken before a single row is written. A session another live
         // process holds is refused by name; one whose live copy is elsewhere is never claimed.
@@ -1263,14 +1271,15 @@ impl Harness {
             .map_err(|e| HarnessError::Setup(format!("registering the review verdict: {e}")))?;
         // Standing notes, written: the loop was one-way until the `notes` tool, scoped to the
         // stored workspace and the box-wide dir. Registered for every session so a role that names
-        // it resolves; the ROLE decides who seats it.
+        // it resolves; the ROLE decides who seats it. The near-copy gate scores with the box's
+        // second tier, so a paraphrased duplicate is refused where the words would have let it in.
         registry
-            .register(Box::new(letibot_tools::builtins::notes::NotesTool::new(
-                std::sync::Arc::new(crate::notes_scope::ConfigNotes::new(
-                    cfg.workspace.clone(),
-                    cfg.global_notes(),
-                )),
-            )))
+            .register(Box::new(
+                letibot_tools::builtins::notes::NotesTool::new(std::sync::Arc::new(
+                    crate::notes_scope::ConfigNotes::new(cfg.workspace.clone(), cfg.global_notes()),
+                ))
+                .with_tier(cfg.tier()),
+            ))
             .map_err(|e| HarnessError::Setup(format!("registering the notes tool: {e}")))?;
         registry
             // The box-wide `[memory]` under the session's project's own (R76 item 7): the

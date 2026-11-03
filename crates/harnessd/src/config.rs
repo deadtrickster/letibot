@@ -455,6 +455,14 @@ pub struct Config {
     /// [`Config::for_the_daemon`]; `None` in every fixture. They were in `<workspace>/.letibot/`
     /// and a child's workspace is its worktree, so every finished child's tree looked dirty.
     pub logs_root: Option<std::path::PathBuf>,
+    /// **The box's one embedder**, built by [`Config::read_embeddings`] from `[embeddings]` and
+    /// shared by every caller that scores something: the notes offer, the near-copy gate, the
+    /// context-claim check and the skill offer. `None` is the lexical score exactly, which is the
+    /// default and every fixture.
+    pub embedder: Option<std::sync::Arc<letibot_embeddings::Embedder>>,
+    /// Why a section the box DID write produced no embedder. Said once, at the next session's
+    /// open, because a tier that is silently absent is a tier nobody can fix.
+    pub embedder_fault: Option<String>,
     /// Which role this session seats. [`Seat::Orchestrator`] by default, which
     /// is what every invocation gets today. See [`Seat`].
     pub seat: Seat,
@@ -1431,6 +1439,10 @@ impl Config {
             room_link: false,
             restart_room: false,
             logs_root: None,
+            // No tier until `read_embeddings` reads `[embeddings]`: a fixture scores the words
+            // alone, and a daemon that never wrote the section scores exactly what it did before.
+            embedder: None,
+            embedder_fault: None,
             mode: letibot_tools::mode::UNSEEN_PROJECT,
             permission: parse_permission(),
             flowy: None,
@@ -1579,6 +1591,41 @@ impl Config {
     /// `--reviewers vm`, and a test that MEANS to exercise a VM placement.
     pub fn allow_vm_reviewers(&mut self) {
         self.reviewers = Reviewers::Vm;
+    }
+
+    /// **Read `[embeddings]` and build the box's one embedder.** Called by the daemon's start path
+    /// once both `leticode.toml` levels are merged, and nowhere else, so a fixture is lexical-only
+    /// unless it says otherwise. The project's section wins and a level that wrote none leaves the
+    /// other's standing - the precedence every other key in that table has. A box that wrote no
+    /// section gets no embedder and no fault; a box whose section did not produce one keeps the
+    /// sentence, which the next session's open publishes.
+    pub fn read_embeddings(&mut self) {
+        let mut levels: Vec<PathBuf> = Vec::new();
+        levels.extend(self.leticode.path.clone());
+        levels.extend(self.leticode_user.path.clone());
+        let data = crate::mergequeue::git::letibot_data_dir();
+        for file in levels {
+            match letibot_embeddings::Settings::load(&file) {
+                Ok(settings) if settings.mode.is_off() => continue,
+                Ok(settings) => {
+                    match crate::embeddings::embedder(&settings, data.as_deref()) {
+                        Ok(found) => self.embedder = found,
+                        Err(why) => self.embedder_fault = Some(why),
+                    }
+                    return;
+                }
+                Err(why) => {
+                    self.embedder_fault = Some(why.to_string());
+                    return;
+                }
+            }
+        }
+    }
+
+    /// One caller's tier over the box's embedder, or `None` when the box has none. A fresh tier
+    /// each time: what is inside it is that caller's own corpus.
+    pub fn tier(&self) -> Option<letibot_embeddings::Tier> {
+        crate::embeddings::tier(self.embedder.as_ref())
     }
 
     /// The model name the prompt lookup runs on: `provider/model` for a metered session, the bare
