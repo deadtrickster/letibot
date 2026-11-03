@@ -7325,3 +7325,44 @@ fn a_row_on_its_announcement_is_drawn_without_a_fetch() {
         a.queued
     );
 }
+
+/// **A delivery is drawn as news, never as the operator's words.** The row is a `Notice`, so no
+/// `speaker` field stands between a firing and the person reading it: it takes the session's own
+/// grey class, and the operator's block is the one thing it must not become.
+#[test]
+fn a_notice_is_drawn_as_the_sessions_own_news() {
+    use crate::ui::transcript::item::RowClass;
+
+    let said = "[monitor] `pr-watch` fired: the pull request was merged.";
+    let (class, lines) = item_rendered(
+        false,
+        TranscriptItem::Notice {
+            kind: letibot_transcript::NoticeKind::Monitor,
+            text: said.into(),
+        },
+    );
+    assert_eq!(
+        class,
+        RowClass::Other,
+        "a delivery is the grey class, as every notice is"
+    );
+    let drawn = lines.join("\n");
+    assert!(
+        drawn.contains("pr-watch") && drawn.contains("merged"),
+        "and it carries the words the harness composed: {drawn}"
+    );
+    // **The operator's own words are the only speech**, asserted beside it so the difference is
+    // shown rather than assumed: the same sentence typed by a person draws in another class.
+    let (class, _) = item_rendered(
+        false,
+        TranscriptItem::User {
+            speaker: letibot_transcript::Speaker::Operator,
+            parts: vec![UserPart::Text { text: said.into() }],
+        },
+    );
+    assert_eq!(
+        class,
+        RowClass::Speech,
+        "a firing must never take the class the operator's own words take"
+    );
+}
