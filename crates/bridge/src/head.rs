@@ -38,7 +38,7 @@ use std::time::{Duration, Instant};
 
 use letibot_sessionlog::activity::{Activity, Waiting};
 use letibot_sessionlog::client::{ClientError, HeadClient, Inbound, pump};
-use letibot_sessionlog::event::{DeltaTarget, Envelope, SessionEvent, TodoEntry};
+use letibot_sessionlog::event::{DeltaTarget, Envelope, PrefixCheck, SessionEvent, TodoEntry};
 use letibot_sessionlog::protocol::{Ack, Caps, PeekShape, ServerFrame};
 use letibot_sessionlog::view::{
     CallState, OpenDecision, Snapshot, SnapshotItem, TurnState as ViewTurnState,
@@ -455,6 +455,13 @@ pub struct State {
     pub spent: Meter,
     /// How many rounds `spent` sums.
     pub rounds: u64,
+    /// §18.1-I1's verdict on the last ending: whether this prompt extended the one before it,
+    /// which is what tells a slot that did not hold the history from a prompt of ours that
+    /// diverged. `None` is a daemon older than the field.
+    pub prefix_check: Option<PrefixCheck>,
+    /// The dialect's `template_sha` on the last ending, so a template change reads as a different
+    /// dialect rather than as an unexplained cache miss. Empty when the daemon did not say.
+    pub dialect_template_sha: String,
     /// **The newest assistant message that is a report.** A model that reports and is then
     /// woken by its own background jobs says *nothing new in them* and stops, so a report
     /// read only from the last message was lost under it (P1).
@@ -605,6 +612,22 @@ impl State {
     /// ci"]`, empty for a quiet session.
     pub fn waiting_on(&self) -> Vec<String> {
         self.activity.waiting_labels()
+    }
+
+    /// **What the last ending measured**, as the keys `leticode_status` answers with. Defined here
+    /// rather than spelled in the status answer, so a caller and a test read one pair of names.
+    /// `null` and an empty string are a daemon older than the fields, which measured nothing.
+    pub fn measured_keys(&self) -> Vec<(&'static str, Value)> {
+        vec![
+            (
+                "prefix_check",
+                serde_json::to_value(&self.prefix_check).unwrap_or(Value::Null),
+            ),
+            (
+                "dialect_template_sha",
+                json!(self.dialect_template_sha.as_str()),
+            ),
+        ]
     }
 
     /// The word `leticode_status` answers with. `asking` wins over `running` because a turn
@@ -884,7 +907,11 @@ impl State {
                 }
             }
             SessionEvent::TurnFinished {
-                usage, ends_turn, ..
+                usage,
+                ends_turn,
+                prefix_check,
+                dialect_template_sha,
+                ..
             } => {
                 // **Whether this frame ended the PROMPT is the daemon's field**: a round that
                 // proposed calls is not an ending, and a head that read it as one wrote a report
@@ -894,6 +921,11 @@ impl State {
                     self.events.push(Entry::of("turn", "ended"));
                 }
                 self.turned = true;
+                // The ending's own record of what the engine measured. `leticode_status` answers
+                // both, and neither is derived here: a check this head recomputed could disagree
+                // with the one the turn was actually judged by.
+                self.prefix_check = prefix_check;
+                self.dialect_template_sha = dialect_template_sha;
                 if !self.streaming.is_empty() {
                     self.last_row = std::mem::take(&mut self.streaming);
                 }
@@ -1442,6 +1474,9 @@ impl Head {
             meter: g.meter,
             spent: g.spent,
             rounds: g.rounds,
+            // Carried: `leticode_status` answers both, and neither is a payload.
+            prefix_check: g.prefix_check.clone(),
+            dialect_template_sha: g.dialect_template_sha.clone(),
             last_report: g.last_report.clone(),
             calls: g.calls.clone(),
             children: g.children.clone(),
@@ -2353,6 +2388,59 @@ mod tests {
             Some(250),
             "the meter is one round"
         );
+    }
+
+    /// **The two facts §18.2 needs reach `leticode_status`**: which check judged the last ending and
+    /// which dialect rendered it. Without the check an orchestrator reads zero reuse as a prompt
+    /// that diverged; a daemon older than the fields answers `null` and an empty string.
+    #[test]
+    fn an_endings_prefix_check_and_dialect_reach_the_status() {
+        let mut state = State::default();
+        let mut seq = 0;
+        let mut feed = |state: &mut State, event: SessionEvent| {
+            seq += 1;
+            state.fold(ServerFrame::Event(env(seq, event)));
+        };
+        feed(&mut state, testing::turn_started("t1"));
+        feed(
+            &mut state,
+            SessionEvent::TurnFinished {
+                turn_id: "t1".into(),
+                finish_reason: letibot_sessionlog::event::FinishReason::Eos,
+                usage: Default::default(),
+                timings: Default::default(),
+                ends_turn: true,
+                prefix_check: Some(letibot_sessionlog::event::PrefixCheck::Held {
+                    expected_cached_min: 12_340,
+                    cached: 12_300,
+                    shortfall: 40,
+                }),
+                dialect_template_sha: "3f2a9c".into(),
+            },
+        );
+        let measured: std::collections::BTreeMap<&str, Value> =
+            state.measured_keys().into_iter().collect();
+        assert_eq!(
+            measured.get("dialect_template_sha"),
+            Some(&json!("3f2a9c")),
+            "{measured:?}"
+        );
+        assert_eq!(
+            measured.get("prefix_check"),
+            Some(&json!({"held": {
+                "expected_cached_min": 12_340,
+                "cached": 12_300,
+                "shortfall": 40,
+            }})),
+            "the verdict is the daemon's, in its own shape: {measured:?}"
+        );
+
+        // A daemon older than the two fields: the keys are present and say nothing was measured,
+        // which is a different statement from a check that ran.
+        let old: std::collections::BTreeMap<&str, Value> =
+            State::default().measured_keys().into_iter().collect();
+        assert_eq!(old.get("prefix_check"), Some(&Value::Null), "{old:?}");
+        assert_eq!(old.get("dialect_template_sha"), Some(&json!("")), "{old:?}");
     }
 
     /// **A recorded turn folds into the compact entries `leticode_events` answers with.** The
