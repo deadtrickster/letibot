@@ -268,9 +268,8 @@ fn a_summary_turn_that_calls_tools_surfaces_them() {
 }
 
 /// A summary turn that keeps saying nothing fails the compaction once the salvage budget is
-/// spent, and nothing is reduced: the whole failed fold is rolled back, so the transcript is what it
-/// was before the attempt and the next one starts from the same place. The fourth failure is
-/// `SalvageExhausted` and propagates.
+/// spent, and nothing is reduced: the whole failed fold is rolled back, so the next attempt starts
+/// where this one did. The fourth failure is `SalvageExhausted` and propagates.
 #[test]
 fn a_summary_turn_that_never_says_anything_exhausts_the_salvage_and_fails_the_compaction() {
     let Some(_) = letibot_llama::apparatus::present_gguf() else {
@@ -321,10 +320,9 @@ fn a_summary_turn_that_never_says_anything_exhausts_the_salvage_and_fails_the_co
         other => panic!("the spent budget must propagate as itself: {other:?}"),
     }
 
-    // The failed fold left nothing behind - no assistant row, no reasoning row, no dangling
-    // half-summary, no instruction, and none of the three salvage notices either: what it appended
-    // is undone, or a session that keeps failing carries one more copy of the instruction per
-    // attempt.
+    // The failed fold left nothing behind - no assistant row, no instruction, and none of the three
+    // salvage notices either: what it appended is undone, or a session that keeps failing carries
+    // one more copy of the instruction per attempt.
     assert_eq!(session.items.len(), items_before, "{:#?}", session.items);
     assert_eq!(session.ledger.rows().len(), items_before);
     assert_eq!(

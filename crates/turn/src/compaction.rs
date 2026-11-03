@@ -670,9 +670,8 @@ pub fn run_compaction(
 }
 
 /// Undo what a fold appended that did not become a record: the instruction, and the notices a
-/// salvage wrote. The ledger is FORKED at the mark rather than truncated, because the region is
-/// append-only by design, and the items move with the rows they are paired with: a ledger longer
-/// than its item list writes every later row against the wrong item.
+/// salvage wrote. The ledger is FORKED rather than truncated, because the region is append-only and
+/// it must stay as long as the items: a longer ledger pairs later rows with the wrong item.
 fn undo_failed_fold(session: &mut Session, mark: usize) {
     if session.items.len() <= mark {
         return;

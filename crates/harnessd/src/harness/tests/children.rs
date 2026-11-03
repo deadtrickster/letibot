@@ -1284,10 +1284,9 @@ fn a_child_that_ends_with_children_on_their_task_stops_them() {
     );
 }
 
-/// **An answer is kept only while it is owed to somebody.** A child's body is 5 KB to 120 KB, and
-/// a daemon that held every one of them for its life held the whole tree's output. What a reader
-/// has been handed is in the child's own session, so the slot drops it. Counted, never measured:
-/// the question is how many bodies the tree still owes, and that must not grow with the children.
+/// **An answer is kept only while it is owed to somebody.** What a reader has been handed is in the
+/// child's own session, so the slot drops the body: how many bodies the tree still owes must not
+/// grow with the children it has run.
 #[test]
 fn a_delivered_answer_is_not_kept_for_the_daemons_life() {
     use letibot_tools::builtins::task::TaskStatus;

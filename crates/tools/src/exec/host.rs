@@ -851,10 +851,9 @@ impl HostProcesses {
         }
     }
 
-    /// Drop the finished jobs past a window of `keep`, oldest first ([`KEPT_FINISHED_JOBS`]), and any
-    /// finished one settled less than `grace` before `now`. Both tables lose the row together: `find`
-    /// reads `by_id` and `jobs()` reads `jobs`, and one without the other is a row nobody can reach.
-    /// The clock is handed in so a test can age a finish without sleeping. Returns how many rows went.
+    /// Drop the finished jobs past a window of `keep`, oldest first, and any finished one settled
+    /// less than `grace` before `now`. Both tables lose the row together, or `find` answers about a
+    /// row `jobs()` has not got. The clock is a parameter so a test can age a finish without sleeping.
     fn prune_finished(&self, keep: usize, grace: Duration, now: SystemTime) -> usize {
         let aged = |job: &Arc<Job>| {
             !job.state().is_running()
@@ -2640,11 +2639,9 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// **A row is about 1.1 KB and nothing ever removed one**, so a session's job table grew with
-    /// every `bash` it ran. What is kept is the running jobs and the newest window of finished
-    /// ones, and a finish younger than the grace is kept whatever the window says: a watcher polls
-    /// its settlement every five seconds and would lose the news of a job whose row had gone.
-    /// Counted, never measured - the question is how many rows the host still holds.
+    /// **A row is about 1.1 KB and nothing ever removed one.** What is kept is the running jobs and
+    /// the newest window of finished ones, and a finish younger than the grace whatever the window
+    /// says: a watcher polls every five seconds and would lose the news of a row that went.
     #[test]
     fn finished_jobs_are_kept_to_a_window_and_a_running_one_is_never_dropped() {
         let h = HostProcesses::with_tree(
