@@ -33,7 +33,6 @@ candle-transformers = "0.9"
 # on purpose: each is a C build, and BERT's WordPiece needs neither. `fancy-regex`
 # is the pure-Rust half of the pair tokenizers refuses to compile without.
 tokenizers = { version = "0.21", default-features = false, features = ["fancy-regex"] }
-safetensors = "0.4"
 
 [features]
 # The tiny BERT a test builds, for a crate that wants the internal path without a
