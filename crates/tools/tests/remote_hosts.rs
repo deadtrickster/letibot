@@ -2270,3 +2270,77 @@ fn a_placed_session_reads_its_note_corpus_in_pages() {
     );
     let _ = std::fs::remove_dir_all(&local);
 }
+
+/// **A session that is already stopped can still be collected.** The branch came home only while
+/// the backend that made the placement was still reachable, so a package whose daemon was stopped
+/// left its work on the host with nothing here to fetch it. A collect needs nothing of the daemon:
+/// the host, the repository and the session id are the names the placement was made by.
+#[test]
+fn a_stopped_session_is_collected_by_the_names_its_placement_used() {
+    let mut rig = Rig::new("collect");
+    let b = rig.place();
+    std::fs::write(rig.worktree.join("late.rs"), b"// the work\n").expect("a file");
+    git(&rig.worktree, &["add", "late.rs"]);
+    git(
+        &rig.worktree,
+        &["commit", "-q", "-m", "the work the package did"],
+    );
+    let remote_head = git(&rig.worktree, &["rev-parse", "HEAD"]).trim().to_string();
+    let back = format!("remote/{}/{SHORT}", rig.host.name);
+    // The state `letibot --stop` leaves: the session was never closed, so nothing fetched.
+    drop(b);
+    let absent = letibot_tools::testing::git(&rig.repo)
+        .args(["rev-parse", "--verify", &back])
+        .output()
+        .expect("git runs");
+    assert!(
+        !absent.status.success(),
+        "the fixture has the branch before the collect, so it would prove nothing"
+    );
+
+    let said = letibot_tools::remote::collect(&letibot_tools::remote::CollectSpec {
+        host: rig.host.clone(),
+        session: "s-01abcdef".into(),
+        repo: rig.repo.clone(),
+        ssh: Some(rig.ssh.clone()),
+        paths: rig.paths.clone(),
+        vm: false,
+    })
+    .expect("the collect reached the host");
+    assert!(
+        said.contains(&back) && said.contains("came back"),
+        "the collect says which branch came home: {said}"
+    );
+    assert_eq!(
+        git(&rig.repo, &["rev-parse", &back]).trim(),
+        remote_head,
+        "the branch is at the commit the session made: {said}"
+    );
+    assert!(
+        git(&rig.repo, &["show", &format!("{back}:late.rs")]).contains("the work"),
+        "and the commit's own contents came with it"
+    );
+}
+
+/// A collect that names a host with nothing of that session on it says which path it looked for,
+/// rather than a `git fetch` refusal about a repository this box cannot see.
+#[test]
+fn a_collect_of_nothing_names_the_host_and_the_path_it_looked_for() {
+    let mut rig = Rig::new("collect-nothing");
+    let _b = rig.place();
+    let refused = letibot_tools::remote::collect(&letibot_tools::remote::CollectSpec {
+        host: rig.host.clone(),
+        // Never placed here, so the checkout this id names does not exist.
+        session: "s-99ffffff".into(),
+        repo: rig.repo.clone(),
+        ssh: Some(rig.ssh.clone()),
+        paths: rig.paths.clone(),
+        vm: false,
+    })
+    .expect_err("there is nothing to collect");
+    let said = refused.to_string();
+    assert!(
+        said.contains("nothing at") && said.contains("99ffffff"),
+        "the refusal names the path it looked for: {said}"
+    );
+}

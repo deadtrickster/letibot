@@ -3085,28 +3085,7 @@ impl SshBackend {
         // The root, resolved ONCE on the remote: `root = "~/letibot-remote"` is a fact about the
         // remote's home, not this machine's, so it is expanded there and every path below is absolute,
         // which is what `git fetch` needs. A relative answer is refused rather than used.
-        let root = ssh
-            .must(
-                "making the remote root",
-                &format!(
-                    // `${r:2}`, not `${r#~/}`: bash tilde-expands the pattern of a `${v#...}`, so
-                    // `#~/` quietly matches nothing and the root becomes `$HOME/~/...`.
-                    "r={}; case \"$r\" in '~/'*) r=\"$HOME/${{r:2}}\" ;; esac; \
-                     mkdir -p \"$r\" && cd \"$r\" && pwd -P",
-                    quote(&spec.host.root)
-                ),
-            )
-            .map_err(place)?
-            .trim()
-            .to_string();
-        if !root.starts_with('/') {
-            return Err(place(BackendError::Io(format!(
-                "the remote said its root is `{root}`, which is not an absolute path — a \
-                 `root = \"~/letibot-remote\"` must be expanded by ssh's own shell, and a \
-                 remote shell that answers a relative path would put every worktree somewhere \
-                 neither this box nor `git fetch` can name"
-            ))));
-        }
+        let root = resolved_root(&ssh, &spec.host.root, true).map_err(place)?;
         let mirror = format!("{root}/{repo_name}.git");
         let worktree = format!("{root}/{repo_name}/{short}");
 
@@ -3759,11 +3738,123 @@ fn ssh_program_default() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("ssh"))
 }
 
+/// The remote root, resolved ONCE on the host: `root = "~/letibot-remote"` is a fact about that
+/// machine's home, not this one's, so it is expanded there and every path below is absolute, which
+/// is what `git fetch` needs. A relative answer is refused rather than used, and `create` is a
+/// placement making the root against a collect that must not make one on a host that has neither.
+fn resolved_root(ssh: &Ssh, asked: &str, create: bool) -> Result<String, BackendError> {
+    let root = ssh
+        .must(
+            if create {
+                "making the remote root"
+            } else {
+                "reading the placement's root"
+            },
+            &format!(
+                // `${r:2}`, not `${r#~/}`: bash tilde-expands the pattern of a `${v#...}`, so
+                // `#~/` quietly matches nothing and the root becomes `$HOME/~/...`.
+                "r={}; case \"$r\" in '~/'*) r=\"$HOME/${{r:2}}\" ;; esac; \
+                 {make}cd \"$r\" && pwd -P",
+                quote(asked),
+                make = if create { "mkdir -p \"$r\" && " } else { "" }
+            ),
+        )?
+        .trim()
+        .to_string();
+    if !root.starts_with('/') {
+        return Err(BackendError::Io(format!(
+            "the remote said its root is `{root}`, which is not an absolute path — a \
+             `root = \"~/letibot-remote\"` must be expanded by ssh's own shell, and a \
+             remote shell that answers a relative path would put every worktree somewhere \
+             neither this box nor `git fetch` can name"
+        )));
+    }
+    Ok(root)
+}
+
 /// The local branch a placement's work comes home on: `remote/<host>/<short id>`. The one spelling of
 /// the rule, because a caller that must NAME that branch without holding the backend - the bridge's
 /// stop answer - is telling the operator where to look.
 pub fn back_branch_for(host: &str, session: &str) -> String {
     format!("remote/{host}/{}", short_branch_id(session))
+}
+
+/// What a collect needs, and nothing a daemon holds: the host, the local repository the branch comes
+/// home to, and the session id whose checkout and branch the placement was named by. A placement is
+/// the daemon's and dies with it, so these are what a stopped session can still be collected from.
+pub struct CollectSpec {
+    pub host: Host,
+    pub session: String,
+    /// The local repository, or a folder inside one: the branch comes home here.
+    pub repo: PathBuf,
+    pub ssh: Option<PathBuf>,
+    pub paths: Paths,
+    /// The placement ran in a firecode guest, so its branch is in the checkout and not the mirror.
+    pub vm: bool,
+}
+
+/// Fetch a stopped session's branch home as `remote/<host>/<short id>`, or say why not. Every name
+/// is derived the way [`SshBackend::place`] derived it - the root, the repository's name, the short
+/// id - because the daemon that derived them is gone by the time this is asked.
+pub fn collect(spec: &CollectSpec) -> Result<String, BackendError> {
+    let host = spec.host.name.clone();
+    let refuse = |what: String| BackendError::Io(format!("collecting {host}'s branch: {what}"));
+    let top = git(&spec.repo, &["rev-parse", "--show-toplevel"]).map_err(|e| {
+        refuse(format!(
+            "{} is not a git repository, and the branch comes home to one ({e})",
+            spec.repo.display()
+        ))
+    })?;
+    let local_repo = PathBuf::from(top.trim());
+    let repo_name = local_repo
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .ok_or_else(|| refuse(format!("{} has no name", local_repo.display())))?;
+    let ssh = Ssh::connect(spec.host.clone(), spec.ssh.clone(), spec.paths.clone())
+        .map_err(|why| refuse(why))?;
+    let root = resolved_root(&ssh, &spec.host.root, false).map_err(|e| refuse(e.to_string()))?;
+    let short = short_branch_id(&spec.session);
+    let branch = format!("remote/{short}");
+    let back_branch = back_branch_for(&host, &spec.session);
+    let worktree = format!("{root}/{repo_name}/{short}");
+    let mirror = format!("{root}/{repo_name}.git");
+    // A host with nothing there is a placement made somewhere else, and `git fetch` would refuse
+    // with words about a path this box cannot see; this names the path somebody can go and look at.
+    // The checkout is the witness and not the mirror: one mirror is shared by every session on the
+    // same repository, so its presence says nothing about whether THIS session was placed here.
+    if ssh
+        .must(
+            "looking for the placement's checkout",
+            &format!("[ -d {} ]", quote(&worktree)),
+        )
+        .is_err()
+    {
+        return Err(refuse(format!(
+            "there is nothing at {worktree}, so this session was placed on another host or its \
+             checkout is gone. The branch `{back_branch}` in {} is what came home, if anything did",
+            local_repo.display()
+        )));
+    }
+    let source = if spec.vm { &worktree } else { &mirror };
+    // The count the sentence gives is against the local branch the collect runs from, which is a
+    // measurement of that branch and not a guess at the one the session was placed from.
+    let base = match git(&local_repo, &["symbolic-ref", "--short", "-q", "HEAD"]) {
+        Ok(b) => b.trim().to_string(),
+        Err(_) => git(&local_repo, &["rev-parse", "--short", "HEAD"])
+            .unwrap_or_default()
+            .trim()
+            .to_string(),
+    };
+    let home = Home {
+        local_repo,
+        url: format!("{}:{source}", ssh.destination()),
+        refspec: format!("+{branch}:refs/heads/{back_branch}"),
+        worktree,
+        branch,
+        back_branch,
+        base,
+    };
+    Ok(home.fetch(&ssh, &format!("the session on {host} was collected")))
 }
 
 /// The last eight usable characters of a session id, as a branch and directory name. Alphanumerics
