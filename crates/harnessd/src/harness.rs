@@ -1600,7 +1600,7 @@ pub(crate) use models::{
 };
 pub(crate) use open::{
     STORE_BUSY_PATIENCE, first_sentence, latest_box_stop, load_gguf, provider_notes,
-    render_sampling, tool_names, tool_schemas, view_brief, vocab_basename, wire_turns,
+    render_sampling, tool_names, tool_schemas, vocab_basename, wire_turns,
 };
 pub use open::{
     VerbatimFit, build_provider, engine_for, instructions_of, mode_in_vm, prefix_fingerprint,

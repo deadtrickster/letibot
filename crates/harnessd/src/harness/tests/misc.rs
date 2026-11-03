@@ -65,7 +65,7 @@ fn the_depth_cap_refuses_the_spawn_one_past_it_by_name() {
 /// has not got, and it would change the bytes of every unconfined session's prefix.
 #[test]
 fn the_prompts_view_comes_from_the_boundary_that_was_measured() {
-    assert_eq!(super::view_brief(None), None);
+    assert_eq!(crate::harness::open::view_brief(None), None);
     let dir = letibot_sessionlog::testing::scratch_root()
         .join(format!("letibot-view-brief-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("a project to be confined to");
@@ -74,7 +74,8 @@ fn the_prompts_view_comes_from_the_boundary_that_was_measured() {
     match letibot_tools::exec::Bwrap::project(&dir) {
         Ok(b) => {
             let boundary = letibot_tools::exec::Confinement::boundary(&b).cloned();
-            let brief = super::view_brief(boundary.as_ref()).expect("a view, so a brief");
+            let brief =
+                crate::harness::open::view_brief(boundary.as_ref()).expect("a view, so a brief");
             assert!(
                 brief.contains(&dir.display().to_string()),
                 "the project the boundary measured is in it: {brief}"
