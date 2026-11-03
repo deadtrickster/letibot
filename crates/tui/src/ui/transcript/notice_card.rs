@@ -258,11 +258,16 @@ fn todo_check(text: &str) -> Option<Card> {
         if in_progress {
             parts.push("in progress".to_string());
         }
-        if let Some(more) = head.rsplit_once('(').and_then(|(_, m)| {
+        // A notice written before R93.B1 carries the count in its head and still says it. The
+        // daemon writes none now, so a later one is counted by the rows it names - which is what
+        // the card is drawn from, and the only count that notice really has.
+        match head.rsplit_once('(').and_then(|(_, m)| {
             m.strip_suffix("more open):")
                 .or(m.strip_suffix("more open)"))
         }) {
-            parts.push(format!("{}more open", more));
+            Some(more) => parts.push(format!("{}more open", more)),
+            None if items.len() > 1 => parts.push(format!("{} rows", items.len())),
+            None => {}
         }
     }
     let title = format!("todo · {}", parts.first().cloned().unwrap_or_default());
@@ -754,6 +759,17 @@ mod tests {
         let nothing = "[todo check] this turn is finished and NOTHING can start — every item left \
                        waits on another:\n  - `review-main` waits on the child `s-x`\nunblock one \
                        of these rather than starting something new: finish a row.";
+        // **And a notice from the daemon as it writes them now** - no count in the head, because
+        // R93.B1 took it out - is counted by the rows it names, which is all it has.
+        let current = "[todo check] this turn is finished and one item is not done:\n  \
+                       - review-agent/a-pass (entry s-1): Your branch is cut from x\n  \
+                       - review-agent/b-pass (entry s-2): and this one\n  \
+                       - review-main (entry red-main-1): and this\nthis row is the merge queue's, \
+                       not your plan's: it is one entry.";
+        assert_eq!(
+            session_notice(current).line,
+            "todo · review-agent/a-pass (entry s-1)… · queue's · 3 rows · click for details"
+        );
         assert!(
             session_notice(nothing)
                 .line
