@@ -1324,6 +1324,7 @@ mod one_line_walls;
 mod oneliners;
 mod onevent;
 mod pane;
+mod panes_ux;
 mod paste;
 mod payloadwindow;
 mod pictures;
