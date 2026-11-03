@@ -207,7 +207,7 @@ impl Meminfo {
     pub fn round_clause(&self, policy: &MemoryPolicy, holds: Holds) -> String {
         use super::scope::human_bytes;
         let mut line = format!(
-            "{} of {} is free, swap {} free; an ask up to {} is granted at once",
+            "{} of {} is free (swap {}); an ask up to {} is granted at once",
             human_bytes(self.available),
             human_bytes(self.total),
             human_bytes(self.swap_free),
@@ -226,9 +226,9 @@ impl Meminfo {
     }
 }
 
-/// What a daemon's own live work already promises: how many scopes it holds open, the caps they
-/// carry added up, and the most they have held. Read because a ceiling of a fraction of what is
-/// free does not see a grant nobody has used yet.
+/// What a daemon's own live work already promises: how many scopes it holds that carry a cap, the
+/// caps added up, and the most they have held. Read because a ceiling of a fraction of what is free
+/// does not see a grant nobody has used yet.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Holds {
     pub scopes: usize,
@@ -237,16 +237,17 @@ pub struct Holds {
 }
 
 impl Holds {
-    /// Read off the scopes a host holds open. A scope whose files are gone, or one on a tree with
-    /// no memory controller, adds nothing: absence is not a measured zero.
+    /// Read off the scopes a host holds open, counting only those that answer: a scope on a tree
+    /// with no memory controller, or one already removed, is absence and not a measured zero.
     pub fn of(host: &dyn super::host::ProcessHost) -> Holds {
         let mut holds = Holds::default();
         for scope in host.scopes() {
+            let Some(used) = super::scope::memory_use_of(&scope) else {
+                continue;
+            };
             holds.scopes += 1;
-            if let Some(used) = super::scope::memory_use_of(&scope) {
-                holds.promised += used.cap.unwrap_or(0);
-                holds.peaks += used.peak;
-            }
+            holds.promised += used.cap.unwrap_or(0);
+            holds.peaks += used.peak;
         }
         holds
     }
@@ -454,7 +455,7 @@ mod tests {
         let p = MemoryPolicy::default();
         assert_eq!(
             mem(100).round_clause(&p, Holds::default()),
-            "100 GiB of 185 GiB is free, swap 0 B free; an ask up to 50 GiB is granted at once."
+            "100 GiB of 185 GiB is free (swap 0 B); an ask up to 50 GiB is granted at once."
         );
         let holds = Holds {
             scopes: 2,
@@ -463,7 +464,7 @@ mod tests {
         };
         assert_eq!(
             mem(100).round_clause(&p, holds),
-            "100 GiB of 185 GiB is free, swap 0 B free; an ask up to 50 GiB is granted at once; \
+            "100 GiB of 185 GiB is free (swap 0 B); an ask up to 50 GiB is granted at once; \
              this daemon's live calls and jobs hold 300 MiB of 4 GiB promised across 2 scope(s)."
         );
         // The ceiling moves with what is free, which is the whole reason this cannot be a schema.
