@@ -5777,4 +5777,80 @@ Two things stand in the way and neither is §5's transcript edge:
 `coder` session states that it can write tests and not run them, so the operator runs them
 and nobody is surprised.
 
+## R99 — Every daemon shares ONE ssh master per host, and sshd's MaxSessions=10 refuses the eleventh — **DONE 2026-11-03: the fake proves the sharing and the refusal by name, and the live proof is one ignored command, bf0491d4; six_sessions_at_once_on_one_host_all_place_over_one_connection, a_cap_below_the_bound_is_reported_by_name and the ignored six_packages_on_a_real_host_at_once_are_never_refused**
+
+`remote::control_path` gives every daemon the same `ControlPath` for a host
+(`$XDG_RUNTIME_DIR/letibot/ssh-<host>.sock`), so all package daemons placed on lab2x1 — plus
+their job polls and each one's file writes — multiplex over ONE ssh connection, and OpenSSH's
+default `MaxSessions` is 10 per connection. MEASURED 2026-10-27 with five or six packages on
+lab2x1:
+
+* two new placements failed writing the 19 MB git bundle: `Ssh::write_once` sends it as ~400
+  separate 48 KiB `printf %s '<base64>' | base64 -d >> tmp` calls, one was refused part-way,
+  and `incoming.bundle.letibot-<pid>` stopped at 2.8 MB;
+* FB's note (`.letibot/notes/a-write-through-the-git-placement-can-leave-a-file-empty.md`): an
+  edit through the placement left a file at **0 bytes** twice, with
+  `mm_send_fd: sendmsg(1): Message too long` and *"the process did not start … .pid was not
+  written within 2 s"* in the same minutes;
+* retried one at a time, both placements succeeded.
+
+**Build** (one package; the failure is load-dependent, so prove each part with a forcing test):
+1. A ControlMaster per daemon (the pid is already passed to `control_path`; use it), or a
+   bounded pool per host that never asks one master for more than `MaxSessions - 2` sessions.
+   Say which and why (connection setup cost on a 32-core LAN box vs. the session limit).
+2. A refused mux session (`mux_client_request_session: session request failed`,
+   `sendmsg … Message too long`, `channel … open failed`) is recognised as a TRANSIENT transport
+   failure and retried on a fresh connection, never reported as the command's own failure.
+3. Large writes are ONE call streaming stdin (`cat > tmp` with the bytes on stdin, or
+   `base64 -d > tmp` fed by stdin), not N argv chunks; then `mv` into place only after the size
+   (and a checksum) on the far side matches. A failed write leaves the target untouched — and the
+   edit path that produced FB's 0-byte file is found and made to obey the same rule.
+4. Tests with a fake ssh that refuses the Nth session and one that drops a stream mid-write.
+
+**Done when**: six packages placed on lab2x1 at once all place, and a forced mid-write drop leaves
+the target byte-identical.
+**Landed 2026-10-27 (`ccf7b895`): items 1-3, and four forcing tests in `crates/tools/tests/remote_sessions.rs`.**
+A ControlMaster per daemon (`ssh-<host>-<pid>-call.sock`, plus `-git.sock` for the fetch this process
+does not start) rather than a cross-process pool: a fresh handshake is 50-70 ms and `ControlPersist=120`
+pays it once per two idle minutes, which makes the bound a guarantee instead of an average.
+**Landed (this branch): the git master was the eleventh session that nothing bounded.** `git fetch`
+rides its own master and starts that ssh itself, so the call queue never saw it: twelve sessions of one
+daemon closing at once asked one connection for twelve sessions, sshd refused two, and both branches
+came back as *its branch did NOT come back*, which is a fanout of subagents on one host losing its work.
+`Ssh::fetch_back` now takes a slot on a git queue of its own (`rpc::enter_git`, the same bound of 8) and
+retries a mux refusal once over a dropped socket, because a refused session provably never reached the
+remote and a fetch is idempotent. Tests, both measured RED first:
+`a_fanout_of_fetches_never_asks_one_git_master_for_the_eleventh` and
+`a_refused_fetch_is_retried_and_the_branch_still_comes_back`.
+**The proof without a host (this branch).** The fake ssh counts sessions PER CONNECTION, the way
+`sshd` does, and refuses the eleventh in the server's own words (`channel 0: open failed:
+administratively prohibited`). Three things follow with no host at all:
+
+* six sessions placed on one host at once all place, write, read back, run and come back, with no
+  refusal and never more than the bound's eight on any ONE connection
+  (`six_sessions_at_once_on_one_host_all_place_over_one_connection`);
+* every call of all six multiplexed over ONE `ControlPath` and every fetch over git's own second one
+  — the sharing that makes `MaxSessions` a bound on a daemon rather than on a session, and the
+  reason the git master needed a queue of its own;
+* a server configured BELOW the bound (one session per connection) cannot be kept under by a client
+  that counts to eight, so the refusal is reported by NAME — *the server refused the channel
+  (MaxSessions)*, `did NOT run`, never the command's exit and never *it may be running there*
+  (`a_cap_below_the_bound_is_reported_by_name`).
+
+**Left: one command.** The entry's own *Done when* on a real machine is now a test, and it is the
+only thing here that needs a real sshd. It places six sessions from this tree on that host at once
+— each with a 2 MiB write, its read-back, a command that overlaps its neighbours and its fetch home
+— and fails if this process recorded one call that was refused, dropped or timed out, which a
+refusal that was retried still leaves:
+
+```sh
+LETIBOT_R99_HOST=lab2x1 cargo test --offline -p letibot-tools --test remote_sessions \
+  -- --ignored six_packages_on_a_real_host_at_once_are_never_refused
+```
+
+`LETIBOT_R99_N` is the count (six, what this entry measured) and `LETIBOT_R99_SOURCE` the repository
+they are placed from.
+**Still open?** nothing in the code, and nothing in the fake's proof; the one command above has not
+been run, and cannot be inside a sandbox.
+
 ---
