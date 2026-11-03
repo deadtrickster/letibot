@@ -82,8 +82,42 @@ struct Pull {
     /// The session working this pull request; empty for one nobody has picked up.
     #[serde(default)]
     session: String,
+    /// **What would be sent.** Drawn in full, because the operator's decision is about these words.
+    #[serde(default, deserialize_with = "drafts_of")]
+    drafts: Vec<Draft>,
+}
+
+/// One draft as the seat sends it: a review of a head, or an answer to a comment.
+#[derive(Debug, Default, Deserialize)]
+struct Draft {
+    /// `review` or `reply`.
     #[serde(default)]
-    drafts: usize,
+    kind: String,
+    #[serde(default)]
+    for_sha: String,
+    #[serde(default)]
+    comment: u64,
+    #[serde(default)]
+    body: String,
+}
+
+/// **A count from an older host is read as that many drafts with nothing in them.** The snapshot is
+/// another crate's, and a field that changed shape must cost the words, not the whole pane.
+fn drafts_of<'de, D>(d: D) -> Result<Vec<Draft>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let feed = Value::deserialize(d)?;
+    match feed {
+        Value::Array(items) => items
+            .into_iter()
+            .map(|item| serde_json::from_value(item).map_err(serde::de::Error::custom))
+            .collect(),
+        Value::Number(n) => Ok((0..n.as_u64().unwrap_or(0))
+            .map(|_| Draft::default())
+            .collect()),
+        _ => Ok(Vec::new()),
+    }
 }
 
 /// **One row this layer is about to draw.**
@@ -169,19 +203,26 @@ fn pull_row(p: &Pull, width: usize) -> Out {
     cells.push(Cell::new(title));
     clip(&mut cells, &mut facts, width);
 
-    let under: Vec<String> = if p.last_action.is_empty() {
-        Vec::new()
-    } else {
-        vec![fit(&one_line(&p.last_action), width)]
-    };
+    let mut under: Vec<String> = Vec::new();
+    if !p.last_action.is_empty() {
+        under.push(fit(&one_line(&p.last_action), width));
+    }
+    // **Each draft on its own line**, because a count is not something a person can decide about.
+    for draft in &p.drafts {
+        under.push(draft_line(draft, width));
+    }
     let mut detail: Vec<String> = vec![
         field("repo", &p.repo),
         field("head", &p.head_sha),
         field("review", &p.review),
-        field("drafts", &drafts_words(p.drafts)),
+        field("drafts", &drafts_words(p.drafts.len())),
         field("session", &p.session),
         field("fork", if p.fork { FORK_WHY } else { "" }),
     ];
+    // The whole draft, never a cut one: this is what would be sent.
+    for draft in &p.drafts {
+        detail.push(format!("{:<10} {}", draft_what(draft), draft.body.trim()));
+    }
     detail.retain(|l| !l.is_empty());
 
     Out {
@@ -263,6 +304,7 @@ fn legend() -> Value {
         "answering a mention": "somebody wrote on the pull request and a session is answering",
         "fork": "the branch is somebody else's, so its diff is reviewed and nothing of it runs",
         "read-only": "no code from this pull request is executed anywhere on this box",
+        "draft": "a review or an answer that is written and not sent; `[github] post` sends it",
     })
 }
 
@@ -324,6 +366,31 @@ fn drafts_words(n: usize) -> String {
         1 => "1 kept as a draft".to_string(),
         n => format!("{n} kept as drafts"),
     }
+}
+
+/// What one draft is, in the words its line opens with: a review of a head, or an answer.
+fn draft_what(draft: &Draft) -> String {
+    match draft.kind.as_str() {
+        "reply" if draft.comment != 0 => format!("draft reply to comment {}", draft.comment),
+        "reply" => "draft reply".to_string(),
+        _ if draft.for_sha.is_empty() => "draft review".to_string(),
+        _ => format!(
+            "draft review of {}",
+            &draft.for_sha[..draft.for_sha.len().min(10)]
+        ),
+    }
+}
+
+/// One draft's faint line under its row: what it is and the first line of what it says.
+fn draft_line(draft: &Draft, width: usize) -> String {
+    let what = draft_what(draft);
+    let said = one_line(&draft.body);
+    let line = if said.is_empty() {
+        what
+    } else {
+        format!("{what}: {said}")
+    };
+    fit(&line, width)
 }
 
 /// The first line of a text, with control characters flattened - a title is somebody's prose and an

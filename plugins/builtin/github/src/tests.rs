@@ -21,7 +21,11 @@ fn a_feed() -> Value {
                  "title": "a fix for the thing", "head_sha": "c1d2e3f",
                  "review": "drafted", "fork": false,
                  "last_action": "drafted a review of 2 commits", "age_ms": 120_000u64,
-                 "session": "s-abc", "drafts": 1}]},
+                 "session": "s-abc",
+                 "drafts": [
+                    {"kind": "review", "for_sha": "c1d2e3f", "comment": 0,
+                     "body": "This loads the widget once now.\n\ncrates/tui/src/widget.rs:42: this leaks"}
+                 ]}]},
             {"scope": "someone/other", "state": "token missing",
              "state_words": "posting is on and no token file is there",
              "why": "", "pulls": []},
@@ -317,6 +321,58 @@ fn a_row_without_a_session_has_no_enter() {
     assert!(row.get("enter").is_none(), "{row}");
 }
 
+/// **A draft is drawn, not counted.** The operator's decision is whether to send these words, so
+/// the pane shows them: one faint line under the row per draft, and the whole text in the detail.
+#[test]
+fn each_draft_is_drawn_under_its_row() {
+    let view = view_of(Some(&a_feed()));
+    let row = pull_row(&view, "pr:stroppy-io/letibot#12");
+    let under: Vec<&str> = row["under"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|u| u.as_str())
+        .collect();
+    assert!(
+        under
+            .iter()
+            .any(|u| u.contains("draft") && u.contains("This loads the widget once now.")),
+        "{under:?}"
+    );
+    // The review is of a particular head, and a person needs to know which one.
+    assert!(under.iter().any(|u| u.contains("c1d2e3f")), "{under:?}");
+    let detail = row["detail"].as_str().unwrap_or_default();
+    assert!(
+        detail.contains("crates/tui/src/widget.rs:42: this leaks"),
+        "the whole draft is readable: {detail}"
+    );
+    assert!(detail.contains("1 kept as a draft"), "{detail}");
+}
+
+/// A row with nothing drafted says nothing about drafts: an empty line per row would read as a
+/// review that failed.
+#[test]
+fn a_row_with_no_draft_draws_no_draft_line() {
+    let mut feed = a_feed();
+    feed["scopes"][0]["pulls"][0]["drafts"] = json!([]);
+    let view = view_of(Some(&feed));
+    let row = pull_row(&view, "pr:stroppy-io/letibot#12");
+    let drawn = row_text(&row);
+    assert!(!drawn.contains("draft review"), "{drawn}");
+}
+
+/// An older daemon sent the count and not the words, and a pane that broke on it would draw
+/// nothing at all. The count is read as that many drafts with nothing in them.
+#[test]
+fn an_older_daemon_s_count_is_still_read() {
+    let mut feed = a_feed();
+    feed["scopes"][0]["pulls"][0]["drafts"] = json!(2);
+    let view = view_of(Some(&feed));
+    let row = pull_row(&view, "pr:stroppy-io/letibot#12");
+    let detail = row["detail"].as_str().unwrap_or_default();
+    assert!(detail.contains("2 kept as drafts"), "{detail}");
+}
+
 #[test]
 fn every_state_word_the_pane_draws_is_in_the_legend() {
     let view = view_of(Some(&a_feed()));
@@ -335,6 +391,7 @@ fn every_state_word_the_pane_draws_is_in_the_legend() {
         "answering a mention",
         "fork",
         "read-only",
+        "draft",
     ] {
         let sentence = legend
             .get(word)
