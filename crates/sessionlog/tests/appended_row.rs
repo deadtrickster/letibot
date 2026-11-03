@@ -283,6 +283,8 @@ fn the_log_holds_a_body_once_for_either_kind_of_head() {
 #[test]
 fn a_replay_hands_an_older_head_the_body() {
     let registry = start();
+    // Seq 0 asks for a snapshot, not a replay.
+    marker(&registry, "before the row");
     let since = hub(&registry).snapshot().seq;
     append(&registry, "s-1.0", &assistant("said before the head came"));
     let a = hub(&registry).attach("tui", "old", Caps::default(), since);
