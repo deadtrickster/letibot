@@ -644,12 +644,14 @@ fn forty_turns_with_a_failed_compaction_each_keep_the_daemon_bounded() {
         kb(late as u64)
     );
 
-    // And the view keeps rows, not turns: a refused attempt pairs its instruction with a warning, and
-    // nothing in it may outlive the bound.
-    let view_grew = last.held.view.saturating_sub(first.held.view);
+    // The view is a LEVEL: a refused turn announces its prompt, its reply and its instruction, so it
+    // cannot pass three a turn, and a reading up to a tick old can only read it lower. Diffing two
+    // readings needed both to land on a turn boundary, which a one-second tick does not.
     assert!(
-        view_grew <= 3 * spanned,
-        "the view took {view_grew} row(s) from {spanned} turns, which is more than the rows they made"
+        last.held.view <= 3 * (last.turn + 1),
+        "the view holds {} row(s) after {} turn(s), which is more than the three a turn makes",
+        last.held.view,
+        last.turn + 1
     );
     // The log is a ring, and forty turns of this size cannot reach its bound - so what is asserted is
     // its growth against the bytes the run published, which a log that kept a copy of the
