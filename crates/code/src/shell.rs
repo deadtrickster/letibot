@@ -187,6 +187,9 @@ pub enum Construct {
     ProcessSubstitutionPath,
     /// `$((…))`.
     ArithmeticExpansion,
+    /// A here-document whose body the parse did not hand back at all, so whether it is a script
+    /// is unknown. A body the shell expands is [`Construct::ExpandedHeredoc`] instead.
+    UnreadHeredoc,
     /// A here-document whose delimiter was unquoted, so the shell expands the body.
     /// A `<<'EOF'` body is literal and is resolved.
     ExpandedHeredoc,
@@ -216,6 +219,7 @@ impl Construct {
             Construct::ProcessSubstitutionPath => "process_substitution_path",
             Construct::ArithmeticExpansion => "arithmetic_expansion",
             Construct::ExpandedHeredoc => "expanded_heredoc",
+            Construct::UnreadHeredoc => "unread_heredoc",
             Construct::AnsiCEscapes => "ansi_c_escapes",
             Construct::BraceExpansion => "brace_expansion",
             Construct::CompoundArgument => "compound_argument",
@@ -1260,16 +1264,35 @@ fn heredoc_redirect(node: &Node, source: &str, out: &mut Normalised) -> Redirect
     let body_node = kids(node)
         .into_iter()
         .find(|c| c.kind.as_str() == "heredoc_body");
-    // The grammar hands a body whose first byte is a backslash back as a `word` ARGUMENT of the
-    // redirect and leaves `heredoc_body` empty, which would read as a file this writes nothing
-    // into: measured, `cat <<EOF\n\$x\nEOF`. The body is taken from the text instead.
-    let misplaced = kids(node)
-        .into_iter()
-        .any(|c| c.field.as_deref() == Some("argument"));
-    let body = match body_node.map(|b| src(b, source)) {
-        Some(b) if !b.is_empty() => b.to_string(),
-        _ if misplaced => heredoc_body_from_text(node, source).unwrap_or_default(),
-        _ => String::new(),
+    // The grammar hands the body back as an argument word, or inside a sibling redirect or a
+    // pipeline, whenever something on the line comes between the delimiter and the body: an empty
+    // `heredoc_body` is "not in this node", not "nothing", and the text is read instead.
+    let body = match body_node.map(|b| src(b, source)).filter(|b| !b.is_empty()) {
+        Some(b) => Some(b.to_string()),
+        None => heredoc_body_from_text(node, source),
+    };
+    let body = match body {
+        // `<<-` strips the leading tabs of every line, and the grammar strips only the first
+        // line's, so what it hands back is not the bytes the program reads.
+        Some(b) if heredoc_strips_tabs(node) => strip_heredoc_tabs(&b),
+        Some(b) => b,
+        // A body this parse did not hand back at all: nothing was read, and an empty body would
+        // claim a program was fed nothing.
+        None => {
+            out.unresolved.push(Unresolved {
+                construct: Construct::UnreadHeredoc,
+                decides: Decides::RedirectTarget,
+                span: Span::of(node),
+                text: clip(src(node, source), 120),
+                known_prefix: None,
+                stage: Some(out.stages.len()),
+                why: "the here-document's body is not in this parse, so the bytes the program \
+                      reads are unknown. Write the body as a file, or pass it on stdin of a \
+                      command whose text this can read"
+                    .into(),
+            });
+            String::new()
+        }
     };
     if !literal && (heredoc_expansion_child(body_node) || heredoc_expands(&body)) {
         out.unresolved.push(Unresolved {
@@ -1294,24 +1317,29 @@ fn heredoc_redirect(node: &Node, source: &str, out: &mut Normalised) -> Redirect
     }
 }
 
-/// A here-document's body read out of its redirect's own text, for the shape the grammar hands
-/// back as an argument word: everything between the first newline and the line that ends the
-/// document, with `<<-`'s leading tabs removed the way the shell removes them.
+/// A here-document's body read out of its redirect's own text: everything between the first
+/// newline of the redirect and the line that ends the document.
 fn heredoc_body_from_text(node: &Node, source: &str) -> Option<String> {
     let text = src(node, source);
     let from = node.start + text.find('\n')? + 1;
     let end = kids(node)
         .into_iter()
         .find(|c| c.kind.as_str() == "heredoc_end")?;
-    let body = source.get(from..end.start)?;
-    if !text.starts_with("<<-") {
-        return Some(body.to_string());
-    }
-    Some(
-        body.split_inclusive('\n')
-            .map(|l| l.trim_start_matches('\t'))
-            .collect(),
-    )
+    source.get(from..end.start).map(str::to_string)
+}
+
+/// Whether the redirect is `<<-`, which the shell reads as "strip the leading tabs". The token is
+/// the only tell that survives a descriptor: `3<<-'EOF'` does not start with `<<-`.
+fn heredoc_strips_tabs(node: &Node) -> bool {
+    kids(node).into_iter().any(|c| c.kind.as_str() == "<<-")
+}
+
+/// `<<-` strips every line's leading tabs and the grammar strips one line's, so the body it hands
+/// back still carries tabs the program never sees.
+fn strip_heredoc_tabs(body: &str) -> String {
+    body.split_inclusive('\n')
+        .map(|l| l.trim_start_matches('\t'))
+        .collect()
 }
 
 /// Whether the grammar put something in the body other than literal content: an expansion, a
@@ -1614,6 +1642,9 @@ fn why_of(construct: &Construct, decides: Decides) -> String {
             "the here-document body is expanded by the shell, so it decides {what} \
              with bytes that are not these. Quote the delimiter to make it literal."
         ),
+        Construct::UnreadHeredoc => {
+            format!("the here-document's body is not in this parse, so {what} was never read")
+        }
         Construct::AnsiCEscapes => format!(
             "a `$'…'` string decides {what}, and its escapes are decoded by the shell \
              — the bytes the program receives are not the bytes written here."
@@ -2634,6 +2665,43 @@ mod tests {
             )),
             "the body was lost: {:?}",
             q.stages[0].redirects
+        );
+    }
+
+    #[test]
+    fn a_here_document_body_a_sibling_swallowed_is_read_from_the_text() {
+        // Measured: a redirect or a pipeline between the delimiter and the body leaves
+        // `heredoc_body` empty and the body's own text inside that sibling, so an empty body is
+        // "not in this node" - and an empty body is a script nobody read, admitted as no code.
+        for src in [
+            "cat <<'EOF' > /w/f\n\\x\nEOF",
+            "cat <<'EOF' | sh\n\\x\nEOF",
+            "cat <<'EOF' 2>&1\n\\x\nEOF",
+        ] {
+            let x = n(src);
+            assert!(
+                x.stages.iter().flat_map(|s| &s.redirects).any(|r| matches!(
+                    &r.target,
+                    RedirectTarget::HereDoc { body, .. } if body == "\\x\n"
+                )),
+                "the body was lost in {src:?}: {:?}",
+                x.stages
+            );
+        }
+    }
+
+    #[test]
+    fn a_dash_here_document_hands_over_no_tabs() {
+        // `<<-` strips the leading tabs of every line, terminator line included; the grammar
+        // strips only the first line's and keeps the rest, so the body here is not the shell's.
+        let x = n("cat 3<<-'EOF'\n\t\t\\x\n\t\ty\n\tEOF");
+        assert!(
+            x.stages.iter().flat_map(|s| &s.redirects).any(|r| matches!(
+                &r.target,
+                RedirectTarget::HereDoc { literal: true, body } if body == "\\x\ny\n"
+            )),
+            "the tabs were kept: {:?}",
+            x.stages[0].redirects
         );
     }
 
