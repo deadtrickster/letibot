@@ -193,14 +193,16 @@ fn job_list_summary(
     if running == 0 && settled > 0 {
         return match want {
             Some(w) => format!(
-                "Nothing is running in scope `{w}`; {} there have settled — \
+                "Nothing is running in scope `{w}`; {} there {} settled — \
                  `job_list` with `all: true` shows them.\n",
-                counted(settled, "job", "jobs")
+                counted(settled, "job", "jobs"),
+                have(settled)
             ),
             None => format!(
-                "Nothing is running; {} have settled — `job_list` with \
+                "Nothing is running; {} {} settled — `job_list` with \
                  `all: true` shows every one.\n",
-                counted(settled, "job", "jobs")
+                counted(settled, "job", "jobs"),
+                have(settled)
             ),
         };
     }
@@ -216,8 +218,9 @@ fn job_list_summary(
         ),
         (None, true) => format!("{jobs} this session has started.\n"),
         (None, false) => format!(
-            "{running} of {jobs} this session has started are still running; {settled} \
-             have settled and are not listed — `job_list` with `all: true` shows every one.\n"
+            "{running} of {jobs} this session has started are still running; {} settled \
+             and not listed — `job_list` with `all: true` shows every one.\n",
+            counted(settled, "job", "jobs")
         ),
     }
 }
@@ -390,8 +393,9 @@ impl Tool for JobList {
         // are different rows, and neither of them is silence.
         let reaps = host.reap_log();
         body.push_str(&format!(
-            "\n{} have ended this session",
-            counted(reaps.len(), "scope", "scopes")
+            "\n{} {} ended this session",
+            counted(reaps.len(), "scope", "scopes"),
+            have(reaps.len())
         ));
         if reaps.is_empty() {
             body.push_str(
@@ -1114,6 +1118,17 @@ impl Tool for JobKill {
     }
 }
 
+/// The verb a count takes, for the sentence that puts one beside it: `1 job has settled`,
+/// `3 jobs have settled`. The noun and the verb agree with the same number, so they are
+/// picked the same way.
+fn have(n: usize) -> &'static str {
+    if n == 1 {
+        "has"
+    } else {
+        "have"
+    }
+}
+
 /// A count, said in words: `1 job`, `3 jobs`. A placeholder is for a writer who does not
 /// know the number, and every caller here knows it.
 fn counted(n: usize, one: &str, many: &str) -> String {
@@ -1363,7 +1378,7 @@ mod tests {
             "{head}"
         );
         assert!(
-            head.contains("43 have settled and are not listed"),
+            head.contains("43 jobs settled and not listed"),
             "{head}"
         );
         assert!(
@@ -1418,6 +1433,32 @@ mod tests {
             "{scoped_all}"
         );
         assert!(!scoped_all.contains("not listed"), "{scoped_all}");
+    }
+
+    /// The verb agrees with the count beside it, because a number in words is only half the
+    /// sentence: `1 job has settled` and `43 jobs have settled` are the same fact, said two ways.
+    #[test]
+    fn a_verb_agrees_with_the_count_beside_it() {
+        let one = job_list_summary(None, false, 1, 1, 0);
+        assert!(
+            one.starts_with("Nothing is running; 1 job has settled"),
+            "{one}"
+        );
+        let many = job_list_summary(None, false, 3, 3, 0);
+        assert!(
+            many.starts_with("Nothing is running; 3 jobs have settled"),
+            "{many}"
+        );
+        let scoped = job_list_summary(Some("turn"), false, 1, 1, 0);
+        assert!(scoped.contains("1 job there has settled"), "{scoped}");
+        // The one that is still running leaves a count of one settled behind it, and the
+        // sentence has to be grammatical for that too.
+        let rest = job_list_summary(None, false, 2, 2, 1);
+        assert!(
+            rest.contains("1 job settled and not listed"),
+            "{rest}"
+        );
+        assert!(!rest.contains("1 have"), "{rest}");
     }
 
     /// A count the tool already knows is said in words. `job(s)` is a form for a writer who

@@ -393,8 +393,10 @@ fn the_reap_log_reaches_the_model_through_job_list() {
     );
 
     let after = h.call("job_list", "{}");
+    // The kill ends the job's own cgroup, which is one reaping in the log: the listing has to
+    // count it rather than say the session has reaped nothing.
     assert!(
-        after.payload.contains("0 scopes have ended this session"),
+        after.payload.contains("1 scope has ended this session"),
         "{}",
         after.payload
     );
