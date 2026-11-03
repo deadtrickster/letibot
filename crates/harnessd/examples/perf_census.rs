@@ -152,6 +152,10 @@ impl Row {
         println!("       threads at open: {}", self.threads_open);
         let wrote = self.store_after.saturating_sub(self.store_before);
         println!(
+            "       WAL frames per session-turn: {:.1}",
+            wrote as f64 / 4120.0 / self.sessions as f64
+        );
+        println!(
             "       store {:.0} KiB per session-turn ({} -> {} bytes, {} turn(s))",
             wrote as f64 / 1024.0 / self.sessions as f64,
             self.store_before,
@@ -324,6 +328,15 @@ fn run(n: usize, subs: usize) -> Result<Row, String> {
 
     let rss_open_kb = rss_kb();
     let threads_open = status_kb("Threads:");
+    // Checkpoints off for the streaming phase, so the WAL only grows and its size is the volume the
+    // turns wrote, not whatever a checkpoint happened to have reset.
+    letibot_tokencore::store::Store::open(&store_path)
+        .and_then(|s| {
+            s.connection()
+                .execute_batch("PRAGMA wal_autocheckpoint = 0")
+                .map_err(Into::into)
+        })
+        .map_err(|e| format!("store: {e}"))?;
     let store_before = store_bytes(&store_path);
     let cpu_before = cpu_ms();
 
