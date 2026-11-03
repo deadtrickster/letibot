@@ -158,6 +158,8 @@ fn a_scrolled_viewport_holds_while_the_transcript_grows() {
             item_id: "s.grow".into(),
             kind: "tool_result".into(),
             ledger_head: String::new(),
+            item: None,
+            body_bytes: 0,
         },
     )));
     a.apply(ServerFrame::Event(env(
@@ -2135,6 +2137,8 @@ fn the_marker_joins_the_prose_the_tail_walk_rendered_before_it() {
                 item_id: id.clone(),
                 kind: "assistant".into(),
                 ledger_head: String::new(),
+                item: None,
+                body_bytes: 0,
             },
         )));
         a.apply(ServerFrame::Event(env(
@@ -2156,6 +2160,8 @@ fn the_marker_joins_the_prose_the_tail_walk_rendered_before_it() {
             item_id: "n.0".into(),
             kind: "assistant".into(),
             ledger_head: String::new(),
+            item: None,
+            body_bytes: 0,
         },
     )));
     a.apply(ServerFrame::Event(env(

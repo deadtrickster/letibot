@@ -180,6 +180,8 @@ mod tests {
                 item_id: id.into(),
                 kind: kind.into(),
                 ledger_head: "0000".into(),
+                item: None,
+                body_bytes: 0,
             });
             hub.record_item(id, item);
         };

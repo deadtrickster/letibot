@@ -1926,6 +1926,8 @@ fn one_warning_delivered_twice_is_noted_once() {
             item_id: format!("r{i}"),
             kind: "user".into(),
             ledger_head: String::new(),
+            item: None,
+            body_bytes: 0,
         });
         hub.record_item(
             &format!("r{i}"),

@@ -245,7 +245,7 @@ fn probe(args: &Args) -> i32 {
         0,
         "probe",
         &args.identity,
-        Caps::default(),
+        Caps::drawing_rows(),
     ) {
         Ok((mut client, _hello, _reader)) => {
             let _ = client.detach();
@@ -384,7 +384,7 @@ fn list_sessions(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         u64::MAX,
         "remote",
         "ls",
-        Caps::default(),
+        Caps::drawing_rows(),
     )?;
     let (tx, rx) = std::sync::mpsc::channel();
     let pump_thread = std::thread::spawn(move || pump(reader, tx));

@@ -218,6 +218,8 @@ pub fn appended(item_id: &str, kind: &str) -> SessionEvent {
         item_id: item_id.into(),
         kind: kind.into(),
         ledger_head: "beef".into(),
+        item: None,
+        body_bytes: 0,
     }
 }
 

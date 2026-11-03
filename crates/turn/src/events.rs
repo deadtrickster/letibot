@@ -66,6 +66,10 @@ pub enum TurnEvent {
         kind: &'static str,
         ledger_head: String,
         tokens: u32,
+        /// **The row itself**, so a log of these events can be read back as a conversation: the
+        /// lift decides whether it fits an announcement, and the engine has no opinion on that
+        /// number. Boxed because every other variant here is small.
+        item: Box<letibot_transcript::TranscriptItem>,
     },
     TurnFinished {
         turn_id: String,
@@ -275,6 +279,10 @@ mod progress_only {
                 kind: "tool_result",
                 ledger_head: "abc".into(),
                 tokens: 10,
+                item: Box::new(letibot_transcript::TranscriptItem::System {
+                    text: "restaged history".into(),
+                    origin: letibot_transcript::SystemOrigin::Update,
+                }),
             });
         }
         assert!(

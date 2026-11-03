@@ -33,6 +33,8 @@ fn a_run_of(think: &str, extra: usize) -> App {
             item_id: "s.0".into(),
             kind: "assistant".into(),
             ledger_head: String::new(),
+            item: None,
+            body_bytes: 0,
         },
     )));
     // The row carries the calls as well as the prose - the shape the daemon writes, and the only
@@ -69,6 +71,8 @@ fn a_run_of(think: &str, extra: usize) -> App {
             item_id: "s.1".into(),
             kind: "reasoning".into(),
             ledger_head: String::new(),
+            item: None,
+            body_bytes: 0,
         },
     )));
     a.apply(ServerFrame::Event(env(

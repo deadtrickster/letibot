@@ -13,6 +13,8 @@ impl App {
                 item_id,
                 kind,
                 ledger_head,
+                item: body,
+                ..
             } => {
                 // **A row that arrives below the window is counted and not held.** This head let
                 // the tail go (see `App::drop_rows_below`), so a row spliced onto the end here
@@ -63,6 +65,7 @@ impl App {
                 if kind == "user" {
                     self.bind_echo(&item_id);
                 }
+                let drawn = body.map(|b| (item_id.clone(), *b));
                 self.items.push(SnapshotItem {
                     citations: Vec::new(),
                     item_id,
@@ -78,6 +81,11 @@ impl App {
                 // — the `!` candidates and the model's suggestions — is stale. The next
                 // Tab for the same prefix is a fresh ask.
                 self.the_rows_moved();
+                // The body, when it rode the announcement: the row is whole now and waits for no
+                // second event.
+                if let Some((id, body)) = drawn {
+                    self.record_item(&id, body);
+                }
                 // **And the restore this head was waiting on has begun to arrive.** The line that
                 // said *N rows are in the store and not here yet* was true until this row; from
                 // here the conversation draws itself, so it goes. See [`App::restoring`].

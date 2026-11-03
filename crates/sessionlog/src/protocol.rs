@@ -16,7 +16,7 @@ use crate::view::Snapshot;
 /// Bumped when a frame's meaning changes in a way the other side cannot parse: a new variant is a
 /// deserialisation fault in the middle of a turn. Both sides compare it at ATTACH and refuse a
 /// mismatch by name.
-pub const PROTOCOL_VERSION: u32 = 59;
+pub const PROTOCOL_VERSION: u32 = 60;
 
 /// The names an operator may run through the head-run door: read-only and bounded, which admits
 /// `web_fetch` and not a tool that writes.
@@ -301,6 +301,21 @@ pub struct Caps {
     /// Free-form feature names, for forward compatibility.
     #[serde(default)]
     pub features: Vec<String>,
+    /// **This head draws a row from its own `TranscriptAppended`**, so a body that rode one need
+    /// not be sent again as `TranscriptContent`. Absent is a head built before the field: it reads
+    /// nothing off an announcement, and the daemon keeps sending it the second event.
+    #[serde(default)]
+    pub row_bodies: bool,
+}
+
+impl Caps {
+    /// The caps of a head that draws rows: the defaults, plus reading a body off its announcement.
+    pub fn drawing_rows() -> Caps {
+        Caps {
+            row_bodies: true,
+            ..Caps::default()
+        }
+    }
 }
 
 impl Default for Caps {
@@ -309,6 +324,7 @@ impl Default for Caps {
             queue: 1024,
             can_decide: true,
             features: Vec::new(),
+            row_bodies: false,
         }
     }
 }
@@ -1301,8 +1317,13 @@ mod tests {
         let _ = event;
         let _ = server;
         assert_eq!(
-            PROTOCOL_VERSION, 59,
-            "the match above was last reconciled with the frame list at 59. 59 added \
+            PROTOCOL_VERSION, 60,
+            "the match above was last reconciled with the frame list at 60. 60 put the row's body \
+             on `SessionEvent::TranscriptAppended` (`item`, `body_bytes`) and gave `Caps` \
+             `row_bodies`. Every new field is defaulted, so a version-59 head and a 60 daemon still \
+             parse each other's frames, and the daemon keeps sending `TranscriptContent` to a head \
+             that did not declare `row_bodies`; what the bump records is that an announcement now \
+             carries the row. 59 added \
              `SessionEvent::ModelRetry`, the one row a series of retries is worth: a version-58 \
              head cannot decode it, and an event side has no version negotiation at parse time, so \
              the number moves - that head reports the frame as unreadable and skips it, which is \

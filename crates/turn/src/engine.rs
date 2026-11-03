@@ -486,6 +486,7 @@ impl Session {
                 kind,
                 ledger_head: head,
                 tokens: n,
+                item: Box::new(item.clone()),
             });
             progress(done as u64 + 1, total);
         }
@@ -971,6 +972,7 @@ impl TurnEngine {
                 kind,
                 ledger_head: head,
                 tokens,
+                item: Box::new(produced_item.item.clone()),
             });
         }
 

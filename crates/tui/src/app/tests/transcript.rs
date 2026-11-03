@@ -818,6 +818,8 @@ fn the_conversation_rung_shows_the_conversation_and_nothing_else() {
                 item_id: "s.1".into(),
                 kind: "reasoning".into(),
                 ledger_head: String::new(),
+                item: None,
+                body_bytes: 0,
             },
         ),
         (
@@ -1312,6 +1314,8 @@ fn a_compaction_resolves_the_echoes_it_supersedes() {
         item_id: "s#t25.0".into(),
         kind: "system".into(),
         ledger_head: String::new(),
+        item: None,
+        body_bytes: 0,
     });
     hub.record_item(
         "s#t25.0",
@@ -3123,6 +3127,8 @@ fn a_run_of_hidden_rows_draws_one_line_that_continues_the_sentence() {
             item_id: "s.0".into(),
             kind: "assistant".into(),
             ledger_head: String::new(),
+            item: None,
+            body_bytes: 0,
         },
     )));
     // The row carries the calls as well as the prose, and that is the only place a row's target
@@ -3159,6 +3165,8 @@ fn a_run_of_hidden_rows_draws_one_line_that_continues_the_sentence() {
             item_id: "s.1".into(),
             kind: "reasoning".into(),
             ledger_head: String::new(),
+            item: None,
+            body_bytes: 0,
         },
     )));
     a.apply(ServerFrame::Event(env(
@@ -3261,6 +3269,8 @@ fn a_tool_heavy_turn_draws_one_marker_however_the_rows_are_interleaved() {
                 item_id: id.into(),
                 kind: kind.into(),
                 ledger_head: String::new(),
+                item: None,
+                body_bytes: 0,
             },
         )));
         seq += 1;
@@ -3408,6 +3418,8 @@ fn a_tool_heavy_turn_draws_one_marker_however_the_rows_are_interleaved() {
                 item_id: id.into(),
                 kind: kind.into(),
                 ledger_head: String::new(),
+                item: None,
+                body_bytes: 0,
             },
         )));
         seq += 1;
@@ -3813,6 +3825,8 @@ fn a_call_in_flight_is_counted_before_its_row_exists() {
             item_id: "s.0".into(),
             kind: "assistant".into(),
             ledger_head: String::new(),
+            item: None,
+            body_bytes: 0,
         },
     )));
     a.apply(ServerFrame::Event(env(
@@ -3874,6 +3888,8 @@ fn an_echo_that_grew_after_it_was_bound_is_not_drawn_twice() {
             item_id: "s.0".into(),
             kind: "user".into(),
             ledger_head: String::new(),
+            item: None,
+            body_bytes: 0,
         },
     )));
     assert_eq!(
@@ -3938,6 +3954,8 @@ fn a_grown_entry_keeps_the_mark_its_original_text_carried() {
             item_id: "s.0".into(),
             kind: "user".into(),
             ledger_head: String::new(),
+            item: None,
+            body_bytes: 0,
         },
     )));
     // The mark is on the entry as it was, which is the entry's identity.
@@ -4710,6 +4728,8 @@ fn the_calls_count_goes_pending_and_nothing_else_in_the_marker_does() {
             item_id: "s.0".into(),
             kind: "assistant".into(),
             ledger_head: String::new(),
+            item: None,
+            body_bytes: 0,
         },
     )));
     a.apply(ServerFrame::Event(env(
@@ -4731,6 +4751,8 @@ fn the_calls_count_goes_pending_and_nothing_else_in_the_marker_does() {
                 item_id: id.clone(),
                 kind: "tool_result".into(),
                 ledger_head: String::new(),
+                item: None,
+                body_bytes: 0,
             },
         )));
         a.apply(ServerFrame::Event(env(
@@ -4756,6 +4778,8 @@ fn the_calls_count_goes_pending_and_nothing_else_in_the_marker_does() {
             item_id: "s.9".into(),
             kind: "assistant".into(),
             ledger_head: String::new(),
+            item: None,
+            body_bytes: 0,
         },
     )));
     a.apply(ServerFrame::Event(env(
@@ -5324,6 +5348,8 @@ fn the_counts_after_the_operators_own_message_stand_on_their_own_line() {
             item_id: "s.0".into(),
             kind: "user".into(),
             ledger_head: String::new(),
+            item: None,
+            body_bytes: 0,
         },
     )));
     a.apply(ServerFrame::Event(env(
@@ -5399,6 +5425,8 @@ fn the_counts_after_the_models_own_sentence_are_glued_to_it() {
             item_id: "s.0".into(),
             kind: "assistant".into(),
             ledger_head: String::new(),
+            item: None,
+            body_bytes: 0,
         },
     )));
     a.apply(ServerFrame::Event(env(
@@ -5447,6 +5475,8 @@ fn the_counts_land_on_a_sentence_that_fills_its_line() {
             item_id: "s.0".into(),
             kind: "assistant".into(),
             ledger_head: String::new(),
+            item: None,
+            body_bytes: 0,
         },
     )));
     a.apply(ServerFrame::Event(env(
@@ -5594,6 +5624,8 @@ fn a_run_of_one_row_is_one_count() {
             item_id: "s.0".into(),
             kind: "assistant".into(),
             ledger_head: String::new(),
+            item: None,
+            body_bytes: 0,
         },
     )));
     a.apply(ServerFrame::Event(env(
@@ -5656,6 +5688,8 @@ fn a_run_of_one_row_is_one_count() {
             item_id: "s.0".into(),
             kind: "reasoning".into(),
             ledger_head: String::new(),
+            item: None,
+            body_bytes: 0,
         },
     )));
     b.apply(ServerFrame::Event(env(
@@ -5698,6 +5732,8 @@ fn the_chord_is_named_on_one_run_and_the_verb_on_the_others() {
             item_id: "s.1".into(),
             kind: "assistant".into(),
             ledger_head: String::new(),
+            item: None,
+            body_bytes: 0,
         },
     )));
     a.apply(ServerFrame::Event(env(
@@ -6555,6 +6591,8 @@ fn the_marker_reads_as_one_paragraph() {
                 item_id: item_id.into(),
                 kind: kind.into(),
                 ledger_head: String::new(),
+                item: None,
+                body_bytes: 0,
             },
         )));
         a.apply(ServerFrame::Event(env(
@@ -7246,5 +7284,44 @@ fn a_parents_message_is_drawn_as_the_sessions_own_block() {
     assert!(
         drawn.contains("s-the-father-sub-1793") && drawn.contains("the parser half is done"),
         "with the child's name and its words in it: {drawn}"
+    );
+}
+
+/// A row that rides its own announcement is drawn at once and asks for nothing: no `FetchRow`, no
+/// `FetchRows`, and no `TranscriptContent` to wait for.
+#[test]
+fn a_row_on_its_announcement_is_drawn_without_a_fetch() {
+    let mut a = app();
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", false)],
+        Hub::new("s").snapshot(),
+    ));
+    a.queued.clear();
+    a.apply(ServerFrame::Event(env(
+        1,
+        SessionEvent::TranscriptAppended {
+            item_id: "s.0".into(),
+            kind: "assistant".into(),
+            ledger_head: String::new(),
+            item: Some(Box::new(letibot_transcript::TranscriptItem::Assistant {
+                text: "the answer rode the announcement".into(),
+                tool_calls: Vec::new(),
+                truncated: false,
+            })),
+            body_bytes: 32,
+        },
+    )));
+    let screen = a.screen(100, 20).join("\n");
+    assert!(
+        screen.contains("the answer rode the announcement"),
+        "{screen}"
+    );
+    assert!(
+        !a.queued
+            .iter()
+            .any(|q| matches!(q, Action::FetchRow { .. } | Action::FetchRows { .. })),
+        "{:?}",
+        a.queued
     );
 }

@@ -26,6 +26,8 @@ fn a_row_with_a_body(
         item_id: item_id.into(),
         kind: "tool_result".into(),
         ledger_head: "0000".into(),
+        item: None,
+        body_bytes: 0,
     });
     hub.record_item(
         item_id,

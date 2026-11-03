@@ -11,7 +11,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use letibot_transcript::TranscriptItem;
 
 use crate::cursor::{Batch, ReadMark};
-use crate::event::{Envelope, SessionEvent};
+use crate::event::{Envelope, SessionEvent, rides_announcement};
 use crate::log::{LogBounds, SessionLog};
 use crate::protocol::{
     Ack, Caps, REJECT_READ_ONLY, REJECT_STALE_SEQ, REJECT_UNKNOWN_DECISION, ServerFrame,
@@ -907,13 +907,35 @@ impl Hub {
             .collect()
     }
 
-    /// Attach content to an already-appended transcript row and fan it out: `TranscriptAppended`
-    /// carries no content, so this is how a head learns what the row says.
+    /// Attach content to an already-appended transcript row, for the rows an announcement could not
+    /// carry. A row that fit rode its own `TranscriptAppended` and is already whole in the log, so
+    /// there is nothing to send - unless a head built before that field is attached, because it
+    /// reads no body off an announcement and would draw the row empty. One such head is why this
+    /// still publishes: the log is one stream for every head, not a per-head choice.
     pub fn record_item(&self, item_id: &str, item: TranscriptItem) {
+        let whole = self.lock().view.row_has_body(item_id);
+        let older_head = self.lock().heads.iter().any(|h| !h.caps.row_bodies);
+        if whole && !older_head {
+            return;
+        }
         self.publish(SessionEvent::TranscriptContent {
             item_id: item_id.to_string(),
             item: Box::new(item),
         });
+    }
+
+    /// **One row, announced and readable**: the announcement carries the body when it fits, and
+    /// [`Hub::record_item`] supplies it for a row that does not. Every door that publishes a row it
+    /// already holds goes through here, so the bound cannot be applied twice and differently.
+    pub fn append_row(&self, item_id: &str, kind: &str, ledger_head: &str, item: &TranscriptItem) {
+        self.publish(SessionEvent::TranscriptAppended {
+            item_id: item_id.to_string(),
+            kind: kind.to_string(),
+            ledger_head: ledger_head.to_string(),
+            item: rides_announcement(item).then(|| Box::new(item.clone())),
+            body_bytes: item.bytes() as u64,
+        });
+        self.record_item(item_id, item.clone());
     }
 
     /// Every event still in the scrollback, in seq order: the session as a record, which is what

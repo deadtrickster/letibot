@@ -269,6 +269,8 @@ fn publish_rows(hub: &Arc<Hub>, text: &str) {
             item_id: (*id).to_string(),
             kind: if i == 0 { "user" } else { "assistant" }.to_string(),
             ledger_head: "0".repeat(64),
+            item: None,
+            body_bytes: 0,
         });
         hub.record_item(id, item.clone());
     }

@@ -5925,3 +5925,17 @@ this tree depends on it.
 **What is left is the three-host re-measure, and it needs the operator**: the corpus gate has to
 run on the Mac and on lab2x1 over `scratch/corpus` and `~/letibot-corpus/{mac,lab2x1,lubuntu1}.json`,
 which this branch cannot reach. Every number in §4i.2 and §4i.7 is the pre-change one.
+## N1 — Put content on `TranscriptAppended` (was T13.1) — SETTLED: the announcement carries the row when it fits `ANNOUNCE_BYTES` (8 KiB), with `body_bytes` always and `TranscriptContent` kept for a row too large; `Caps.row_bodies` keeps older heads on the second event; PROTOCOL_VERSION 59; the TUI and bridge heads draw from the append (tests `crates/sessionlog/tests/appended_row.rs`).
+
+**This is the structural one.** T14 settled that composable KV is impossible on hybrid
+models and an addressable record is the fallback — and a log whose transcript events
+carry no content **cannot be that record**. A head cannot reconstruct a conversation
+from the log at all; the daemon reconciles out of band via `Hub::record_item`.
+
+**Still open?** `grep -n 'TranscriptAppended' crates/harnessd/src/harness.rs` — the
+comment at line 19 states the gap.
+
+**Why it is not in section 1.** W8 kept §4.5's event exactly as specified and made the
+gap explicit **rather than widening it unilaterally**, which was the right call: this
+changes the head protocol. The question for the operator is one line — *does the event
+carry the content, or a handle the head resolves?* — and after that it is code.

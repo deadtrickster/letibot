@@ -129,8 +129,9 @@ fn a_recorded_job_says_what_happened_and_where_its_bytes_went() {
 #[test]
 fn an_announced_row_is_filled_by_the_pairing_rule_and_body_less_without_it() {
     use super::*;
+    // Over the announcement bound, so the body cannot ride and the pairing rule is what fills it.
     let item = || TranscriptItem::System {
-        text: "the summary instruction".into(),
+        text: "x".repeat(letibot_sessionlog::event::ANNOUNCE_BYTES + 1),
         origin: letibot_transcript::SystemOrigin::Update,
     };
     let announce = |sink: &mut CapturingSink| {
@@ -139,6 +140,7 @@ fn an_announced_row_is_filled_by_the_pairing_rule_and_body_less_without_it() {
             kind: "system",
             ledger_head: "beef".into(),
             tokens: 3,
+            item: Box::new(item()),
         });
     };
 

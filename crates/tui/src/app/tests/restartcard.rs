@@ -345,6 +345,8 @@ fn a_restart_warning_and_its_notice_are_one_line() {
                     item_id: "s.0".into(),
                     kind: "user".into(),
                     ledger_head: String::new(),
+                    item: None,
+                    body_bytes: 0,
                 },
             )));
             a.apply(ServerFrame::Event(env(
@@ -405,6 +407,8 @@ fn a_restart_card_opens_with_its_header_once() {
                     item_id: "s.0".into(),
                     kind: "user".into(),
                     ledger_head: String::new(),
+                    item: None,
+                    body_bytes: 0,
                 },
             )));
             a.apply(ServerFrame::Event(env(
@@ -513,6 +517,8 @@ fn a_restart_and_the_children_it_handed_over_are_one_line() {
                     item_id: "s.0".into(),
                     kind: "user".into(),
                     ledger_head: String::new(),
+                    item: None,
+                    body_bytes: 0,
                 },
             )));
             a.apply(ServerFrame::Event(env(

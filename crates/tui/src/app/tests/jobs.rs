@@ -111,6 +111,8 @@ fn a_settled_jobs_row_draws_compact_and_not_as_the_promise() {
             item_id: "s.0".into(),
             kind: "user".into(),
             ledger_head: String::new(),
+            item: None,
+            body_bytes: 0,
         },
     )));
     let notice = "[job] a job you backgrounded has ended:\n  - `j57` exited 0 after 3.0s, wrote 5 bytes: sleep 3; echo done\nOutput: `job_output` job=\"j57\".";
@@ -177,6 +179,8 @@ fn a_session_row_is_not_drawn_as_the_operators() {
                 item_id: id.into(),
                 kind: "user".into(),
                 ledger_head: String::new(),
+                item: None,
+                body_bytes: 0,
             },
         )));
         a.apply(ServerFrame::Event(env(

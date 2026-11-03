@@ -303,6 +303,8 @@ fn a_settled_runs_expansion_draws_no_notice_the_watermark_covers() {
             item_id: "s.0".into(),
             kind: "assistant".into(),
             ledger_head: String::new(),
+            item: None,
+            body_bytes: 0,
         },
     )));
     a.apply(ServerFrame::Event(env(

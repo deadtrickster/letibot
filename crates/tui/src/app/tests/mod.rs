@@ -592,6 +592,8 @@ fn snapshot_hello(tag: &str, n: usize) -> ServerFrame {
             item_id: format!("{tag}.{i}"),
             kind: "user".into(),
             ledger_head: String::new(),
+            item: None,
+            body_bytes: 0,
         });
     }
     let att = hub.attach("tui", "test", Caps::default(), 0);
@@ -841,6 +843,8 @@ fn the_counts_are_plain_and_the_seam_is_faint_body() {
             item_id: "s.0".into(),
             kind: "assistant".into(),
             ledger_head: String::new(),
+            item: None,
+            body_bytes: 0,
         },
     )));
     a.apply(ServerFrame::Event(env(
@@ -912,6 +916,8 @@ fn the_counts_are_plain_and_the_seam_is_faint_body() {
                 item_id: id.into(),
                 kind: kind.into(),
                 ledger_head: String::new(),
+                item: None,
+                body_bytes: 0,
             },
         )));
         b.apply(ServerFrame::Event(env(

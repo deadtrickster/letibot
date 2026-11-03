@@ -969,6 +969,8 @@ fn the_counts_move_as_the_round_runs() {
             item_id: "s.0".into(),
             kind: "assistant".into(),
             ledger_head: String::new(),
+            item: None,
+            body_bytes: 0,
         },
     )));
     a.apply(ServerFrame::Event(env(

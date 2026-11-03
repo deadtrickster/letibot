@@ -307,8 +307,14 @@ impl Link {
         identity: &str,
     ) -> Result<Link, ClientError> {
         let socket_path = path.as_ref().to_path_buf();
-        let (client, reader) =
-            HeadClient::start_attach(path, session, since_seq, kind, identity, Caps::default())?;
+        let (client, reader) = HeadClient::start_attach(
+            path,
+            session,
+            since_seq,
+            kind,
+            identity,
+            Caps::drawing_rows(),
+        )?;
         Ok(Link::spawn(
             client,
             reader,
@@ -422,7 +428,7 @@ impl Link {
             since_seq,
             &self.kind,
             &self.identity,
-            Caps::default(),
+            Caps::drawing_rows(),
         )?;
         let (session, kind, identity) = (
             self.session.clone(),

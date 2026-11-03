@@ -631,6 +631,8 @@ impl SessionView {
                 item_id,
                 kind,
                 ledger_head,
+                item,
+                ..
             } => {
                 self.items.push(SnapshotItem {
                     citations: Vec::new(),
@@ -638,7 +640,9 @@ impl SessionView {
                     kind: kind.clone(),
                     ledger_head: ledger_head.clone(),
                     ts: env.ts,
-                    item: None,
+                    // A row that rode its own announcement is whole the moment it is published,
+                    // which is what makes a log of these events readable as a conversation.
+                    item: item.as_deref().cloned(),
                 });
                 self.trim();
                 // Which rows this turn produced. A head cannot work this out from the snapshot -
@@ -851,8 +855,17 @@ impl SessionView {
         self.items.get(idx).cloned()
     }
 
-    /// Attach content to an already-appended transcript row: `TranscriptAppended` has no body, so
-    /// this is how a row becomes readable.
+    /// Whether this view already holds a row's body, by the row's id: an announcement that carried
+    /// it filled the row, so the body has no second journey to make. See `Hub::record_item`.
+    pub fn row_has_body(&self, item_id: &str) -> bool {
+        self.items
+            .iter()
+            .find(|r| r.item_id == item_id)
+            .is_some_and(|r| r.item.is_some())
+    }
+
+    /// Attach content to an already-appended transcript row: a row too large to ride its own
+    /// announcement becomes readable here.
     pub fn record_item(&mut self, item_id: &str, item: TranscriptItem) {
         if let Some(row) = self.items.iter_mut().find(|r| r.item_id == item_id) {
             row.item = Some(item);
@@ -1351,6 +1364,8 @@ mod tests {
                 item_id: format!("s.{i}"),
                 kind: "assistant".into(),
                 ledger_head: "ab".into(),
+                item: None,
+                body_bytes: 0,
             });
         }
         assert_eq!(
@@ -1365,6 +1380,8 @@ mod tests {
                 item_id: format!("s#t1.{i}"),
                 kind: "assistant".into(),
                 ledger_head: "cd".into(),
+                item: None,
+                body_bytes: 0,
             });
         }
 
@@ -1405,6 +1422,8 @@ mod tests {
                 item_id: format!("s.{i}"),
                 kind: "assistant".into(),
                 ledger_head: "ab".into(),
+                item: None,
+                body_bytes: 0,
             });
         }
         let bounds = ViewBounds {
@@ -1424,6 +1443,8 @@ mod tests {
                 item_id: format!("s#t1.{i}"),
                 kind: "assistant".into(),
                 ledger_head: "cd".into(),
+                item: None,
+                body_bytes: 0,
             });
         }
         for e in log.retained() {
@@ -1454,6 +1475,8 @@ mod tests {
                 item_id: format!("s#t1.{i}"),
                 kind: "assistant".into(),
                 ledger_head: "ab".into(),
+                item: None,
+                body_bytes: 0,
             });
         }
         for i in 0..40u64 {
@@ -1461,6 +1484,8 @@ mod tests {
                 item_id: format!("s#t2.{i}"),
                 kind: "assistant".into(),
                 ledger_head: "cd".into(),
+                item: None,
+                body_bytes: 0,
             });
         }
         // The fork replaces the transcript the session is speaking, and not the one behind it.
@@ -1470,6 +1495,8 @@ mod tests {
                 item_id: format!("s#t3.{i}"),
                 kind: "assistant".into(),
                 ledger_head: "ef".into(),
+                item: None,
+                body_bytes: 0,
             });
         }
 
@@ -1503,6 +1530,8 @@ mod tests {
             item_id: "s.0".into(),
             kind: "user".into(),
             ledger_head: "ab".into(),
+            item: None,
+            body_bytes: 0,
         });
         let mut v = fold(&log);
         assert_eq!(v.snapshot(1, 0).items[0].item, None);

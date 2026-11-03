@@ -933,7 +933,12 @@ impl State {
                         .saying(one_line(&error, LINE)),
                 );
             }
-            SessionEvent::TranscriptContent { item, .. } => {
+            // The body rides its announcement when it fits and arrives as `TranscriptContent`
+            // when it does not, so a committed row is read from whichever event carries it.
+            SessionEvent::TranscriptContent { item, .. }
+            | SessionEvent::TranscriptAppended {
+                item: Some(item), ..
+            } => {
                 if let TranscriptItem::Assistant { text, .. } = item.as_ref()
                     && !text.trim().is_empty()
                 {
@@ -1321,6 +1326,7 @@ impl Head {
     fn attach_with(d: &Daemon, session: &str, watch_only: bool) -> Result<Head, String> {
         let caps = Caps {
             can_decide: !watch_only,
+            row_bodies: true,
             ..Caps::default()
         };
         let (client, hello, reader) =
@@ -2265,6 +2271,28 @@ mod tests {
         );
         feed(&mut state, testing::turn_finished("t1"));
         assert_eq!(state.turn, Turn::Idle, "the marked end is");
+    }
+
+    /// A row that rode its own announcement is read from it: the daemon sends the body no second time
+    /// to a head that declared `row_bodies`, so the bridge's last message must come from the append.
+    #[test]
+    fn a_row_on_its_announcement_is_the_last_message() {
+        let mut state = State::default();
+        state.fold(ServerFrame::Event(env(
+            1,
+            SessionEvent::TranscriptAppended {
+                item_id: "tr.1".into(),
+                kind: "assistant".into(),
+                ledger_head: String::new(),
+                item: Some(Box::new(TranscriptItem::Assistant {
+                    text: "done, all green".into(),
+                    tool_calls: Vec::new(),
+                    truncated: false,
+                })),
+                body_bytes: 15,
+            },
+        )));
+        assert_eq!(state.last_message(), "done, all green");
     }
 
     /// **The report outlives the chatter after it, and the spend is the package's.** P1

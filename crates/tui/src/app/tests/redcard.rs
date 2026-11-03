@@ -35,6 +35,8 @@ pub(super) fn with_notice(notice: &str) -> App {
             item_id: "s.0".into(),
             kind: "user".into(),
             ledger_head: String::new(),
+            item: None,
+            body_bytes: 0,
         },
     )));
     a.apply(ServerFrame::Event(env(

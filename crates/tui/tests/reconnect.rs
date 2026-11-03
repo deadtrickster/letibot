@@ -160,6 +160,8 @@ fn scripted_daemon(path: PathBuf) -> std::sync::mpsc::Receiver<Attach> {
                     item_id: "s.0".into(),
                     kind: "user".into(),
                     ledger_head: "x".into(),
+                    item: None,
+                    body_bytes: 0,
                 },
             )))
             .unwrap();

@@ -50,6 +50,8 @@ fn a_mark_lands_in_metrics_db_on_the_running_turn_and_on_a_read_back_row() {
                 item_id: row.into(),
                 kind: "assistant".into(),
                 ledger_head: String::new(),
+                item: None,
+                body_bytes: 0,
             });
         }
     }

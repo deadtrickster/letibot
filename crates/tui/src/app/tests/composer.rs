@@ -956,6 +956,8 @@ fn a_completion_row_holds_a_whole_brief_on_one_line() {
             item_id: "s.0".into(),
             kind: "user".into(),
             ledger_head: String::new(),
+            item: None,
+            body_bytes: 0,
         },
     )));
     a.apply(ServerFrame::Event(env(
@@ -1048,6 +1050,8 @@ fn an_open_ask_does_not_take_the_draft_on_enter_or_on_up() {
             item_id: "s.0".into(),
             kind: "user".into(),
             ledger_head: String::new(),
+            item: None,
+            body_bytes: 0,
         },
     )));
     // The entry the send left behind is stood down by hand, so the premise below is about ONE

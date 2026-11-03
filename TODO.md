@@ -2224,20 +2224,6 @@ model sees it too.
 
 ---
 
-## N1 — Put content on `TranscriptAppended` (was T13.1) — OPEN: `TranscriptAppended` still carries `{item_id, kind, ledger_head}` and the body rides a second event (`crates/sessionlog/src/event.rs:1026-1036`), so the operator's one-line question is still untaken; the gap the entry points at is now stated at `crates/sessionlog/src/hub.rs:899`, not at `harness.rs:19`.
-
-**This is the structural one.** T14 settled that composable KV is impossible on hybrid
-models and an addressable record is the fallback — and a log whose transcript events
-carry no content **cannot be that record**. A head cannot reconstruct a conversation
-from the log at all; the daemon reconciles out of band via `Hub::record_item`.
-
-**Still open?** `grep -n 'TranscriptAppended' crates/harnessd/src/harness.rs` — the
-comment at line 19 states the gap.
-
-**Why it is not in section 1.** W8 kept §4.5's event exactly as specified and made the
-gap explicit **rather than widening it unilaterally**, which was the right call: this
-changes the head protocol. The question for the operator is one line — *does the event
-carry the content, or a handle the head resolves?* — and after that it is code.
 
 ---
 

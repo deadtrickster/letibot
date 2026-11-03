@@ -3234,13 +3234,12 @@ impl Harness {
             if i % FILLING_STRIDE == 0 || (i as u64 + 1) == total {
                 self.filling(what, "rows", i as u64 + 1, total);
             }
-            self.hub
-                .publish(letibot_sessionlog::SessionEvent::TranscriptAppended {
-                    item_id: item_id.clone(),
-                    kind: letibot_tokencore::store::item_kind(item).to_string(),
-                    ledger_head: hex32(h_k),
-                });
-            self.hub.record_item(item_id, item.clone());
+            self.hub.append_row(
+                item_id,
+                letibot_tokencore::store::item_kind(item),
+                &hex32(h_k),
+                item,
+            );
             self.publish_citations(item_id, item);
         }
         // The walk ending is the operation ending, so say so: a row with no matching item ends the walk below

@@ -88,18 +88,25 @@ pub fn from_turn_event(e: TurnEvent) -> SessionEvent {
             // are one in-process string, above it they would be a copy per attached head.
             target: crate::event::display_target(&arguments),
         },
-        // `tokens` is dropped: `TranscriptAppended` is `{item_id, kind, ledger_head}`. The token
-        // count is a ledger fact and the ledger is where a head asks for it.
+        // `tokens` is dropped: the token count is a ledger fact and the ledger is where a head asks
+        // for it. The BODY rides, bounded here: one copy per retained event, and a head that can
+        // draw a row from its announcement never waits for a second event to do it.
         TurnEvent::TranscriptAppended {
             item_id,
             kind,
             ledger_head,
+            item,
             ..
-        } => SessionEvent::TranscriptAppended {
-            item_id,
-            kind: kind.to_string(),
-            ledger_head,
-        },
+        } => {
+            let body_bytes = item.bytes() as u64;
+            SessionEvent::TranscriptAppended {
+                item_id,
+                kind: kind.to_string(),
+                ledger_head,
+                item: crate::event::rides_announcement(&item).then_some(item),
+                body_bytes,
+            }
+        }
         TurnEvent::TurnFinished {
             turn_id,
             finish_reason,

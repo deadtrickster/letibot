@@ -13,8 +13,8 @@
 //! TurnInterrupted{turn_id, reason, partial_kept: bool}
 //! TurnFailed{turn_id, error, partial_kept: bool}   — not §4.5's; see the variant
 //! ProviderTrouble{kind, model, detail, reset_ms, count, switched_to}
-//! TranscriptAppended{item_id, kind, ledger_head}
-//! TranscriptContent{item_id, item}          — not §4.5's; see the variant
+//! TranscriptAppended{item_id, kind, ledger_head, item?, body_bytes}
+//! TranscriptContent{item_id, item}          — for a row too large to ride its announcement
 //! HeadAttached / HeadDetached{head_id, kind, identity}
 //! Warning{code, detail}
 //! ModelRetry{host, attempts, said, log, ended}   — one row's whole value; see the variant
@@ -635,6 +635,17 @@ pub struct Decider {
 /// display decision, so a huge argument cannot stall a head's socket.
 pub const TARGET_MAX_BYTES: usize = 2048;
 
+/// The most bytes of a row's body that ride its own `TranscriptAppended`. The bound is the head's
+/// queue as much as the wire's - a queue holds 1024 events, so this is the most announcements can
+/// grow to - and it is generous enough that prose and reasoning fit while a tool's payload does not.
+pub const ANNOUNCE_BYTES: usize = 8 * 1024;
+
+/// Whether a row's body fits its own announcement. One rule, read by the lift that decides what
+/// rides and by every door that publishes a row by hand, so a row cannot ride one and not the other.
+pub fn rides_announcement(item: &letibot_transcript::TranscriptItem) -> bool {
+    item.bytes() <= ANNOUNCE_BYTES
+}
+
 /// The keys that name a call's subject, in preference order. Key names and not tools, so the
 /// rule stays derived from the arguments rather than a table of tools.
 const SUBJECT_KEYS: [&str; 3] = ["path", "file_path", "file"];
@@ -1152,9 +1163,19 @@ pub enum SessionEvent {
         item_id: String,
         kind: String,
         ledger_head: String,
+        /// **The row itself, when it fits [`ANNOUNCE_BYTES`].** A log whose appends carry no body
+        /// cannot be read back as a conversation, and a head had to wait for a second event
+        /// before it could draw a row it had been told about. `None` is a row too large to ride
+        /// one, and - for an event written before the field existed - every row.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        item: Option<Box<letibot_transcript::TranscriptItem>>,
+        /// How many bytes the body is, whether or not it is here: a head told nothing can then
+        /// say the row was too large rather than lost, and the log says why the row is empty.
+        #[serde(default)]
+        body_bytes: u64,
     },
-    /// A row's body, published after its announcement: `TranscriptAppended` announces a row and
-    /// carries no body, so this is what a head draws from.
+    /// A row's body, for a row too large to ride its own announcement. A head reads the body from
+    /// whichever event carries it, and this is that event when the row does not fit.
     TranscriptContent {
         item_id: String,
         item: Box<letibot_transcript::TranscriptItem>,

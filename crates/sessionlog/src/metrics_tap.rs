@@ -300,6 +300,8 @@ mod tests {
             item_id: id.into(),
             kind: "assistant".into(),
             ledger_head: String::new(),
+            item: None,
+            body_bytes: 0,
         }
     }
 

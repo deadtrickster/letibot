@@ -1457,6 +1457,8 @@ fn a_snapshot_full_of_bodiless_rows_draws_no_bar_and_renders_as_bodies_land() {
             item_id: format!("s.{i}"),
             kind: "user".into(),
             ledger_head: String::new(),
+            item: None,
+            body_bytes: 0,
         });
     }
     let att = hub.attach(
