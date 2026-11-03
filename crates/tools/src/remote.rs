@@ -860,22 +860,26 @@ const MASTER_BOUND: Duration = Duration::from_secs(3);
 /// because it is real work on a real repository: the number only has to be below "for ever".
 pub const GIT_BOUND: Duration = Duration::from_secs(300);
 
-/// One fetch's wall clock: a slot wait, a run and the retry all come out of one `GIT_BOUND`,
-/// because a close that asked for one transfer must not cost four.
+/// One fetch's wall clock: a slot wait, a run and the retry all come out of one bound - the
+/// [`GIT_BOUND`] a close is given, because a close that asked for one transfer must not cost four.
 struct FetchBudget {
     began: Instant,
+    /// The whole fetch's bound, so a test can measure it in seconds where production spends
+    /// minutes: [`Ssh::with_bound`]'s reason, one layer in.
+    within: Duration,
 }
 
 impl FetchBudget {
-    fn new() -> Self {
+    fn new(within: Duration) -> Self {
         FetchBudget {
             began: Instant::now(),
+            within,
         }
     }
 
     /// What is left of the fetch's own bound, and never less than nothing.
     fn left(&self) -> Duration {
-        GIT_BOUND.saturating_sub(self.began.elapsed())
+        self.within.saturating_sub(self.began.elapsed())
     }
 
     /// What a wait may take: no longer than the caller's own bound, and never past the fetch's.
@@ -2176,7 +2180,21 @@ impl Ssh {
         url: &str,
         refspec: &str,
     ) -> Result<Option<std::process::Output>, String> {
-        let budget = FetchBudget::new();
+        self.fetch_within(Path::new("git"), repo, url, refspec, GIT_BOUND)
+    }
+
+    /// [`Ssh::fetch_back`] with the program and the budget named, the way [`Ssh::with_bound`]
+    /// names the connection's own: a test that measures the deadline wants seconds and a git it
+    /// can make silent, and production names neither.
+    fn fetch_within(
+        &self,
+        program: &Path,
+        repo: &Path,
+        url: &str,
+        refspec: &str,
+        within: Duration,
+    ) -> Result<Option<std::process::Output>, String> {
+        let budget = FetchBudget::new(within);
         let mut last: Option<std::process::Output> = None;
         for attempt in 0..2 {
             // The wait and the run both come out of the one budget, so the second attempt gets what
@@ -2199,7 +2217,7 @@ impl Ssh {
             let argv = self.fetch_argv(attempt, repo, url, refspec);
             // Bounded, because this fetch's transport is an ssh connection: a close that waits for
             // ever on a dead host is the same defect as a `read` that does.
-            let out = run_bounded(Path::new("git"), &argv, budget.left());
+            let out = run_bounded(program, &argv, budget.left());
             let refused = out.as_ref().is_some_and(|o| {
                 !o.status.success() && mux_refusal(&String::from_utf8_lossy(&o.stderr)).is_some()
             });
@@ -5307,6 +5325,7 @@ user     = "root"
     fn one_fetch_spends_one_budget_however_many_attempts() {
         let spent = FetchBudget {
             began: Instant::now() - (GIT_BOUND + Duration::from_secs(1)),
+            within: GIT_BOUND,
         };
         assert_eq!(
             spent.left(),
@@ -5318,7 +5337,7 @@ user     = "root"
             Duration::ZERO,
             "and no wait may outlive it"
         );
-        let fresh = FetchBudget::new();
+        let fresh = FetchBudget::new(GIT_BOUND);
         assert_eq!(
             fresh.wait(STEP_BOUND),
             STEP_BOUND,
@@ -5787,5 +5806,53 @@ user     = "root"
         assert!(env.contains(&("CARGO_HOME".into(), "/home/dead/.cargo".into())));
         let none = env_for_grants([Path::new("/home/dead/.cargo")].iter().copied());
         assert!(none.iter().all(|(k, _)| k != "GIT_CONFIG_GLOBAL"));
+    }
+
+    /// The git master's bound belongs to the whole fetch and is taken once. Paid per step it is paid
+    /// twice - once waiting for a slot, once running - and the daemon closes sessions one at a time,
+    /// so every session of a fanout that ends inherits the sum.
+    #[test]
+    fn a_fetch_that_queued_for_a_slot_runs_on_what_is_left_of_its_bound() {
+        let (dir, paths) = paths_for("git-deadline", "git-deadline", "git-deadline.invalid");
+        let host = Host {
+            name: "git-deadline".into(),
+            hostname: "git-deadline.invalid".into(),
+            user: Some("tester".into()),
+            key: None,
+            path: Vec::new(),
+            root: "~/letibot-remote".into(),
+            mise: Some(Mise::Off),
+            ..Host::default()
+        };
+        let program = dir.join("git");
+        crate::testing::write_stub(&program, "#!/bin/sh\n[ $# -eq 0 ] && exit 0\nsleep 30\n");
+        let ssh = Ssh::connect(host, Some(program.clone()), paths).expect("the connection opens");
+
+        // Eight fetches ahead of this one, as a fanout of eight closes would be: the slot comes free
+        // 800 ms into a 2 s bound, so a fresh bound for the run would take the call to 2.8 s.
+        let held: Vec<rpc::Entered> = (0..rpc::MAX_SESSIONS_PER_HOST)
+            .map(|_| rpc::enter_git("git-deadline", Duration::from_secs(1)).expect("a free slot"))
+            .collect();
+        let queue = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(800));
+            drop(held);
+        });
+
+        let bound = Duration::from_secs(2);
+        let began = Instant::now();
+        let out = ssh.fetch_within(&program, &dir, "https://example.invalid/repo", "main", bound);
+        let spent = began.elapsed();
+        queue.join().expect("the queue thread");
+        assert!(
+            matches!(out, Ok(None)),
+            "a git that never answers is killed at the deadline: {out:?}"
+        );
+        assert!(
+            spent < bound + Duration::from_millis(400),
+            "one deadline for the whole fetch: the slot wait and the run are both measured against \
+             the {} s it was given, and this call took {spent:?}",
+            bound.as_secs()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
