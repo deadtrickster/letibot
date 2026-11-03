@@ -964,7 +964,7 @@ impl Harness {
                     ),
                     carried: "",
                 });
-            let outcome = Self::run_summary_turn(
+            let ran = Self::run_summary_turn(
                 &self.hub,
                 &mut self.engine,
                 &mut self.session,
@@ -972,7 +972,12 @@ impl Harness {
                 &answerer,
                 &mut ladder,
                 ask.as_ref(),
-            )?;
+            );
+            // The summary turn appends through the engine, not through `reconcile`, so nothing
+            // walked the rows it left: a refused attempt keeps its instruction, and a census
+            // that never walked it under-reports what a session that cannot re-seat holds.
+            self.restate_footprint();
+            let outcome = ran?;
             if outcome.tool_calls > 0 {
                 return Err(HarnessError::Setup(format!(
                     "the summary turn proposed {} tool call(s); a summary is a record, not an action, so nothing was re-seated.",

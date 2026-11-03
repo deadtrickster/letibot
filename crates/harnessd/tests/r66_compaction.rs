@@ -191,6 +191,16 @@ fn a_small_hub(session: &str) -> Arc<Hub> {
 }
 
 fn opened(dir: &TempDir, url: &str, session: &str) -> (Harness, Arc<Hub>) {
+    opened_with(dir, url, session, |_| {})
+}
+
+/// [`opened`], with the last word on the config - the prompt a `/reseat` has to differ from.
+fn opened_with(
+    dir: &TempDir,
+    url: &str,
+    session: &str,
+    tweak: impl FnOnce(&mut Config),
+) -> (Harness, Arc<Hub>) {
     let config = dir.path().join("config");
     std::fs::create_dir_all(config.join("letibot")).expect("the config dir");
     std::fs::write(
@@ -223,6 +233,7 @@ fn opened(dir: &TempDir, url: &str, session: &str) -> (Harness, Arc<Hub>) {
     cfg.context_window = Some(8_000_000);
     cfg.store = Some(dir.path().join("sessions.db"));
     cfg.session_id = session.into();
+    tweak(&mut cfg);
 
     let parts = Parts::load(&cfg).expect("a provider session opens on the byte vocabulary");
     let hub = a_small_hub(&cfg.session_id);
@@ -433,6 +444,55 @@ fn a_refused_compaction_leaves_one_instruction_row_and_nothing_it_rendered() {
         end.census,
         end.text,
         "the footprint census is {} byte(s) behind the transcript after 40 failed attempts",
+        end.text.saturating_sub(end.census)
+    );
+}
+
+/// `/reseat summarise` runs the same summary turn `/compact` does, so a refused one leaves the same
+/// instruction row. The census has to walk it too, or the footprint, the hub snapshot and the
+/// memory watchdog under-report a session that cannot re-seat by one instruction per attempt.
+#[test]
+fn a_refused_reseat_leaves_the_census_walking_its_instruction() {
+    let _serial = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let fake = Fake::start();
+    let dir = TempDir::new("harnessd-r66-reseat-refused");
+    let session = "r66-reseat-refused";
+    let (mut h, _hub) = opened(&dir, &fake.url, session);
+    history(&mut h, 8, "warm-up");
+    let base = held(&h);
+    assert_eq!(
+        base.census, base.text,
+        "the census is level before anything is refused"
+    );
+    drop(h);
+
+    // The daemon comes back with a prompt the conversation does not speak, which is the only thing
+    // that gives `/reseat` something to re-seat onto.
+    let (mut h, _hub) = opened_with(&dir, &fake.url, session, |cfg| {
+        cfg.system = format!("{}\n\nAnd one more standing instruction.", cfg.system);
+    });
+    assert!(
+        h.reseat_target().expect("probing").is_some(),
+        "the seated prompt differs, so a re-seat has a target"
+    );
+    fake.answer_with(REFUSE);
+    for i in 0..5 {
+        assert!(
+            h.reseat().is_err(),
+            "attempt {i} must fail: the fake refused the summary turn"
+        );
+    }
+    let end = held(&h);
+    assert_eq!(
+        instructions(&h),
+        5,
+        "one instruction row per refused attempt"
+    );
+    assert_eq!(
+        end.census,
+        end.text,
+        "the footprint census is {} byte(s) behind the transcript after 5 refused `/reseat \
+         summarise` attempts",
         end.text.saturating_sub(end.census)
     );
 }
