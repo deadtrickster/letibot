@@ -510,85 +510,7 @@ the last step. **Still open?** for each: re-read the cited lines on the current 
 
 ---
 
-## R89 — Notices still drawn in full instead of one line + popup — **OPEN, filed 2026-10-12**
-
-How the transcript draws now: a session row goes `user.rs:61` → `compact_cards` → `compact_notice`
-→ `folded_notice`, else `session_block` (`blocks.rs:7`) prints the whole text faint (the gray
-wall). System rows are drawn whole by `item.rs:~263` (rano `system_row`), no fold. Hub warnings go
-through `panes/notes.rs:120`: a card reader gives a one-liner, the four compaction codes give an
-unclickable `· /notes` line, everything else gets rano `Note::lines` (3 lines + `… +N lines ·
-/notes`, unclickable). Counts are real rows from the last 4 days, deduplicated.
-
-1. **`[todo check]` that does not fold — 264 rows, ~4,490 screen rows, max 66.** Producer
-   `tools/src/builtins/todo.rs:1728-1820, :2412`; fold `blocks.rs:177 PROMISES`. Falls to raw
-   because: the old Model closing (168, still in the store), the Queue advice (13) and Parent
-   advice (10) carry no promise phrase, the "NOTHING can start" variant's closing (13), the
-   `blocked_said` line after the promise, and the stale-prompt paragraph added as a second group
-   (18). Want: `todo · <item> · yours|operator's|queue's|parent's · N more open · click for
-   details`; the stale paragraph as its own card. CONFIRMED. [walls 1]
-2. **`Tool call X was not executed` — one row of 1,083,613 chars, 6,902 lines** (session
-   `s-1789462738453908838-sub-1791503723529407810`, 10-09). Producer `turn/src/length.rs:139`.
-   Want: `length cap · 6902 calls not executed (bash ×6901, read ×1)`. CONFIRMED. [walls 2]
-3. **`message from your parent session` that is not a review — 130 rows, median 20 screen rows.**
-   Producer `harness.rs:14865`; only review-shaped ones unwrap (`review_card.rs:222`). Want:
-   `parent <id> · <first clause> · click for details`. CONFIRMED. [walls 3]
-4. **`[intent check]` — 52 rows, median 12.** Producer `intent/ledger.rs:304`. CONFIRMED. [walls 4]
-5. **`[context check]` — 99 rows, 4–5 each.** Producer `context_claim.rs:462, :530`. CONFIRMED.
-   [walls 5]
-6. **Merge-queue session notices with no card reader — 8 rows, up to 52.** `harness.rs:8202` (the
-   AGENTS.md section one) still produced; older shapes live in carried history. `red_card` opens
-   only three prefixes. CONFIRMED. [walls 6]
-7. **`[reseat]` session row raw** (`harness.rs:2263`); one reseat draws three rows (warning
-   one-liner + System(update) + this). CONFIRMED. [walls 7]
-8. **`[monitor]` raw, and a row mixing `[job]` with `[monitor]` falls entirely to raw** —
-   `job_card.rs:249 notice_groups` lists the tag but `folded_notice` has no case. `harness.rs:990`.
-   CONFIRMED. [walls 8]
-9. **Progress watcher** ("The harness is watching what your tool calls return…",
-   `progress.rs:246`) raw. CONFIRMED. [walls 9]
-10. **`[the deliverable]`** (`harness/deliverable.rs:98`, `task.rs:366`) raw. CONFIRMED. [walls 10]
-11. **Stale-prompt sentence as a session row** — `stale_card.rs:131` registers only the WARNING
-    kind. CONFIRMED. [walls 11]
-12. **`[answer] on "…"`** (`operator_ask.rs:75`) raw. CONFIRMED. [walls 12]
-13. **Orphan `[task]` completion** — `PROMISES` lacks "This session is told because the one that
-    started it cannot be:", which `job_card::CLOSINGS` has (`harness.rs:1114, :1146`). CONFIRMED.
-    [walls 13]
-14. **Context-wall nudge and "You keep overthinking"** (`harness.rs:9037, :11368`;
-    `compaction.rs:243/253`) raw. CONFIRMED. [walls 14]
-15. **System(update) rows unfolded** — 39 compaction summaries up to 18,684 chars / ~190 screen
-    rows, 25 reseat rows, the compaction instruction (`compaction.rs:448, :1756`;
-    `harness.rs:10594`; `dialect.rs:156`; `httphead.rs:230`). CONFIRMED. [walls 15]
-16. **~22 hub warning codes have no card** (3 lines + `/notes`, no click): `context_claim_repeated`
-    63, `resume_note` 55, `daemon_stopping` 24, `merge_queue_store_error` 23,
-    `merge_queue_recovered` 23, `queue_lease_lost` 17, `queue_wrong_build` 13,
-    `queue_target_proposed` 11, `memory_high` 11, `waiting_on_operator` 10, `daemon_stopping_runs`
-    10, and the rest in the report. Want a generic fallback card for every code. CONFIRMED.
-    [walls 16]
-17. **`memory_high` and `denied:<id>` are not in the warning census**, so they default to Failure
-    and draw red. CONFIRMED. [walls 16, inconsistencies]
-18. **Head-made notes, same 3-line fold, no click:** `denied:<req>` REFUSED (`asks.rs:344`),
-    NotRun/Answered/Decided, `Note::Pane` (`term.rs:153`), sudo, prompt, `provider_key_refused`,
-    `protocol_skew`, `daemon_replaced` (`hello.rs:194`), `unreadable_frame` (`session.rs:500`),
-    `anchor_lost` (`scroll.rs:1115`). CONFIRMED. [walls 17]
-19. **Compaction one-liners cannot be clicked and say the code twice** (`panes/notes.rs:222`).
-    CONFIRMED. [walls 18]
-20. **Folded `[task]` / `[todo]` rows have no popup** — `diff_popup.rs:228 notice_rows_in` marks a
-    row clickable only with `[job]` groups or a card; 8 finished subagents = 8 lines. CONFIRMED.
-    [walls 19]
-21. **The flash notice above the composer is cut to one line with no way to read the rest**
-    (`ui/screen.rs:296`). CONFIRMED. [walls 20]
-22. **The one-liners disagree with each other** (all CONFIRMED) [walls, inconsistencies]:
-    - hint wording: `click for details` / `alt-p for the card` (stale; alt-p and the click open
-      different views) / `· /notes` / none; and the hint is at the line's end, so it is cut first;
-    - lead: only red has a glyph; compaction uses `· code — `;
-    - framing: a session-row card sits in `  session · ` with a stamp and faint rest, a warning
-      card is bare and bright — the same `‼ main RED` looks different by source;
-    - click paths `Target::Notice` vs `Target::NoteCard` vs none, and **no key opens any popup**;
-    - popup titles differ (the fallback is `notice` in red);
-    - one event, several rows: red target (2), restart (2), reseat (3), stale prompt (2).
-
----
-
-## R90 — Keys, cards and popups disagree, and several send an answer the operator did not pick — **OPEN, filed 2026-10-12**
+## R90 — Keys, cards and popups disagree, and several send an answer the operator did not pick — **filed 2026-10-12; left: item 27 (a todo row that waits with no card open notifies nobody) and item 32 (the `allow_session` id still drawn on every permission row)**
 
 Paths under `crates/tui/src/`. Ranked by how likely the operator hits it. All from reading code.
 **1–4 and 6 can send an answer or `/reseat` the operator did not choose** — do those first, each
@@ -671,7 +593,7 @@ pinned by a key-sequence test.
 
 ---
 
-## R91 — Results, restore, reseat and the store: messages lost and wrong states — **OPEN, filed 2026-10-12**
+## R91 — Results, restore, reseat and the store: messages lost and wrong states — **filed 2026-10-12; left: items 9, 10, 15, 16 and 18 (another daemon's instance read as gone, the 30-minute busy wait, a child's unheard `[meanwhile]` turn, the per-delta R79 sort, a root close dropping held results)**
 
 Ranked severity × likelihood. **1 and 2 lose data; 3 fires waits on the wrong job.**
 
