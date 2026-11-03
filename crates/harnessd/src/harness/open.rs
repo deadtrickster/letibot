@@ -2313,10 +2313,6 @@ impl Harness {
                     // exec follows the mode (so `allow-all` admits `bash`) rather than the rule
                     // that exec always asks; off for the confined seats, which keep the rule.
                     .with_exec_follows_mode(cfg.unconfined)
-                    // Off unless a `leticode.toml` says otherwise: a host with no boundary then
-                    // asks about every test runner, build and project script, because asking about
-                    // every build on an unconfined box buys `allow-all` rather than safety.
-                    .with_unconfined_code_asks(cfg.leticode.permissions.ask_unconfined_code())
                     // opencode's `permission` config, so the allow/deny/ask rules govern before
                     // the mode; a subagent inherits them.
                     .with_permission(downgraded_ruleset(
@@ -2338,8 +2334,9 @@ impl Harness {
                     // Without this the trail is `NotCollected`, which is not the same fact as an
                     // empty trail.
                     .with_trail_source(move |_call: &GateCall<'_>| trail_for_gate.trail())
-                    // Where the tools actually run, so a card tells the truth about the boundary
-                    // instead of reciting one fixed sentence. Read off the backend above.
+                    // Where the tools actually run: a card tells the truth about the boundary, and
+                    // a host with none asks about the project's own code. Read off the backend
+                    // above, never probed here - the gate takes the fact it is handed.
                     .with_boundary(backend_boundary, backend_boundary_refusal)
                     // What the agent says it is doing, so the guard can connect the operator's
                     // words to a call that does not repeat them. Outside the trail's numbering, so
@@ -2372,21 +2369,6 @@ impl Harness {
                 // session exactly when one has gone wrong. Seeded from the store and re-checked at every lookup; a store
                 // that cannot answer is a note rather than a refusal to start.
                 let mut g = g;
-                // A narrowing in force is disclosed, like every other one: an operator who forgot
-                // they set it would read the cards as a regression. Silence is the default because
-                // the default is off.
-                if cfg.leticode.permissions.ask_unconfined_code() {
-                    notes.push(format!(
-                        "[permissions] ask_unconfined_code is ON{}: a session with no measured \
-                         boundary asks about every test runner, build and project script, every \
-                         time — no session grant, no approved shape and no `permission` rule \
-                         settles one. Only the per-call answer does",
-                        match cfg.leticode.path.as_deref() {
-                            Some(p) => format!(" ({})", p.display()),
-                            None => String::new(),
-                        }
-                    ));
-                }
                 if let Some(st) = &store {
                     let ws = cfg.workspace.display().to_string();
                     match st.approved_shapes(&ws) {

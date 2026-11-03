@@ -1326,7 +1326,7 @@ pub struct AdjudicatedGate {
     permission_sink: Option<PermissionSink>,
     /// The boundary this session's commands run inside, read off the backend at open. `None` is
     /// *no boundary*, and `boundary_refusal` says whether that is a choice or a host that could
-    /// not confine.
+    /// not confine. A verdict reads it - [`AdjudicatedGate::runs_project_code_unconfined`].
     boundary: Option<crate::exec::Boundary>,
     boundary_refusal: Option<String>,
     /// Whether exec follows the mode. Off by default: no point admits an exec-class call
@@ -1384,10 +1384,6 @@ pub struct AdjudicatedGate {
     /// opposite channel to `denials`, and not for symmetry: a mode change that stops asking has
     /// to be visible while the work happens, or the only evidence is that the cards stopped.
     admissions: Option<Box<dyn AdmissionSink>>,
-    /// Whether a host with no boundary asks about the project's own code, and off by default:
-    /// a gate that asks about every `cargo build` on an unconfined box does not make it safer,
-    /// it makes the operator reach for the point that asks nothing at all.
-    unconfined_code_asks: bool,
 }
 
 /// A call the gate admitted without asking anybody, and why. Deliberately not a denial with a
@@ -1475,7 +1471,6 @@ impl AdjudicatedGate {
             corpus_sink: None,
             unasked: false,
             admissions: None,
-            unconfined_code_asks: false,
         }
     }
 
@@ -1486,9 +1481,10 @@ impl AdjudicatedGate {
         self
     }
 
-    /// Where this session's commands actually run, for the facts a card carries: the measured
-    /// boundary, or the reason there is none. It changes no verdict, only what a reader is told,
-    /// and a card wrong about the boundary is worse than one that says nothing.
+    /// Where this session's commands actually run: the boundary that was measured, or `None` for a
+    /// host that has none. **The one fact the gate may read about the platform**, and it is handed
+    /// in rather than probed, so the Mac's case (`confine::probe` answers nothing there) is a Linux
+    /// test's to construct. `refusal` is the words the probe refused in, which a card repeats.
     pub fn with_boundary(
         mut self,
         boundary: Option<crate::exec::Boundary>,
@@ -1503,14 +1499,6 @@ impl AdjudicatedGate {
     /// [`AdmissionSink`], and `denials` for the channel in the other direction.
     pub fn with_admission_sink(mut self, sink: Box<dyn AdmissionSink>) -> Self {
         self.admissions = Some(sink);
-        self
-    }
-
-    /// Make a host with no boundary ask about the project's own code. Off by default; see
-    /// [`AdjudicatedGate::unconfined_code_asks`] for why, and the `[permissions]` key
-    /// `ask_unconfined_code` for the one caller.
-    pub fn with_unconfined_code_asks(mut self, on: bool) -> Self {
-        self.unconfined_code_asks = on;
         self
     }
 
@@ -1761,6 +1749,13 @@ impl AdjudicatedGate {
         }
     }
 
+    /// The whole of what this gate knows about the platform, and it was handed in at open rather
+    /// than probed here: a Mac's host shell answers `None` at `confine::probe`, so a test on a
+    /// Linux box constructs that case by handing this gate the same `None`.
+    fn has_measured_boundary(&self) -> bool {
+        self.boundary.is_some()
+    }
+
     /// Does this call run the project's own code on a host with no boundary, and what does it run?
     /// One function because a card that offers a grant the matcher refuses is the defect `Offer`
     /// exists to prevent. An unconfined host asks every time: the file changes after the answer.
@@ -1769,12 +1764,7 @@ impl AdjudicatedGate {
         access: Access,
         baseline: &crate::intent::Baseline,
     ) -> Option<String> {
-        // Off by default, and the default is the old behaviour. See
-        // [`AdjudicatedGate::unconfined_code_asks`].
-        if !self.unconfined_code_asks {
-            return None;
-        }
-        if access != Access::Exec || self.boundary.is_some() {
+        if access != Access::Exec || self.has_measured_boundary() {
             return None;
         }
         crate::project_code::runs_project_code(baseline)

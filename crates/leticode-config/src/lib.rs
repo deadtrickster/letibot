@@ -472,9 +472,6 @@ pub struct LeticodeConfig {
     /// project (TODO.md R76 item 7), over the box-wide `providers.toml` numbers. See
     /// [`memory_policy`].
     pub memory: MemoryKeys,
-    /// **The `[permissions]` table** — currently one key, `ask_unconfined_code`. See
-    /// [`PermissionKeys`].
-    pub permissions: PermissionKeys,
     /// **The `[skills]` table**: the skills this level pins. A pin asks for a skill to stay
     /// loaded, so the two levels add up instead of one replacing the other.
     pub skills: SkillKeys,
@@ -488,54 +485,6 @@ pub struct LeticodeConfig {
     /// How many consecutive model timeouts earn that move. `None` is the daemon's own
     /// number, and `0` never reaches here: it is refused at the parser by name.
     pub fallback_after_timeouts: Option<u32>,
-}
-
-/// **`[permissions]` in a `leticode.toml`** — the gate settings a file may carry, which is to
-/// say the ones that make the gate ask MORE.
-///
-/// ```toml
-/// [permissions]
-/// ask_unconfined_code = true   # R98(1): a host with no boundary asks about every
-///                              # test runner, build and project script, every time
-/// ```
-///
-/// **One key, and it is off unless a file says otherwise.** The operator, after the first cut
-/// of R98 shipped it always on: *"asking on every build/test on the Mac would just push them to
-/// allow-all (which they already run, unsandboxed)"*. A gate that asks about everything on an
-/// unconfined box does not buy safety, it buys `allow-all` — so the rule is a switch, and the
-/// default is the behaviour that predates it.
-///
-/// **Either level may turn it on and neither can turn it off**: the merge is `or`, because the
-/// user file is the operator's own and a project file (which a session with `write` can edit)
-/// must not be able to loosen what the user asked for.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct PermissionKeys {
-    pub ask_unconfined_code: Option<bool>,
-}
-
-impl PermissionKeys {
-    /// The two levels as one, `or` per key — see the type's own note on why it is not `over`.
-    pub fn overridden_by(&self, other: &PermissionKeys) -> PermissionKeys {
-        PermissionKeys {
-            ask_unconfined_code: match (self.ask_unconfined_code, other.ask_unconfined_code) {
-                (Some(a), Some(b)) => Some(a || b),
-                (a, b) => a.or(b),
-            },
-        }
-    }
-
-    /// **Whether R98(1) is in force**: a host with no boundary asks about the project's own
-    /// code, every time. `false` for a file that said nothing, which is every file that does
-    /// not carry the key.
-    pub fn ask_unconfined_code(&self) -> bool {
-        self.ask_unconfined_code.unwrap_or(false)
-    }
-
-    /// Whether the file said anything at all — for the disclosure, which must not claim a
-    /// setting nobody made.
-    pub fn is_empty(&self) -> bool {
-        self.ask_unconfined_code.is_none()
-    }
 }
 
 /// **`[github]` in a `leticode.toml`** — the two facts the reviewer seat needs before it may post.
@@ -596,26 +545,6 @@ fn github_keys(value: &toml::Value) -> Result<GithubKeys, String> {
     Ok(GithubKeys {
         post: t.post,
         token_path: t.token_path.as_deref().and_then(non_empty),
-    })
-}
-
-/// The `[permissions]` table as the file wrote it; unknown keys refused by name.
-#[derive(Debug, Default, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PermissionTable {
-    #[serde(default)]
-    ask_unconfined_code: Option<bool>,
-}
-
-fn permission_keys(value: &toml::Value) -> Result<PermissionKeys, String> {
-    let t: PermissionTable = value.clone().try_into().map_err(|e| {
-        format!(
-            "[permissions]: {e} — the one key is `ask_unconfined_code` (true makes a host with \
-             no confinement ask about every test runner, build and project script)"
-        )
-    })?;
-    Ok(PermissionKeys {
-        ask_unconfined_code: t.ask_unconfined_code,
     })
 }
 
@@ -845,12 +774,6 @@ impl LeticodeConfig {
                 Some(v) => memory_keys(v).map_err(|why| format!("{}: {why}", path.display()))?,
                 None => MemoryKeys::default(),
             },
-            permissions: match &file.permissions {
-                Some(v) => {
-                    permission_keys(v).map_err(|why| format!("{}: {why}", path.display()))?
-                }
-                None => PermissionKeys::default(),
-            },
             skills: match &file.skills {
                 Some(v) => skill_keys(v).map_err(|why| format!("{}: {why}", path.display()))?,
                 None => SkillKeys::default(),
@@ -959,7 +882,6 @@ impl LeticodeConfig {
                 default: other.memory.default.or(self.memory.default),
                 ceiling: other.memory.ceiling.or(self.memory.ceiling),
             },
-            permissions: self.permissions.overridden_by(&other.permissions),
             skills: self.skills.overridden_by(&other.skills),
             github: self.github.overridden_by(&other.github),
             // Replaced, not joined: a project that names two models must not inherit a third.
@@ -1117,11 +1039,6 @@ struct LeticodeConfigFile {
     /// what a call may hold, and the ceiling above which the operator is asked still holds.
     #[serde(default)]
     memory: Option<toml::Value>,
-    /// **The `[permissions]` table** — see [`PermissionKeys`]. Read here for the reason the
-    /// `[memory]` table is: a key that makes the gate ASK MORE cannot widen a capability, so it
-    /// belongs on this side of the wall rather than beside the models.
-    #[serde(default)]
-    permissions: Option<toml::Value>,
     /// **The `[skills]` table**: a pin says which skills stay loaded, so it sits on this side
     /// of the wall, seating no tool and lifting no narrowing.
     #[serde(default)]
@@ -1897,49 +1814,6 @@ mod tests {
         assert!(
             err.contains("[memory] default") && err.contains("lots"),
             "{err}"
-        );
-    }
-
-    /// **`[permissions] ask_unconfined_code` is read, and one key this build does not know is
-    /// refused by name.** R98(1) is the one setting here: off unless a file says so.
-    #[test]
-    fn the_permissions_table_is_read_and_its_one_key_is_named() {
-        let dir = project_dir("permissions");
-        let path = write_file(&dir, "[permissions]\nask_unconfined_code = true\n");
-        let cfg = LeticodeConfig::load(&path).expect("one key parses");
-        assert!(cfg.permissions.ask_unconfined_code());
-        assert!(
-            !LeticodeConfig::default().permissions.ask_unconfined_code(),
-            "the default is OFF — the behaviour that predates the rule"
-        );
-
-        let path = write_file(&dir, "[permissions]\nask_unconfined_cod = true\n");
-        let err = LeticodeConfig::load(&path).unwrap_err();
-        assert!(
-            err.contains("ask_unconfined_cod") && err.contains("[permissions]"),
-            "{err}"
-        );
-    }
-
-    /// **Either level may turn it on and neither can turn it off.** The user file is the
-    /// operator's own; a project file is one a session with `write` can edit, so a `false` in
-    /// the repository must not loosen what the user asked for.
-    #[test]
-    fn a_project_file_cannot_turn_the_ask_back_off() {
-        let on = PermissionKeys {
-            ask_unconfined_code: Some(true),
-        };
-        let off = PermissionKeys {
-            ask_unconfined_code: Some(false),
-        };
-        assert!(
-            on.overridden_by(&off).ask_unconfined_code(),
-            "a project file turned the user's ask off"
-        );
-        assert!(off.overridden_by(&on).ask_unconfined_code());
-        assert!(
-            !off.overridden_by(&PermissionKeys::default())
-                .ask_unconfined_code()
         );
     }
 
