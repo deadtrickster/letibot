@@ -4609,3 +4609,65 @@ an unread peer is on the refusing side.
 **The other half of this entry — pane ownership — is filed as R75a.**
 
 ---
+
+## R75a — A pane outlived its session, and a dead daemon's panes were never swept — **SETTLED AND BUILT 2026-11-03: all three, so a pane now has an owner of record**
+
+Split out of R75, which answered *who may type into a pane* and left *whose pane it is*. The
+measurements stood: `Terminals` is keyed by session and pane, each pane is its own
+`session.term-<session>-<N>` scope under the daemon's tree, and the only things that ended one were
+`!term close`, its program's exit and a clean daemon stop. `Sessions::close` named no driver, so a
+session's close and its park left its panes running in a session nobody could reopen, and a daemon
+killed hard left them in a tree whose owner pid was gone.
+
+**The three answers, and each is what the tree now does:**
+
+1. **A pane ends with its session.** `TerminalDriver::end_session` is the new seam - a default of
+   `0`, so a driver that holds no pane is unchanged - and `Terminals` implements it: every pane the
+   session holds is closed with the reason `the session ended`, its scope ended, and the map entry
+   dropped. `Sessions::close` calls it FIRST and puts the count in its own answer
+   (`2 pane(s) ended with it`), which is the daemon log's report for a close and the only report a
+   PARK has, because `park_idle_children` closes through the same function.
+2. **A daemon's start sweeps what a killed predecessor left.** `Terminals::begin` runs before any
+   head can open a pane: it reads `<data dir>/panes/<workspace key>.scopes` - the tree roots this
+   workspace's daemons recorded, one path per line - and for each root whose `letibot.<pid>.<n>`
+   names a DEAD pid, ends every `session.term-*` child and forgets the line. The two facts that
+   licence it are the cgroup path and the dead owner pid, and nothing else: a LIVE daemon's root is
+   kept, a job or turn scope in the same tree is not a pane and is left alone, and a directory this
+   format did not write is never touched. A root whose panes survive the kill stays recorded, so the
+   next start tries again. Then it records its own root (`ScopeTree::root`, new and defaulted), so
+   the next daemon can find it.
+3. **A pane is capped.** `PaneMemory` resolves the same policy a `bash` call in that session gets
+   (the box's `[memory]` under the user's `leticode.toml` and the session's own project's, against
+   what is free) and `Terminals::open` puts it on the pane's scope BEFORE the program starts. A tree
+   that will not take the cap says so once (`panes run UNCAPPED: ...`) rather than per pane, and a
+   box with no `/proc/meminfo` has no controller to hold one, which is `bash`'s answer there too.
+   The daemon wires both at `crates/harnessd/src/cli.rs`, where the terminal driver is installed.
+
+**Done when** a test says which - **DONE**, and none of them needs a cgroup: they run the real
+driver against a `ScopeTree` whose scopes are directories, so the daemon's DECISION is measured
+instead of the kernel's.
+
+- `crates/harnessd/src/term.rs`'s `closing_a_session_ends_its_panes_and_counts_them`: two real
+  programs on real ptys; `end_session` answers 2, the session holds no pane after, the tree was told
+  to end exactly those two scopes, and the two pids are GONE (waited for), which is the half a
+  scope's name cannot prove.
+- `the_close_report_says_what_a_session_took_with_it`: the sentence, in the four shapes it has
+  (`None` with no pane is the one that says nothing).
+- `a_pane_is_capped_by_the_policy_its_session_gets`: the pane's own scope is the one capped, at the
+  policy's default, and `memory.max` holds that number; skipped through `apparatus::present` on a box
+  with no `/proc/meminfo`.
+- `a_start_ends_the_panes_a_dead_daemon_of_the_same_workspace_left`: the dead root's two pane scopes
+  are ended and gone, while the LIVE root's pane, the job scope beside them and a directory with no
+  owner pid in its name are all untouched.
+- `a_start_records_this_tree_after_sweeping_a_dead_one`: the record it writes is its own root, and
+  the swept one is not in it.
+
+The `TerminalDriver` default is what keeps every other implementor - a fake in sessionlog's own
+tests - compiling without an `end_session`.
+
+**Not done, so nobody reads it as covered:** a pane is capped by the DAEMON's memory policy resolved
+against the session's workspace, so a session whose own project sets `[memory] default` differently
+from the daemon's workspace gets the daemon's number for its pane. The record is per workspace, so a
+pane scope whose record was lost (a wiped data dir) is debris nobody claims.
+
+---

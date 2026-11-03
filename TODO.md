@@ -1707,22 +1707,6 @@ nothing to design.
 
 ---
 
-## R75a — A pane outlives its session, and a dead daemon's panes are never swept — **OPEN, split out of R75 2026-11-03**
-
-From the same answer as R75, and not settled by it. A pane is owned by the daemon's `Terminals`
-registry, keyed by session and pane number, each in its own `session.term-<session>-<N>` cgroup
-under the daemon's scope; it ends on `!term close`, its program's exit, or a CLEAN daemon stop.
-Not on the session's close or park (R68's `Sessions::close` does not touch `Terminals`), and a
-daemon killed hard leaves its panes running unowned in its scope. Panes are uncapped (the
-operator's own run). Options: close a session's panes with it; clean up a crashed predecessor's
-`term-*` cgroups at daemon start.
-— OPEN: panes still outlive their session (`crates/harnessd/src/sessions.rs` names no `Terminals`; the cgroup is `term-<session>-<pane>` at `crates/harnessd/src/term.rs:227`) and nothing sweeps a dead predecessor's `term-*` cgroups at start.
-
-**Done when:** a pane's own fate is decided: either it ends with its session, or a daemon's start
-sweeps what a crashed predecessor left, and a test says which.
-
----
-
 ## R84a — Worktrees and landing trees beside the checkout (`wt/`, `landing/`) — **PARKED 2026-10-12, built on branch `parked/layout-wt-landing` (e7f4e55), not on main**
 
 The operator proposed the placement: *"so id suggest to correct the placement - ~/Projects/rano/rano
