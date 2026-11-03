@@ -22,8 +22,8 @@ T="$(mktemp -d)"
 # about (the operator's 2026-10-26 third report), so the cleanup does not depend on a case
 # reaching its last line.
 cleanup() {
-  ps -eo pid=,args= 2>/dev/null | awk -v d="$T/bin/harnessd" 'index($0, d) { print $1 }' \
-    | while read -r _stub; do kill "$_stub" 2>/dev/null || true; done
+  ps -eo pid=,args= 2> /dev/null | awk -v d="$T/bin/harnessd" 'index($0, d) { print $1 }' \
+    | while read -r _stub; do kill "$_stub" 2> /dev/null || true; done
   rm -rf "$T"
 }
 trap cleanup EXIT
@@ -38,7 +38,7 @@ mkdir -p "$T/bin" "$T/home/.config/letibot" "$T/run" "$T/ws"
 # `exec -a harnessd` is load-bearing twice: `--stop --all` decides a record is live by the FIRST
 # WORD of the process's argv (a python script's is `python3`), and `room_up` reads the argv for
 # `--room`.
-cat > "$T/bin/harnessd-room.py" <<'STUB'
+cat > "$T/bin/harnessd-room.py" << 'STUB'
 import os, socket, sys, time
 p = os.environ["LETIBOT_ROOM_SOCKET"]
 with open(os.environ["ROOM_ARGV"], "a") as f:
@@ -53,7 +53,7 @@ with open(p[:-5] + ".lease", "w") as f:
     f.write("box/%d/1\t%d\t%d\t%d\n" % (os.getpid(), os.getpid(), now, now))
 while True: time.sleep(0.2)
 STUB
-cat > "$T/bin/harnessd" <<'STUB'
+cat > "$T/bin/harnessd" << 'STUB'
 #!/usr/bin/env bash
 if [ "${1:-}" = "--room" ]; then
   exec -a harnessd python3 "$(dirname "$0")/harnessd-room.py" --room
@@ -84,20 +84,28 @@ ROOM_SOCK="$T/room/room.sock"
 mkdir -p "$T/room"
 # run NAME PROVIDERS_TOML [ARGS...] -- the launcher's combined output for one case.
 run() {
-  local toml="$1"; shift
+  local toml="$1"
+                   shift
   printf '%s' "$toml" > "$T/home/.config/letibot/providers.toml"
   (cd "${RUN_WS:-$T/ws}" && env -i PATH="${RUN_PATH_EXTRA:-}$RUN_PATH" HOME="$T/home" XDG_RUNTIME_DIR="$T/run" \
     LETIBOT_BIN="$T/bin" LETIBOT_ENDPOINT= STUB_ARGV="$T/argv.log" \
     LETIBOT_ROOM_SOCKET="${ROOM_SOCK_OVERRIDE-$ROOM_SOCK}" ROOM_ARGV="$T/room-argv.log" \
-    "$(command -v bash)" "$LAUNCHER" "$@" 2>&1 </dev/null)
+    "$(command -v bash)" "$LAUNCHER" "$@" 2>&1 < /dev/null)
 }
 expect() { # expect NAME OUTPUT PATTERN -- the output must match
-  if printf '%s' "$2" | grep -qE -- "$3"; then echo "ok   $1"
-  else echo "FAIL $1: wanted /$3/ in:"; printf '%s\n' "$2" | sed 's/^/     /'; fails=$((fails + 1)); fi
+  if printf '%s' "$2" | grep -qE -- "$3"; then
+                                               echo "ok   $1"
+  else
+       echo "FAIL $1: wanted /$3/ in:"
+                                        printf '%s\n' "$2" | sed 's/^/     /'
+                                                                               fails=$((fails + 1))
+  fi
 }
 refuse() { # refuse NAME OUTPUT PATTERN -- the output must not match
   if printf '%s' "$2" | grep -qE -- "$3"; then
-    echo "FAIL $1: did not want /$3/ in:"; printf '%s\n' "$2" | sed 's/^/     /'; fails=$((fails + 1))
+    echo "FAIL $1: did not want /$3/ in:"
+                                           printf '%s\n' "$2" | sed 's/^/     /'
+                                                                                  fails=$((fails + 1))
   else echo "ok   $1"; fi
 }
 
@@ -145,11 +153,12 @@ POSIX_SH="scripts/check-dist-names.sh scripts/check-fmt.sh scripts/check-host-ru
 BASH4_SPELLINGS='declare +-[[:alpha:]]*[An]|local +-[[:alpha:]]*[An]|typeset +-[[:alpha:]]*[An]|declare +-[gn]|local +-[gn]|map[f]ile|readarra[y]|copro[c]|wai[t] -n|\[\[ +-v |\$\{[[:alpha:]_][[:alnum:]_]*(\[[^]]*\])?(,,|\^\^|,|\^)\}|[&]>>|[|]&|;;[&]|;[&][[:space:]]*$'
 
 for f in $BASH32; do
-  if /bin/bash -n "$ROOT/$f" 2>"$T/parse.err"; then
+  if /bin/bash -n "$ROOT/$f" 2> "$T/parse.err"; then
     echo "ok   bash-3.2: $f parses under /bin/bash"
   else
     echo "FAIL bash-3.2: $f does not parse under /bin/bash ($(/bin/bash --version | head -1)):"
-    sed 's/^/     /' "$T/parse.err"; fails=$((fails + 1))
+    sed 's/^/     /' "$T/parse.err"
+                                     fails=$((fails + 1))
   fi
 done
 for f in $BASH32 $POSIX_SH; do
@@ -171,19 +180,27 @@ done
 for f in "$ROOT"/scripts/*; do
   [ -f "$f" ] || continue
   rel="scripts/${f##*/}"
-  case "$(head -n 1 "$f" 2>/dev/null)" in
+  case "$(head -n 1 "$f" 2> /dev/null)" in
     *bash*)
       case " $BASH32 " in
         *" $rel "*) ;;
-        *) echo "FAIL bash-3.2: $rel names bash and is not in BASH32 — add it to the guard"; fails=$((fails + 1)) ;;
-      esac ;;
+        *)
+           echo "FAIL bash-3.2: $rel names bash and is not in BASH32 — add it to the guard"
+                                                                                               fails=$((fails + 1))
+                                                                                                                    ;;
+      esac
+           ;;
     # `*bin/sh*` and not `*sh`: a `#!/usr/bin/env zsh` is a shell script of a third kind,
     # and this guard is about the two the launchers and the installer are written in.
     *bin/sh*)
       case " $POSIX_SH " in
         *" $rel "*) ;;
-        *) echo "FAIL bash-3.2: $rel is a /bin/sh script and is not in POSIX_SH — add it to the guard"; fails=$((fails + 1)) ;;
-      esac ;;
+        *)
+           echo "FAIL bash-3.2: $rel is a /bin/sh script and is not in POSIX_SH — add it to the guard"
+                                                                                                          fails=$((fails + 1))
+                                                                                                                               ;;
+      esac
+           ;;
   esac
 done
 # **A script nobody can run is not a check.** The lists above are each file's documented
@@ -207,7 +224,8 @@ if printf '%s' "$help_out" | grep -q "one command to start chatting"; then
   echo "ok   bash-3.2: /bin/bash scripts/letibot --help runs on the Mac's bash"
 else
   echo "FAIL bash-3.2: /bin/bash scripts/letibot --help did not run:"
-  printf '%s\n' "$help_out" | sed 's/^/     /'; fails=$((fails + 1))
+  printf '%s\n' "$help_out" | sed 's/^/     /'
+                                                fails=$((fails + 1))
 fi
 
 DEFAULT_ONLY='[deepseek]
@@ -233,14 +251,21 @@ expect "--status says there is no local home rather than refusing" "$out" "^loca
 # named, and no wall printed after either.
 refusal() { # refusal NAME RC OUTPUT FIRST SECOND -- a mistake, in two lines and no wall
   local name="$1" rc="$2" out="$3" first="$4" second="$5" why=""
-  if [ "$rc" -eq 0 ]; then why="exited 0"
-  elif ! printf '%s\n' "$out" | grep -qE -- "$first"; then why="wanted /$first/ as the first line"
-  elif ! printf '%s\n' "$out" | grep -qE -- "$second"; then why="wanted /$second/ after it"
-  elif printf '%s\n' "$out" | grep -q "one command to start chatting"; then why="printed the usage wall"
+  if [ "$rc" -eq 0 ]; then
+                           why="exited 0"
+  elif ! printf '%s\n' "$out" | grep -qE -- "$first"; then
+                                                           why="wanted /$first/ as the first line"
+  elif ! printf '%s\n' "$out" | grep -qE -- "$second"; then
+                                                            why="wanted /$second/ after it"
+  elif printf '%s\n' "$out" | grep -q "one command to start chatting"; then
+                                                                            why="printed the usage wall"
   fi
-  if [ -z "$why" ]; then echo "ok   $name"
+  if [ -z "$why" ]; then
+                         echo "ok   $name"
   else
-    echo "FAIL $name: $why in:"; printf '%s\n' "$out" | sed 's/^/     /'; fails=$((fails + 1))
+    echo "FAIL $name: $why in:"
+                                 printf '%s\n' "$out" | sed 's/^/     /'
+                                                                          fails=$((fails + 1))
   fi
 }
 
@@ -249,34 +274,44 @@ for spec in "a delete with no id|--delete|ID" "a session with no id|--session|ID
   "a rename with no id|--rename|ID" "a handover with no session|--handover|SESSION DIR" \
   "a revert with no backup|--revert|TRANSCRIPT BACKUP" "a note with no text|--note|TRANSCRIPT TEXT" \
   "a reattach with no id|--reattach|ID"; do
-  name="${spec%%|*}"; rest="${spec#*|}"; verb="${rest%%|*}"; what="${rest#*|}"
-  out="$(run "$DEFAULT_ONLY" "$verb")"; rc=$?
+  name="${spec%%|*}"
+                      rest="${spec#*|}"
+                                         verb="${rest%%|*}"
+                                                             what="${rest#*|}"
+  out="$(run "$DEFAULT_ONLY" "$verb")"
+                                        rc=$?
   refusal "$name names the $what and the verb's help" "$rc" "$out" \
     "^letibot: $verb needs $what" "run \`letibot $verb --help\`"
 done
 
 # --- and `attach`, which has two words to be left without --------------------------------
-out="$(run "$DEFAULT_ONLY" attach)"; rc=$?
+out="$(run "$DEFAULT_ONLY" attach)"
+                                     rc=$?
 refusal "attach with no source names the source" "$rc" "$out" \
   "^letibot: attach needs a source" "letibot attach github <org\\|owner/repo>"
-out="$(run "$DEFAULT_ONLY" attach github)"; rc=$?
+out="$(run "$DEFAULT_ONLY" attach github)"
+                                            rc=$?
 refusal "attach with no scope names the scope" "$rc" "$out" \
   "^letibot: attach needs a scope" "letibot attach github <org\\|owner/repo>"
-out="$(run "$DEFAULT_ONLY" attach gitlab stroppy-io)"; rc=$?
+out="$(run "$DEFAULT_ONLY" attach gitlab stroppy-io)"
+                                                       rc=$?
 refusal "attach with another source names the one it knows" "$rc" "$out" \
   "^letibot: attach knows one source and it is \`github\`, not gitlab" \
   "letibot attach github <org\\|owner/repo>"
 
 # --- a flag nobody has, and a directory that is not there --------------------------------
-out="$(run "$DEFAULT_ONLY" --halp)"; rc=$?
+out="$(run "$DEFAULT_ONLY" --halp)"
+                                     rc=$?
 refusal "an unknown flag is named, not run as a prompt" "$rc" "$out" \
   "^letibot: unknown flag: --halp" "letibot --help"
-out="$(run "$DEFAULT_ONLY" --stop /no/such/folder)"; rc=$?
+out="$(run "$DEFAULT_ONLY" --stop /no/such/folder)"
+                                                     rc=$?
 refusal "--stop with a directory that is not there says so" "$rc" "$out" \
   "^letibot: no such directory: /no/such/folder" "letibot --ls"
 
 # --- a daemon that is not running: what is missing, and the command that starts one ------
-out="$(run "$DEFAULT_ONLY" --attach)"; rc=$?
+out="$(run "$DEFAULT_ONLY" --attach)"
+                                       rc=$?
 refusal "--attach with no daemon says so and names the command that starts one" "$rc" "$out" \
   "^letibot: no harnessd for" "run \`letibot\` there to start one"
 
@@ -287,16 +322,25 @@ for spec in "--delete|letibot --delete ID" "--session|letibot --session ID" \
   "--note-continued|letibot --note-continued" "--list-claude|letibot --list-claude" \
   "--ls|letibot --ls" "--daemons|letibot --daemons" "--attach|letibot --attach" \
   "--status|letibot --status" "attach|letibot attach github"; do
-  verb="${spec%%|*}"; want="${spec#*|}"
-  out="$(run "$DEFAULT_ONLY" "$verb" --help)"; rc=$?
+  verb="${spec%%|*}"
+                      want="${spec#*|}"
+  out="$(run "$DEFAULT_ONLY" "$verb" --help)"
+                                               rc=$?
   if [ "$rc" -ne 0 ]; then
-    echo "FAIL $verb --help exited $rc:"; printf '%s\n' "$out" | sed 's/^/     /'; fails=$((fails + 1))
+    echo "FAIL $verb --help exited $rc:"
+                                          printf '%s\n' "$out" | sed 's/^/     /'
+                                                                                   fails=$((fails + 1))
   elif ! printf '%s\n' "$out" | grep -qF -- "$want"; then
-    echo "FAIL $verb --help should say '$want':"; printf '%s\n' "$out" | sed 's/^/     /'; fails=$((fails + 1))
+    echo "FAIL $verb --help should say '$want':"
+                                                  printf '%s\n' "$out" | sed 's/^/     /'
+                                                                                           fails=$((fails + 1))
   elif ! printf '%s\n' "$out" | grep -q "example"; then
-    echo "FAIL $verb --help gives no example:"; printf '%s\n' "$out" | sed 's/^/     /'; fails=$((fails + 1))
+    echo "FAIL $verb --help gives no example:"
+                                                printf '%s\n' "$out" | sed 's/^/     /'
+                                                                                         fails=$((fails + 1))
   elif printf '%s\n' "$out" | grep -q "one command to start chatting"; then
-    echo "FAIL $verb --help printed the wall instead of its own page"; fails=$((fails + 1))
+    echo "FAIL $verb --help printed the wall instead of its own page"
+                                                                       fails=$((fails + 1))
   else echo "ok   $verb --help is that verb's page, with an example"; fi
 done
 
@@ -305,8 +349,12 @@ out="$(run "$DEFAULT_ONLY" --help)"
 for verb in --continue --session --sessions --new --rename --delete --migrate --reattach \
   --handover --note --note-continued --revert --list-claude --stop --room --status \
   --ls --daemons --attach --glm --provider --host --vm --tsv; do
-  if printf '%s\n' "$out" | grep -q -- "$verb"; then echo "ok   --help names $verb"
-  else echo "FAIL --help does not name $verb, which the launcher accepts"; fails=$((fails + 1)); fi
+  if printf '%s\n' "$out" | grep -q -- "$verb"; then
+                                                     echo "ok   --help names $verb"
+  else
+       echo "FAIL --help does not name $verb, which the launcher accepts"
+                                                                           fails=$((fails + 1))
+  fi
 done
 
 # **No provider, no local model block, nothing serving: started, not refused.** The daemon
@@ -354,7 +402,7 @@ asked="$(sed -n 's/^OPEN_FILES_WANTED=\([0-9][0-9]*\).*/\1/p' "$LAUNCHER" | head
 limit_case() { # limit_case NAME SOFT OUTPUT
   local name="$1" soft="$2" out="$3" ok=0
   case "$soft" in
-    '' ) ok=0 ;;
+    '')  ok=0 ;;
     *[!0-9]*) ok=1 ;; # `unlimited`
     *) if [ "$soft" -ge "$asked" ]; then ok=1; fi ;;
   esac
@@ -378,7 +426,7 @@ else
     "$(printf '%s\n' "$out" | sed -n 's/^openfiles //p' | head -1)" "$out"
   # **The HARD limit must be exactly what this shell has**, because the launcher runs as this
   # shell's child (`env -i` carries no rlimits): anything else means the raise moved it too.
-  own_hard="$(ulimit -Hn 2>/dev/null || true)"
+  own_hard="$(ulimit -Hn 2> /dev/null || true)"
   child_hard="$(printf '%s\n' "$out" | sed -n 's/^openfiles-hard //p' | head -1)"
   if [ "$child_hard" = "$own_hard" ]; then
     echo "ok   ...and the HARD limit is left where the box set it ($own_hard)"
@@ -388,7 +436,7 @@ else
   fi
   # **Never lower one.** A shell already above the request keeps its own number.
   higher=$((asked + 1000))
-  if ( ulimit -Sn "$higher" ) >/dev/null 2>&1; then
+  if ( ulimit -Sn "$higher" ) > /dev/null 2>&1; then
     out="$( ulimit -Sn "$higher" && run "$DEFAULT_ONLY" "one question" )"
     soft="$(printf '%s\n' "$out" | sed -n 's/^openfiles //p' | head -1)"
     if [ "$soft" = "$higher" ]; then
@@ -451,9 +499,9 @@ expect "  ...and the daemon is started on that home" "$out" "^harnessd .*--endpo
 # This needs two things the other cases do not: a socket something is really LISTENING on
 # (`live` is `ss`, not a file test, because a daemon's shutdown unlinks the file while the
 # process keeps serving), and a head that refuses the way an older daemon's would.
-key12() { if command -v sha256sum >/dev/null 2>&1; then sha256sum; else shasum -a 256; fi | cut -c1-12; }
-if command -v python3 >/dev/null 2>&1; then
-  cat > "$T/bin/letibot-tui" <<'STUB'
+key12() { if command -v sha256sum > /dev/null 2>&1; then sha256sum; else shasum -a 256; fi | cut -c1-12; }
+if command -v python3 > /dev/null 2>&1; then
+  cat > "$T/bin/letibot-tui" << 'STUB'
 #!/usr/bin/env bash
 for a in "$@"; do
   if [ "$a" = "--probe" ]; then
@@ -485,16 +533,16 @@ time.sleep(120)' "$SOCK_P" &
   # not run must not look like one that did — the same rule the GGUF-gated tests keep.
   listens() { # listens SOCKET-PATH
     if [ "$(uname -s)" = Darwin ]; then
-      lsof -nP -U 2>/dev/null | grep -qF "$1"
+      lsof -nP -U 2> /dev/null | grep -qF "$1"
     else
-      ss -lxH 2>/dev/null | grep -qF "$1"
+      ss -lxH 2> /dev/null | grep -qF "$1"
     fi
   }
   if ! listens "$SOCK_P"; then
     echo "skip the protocol-skew cases: nothing here reports a listening socket"
     echo "     (ss on Linux, lsof on macOS) so the launcher cannot be shown one either."
     echo "     NOTHING WAS CHECKED — this is a fact about the harness, not a pass."
-    kill "$_listener" 2>/dev/null || true
+    kill "$_listener" 2> /dev/null || true
   else
     out="$(run "$DEFAULT_ONLY")"
     expect "a daemon speaking another protocol is refused, not attached to" "$out" "does not speak this build's protocol"
@@ -506,7 +554,7 @@ time.sleep(120)' "$SOCK_P" &
     expect "--attach refuses in the same words" "$out" "does not speak this build's protocol"
     refuse "  ...and does not claim to have attached" "$out" "attached to harnessd"
 
-    kill "$_listener" 2>/dev/null || true
+    kill "$_listener" 2> /dev/null || true
   fi
 else
   echo "skip the protocol-skew cases: no python3 to listen on a unix socket"
@@ -545,8 +593,8 @@ fi
 #
 # Constructed rather than raced: the *daemon* is a stub that listens (so the start path runs
 # its real `live` poll), and it goes when this test lets it go.
-if command -v python3 >/dev/null 2>&1; then
-  cat > "$T/bin/harnessd" <<'STUB'
+if command -v python3 > /dev/null 2>&1; then
+  cat > "$T/bin/harnessd" << 'STUB'
 #!/usr/bin/env python3
 import os, socket, sys, time
 p = sys.argv[sys.argv.index("--socket") + 1]
@@ -580,7 +628,7 @@ STUB
   # must not have started a second daemon in that window.
   sleep 1
   : > "$T/let-go"
-  wait "$launched" 2>/dev/null || true
+  wait "$launched" 2> /dev/null || true
   out="$(cat "$T/going.out")"
   expect "a daemon that is still going is waited for" "$out" "is still going - waiting for it"
   refuse "  ...and nothing is started over it" "$out" "already served by a live daemon"
@@ -598,14 +646,14 @@ STUB
   expect "  ...and the head runs" "$bare_out" "THE HEAD RAN"
   bare_key="$(printf '%s' "$(cd "$T/bare" && pwd -P)" | key12)"
   kill "$(sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' \
-    "$T/run/letibot/$bare_key.json" 2>/dev/null | head -1)" 2>/dev/null || true
+    "$T/run/letibot/$bare_key.json" 2> /dev/null | head -1)" 2> /dev/null || true
 
   # The stub daemon the launcher started is a real one for this case; it does not exit.
   # (Read with the same sed the launcher's own `json_num` is, because that is a function of
   # the launcher and not of this harness.)
   kill "$(sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' \
-    "$T/run/letibot/$key.json" | head -1)" 2>/dev/null || true
-  kill "$going" 2>/dev/null || true
+    "$T/run/letibot/$key.json" | head -1)" 2> /dev/null || true
+  kill "$going" 2> /dev/null || true
 else
   echo "skip the going-daemon case: no python3 to listen on a unix socket"
 fi
@@ -642,10 +690,10 @@ rm -f "$T/run/letibot/"*.json
 # 3. And `--new` with NO daemon up must not ask the head for a session of its own: the start
 #    already opened the fresh one, and a second leaves the folder's daemon holding an empty
 #    first session that every later plain attach lands on.
-if command -v python3 >/dev/null 2>&1; then
+if command -v python3 > /dev/null 2>&1; then
   # A daemon stub that LISTENS (so the launcher's start poll succeeds), writes every invocation's
   # argv down, and stays until this test kills it.
-  cat > "$T/bin/harnessd" <<'STUB'
+  cat > "$T/bin/harnessd" << 'STUB'
 #!/usr/bin/env python3
 import os, resource, socket, sys, time
 with open(os.environ["STUB_ARGV"], "a") as log:
@@ -670,7 +718,7 @@ while True:
 STUB
   # The head the operator quits: it records what it was handed and exits at once. `--probe` is the
   # launcher's own question and answers 0 ("a daemon here, speaking this build").
-  cat > "$T/bin/letibot-tui" <<'STUB'
+  cat > "$T/bin/letibot-tui" << 'STUB'
 #!/usr/bin/env bash
 case " $* " in *" --probe "*) exit 0 ;; esac
 printf 'tui %s\n' "$*" >> "$STUB_ARGV"
@@ -678,8 +726,8 @@ echo "letibot-tui: THE HEAD RAN"
 STUB
   chmod +x "$T/bin/harnessd" "$T/bin/letibot-tui"
 
-  daemon_argv() { grep '^harnessd ' "$T/argv.log" 2>/dev/null || true; }
-  head_argv() { grep '^tui ' "$T/argv.log" 2>/dev/null || true; }
+  daemon_argv() { grep '^harnessd ' "$T/argv.log" 2> /dev/null || true; }
+  head_argv() { grep '^tui ' "$T/argv.log" 2> /dev/null || true; }
   # **`printf '%s'`, with no newline**: the launcher hashes the workspace path with nothing
   # appended (`launcher.rs`'s `key`, and the `printf '%s' | sha256sum` the shell has always
   # used). A `$(pwd -P)` piped straight in carries a trailing newline and hashes a DIFFERENT
@@ -687,13 +735,16 @@ STUB
   key_of() { printf '%s' "$(cd "$1" && pwd -P)" | key12; }
   pid_of() { # pid_of DIR -- the pid in that folder's record
     sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' \
-      "$T/run/letibot/$(key_of "$1").json" 2>/dev/null | head -1
+      "$T/run/letibot/$(key_of "$1").json" 2> /dev/null | head -1
   }
-  fresh() { : > "$T/argv.log"; rm -f "$T/run/letibot/"*.json; }
+  fresh() {
+            : > "$T/argv.log"
+                               rm -f "$T/run/letibot/"*.json
+  }
   stop_case() { # stop_case DIR -- this block's own daemon, and nothing else
     local p
     p="$(pid_of "$1")"
-    [ -n "$p" ] && kill "$p" 2>/dev/null || true
+    [ -n "$p" ] && kill "$p" 2> /dev/null || true
   }
 
   # **1. A plain start opens a FRESH session.** No `--session` on the daemon's command line is
@@ -710,7 +761,7 @@ STUB
   # its own limit; this proves the daemon it detached still has it (perl's `setsid`+`exec` on a
   # Mac, `systemd-run --scope setsid` on Linux, neither of which touches rlimits).
   limit_case "the daemon the launcher detaches gets the raised limit too" \
-    "$(sed -n 's/^openfiles //p' "$T/argv.log" 2>/dev/null | head -1)" "$out"
+    "$(sed -n 's/^openfiles //p' "$T/argv.log" 2> /dev/null | head -1)" "$out"
 
   # **2. `--continue` is the verb that names one** — and it names it on the daemon's command line,
   # where the resume (and its hash-chain check) happens at startup.
@@ -749,7 +800,7 @@ STUB
   fi
   live_pid="$(pid_of "$T/new")"
   sleep 0.3
-  if kill -0 "$live_pid" 2>/dev/null && listens "$T/run/letibot/$(key_of "$T/new").sock"; then
+  if kill -0 "$live_pid" 2> /dev/null && listens "$T/run/letibot/$(key_of "$T/new").sock"; then
     echo "ok   ...and the daemon survives the head's exit"
   else
     echo "FAIL ...and the daemon survives the head's exit: pid $live_pid is gone or its socket went"
@@ -767,7 +818,8 @@ STUB
   # session opens and whether a turn is run. The id forms are the store's own: `s-<digits>`, with
   # an optional transcript suffix `#tN`.
   for pair in "contid:s-1791394076177451000" "contid-t:s-1791394076177451000#t17"; do
-    d="$T/${pair%%:*}"; want="${pair#*:}"
+    d="$T/${pair%%:*}"
+                        want="${pair#*:}"
     mkdir -p "$d"
     fresh
     out="$(RUN_WS="$d" run "$DEFAULT_ONLY" --continue "$want")"
@@ -792,10 +844,12 @@ STUB
     "--continue takes no argument, and 'please-reopen-it' is not a session id"
   expect "  ...with the usage line" "$out" "letibot --session ID"
   if [ "$rc" -ne 0 ]; then echo "ok   ...and exits non-zero"; else
-    echo "FAIL ...and exits non-zero: exit $rc"; fails=$((fails + 1))
+    echo "FAIL ...and exits non-zero: exit $rc"
+                                                 fails=$((fails + 1))
   fi
   if [ -z "$(daemon_argv)" ]; then echo "ok   ...and starts no daemon with it as a prompt"; else
-    echo "FAIL ...and starts no daemon with it as a prompt:"; daemon_argv | sed 's/^/     /'
+    echo "FAIL ...and starts no daemon with it as a prompt:"
+                                                              daemon_argv | sed 's/^/     /'
     fails=$((fails + 1))
   fi
 
@@ -812,13 +866,13 @@ fi
 # daemon held. The daemon's stop is bounded but not quick (the merge queues joined, five seconds
 # of subagent threads), it prints one `  stopping: …` line per step, and the launcher now waits
 # thirty seconds relaying those lines.
-if command -v python3 >/dev/null 2>&1; then
+if command -v python3 > /dev/null 2>&1; then
   mkdir -p "$T/home/logs" "$T/run/letibot" "$T/slow" "$T/stuck"
   # A daemon on its way out: it says what it is waiting for on its own log — the path the
   # launcher reads (`$HOME/logs/harnessd-<key>.log`, keyed by the workspace it was told) — and
   # it takes SEVEN seconds to go, two more than the bound that used to call it stuck. It also
   # LISTENS, because the start case below needs a daemon that comes up.
-  cat > "$T/bin/harnessd" <<'STUB'
+  cat > "$T/bin/harnessd" << 'STUB'
 #!/usr/bin/env python3
 import hashlib, os, signal, socket, sys, time
 ws = sys.argv[sys.argv.index("--workspace") + 1]
@@ -851,7 +905,7 @@ STUB
   chmod +x "$T/bin/harnessd"
   # The tui stub: `--stop` calls it for the interrupt and the start path for its probe — both
   # answer 0 and say nothing — and any other invocation is the head, which says it ran.
-  cat > "$T/bin/letibot-tui" <<'STUB'
+  cat > "$T/bin/letibot-tui" << 'STUB'
 #!/usr/bin/env bash
 for a in "$@"; do
   case "$a" in --probe|--interrupt-all) exit 0 ;; esac
@@ -865,12 +919,12 @@ STUB
     key="$(printf '%s' "$ws_p" | key12)"
     sock="$T/run/letibot/$key.sock"
     env -i PATH="$RUN_PATH" HOME="$T/home" "$T/bin/harnessd" \
-      --workspace "$ws_p" --socket "$sock" $extra >/dev/null 2>&1 &
+      --workspace "$ws_p" --socket "$sock" ${extra:+"$extra"} > /dev/null 2>&1 &
     printf '{"pid": %s, "workspace": "%s", "socket": "%s"}' "$!" "$ws_p" "$sock" \
       > "$T/run/letibot/$key.json"
     echo "$!"
   }
-  slow_daemon "$T/slow" >/dev/null
+  slow_daemon "$T/slow" > /dev/null
   out="$(RUN_WS="$T/slow" run "$DEFAULT_ONLY" --stop)"
   expect "a daemon that takes seven seconds to stop is waited for, not called stuck" \
     "$out" "^stopped "
@@ -881,7 +935,7 @@ STUB
   # **AND THE TIMEOUT STILL COMES, with the advice only after it.** A daemon wedged INSIDE a step
   # is exactly the case `--force` exists for; thirty seconds of patience is the difference
   # between a slow stop and a stuck one, so this case spends them.
-  slow_daemon "$T/stuck" --stuck >/dev/null
+  slow_daemon "$T/stuck" --stuck > /dev/null
   stuck_pid="$(sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' \
     "$T/run/letibot/$(printf '%s' "$(cd "$T/stuck" && pwd -P)" | key12).json" | head -1)"
   out="$(RUN_WS="$T/stuck" run "$DEFAULT_ONLY" --stop)"
@@ -890,7 +944,7 @@ STUB
   expect "  ...its own last words are said" "$out" \
     "it last said: stopping: waiting up to 5s for subagent threads"
   expect "  ...and only THEN is --force offered" "$out" "sends SIGKILL"
-  kill -9 "$stuck_pid" 2>/dev/null || true
+  kill -9 "$stuck_pid" 2> /dev/null || true
   rm -f "$T/run/letibot/"*.json
 
   # **A daemon that is on its way out, for TWELVE seconds** — the ten-second wait the start used to
@@ -910,9 +964,9 @@ STUB
     "is still going - waiting for it"
   refuse "  ...and the start never refuses on the old ten-second bound" "$out" "not taking heads"
   expect "  ...and it starts once that daemon is gone" "$out" "THE HEAD RAN"
-  kill "$going" 2>/dev/null || true
+  kill "$going" 2> /dev/null || true
   kill "$(sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' \
-    "$T/run/letibot/$key.json" 2>/dev/null | head -1)" 2>/dev/null || true
+    "$T/run/letibot/$key.json" 2> /dev/null | head -1)" 2> /dev/null || true
   rm -f "$T/run/letibot/"*.json
 else
   echo "skip the stop and start-wait cases: no python3"
@@ -925,7 +979,7 @@ fi
 # The launcher never migrated anything itself — that is `letibot migrate` — but it is the thing
 # that decides WHERE a head attaches, and the record in the rundir is the whole of what it
 # reads. Both halves are pinned here.
-cat > "$T/bin/letibot" <<'STUB'
+cat > "$T/bin/letibot" << 'STUB'
 #!/usr/bin/env bash
 printf 'letibot'; printf ' %q' "$@"; printf '\n'
 STUB
@@ -958,7 +1012,7 @@ expect "  ...and a source that is not github is refused by name" "$out" \
 mkdir -p "$T/run/letibot"
 # **A head stub that says what it was handed** — the last case above leaves one that only says
 # it ran, and what this case is about is the ARGUMENTS.
-cat > "$T/bin/letibot-tui" <<'STUB'
+cat > "$T/bin/letibot-tui" << 'STUB'
 #!/usr/bin/env bash
 printf 'head'; printf ' %q' "$@"; printf '\n'
 STUB
@@ -973,8 +1027,6 @@ expect "  ...and the head is handed the FORWARDED socket" "$out" \
 expect "  ...and resumes that session, not this folder's" "$out" "--resume s-4242"
 refuse "  ...and no daemon is started for this folder" "$out" "^harnessd "
 rm -f "$T/run/letibot/migrated-s-4242.json"
-
-
 
 # ---------------------------------------------------------------------------
 # **THE LAUNCHER STARTS THE BOX'S ROOM** — `docs/room.md` § *Still owed* item 4: *"`--room` exists;
@@ -993,12 +1045,12 @@ rm -f "$T/run/letibot/migrated-s-4242.json"
 # The one-per-box guarantee itself is `letibot_room::lease`'s and is measured in
 # `crates/room/src/lease.rs` (`a_race_for_the_lease_gives_one_coordinator_and_names_the_holder`) —
 # the launcher does not carry a second lock, it carries the loser's sentence to the terminal.
-if command -v python3 >/dev/null 2>&1; then
-  room_argv() { grep '^room ' "$T/room-argv.log" 2>/dev/null || true; }
+if command -v python3 > /dev/null 2>&1; then
+  room_argv() { grep '^room ' "$T/room-argv.log" 2> /dev/null || true; }
   # **The room-capable daemon stub, restored** — the sections above replace `$T/bin/harnessd`
   # (one of them with a daemon that LISTENS and never exits, which would hang a one-shot here).
   room_stub() {
-    cat > "$T/bin/harnessd" <<'STUB'
+    cat > "$T/bin/harnessd" << 'STUB'
 #!/usr/bin/env bash
 if [ "${1:-}" = "--room" ]; then
   exec -a harnessd python3 "$(dirname "$0")/harnessd-room.py" --room
@@ -1012,10 +1064,13 @@ STUB
   # binder holds it even after its file is removed, which is exactly the property `live` documents.
   room_kill() {
     local p i=0
-    p="$(cat "$T/room/pid" 2>/dev/null || true)"
+    p="$(cat "$T/room/pid" 2> /dev/null || true)"
     if [ -n "$p" ]; then
-      kill "$p" 2>/dev/null || true
-      while [ "$i" -lt 40 ] && kill -0 "$p" 2>/dev/null; do sleep 0.05; i=$((i + 1)); done
+      kill "$p" 2> /dev/null || true
+      while [ "$i" -lt 40 ] && kill -0 "$p" 2> /dev/null; do
+                                                            sleep 0.05
+                                                                        i=$((i + 1))
+      done
     fi
     rm -f "$T/room/room.sock" "$T/room/room.lease" "$T/room/pid" "$T/run/letibot/room.json"
   }
@@ -1029,17 +1084,17 @@ STUB
   expect "  ...and names the lease the coordinator holds" "$out" "lease  *$T/room/room.lease"
   expect "  ...and is handed --room and nothing else" "$(room_argv)" "^room --room$"
   # **The record, in the launcher's own shape** — `role: room` is what tells it from a folder's.
-  if grep -q '"role": "room"' "$T/run/letibot/room.json" 2>/dev/null; then
+  if grep -q '"role": "room"' "$T/run/letibot/room.json" 2> /dev/null; then
     echo "ok   ...and writes the record \`--daemons\` reads, marked role room"
   else
     echo "FAIL ...and writes the record \`--daemons\` reads:"
-    sed 's/^/     /' "$T/run/letibot/room.json" 2>/dev/null || echo "     (no record at all)"
+    sed 's/^/     /' "$T/run/letibot/room.json" 2> /dev/null || echo "     (no record at all)"
     fails=$((fails + 1))
   fi
   # **And it outlives the run that asked.** The launcher has exited by the time this reads the
   # pid — that is the whole of "a coordinator that dies with its asker is worse than none".
-  room_pid="$(sed -n 's/.*"pid": *\([0-9][0-9]*\).*/\1/p' "$T/run/letibot/room.json" 2>/dev/null | head -1)"
-  if [ -n "$room_pid" ] && kill -0 "$room_pid" 2>/dev/null; then
+  room_pid="$(sed -n 's/.*"pid": *\([0-9][0-9]*\).*/\1/p' "$T/run/letibot/room.json" 2> /dev/null | head -1)"
+  if [ -n "$room_pid" ] && kill -0 "$room_pid" 2> /dev/null; then
     echo "ok   ...and the coordinator is still alive after the launcher exited (pid $room_pid)"
   else
     echo "FAIL ...and the coordinator is still alive after the launcher exited (pid '${room_pid:-none}')"
@@ -1051,13 +1106,15 @@ STUB
   out="$(RUN_WS="$T/roomws" run "$DEFAULT_ONLY" --room)"
   refuse "a second run does not start a second coordinator" "$out" "no room on this box"
   if [ -z "$(room_argv)" ]; then echo "ok   ...and nothing was started over it"; else
-    echo "FAIL ...and nothing was started over it:"; room_argv | sed 's/^/     /'
+    echo "FAIL ...and nothing was started over it:"
+                                                     room_argv | sed 's/^/     /'
     fails=$((fails + 1))
   fi
   out="$(RUN_WS="$T/roomws" run "$DEFAULT_ONLY" "one question")"
   refuse "  ...nor does a plain run" "$out" "no room on this box"
   if [ -z "$(room_argv)" ]; then echo "ok   ...and a plain run starts nothing either"; else
-    echo "FAIL ...and a plain run starts nothing either:"; room_argv | sed 's/^/     /'
+    echo "FAIL ...and a plain run starts nothing either:"
+                                                           room_argv | sed 's/^/     /'
     fails=$((fails + 1))
   fi
 
@@ -1074,7 +1131,7 @@ STUB
   # the session's `room` tool still refuses by name — which is true — instead of the failure being
   # the launcher's silence.
   room_kill
-  cat > "$T/bin/harnessd" <<'STUB'
+  cat > "$T/bin/harnessd" << 'STUB'
 #!/usr/bin/env bash
 if [ "${1:-}" = "--room" ]; then
   echo "harnessd: another room coordinator is alive here: box/4242/1 (pid 4242) holds /x/room.lease and beat 3s ago. Two coordinators are two rooms with one name, so this one will not start." >&2
@@ -1093,25 +1150,28 @@ STUB
 
   # **And `--room --stop` stops it** — the record goes with the process it names.
   room_stub
-  RUN_WS="$T/roomws" run "$DEFAULT_ONLY" --room >/dev/null 2>&1
-  room_pid="$(sed -n 's/.*"pid": *\([0-9][0-9]*\).*/\1/p' "$T/run/letibot/room.json" 2>/dev/null | head -1)"
+  RUN_WS="$T/roomws" run "$DEFAULT_ONLY" --room > /dev/null 2>&1
+  room_pid="$(sed -n 's/.*"pid": *\([0-9][0-9]*\).*/\1/p' "$T/run/letibot/room.json" 2> /dev/null | head -1)"
   out="$(RUN_WS="$T/roomws" run "$DEFAULT_ONLY" --room --stop)"
   expect "--room --stop stops the box's room" "$out" "^stopped the room"
   if [ ! -f "$T/run/letibot/room.json" ]; then echo "ok   ...and its record goes with it"; else
-    echo "FAIL ...and its record goes with it"; fails=$((fails + 1))
+    echo "FAIL ...and its record goes with it"
+                                                fails=$((fails + 1))
   fi
-  if [ -n "$room_pid" ] && kill -0 "$room_pid" 2>/dev/null; then
-    echo "FAIL ...and the process is gone (pid $room_pid is still there)"; fails=$((fails + 1))
+  if [ -n "$room_pid" ] && kill -0 "$room_pid" 2> /dev/null; then
+    echo "FAIL ...and the process is gone (pid $room_pid is still there)"
+                                                                           fails=$((fails + 1))
   else
     echo "ok   ...and the process is gone"
   fi
 
   # **`--stop --all` sees it too** — a stop that leaves a daemon running is the R102 complaint.
-  RUN_WS="$T/roomws" run "$DEFAULT_ONLY" --room >/dev/null 2>&1
+  RUN_WS="$T/roomws" run "$DEFAULT_ONLY" --room > /dev/null 2>&1
   out="$(RUN_WS="$T/roomws" run "$DEFAULT_ONLY" --stop --all)"
   expect "--stop --all stops the box's room" "$out" "stopped .*room-workspace"
   if [ ! -f "$T/run/letibot/room.json" ]; then echo "ok   ...and its record goes with it"; else
-    echo "FAIL ...and its record goes with it"; fails=$((fails + 1))
+    echo "FAIL ...and its record goes with it"
+                                                fails=$((fails + 1))
   fi
 
   # **And `--stop N` stops it by the number `--ls` just printed** — the handle the list gives you,
@@ -1121,16 +1181,17 @@ STUB
   # *"the interrupt did not go through"* (the session protocol's frame, refused by a socket that
   # speaks another one), and `room.json` was left behind so `--ls` went on listing a room that was
   # gone. Both halves are what reading the record the number printed fixes.
-  RUN_WS="$T/roomws" run "$DEFAULT_ONLY" --room >/dev/null 2>&1
+  RUN_WS="$T/roomws" run "$DEFAULT_ONLY" --room > /dev/null 2>&1
   n="$(RUN_WS="$T/roomws" run "$DEFAULT_ONLY" --ls | grep -F "the box's room" | awk '{ print $1; exit }')"
   if [ -n "$n" ]; then echo "ok   ...and --ls gives it a number ($n)"; else
     echo "FAIL ...and --ls gives it a number: no room row in:"
-    RUN_WS="$T/roomws" run "$DEFAULT_ONLY" --ls | sed 's/^/     /'; fails=$((fails + 1))
+    RUN_WS="$T/roomws" run "$DEFAULT_ONLY" --ls | sed 's/^/     /'
+                                                                    fails=$((fails + 1))
   fi
   # **A `letibot-tui` that refuses, because the real one does**: a coordinator's socket speaks the
   # room's protocol, so the session protocol's interrupt comes back a refusal. That is what makes
   # the check below a measurement rather than a sentence the suite cannot falsify.
-  cat > "$T/bin/letibot-tui" <<'STUB'
+  cat > "$T/bin/letibot-tui" << 'STUB'
 #!/usr/bin/env bash
 echo "letibot-tui: this socket does not speak the session protocol" >&2
 exit 1
@@ -1140,7 +1201,8 @@ STUB
   expect "--stop N stops the box's room by its number" "$out" "^stopped the box's room"
   refuse "  ...without sending it the session protocol's interrupt" "$out" "interrupt did not go through"
   if [ ! -f "$T/run/letibot/room.json" ]; then echo "ok   ...and its record goes with it"; else
-    echo "FAIL ...and its record goes with it"; fails=$((fails + 1))
+    echo "FAIL ...and its record goes with it"
+                                                fails=$((fails + 1))
   fi
   cp "$T/bin/harnessd" "$T/bin/letibot-tui"
 
@@ -1149,7 +1211,7 @@ STUB
   # look for a socket no coordinator ever binds: a second coordinator on every run, refused by the
   # lease for ever. Both sides carry the same four names.
   mkdir -p "$T/unamebin"
-  cat > "$T/unamebin/uname" <<'STUB'
+  cat > "$T/unamebin/uname" << 'STUB'
 #!/usr/bin/env bash
 if [ "${1:-}" = "-n" ]; then printf '%s\n' "MacBook-Pro"; exit 0; fi
 exec /usr/bin/uname "$@"
@@ -1165,4 +1227,8 @@ else
   echo "skip the room cases: no python3 to bind a unix socket"
 fi
 
-[ "$fails" -eq 0 ] && echo "launcher: all cases pass" || { echo "launcher: $fails failed"; exit 1; }
+if [ "$fails" -ne 0 ]; then
+  echo "launcher: $fails failed"
+  exit 1
+fi
+echo "launcher: all cases pass"
