@@ -62,10 +62,11 @@ one head connection per session it started or attached to, so asks reach it.
 | `leticode_start` | `{worktree, brief, model, mode, host, vm}` - starts the folder's daemon if needed, opens a session, sends the brief, stays attached |
 | `leticode_attach` | `{worktree, session, watch_only}` - joins a running daemon (never starts one); `session` is an id or `gatekeeper` |
 | `leticode_send` | `{session, text}` - an operator line, queued behind a running turn |
-| `leticode_status` | `{session}` - `state`, `placement`, `turn`, `todos`, `last_message`, `report?`, `cost_usd`, `tokens`, `spent`, `pending_asks`, `activity`, `waiting_on`, `last_rejection` |
-| `leticode_events` | `{session, since, limit}` - the progress since the cursor: calls, jobs, failures, asks, turns, **subagents** |
+| `leticode_status` | `{session}` - `state`, `model`, `last_trouble`, `placement`, `turn`, `todos`, `last_message`, `report?`, `cost_usd`, `tokens`, `spent`, `pending_asks`, `activity`, `waiting_on`, `last_rejection` |
+| `leticode_events` | `{session, since, limit}` - the progress since the cursor: calls, jobs, failures, asks, turns, **subagents**, and a `provider` entry when the provider itself was stuck |
 | `leticode_transcript` | `{session, since, limit, reasoning}` - the CONVERSATION, row by row, up to the stated `cap` (B8) |
 | `leticode_mode` | `{session, mode}` - a point that needs nobody applies at once; `allow-all` with no boundary asks the operator (B8) |
+| `leticode_model` | `{session, model}` - moves a RUNNING session to another model; the daemon's `/models` verb, so a switch that arrives mid-turn takes when the turn ends |
 | `leticode_asks` | `{session}` - the pending asks: id, the call, the options offered |
 | `leticode_answer` | `{session, ask, option, note}` - sent as the protocol's `Answer`, so it lands in the decision corpus |
 | `leticode_diff` | `{session, full}` - the branch against its merge base: `git log --oneline`, `git diff --stat`, and the diff when `full` |
@@ -76,8 +77,10 @@ one head connection per session it started or attached to, so asks reach it.
 
 `letibot-mcp wait <worktree> <session> --until attention [--timeout 2h]` connects as a head and
 **exits when the session needs Claude**: turn ended (0, the last assistant message on stdout), an
-ask pending (10, the ask on stdout), failed (20), timeout (30). Claude runs it after every
-`leticode_start` and `leticode_send`; its exit is the notification.
+ask pending (10, the ask on stdout), failed (20), timeout (30), **the provider itself is in trouble
+(40, the event on stdout)** - a rate limit (with the reset instant when the provider gave one), an
+exhausted account, a model API timeout, or a round that stalled past the first-byte threshold. Claude
+runs it after every `leticode_start` and `leticode_send`; its exit is the notification.
 
 **"Its turn ended" means the DAEMON says the session is quiet** - `PROTOCOL_VERSION` 52's
 `Activity`: no prompt in flight (**the whole prompt, not one of its rounds**), no settlement owed to

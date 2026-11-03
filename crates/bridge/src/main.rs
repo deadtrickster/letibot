@@ -18,6 +18,7 @@
 //! | 10 | a permission ask is pending | the ask, as JSON |
 //! | 20 | the session failed, or could not be reached | why |
 //! | 30 | the timeout passed | nothing (the reason is on stderr) |
+//! | 40 | the provider is in trouble | the event, as JSON |
 //!
 //! **stdout is the MCP wire when serving**, and nothing may be printed to it there. The
 //! wait's stdout is its own and holds nothing but the payload above.
@@ -39,6 +40,8 @@ letibot-mcp — the Claude Code bridge to leticode
         10  an ask is pending     (the ask is on stdout, as JSON)
         20  the session failed    (why is on stdout)
         30  the timeout passed    (nothing on stdout)
+        40  the provider is stuck (a rate limit, a quota, a timeout or a stall: the event
+                                  is on stdout, as JSON)
 
       --timeout takes s, m or h (2h, 90s, 15m). Default 2h.
 
@@ -64,7 +67,7 @@ fn main() {
                     // The payload is the message or the ask: a person reading the
                     // notification sees the words, and the orchestrator that only wants the
                     // code ignores it.
-                    0 | 10 => println!("{said}"),
+                    0 | 10 | 40 => println!("{said}"),
                     20 => {
                         eprintln!("letibot-mcp: {said}");
                         println!("{said}");
