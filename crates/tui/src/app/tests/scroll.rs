@@ -4316,6 +4316,52 @@ fn scrolling_above_the_window_asks_for_the_rows_it_is_missing() {
     );
 }
 
+/// **A head at the tail asks for nothing.** `hist_floor == 0` means *everything this head holds is
+/// rendered*, which is true at the tail of every session short enough to walk whole - and the page
+/// ask read it as *the reader has scrolled up*, so a head that had just attached pulled the rows
+/// above its window a hundred at a time, for ever.
+#[test]
+fn a_head_following_the_tail_asks_for_no_rows() {
+    let mut a = app();
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", false)],
+        Hub::new("s").snapshot(),
+    ));
+    // The daemon trimmed 300 rows before this head attached, and what is left of the window is
+    // under the walk limit, so the whole of it renders and `hist_floor` is 0 at the tail.
+    a.items_base = 300;
+    for i in 0..200u64 {
+        a.apply(ServerFrame::Event(env(
+            i * 2 + 1,
+            testing::appended(&format!("s.{i}"), "user"),
+        )));
+        a.apply(ServerFrame::Event(env(
+            i * 2 + 2,
+            testing::content(&format!("s.{i}"), &format!("row {i}\n")),
+        )));
+    }
+    for _ in 0..3 {
+        let _ = a.screen(100, 20);
+    }
+    let asked: Vec<(usize, usize)> = a
+        .queued
+        .iter()
+        .filter_map(|x| match x {
+            Action::FetchRows { from, count, .. } => Some((*from, *count)),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        asked.is_empty(),
+        "a head following the tail asked for rows nobody is reading: {asked:?}"
+    );
+    assert_eq!(
+        a.hist_floor, 0,
+        "the fixture did not take the full-walk path"
+    );
+}
+
 /// **Attaching to a long session draws its end.** The daemon sends a window of a session it has
 /// trimmed 4500 rows of, and the head must draw the last screen of that window without lexing the
 /// rows above it: the first frame is the current one, not a walk of the conversation.

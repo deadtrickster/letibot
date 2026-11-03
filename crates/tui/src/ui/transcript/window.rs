@@ -244,9 +244,11 @@ impl App {
         // **The window has a budget, and everything this frame drew is in it.** Run after the walks
         // and the fill above, so what is measured is what the head would go on holding.
         self.trim_held(room);
-        // And when the reader has reached the oldest row this head holds, the rows above it are
-        // somebody else's: the daemon answers them, in pages.
-        if self.hist_floor == 0 {
+        // And when the reader has scrolled up past the oldest row this head holds, the rows above it
+        // are somebody else's: the daemon answers them, in pages. `hist_floor == 0` alone is
+        // *everything I hold is rendered*, which is also true at the tail of a short session, so
+        // the ask needs the reader to have left the tail as well.
+        if self.hist_floor == 0 && (self.scroll > 0 || !self.following()) {
             self.ask_for_rows_above();
         }
         // And the same at the other end: a reader at the end of what is held, with the session gone
