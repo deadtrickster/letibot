@@ -1,0 +1,15 @@
+name = "github"
+purpose = "the GitHub reviewer seat: each scope's state, and the open pull requests it holds"
+hooks = ["pane_github"]
+# **`capabilities = []` is the half the layer cannot cross**: it reads no file, runs no program and
+# fetches nothing - it never talks to GitHub. Every fact it draws arrives in the `github` feed, which
+# is the daemon's snapshot of the seat.
+capabilities = []
+# **What it reads**, and the only thing it is handed: the seat's identity and whether reviews are
+# posted, and per scope its state words and the open pull requests with their review state, the
+# age of their last action and the session that is working them.
+feeds = ["github"]
+# **What its rows may ask the host to do.** Enter on a pull request goes to the session reviewing
+# it, which is the one verb a row here has; a row without a session carries no act at all.
+actions = ["switch"]
+contract = 1
