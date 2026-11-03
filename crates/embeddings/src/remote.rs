@@ -58,7 +58,7 @@ impl std::error::Error for RemoteError {}
 impl From<HttpError> for RemoteError {
     fn from(e: HttpError) -> Self {
         match e {
-            HttpError::Status { code, body } => RemoteError::Refused { status: code, body },
+            HttpError::Status { code, body, .. } => RemoteError::Refused { status: code, body },
             other => RemoteError::Http(other.to_string()),
         }
     }
