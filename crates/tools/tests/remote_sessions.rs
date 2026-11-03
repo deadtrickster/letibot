@@ -723,3 +723,38 @@ fn a_refused_fetch_is_retried_and_the_branch_still_comes_back() {
     );
     git(&repo, &["rev-parse", "--verify", b.back_branch()]);
 }
+
+/// A fetch waits for a git slot for as long as the CONNECTION was given, not for the transfer's five
+/// minutes: the gate's contract is never past the caller's own deadline, and a close that waits it
+/// out is the hang coming back through the door marked back-pressure.
+#[test]
+fn a_fetch_waits_for_a_git_slot_as_long_as_the_connection_is_given() {
+    let fake = Fake::new("slot-bound", "");
+    let (repo, paths) = repo_and_paths(&fake.dir.join("rig"));
+    let b = SshBackend::place(&spec_for(
+        &repo,
+        &paths,
+        &fake.program,
+        Duration::from_secs(1),
+    ))
+    .expect("placed");
+    // Every slot of this process's git gate, held: the fetch cannot have one until these drop.
+    let _held: Vec<_> = (0..letibot_tools::rpc::MAX_SESSIONS_PER_HOST)
+        .map(|_| letibot_tools::rpc::enter_git("fake", Duration::from_secs(5)).expect("a git slot"))
+        .collect();
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(b.close());
+    });
+    // Ten seconds, not five minutes: the close has a one-second bound and this is the wait that has
+    // to respect it. A close that waits out the transfer's bound fails here instead of hanging.
+    let said = rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the close came back inside a few seconds")
+        .expect("a close says where the work went");
+    assert!(
+        said.contains("without getting one"),
+        "the report says it never got a slot: {said}"
+    );
+}

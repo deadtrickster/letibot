@@ -2192,7 +2192,10 @@ impl Ssh {
             if budget.left().is_zero() {
                 break;
             }
-            let _slot = rpc::enter_git(&self.host.name, budget.wait(GIT_BOUND))?;
+            // The wait is the connection's own bound and never more than the fetch has left: a
+            // caller that asked for a second of patience did not ask for the transfer's five
+            // minutes of slot queue. The RUN keeps what is left, because that is real work.
+            let _slot = rpc::enter_git(&self.host.name, budget.wait(self.bound))?;
             // Bounded, because this fetch's transport is an ssh connection: a close that waits for
             // ever on a dead host is the same defect as a `read` that does.
             let out = run_bounded(Path::new("git"), argv, budget.left());
