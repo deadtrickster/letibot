@@ -301,12 +301,20 @@ impl Harness {
             &self.session.ledger,
             &self.session.items,
             self.provider.is_some(),
+            self.echoes_reasoning(),
         );
         self.wall_anchor = Some(anchor);
         if len > 0 && now.tokens > 0 {
             self.cfg.ledger_scale = Some((len, now.tokens));
         }
         now
+    }
+
+    /// **Whether the next request echoes the reasoning it holds** - the provider does this for its own reason (a
+    /// tool chain without the thought is refused), so it is a fact about the tools, decided in one place and read by
+    /// both the request and the count of what that request sends.
+    pub(crate) fn echoes_reasoning(&self) -> bool {
+        !tool_names(&self.prefix.tools_json).is_empty()
     }
 
     /// The turn after a re-seat: the model is told it happened and answers. The same seam as
@@ -2067,8 +2075,15 @@ fn sent_between(
     from: u64,
     to: u64,
     metered: bool,
+    echo_reasoning: bool,
 ) -> u64 {
-    sent_since(ledger, items, from, metered).saturating_sub(sent_since(ledger, items, to, metered))
+    sent_since(ledger, items, from, metered, echo_reasoning).saturating_sub(sent_since(
+        ledger,
+        items,
+        to,
+        metered,
+        echo_reasoning,
+    ))
 }
 
 /// The measured ratio for a prompt of `ledger_at` ledger tokens counted as `provider`
@@ -2079,12 +2094,13 @@ pub(crate) fn sent_scale(
     ledger_at: u64,
     provider: u64,
     metered: bool,
+    echo_reasoning: bool,
 ) -> Option<(u64, u64)> {
     if !metered || provider == 0 {
         return None;
     }
     let prefix = u64::from(ledger.prefix_len());
-    let sent = prefix + sent_between(ledger, items, prefix, ledger_at, metered);
+    let sent = prefix + sent_between(ledger, items, prefix, ledger_at, metered, echo_reasoning);
     (sent > 0).then_some((sent, provider))
 }
 
@@ -2118,13 +2134,15 @@ impl Resident {
 }
 
 /// What the ledger holds after `from` that the next request will carry, in ledger tokens: the provider-sized
-/// estimate of an append, so it drops reasoning and the segment mark on a metered session while on a local one the
-/// request IS the ledger. A row that starts before `from` is not counted.
+/// estimate of an append, so on a metered session it drops what the request leaves out - the segment mark, and the
+/// reasoning unless the request echoes it - while on a local one the request IS the ledger. A row that starts before
+/// `from` is not counted.
 fn sent_since(
     ledger: &letibot_tokencore::ledger::TokenLedger,
     items: &[TranscriptItem],
     from: u64,
     metered: bool,
+    echo_reasoning: bool,
 ) -> u64 {
     let len = ledger.len() as u64;
     if !metered {
@@ -2135,11 +2153,10 @@ fn sent_since(
         .iter()
         .zip(items)
         .filter(|(row, _)| u64::from(row.tok_offset) >= from)
-        .filter(|(_, item)| {
-            !matches!(
-                item,
-                TranscriptItem::Reasoning { .. } | TranscriptItem::SegmentMark { .. }
-            )
+        .filter(|(_, item)| match item {
+            TranscriptItem::Reasoning { .. } => echo_reasoning,
+            TranscriptItem::SegmentMark { .. } => false,
+            _ => true,
         })
         .map(|(row, _)| u64::from(row.tok_len))
         .sum()
@@ -2168,10 +2185,17 @@ pub(crate) fn roll_resident(
     ledger: &letibot_tokencore::ledger::TokenLedger,
     items: &[TranscriptItem],
     metered: bool,
+    echo_reasoning: bool,
 ) -> (WallAnchor, Resident) {
     let len = ledger.len() as u64;
     if anchor.transcript == transcript_now && anchor.ledger <= len {
-        let since = anchor.convert(sent_since(ledger, items, anchor.ledger, metered));
+        let since = anchor.convert(sent_since(
+            ledger,
+            items,
+            anchor.ledger,
+            metered,
+            echo_reasoning,
+        ));
         return (
             anchor.clone(),
             Resident {
@@ -2182,7 +2206,8 @@ pub(crate) fn roll_resident(
         );
     }
     let prefix = u64::from(ledger.prefix_len());
-    let tokens = anchor.convert(prefix + sent_since(ledger, items, prefix, metered));
+    let tokens =
+        anchor.convert(prefix + sent_since(ledger, items, prefix, metered, echo_reasoning));
     (
         WallAnchor {
             transcript: transcript_now.to_string(),

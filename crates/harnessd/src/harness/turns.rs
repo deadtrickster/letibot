@@ -1752,6 +1752,9 @@ impl Harness {
                     rendered_at,
                 )),
             )?;
+            // The request this round sent carried tools or it did not, and that is what decides whether its thought
+            // was part of the prompt the provider counted.
+            let echoed = self.echoes_reasoning();
             if ok.metrics.prompt_tokens > 0 {
                 self.wall_anchor = Some(WallAnchor {
                     transcript: self.session.transcript_id.clone(),
@@ -1764,6 +1767,7 @@ impl Harness {
                         rendered_at,
                         ok.metrics.prompt_tokens,
                         self.provider.is_some(),
+                        echoed,
                     ),
                 });
                 self.cfg.ledger_scale = Some((rendered_at, ok.metrics.prompt_tokens));

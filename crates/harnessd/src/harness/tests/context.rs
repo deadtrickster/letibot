@@ -78,7 +78,7 @@ fn a_reasoning_heavy_history_meets_the_wall_at_the_providers_count() {
     let at_round = w.len();
     w.thought(200_000).sent(12_000);
 
-    let (_, now) = super::roll_resident(&anchor, "t-wall", &w.ledger, &w.items, true);
+    let (_, now) = super::roll_resident(&anchor, "t-wall", &w.ledger, &w.items, true, false);
     assert_eq!(
         now.tokens, 892_000,
         "the provider's 880k + the 12k it will be sent"
@@ -106,7 +106,7 @@ fn a_reasoning_heavy_history_meets_the_wall_at_the_providers_count() {
 
     // And at the real edge it fires: a 50k tool result takes it to 942k.
     w.sent(50_000);
-    let (_, now) = super::roll_resident(&anchor, "t-wall", &w.ledger, &w.items, true);
+    let (_, now) = super::roll_resident(&anchor, "t-wall", &w.ledger, &w.items, true, false);
     assert_eq!(now.tokens, 942_000);
     cfg.ledger_scale = Some((w.len(), now.tokens));
     assert!(
@@ -139,7 +139,7 @@ fn a_restart_after_a_notice_recovers_the_providers_count_and_does_not_compact() 
         measured: true,
         scale: None,
     };
-    let (_, now) = super::roll_resident(&anchor, "t-wall", &w.ledger, &w.items, true);
+    let (_, now) = super::roll_resident(&anchor, "t-wall", &w.ledger, &w.items, true, false);
     assert_eq!(now.tokens, 742_100, "740k + the answer and the notice");
 
     let mut cfg = deepseek_window();
@@ -173,7 +173,7 @@ fn a_fork_rebases_the_count_and_a_local_session_counts_the_ledger() {
         measured: true,
         scale: None,
     };
-    let (rebased, now) = super::roll_resident(&stale, "t-wall", &w.ledger, &w.items, true);
+    let (rebased, now) = super::roll_resident(&stale, "t-wall", &w.ledger, &w.items, true, false);
     assert_eq!(
         now.tokens, 8_000,
         "prefix + what is sent, the thought left out"
@@ -183,7 +183,7 @@ fn a_fork_rebases_the_count_and_a_local_session_counts_the_ledger() {
     assert!(!rebased.measured);
     // The next roll adds only what came after the re-base.
     w.sent(500);
-    let (_, next) = super::roll_resident(&rebased, "t-wall", &w.ledger, &w.items, true);
+    let (_, next) = super::roll_resident(&rebased, "t-wall", &w.ledger, &w.items, true, false);
     assert_eq!(next.tokens, 8_500);
 
     // Local: the ledger is the prompt, reasoning and all.
@@ -194,7 +194,7 @@ fn a_fork_rebases_the_count_and_a_local_session_counts_the_ledger() {
         measured: true,
         scale: None,
     };
-    let (_, local) = super::roll_resident(&anchor, "t-wall", &w.ledger, &w.items, false);
+    let (_, local) = super::roll_resident(&anchor, "t-wall", &w.ledger, &w.items, false, false);
     assert_eq!(local.tokens, w.len(), "ratio 1 by construction");
 }
 
@@ -208,7 +208,7 @@ fn a_fork_of_a_byte_ledger_is_sized_by_the_last_measured_ratio() {
         w.sent(11_569).thought(7_906);
     }
     let at = w.len();
-    let scale = super::sent_scale(&w.ledger, &w.items, at, 598_000, true);
+    let scale = super::sent_scale(&w.ledger, &w.items, at, 598_000, true, false);
     assert_eq!(
         scale,
         Some((1_276_900, 598_000)),
@@ -222,7 +222,8 @@ fn a_fork_of_a_byte_ledger_is_sized_by_the_last_measured_ratio() {
         scale,
     };
     // The reseat carries the same rows onto a new transcript.
-    let (rebased, now) = super::roll_resident(&measured, "t-wall", &w.ledger, &w.items, true);
+    let (rebased, now) =
+        super::roll_resident(&measured, "t-wall", &w.ledger, &w.items, true, false);
     assert_eq!(now.tokens, 598_000, "the same conversation, the same count");
     assert_eq!(rebased.scale, scale, "the ratio rides the fork");
     let mut cfg = deepseek_window();
@@ -231,16 +232,58 @@ fn a_fork_of_a_byte_ledger_is_sized_by_the_last_measured_ratio() {
 
     // And a delta after a measurement is converted the same way: 10k bytes sent.
     w.sent(10_000);
-    let (_, next) =
-        super::roll_resident(&measured, "t-before-the-reseat", &w.ledger, &w.items, true);
+    let (_, next) = super::roll_resident(
+        &measured,
+        "t-before-the-reseat",
+        &w.ledger,
+        &w.items,
+        true,
+        false,
+    );
     assert_eq!(next.tokens, 598_000 + 4_683, "10k bytes at 598000/1276900");
     assert_eq!(next.since, 4_683);
 
     // Local: no ratio, the ledger is the prompt.
     assert_eq!(
-        super::sent_scale(&w.ledger, &w.items, at, 598_000, false),
+        super::sent_scale(&w.ledger, &w.items, at, 598_000, false, false),
         None
     );
+}
+
+/// **A round that carries tools echoes its reasoning**, so the count of what will be sent includes it: before this,
+/// a thought written after the last measurement was left out and the wall was short by a round's thought. A request
+/// with no tools is sent without it and counts nothing.
+#[test]
+fn a_round_that_carries_tools_counts_the_reasoning_it_echoes() {
+    let mut w = Wall::new(20_000);
+    w.sent(10_000);
+    let anchor = w.anchor(9_000);
+    w.thought(40_000).sent(2_000);
+
+    let (_, echoed) = super::roll_resident(&anchor, "t-wall", &w.ledger, &w.items, true, true);
+    assert_eq!(
+        echoed.tokens,
+        9_000 + 42_000,
+        "9000 measured + the 40000 thought and the 2000 sent after it"
+    );
+    assert_eq!(echoed.since, 42_000);
+
+    let (_, withheld) = super::roll_resident(&anchor, "t-wall", &w.ledger, &w.items, true, false);
+    assert_eq!(
+        withheld.tokens, 11_000,
+        "no tools, so the thought is not sent"
+    );
+
+    // Local: the ledger is the prompt whatever the tools are.
+    let local = super::WallAnchor {
+        transcript: "t-wall".into(),
+        ledger: u64::from(w.ledger.prefix_len()),
+        provider: 20_000,
+        measured: true,
+        scale: None,
+    };
+    let (_, counted) = super::roll_resident(&local, "t-wall", &w.ledger, &w.items, false, false);
+    assert_eq!(counted.tokens, w.len(), "the ledger IS the prompt");
 }
 
 /// The closing line names its unit and says when the after-count is an estimate.

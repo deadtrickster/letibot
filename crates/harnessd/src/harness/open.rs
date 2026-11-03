@@ -2819,7 +2819,14 @@ impl Harness {
                 ledger,
                 provider,
                 measured: true,
-                scale: sent_scale(&session.ledger, &session.items, ledger, provider, true),
+                scale: sent_scale(
+                    &session.ledger,
+                    &session.items,
+                    ledger,
+                    provider,
+                    true,
+                    !tool_names(&prefix.tools_json).is_empty(),
+                ),
             });
         }
         // Fill the harness view's slot, now that there is something to disclose: the tool was registered before the
