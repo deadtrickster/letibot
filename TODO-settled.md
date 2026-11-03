@@ -7118,3 +7118,183 @@ Ranked by how often the operator hits it.
     (`bash.rs:~308-318`) — false under R79. Also R93 F12. CONFIRMED. [lifecycle C35]
 
 ---
+---
+
+## R67 — Stabilization: the contained fixes the 2026-10-11 review found — **SETTLED 2026-11-03: every item is fixed and carries the test that would have caught it; item 24's 400 ms deadline and 10 ms polls stay, as the operator ruled — not a defect, so not a test**
+
+The operator: *"goal is stabilization. many features recently, things arent stable or follwoing
+the same path, like mouse clicks - sometimes they work, sometimes they dont, per pane key maps
+etc etc."* Four read-only reviews of main at `435bb88`. These are the findings that are one
+defect each and fixable without the structural work in R68–R70; every line names where, and
+every fix lands with the test that would have caught it. CONFIRMED means the code path was
+traced; each was re-checked where marked ✓.
+
+**Head (crates/tui):**
+
+1. ✓ **Typing with the queue pane open runs queue verbs.** `app/keys/panes.rs` (`key_queue…`,
+   `Key::Char('r')` ~:736, `'a' | 'v' | 'd'` ~:770) has no empty-composer guard; the subagents
+   pane's `o`/`p` do (`self.editor.text().is_empty()`). Typing "deploy" with `/queue` open sends
+   `d` and `a` against the selected entry.
+   **DONE** (branch `r67-tui`, `e25a7d5`): `r`/`a`/`v`/`d` guarded on an empty composer; `a_typed_word_reaches_the_composer_and_runs_no_queue_verb`. — ✓ fixed in
+   74de81a5, test a_word_typed_over_any_surface_reaches_the_composer
+2. **A click in the session picker selects the wrong session.** `panes.rs:~294-308` maps
+   `y - (header+2)` to `picker_sel`, but the picker draws two lines per session (row + id line)
+   and footer lines fall inside the bound. **The test `a_click_picks_the_row_under_the_pointer…`
+   (`app/tests/session.rs:1762`) asserts the wrong row** — fix it with the code. The picker also
+   truncates without scrolling.
+   **DONE** (`8774e72`): clicks read `picker_hits`, built from rano's `stop_rows` (row + id line per session; footer picks nothing); the picker now scrolls its cursor into view; the test is rewritten to the right row, plus `the_picker_scrolls_its_cursor_into_view_and_clicks_follow`. — ✓ fixed in a92752ad, test
+   the_picker_scrolls_its_cursor_into_view_and_clicks_follow
+3. **Clicks on the mode/setting card are mis-mapped.** `ui/screen.rs:393-394` takes
+   `mode_first_row` from the top of the chrome, above the lines pushed before the card (`:311`);
+   `mode_rows_drawn` counts the MODE row's choices for every subject (`/verbosity`, `/diff`,
+   `/models`); wrapped `why` text breaks one-line-per-value.
+   **DONE** (`0b42927`): `mode_hits` from `setting_picker_layout` (rano's `stop_rows`, `why` lines included), placed where the frame put the card; `mode_first_row`/`mode_rows_drawn` removed. Tests: `a_click_on_the_mode_card_lands_under_a_link_line`, `a_click_on_the_verbosity_card_picks_the_value_drawn_there`. — ✓ fixed in
+   9e82bdbb, test a_click_on_the_mode_card_lands_under_a_link_line
+4. **The diff popup blocks the permission card.** `key_diff_popup` (`keys/mod.rs:132`) runs before
+   `key_decision` (`:196`) and returns `Break` for every key; its own comment says cards stay
+   answerable. The hint bar has no diff-popup branch.
+   **DONE** (`ccde44b`): with a decision open the popup keeps only Esc/ctrl-c/ctrl-]/wheel/page keys; hint bar gains popup and popup-over-decision branches. `a_decision_under_the_diff_popup_takes_its_keys`. — ✓ fixed in
+   af6faf2a, test a_decision_under_the_diff_popup_takes_its_keys
+5. **Scrolling in the queue pane moves the hidden transcript.** The wheel/PgUp pane list in
+   `app/keys/chords.rs:270` omits `queue_pane` and `queue_open`; `key_queue_review`'s PageUp arm
+   (`panes.rs:182`) is dead code.
+   **DONE** (`e0252df`): `queue_pane`/`queue_open` in the chords' list, the dead PageUp arm removed. `the_wheel_and_page_keys_scroll_the_queue_pane_and_its_overlay`. — ✓ fixed in f40be664, test
+   the_wheel_and_page_keys_scroll_the_queue_pane
+6. **`!term` gets the operator's raw mouse reports.** `pane_keys` (`keys/mod.rs:719`) forwards SGR
+   mouse sequences verbatim, against `crates/vt/src/screen.rs:27`.
+   **DONE** (`e312b44`): SGR and X10 reports stripped before forwarding (no program has mouse mode per `vt/src/screen.rs`). `the_pane_is_never_sent_the_operators_mouse`. A report split across two reads is not recognised (documented). — ✓ fixed in
+   6bf6238b, test the_pane_is_never_sent_the_operators_mouse
+7. **Any wheel or click cancels allow-all.** `key_mode_confirm` (`app/keys/cards.rs:25`) treats
+   every key as "no".
+   **DONE** (`262867f`): the wheel falls through, a click is swallowed, the card stays up. `the_wheel_and_a_click_leave_the_allow_all_card_standing`. — ✓ fixed in
+   08bc5d55, test the_wheel_and_a_click_leave_the_allow_all_card_standing
+8. **`/sessions` and ctrl-s open the picker differently.** `commands.rs:510` neither seeds
+   `picker_sel` nor clears `pick`; the chord does both.
+   **DONE** (`e274142`): both call `App::open_session_picker`. `slash_sessions_opens_the_picker_the_way_ctrl_s_does`. — ✓ fixed in
+   44001592, test slash_sessions_opens_the_picker_the_way_ctrl_s_does
+9. **Help and hints disagree with the bindings.** `ui/panes/help.rs:99` (a click on an edit row
+   opens the diff popup, not rano); the hint bar's "ctrl-n notes" (ctrl-n retires every note,
+   `chords.rs:162`); help omits ctrl-g, ctrl-q, ctrl-o, `/queue`, `/jobs`, `/todos`,
+   `/subagents`; "wheel scrolls the transcript" is not what happens. **And the hint bar has no
+   mode for `slash_out`, `sub_out`, the diff popup or the payload window**: with `sub_out` open
+   over the subagents pane the bar still says "enter (or o) opens a subagent", while Enter
+   re-peeks and `o` falls through to switching session.
+   **DONE except one string** (`50ec059`): help fixed (popup, wheel, click, ctrl-g/q/o, `/queue` `/jobs` `/todos` `/subagents`); hint-bar branches for `slash_out`, `sub_out`, the payload window (diff popup in `ccde44b`). ~~**NOT DONE: "ctrl-n notes"**~~ **DONE**: the head generates the conversation's half (`ctrl-n clears notes`), and rano 0.8.2 corrected its own sentence. — ✓ fixed in 5be9113d, test
+   the_help_names_every_pane_chord_and_what_a_click_and_the_wheel_do
+
+**Daemon (crates/harnessd, crates/tools):**
+
+10. **A nag-started turn strands its calls.** `Sessions::deliver_due_nags` (`sessions.rs:2379`)
+    runs a turn and arms neither `arm_sweep` nor `arm_wake`, after `sweep_at` was cleared
+    (`:2367`) — the wake arm's bug (fixed 2026-10-10) on the third door.
+    **DONE** (branch `r67-daemon`, `e28cebc`): the nag door arms the sweep before its turn and the monitor wake after; `SWEEP_AFTER` moved beside the clock. `tests/nag_arms_the_sweep.rs`. — ✓ fixed in 10a99ed7, test
+    a_nag_turn_arms_the_sweep_that_closes_a_call_it_stranded
+11. **`!` stops working for a session after one failed settle.** `OperatorShellResult`
+    (`sessions.rs ~3525`) returns `Failed` before `clear_bang_in_flight`; every later `!` line is
+    queued for ever. Error to stderr only.
+    **DONE** (`e6d3377`): the flag comes down before any return; a failed settle is `operator_shell_failed` on the hub and the next queued line still starts. `sessions::operator_run_failures`. — ✓ fixed in fac036fc, test
+    a_settle_that_fails_still_ends_the_run_and_says_so_on_the_hub
+12. ✓ **One store error ends the merge queue thread for good.** `mergequeue.rs:4116/4121` — the
+    loop must retry with backoff and say so on the hubs (R61 req. 4 makes it structural; this is
+    the stop-gap that keeps today's queue alive).
+    **DONE** (`1651b85`): `run` never ends on a store error — 1s→60s backoff honouring `stop`, `merge_queue_store_error` once per reason, `merge_queue_recovered` after. `mergequeue::store_errors`. — **✓ TESTED 2026-11-03**: `a_store_that_will_not_open_is_waited_out_and_the_worker_goes_on` runs `work` against a store path that cannot be opened and has the door make the directory between the two attempts, so the second attempt opens the store and the pass after it runs; `a_store_error_is_said_once_per_reason_and_the_recovery_once` pins the accounting — one line per reason, one recovery naming the count, the wait starting over.
+13. **The deadline watchdog never exits.** `tools/src/exec/host.rs:629/660` (`Deadlines::run`, an
+    endless `loop` holding its own `Arc`): one `letibot-deadline` thread per `HostProcesses`
+    forever — one of R66's two threads per finished subagent.
+    **DONE** (`d338e9c`): `Deadlines::close` from `HostProcesses`' `Drop`; the watchdog returns. `a_dropped_host_takes_its_deadline_thread_with_it` (a `Weak`, then the tid in `/proc/self/task`). — ✓ fixed in
+    d2c916d1, test a_dropped_host_takes_its_deadline_thread_with_it
+14. **The idle sweep is quadratic, on the worker.** `abandoned_calls` (`harness.rs:20292`):
+    `answered.iter().any` per asked call over the whole transcript; with ~15k results, ~10⁸
+    compares per sweep, every 2 s after a turn. A `HashSet`, and only items since the last sweep.
+    **DONE** (`2ea0e38`): one pass into a `HashSet` of borrowed ids. **AND "only items since the last sweep"** (2026-11-03): the judgement is `SweptCalls` — a cursor, the pending calls and the ids an answer settled — so `Harness::sweep_abandoned_calls` reads the round that was added. A transcript that SHRANK is a different conversation (a compaction forks onto a summary and a tail), so the cursor starts over rather than skipping rows and reporting calls whose rows are gone. Tests: `a_second_sweep_reads_the_rows_since_the_first` (a test-only count of the rows read: one for one new row, not 4 001) and `a_transcript_that_shrank_is_read_again_from_the_top`.
+15. **Failures that reach no hub** — `let _ = self.append_results(…)` in
+    `Harness::sweep_abandoned_calls` (`harness.rs:5228`, the hub block at 5222 is dead);
+    `JobRecorder::put_job` (`jobwatch.rs:776, 813`); `flush_todos` (`harness.rs:7044, 7056, 7704,
+    8122` — at 8122 an unpersisted fired condition fires again after restart);
+    `StoreSessions::merge_entries`/`merge_reviews` (`sessions.rs:4247, 4266`) answer an empty queue
+    on a failed read; a child's `ChildCommand::Leave` (`harness.rs ~13093`) drops `!`, `/slash`,
+    `/mode` and todo edits sent to a subagent with a stderr line. Also stderr-only: `OperatorCall`
+    failures, "not open" failures and `run_operator_shell_here`'s fallback lines
+    (`sessions.rs ~3460, 3497, 3538`, reaching only `on_reply` → `eprintln!` at `cli.rs:1761`); in
+    `daemon.rs`, the `ensure_gatekeeper` error and the sweep and nag counts (a nag's FAILURE is
+    published, by `after_turn`).
+    **DONE** (`e6d3377`, `2ea0e38`, `41f5e2d`): every site now also publishes a hub warning — `calls_abandoned`/`transcript_store` (sweep), `job_not_recorded` (recorder, via a `Weak<Hub>`), `todos_not_stored` + `todo_move_unresolved` (`flush_todos_or_say`), `merge_queue_unreadable` (`SessionSource::merge_*` now return `Result`; `Registry::merge_queue_for`), `child_door_refused` (Leave), `operator_call_failed`/`session_unavailable`/`operator_shell_on_worker`/`operator_shell_failed` (operator arms), `review_queue_not_open` (once per reason). Census 103. Sweep and nag COUNTS stay stderr-only (routine). Tests in idle_clock.rs, todos.rs, jobwatch, resume_frames, sessions. — ✓ fixed in de66c0f5 (with
+    975c161c, fac036fc), test a_row_the_store_refuses_is_said_on_the_hub
+16. **`Catalogue::load` re-reads the 5 MiB model catalogue on every `Config::settings`** — every
+    session open (found by memwatch's large-allocation log).
+    **DONE** (`660a79e`): `Catalogue::load` → `Arc<Catalogue>` through `cached_read` (path + mtime + length); snapshot parsed once. `a_file_is_parsed_once_until_it_changes`. — ✓ fixed in aaa9b69f, test
+    a_file_is_parsed_once_until_it_changes
+
+**Tests (flaky by construction):**
+
+17. **Environment variables set with no lock**, read concurrently by other tests in the same
+    binary: `tools/src/builtins/task.rs:2101,2131` (`FIRECODE_BIN`, read at `firecode.rs:73`),
+    `turn/src/serving.rs:587`, `letibot/src/roles.rs:332-341`, `websearch/src/lib.rs:298`,
+    `tokencore/src/apparatus.rs:189-223`. `confine.rs`/`host.rs` hold a `static LOCK` — do that.
+    **DONE** (`f08b7ba`, branch `r67-tests`): not a lock — every reader is production code, so a
+    lock would have to be taken by all of them. Each function grew a seam taking the reading as a
+    value (`firecode_available_at` + `TaskTool::with_firecode_bin`, `skip_unreachable`,
+    `askpass_in`, `resolve_key_from`, `present_given`/`gguf_path_from`); no test sets a variable.
+    serving.rs's test also stopped panicking under a run's own `LETIBOT_REQUIRE_MODEL=1`. — **✓ TESTED 2026-11-03**: every seam has its test. The two that had none are pinned now — `the_firecode_a_caller_names_is_the_one_that_is_looked_for` (the refusal names the path it was given; a bare name is a question about `PATH`) and `askpass_names_the_socket_it_was_given_and_refuses_when_no_daemon_is_at_it` — and `skip_unreachable`, `resolve_key_from`, `present_given`, `applies`, `real_store_allowed_given` and `gguf_path_from` were pinned as they were written.
+18. **Silent skips the require-switch cannot catch**: `tools/tests/confine.rs` (13 early
+    `return;`), `notscoped.rs:55`, `src/exec/scope.rs` skip with `eprintln!` + `return` instead of
+    `apparatus::present`, so `LETIBOT_REQUIRE_APPARATUS=1` cannot make a missing cgroup v2 fail.
+    **DONE** (`0157743`): confine.rs, notscoped.rs, and the same skip in background.rs, exec.rs,
+    deadline.rs, toolchain_grant.rs go through `apparatus::absent` (refusal still asserted first).
+    MEASURED with `LETIBOT_BWRAP=/nonexistent/bwrap LETIBOT_REQUIRE_APPARATUS=1`: confine was 23
+    passed on main, 5 failed after. scope.rs's tests have no skip (checked at `435bb88` too). — **✓ TESTED 2026-11-03**: `a_missing_boundary_fails_the_run_that_demands_the_apparatus` starts this binary again with `LETIBOT_BWRAP=/nonexistent/bwrap` and `LETIBOT_REQUIRE_APPARATUS=1` and asserts the child FAILS with the switch's own sentence — no run can set either variable under its own tests, so the child is where the reading is honest.
+19. **Wall-clock upper bounds**: `task.rs:1815` (`< 1s`), `answers.rs:2256` (`< 1s`),
+    `answers.rs:1677`, `1723`, `1908` — trip on a loaded box or a parallel `cargo test`.
+    **DONE** (`7761f7b`): task.rs asserts the cause (zero `collect` calls; and, same class at
+    `a_watched_subagent_is_not_waited_on`, the longest wait asked of the child); answers.rs:2256's
+    bound dropped (the `Answered` match is the claim); the three refuses-at-once tests keep a
+    clock — the fact is about time — at half the 30 s budget, reason written beside each. — ✓ fixed in 7761f7b8, test
+    a_watched_subagent_is_not_waited_on
+20. **Pre-existing failure:** `tui` `app::tests::detected::a_python_edit_detected_after_a_command_draws_its_diff`
+    fails on main (with and without llama).
+    **DONE — a real head bug, environment-dependent** (`c9f3028`): the provenance note was the payload's second `[note]` line, hidden by the fold behind the box's `memory: ran UNCAPPED` note; a folded detected-diff panel now carries its own provenance line. — ✓ fixed in 6ba1ede1, test
+    a_python_edit_detected_after_a_command_draws_its_diff
+
+**Also found, and contained:**
+
+21. **The flowy seat's slot can outlive a failed open.** `seat_tool` inserts into `slots` before
+    the open can fail; `detach_seat` clears `seated` but not `slots`. Minor.
+    **DONE** (`662f7eb`): a failed open removes its `slots`/`seated` entries. `sessions::seat_slots`. The `detach_seat` half is not a defect: it empties every slot, and the entries must stay for `attach_seat` to refill. — ✓ fixed in 43f124ff, test
+    a_failed_open_takes_its_slot_with_it
+22. **A shared global counter makes one allocation test single-test-only.**
+    `tui/tests/frame_allocations.rs:43` counts every allocation in the binary through a global
+    `ALLOCS`; safe while the binary holds one test, flaky the day a second is added.
+    **DONE** (`8813962`): per-thread `const` thread-local counter. MEASURED: a second allocating
+    test beside it failed it 3/3 before, passed 3/3 after. — ✓ fixed in 88139627, test
+    a_frame_costs_no_allocation_per_unchanged_line
+23. **A process-wide cache shared across tests**: `tools/src/builtins/pattern.rs:142` (`CACHE`).
+    **DONE, documentation only** (`eb25ba8`): entries are pure functions of their key, so no test
+    can observe another's through a match; identity breaks only on a 256-key cap clear, and the
+    whole lib test binary peaks at 44 keys (measured). The reason is written on `CacheKey`. — **✓ TESTED 2026-11-03**: `the_shared_cache_cannot_answer_for_a_pattern_it_did_not_compile` holds the two facts the reasoning rests on — the key names everything that changes the program (the same source under both case flags answers differently), and a clear at the cap cannot change an answer.
+24. **Slow polls in tests**: 70 `sleep` calls under test dirs, many 10–20 ms polls;
+    `tools/tests/deadline.rs:179,235` arms a 400 ms deadline (a lower bound — safe, slow);
+    `tui/tests/stop_daemon.rs` and `reconnect.rs` poll at 10 ms. Most `recv_timeout(200ms)` sit
+    inside 10–30 s deadline loops, which is fine.
+    **NOT DONE, on purpose**: deadline.rs's 400 ms is the quantity under test, and its poll is the
+    premise ("a run nobody is waiting on") — `wait_job` would change what it tests. The 10 ms
+    polls in stop_daemon.rs return the moment their condition holds, inside 10 s bounds; reconnect
+    has no 10 ms poll (its 20–120 ms sleeps are retry pacing and quiet-detection). No condition to
+    wait on without new hooks in the head's link, so not cheap. — **DECIDED 2026-11-03, not open**: the 400 ms deadline is the quantity the test measures and its poll is the premise; the 10 ms polls return the moment their condition holds. Nothing here is a defect, so nothing here is a test.
+25. **No click test for queue rows** (`panes.rs:798`); `cards.rs:498` (`key_pick`) is reached only
+    through settings. Existing click tests: the picker (`app/tests/session.rs:1762` — wrong, item 2),
+    the count labels (`screen.rs:384-636`), todos (`todos.rs:293-332`), settings, the editor, the
+    queue strip (`queue.rs:1049`). The mouse decoder itself is pinned (`keys/input.rs:264-277`).
+    **DONE** (`e25a7d5`): `a_click_on_a_queue_row_selects_the_entry_drawn_there` (the hit test was already right). — ✓ fixed in 74de81a5, test
+    a_click_on_a_queue_row_opens_the_row_drawn_there
+26. **The queue's log repeats `landed <same sha>` 7 and 10 times in a row** — reset rows recognised
+    as already on main, logged as landings each pass. Noise that reads like work.
+    **DONE** (`1651b85`): a tip is logged as a landing once; the same tip again says *already on main, nothing new merged*. — **✓ TESTED 2026-11-03**: the R61 rewrite made it two conditional moves — `a_branch_already_on_the_target_is_recognised_once_and_not_on_every_pass` (withdrawn by one move, and three later passes write nothing) and `a_landing_that_finds_its_branch_on_the_target_moves_once` (the `land` arm: one move to `landed` with the sentence; without it the rebase parks the row as a conflict over a commit that carries nothing).
+27. **Linear lookups that grow with the daemon's age**: `Registry::get` scans every entry under
+    the registry lock; `HostProcesses` finds a job by `iter()` over every job ever run
+    (`host.rs:1740`).
+    **DONE** (`d338e9c`): `HostProcesses.by_id` beside `jobs`; `Registry` `Inner.index` with `push`/`entry`/`entry_mut`/`has` (nothing removes entries today; R68's remove must update it). — **✓ PINNED 2026-11-03** by the tests a behaviour-neutral change needs, each of which fails on a table that drifted: `finished_jobs_are_kept_to_a_window_and_a_running_one_is_never_dropped` (`by_id` and `jobs` name the same jobs after the prune, and `find` answers for each) and `a_removed_session_leaves_every_table_and_the_rest_are_still_found` (the index is rewritten for every position a removal shifts).
+
+**Settled 2026-11-03.** Each item carries the test that would have caught it: seven were landed
+untested and have one now (12, 14, 17, 18, 23, 26, 27), and 24 is a decision rather than a
+defect. The four reviews these come from are in full in section 4, "The stabilization review of
+2026-10-11, in full".
