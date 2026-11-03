@@ -5202,3 +5202,80 @@ fn a_switch_takes_the_last_sessions_call_decisions_with_it() {
         a.call_decisions.keys().collect::<Vec<_>>()
     );
 }
+
+/// **A note filed at the row the trim takes is filed beside the conversation, not at its end.**
+/// `keep` is the first index that goes, so a seam left at exactly `keep` names a row the head no
+/// longer holds and draws at the bottom, where only what just happened belongs.
+#[test]
+fn a_note_at_the_row_the_window_drops_is_filed_beside_it() {
+    let mut a = app();
+    a.session_id = "s".into();
+    a.walk_limit = 1;
+    let body = "a line of conversation, and enough of them to make a row cost its bytes\n\n\
+                ```rust\nfn f() { let n = 1; }\n```\n";
+    let mut n = 0u64;
+    let mut arrive = |a: &mut App, n: &mut u64| {
+        let i = *n;
+        a.apply(ServerFrame::Event(env(
+            i * 2 + 1,
+            testing::appended(&format!("s.{i}"), "user"),
+        )));
+        a.apply(ServerFrame::Event(env(
+            i * 2 + 2,
+            testing::content(&format!("s.{i}"), &format!("row {i}\n{body}")),
+        )));
+        *n += 1;
+    };
+    for _ in 0..8 {
+        arrive(&mut a, &mut n);
+    }
+    let _ = a.screen(100, 20);
+    let room = a.view_room;
+    // The reader goes to the oldest row this head holds, so the trim has nothing above it to free
+    // and takes the rows below: everything from `keep` on goes.
+    for _ in 0..20 {
+        a.key(Key::PageUp);
+        let _ = a.screen(100, 20);
+    }
+    assert_eq!(
+        a.anchor.as_ref().map(|h| h.ordinal),
+        Some(0),
+        "the reader did not reach the top row"
+    );
+    // A note is filed at each length, so whichever index the trim keeps, one of them names it: the
+    // boundary rule is about the note whose row is the first that goes.
+    let mut filed_at: Vec<usize> = Vec::new();
+    let mut i = 0usize;
+    while a.items.len() < room + 1 + 30 {
+        arrive(&mut a, &mut n);
+        filed_at.push(a.items.len());
+        a.note(Note::Answered {
+            req_id: format!("q{i}"),
+            summary: "ship it".into(),
+            by: "human dead".into(),
+            said: "not before the gate is green".into(),
+        });
+        i += 1;
+    }
+    a.held_limit = 4 * 1024;
+    let _ = a.screen(100, 20);
+    let len = a.items.len();
+    assert_eq!(a.items_base, 0, "the fixture dropped rows above the reader");
+    assert!(
+        len < room + 1 + 30,
+        "the fixture dropped nothing below the window"
+    );
+    assert!(
+        filed_at.contains(&len),
+        "no note was filed at the index the trim kept, so this asserts nothing"
+    );
+    for (place, _) in &a.notes {
+        if let Placed::Seam(at) = place {
+            assert!(
+                *at < len,
+                "a note about a row the head no longer holds is drawn as the newest line of the \
+                 conversation: {place:?}"
+            );
+        }
+    }
+}

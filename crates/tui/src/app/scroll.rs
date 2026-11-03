@@ -840,9 +840,10 @@ impl App {
         self.items.truncate(keep);
         self.items_below += m;
         // A note filed past the window is one the head no longer draws, the rule a fork's seams
-        // follow: reachable through `/notes`, which is where a note off the screen is read.
+        // follow: reachable through `/notes`, which is where a note off the screen is read. `keep`
+        // is the first index that went, so a seam AT it names a row this head no longer holds.
         for (place, _) in &mut self.notes {
-            if matches!(place, Placed::Seam(at) if *at > keep) {
+            if matches!(place, Placed::Seam(at) if *at >= keep) {
                 *place = Placed::Before;
             }
         }
