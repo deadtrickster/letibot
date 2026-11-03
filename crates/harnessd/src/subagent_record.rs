@@ -396,15 +396,17 @@ pub fn decide(
     match run.state.as_str() {
         "running" => {}
         "done" | "failed" if !run.delivered => {
-            let text = run.outcome.clone().unwrap_or_default();
-            return Decision::Deliver(if run.state == "done" {
+            let status = if run.state == "done" {
                 TaskStatus::Done {
-                    answer: text,
+                    answer: answer_said(run),
                     child: None,
                 }
             } else {
-                TaskStatus::Failed { why: text }
-            });
+                TaskStatus::Failed {
+                    why: run.outcome.clone().unwrap_or_default(),
+                }
+            };
+            return Decision::Deliver(status);
         }
         // Delivered, stopped by somebody, or already given up on.
         _ => return Decision::Leave,
@@ -464,6 +466,27 @@ fn vm_work_survives(spec: &TaskSpec) -> bool {
             .is_some_and(|wt| letibot_tools::firecode::mounts(std::path::Path::new(&wt.path)))
 }
 
+/// **The child's latest word**, and whether it is a later turn's: the answer of the last turn it ran
+/// after settling, else the one its first turn gave. `outcome` keeps the first either way, so a reader
+/// that wants it has it.
+pub fn latest_answer(run: &SubagentRun) -> (String, bool) {
+    match &run.later_answer {
+        Some(again) => (again.clone(), true),
+        None => (run.outcome.clone().unwrap_or_default(), false),
+    }
+}
+
+/// What a parent is handed as the child's answer: a later turn says so, because the same child
+/// speaking twice is not the news its first answer was.
+pub fn answer_said(run: &SubagentRun) -> String {
+    let (answer, later) = latest_answer(run);
+    if later {
+        format!("a later turn of this child, after the answer it gave first:\n\n{answer}")
+    } else {
+        answer
+    }
+}
+
 /// A recorded child's state, as `task_result` reads it - for a child of this session that has
 /// no slot in this daemon. The sentences agree with [`resumable`]'s: a finished child's answer IS
 /// readable, and a child that is not running says why and names the door that brings it back.
@@ -481,7 +504,7 @@ pub fn recorded_status(run: &SubagentRun, instance: &str) -> TaskStatus {
     );
     match run.state.as_str() {
         "done" => TaskStatus::Done {
-            answer: outcome,
+            answer: answer_said(run),
             child: None,
         },
         "failed" => TaskStatus::Failed { why: outcome },
@@ -1085,6 +1108,46 @@ mod tests {
             TaskStatus::Failed { why } => assert!(why.contains("stopped by a person"), "{why}"),
             other => panic!("{other:?}"),
         }
+    }
+
+    /// **A child that answered again is read as its later turn**, because after a restart the row is
+    /// all `task_result` has: the answer it hands over is the last word, it says which turn that came
+    /// from, and the first answer stays in the row for whoever reads `outcome`.
+    #[test]
+    fn a_settled_child_with_a_later_answer_reads_as_that_later_turn() {
+        let mut again = run("done");
+        again.outcome = Some("the first answer".into());
+        again.later_answer = Some("the second answer".into());
+        match recorded_status(&again, NEW) {
+            TaskStatus::Done { answer, .. } => {
+                assert!(answer.contains("the second answer"), "{answer}");
+                assert!(!answer.contains("the first answer"), "{answer}");
+                assert!(
+                    answer.contains("a later turn of this child"),
+                    "a parent has to be able to tell this from the answer the child gave first: \
+                     {answer}"
+                );
+            }
+            other => panic!("a settled child with a later answer read as {other:?}"),
+        }
+        // **A restart's delivery at open says the same thing**, or the notice would carry the first
+        // answer while `task_result` hands over the second.
+        match decide(&again, NEW, false, |_| true, RestoreMode::Resume) {
+            Decision::Deliver(TaskStatus::Done { answer, .. }) => {
+                assert!(answer.contains("the second answer"), "{answer}");
+            }
+            other => panic!("a settled, undelivered child is {other:?}"),
+        }
+        // And a child that answered once is unchanged: no sentence, no later answer.
+        let mut once = run("done");
+        once.outcome = Some("the first answer".into());
+        assert_eq!(
+            recorded_status(&once, NEW),
+            TaskStatus::Done {
+                answer: "the first answer".into(),
+                child: None,
+            }
+        );
     }
 
     #[test]

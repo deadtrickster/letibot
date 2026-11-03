@@ -535,6 +535,9 @@ impl Harness {
             {
                 continue;
             }
+            // **The child's latest word, and whether it is a later turn's**: a later answer puts the row
+            // back to undelivered, so the sentence that carries it here is the one `task_result` promises.
+            let (answer, later) = crate::subagent_record::latest_answer(&run);
             watch.queue(JobCompletion {
                 memory: None,
                 kind: BackgroundKind::Subagent,
@@ -547,9 +550,9 @@ impl Harness {
                 state: run.state.clone(),
                 produced: 0,
                 elapsed_ms: 0,
-                detail: crate::jobwatch::first_line(run.outcome.as_deref().unwrap_or_default()),
+                detail: crate::jobwatch::first_line(&answer),
                 arrived: std::time::SystemTime::now(),
-                later: false,
+                later,
             });
             queued += 1;
         }
