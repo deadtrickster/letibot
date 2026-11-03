@@ -176,11 +176,9 @@ impl std::fmt::Display for DownloadError {
 
 impl std::error::Error for DownloadError {}
 
-/// **Make the pinned model present in the data directory, fetching it if it is not.**
-///
-/// Called on the path that opens the box's embedder, which is daemon start: a fetch therefore
-/// never runs inside a turn, and until it lands every caller scores the words alone. `say` is
-/// handed one sentence, before anything is written, and only when a fetch is about to happen.
+/// **Make the pinned model present in the data directory, fetching it if it is not.** Called
+/// where the embedder is opened, which is daemon start, so a fetch never runs inside a turn.
+/// `say` is handed one sentence and only when a fetch is about to happen.
 pub fn ensure(
     pin: &Pin,
     data_dir: &Path,
