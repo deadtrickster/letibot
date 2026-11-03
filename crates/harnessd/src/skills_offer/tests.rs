@@ -105,6 +105,59 @@ fn logs(name: &str) -> PathBuf {
     p
 }
 
+/// **A skill asked for in none of its words.** `keynote` and `deck` are in no frontmatter here,
+/// so the words score the subject at zero; the second tier's cosine, over the two planted as
+/// synonyms of `beamer` and `slides`, earns the offer - and with no tier nothing is offered.
+#[test]
+fn a_subject_in_none_of_the_skills_words_is_offered_by_the_second_tier() {
+    let registry = SkillRegistry::new(vec![
+        slides(),
+        Skill::new(
+            "postgres-migrations",
+            "change a live schema safely",
+            "backfill in batches",
+            SkillSource::Project,
+        ),
+        Skill::new(
+            "release",
+            "cut a tagged release",
+            "tag, push, write the notes",
+            SkillSource::Operator,
+        ),
+    ]);
+    let text = subject(&prompt("a keynote deck outline"), &[]);
+
+    let mut lexical = Offers::new();
+    assert!(
+        !lexical.compose(&registry, &text),
+        "the words share nothing with any frontmatter"
+    );
+
+    let data = std::env::temp_dir().join(format!(
+        "harnessd-skills-tier-{}-{}",
+        std::process::id(),
+        now_secs()
+    ));
+    let tier =
+        letibot_embeddings::testing::planted(&data, &[&["beamer", "keynote"], &["slides", "deck"]]);
+    let mut offers = Offers::new().with_tier(Some(tier));
+    assert!(
+        offers.compose(&registry, &text),
+        "the meaning earns the offer"
+    );
+    let made = offers.tail();
+    let said = match &made[0] {
+        TranscriptItem::User { parts, .. } => match &parts[0] {
+            UserPart::Text { text } => text.clone(),
+            other => panic!("a text part, not {other:?}"),
+        },
+        other => panic!("a user-side item, not {other:?}"),
+    };
+    assert!(said.contains("latex-presentation"), "{said}");
+    assert!(said.contains("its meaning"), "{said}");
+    let _ = std::fs::remove_dir_all(&data);
+}
+
 /// The prompt alone is enough: a person asking for a presentation is offered the skill that makes
 /// one, and the corpus's own subject decides which one.
 #[test]

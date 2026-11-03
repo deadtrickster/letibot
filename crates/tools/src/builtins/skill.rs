@@ -570,27 +570,27 @@ impl SkillRegistry {
     /// skill's whole frontmatter ([`Skill::document`]) - a `description` alone is a title, and a
     /// title cannot carry "beamer" to a query that says "latex presentation".
     pub fn ranked(&self, query: &str, most: usize) -> Vec<(String, f64)> {
-        let mut docs: Vec<(PathBuf, String)> = self
-            .skills
-            .iter()
-            .map(|s| (PathBuf::from(&s.name), s.document()))
-            .collect();
-        // A shelf's skills are a title and a visibility, and nothing else is known about them
-        // until one is loaded, so that is what they are scored on.
-        if let Some(shelf) = self.shelf()
-            && let Ok(entries) = shelf.list()
-        {
-            docs.extend(entries.into_iter().map(|e| {
-                (
-                    PathBuf::from(&e.title),
-                    format!("{} {}", e.title, e.visibility),
-                )
-            }));
-        }
+        self.ranked_with(query, most, None)
+    }
+
+    /// [`ranked`](Self::ranked) with the box's second tier attached: a subject in none of a
+    /// skill's words is offered on its meaning. `tier` is filled with this registry's documents,
+    /// keyed by the name every door here keys by.
+    pub fn ranked_with(
+        &self,
+        query: &str,
+        most: usize,
+        tier: Option<&crate::similarity::Tier>,
+    ) -> Vec<(String, f64)> {
+        let docs = self.documents();
+        let corpus = crate::similarity::Corpus::of_texts(&docs);
+        // Filled from THIS registry, through the door that keys it as the score reads it. A fill
+        // that cannot answer leaves no vectors, so the words stand alone.
+        let _ = corpus.fill(tier);
         // One name is one skill here - a pin, a `load` and an offer all key by it - so a second
         // document under the same name would be the same row twice in a request that carries both.
         let mut out: Vec<(String, f64)> = Vec::with_capacity(most.min(docs.len()));
-        for (path, score) in crate::similarity::Corpus::of_texts(&docs).ranked(query, usize::MAX) {
+        for (path, score) in corpus.ranked_with(query, usize::MAX, tier) {
             if out.len() >= most {
                 break;
             }
@@ -601,6 +601,27 @@ impl SkillRegistry {
             out.push((name, score));
         }
         out
+    }
+
+    /// What this registry is scored on, in the corpus's own shape: one document per skill, and
+    /// one per shelf entry, whose title and visibility are all that is known about it.
+    fn documents(&self) -> Vec<(PathBuf, String)> {
+        let mut docs: Vec<(PathBuf, String)> = self
+            .skills
+            .iter()
+            .map(|s| (PathBuf::from(&s.name), s.document()))
+            .collect();
+        if let Some(shelf) = self.shelf()
+            && let Ok(entries) = shelf.list()
+        {
+            docs.extend(entries.into_iter().map(|e| {
+                (
+                    PathBuf::from(&e.title),
+                    format!("{} {}", e.title, e.visibility),
+                )
+            }));
+        }
+        docs
     }
 
     /// The tools a set of declared skills allows: the union of their `allowed-tools`, or `None`

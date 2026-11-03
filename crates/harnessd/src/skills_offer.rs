@@ -9,6 +9,8 @@ use letibot_tokencore::store::{TodoBy, TodoItem};
 use letibot_tools::builtins::skill::SkillRegistry;
 use letibot_transcript::{Speaker, ToolCall, TranscriptItem, UserPart};
 
+use letibot_embeddings::Tier;
+
 /// The score a skill has to reach before it is offered - this offer's own floor, apart from
 /// `skill find`'s. MEASURED over one project's skills plus this build's two: a subject about a
 /// skill scored 0.33 to 0.63, and the highest any subject got from a word it merely shared with a
@@ -27,11 +29,14 @@ pub const SUBJECT_CHARS: usize = 8_000;
 /// The file the take-up log is appended to, in the session's logs directory beside the notes'.
 pub const LOG: &str = "skills-offers.jsonl";
 
-/// One skill, offered, with the score that earned it.
+/// One skill, offered, with the score that earned it and whether the meaning was part of that
+/// score - a line that claimed meaning over a box with no embedder would describe an arithmetic
+/// it did not use.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Offer {
     pub name: String,
     pub score: f64,
+    pub blended: bool,
 }
 
 impl Offer {
@@ -44,12 +49,18 @@ impl Offer {
             parts: vec![UserPart::Text {
                 text: format!(
                     "[skill offer - the harness's own line, not the operator's] `{}` looks \
-                     relevant to what you are doing now (similarity {:.2} of 1.00, lexical over \
-                     its frontmatter: description, when-to-use and keywords). Its body is not in \
-                     this prompt. If it is worth the context, load it - `skill` action=\"load\", \
-                     name=\"{}\". This line is composed for this round and is gone from the next \
-                     one; the skill, once loaded, is not.",
-                    self.name, self.score, self.name
+                     relevant to what you are doing now (similarity {:.2} of 1.00, {}). Its body \
+                     is not in this prompt. If it is worth the context, load it - `skill` \
+                     action=\"load\", name=\"{}\". This line is composed for this round and is \
+                     gone from the next one; the skill, once loaded, is not.",
+                    self.name,
+                    self.score,
+                    match self.blended {
+                        true => "lexical over its frontmatter, and its meaning",
+                        false =>
+                            "lexical over its frontmatter: description, when-to-use and keywords",
+                    },
+                    self.name
                 ),
             }],
         }
@@ -64,11 +75,21 @@ pub struct Offers {
     offered: HashSet<String>,
     open: Vec<Offer>,
     last: Vec<Offer>,
+    /// The box's second tier, when it has one: this registry's vectors, and nothing of another
+    /// caller's. `None` is the lexical score exactly, which is the default.
+    tier: Option<Tier>,
 }
 
 impl Offers {
     pub fn new() -> Offers {
         Offers::default()
+    }
+
+    /// Score with the box's second tier. Off is `None`, and then this offer is the one it was
+    /// before the tier existed; the floor is this caller's either way.
+    pub fn with_tier(mut self, tier: Option<Tier>) -> Offers {
+        self.tier = tier;
+        self
     }
 
     /// Seed the memory with what this SESSION has already been offered: the log is the memory, so the
@@ -118,11 +139,15 @@ impl Offers {
             return false;
         }
         self.open = registry
-            .ranked(text, OFFERS_MAX * 4)
+            .ranked_with(text, OFFERS_MAX * 4, self.tier.as_ref())
             .into_iter()
             .filter(|(name, score)| *score >= OFFER_FLOOR && !self.offered.contains(name))
             .take(OFFERS_MAX)
-            .map(|(name, score)| Offer { name, score })
+            .map(|(name, score)| Offer {
+                name,
+                score,
+                blended: self.tier.is_some(),
+            })
             .collect();
         !self.open.is_empty()
     }
