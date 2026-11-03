@@ -345,10 +345,12 @@ fn the_check_offers_wait_on_when_a_job_or_a_subagent_is_running() {
     assert!(!said.contains("wait_on"), "{said}");
 }
 
-/// The offer names the running job the row is LIKE, not the first handle in the table: a wrong
-/// offer gets attached and the row is asked about again.
+/// **R93.B4: a row whose own words are a running job's description is work in flight, and the
+/// check says nothing about it.** It used to offer the wait instead - 120 offers against replies
+/// that already said *running, the completion arrives on its own* - so the row was nagged about
+/// while the very thing it asked for was running.
 #[test]
-fn the_offer_names_the_running_job_most_like_the_row() {
+fn a_row_a_running_job_reads_like_is_not_nagged() {
     let plan = vec![operator_row(
         "correctness gate must PASS in RATCHET=0 — rerun scripts/correctness_gate.sh",
         TodoStatus::InProgress,
@@ -360,24 +362,22 @@ fn the_offer_names_the_running_job_most_like_the_row() {
         )
         .running("j12")
         .about("j55", "gate: RATCHET=0 scripts/correctness_gate.sh")
-        .running("j55")
-        .about(
-            "s-1-sub-9",
-            "Widen the JSON and UUID type mapping in the engine",
-        )
-        .subagent("s-1-sub-9");
-    let said = nag_with(&plan, &ChildSessions::none(), &jobs).unwrap();
-    assert!(
-        said.contains(r#""job": "j55""#),
-        "the gate job, not j12 which sorts first: {said}"
+        .running("j55");
+    assert_eq!(
+        nag_with(&plan, &ChildSessions::none(), &jobs),
+        None,
+        "the gate job IS the row: nothing to ask and no wait to attach"
     );
-    assert!(said.contains("It reads like `j55`"), "{said}");
-    assert!(
-        said.contains("Also running: `j12`"),
-        "the others are named: {said}"
-    );
-    assert_eq!(said.lines().count(), 3, "still one advice line: {said}");
+}
 
+/// The offer is for a row that is only waiting, so where nothing running is alike it still names
+/// what it could attach - without claiming a likeness it cannot see.
+#[test]
+fn the_offer_still_names_a_running_job_the_row_does_not_read_like() {
+    let plan = vec![operator_row(
+        "correctness gate must PASS in RATCHET=0 — rerun scripts/correctness_gate.sh",
+        TodoStatus::InProgress,
+    )];
     // Nothing alike: the likeliest is still offered, and nothing claims a likeness.
     let unrelated = RunningJobs::none()
         .about("j12", "cargo bench")

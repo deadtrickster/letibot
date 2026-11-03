@@ -1192,6 +1192,17 @@ pub fn unfinished_plan_for(
     // The count of open rows is not in the text: the idle clock compares that text, so a row
     // added or closed elsewhere would make the same question a new notice and reset the backoff.
     let who = whose_row(&next.by);
+    // R93.B4: a row whose own words are a running job's or child's description is work already in
+    // flight. Asking about it produces "still running" and offering the wait is the same sentence
+    // again, so the check is silent until the thing it names has ended.
+    if matches!(next.by, TodoBy::Model | TodoBy::Operator)
+        && jobs
+            .likeliest_wait(&next.content)
+            .first()
+            .is_some_and(|(_, _, _, score)| *score >= LIKE_FLOOR)
+    {
+        return None;
+    }
     // The first check that names an operator's row after they add it says who put it there; a row
     // the model has already moved to in progress is one it knows about.
     let operator_added = next.by == TodoBy::Operator
@@ -1231,12 +1242,7 @@ pub fn unfinished_plan_for(
     // model will not reach for a door nobody named. Appended to the advice's own line, because
     // the head folds a notice only while every line after the bullet is the advice it knows.
     let offer = match (&next.by, jobs.likeliest_wait(&next.content).as_slice()) {
-        (TodoBy::Model | TodoBy::Operator, [(kind, handle, about, score), rest @ ..]) => {
-            let like = if *score >= LIKE_FLOOR {
-                format!(" It reads like `{handle}` ({}).", said_short(about))
-            } else {
-                String::new()
-            };
+        (TodoBy::Model | TodoBy::Operator, [(kind, handle, _, _), rest @ ..]) => {
             let others: Vec<String> = rest
                 .iter()
                 .take(2)
@@ -1247,7 +1253,7 @@ pub fn unfinished_plan_for(
                 false => format!(" Also running: {}.", others.join(", ")),
             };
             format!(
-                "{like} If this row is only waiting on a running job or subagent, attach the wait \
+                " If this row is only waiting on a running job or subagent, attach the wait \
                  instead of answering — `todo_write` {{\"wait_on\": [{{\"content\": \"<the text \
                  above>\", \"{kind}\": \"{handle}\"}}]}} — and this check stays quiet until it \
                  ends.{others}"
