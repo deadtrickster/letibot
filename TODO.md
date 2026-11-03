@@ -1707,7 +1707,7 @@ nothing to design.
 
 ---
 
-## R75 — A model's command can drive the operator's panes and doors through the daemon's socket — **OPEN, 2026-10-11, the operator decides later**
+## R75 — A model's command can drive the operator's panes and doors through the daemon's socket — **DECIDED AND BUILT 2026-11-03: a tool call's connection gets the askpass door and no other**
 
 Found answering the operator's *"who owns !term process?"* / *"so it means say web head can have
 access to that?"*. The web head (`crates/harnessd/src/httphead.rs`) cannot — it is stateless,
@@ -1726,18 +1726,61 @@ into the operator's open `!term` pane, or start its own `!term` / `!` line — w
 OPERATOR's own act and is therefore ungated: the gate judged only the outer command that opened a
 socket. Confined sessions are not exposed (`/run` is a fresh tmpfs inside the boundary).
 
-**The proposal (not decided):** the daemon reads the connecting process from the kernel
-(`SO_PEERCRED` → pid → `/proc/PID/cgroup`); a connection from inside the daemon's own tool-call
-cgroup tree (`letibot.<pid>.<n>/…`, the tree the reaper and the memory caps already use) is a
-model's command, not a head, and gets only the one narrow frame `letibot-askpass` needs (the
-secret ask) — every operator door refused by name: `!`, `!term` and pane input, `/mode`, slash
-verbs, queue verbs. No tokens, no new files; the fact is the one the reaper already trusts.
-Alternatives to weigh: a per-head credential the launcher hands the TUI and never puts on a
-command's environment; or not handing `LETIBOT_SOCKET` to commands at all and giving askpass its
-own narrow socket.
-— OPEN: the rule is not in the tree — nothing on the daemon side reads the peer's pid (`crates/sessionlog/src/server.rs` has no `SO_PEERCRED`), and every command still carries `LETIBOT_SOCKET`/`LETIBOT_SESSION` (`crates/harnessd/src/harness/open.rs:885`).
+**The decision (the operator's, 2026-11-03): close it, by asking the kernel who connected.** The
+operator's own words: *"read the connecting process from the kernel ... and classify the
+connection: from inside a session's own tool tree ..., or not"*. So a connection from inside this
+daemon's own tree is a tool call and not a head, and it gets only the askpass door.
 
-**Related, from the same answer (pane ownership):** a pane is owned by the daemon's `Terminals`
+**The rule, as built** (`crates/sessionlog/src/peer.rs`, `Peer::of`):
+
+- The pid comes from the kernel at `connect` — `SO_PEERCRED` on Linux, `LOCAL_PEERPID` on macOS —
+  read in `serve_conn` before the stream is handed to the reader. Not from a frame: a head's own
+  `kind` and `identity` are claims a command can type.
+- `inside` is the parent chain up to this daemon (`/proc/<pid>/stat`, `PROC_PIDTBSDINFO`) **or**, on
+  Linux, `/proc/<pid>/cgroup` naming `letibot.<daemon pid>.<n>` — the tree every tool call and job
+  runs in. The cgroup arm is the one a double-forked child cannot leave; a process is not its own
+  descendant, which is what keeps every head that attaches to a daemon it started.
+- A peer the kernel will not name is `inside`: an unsupported platform, or a process that exited
+  under the question, falls on the side that refuses, never the other way.
+- The doors a tool tree keeps are `Attach`, `Ack`, `Resync`, `Detach` and `Askpass`. Every other
+  frame is answered `Rejected` **by name** — `!term opening a pane`, `!term keys`, `!term closing a
+  pane`, `a ! line`, `/mode`, `a / verb`, `the settings rows`, `the session list`, `typing a prompt
+  to the model`, `a decision`, `stopping the daemon`, and the rest — with the sentence naming the
+  door and the pid, so a person reading it knows what was refused and why.
+- Nothing else was needed: no per-head credential, no second socket, and no token. The `!`-line and
+  `!term` paths are unchanged for a head.
+
+**What the operator said is NOT closed by this** — carried here so the next reader does not think
+the socket was the whole story: *"when the operator's terminal runs inside tmux or screen, an
+unconfined command can still type into it through the multiplexer (`tmux send-keys`, `screen -X
+stuff`); that is outside letibot's socket and is not closed by this change. Confined sessions do not
+reach the operator's tmux socket."*
+
+**And two limits of the rule itself**, measured while building it: on macOS there is no cgroup, so a
+child that double-forks (`setsid`) leaves the parent chain and is read as a head there; and a
+program the daemon started outside a tool call — a `!term` pane's program, a background job — is
+also `inside` by this rule, so it is not a head. Nothing in the tree attached as a head from either.
+
+**Done when:** a test connects to the socket from a process placed in the tool tree and is
+refused `!term` input and `!` lines while askpass's ask still works; a head connection is
+unaffected. — **DONE**, three ways:
+
+1. `crates/sessionlog/tests/peer_doors.rs` re-executes itself as a child of the process that serves
+the socket and asks for eleven operator doors, each refused with a reason that names it, then asks
+for the password and gets the head's answer; the same file attaches a head from the serving process
+and checks the `!` line is accepted and the session list answered.
+2. `crates/harnessd/tests/askpass_from_tool_tree.rs` runs the production `letibot-askpass` binary as
+a child of the serving process and asserts its stdout is the password, byte for byte.
+3. `crates/sessionlog/src/peer.rs`'s own tests: a spawned child is inside, this process is not, and
+an unread peer is on the refusing side.
+
+**The other half of this entry — pane ownership — is R75a below.**
+
+---
+
+## R75a — A pane outlives its session, and a dead daemon's panes are never swept — **OPEN, split out of R75 2026-11-03**
+
+From the same answer as R75, and not settled by it. A pane is owned by the daemon's `Terminals`
 registry, keyed by session and pane number, each in its own `session.term-<session>-<N>` cgroup
 under the daemon's scope; it ends on `!term close`, its program's exit, or a CLEAN daemon stop.
 Not on the session's close or park (R68's `Sessions::close` does not touch `Terminals`), and a
@@ -1746,9 +1789,8 @@ operator's own run). Options: close a session's panes with it; clean up a crashe
 `term-*` cgroups at daemon start.
 — OPEN: panes still outlive their session (`crates/harnessd/src/sessions.rs` names no `Terminals`; the cgroup is `term-<session>-<pane>` at `crates/harnessd/src/term.rs:227`) and nothing sweeps a dead predecessor's `term-*` cgroups at start.
 
-**Done when:** a test connects to the socket from a process placed in the tool tree and is
-refused `!term` input and `!` lines while askpass's ask still works; a head connection is
-unaffected.
+**Done when:** a pane's own fate is decided: either it ends with its session, or a daemon's start
+sweeps what a crashed predecessor left, and a test says which.
 
 ---
 
