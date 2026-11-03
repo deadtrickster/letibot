@@ -231,6 +231,9 @@ pub struct Harness {
     /// True only while [`Harness::compact`] is running its summary turn. See the
     /// context-wall check in `run_rounds` for why that turn must be exempt.
     compacting: bool,
+    /// Where the abandoned-call sweep stopped last time, so it reads the turn that was added rather
+    /// than the whole conversation after every turn.
+    swept_calls: crate::harness::turns::SweptCalls,
     /// Where the provider last counted this conversation: the anchor the wall's resident count is
     /// rolled forward from, with `cfg.ledger_scale` as the pair `measure_resident` computed. `None`
     /// with a scale set is one this session did not measure, and it keeps the old ratio reading.
@@ -528,7 +531,7 @@ impl Harness {
     pub fn sweep_abandoned_calls(&mut self) -> usize {
         // **THE DECISION IS A FREE FUNCTION**, so it can be tested without a daemon, a model or a
         // socket. What is left here is the plumbing: read the log, build the rows, append them.
-        let abandoned = abandoned_calls(self.session.items.as_slice());
+        let abandoned = self.swept_calls.sweep(self.session.items.as_slice());
         if abandoned.is_empty() {
             return 0;
         }

@@ -3995,38 +3995,66 @@ pub(crate) fn one_line(s: &str, n: usize) -> String {
 /// apart from the plumbing so it is tested alone. It reads ONE transcript, since a row naming a call is the request
 /// and a `ToolResult` with that id is the answer. Linear on purpose, since this runs on the worker.
 pub fn abandoned_calls(items: &[TranscriptItem]) -> Vec<(String, String)> {
-    let mut asked: Vec<(&str, &str)> = Vec::new();
-    let mut answered: std::collections::HashSet<&str> = std::collections::HashSet::new();
-    for item in items {
-        match item {
-            TranscriptItem::Assistant { tool_calls, .. } => {
-                for c in tool_calls {
-                    asked.push((c.id.as_str(), c.name.as_str()));
-                }
-            }
-            TranscriptItem::ToolResult { call_id, .. } => {
-                answered.insert(call_id.as_str());
-            }
-            _ => {}
+    SweptCalls::default().sweep(items)
+}
+
+/// The sweep's memory of the transcript it has already read. A turn appends a round to a
+/// transcript that only grows, and the sweep runs after every turn: reading it whole each time is
+/// one pass per turn over the whole conversation.
+#[derive(Default)]
+pub(crate) struct SweptCalls {
+    /// How many of the transcript's rows have been read - the cursor the next sweep starts at.
+    upto: usize,
+    /// Calls asked and not yet answered, in the order they were asked.
+    asked: Vec<(String, String)>,
+    /// The ids an answer settled since the last sweep, dropped from `asked` by it.
+    answered: std::collections::HashSet<String>,
+}
+
+impl SweptCalls {
+    /// The unanswered calls, having read only the rows no earlier sweep has.
+    pub(crate) fn sweep(&mut self, items: &[TranscriptItem]) -> Vec<(String, String)> {
+        // A compaction replaces the transcript with a summary and a tail, so a cursor into the old
+        // one would skip rows that exist and keep calls whose rows are gone. Start over instead.
+        if self.upto > items.len() {
+            *self = SweptCalls::default();
         }
-    }
-    // A call asked for TWICE and answered once is answered: the set difference, not a count.
-    asked
-        .into_iter()
-        .filter(|(id, _)| {
+        for item in &items[self.upto..] {
+            probe_row();
+            match item {
+                TranscriptItem::Assistant { tool_calls, .. } => {
+                    for c in tool_calls {
+                        if !self.asked.iter().any(|(id, _)| id == &c.id) {
+                            self.asked.push((c.id.clone(), c.name.clone()));
+                        }
+                    }
+                }
+                TranscriptItem::ToolResult { call_id, .. } => {
+                    self.answered.insert(call_id.clone());
+                }
+                _ => {}
+            }
+        }
+        self.upto = items.len();
+        // A call asked twice and answered once is answered: the set difference, not a count - and
+        // an answer that arrives after its call settles it whichever sweep reads which row.
+        let answered = std::mem::take(&mut self.answered);
+        self.asked.retain(|(id, _)| {
             probe_answer();
             !answered.contains(id)
-        })
-        .map(|(id, name)| (id.to_string(), name.to_string()))
-        .collect()
+        });
+        self.asked.clone()
+    }
 }
 
 // The answer lookups this thread's sweeps have made, so the cost is a number a test can read.
 // The sweep runs on the worker after every turn, over a transcript that only grows: one probe
-// per asked call, never a scan of the answers.
+// per asked call, never a scan of the answers - and one row read per row appended since the last
+// sweep, never a walk of the conversation.
 #[cfg(test)]
 thread_local! {
     static ANSWER_PROBES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static SWEPT_ROWS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// One answer lookup - counted under test, and nothing at all in a shipped build.
@@ -4034,6 +4062,13 @@ thread_local! {
 fn probe_answer() {
     #[cfg(test)]
     ANSWER_PROBES.with(|n| n.set(n.get() + 1));
+}
+
+/// One transcript row read - counted under test, nothing in a shipped build.
+#[inline(always)]
+fn probe_row() {
+    #[cfg(test)]
+    SWEPT_ROWS.with(|n| n.set(n.get() + 1));
 }
 
 #[cfg(test)]
@@ -4061,7 +4096,7 @@ mod endpoint_retry {
     /// process both vanished: it sat `running` for eight minutes while `esc esc` did nothing.
     mod abandoned_call_sweep {
         use crate::harness::abandoned_calls;
-        use crate::harness::turns::ANSWER_PROBES;
+        use crate::harness::turns::{ANSWER_PROBES, SWEPT_ROWS};
         use letibot_transcript::{ToolCall, ToolOutcome, TranscriptItem, UserPart};
 
         fn assistant(call_id: &str, name: &str) -> TranscriptItem {
@@ -4176,6 +4211,76 @@ mod endpoint_retry {
                 },
             ];
             assert!(abandoned_calls(&items).is_empty());
+        }
+
+        /// **The sweep reads only what no earlier sweep has.** A turn appends a round to a
+        /// transcript that only grows, and the sweep runs after every turn: reading it whole each
+        /// time is one pass over the whole conversation per turn, on the worker.
+        #[test]
+        fn a_second_sweep_reads_the_rows_since_the_first() {
+            let mut swept = crate::harness::turns::SweptCalls::default();
+            let mut items: Vec<TranscriptItem> = (0..2_000)
+                .flat_map(|i| {
+                    [
+                        assistant(&format!("c{i}"), "grep"),
+                        result_for(&format!("c{i}")),
+                    ]
+                })
+                .collect();
+            SWEPT_ROWS.with(|n| n.set(0));
+            assert!(swept.sweep(&items).is_empty());
+            assert_eq!(
+                SWEPT_ROWS.with(|n| n.get()),
+                items.len(),
+                "the first sweep has nothing to remember and reads the transcript"
+            );
+
+            items.push(assistant("late", "grep"));
+            SWEPT_ROWS.with(|n| n.set(0));
+            assert_eq!(
+                swept.sweep(&items),
+                vec![("late".to_string(), "grep".to_string())],
+                "the new call is the answer"
+            );
+            let read = SWEPT_ROWS.with(|n| n.get());
+            assert_eq!(
+                read, 1,
+                "{read} rows read for one new row: the sweep remembers where it stopped"
+            );
+        }
+
+        /// A transcript that SHRANK is a different conversation - a compaction forks onto a
+        /// summary and a tail - so the cursor starts over, and a call whose row is gone is not
+        /// reported as abandoned.
+        #[test]
+        fn a_transcript_that_shrank_is_read_again_from_the_top() {
+            let mut swept = crate::harness::turns::SweptCalls::default();
+            let full = vec![assistant("c-old", "grep"), result_for("c-old")];
+            assert!(swept.sweep(&full).is_empty());
+            assert!(swept.sweep(&full).is_empty(), "and it stays answered");
+
+            // The fork: the summary row, and the one call this turn asked. `c-unanswered` was in
+            // the folded half and its row is not here any more.
+            let mut before = full.clone();
+            before.push(assistant("c-unanswered", "bash"));
+            assert_eq!(
+                swept.sweep(&before),
+                vec![("c-unanswered".to_string(), "bash".to_string())]
+            );
+            let compacted = vec![
+                TranscriptItem::User {
+                    parts: vec![UserPart::Text {
+                        text: "summary".into(),
+                    }],
+                    speaker: Default::default(),
+                },
+                assistant("c-new", "grep"),
+            ];
+            assert_eq!(
+                swept.sweep(&compacted),
+                vec![("c-new".to_string(), "grep".to_string())],
+                "the call whose row the fork dropped is not the sweep's business"
+            );
         }
     }
 

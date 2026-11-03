@@ -2874,6 +2874,7 @@ impl Harness {
             last_turn_id: String::new(),
             resumed: resume,
             compacting: false,
+            swept_calls: Default::default(),
             wall_anchor,
             render: parts.wiring.clone(),
             supplies,
