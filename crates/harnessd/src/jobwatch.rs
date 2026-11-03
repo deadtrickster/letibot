@@ -574,30 +574,9 @@ impl JobWatchers {
 
     /// **A settlement found by the session that knows and not by a watcher**: a subagent's later
     /// turn ends and nothing is blocked on its slot, so it goes to the level ABOVE - the parent
-    /// that started the child - queued and rung the way a stopped session's queue hands up.
-    pub fn settle_up(&self, c: JobCompletion) {
-        let Some(up) = &self.parent else {
-            return;
-        };
-        let (above, who) = up.route();
-        above.push(c);
-        if let Some(bell) = &self.bell {
-            bell.ring_wake(who);
-        }
-    }
-
-    /// Queue a settlement as a watcher would, without the ring - for a test of the delivery
-    /// rules, which needs a completion in the queue without a process ending. Nothing in
-    /// the daemon calls it: a settlement is queued by its watcher thread.
-    #[doc(hidden)]
-    pub fn queue_for_test(&self, c: JobCompletion) {
-        self.queue(c);
-    }
-
-    /// **Queue a settlement on the session ABOVE this one, and ring its bell.** A child's later turn
-    /// settles here: its parent's watcher stopped at the first answer, so nothing else would carry
-    /// it. `false`, and nothing queued, for a session with no level above it.
-    pub fn queue_up(&self, c: JobCompletion) -> bool {
+    /// that started the child - queued and rung the way a stopped session's queue hands up. `false`,
+    /// and nothing queued, for a session with no level above it.
+    pub fn settle_up(&self, c: JobCompletion) -> bool {
         let Some(up) = &self.parent else {
             return false;
         };
@@ -607,6 +586,14 @@ impl JobWatchers {
             bell.ring_wake(who);
         }
         true
+    }
+
+    /// Queue a settlement as a watcher would, without the ring - for a test of the delivery
+    /// rules, which needs a completion in the queue without a process ending. Nothing in
+    /// the daemon calls it: a settlement is queued by its watcher thread.
+    #[doc(hidden)]
+    pub fn queue_for_test(&self, c: JobCompletion) {
+        self.queue(c);
     }
 
     /// Hold this session's settlement queue while `during` runs - the position a publisher must

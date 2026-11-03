@@ -624,7 +624,7 @@ fn a_grandchilds_settlement_reaches_its_parent_and_rings_its_parent() {
     );
 }
 
-/// **A child's later turn is queued on its PARENT and rung there** - `queue_up`, which is the one
+/// **A child's later turn is queued on its PARENT and rung there** - `settle_up`, which is the one
 /// door a child has for a settlement its parent's watcher has already stopped waiting on.
 #[test]
 fn a_later_turn_is_queued_on_the_level_above_and_rings_it() {
@@ -650,7 +650,7 @@ fn a_later_turn_is_queued_on_the_level_above_and_rings_it() {
     let child_watch =
         JobWatchers::watching_tasks(&child, Some(Arc::clone(r.bell()))).shares_tree(&root_watch);
     assert!(
-        child_watch.queue_up(JobCompletion {
+        child_watch.settle_up(JobCompletion {
             arrived: std::time::SystemTime::UNIX_EPOCH,
             later: true,
             kind: BackgroundKind::Subagent,
@@ -685,7 +685,7 @@ fn a_later_turn_is_queued_on_the_level_above_and_rings_it() {
 
     // A root has no level above it, so there is nowhere to put one and the caller is told so.
     assert!(
-        !root_watch.queue_up(JobCompletion {
+        !root_watch.settle_up(JobCompletion {
             arrived: std::time::SystemTime::UNIX_EPOCH,
             later: true,
             kind: BackgroundKind::Subagent,
@@ -746,7 +746,7 @@ fn a_settlement_handed_up_past_a_stopped_level_reaches_the_one_above_it() {
     child_watch.stop();
 
     assert!(
-        grandchild_watch.queue_up(JobCompletion {
+        grandchild_watch.settle_up(JobCompletion {
             arrived: std::time::SystemTime::UNIX_EPOCH,
             later: true,
             kind: BackgroundKind::Subagent,
