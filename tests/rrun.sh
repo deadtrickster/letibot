@@ -33,8 +33,13 @@ import shutil
 import sys
 
 cmd = sys.argv[-1] if len(sys.argv) > 1 else ""
-with open(os.environ["RRUN_SSH_LOG"], "a") as log:
-    log.write(cmd + "\n")
+# A watcher outlives the case that started it, so a log path that is already gone must not turn into
+# a stub that fails: the launcher's loop would spin on a read that never answers.
+try:
+    with open(os.environ["RRUN_SSH_LOG"], "a") as log:
+        log.write(cmd + "\n")
+except OSError:
+    pass
 payload = re.match(r"cat > (\S+)\s*$", cmd)
 if payload:
     dest = os.path.join(os.environ["RRUN_SSH_FILES"], os.path.basename(payload.group(1)))
