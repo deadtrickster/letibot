@@ -71,6 +71,41 @@ fn the_launcher_is_the_only_thing_that_is_not_a_role() {
     assert_eq!(code, Some(2), "an unwired launcher must exit 2");
 }
 
+/// **`--help` names every verb this dispatcher accepts, and its descriptions line up.**
+///
+/// A usage block nobody reads is one whose columns are broken: the `\` continuation this text
+/// used to be written with dropped the indent from every second line, and the verbs that are not
+/// roles (`migrate`, `reattach`) were missing from it entirely.
+#[test]
+fn the_help_lists_every_verb_and_keeps_its_descriptions_indented() {
+    let (code, stdout, stderr) = run(&["--help"]);
+    assert_eq!(code, Some(0), "`--help` is not a failure: {stderr}");
+    for verb in [
+        "stats [VERB]",
+        "fb --session",
+        "migrate",
+        "attach github",
+        "daemon",
+        "tui | head",
+    ] {
+        assert!(
+            stdout.contains(verb),
+            "`letibot --help` must name `{verb}`:\n{stdout}"
+        );
+    }
+    assert!(
+        stdout.contains("--help`") && stdout.contains("verb"),
+        "it must say a verb answers for itself, `letibot <verb> --help`:\n{stdout}"
+    );
+    // A description column, not a wall: the text after the command starts at column 2.
+    for line in stdout.lines() {
+        assert!(
+            !line.starts_with("turns,") && !line.starts_with("per open pull"),
+            "a wrapped description lost its indent: {line:?}"
+        );
+    }
+}
+
 /// **`letibot` answers for itself**, and a typo is refused by name rather than resolving
 /// to a role - the dispatcher's own name is not in the table, which is what stops
 /// `letibot` from becoming the daemon by substring.

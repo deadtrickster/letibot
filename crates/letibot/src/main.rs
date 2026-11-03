@@ -325,29 +325,41 @@ fn main() -> ExitCode {
     }
 }
 
+/// **One line per command, and every line's description at one column.** Written as a raw
+/// string because the `\` continuation this used to use dropped the indent from every wrapped
+/// line, and a usage whose columns wander is one nobody finishes reading.
 fn print_usage() {
     println!(
-        "letibot {} — one binary, several roles\n\n\
-         USAGE\n  \
-           letibot                     start or attach to this folder's session\n  \
-           letibot <role> [args…]      run one role\n\n\
-         ROLES\n  \
-           daemon                      the session owner (also installed as `harnessd`)\n  \
-           tui | head                  a head, attached to a daemon\n  \
-           askpass [PROMPT]            what `sudo` runs (also installed as `letibot-askpass`)\n  \
-           m1                          the M1 measurement\n  \
-           render | render-qwen        the renderers the fidelity gate runs\n\n\
-         METRICS\n  \
-           stats [VERB]                read metrics.db: today, waits, deliveries, tools, models,\n  \
-                                       turns, feedback, session ID, sql (`letibot stats --help`)\n  \
-           fb --session S [+|-] NOTE   mark a session's last turn from a shell\n\n\
-          GITHUB\n  \
-            attach github <scope>       the reviewer seat on an org or `owner/repo`: one session\n  \
-                                        per open pull request, one review per push, and drafts\n  \
-                                        until `[github] post` and a token are set\n\n\
-         A role is reachable by its own name through a symlink, which is how anything\n\
-         that invokes a PATH rather than typing a command reaches it — `sudo` runs the\n\
-         askpass helper with no arguments but the prompt.\n",
+        "\
+letibot {} — one binary, several roles
+
+USAGE
+  letibot                     start or attach to this folder's session
+  letibot <role> [args…]      run one role
+  letibot <verb> [args…]      read metrics, mark a turn, move a session, seat a reviewer
+
+ROLES
+  daemon                      the session owner (also installed as `harnessd`)
+  tui | head                  a head, attached to a daemon
+  askpass [PROMPT]            what `sudo` runs (also installed as `letibot-askpass`)
+  m1                          the M1 measurement
+  render | render-qwen        the renderers the fidelity gate runs
+
+VERBS
+  stats [VERB]                read metrics.db: today, waits, deliveries, tools, models,
+                              turns, feedback, session ID, sql
+  fb --session S [+|-] NOTE   mark a session's last turn from a shell
+  migrate SESSION --to HOST   move a session's whole daemon to a host, or back with
+                              `--to local` (`letibot --migrate` is the same verb)
+  attach github <scope>       the reviewer seat on an org or `owner/repo`: one session per
+                              open pull request, one review per push, drafts until
+                              `[github] post` and a token are set
+
+Every verb answers for itself: `letibot <verb> --help` says what it takes, which
+flags have defaults, and one example. A role is reachable by its own name through a
+symlink, which is how anything that invokes a PATH rather than typing a command
+reaches it — `sudo` runs the askpass helper with no arguments but the prompt.
+",
         env!("CARGO_PKG_VERSION")
     );
 }
