@@ -415,6 +415,10 @@ pub struct Config {
     /// `providers.toml`, in the order written; empty is the old behaviour. Read once at startup
     /// like `[default]`, so an edit takes effect on the next daemon.
     pub fallback: Vec<String>,
+    /// **How many consecutive model timeouts earn one of those moves.** A timeout is the failure that
+    /// says nothing about the model - the request never came back - so one is weather and a run of
+    /// them is the model. 3 unless a session's own `leticode.toml` says otherwise.
+    pub fallback_after_timeouts: u32,
     /// What the fabric block in the system prompt is, said by whoever composed
     /// it (`Sessions`): live, cached with its age, or unreachable. `None` when
     /// there is no seat, and then there is no block.
@@ -1386,6 +1390,9 @@ impl Config {
             // No fallback until `run` reads `[fallback]`: an empty list is the old behaviour
             // exactly, so a test that wants the fallback path sets this field by hand.
             fallback: Vec::new(),
+            // Three timeouts in a row, which is what a session gets before the daemon stops believing
+            // the provider is merely slow.
+            fallback_after_timeouts: 3,
             // No overrides until `run` loads the operator's `prompts.toml`. `Default`
             // is the byte-identical case: a daemon that never reads the file composes
             // the built-in prompt for every seat.

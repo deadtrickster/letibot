@@ -521,6 +521,28 @@ impl Drop for GuestsDown {
     }
 }
 
+/// **Where this session's turns go when its model is out.** The box's `[fallback] models` is the
+/// default and a `leticode.toml` that names a list replaces it WHOLE: a list is the narrower
+/// statement, and a project naming two names must not silently inherit a third. The timeout budget
+/// rides with the list, because it is the same policy's other half.
+fn session_fallback(cfg: &mut Config) {
+    if !cfg.leticode.fallback.is_empty() {
+        eprintln!(
+            "  fallback: {} — from leticode.toml ({})",
+            cfg.leticode.fallback.join(", "),
+            cfg.leticode
+                .path
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default()
+        );
+        cfg.fallback = cfg.leticode.fallback.clone();
+    }
+    if let Some(n) = cfg.leticode.fallback_after_timeouts {
+        cfg.fallback_after_timeouts = n;
+    }
+}
+
 pub fn run(args: &[String]) -> Result<i32, String> {
     // Declared first, so it is dropped LAST: after every session, daemon and seat has had its own
     // chance to close its backend and say where its work went.
@@ -1523,6 +1545,9 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         Ok(_) => {}
         Err(why) => eprintln!("  providers.toml: {why} — no fallback is in force"),
     }
+    // **A session's own list outranks the box's**, because it is the narrower statement: a file in
+    // the project says where THIS project's sessions go.
+    session_fallback(&mut cfg);
 
     // Captured here rather than before the levels, because this is the banner's copy of
     // the model and the levels are what decide it: a file that set `main_model` would
@@ -3041,6 +3066,32 @@ mod tests {
             Ok(Placement::RemoteVm("lab2x1".into())),
             "the pair is a VM on that machine, and both flags are honoured"
         );
+    }
+
+    /// **A session's own fallback list replaces the box's, and its timeout budget rides along.** The
+    /// list is where a project's sessions go when their model is out; a merge would inherit a third
+    /// name from the box file that this project never chose.
+    #[test]
+    fn a_sessions_fallback_list_replaces_the_boxs_and_carries_its_budget() {
+        let mut cfg = Config::for_this_box("/tmp/r119-cli-fallback");
+        cfg.fallback = vec!["box/one".into(), "box/two".into()];
+        // A session file that says nothing leaves the box's answer alone.
+        session_fallback(&mut cfg);
+        assert_eq!(
+            cfg.fallback,
+            vec!["box/one".to_string(), "box/two".to_string()]
+        );
+        assert_eq!(cfg.fallback_after_timeouts, 3, "the daemon's own budget");
+
+        cfg.leticode.fallback = vec!["glm/glm-4.6".into()];
+        cfg.leticode.fallback_after_timeouts = Some(2);
+        session_fallback(&mut cfg);
+        assert_eq!(
+            cfg.fallback,
+            vec!["glm/glm-4.6".to_string()],
+            "the session's list, not the box's two names and this one"
+        );
+        assert_eq!(cfg.fallback_after_timeouts, 2);
     }
 
     /// The Claude Code listing (Package H): the id a person types, then the facts a picker

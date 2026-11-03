@@ -2448,15 +2448,37 @@ impl Harness {
         });
     }
 
+    /// **Is the model itself the likely fault?** A refusal, a spent account, a server that is down, or a run
+    /// of timeouts long enough to stop reading as weather. The first two are the provider's own words; a
+    /// timeout says nothing about the model on its own, which is why it has to repeat.
+    fn worth_moving_for(&self, e: &letibot_turn::HttpError) -> bool {
+        use letibot_http::retry::Trouble;
+        match letibot_http::retry::Policy::trouble(e) {
+            Some(Trouble::Quota | Trouble::RateLimit) => true,
+            Some(Trouble::Timeout) => {
+                let this_one = if self.trouble_kind == "timeout" {
+                    self.trouble_count + 1
+                } else {
+                    1
+                };
+                this_one >= self.cfg.fallback_after_timeouts.max(1)
+            }
+            // A stall is a round that is slow, and a round that is slow may still answer; a 5xx is
+            // `model_refused`'s and was the original rule.
+            Some(Trouble::Stall) | None => model_refused(e),
+        }
+    }
+
     /// The model is out and this box has somewhere else to go: a `[fallback] models` list, tried once each. It
     /// records the move and does not make it, because a re-issued round carries the rest of the old turn and a
-    /// thinking-mode provider refuses that. A 429 or a 5xx only, and a metered name only.
+    /// thinking-mode provider refuses that. A refusal by the provider, a spent account, a 5xx, or a run of
+    /// timeouts long enough that the model is the likelier fault - and a metered name only.
     fn fall_back_from(
         &mut self,
         e: &letibot_turn::HttpError,
         tried: &mut Vec<String>,
     ) -> Option<String> {
-        if !model_refused(e) || self.cfg.fallback.is_empty() {
+        if !self.worth_moving_for(e) || self.cfg.fallback.is_empty() {
             return None;
         }
         if let letibot_turn::HttpError::Status { body, .. } = e

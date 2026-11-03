@@ -55,6 +55,9 @@ struct Fake {
     port: u16,
     script: Arc<Mutex<Vec<Act>>>,
     seen: Arc<AtomicU64>,
+    /// The `model` field of every request, in order: which model a turn actually went to is the only
+    /// evidence a switch landed, and this is the provider's own copy of the body.
+    models: Arc<Mutex<Vec<String>>>,
 }
 
 impl Fake {
@@ -63,13 +66,21 @@ impl Fake {
         let port = listener.local_addr().unwrap().port();
         let script: Arc<Mutex<Vec<Act>>> = Default::default();
         let seen: Arc<AtomicU64> = Default::default();
+        let models: Arc<Mutex<Vec<String>>> = Default::default();
         let acts = script.clone();
         let requests = seen.clone();
+        let asked = models.clone();
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(mut s) = stream else { continue };
-                let _ = read_request(&mut s);
+                let body = read_request(&mut s);
                 requests.fetch_add(1, Ordering::SeqCst);
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
+                    asked
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .push(v["model"].as_str().unwrap_or_default().to_string());
+                }
                 let act = {
                     let mut g = acts.lock().unwrap_or_else(|e| e.into_inner());
                     if g.is_empty() {
@@ -78,7 +89,10 @@ impl Fake {
                         g.remove(0)
                     }
                 };
-                match act {
+                // **One thread per connection, taken in arrival order.** A real provider serves
+                // concurrent requests, and a silent one that held the accept loop would make the
+                // request AFTER it time out as well - a fixture failing its own subject.
+                std::thread::spawn(move || match act {
                     Act::RateLimited(secs) => {
                         let body = "{\"error\":{\"message\":\"rate limited\"}}";
                         // The header is present only when the provider said something: `None` is the
@@ -114,14 +128,27 @@ impl Fake {
                         answer(&mut s);
                     }
                     Act::Answer => answer(&mut s),
-                }
+                });
             }
         });
-        Fake { port, script, seen }
+        Fake {
+            port,
+            script,
+            seen,
+            models,
+        }
     }
 
     fn url(&self) -> String {
         format!("http://127.0.0.1:{}/v1/chat/completions", self.port)
+    }
+
+    /// The models the requests named, in the order they arrived.
+    fn models(&self) -> Vec<String> {
+        self.models
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// The next `acts` this provider takes, in order. The script is a queue, not a repeat: each
@@ -202,6 +229,8 @@ struct Rec {
     failed: usize,
     /// A turn that ended in anything: the end of one scenario's wait.
     ended: usize,
+    /// Every warning the daemon raised, for a failure message that says WHICH refusal this was.
+    said: Vec<String>,
 }
 
 fn fold(rec: &mut Rec, inb: Inbound) {
@@ -226,6 +255,9 @@ fn fold(rec: &mut Rec, inb: Inbound) {
                 rec.ended += 1;
             }
             SessionEvent::TurnFinished { .. } => rec.ended += 1,
+            SessionEvent::Warning { code, detail, .. } => {
+                rec.said.push(format!("{code}: {detail}"))
+            }
             _ => {}
         },
         ServerFrame::Rejected { reason, .. } => {
@@ -354,10 +386,13 @@ fn the_four_provider_troubles_reach_the_wire_as_types() {
     let fake = Fake::serve();
     std::fs::write(
         scratch.join("letibot/providers.toml"),
+        // Two providers on one loopback stub, because a fallback names another of the box's models and
+        // a name with no key is refused before it is ever tried.
         format!(
             "# Written by provider_trouble.rs. Nothing here is the operator's file.\n\
-             [deepseek]\nkey = \"sk-test\"\nurl = \"{}\"\n",
-            fake.url()
+             [deepseek]\nkey = \"sk-test\"\nurl = \"{url}\"\n\n\
+             [glm]\nkey = \"sk-test\"\nurl = \"{url}\"\n",
+            url = fake.url()
         ),
     )
     .expect("providers.toml");
@@ -488,6 +523,82 @@ fn the_four_provider_troubles_reach_the_wire_as_types() {
         rec.failed, 0,
         "a stall is a slow round, not a failed one: {:?}",
         rec.troubles
+    );
+
+    // F. **A quota moves the session by itself.** The account cannot pay, a fallback list names where
+    // this session goes, and the daemon makes the switch and says so: `switched_to` on the event is the
+    // announcement, and the continuation's request is sent to the new model.
+    let mut cfg = config(&scratch, "quota-fallback", None);
+    cfg.fallback = vec!["glm/glm-4.6".to_string()];
+    let f = fake.clone();
+    let requests_before = fake.models().len();
+    let rec = drive(&parts, cfg, move |client, rx| {
+        f.script(&[Act::Quota, Act::Answer]);
+        client.prompt(0, PROMPT).expect("the prompt is accepted");
+        let mut rec = Rec::default();
+        // The continuation turn is the daemon's own, so the wait is for its request rather than for
+        // anything the driver sends.
+        watch(rx, &mut rec, |rec| {
+            rec.troubles.len() == 1 && f.models().len() > requests_before
+        });
+        rec
+    });
+    let after = fake.models();
+    assert_eq!(rec.troubles.len(), 1, "{:?}", rec.troubles);
+    assert_eq!(rec.troubles[0].kind, "quota", "{:?}", rec.troubles);
+    assert_eq!(
+        rec.troubles[0].switched_to.as_deref(),
+        Some("glm/glm-4.6"),
+        "a quota names where the session went: {:?} / warnings {:?}",
+        rec.troubles,
+        rec.said
+    );
+    assert_eq!(
+        after.last().map(String::as_str),
+        Some("glm-4.6"),
+        "and the turn that follows is sent there: {after:?}"
+    );
+
+    // G. **Two timeouts in a row move it, and one does not.** A timeout says nothing about the model
+    // on its own, so the budget is what makes it evidence: at two, the first turn stays where it is and
+    // the second moves the session with the same `switched_to` announcement.
+    let mut cfg = config(
+        &scratch,
+        "timeout-fallback",
+        Some(Duration::from_millis(400)),
+    );
+    cfg.fallback = vec!["glm/glm-4.6".to_string()];
+    cfg.fallback_after_timeouts = 2;
+    let f = fake.clone();
+    let requests_before = fake.models().len();
+    let rec = drive(&parts, cfg, move |client, rx| {
+        f.script(&[Act::Silent, Act::Silent, Act::Answer]);
+        let mut rec = Rec::default();
+        client.prompt(0, PROMPT).expect("the prompt is accepted");
+        watch(rx, &mut rec, |rec| rec.troubles.len() == 1);
+        client.prompt(0, PROMPT).expect("the prompt is accepted");
+        watch(rx, &mut rec, |rec| {
+            rec.troubles.len() == 2 && f.models().len() > requests_before + 2
+        });
+        rec
+    });
+    let after = fake.models();
+    assert_eq!(rec.troubles.len(), 2, "{:?}", rec.troubles);
+    assert_eq!(
+        rec.troubles[0].switched_to, None,
+        "one timeout is weather, and a session that moved on it would move on every slow round: {:?}",
+        rec.troubles
+    );
+    assert_eq!(
+        rec.troubles[1].switched_to.as_deref(),
+        Some("glm/glm-4.6"),
+        "the second in a row is the model: {:?}",
+        rec.troubles
+    );
+    assert_eq!(
+        after.last().map(String::as_str),
+        Some("glm-4.6"),
+        "and the continuation is sent there: {after:?}"
     );
 
     let _ = std::fs::remove_dir_all(&scratch);
