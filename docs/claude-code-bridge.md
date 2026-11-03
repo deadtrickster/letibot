@@ -72,7 +72,6 @@ one head connection per session it started or attached to, so asks reach it.
 | `leticode_diff` | `{session, full}` - the branch against its merge base: `git log --oneline`, `git diff --stat`, and the diff when `full` |
 | `leticode_stop` | `{session}` - interrupts a running turn, closes the session here and detaches; a placement settles as it closes (`branch` names the branch the work comes home on), and the rows stay on disk |
 | `leticode_list` | - the sessions this bridge holds, with `placement`, watched or driven |
-
 | `rooms`, `room_read`, `room_say`, `room_dm`, `room_roster`, `room_inbox` | see `docs/room.md` § *Claude Code*: Claude Code as the external seat `claude-code` in the host's chat rooms |
 
 ### Rooms: the stream and `room-wait`
