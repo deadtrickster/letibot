@@ -280,9 +280,11 @@ Landed (`crates/turn/src/evict.rs` for the units, `crates/tools/src/recall.rs` f
   same units, so the ids a model is shown and the ids it can open cannot drift apart.
 - **`recall`.** `recall id=<id> [offset]` returns the body exactly, from the store: bounded to an
   eighth of the session's window and floored at 2,000 bytes, with the offset to continue when a body
-  is larger than one read. An id the map never named is refused by name and the refusal lists the
-  ids it does have; an id it named whose body the store has lost says exactly that, because a spill
-  store with no directory keeps bodies only for the life of the daemon. Seated on every role that
+  is larger than one read. The store is what an id is resolved against and the map is what names it,
+  so a body kept on disk by `--spill-dir` still opens after a restart that left no map; an id the
+  store has nothing under is refused by name, with the ids the map does have, and an id it does name
+  whose body is gone says exactly that, because a store with no directory keeps bodies only for the
+  life of the daemon. Seated on every role that
   can be compacted.
 - **Not an edit.** The reduced span is only the summary turn's prompt. The session, ledger and
   transcript are untouched, so no hash chain is broken. `Harvest` reports `evicted`, `gone` and the
