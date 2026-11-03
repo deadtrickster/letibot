@@ -810,7 +810,6 @@ impl App {
                 self.invalidate_history_from(0);
                 self.hist_upto = 0;
             }
-            return;
         }
         // **A page that is neither side of the window is dropped rather than spliced in.** This head
         // holds one contiguous run of the session; a page that would leave a hole in it is an answer
