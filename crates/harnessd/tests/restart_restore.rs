@@ -469,20 +469,18 @@ fn a_child_running_when_the_daemon_stopped_resumes_and_its_answer_reaches_the_pa
         .expect("the parent had a child to bring back");
     eprintln!("--- what the parent's model is told ---\n{notice}");
     assert!(
-        notice.contains("under the 1h00m restore threshold"),
+        notice.starts_with("[restart] The daemon restarted (down ")
+            && notice.contains("). Restored:"),
         "{notice}"
     );
     assert!(
         notice.contains(&format!(
-            "[restart] subagent `fix-flaky · {handle}` (fix the flaky test) was running when \
-             the daemon restarted and has been resumed."
+            "- subagent `fix-flaky · {handle}` (fix the flaky test): resumed."
         )),
         "{notice}"
     );
-    // And the time, with the list - the return time and the stop are in every restart notice
-    // and a restore is not the case that is allowed to drop them.
-    assert!(notice.contains("; back at "), "{notice}");
-    assert!(notice.contains("stopped at "), "{notice}");
+    // And the down time, with the list: a restore is not the case that is allowed to drop it.
+    assert!(notice.contains("(down "), "{notice}");
     let child = {
         let mut hub = None;
         wait_until("the resumed child to be in the new registry", || {
@@ -504,7 +502,7 @@ fn a_child_running_when_the_daemon_stopped_resumes_and_its_answer_reaches_the_pa
     wait_until("the restart notice in the child's transcript", || {
         user_rows(&child)
             .iter()
-            .any(|r| r.starts_with("[restart] the daemon restarted while you were working"))
+            .any(|r| r.starts_with("[restart] You were interrupted and resumed"))
     });
     assert!(
         user_rows(&child)
@@ -561,7 +559,7 @@ fn a_child_running_when_the_daemon_stopped_resumes_and_its_answer_reaches_the_pa
         "{said:?}"
     );
     assert!(
-        said.iter().any(|r| r.contains("has been resumed")),
+        said.iter().any(|r| r.contains("): resumed.")),
         "the parent's model got the restart line: {said:?}"
     );
     wait_until("the delivery to be recorded", || {
@@ -652,7 +650,7 @@ fn a_child_stopped_in_a_later_turn_is_resumed_not_left_as_finished() {
         .expect("the child mid-turn is brought back");
     eprintln!("--- what the parent's model is told ---\n{notice}");
     assert!(
-        notice.contains(&format!("`slt-sweep · {handle}`")) && notice.contains("has been resumed"),
+        notice.contains(&format!("`slt-sweep · {handle}`")) && notice.contains("): resumed."),
         "{notice}"
     );
     wait_until("the resumed child to answer", || answered(&two, &handle));
@@ -1378,8 +1376,8 @@ fn relics_alone_draw_no_reminder_and_are_closed_quietly() {
     // the sentence is the empty one - the relics name no daemon, so the stop is unknown.
     let notice = notice.expect("a restart with nothing running is still said");
     assert!(
-        notice.starts_with("[restart] the daemon came back at ")
-            && notice.ends_with(": nothing was running"),
+        notice.starts_with("[restart] The daemon restarted (")
+            && notice.ends_with("). Nothing was running."),
         "{notice}"
     );
     for relic in ["j900", "j610", "j624", "j2437"] {
@@ -1395,7 +1393,7 @@ fn relics_alone_draw_no_reminder_and_are_closed_quietly() {
     assert!(
         user_rows(&d.hub())
             .iter()
-            .any(|r| r.contains("nothing was running")),
+            .any(|r| r.contains("Nothing was running.")),
         "the row says it: {:?}",
         user_rows(&d.hub())
     );
@@ -1448,13 +1446,10 @@ fn a_relic_beside_a_real_record_takes_the_down_time_from_the_real_one() {
     let notice = d.parent.restore_after_restart().expect("a reminder");
     eprintln!("--- what the parent's model is told ---\n{notice}");
     assert!(
-        notice.starts_with("[restart] the daemon was down for "),
+        notice.starts_with("[restart] The daemon restarted (down "),
         "{notice}"
     );
-    assert!(
-        notice.contains("under the 1h00m restore threshold"),
-        "{notice}"
-    );
+    assert!(!notice.contains("threshold"), "{notice}");
     assert!(!notice.contains("unknown"), "{notice}");
     assert!(notice.contains("- job `j9`"), "{notice}");
     assert!(!notice.contains("j900"), "the relic was reminded: {notice}");
@@ -1590,11 +1585,11 @@ fn past_the_threshold_a_child_is_only_reminded_and_task_resume_brings_it_back() 
     let notice = d.parent.restore_after_restart().expect("a reminder");
     eprintln!("--- what the parent's model is told ---\n{notice}");
     assert!(
-        notice.contains("longer than the 2s restore threshold"),
+        notice.starts_with("[restart] The daemon restarted (down "),
         "{notice}"
     );
     assert!(
-        notice.contains("NOTHING was restored automatically"),
+        notice.contains("Nothing was restored automatically"),
         "{notice}"
     );
     assert!(
@@ -1698,7 +1693,7 @@ fn a_session_opened_late_is_measured_from_the_open_and_only_reminded() {
     let notice = d.parent.restore_after_restart().expect("a reminder");
     eprintln!("--- what the parent's model is told ---\n{notice}");
     assert!(
-        notice.contains("NOTHING was restored automatically"),
+        notice.contains("Nothing was restored automatically"),
         "a session opened past the threshold is reminded, not resumed: {notice}"
     );
     assert!(
@@ -1774,7 +1769,7 @@ fn a_grandchild_comes_back_when_its_parent_does() {
     assert!(
         !user_rows(&c)
             .iter()
-            .any(|r| r.starts_with("[restart] the daemon restarted while you were working")),
+            .any(|r| r.starts_with("[restart] You were interrupted and resumed")),
         "a child with no transcript is not told to carry on"
     );
     wait_until("the grandchild to finish", || {
@@ -1837,7 +1832,7 @@ fn what_must_not_be_respawned_is_reported_or_delivered() {
     assert!(
         // Named by its record: the branch its worktree was cut on, `agent/gone`.
         notice.contains("`gone · s-restart-parent-sub-gone`")
-            && notice.contains("could NOT be resumed")
+            && notice.contains("not resumed (")
             && notice.contains("no-such-worktree")
             && notice.contains("is gone"),
         "{notice}"
@@ -2020,10 +2015,8 @@ fn an_empty_restart_is_said_once_and_starts_no_turn() {
     // The whole sentence, not a fragment: the return time from the daemon's own clock, the down
     // time and the stop it is counted from, and that nothing was running.
     let sentence = format!(
-        "[restart] the daemon came back at {} (down {}, stopped at {}): nothing was running",
-        letibot_harnessd::subagent_record::utc(back),
+        "[restart] The daemon restarted (down {}). Nothing was running.",
         letibot_harnessd::restart::span(Duration::from_millis(back.saturating_sub(stopped))),
-        letibot_harnessd::subagent_record::utc(stopped)
     );
     // One line, and it is the row. The sentence used to be published as a card *and* written as a
     // row, which drew one restart twice; the row is the copy both readers can use, so the card is
@@ -2158,7 +2151,7 @@ fn a_restored_session_with_an_open_todo_row_is_woken_and_its_turn_carries_the_re
         .iter()
         .find(|r| r.starts_with("[restart] "))
         .unwrap_or_else(|| panic!("the restart sentence never reached the turn: {rows:?}"));
-    assert!(restart.contains("nothing was running"), "{restart}");
+    assert!(restart.contains("Nothing was running."), "{restart}");
     assert!(
         restart.contains("a todo row still owed"),
         "the sentence says why it is a turn: {restart}"
@@ -2331,7 +2324,7 @@ fn monitors_are_rearmed_and_jobs_reminded_and_the_reminder_is_a_turn() {
     let rows = user_rows(&hub);
     let notice = rows
         .iter()
-        .find(|r| r.starts_with("[restart] the daemon was down for"))
+        .find(|r| r.starts_with("[restart] The daemon restarted (down "))
         .unwrap_or_else(|| panic!("the reminder reached the model: {rows:?}"));
     eprintln!("--- what the parent's model is told ---\n{notice}");
     assert!(
@@ -2412,7 +2405,7 @@ fn past_the_threshold_monitors_and_jobs_are_only_reminded() {
     let notice = d.parent.restore_after_restart().expect("a reminder");
     eprintln!("--- what the parent's model is told ---\n{notice}");
     assert!(
-        notice.contains("NOTHING was restored automatically"),
+        notice.contains("Nothing was restored automatically"),
         "{notice}"
     );
     assert!(
@@ -2580,15 +2573,11 @@ fn a_stop_no_record_dates_is_said_unknown_and_restores_nothing() {
     let notice = d.parent.restore_after_restart().expect("a reminder");
     eprintln!("--- what the parent's model is told ---\n{notice}");
     assert!(
-        notice.starts_with("[restart] the daemon restarted at "),
+        notice.starts_with("[restart] The daemon restarted (stop time unknown)."),
         "{notice}"
     );
     assert!(
-        notice.contains("when the previous one stopped is unknown"),
-        "{notice}"
-    );
-    assert!(
-        notice.contains("An unknown down time counts as longer than the 1h00m restore threshold"),
+        notice.contains("Nothing was restored automatically"),
         "{notice}"
     );
     for wrong in [
@@ -2679,13 +2668,11 @@ fn under_the_threshold_a_session_with_only_a_job_is_reminded_not_restored() {
     let notice = d.parent.restore_after_restart().expect("a reminder");
     eprintln!("--- what the parent's model is told ---\n{notice}");
     assert!(
-        notice.contains("under the 1h00m restore threshold, but nothing could be restored"),
+        notice.contains("). Nothing could be restored; this is what you were running:"),
         "{notice}"
     );
-    // And the time, which is what a restart is for: the return time and the stop it is counted
-    // from are in every notice, whatever is listed under it.
-    assert!(notice.contains("; back at "), "{notice}");
-    assert!(notice.contains("stopped at "), "{notice}");
+    // And the down time, which is what a restart is for, whatever is listed under it.
+    assert!(notice.contains("(down "), "{notice}");
     assert!(!notice.contains("restored where it could be"), "{notice}");
     assert!(
         notice.contains("Its output was in the old daemon's memory and is gone."),
