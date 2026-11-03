@@ -262,7 +262,12 @@ const QUEUE: &[Binding] = &[
         Text("approve"),
     ),
     b(&[On::Char('v')], Empty, Act::Verb(Verb::Veto), Text("veto")),
-    b(&[On::Char('d')], Empty, Act::Verb(Verb::Rm), Text("withdraw")),
+    b(
+        &[On::Char('d')],
+        Empty,
+        Act::Verb(Verb::Rm),
+        Text("withdraw"),
+    ),
     b(
         &[On::Char('r')],
         Empty,

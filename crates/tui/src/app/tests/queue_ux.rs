@@ -42,7 +42,12 @@ fn layer(mut a: App) -> App {
 }
 
 /// One review row of the fixture.
-fn review(id: &str, branch: &str, state: &str, state_ms: u64) -> letibot_sessionlog::event::QueueReview {
+fn review(
+    id: &str,
+    branch: &str,
+    state: &str,
+    state_ms: u64,
+) -> letibot_sessionlog::event::QueueReview {
     letibot_sessionlog::event::QueueReview {
         id: id.into(),
         repository: REPO.into(),
@@ -195,8 +200,10 @@ fn joined(rows: &[String]) -> String {
 #[test]
 fn dump_verdict_surfaces() {
     let mut out = String::new();
-    for (name, notice) in [("refused message", REFUSED_MSG), ("needs-human warning", NEEDS_HUMAN)]
-    {
+    for (name, notice) in [
+        ("refused message", REFUSED_MSG),
+        ("needs-human warning", NEEDS_HUMAN),
+    ] {
         let mut a = if name.ends_with("message") {
             with_notice(notice)
         } else {
@@ -230,7 +237,8 @@ fn the_queue_pane_reads_for_somebody_who_has_never_seen_it() {
     // **A title that says what this is.** Not `the queue`: the merge queue, and what it lists.
     assert!(screen.contains("the merge queue"), "{screen}");
     assert!(
-        rows.iter().any(|r| r.contains("in review") && r.contains("to land")),
+        rows.iter()
+            .any(|r| r.contains("in review") && r.contains("to land")),
         "the panel says what it lists: {screen}"
     );
 
@@ -254,7 +262,10 @@ fn the_queue_pane_reads_for_somebody_who_has_never_seen_it() {
     assert!(!screen.contains("[+]"), "{screen}");
 
     // The pane says whose branch each row is, in a word.
-    assert!(screen.contains("in letibot"), "the repository is named: {screen}");
+    assert!(
+        screen.contains("in letibot"),
+        "the repository is named: {screen}"
+    );
 
     // **The bar names the keys that would act on the row under the cursor** - and only those. On
     // the row a reviewer is reading, approve and withdraw both move it.
@@ -272,7 +283,10 @@ fn the_queue_pane_reads_for_somebody_who_has_never_seen_it() {
     a.screen(80, 40);
     let bar = a.hint_bar(80);
     assert!(bar.contains("d withdraw"), "{bar}");
-    assert!(!bar.contains("a approve"), "approve does nothing here: {bar}");
+    assert!(
+        !bar.contains("a approve"),
+        "approve does nothing here: {bar}"
+    );
 }
 
 /// **The composer's edge says which queue it counts** - it is a person's only sight of the queue

@@ -171,7 +171,11 @@ impl Review {
 
     /// **The whole line, uncut.**
     pub(crate) fn line(&self) -> String {
-        let mut parts = vec![REVIEW.to_string(), self.subject.clone(), self.verdict_words()];
+        let mut parts = vec![
+            REVIEW.to_string(),
+            self.subject.clone(),
+            self.verdict_words(),
+        ];
         if let Some(r) = &self.reason {
             parts.push(r.clone());
         }

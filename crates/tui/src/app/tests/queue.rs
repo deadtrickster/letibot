@@ -154,7 +154,10 @@ fn a_red_target_is_an_alarm_and_its_review_reads_as_the_target() {
     a.apply(queue_frame(snap));
     let rows = a.screen(160, 40);
     let screen = rows.join("\n");
-    assert!(screen.contains("main in letibot is red"), "the alarm: {screen}");
+    assert!(
+        screen.contains("main in letibot is red"),
+        "the alarm: {screen}"
+    );
     assert!(screen.contains("`cargo test` failed"), "{screen}");
     assert!(
         screen.contains("main's own tip"),
@@ -282,10 +285,7 @@ fn a_merge_rows_gate_steps_draw_and_timed_out_is_its_own_word() {
     a.queue_sel = stop_of(&a, "agent/two");
     assert_eq!(a.key(Key::Enter), None);
     let screen = a.screen(160, 60).join("\n");
-    assert!(
-        screen.contains("timed out: cargo test · 30m"),
-        "{screen}"
-    );
+    assert!(screen.contains("timed out: cargo test · 30m"), "{screen}");
     assert!(
         screen.contains("not run: cargo build --release · 0s"),
         "{screen}"
