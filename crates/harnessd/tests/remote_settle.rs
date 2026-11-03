@@ -1,7 +1,6 @@
 //! A placed session's commits come home on the daemon's own stop, whichever thread holds the
-//! session. `--stop`, the idle exit and a `Stop` frame all end in the same orderly stop, and the
-//! session this daemon serves has its backend on a thread of its own by then - so the settle has
-//! to reach across threads or there is no door at all.
+//! session: `--stop` and the idle exit end in one orderly stop, and by then the daemon's session
+//! has its backend on a thread of its own - so the settle has to reach across threads.
 
 use std::path::{Path, PathBuf};
 
