@@ -147,6 +147,8 @@ pub(crate) fn folded_notice_rows(
         // that started it has stopped. `job_card::CLOSINGS` has the same sentence for `[job]`, so
         // the two folds agree about it.
         "This session is told because the one that started it cannot be:",
+        // R93.C5's closing, which names the starter that has stopped instead.
+        "(Started by ",
     ];
     let mut out: Vec<(String, Option<String>)> = Vec::new();
     for group in text.split("\n\n") {

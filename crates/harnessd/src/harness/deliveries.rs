@@ -342,13 +342,32 @@ pub(crate) fn completion_notice(done: &[JobCompletion], mine: bool) -> String {
         // to a model that had just waited, and gave `job="…"` for an id it knew. It names the door.
         s.push_str(&format!("{JOB_CLOSING}{}.", handles_as("job", done)));
     } else {
-        s.push_str(
-            "This session is told because the one that started it cannot be: it has stopped and \
-             will not run again, and the job's output went with it. There is nothing to collect \
-             and nothing to wait for — this is the fact of the ending and no more.",
-        );
+        // R93.C5: the paragraph this replaces spent its length explaining why the reader is
+        // being told, and named no starter.
+        s.push_str(&stopped_closing(done, "output is gone."));
     }
     s
+}
+
+/// `(Started by `s-a`, which has stopped; its output is gone.)` - the closing a settlement
+/// handed up from a session that has stopped carries, with one clause per starter the batch has.
+fn stopped_closing(done: &[JobCompletion], tail: &str) -> String {
+    let mut owners: Vec<&str> = Vec::new();
+    for c in done {
+        if !owners.contains(&c.owner.as_str()) {
+            owners.push(&c.owner);
+        }
+    }
+    let names: Vec<String> = owners.iter().map(|o| format!("`{o}`")).collect();
+    let (verb, their) = if owners.len() > 1 {
+        ("have stopped", "their")
+    } else {
+        ("has stopped", "its")
+    };
+    format!(
+        "(Started by {}, which {verb}; {their} {tail})",
+        names.join(" and ")
+    )
 }
 
 /// The same sentence for a subagent, and the same rule: a subagent settles through the job channel
@@ -395,11 +414,9 @@ pub(crate) fn subagent_notice(done: &[JobCompletion], mine: bool) -> String {
         // `task_result`" said don't and do in one breath, with `task="…"` for a known handle.
         s.push_str(&format!("{TASK_CLOSING}{}.", handles_as("task", done)));
     } else {
-        s.push_str(&format!(
-            "This session is told because the one that started it cannot be: it has stopped and \
-             will not run again. The handle is in this tree, so the whole answer is still there: \
-             `task_result` {}.",
-            handles_as("task", done)
+        s.push_str(&stopped_closing(
+            done,
+            &format!("answer is still here: `task_result` {}.", handles_as("task", done)),
         ));
     }
     s

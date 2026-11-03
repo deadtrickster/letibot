@@ -54,6 +54,15 @@ const CLOSINGS: &[&str] = &[
     // The closing before R93.C1, which every stored transcript from before it still carries.
     "This is the completion arriving on its own — you do not need to wait for it, and `job_wait`",
     "This session is told because the one that started it cannot be:",
+    // R93.C5's closing, which names the starter that has stopped instead.
+    "(Started by ",
+];
+
+/// **The closings only a settlement handed up carries** - the paragraph before R93.C5 and the
+/// clause after it - so which heading a group belongs under is decided by the set, not by order.
+const HANDED_UP: &[&str] = &[
+    "This session is told because the one that started it cannot be:",
+    "(Started by ",
 ];
 
 /// The headings, as `(singular, plural suffix)`: `a job you backgrounded has ended:` and
@@ -129,9 +138,8 @@ pub(crate) fn ended_jobs(group: &str) -> Option<(bool, Vec<EndedJob>)> {
         Some(_) => return None,
     };
     // Which closing goes with which heading is the daemon's rule, and a mismatch is a shape this
-    // head does not know.
-    // Every closing but the last is a job of this session's own; the last is one handed up.
-    if !closing.starts_with(CLOSINGS[CLOSINGS.len() - 1]) != mine {
+    // head does not know: a `HANDED_UP` closing belongs to the handed-up heading and no other.
+    if !HANDED_UP.iter().any(|c| closing.starts_with(c)) != mine {
         return None;
     }
     let mut jobs: Vec<EndedJob> = Vec::new();

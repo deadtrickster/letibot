@@ -553,6 +553,11 @@ fn a_settlement_carries_the_jobs_name_and_an_unnamed_one_is_unchanged() {
             .contains("`release-build · j65` exited 0 after 54.9s: cargo test (started by `s-me`)"),
         "{handed}"
     );
+    // R93.C5: the closing is one clause naming the starter, not a paragraph about the ending.
+    assert!(
+        handed.ends_with("(Started by `s-me`, which has stopped; its output is gone.)"),
+        "{handed}"
+    );
 
     let bare = completion_notice(&[settled("j65", None)], true);
     assert!(
@@ -1094,6 +1099,15 @@ fn a_handed_up_settlement_names_its_owner_and_sends_nobody_to_a_shut_door() {
     assert!(
         handed[0].contains("task_result"),
         "the handle is in this tree, so this door does open: {:?}",
+        handed[0]
+    );
+    // R93.C5: one clause naming the starter, and the door to the answer in it.
+    assert!(
+        handed[0].ends_with(
+            "(Started by `s-child`, which has stopped; its answer is still here: \
+             `task_result` task=\"s-child-sub-1\".)"
+        ),
+        "{:?}",
         handed[0]
     );
 }

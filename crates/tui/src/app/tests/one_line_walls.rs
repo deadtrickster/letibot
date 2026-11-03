@@ -322,17 +322,15 @@ fn an_operators_answer_is_one_row_at_eighty_columns() {
 #[test]
 fn an_orphan_childs_completion_is_one_row_at_eighty_columns() {
     let text = "[task] a subagent a session below this one started has finished:\n  - \
-                `s-9-sub-1` done: all green (started by `s-9`)\nThis session is told because the \
-                one that started it cannot be: it has stopped and will not run again. The handle \
-                is in this tree, so the whole answer is still there: `task_result` \
-                task=\"s-9-sub-1\".";
+                `s-9-sub-1` done: all green (started by `s-9`)\n(Started by `s-9`, which has \
+                stopped; its answer is still here: `task_result` task=\"s-9-sub-1\".)";
     let (rows, glass, popup) = drawn(text);
     assert_eq!(rows, 1, "{glass}");
     assert!(
         glass.contains("Agent s-9-sub-1 · done: all green"),
         "{glass}"
     );
-    assert!(!glass.contains("This session is told"), "{glass}");
+    assert!(!glass.contains("(Started by"), "{glass}");
     assert_eq!(popup, text);
 }
 
