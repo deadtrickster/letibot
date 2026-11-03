@@ -1939,7 +1939,7 @@ it on the compaction path.
 sentence and the banner now print the provider's count and its unit, with the ledger pair in parentheses, and
 `tokens_are_converted()` is what chooses that aside (`crates/harnessd/src/harness/turns.rs:1363`).
 
-## A sub-session is a SESSION a head may ATTACH to — the filter that hides it is the bug — **OPEN, corrected from leticl 2026-10-03**
+## A sub-session is a SESSION a head may ATTACH to — the filter that hides it is the bug — **OPEN, corrected from leticl 2026-10-03; left: leticl's `a216cfa` — its repository, not this tree**
 
 **CORRECTED THE SAME HOUR, AND THE CORRECTION IS BIGGER THAN THE ASK BELOW.** The operator: *"why readonly?
 subagent session is more like you driving others via tmux. I already can post to subagent, and agent can
@@ -2200,7 +2200,7 @@ model-facing paragraph, and opens the whole message on demand. **leticl's half i
 letibot's is the plan above, with that last clause deliberately not in this change — and the raw text
 staying in the transcript, and in the model's context, is what makes that honest rather than a loss.**
 
-## A wake that has not run yet does not survive its transcript being replaced — **NEW 2026-10-04, split out of the stall entry**
+## A wake that has not run yet does not survive its transcript being replaced — **NEW 2026-10-04, split out of the stall entry; left: the loss itself — a settlement whose turn has not run is still not re-armed at a fork, since `deliver_settlements_left_undelivered` is reached from `Harness::open` alone**
 
 `j19` and `j56` are the two measured cases: both settled while `s-1791017230755743833#t2` was current,
 neither notice is in `#t2`, and neither is in `#t3` either. The daemon's wake submits the notice as a
@@ -2243,71 +2243,6 @@ see a fork, and this entry is the fifth measurement to prove it.
 lost, in both cases with the transcript it belongs to named.
 
 — OPEN: a fork is not an open, so the suspect named above is falsified and the loss is unchanged. A compaction runs on the held harness (`crates/harnessd/src/sessions.rs:3226` → `harness.compact()`), so the pen survives it; the only door that re-queues a settlement nobody was told about is `deliver_settlements_left_undelivered`, called from `Harness::open` alone (`crates/harnessd/src/harness/turns.rs:461`), and a settlement taken for a turn that opened is marked read and skipped there (`:415`). `TODO-settled.md:3459` names the same residue as still a defect.
-
-## A 429 that names money was retried six times — and the interrupt did not reach the retry — **MEASURED 2026-10-04 20:43**
-
-The operator, on a session they had just put on `glm/glm-5.3` with `/model glm/glm-5.3`:
-
-    · model_endpoint_retry — the model endpoint at open.bigmodel.cn did not answer:
-      http 429: 余额不足或无可用资源包,请充值。. Taking this round again in 1s (attempt 1 of 6).
-      Nothing was recorded, so the retry sends exactly the bytes this one did.
-    coulnt interrupt too
-
-**THE BILLING HALF IS FIXED — `http_retry_after` now reads the body.** It keyed on the status alone
-(`matches!(code, 408 | 429) || *code >= 500`), so every 429 was "not yet" — and a 429 is also the status
-a provider uses when the account behind the key cannot pay. The body says which: a refusal naming money
-is terminal and is no longer taken again, and a rate limit still is (the assertion the fix would be
-worthless without). The sentence was wrong twice over, which is the same shape as `retry_host`'s note one
-function below: **the endpoint did answer**, and what it said was actionable — 请充值 is a thing to do,
-and "did not answer" sends the reader to a network problem.
-— ✓ fixed in 1362185e (after f53a349c and 3f995115), test what_is_retryable_and_what_the_operator_is_told
-
-**THE INTERRUPT HALF IS OPEN, and it is the half the operator actually complained about.** Two candidates,
-and this needs a live head to separate them:
-
-  * **the daemon cannot hear it while it waits.** The retry sleeps in `sleep_unless_closed`
-    (`harness.rs:6429`), which watches **only `self.hub.is_closed()`** — a daemon shutdown, not a
-    person. The one channel an interrupt rides is the hub's steering command queue, which the loop
-    reads at the top of the NEXT iteration (`let mut steering = self.steering()`), into a round that
-    hits the same 429 within milliseconds: so the interrupt is either honoured there or consumed by a
-    round that fails before it can matter;
-  * **the head never sent it.** Esc-esc to `Action::Interrupt` is gated on `turn_busy()`, and during a
-    retry the round's own `TurnFinished` may already have been published — the exact gap R51 item 16
-    fixed for a running *call*, one state further along.
-
-**The measurement that separates them**: with the endpoint refusing, watch the daemon's log for the
-`interrupt` line (`hub.rs:1079`) while pressing esc-esc. Present means the daemon heard it and the sleep
-ignored it — and then the fix is that the wait has to watch the same door the tool-call path watches.
-Absent means the head's own gate, and the fix is in `turn_busy`.
-— OPEN: the first candidate is the live one — `sleep_unless_closed` (`crates/harnessd/src/harness/turns.rs:2756`) still polls only `self.hub.is_closed()`, and `has_queued_interrupt` (`crates/sessionlog/src/hub.rs:1730`) has one reader (`turns.rs:993`), not the ladder. The second is closed: `turn_busy` reads the daemon's own `Waiting::Turn`/`Waiting::Calls` (`crates/tui/src/app/turn.rs:303`), so the head does send it.
-
-**still open?** the screen above, on a build with the classifier fix: a billing 429 now fails the turn
-once and says whose money it is; whether the interrupt lands during a *transient* wait is still open.
-
-**done when** a person who presses interrupt during a retry's wait gets the turn back, however the
-retry was classified.
-
-**The billing half was widened 2026-10-31** (branch `agent/the-five-small-diagnosed-ones`): the phrase
-list in `refused_for_want_of_credit` did not carry this entry's own wording, *out of credit*, nor
-Anthropic's *credit balance is too low*, so a 429 in either shape was still taken six times. Both are
-in the list now, and the case that fails without them is in
-`a_billing_refusal_is_not_taken_again_and_a_rate_limit_still_is`. The interrupt half above is still
-open.
-
-**The billing half was NOT fixed on the provider path — MEASURED 2026-11-01** (branch
-`agent/what-is-retryable`). The list matches on the body the *policy* is handed, and the provider hands
-it only half of one: `openai.rs` projected `{"error":{"code":"insufficient_quota","message":"You
-exceeded your current quota…"}}` down to the message, so the one machine-readable word naming the case
-was gone one layer above the classifier. A 429 in that shape was taken **six times** on this tree,
-measured through a loopback stub: `crates/harnessd/tests/retry_policy.rs`'s scenario D counted six
-calls before the fix and one after. `openai.rs` now keeps the provider's `code` beside its message, and
-`crates/provider/tests/fake_provider.rs`'s `a_refusal_keeps_the_code_that_says_what_it_is` pins it.
-
-The rule itself moved out of `harnessd` the same day: `letibot_http::retry` (`crates/http/src/retry.rs`)
-is now the one answer to *what is retryable, and for how long* — three classes, one bounded ladder (five
-retries, 1/2/4/8/16 s, six calls, 31 s), and a sentence for each ending, so `FAILED — ` carries the
-count. `refused_for_want_of_credit` and `http_retry_after` no longer exist. The interrupt half is still
-open, and it is now a question about `sleep_unless_closed` rather than about the ladder.
 
 ## R19 — stream backwards: the head holds a window, not a buffer — **given 2026-09-20**
 
