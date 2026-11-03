@@ -375,7 +375,49 @@ pub(crate) enum Note {
         /// is a detach now.
         closed: bool,
     },
+    /// **One model call being retried, as ONE row.** The wire sends the row's whole value on every
+    /// failed attempt, so a head that holds the row rewrites it - which is what makes five attempts
+    /// one line rather than five, and what lets that line settle to how the call ended.
+    Retrying(Retry),
 }
+
+/// One series of retries, as the row that draws it. The values are the daemon's: the words of the
+/// line, the attempts behind the popup, and the line the row settles to once the series stops.
+#[derive(Debug, Clone)]
+pub(crate) struct Retry {
+    /// Which series this row is. A second outage is a second row, and a row that moved is not.
+    pub(crate) series: u64,
+    /// The endpoint being retried, as the daemon spells a host.
+    pub(crate) host: String,
+    /// How many attempts have failed so far.
+    pub(crate) attempts: u32,
+    /// The row's line while the ladder is still trying.
+    pub(crate) said: String,
+    /// Every failed attempt, oldest first: the popup's list.
+    pub(crate) log: Vec<String>,
+    /// The line the row settles to, `None` while the series is still going.
+    pub(crate) ended: Option<String>,
+    /// When this head filed the row: the clock a watermark compares, as every note has.
+    pub(crate) ts: u64,
+}
+
+impl Retry {
+    /// The row's line as it stands: the ending once there is one, because a settled row that still
+    /// said `retrying` would be a row about a call nothing is doing anything about.
+    pub(crate) fn line(&self) -> &str {
+        self.ended.as_deref().unwrap_or(&self.said)
+    }
+
+    /// Is the ladder still trying? A settled row is history and must not be rewritten by the next
+    /// series, which is the whole difference between a value moving and a second outage.
+    pub(crate) fn live(&self) -> bool {
+        self.ended.is_none()
+    }
+}
+
+/// The kind a retry row is filed under: one event, never a burst of itself, so a series counts its
+/// own attempts inside its line rather than in a count of rows.
+pub(crate) const MODEL_RETRY: &str = "model_retry";
 
 impl Note {
     /// A settled decision, as the note it deserves. One function because the live arm and the snapshot arm both
@@ -408,6 +450,9 @@ pub(crate) fn note_kind(n: &Note) -> Option<&str> {
         // The FAMILY and not the code: a refusal's code carries its request id, which is the notice's identity, so
         // what kind of thing it is has to be read off the prefix.
         Note::Warned(w) | Note::NotRun(w) => Some(letibot_sessionlog::warning::family(&w.code)),
+        // **A series is a kind of its own**, so `ctrl-n` retires a settled one and [`LIVE`] keeps it
+        // out of a burst: its attempts are counted in its line, not in a count of rows.
+        Note::Retrying(_) => Some(MODEL_RETRY),
         Note::Decided(_) | Note::Answered { .. } | Note::Pane { .. } => None,
     }
 }
@@ -417,6 +462,7 @@ pub(crate) fn note_kind(n: &Note) -> Option<&str> {
 pub(crate) fn note_stamp(n: &Note) -> Option<u64> {
     match n {
         Note::Warned(w) | Note::NotRun(w) => Some(w.ts),
+        Note::Retrying(r) => Some(r.ts),
         _ => None,
     }
 }
@@ -457,6 +503,9 @@ pub(crate) fn note_key(n: &Note) -> String {
         Note::Pane {
             line, said, reason, ..
         } => format!("t|{line}|{reason}|{:016x}", fnv1a(&said.join("\n"))),
+        // By the series and not by the text: the row's whole point is that the text moves while
+        // the row stays, so a key built from it would be a hidden dismissal on every attempt.
+        Note::Retrying(r) => format!("r|{}", r.series),
     }
 }
 
@@ -503,7 +552,7 @@ pub const COALESCE_MS: u64 = 60_000;
 
 /// Codes that are re-said while they still stand, and so are never coalesced: a burst counts things that happened,
 /// and a line saying *this is still true* is not one of them.
-pub const LIVE: &[&str] = &["store_busy_wait"];
+pub const LIVE: &[&str] = &["store_busy_wait", "model_retry"];
 
 /// **The plural a burst of this code is counted in** - `5 reviews could not run` rather than
 /// `5 × queue_blocked`. A code with no row here is counted by its code, which is the head's own

@@ -1339,6 +1339,7 @@ mod render;
 mod repos;
 mod reseatcard;
 mod restartcard;
+mod retryrow;
 mod reviewcard;
 mod screen;
 mod scroll;

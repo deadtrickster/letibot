@@ -72,6 +72,12 @@ pub(crate) fn note_view(n: &Note) -> view::Note {
             reason: reason.clone(),
             closed: *closed,
         },
+        // **The settled row and the one still trying are one register in `/notes`**, the dot and
+        // the sentence: the listing is what a reader scrolls for the words, and the card is what
+        // they see in the conversation.
+        Note::Retrying(r) => view::Note::NotRun {
+            detail: r.line().to_string(),
+        },
         Note::Decided(d) => {
             use letibot_sessionlog::event::DecisionOutcome as O;
             view::Note::Decided {
@@ -172,6 +178,23 @@ pub(crate) fn note_card(
             );
             Some((card, said, 0))
         }
+        // **A retried call, one line**, in the register the durable warning has ([`class_mark`] of
+        // [`RETRY_CODE`]): the row and the warning beside it are one outage, so they cannot be two
+        // registers. The mark is the frame's own `·` for a routine row, so the words stand alone.
+        Note::Retrying(r) => {
+            let (lead, role) = match class_mark(RETRY_CODE) {
+                ("·", role) => (String::new(), role),
+                (mark, role) => (format!("{mark} "), role),
+            };
+            let card = Card::new(
+                format!("{lead}{} · {CLICK}", r.line()),
+                0,
+                r.line(),
+                role,
+                format!("model retry · {}", r.host),
+            );
+            Some((card, retry_popup(r), r.ts))
+        }
         Note::Pane { .. } => None,
     }
 }
@@ -197,6 +220,30 @@ fn settled(outcome: &letibot_sessionlog::event::DecisionOutcome) -> (String, ran
         ),
     }
 }
+
+/// **The popup a retry row opens**: the row's own line whole - the frame cut it - and every failed
+/// attempt with its clock, which is the shape of the outage a reader asks about and the one thing a
+/// row cannot say.
+fn retry_popup(r: &Retry) -> String {
+    // Nothing to list: a header with no attempts under it is worse than the line alone.
+    if r.log.is_empty() {
+        return r.line().to_string();
+    }
+    let mut text = format!(
+        "{}\n\n{} · every failed attempt, oldest first:",
+        r.line(),
+        r.host
+    );
+    for attempt in &r.log {
+        text.push('\n');
+        text.push_str(attempt);
+    }
+    text
+}
+
+/// The daemon's warning code for the same outage. The row and the durable warning it settles into
+/// are one fact, so the register comes from this code and not from the row's own kind name.
+pub(crate) const RETRY_CODE: &str = "model_endpoint_retry";
 
 /// A note as a card's one line, framed the way a session row's card is, so one card looks the same
 /// whichever way it arrived: the same fact from a warning and from a transcript row was two

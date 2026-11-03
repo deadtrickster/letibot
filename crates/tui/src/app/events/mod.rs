@@ -515,6 +515,9 @@ impl App {
             // The typed twin of a warning, drawn as one row for the same reason: a person reads a
             // sentence, and automation reads the type.
             e @ SessionEvent::ProviderTrouble { .. } => self.on_provider_trouble(e, ts),
+            // A retried call is ONE row whose value moves, so it is a value rather than an event:
+            // the same arm rewrites the row it drew last time.
+            e @ SessionEvent::ModelRetry { .. } => self.on_model_retry(e, ts),
         }
     }
 

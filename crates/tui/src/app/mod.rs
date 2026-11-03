@@ -1034,6 +1034,9 @@ pub struct App {
     /// Drawn as state ([`App::switch_line`]), because a note would scroll away inside the very
     /// turn it is about while the header keeps naming the old model - true, and half of it.
     pub(crate) model_pending: Option<String>,
+    /// **The number the next retry row is keyed by.** A series is ONE row whose value moves, so the
+    /// row needs an identity that survives those moves and that a later outage cannot reuse.
+    pub(crate) retry_series: u64,
 }
 
 /// A confirmation another head asked for, as this screen holds it. Beside [`App::mode_confirm`]
@@ -1354,6 +1357,7 @@ impl App {
             absorbed: std::collections::HashMap::new(),
             todo_answered: Vec::new(),
             model_pending: None,
+            retry_series: 0,
             // **The done group starts folded**, matching `HeadPrefs::default` — this is the
             // builder's value, and `apply_prefs` puts the file's answer over it at startup. The
             // operator's ruling (2026-10-28): *"i want done collapsed by default"*.

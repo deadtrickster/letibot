@@ -297,4 +297,68 @@ impl App {
         }));
         Disposition::Rendered
     }
+
+    /// **One model call being retried, as ONE row**, whatever attempt it is at: the wire sends the
+    /// row's whole value, so the row the reader is watching is rewritten rather than added to.
+    ///
+    /// A count that goes DOWN is a second outage - the daemon settles a series before another starts,
+    /// but a head that attached late or missed the ending must not fold two series into one row.
+    pub(crate) fn on_model_retry(&mut self, e: SessionEvent, ts: u64) -> Disposition {
+        let SessionEvent::ModelRetry {
+            host,
+            attempts,
+            said,
+            log,
+            ended,
+        } = e
+        else {
+            unreachable!("on_model_retry was handed an event it does not handle")
+        };
+        let live = self.notes.iter().position(
+            |(_, n)| matches!(n, Note::Retrying(r) if r.live() && r.attempts <= attempts),
+        );
+        match live {
+            None => self.file_retry(host, attempts, said, log, ended, ts),
+            Some(i) => {
+                let seam = match self.notes[i].0 {
+                    Placed::Seam(at) => at,
+                    Placed::Before => 0,
+                };
+                if let (_, Note::Retrying(r)) = &mut self.notes[i] {
+                    r.host = host;
+                    r.attempts = attempts;
+                    r.said = said;
+                    r.log = log;
+                    r.ended = ended;
+                }
+                // The row is a seam the walk has already passed and the walk is incremental, so the
+                // one honest way to move a drawn row is to make it draw again from the row before.
+                self.invalidate_history_from(seam.saturating_sub(1));
+            }
+        }
+        self.redraw = true;
+        Disposition::Rendered
+    }
+
+    /// The row a series opens with, filed where the conversation is now.
+    fn file_retry(
+        &mut self,
+        host: String,
+        attempts: u32,
+        said: String,
+        log: Vec<String>,
+        ended: Option<String>,
+        ts: u64,
+    ) {
+        self.retry_series += 1;
+        self.file_note(Note::Retrying(Retry {
+            series: self.retry_series,
+            host,
+            attempts,
+            said,
+            log,
+            ended,
+            ts,
+        }));
+    }
 }
