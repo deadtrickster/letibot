@@ -18,7 +18,7 @@
 //! subject is *how many rows one outage is worth*: three failed attempts give ONE row that moves -
 //! `attempts 2`, `attempts 3` - and then settles to `gave up after 3 attempts`, with the durable
 //! `model_endpoint_retry` warning beside it written once. A fourth attempt that answers settles the
-//! same row as `the model answered after 3 attempts` and writes one `model_endpoint_answered` row;
+//! same row as `answered after 3 attempts` and writes one `model_endpoint_answered` row;
 //! a second outage starts its own count.
 //!
 //! One test and three sessions, because `XDG_CONFIG_HOME` is process-global. The waits are the
@@ -422,7 +422,7 @@ fn one_outage_is_one_row_with_a_counter() {
     let live = &rec.series[0];
     assert!(
         live.said
-            .starts_with("retrying the model: 2 attempts, last 503 server error, ")
+            .starts_with("retrying: 2 attempts, 503 server error, ")
             && live.log.len() == 2,
         "the live row names the count and the last four words, and the popup holds one line per \
          failed attempt: {live:?}"
@@ -484,7 +484,7 @@ fn one_outage_is_one_row_with_a_counter() {
         .and_then(|r| r.ended.clone())
         .unwrap_or_default();
     assert!(
-        settled.starts_with("the model answered after 3 attempts, "),
+        settled.starts_with("answered after 3 attempts, "),
         "the recovered row settles on the attempts that FAILED, which is the count the reader \
          was watching: {:?}",
         rec.series

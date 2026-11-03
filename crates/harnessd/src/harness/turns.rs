@@ -3423,12 +3423,12 @@ pub(crate) struct Outage {
 }
 
 impl Outage {
-    /// **The row while the ladder is still trying**: the count, the last reason, and how long this
-    /// has been going on. The span is as of the attempt that closed the count, since only a publish
-    /// can move a row.
+    /// **The row while the ladder is still trying**: the count, the last reason, and how long. Terse
+    /// on purpose, since a frame at eighty columns keeps about thirty of these characters; the span
+    /// is as of the attempt that closed the count, since only a publish can move a row.
     fn retrying(&self) -> String {
         format!(
-            "retrying the model: {n} {word}, last {reason}, {span}",
+            "retrying: {n} {word}, {reason}, {span}",
             n = self.attempts,
             word = attempts_word(self.attempts),
             reason = self.reason,
@@ -3441,7 +3441,7 @@ impl Outage {
     /// showing, because a count that jumps by one as the row settles reads as a different series.
     fn settled_well(&self, now_ms: u64) -> String {
         format!(
-            "the model answered after {n} {word}, {span}",
+            "answered after {n} {word}, {span}",
             n = self.attempts,
             word = attempts_word(self.attempts),
             span = outage_span(now_ms.saturating_sub(self.began_ms)),
@@ -4219,7 +4219,7 @@ mod endpoint_retry {
         };
         assert_eq!(
             outage.retrying(),
-            "retrying the model: 3 attempts, last 502 server error, 41s",
+            "retrying: 3 attempts, 502 server error, 41s",
             "the row while the ladder runs: the count, the last reason and how long"
         );
         assert_eq!(
@@ -4229,7 +4229,7 @@ mod endpoint_retry {
         );
         assert_eq!(
             outage.settled_well(52_000),
-            "the model answered after 3 attempts, 51s",
+            "answered after 3 attempts, 51s",
             "a recovery names the attempts that failed before it, so the count the reader was \
              watching is the count that settles"
         );
@@ -4240,7 +4240,7 @@ mod endpoint_retry {
         };
         assert_eq!(
             once.retrying(),
-            "retrying the model: 1 attempt, last 502 server error, 41s"
+            "retrying: 1 attempt, 502 server error, 41s"
         );
         assert_eq!(once.gave_up(), "gave up after 1 attempt: 502 server error");
     }

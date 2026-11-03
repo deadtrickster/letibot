@@ -380,12 +380,12 @@ pub fn one_of_each() -> Vec<SessionEvent> {
         SessionEvent::ModelRetry {
             host: "api.deepseek.com".into(),
             attempts: 2,
-            said: "retrying the model: 2 attempts, last 429 rate limited, 41s".into(),
+            said: "retrying: 2 attempts, 429 rate limited, 41s".into(),
             log: vec![
                 "10:31:22 · 429 rate limited".into(),
                 "10:31:41 · timeout".into(),
             ],
-            ended: Some("the model answered after 3 attempts, 52s".into()),
+            ended: Some("answered after 3 attempts, 52s".into()),
         },
     ]
 }

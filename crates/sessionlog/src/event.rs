@@ -1475,14 +1475,14 @@ pub enum SessionEvent {
         host: String,
         /// How many attempts have failed so far.
         attempts: u32,
-        /// The row's one line while the series runs: `retrying the model: 3 attempts, last 429
-        /// rate limited, 41s`. The daemon's words, and its clock: the span is as of the attempt
-        /// that closed the count, since only a publish can move a row.
+        /// The row's one line while the series runs: `retrying: 3 attempts, 429 rate limited, 41s`.
+        /// The daemon's words, and its clock: the span is as of the attempt that closed the count,
+        /// since only a publish can move a row.
         said: String,
         /// Every failed attempt, oldest first, as the popup lists them: `<clock> · <reason>`.
         log: Vec<String>,
-        /// **The line the row settles to**, `None` while the series is still going: `the model
-        /// answered after 4 attempts, 52s` or `gave up after 6 attempts: <reason>`. It is the
+        /// **The line the row settles to**, `None` while the series is still going: `answered
+        /// after 4 attempts, 52s` or `gave up after 6 attempts: <reason>`. It is the
         /// same row's last value, and the durable warning beside it is the record for a head that
         /// attaches after the series is over.
         #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -2108,7 +2108,7 @@ mod tests {
         let series = |attempts: u32, ended: Option<&str>| SessionEvent::ModelRetry {
             host: "api.deepseek.com".into(),
             attempts,
-            said: format!("retrying the model: {attempts} attempts, last 429 rate limited, 41s"),
+            said: format!("retrying: {attempts} attempts, 429 rate limited, 41s"),
             log: vec!["10:31:22 · 429 rate limited".into()],
             ended: ended.map(str::to_string),
         };
@@ -2144,7 +2144,7 @@ mod tests {
 
         // The series ends, and a head attaching afterwards is not told a call is being retried.
         hub.detach(&late.head_id);
-        hub.publish(series(4, Some("the model answered after 5 attempts, 52s")));
+        hub.publish(series(4, Some("answered after 5 attempts, 52s")));
         let after = attach(&hub, 64);
         mark(&hub);
         let Delivery::Events(b) = hub.next_batch(&after.head_id, 64) else {
