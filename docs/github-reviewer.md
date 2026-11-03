@@ -5,8 +5,8 @@ per open pull request: what is new, what a push made owed again, which comment m
 poll rather than a webhook, because a webhook is an endpoint exposed on this box and a poll is not.
 
 It is a seat of drafts. Nothing is sent to GitHub until the operator has an identity named `letibot`
-and says so in config, and this build has no reviewer worker yet, so a row says what it is waiting for
-instead of the run looking idle.
+and says so in config, so a review is written into that pull request's session, kept on the row as a
+draft, and read by a person before anything leaves the box.
 
 ```sh
 letibot attach github stroppy-io            # every repository of an org
@@ -36,19 +36,35 @@ another repository (a fork) is read-only, so a reviewer that would run something
 standing exists to make impossible. Nothing in this seat ever posts as the operator: the seat has its
 own identity, `letibot`, and that name is also what a comment must mention to be a question for it.
 
-## What this build does not do yet
+## The worker: one session per pull request
 
-There is no reviewer worker. `letibot attach github` wires the seat to a reviewer that refuses every
-job by name, so a pull request is never actually reviewed, and the row says so:
+A row owed a review is a brief run in that pull request's own letibot session, and what the session
+answers is the review the row keeps as a draft.
 
-```text
-stroppy-io/letibot#12 was not reviewed: stroppy-io/letibot#12 is this repository's and the reviewer
-worker does not open sessions yet
-```
+- **The session is opened once and reused**, so the second review of a change is made by the session
+  that made the first: a push's re-review knows what the last one said. Enter on a row in the pane
+  goes to it, and the operator attaches to it like any other session.
+- **Its tree is the pull request's head**, fetched from `origin` as GitHub's `refs/pull/<n>/head` (the
+  same ref for a fork's pull request) and checked out detached under
+  `~/.local/share/letibot/github/<folder key>/<owner>-<name>-<number>`. One tree per pull request, so
+  a re-review lands where the last one was made.
+- **The sessions are the folder's daemon's**, which must be up: a review runs in a session, and a seat
+  that started its own daemon would be choosing the flags of the one the operator runs. Started where
+  no daemon is listening, the seat refuses by name and says to start one there first.
+- **The brief carries what a reviewer needs**: the title and the description its author wrote, the
+  diff (the whole pull request, or only the commits after the head last reviewed), and what has
+  already been said on it. A fork's brief says its tree is somebody else's and that nothing of it runs.
+- **The answer is the review**: the prose is the summary, and each line spelled
+  `path:LINE: what is wrong` is an inline comment on that line. The verdict is always `COMMENT` - an
+  unattended reviewer neither approves nor blocks - and an answer with no words in it is not a review,
+  so the row goes back to owed rather than keeping an empty draft.
+- **A review that could not be made stays owed.** A session that fails, that asks a permission card
+  (a seat answers no cards), or that is still working after twenty minutes leaves the reason on the
+  row and the review owed again on the next pass.
 
-What the seat does give is the state machine around a review: the scope's state, one row per pull
-request with its review state and the age of its last action, the drafts, and a rate cap. When a worker
-is seated, the rows do not change shape.
+The seat reviews a pull request of **the repository it was started in**. A pull request of another
+repository in the scope is refused by name rather than reviewed from the wrong tree; ten repositories
+of an org are ten seats, one per checkout, until a mirror per repository exists.
 
 ## Configuration
 
@@ -85,6 +101,11 @@ request with its review state, the age of its last action and the session workin
 whether anything is posted or kept as a draft. Enter on a pull request switches to that session; a row
 without one carries no act at all.
 
+**A draft is drawn, not counted.** Under a row that is owed nothing there is one faint line per draft -
+`draft review of c1d2e3f: This loads the widget once now.` or `draft reply to comment 7: Because …` - and
+the whole text is in the row's detail, because the decision a draft asks for is about those words. A
+row with no draft draws no such line.
+
 The pane draws the daemon's snapshot of the seat, and this build's daemon does not build that feed yet,
 so the pane is handed no `github` key at all and says the honest thing instead of drawing an empty
 scope:
@@ -93,8 +114,8 @@ scope:
 no scope is attached - nothing is being watched for review
 ```
 
-While the worker is missing, `letibot attach github` in a terminal is what shows the seat working: one
-line per thing it did, printed as the pass does it.
+Until the seat lives in the daemon, `letibot attach github` in a terminal is what shows the seat
+working: one line per thing it did, printed as the pass does it.
 
 ## The scope's state, in the pane's words
 
@@ -119,6 +140,12 @@ line per thing it did, printed as the pass does it.
 - A key this build does not know inside `[github]` is refused at load, by name.
 - `gh` itself: `LETIBOT_GH` names the binary, and a run that fails reports the command and `gh`'s own
   stderr. Nothing is retried behind the operator's back; the row is owed again on the next pass.
+- No daemon listening for the folder the seat was started in: refused before anything is polled, naming
+  the folder, because a review runs in a session and the seat will not start a daemon of its own.
+- A pull request of a repository this checkout is not: the row says so and stays unread, rather than
+  being reviewed from the wrong tree.
+- A session that answers nothing, fails, or asks a card: the reason is written on the row, and the
+  review is owed again on the next pass.
 
 ## Turning it off
 

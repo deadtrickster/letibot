@@ -55,9 +55,13 @@ N4 moves to TODO-settled.md as superseded by this entry.
 
 Parked by the operator the same day. There is no default oracle because every open, locally hosted model tried so far FAILED the oracle tests (the etalon corpus, `crates/harnessd/src/etalon_oracle.rs`), and automode without a passing oracle is a model approving its own actions. The work resumes when a model passes the corpus; until then the seats keep today's modes.
 
-## R118 - A GitHub reviewer seat: `letibot attach github <org|repo>` reviews every PR and answers as @letibot - **OPEN, filed 2026-11-03, the operator's ask**
+## R118 - A GitHub reviewer seat: `letibot attach github <org|repo>` reviews every PR and answers as @letibot - **OPEN, filed 2026-11-03, the operator's ask; the worker is in and drafts are drawn, left: the seat in the daemon so the pane has a feed, the review panel, a mirror per repository, and R116's verdict**
 
 The operator wants letibot to work like CodeRabbit on their own repositories, starting with stroppy-io: "it just attaches to whatever pr is on the repo given to it and does reviews ... responding as @letibot".
+
+**Done** (docs/github-reviewer.md): the poll, the row states, the config and its `post` gate, the 6-an-hour cap, and the worker - a review is a brief (title, description, diff, the comments so far) run in that PR's own letibot session, whose answer is the review kept as a draft on the row; a mention is answered in the same session; the pane draws each draft's words. The session stands in a detached worktree of the PR head, fetched as `refs/pull/<n>/head`.
+
+**Left**: the seat lives in `letibot attach github`'s process, not the daemon's, so the daemon builds no `github` feed and `/pane github/github` still draws "no scope is attached"; a PR of another repository in an org scope is refused by name until a mirror per repository exists; the review is one session's answer and not yet R116's review panel; and R114's similarity offers are not wired.
 
 - `letibot attach github <org or owner/repo>` starts a long-lived reviewer seat for that scope. It polls with `gh api` for new PRs and new pushes to open PRs. Polling is used rather than webhooks, so no endpoint is exposed.
 - Each PR is a letibot session with its own worktree of the PR head. A new PR gets a review panel (reviewers plus the gatekeeper, the same machinery as the merge queue's review) and one GitHub review: inline comments on lines and a summary. A push gets a re-review of the new commits only.

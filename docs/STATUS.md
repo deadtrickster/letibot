@@ -36,10 +36,12 @@ provider, for one person's box ([README.md:46-56](../README.md)).
 
 ## Half built
 
-- **The GitHub reviewer seat.** The poll, the row states, the config, the drafts and the scope pane's
-  contract are in the tree (`crates/github`), but there is no reviewer worker, so a pull request is
-  never actually reviewed, and the daemon feeds the pane no `github` key
-  ([github-reviewer.md:39-51](github-reviewer.md), [github-reviewer.md:88](github-reviewer.md),
+- **The GitHub reviewer seat.** The poll, the row states, the config, the drafts, the worker and the
+  scope pane are in the tree (`crates/github`, `letibot attach github`): a review runs as a brief in
+  that pull request's own session and is kept as a draft. What is left is that the seat is its own
+  process rather than the daemon's, so the daemon feeds the pane no `github` key, a pull request of
+  another repository in an org scope is refused until a mirror per repository exists, and the review is
+  not yet R116's panel ([github-reviewer.md:39](github-reviewer.md), [github-reviewer.md:97](github-reviewer.md),
   [TODO.md:58](../TODO.md) R118, which depends on R116 at [TODO.md:73](../TODO.md)).
 - **Placements on a real host.** `Placement::RemoteVm` is in the tree with tests of its shape, and the
   live run owes four facts; six packages placed on one host at once is still unproven; a firecode
@@ -93,10 +95,10 @@ provider, for one person's box ([README.md:46-56](../README.md)).
 
 ## The next five pieces of work, by value
 
-1. **Seat a reviewer worker** ([TODO.md:73](../TODO.md) R116, which the GitHub seat at
-   [TODO.md:58](../TODO.md) reuses). The seat, its rows, its config and its drafts already ship, so
-   the one missing piece is the one that turns a branch or a pull request into a verdict, and that is
-   the whole CodeRabbit-shaped feature the operator asked for.
+1. **R116's verdict as the reviewer's schema** ([TODO.md:73](../TODO.md) R116). The GitHub seat at
+   [TODO.md:58](../TODO.md) now turns a pull request into a review through that pull request's own
+   session ([github-reviewer.md:39](github-reviewer.md)); what is left is the shared verdict schema, so
+   that a Claude reviewer and a letibot reviewer are interchangeable in one panel.
 2. **Close the three deferred core-loop findings** ([2026-11-03-harnessd.md:628-636](reviews/2026-11-03-harnessd.md)).
    Each already has a named smallest fix and each fails silently, so no head can show the operator
    that it happened.
