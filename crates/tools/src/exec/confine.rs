@@ -2591,25 +2591,52 @@ mod tests {
     }
 
     /// A boundary over a real project directory, so the view's roots are paths a `stat` agrees
-    /// with rather than `/proj`.
+    /// with rather than `/proj`. Its SYSTEM roots are empty on purpose: nothing of this box's own
+    /// is in the view, so a program that really exists here really is outside it.
     fn a_boundary_over(project: &Path) -> Boundary {
         Boundary {
-            view: ViewSpec::project_only(project),
+            view: ViewSpec {
+                system: Vec::new(),
+                ..ViewSpec::project_only(project)
+            },
             ..boundary_with(vec![])
         }
     }
 
-    /// A real directory on this box that `view` does not contain: the note is about a path that
-    /// exists outside, and a path that is nowhere would prove nothing.
-    fn outside_dir(view: &ViewSpec) -> Option<PathBuf> {
-        let home = std::env::var_os("HOME").map(PathBuf::from);
-        let under_home = home
+    /// A real directory this view does not contain, proved rather than hoped for: the note is about
+    /// a path that exists outside, and a fixture that cannot find one must fail here rather than
+    /// assert nothing and be counted as a pass.
+    fn a_dir_outside(view: &ViewSpec) -> PathBuf {
+        let found = ["sh", "ls", "cat"]
             .into_iter()
-            .flat_map(|h| [".cargo", ".rustup", ".cache"].map(|n| h.join(n)));
-        under_home
-            .chain(std::env::current_dir().ok())
-            .chain([PathBuf::from("/opt"), PathBuf::from("/var/lib")])
-            .find(|p| p.is_dir() && view.outside(p))
+            .filter_map(on_path)
+            .filter_map(|p| p.parent().map(Path::to_path_buf))
+            .find(|d| view.outside(d));
+        match found {
+            Some(d) => d,
+            None => panic!(
+                "no directory on this PATH is outside the fixture's view, so the case cannot be \
+                 built here: PATH is {:?}",
+                std::env::var_os("PATH")
+            ),
+        }
+    }
+
+    /// A program this box really has and the fixture's view really does not contain, with the word a
+    /// shell prints for it. Proved for [`a_dir_outside`]'s reason.
+    fn a_program_outside(view: &ViewSpec) -> (String, PathBuf) {
+        let found = ["cargo", "sh", "ls"]
+            .into_iter()
+            .find_map(|n| on_path(n).map(|p| (n.to_string(), p)))
+            .filter(|(_, p)| view.outside(p));
+        match found {
+            Some(pair) => pair,
+            None => panic!(
+                "no program on this PATH is outside the fixture's view, so the case cannot be \
+                 built here: PATH is {:?}",
+                std::env::var_os("PATH")
+            ),
+        }
     }
 
     /// The first hit for `name` on this process's `PATH`, resolved the way the note resolves it.
@@ -2620,6 +2647,21 @@ mod tests {
             .find(|p| p.is_file())
     }
 
+    /// And the guard that makes the two above real: a view that contains every program on this
+    /// PATH leaves nothing to assert, and that is a failure rather than a pass.
+    #[test]
+    #[should_panic(expected = "no program on this PATH is outside the fixture's view")]
+    fn a_fixture_that_finds_no_program_outside_fails_instead_of_passing() {
+        let mut view = ViewSpec::project_only(std::env::temp_dir());
+        for dir in std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()) {
+            view = view.granting(Grant::ReadOnly {
+                path: dir,
+                why: "the fixture puts everything this process can run in the view".into(),
+            });
+        }
+        a_program_outside(&view);
+    }
+
     #[test]
     fn an_absence_note_names_the_grant_that_would_allow_the_path_in() {
         // The grant is the only thing that changes the answer, so a note that stops at "absent"
@@ -2627,10 +2669,7 @@ mod tests {
         let project = std::env::temp_dir().join(format!("letibot-view-{}", std::process::id()));
         std::fs::create_dir_all(&project).expect("fixture project");
         let b = a_boundary_over(&project);
-        let Some(real) = outside_dir(&b.view) else {
-            eprintln!("no directory outside the fixture's view; nothing to assert");
-            return;
-        };
+        let real = a_dir_outside(&b.view);
         let file = real.join("config.toml");
         let said = format!("cat: {}: No such file or directory", file.display());
 
@@ -2659,22 +2698,18 @@ mod tests {
         let project = std::env::temp_dir().join(format!("letibot-view-cmd-{}", std::process::id()));
         std::fs::create_dir_all(&project).expect("fixture project");
         let b = a_boundary_over(&project);
-        match on_path("cargo").filter(|p| b.view.outside(p)) {
-            Some(cargo) => {
-                for said in [
-                    "cargo: command not found",
-                    // What this box's `/bin/sh` really prints, measured rather than assumed.
-                    "/bin/sh: 1: cargo: not found",
-                ] {
-                    let notes = b.absence_notes(said);
-                    assert_eq!(notes.len(), 1, "{said}: {notes:?}");
-                    let n = &notes[0];
-                    assert!(n.contains(&cargo.display().to_string()), "{said}: {n}");
-                    assert!(n.contains("`ReadOnly` on it"), "{said}: {n}");
-                    assert!(n.contains("reach the transcript"), "{said}: {n}");
-                }
-            }
-            None => eprintln!("no cargo outside the fixture's view; nothing to assert"),
+        let (name, program) = a_program_outside(&b.view);
+        for said in [
+            format!("{name}: command not found"),
+            // What this box's `/bin/sh` really prints, measured rather than assumed.
+            format!("/bin/sh: 1: {name}: not found"),
+        ] {
+            let notes = b.absence_notes(&said);
+            assert_eq!(notes.len(), 1, "{said}: {notes:?}");
+            let n = &notes[0];
+            assert!(n.contains(&program.display().to_string()), "{said}: {n}");
+            assert!(n.contains("`ReadOnly` on it"), "{said}: {n}");
+            assert!(n.contains("reach the transcript"), "{said}: {n}");
         }
         // A name this host does not have is a typo, and a typo must not become a claim about
         // the boundary.
@@ -2693,15 +2728,19 @@ mod tests {
             std::env::temp_dir().join(format!("letibot-view-grant-{}", std::process::id()));
         std::fs::create_dir_all(&project).expect("fixture project");
         let b = a_boundary_over(&project);
-        let Some(cargo) = on_path("cargo").filter(|p| b.view.outside(p)) else {
-            eprintln!("no cargo outside the fixture's view; nothing to assert");
-            return;
-        };
-        for said in ["cargo: command not found", "/bin/sh: 1: cargo: not found"] {
-            assert_eq!(
-                b.outside_paths(said),
-                vec![cargo.clone()],
-                "{said}: the note names the program, so the grant door has to ask about it"
+        let (name, program) = a_program_outside(&b.view);
+        for said in [
+            format!("{name}: command not found"),
+            // What this box's `/bin/sh` really prints, measured rather than assumed. It names the
+            // shell too, so the claim is that the program is one of the paths asked about.
+            format!("/bin/sh: 1: {name}: not found"),
+        ] {
+            let asked = b.outside_paths(&said);
+            assert!(
+                asked.contains(&program),
+                "{said}: the note names {}, so the grant door has to ask about it: it asked \
+                 about {asked:?}",
+                program.display()
             );
         }
         // A typo is not a path: nothing is asked about it, and nothing is said.
