@@ -246,4 +246,30 @@ mod tests {
             "no session means exit 1 so sudo reports that no password was given"
         );
     }
+
+    /// The session it asks in is the one HANDED IN rather than one read from the environment: a
+    /// socket that names nobody is a refusal at once, which is what keeps a `sudo` prompt from
+    /// hanging on a daemon that is not there.
+    #[test]
+    fn askpass_names_the_socket_it_was_given_and_refuses_when_no_daemon_is_at_it() {
+        let nowhere = std::env::temp_dir().join(format!(
+            "letibot-no-daemon-{}-{}.sock",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.subsec_nanos())
+                .unwrap_or(0)
+        ));
+        let code = askpass_in(
+            &[std::ffi::OsString::from("[sudo] password: ")],
+            &nowhere.to_string_lossy(),
+            "s-nobody",
+            "",
+        );
+        assert_eq!(
+            code,
+            ExitCode::FAILURE,
+            "a socket with no daemon behind it is a refusal, not a wait"
+        );
+    }
 }

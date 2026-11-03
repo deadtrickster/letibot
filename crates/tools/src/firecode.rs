@@ -1792,6 +1792,24 @@ mod tests {
         spec
     }
 
+    /// The CLI a VM placement is checked against is one the caller names, so no test has to set
+    /// `$FIRECODE_BIN` under every other reader of it in this binary: the refusal names the path
+    /// it was given, and a bare name is looked for on `PATH`.
+    #[test]
+    fn the_firecode_a_caller_names_is_the_one_that_is_looked_for() {
+        let root = tmp("available");
+        let missing = root.join("no-such-firecode");
+        let e = firecode_available_at(missing.clone()).expect_err("nothing is at that path");
+        assert!(e.contains(&missing.display().to_string()), "{e}");
+        // A program is answered with the very path it was named by.
+        let stub = stub_firecode(&root.join("fc"), HAPPY);
+        assert_eq!(firecode_available_at(stub.clone()), Ok(stub));
+        // A bare name has no path component, so it is a question about `PATH`.
+        let bare = format!("letibot-no-such-firecode-{}", std::process::id());
+        let e = firecode_available_at(PathBuf::from(&bare)).expect_err("no such program here");
+        assert!(e.contains("PATH"), "{e}");
+    }
+
     /// A child in its parent's VM never brings it down - the operator: *"children live in
     /// the _same_ vm"*. An attached backend runs in the parent's project and reports that it
     /// does not own the VM; dropping it calls no `down`, and the parent's own drop still does.
