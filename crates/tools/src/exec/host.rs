@@ -761,11 +761,25 @@ pub struct Handover {
 /// `explicit` scope, which outlives the session by design and has no owner left once that session
 /// is a subagent's. It travels as [`Adopted`], so `job_list` and `job_kill` already work there.
 pub fn hand_over(from: &dyn ProcessHost, to: &dyn ProcessHost) -> Vec<Handover> {
+    // One host is not two: `adopt` answers the id it already holds, and the caller then forgets
+    // the only record there is - so a hand-over to itself loses a process that is still running.
+    let itself = std::ptr::eq(from, to);
     from.survivors()
         .into_iter()
         .map(|a| {
             let label = job_label(a.slug.as_deref(), &a.handle);
             let job = JobId(a.handle.clone());
+            if itself {
+                return Handover {
+                    job,
+                    label,
+                    refused: Some(
+                        "this host is both the giver and the heir: adopting here would move \
+                         nothing and forget the only record of it, so it was left where it is"
+                            .to_string(),
+                    ),
+                };
+            }
             match to.adopt(&a) {
                 Ok(_) => {
                     from.forget(&job);
@@ -1595,6 +1609,16 @@ impl ProcessHost for HostProcesses {
         if self.find(&id).is_some() {
             return Ok(id);
         }
+        // A record with no identity is one nothing can tell from a later process at that number,
+        // and the watcher below would settle a LIVE process `Dead` on its first look.
+        if a.identity.is_empty() {
+            return Err(ExecError::Spawn(format!(
+                "`{}` (pid {}) carries no readable start time, so nothing here could tell it from \
+                 a later process with that number. It was NOT adopted: it is still running \
+                 wherever it was started, and no table here claims to watch it.",
+                a.handle, a.pid
+            )));
+        }
         let (kind, name) = scope_kind_of(&a.scope);
         let (owner, scope) = match (&a.owner_dir, &a.scope_dir) {
             (Some(owner_dir), Some(scope_dir)) => {
@@ -1633,7 +1657,8 @@ impl ProcessHost for HostProcesses {
             },
             a.cwd.clone(),
             a.pid,
-            0,
+            // The ring every job of this host gets: a zero-length one dropped every byte.
+            DEFAULT_CAPTURE_BYTES,
             super::jobs::Stdin::none(),
         ));
         self.by_id
@@ -3056,6 +3081,140 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
         assert!(
             h.job_handle(&adopted).is_some(),
             "and the job itself, not only a row built from it"
+        );
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A root for one test, and a host over it: a directory per scope, because a real cgroup is
+    /// apparatus these three facts do not need.
+    fn host_and_root(tag: &str) -> (HostProcesses, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("letibot-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("the scope root");
+        (
+            HostProcesses::with_tree("/tmp", Box::new(DirScopes(dir.clone()))),
+            dir,
+        )
+    }
+
+    /// A live process to hand over, and the identity a record would carry for it.
+    fn a_live_child() -> (std::process::Child, u32, String) {
+        let child = std::process::Command::new("sleep")
+            .arg("30")
+            .stdout(Stdio::null())
+            .spawn()
+            .expect("a child to adopt");
+        let pid = child.id();
+        let start = super::super::procs::read(pid)
+            .expect("the child is in /proc")
+            .start;
+        (child, pid, format!("start:{start}"))
+    }
+
+    /// A hand-over must not take back a job nothing can identify. `survivors` invents an empty
+    /// identity where `/proc` could not be read, and `""` never matches `start:<n>` - so the
+    /// heir's watcher settled a LIVE process `Dead` on its first look, 500 ms later.
+    #[test]
+    fn a_job_with_no_readable_identity_is_refused_rather_than_settled_dead() {
+        let (h, dir) = host_and_root("by-no-identity");
+        let (mut child, pid, _) = a_live_child();
+        let refused = h.adopt(&Adopted {
+            handle: "h-blind".into(),
+            command: "sleep 30".into(),
+            slug: Some("blind".into()),
+            cwd: "/tmp".into(),
+            pid,
+            identity: String::new(),
+            scope: "explicit.blind".into(),
+            scope_dir: None,
+            owner_dir: None,
+        });
+        assert!(
+            refused.is_err(),
+            "a job nothing can identify was taken back anyway, so its watcher will settle a live \
+             process Dead: {refused:?}"
+        );
+        // And nothing is left behind wearing its handle, for a reader to believe.
+        std::thread::sleep(Duration::from_millis(700));
+        assert!(
+            h.job(&JobId("h-blind".into())).is_none(),
+            "a refused adoption still put a row in the host's table"
+        );
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An adopted job is a job of this host like any other, so it gets the same output ring.
+    /// `adopt` built it with a zero-length one, and every byte that arrived was dropped.
+    #[test]
+    fn an_adopted_job_keeps_the_output_it_is_given() {
+        let (h, dir) = host_and_root("adopted-ring");
+        let (mut child, pid, identity) = a_live_child();
+        let id = h
+            .adopt(&Adopted {
+                handle: "h-ring".into(),
+                command: "make".into(),
+                slug: None,
+                cwd: "/tmp".into(),
+                pid,
+                identity,
+                scope: "session.test".into(),
+                scope_dir: None,
+                owner_dir: None,
+            })
+            .expect("a recorded job is adopted");
+        let job = h.job_handle(&id).expect("the job this host adopted");
+        job.capture
+            .lock()
+            .expect("capture")
+            .push(b"the build says what it did\n");
+        let window = h.output(&id, 0, 100).expect("the window onto it");
+        assert_eq!(
+            window.text(),
+            "the build says what it did\n",
+            "an adopted job dropped its own output: {window:?}"
+        );
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// One host is not two: `adopt` answers the id it already holds, and `hand_over` then forgets
+    /// the only record there is, leaving a running process in no table at all.
+    #[test]
+    fn a_hand_over_to_the_same_host_leaves_the_job_where_it_is() {
+        let (h, dir) = host_and_root("hand-over-to-itself");
+        let (mut child, pid, identity) = a_live_child();
+        let id = h
+            .adopt(&Adopted {
+                handle: "h-explicit".into(),
+                command: "sleep 30".into(),
+                slug: Some("cache-warm".into()),
+                cwd: "/tmp".into(),
+                pid,
+                identity,
+                scope: "explicit.cache-warm".into(),
+                scope_dir: Some(dir.join("job-h-explicit").display().to_string()),
+                owner_dir: Some(dir.join("explicit.cache-warm").display().to_string()),
+            })
+            .expect("a recorded job is adopted");
+        assert_eq!(
+            h.survivors().len(),
+            1,
+            "an explicit-scope job is a survivor"
+        );
+        let moved = hand_over(&h, &h);
+        assert_eq!(moved.len(), 1, "{moved:?}");
+        assert!(
+            moved[0].refused.is_some(),
+            "a hand-over with one host as both ends is not a hand-over: {moved:?}"
+        );
+        assert!(
+            h.job(&id).is_some(),
+            "the only record of a running process was forgotten, and the process runs on"
         );
         let _ = child.kill();
         let _ = child.wait();
