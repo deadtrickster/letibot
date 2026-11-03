@@ -234,3 +234,62 @@ fn an_announcement_from_an_older_daemon_still_reads() {
     assert!(item.is_none(), "a row that carried no body cannot say one");
     assert_eq!(body_bytes, 0, "nothing said how large it was either");
 }
+
+/// The log is one stream for every head, so what an older head needs must not be stored beside what
+/// a newer one reads: the bytes it grows by are one copy of the bodies, whichever head is attached.
+#[test]
+fn the_log_holds_a_body_once_for_either_kind_of_head() {
+    const ROWS: usize = 20;
+    const BODY: usize = 1000;
+    // What a row's own envelope costs beyond its body, with room; a second copy is BODY more.
+    const FRAME: usize = 400;
+    for (what, caps) in [
+        ("a head that reads bodies", reading_bodies()),
+        ("a head that does not", Caps::default()),
+    ] {
+        let registry = start();
+        let (mut _w, mut r) = attach(&registry, caps);
+        let before = hub(&registry).census().log_bytes;
+        for i in 0..ROWS {
+            append(
+                &registry,
+                &format!("s-1.{i}"),
+                &assistant(&"y".repeat(BODY)),
+            );
+        }
+        let grew = hub(&registry).census().log_bytes - before;
+        assert!(
+            grew <= ROWS * (BODY + FRAME),
+            "{what}: the log grew {grew} bytes for {ROWS} bodies of {BODY}, which is more than one copy"
+        );
+        marker(&registry, "after the rows");
+        let events = until_marker(&mut r, "after the rows");
+        let bodies = events
+            .iter()
+            .filter(|e| match &e.event {
+                SessionEvent::TranscriptAppended { item, .. } => item.is_some(),
+                SessionEvent::TranscriptContent { .. } => true,
+                _ => false,
+            })
+            .count();
+        assert_eq!(
+            bodies, ROWS,
+            "{what}: each row must reach it once: {events:?}"
+        );
+    }
+}
+
+/// A head built before `row_bodies` that resumes from a seq is replayed the body too.
+#[test]
+fn a_replay_hands_an_older_head_the_body() {
+    let registry = start();
+    let since = hub(&registry).snapshot().seq;
+    append(&registry, "s-1.0", &assistant("said before the head came"));
+    let a = hub(&registry).attach("tui", "old", Caps::default(), since);
+    let contents: Vec<_> = a
+        .backlog
+        .iter()
+        .filter(|e| matches!(e.event, SessionEvent::TranscriptContent { .. }))
+        .collect();
+    assert_eq!(contents.len(), 1, "{:?}", a.backlog);
+}
