@@ -1011,21 +1011,41 @@ impl Monitors {
 // Shipped conditions: the examples of the [`Condition`] seam that a caller builds its own
 // on top of.
 
+/// Where a timer reads the time. A caller that owns the clock - a test, a replay - needs one
+/// place to drive it, or the timer measures the machine it runs on.
+type Now = Arc<dyn Fn() -> Instant + Send + Sync>;
+
 /// A timer: fires when the deadline passes. One-shot by default; on a continuous
 /// monitor it re-arms and fires every `interval`.
-#[derive(Debug)]
 pub struct TimerCondition {
     interval: Duration,
     next: Mutex<Instant>,
+    now: Now,
+}
+
+impl std::fmt::Debug for TimerCondition {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TimerCondition")
+            .field("interval", &self.interval)
+            .field("next", &self.next)
+            .finish()
+    }
 }
 
 impl TimerCondition {
     /// Fire after `interval`, and - when the monitor is continuous - every
     /// `interval` after each firing.
     pub fn after(interval: Duration) -> Arc<Self> {
+        let clock: Now = Arc::new(Instant::now);
+        Self::on(interval, clock)
+    }
+
+    /// The same timer, reading the time from `now` instead of this box's clock.
+    pub fn on(interval: Duration, now: Now) -> Arc<Self> {
         Arc::new(TimerCondition {
             interval,
-            next: Mutex::new(Instant::now() + interval),
+            next: Mutex::new(now() + interval),
+            now,
         })
     }
 }
@@ -1033,13 +1053,13 @@ impl TimerCondition {
 impl Condition for TimerCondition {
     fn met(&self) -> Option<String> {
         let next = *self.next.lock().expect("timer");
-        (Instant::now() >= next)
+        ((self.now)() >= next)
             .then(|| format!("the {:.1}s timer elapsed", self.interval.as_secs_f32()))
     }
 
     fn rearm(&self) {
         let mut next = self.next.lock().expect("timer");
-        *next = Instant::now() + self.interval;
+        *next = (self.now)() + self.interval;
     }
 
     fn describe(&self) -> String {
@@ -1327,6 +1347,12 @@ mod tests {
         ));
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    /// Move a test's own clock forward, so a timer's interval is elapsed on purpose and never
+    /// waited out.
+    fn advance(clock: &Mutex<Instant>, by: Duration) {
+        *clock.lock().expect("clock") += by;
     }
 
     /// Tick until something fires or the budget runs out. The command condition
@@ -1684,7 +1710,14 @@ mod tests {
     fn a_timer_condition_fires_after_its_interval_and_rearms() {
         let dir = tmp();
         let ms = Arc::new(Monitors::new());
-        let timer = TimerCondition::after(Duration::from_millis(10));
+        // A clock this test sets, so the firing and the re-arm are facts about the timer and not
+        // about how long the box took between two statements.
+        let clock = Arc::new(Mutex::new(Instant::now()));
+        let read = Arc::clone(&clock);
+        let timer = TimerCondition::on(
+            Duration::from_millis(10),
+            Arc::new(move || *read.lock().expect("clock")),
+        );
         ms.declare(
             "t",
             scope(&dir),
@@ -1695,12 +1728,22 @@ mod tests {
             true,
         )
         .unwrap();
-        assert!(ms.tick().is_empty());
-        std::thread::sleep(Duration::from_millis(20));
+        assert!(
+            ms.tick().is_empty(),
+            "not due at the instant it was declared"
+        );
+        advance(&clock, Duration::from_millis(9));
+        assert!(
+            ms.tick().is_empty(),
+            "a millisecond short is not the interval"
+        );
+        advance(&clock, Duration::from_millis(1));
         assert_eq!(ms.tick().len(), 1);
-        // Re-armed: no immediate re-fire, then fires again after another interval.
+        // Re-armed from the firing: no immediate re-fire, then fires again after another interval.
+        assert!(ms.tick().is_empty(), "the re-arm starts the interval again");
+        advance(&clock, Duration::from_millis(9));
         assert!(ms.tick().is_empty());
-        std::thread::sleep(Duration::from_millis(20));
+        advance(&clock, Duration::from_millis(1));
         assert_eq!(ms.tick().len(), 1);
         assert_eq!(ms.firings().len(), 2);
         let _ = std::fs::remove_dir_all(&dir);
