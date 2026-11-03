@@ -618,7 +618,7 @@ fn a_host_with_no_measured_boundary_asks_with_nothing_switched_on() {
     // The other side of the same injected fact: the same command, the same seeded shape, and a
     // boundary that was measured, where D16 admits it with nobody asked.
     let mut g = gate_at(
-        Box::new(Asked::default()),
+        Box::new(Nobody),
         crate::mode::Mode::WRITES_ALLOWED,
         Some(measured_and_closed()),
     );
