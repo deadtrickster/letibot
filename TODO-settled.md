@@ -4456,11 +4456,12 @@ raw, so a notice whose shape changes fails visibly (*"the notices got long again
 silently (*"a notice lost a line"*). The `[monitor]` notice is the live case: same voice, same
 bullets, deliberately not folded, because leticl does not fold it either.
 
-**still open?** `grep -n "you do not need to wait for it" crates/tui/src/app.rs` — the phrase now
-appears only in `folded_notice`'s refusal check and its tests, so a *drawing* reference is what this
-is looking for.
+**still open?** `grep -rn "you do not need to wait for it" --include=*.rs crates/tui/src` — the module
+split moved this out of `app.rs`: the phrase now appears in `folded_notice`'s refusal check
+(`ui/transcript/blocks.rs`), in `job_card.rs`'s `CLOSINGS` (the pre-R93.C1 wording every stored
+transcript still carries), and in tests — so a *drawing* reference is what this is looking for.
 
-**TWO PIECES ARE NOT IN `1f0146a`**, and they are the remainder of this row:
+**TWO PIECES WERE NOT IN `1f0146a`**, and they were the remainder of this row — both settled below:
 
   · **the child's own task in the `Agent` line.** leticl draws `Agent <id> · <task> · done: <answer>`
     and the task is LOOKED UP — the notice carries only what the child answered, and the title lives
@@ -4474,6 +4475,19 @@ is looking for.
     nothing for now — the transcript and the model's own copy are untouched, which is what makes the
     fold a rendering rather than a loss.
     — ✓ fixed in c7435d80, test a_folded_task_row_opens_its_notice
+
+**BOTH ARE SETTLED, 2026-11-02.** The first — the child's own task in the `Agent` line — **landed in
+`be5f74a2`** (*"the folded agent line names the task the child was asked"*), and it took the shape the
+bullet above demanded: the task is LOOKED UP, through `subagent_asked`
+(`crates/tui/src/ui/transcript/blocks.rs`), which is the same function the subagents pane draws its
+rows from, so the folded line and the pane cannot disagree about one child; the two real absences — a
+child this head never watched spawn, and a daemon older than the `task` field — still draw a line
+rather than a blank. The second needs nothing landed: the ruling on it was *nothing for now*, and that
+ruling is what the tree does today. There is no `/t` for a `User` row; `folded_notice` is the one
+folder, it refuses any notice whose shape it does not recognise, and the paragraph stays in the
+transcript and in the model's context — which is what makes the fold a rendering and not a loss. The
+promise is matched by its opening words in `job_card.rs`'s `CLOSINGS` (R93.C1's own closing and the one
+every transcript stored before it carries), so a reworded notice fails visibly instead of silently.
 
 **THE PLAN AS MEASURED, 2026-10-04** (kept because it is what the two pieces above are against). The render site is
 `app.rs:18197`, the `Speaker::Agent` arm of `item_lines` — `(RowClass::Other,
