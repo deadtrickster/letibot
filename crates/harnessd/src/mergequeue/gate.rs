@@ -114,31 +114,121 @@ pub(crate) fn killed_at_cap_words(step: &str, clause: &str, how: &str, leftover:
     )
 }
 
-static GATE_MEMORY: std::sync::OnceLock<Ask> = std::sync::OnceLock::new();
+/// Where the gate's cap comes from - a lock and not a `OnceLock`, because a number that decides a
+/// step's cap has to be readable when the GATE starts, not when the daemon did. As a `OnceLock` a
+/// second [`set_gate_memory`] was dropped by `let _ =`, so a box whose `[memory] gate` was raised
+/// while the queue ran went on gating at the number it started with.
+enum CapSource {
+    /// A value somebody decided: a fixture, or a caller with no file to read.
+    Fixed(Ask),
+    /// The operator's `providers.toml`, re-read every time a gate asks ([`gate_memory`]). `last` is
+    /// the newest value that read cleanly - a file that goes bad keeps the last number the operator
+    /// wrote rather than falling back to half of what is free - and `said` is the refusal already
+    /// printed, so a gate every pass does not say it every pass.
+    File {
+        path: PathBuf,
+        last: Ask,
+        said: Option<String>,
+    },
+}
 
-/// `[memory] gate`, set once at daemon start (`cli.rs`). Process-wide rather than a field
-/// of [`LocalGate`] because it is a property of the box, read once, like `memory.high`.
+static GATE_MEMORY: std::sync::Mutex<Option<CapSource>> = std::sync::Mutex::new(None);
+
+fn cap_source() -> std::sync::MutexGuard<'static, Option<CapSource>> {
+    GATE_MEMORY.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// The gate's cap as a VALUE - and a second call takes effect, which is the whole point of the lock.
+/// A caller holding the operator's file wants [`set_gate_memory_from_file`] instead.
 pub fn set_gate_memory(ask: Ask) {
-    let _ = GATE_MEMORY.set(ask);
+    *cap_source() = Some(CapSource::Fixed(ask));
 }
 
-/// The gate's cap as configured: [`set_gate_memory`]'s, else [`GATE_MEMORY_DEFAULT`].
+/// The gate's cap from the operator's `providers.toml`: parsed NOW, so a malformed value is refused
+/// where the daemon starts and the sentence names the file, and re-read at every gate after that, so
+/// a person who edits `[memory] gate` and asks for a gate gets the number in the file. The `Err` is
+/// why a `set` cannot take effect, said by the caller (`cli.rs` refuses the start with it) instead of
+/// being swallowed.
+pub fn set_gate_memory_from_file(path: &Path) -> Result<Ask, String> {
+    let ask = gate_memory_in(path)?;
+    *cap_source() = Some(CapSource::File {
+        path: path.to_path_buf(),
+        last: ask,
+        said: None,
+    });
+    Ok(ask)
+}
+
+/// `[memory] gate` as `path` writes it - [`Ask::Default`] (half of what is free when the gate starts)
+/// when the file says nothing about it, and an `Err` naming the file when what it says is not an
+/// amount of memory.
+pub fn gate_memory_in(path: &Path) -> Result<Ask, String> {
+    let section = letibot_provider::memory(Some(path));
+    Ask::parse(section.gate.as_deref())
+        .map_err(|e| format!("[memory] gate in {}: {e}", path.display()))
+}
+
+/// The gate's cap in force NOW: the file's `[memory] gate` when one was armed
+/// ([`set_gate_memory_from_file`]), else [`set_gate_memory`]'s value, else [`GATE_MEMORY_DEFAULT`].
+/// [`LocalGate::run`] asks once per gate, which is what makes an edited file the number the next
+/// gate uses.
 pub fn gate_memory() -> Ask {
-    GATE_MEMORY.get().copied().unwrap_or(Ask::Default)
+    let mut slot = cap_source();
+    match slot.as_mut() {
+        None => Ask::Default,
+        Some(CapSource::Fixed(ask)) => *ask,
+        Some(CapSource::File { path, last, said }) => match gate_memory_in(path) {
+            Ok(ask) => {
+                *last = ask;
+                *said = None;
+                ask
+            }
+            Err(why) => {
+                if said.as_deref() != Some(why.as_str()) {
+                    eprintln!(
+                        "harnessd: {why} — the gate keeps {} until that line parses, and reads it \
+                         again at the next gate",
+                        ask_words(*last)
+                    );
+                    *said = Some(why.clone());
+                }
+                *last
+            }
+        },
+    }
 }
 
-static GATE_HOST: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+/// An [`Ask`] as a person reads it - the number a refusal about the file says still stands.
+fn ask_words(ask: Ask) -> String {
+    match ask {
+        Ask::Default => "half of what is free when the gate starts".to_string(),
+        Ask::Uncapped => "no cap at all".to_string(),
+        Ask::Amount(a) => a.to_string(),
+    }
+}
 
-/// `[queue] gate_host` / `--gate-host`, set once at daemon start (`cli.rs`) - the declared host the
-/// gate's steps run on, or `None` for this machine. Process-wide for [`set_gate_memory`]'s reason: the
-/// queue builds ONE runner per daemon. An empty name is `None`, which is how a project says *here*.
+static GATE_HOST: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+fn gate_host_slot() -> std::sync::MutexGuard<'static, Option<String>> {
+    GATE_HOST.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// `[queue] gate_host` / `--gate-host` - the declared host the gate's steps run on, or `None` for
+/// this machine. A second call takes effect, for [`set_gate_memory`]'s reason: the queue builds ONE
+/// runner per daemon, so [`LocalGate::run`] reads this at every gate rather than at the build. An
+/// empty name is `None`, which is how a project says *here*.
+///
+/// No file is re-read here, unlike the cap: the name comes from the project's `leticode.toml` AND
+/// from `--gate-host`, and the flag wins over the file - a re-read would quietly undo the flag.
 pub fn set_gate_host(host: Option<String>) {
-    let _ = GATE_HOST.set(host.map(|h| h.trim().to_string()).filter(|h| !h.is_empty()));
+    *gate_host_slot() = host
+        .map(|h| h.trim().to_string())
+        .filter(|h| !h.is_empty());
 }
 
 /// The host the gate runs on, or `None` for this machine - [`set_gate_host`]'s value.
 pub fn gate_host() -> Option<String> {
-    GATE_HOST.get().cloned().flatten()
+    gate_host_slot().clone()
 }
 
 // ===== The step running now, and the tail of its log =====
@@ -763,6 +853,10 @@ pub trait GateRunner: Send + Sync {
 pub struct LocalGate;
 
 impl GateRunner for LocalGate {
+    /// The host and the cap are read HERE, when the gate starts, and not when the daemon started: a
+    /// cap edited into `providers.toml` is the number the next gate uses. Both are read once per
+    /// run and [`run_with_memory`] resolves the cap once for every step of it, so one gate never
+    /// judges two of its steps by two different numbers.
     fn run(&self, worktree: &Path, steps: &[String], ctl: &GateControl) -> GateRun {
         run_gate(gate_host().as_deref(), worktree, steps, ctl, gate_memory())
     }

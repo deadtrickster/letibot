@@ -585,13 +585,12 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         // The merge gate's own cap : every gate step runs in a cgroup of its
         // own beside the daemon's leaf, under this - half of what is free when the gate starts
         // unless `gate` says otherwise (`uncapped` keeps the scope and the peak, with no cap).
-        let gate = letibot_tools::exec::memory::Ask::parse(m.gate.as_deref()).map_err(|e| {
-            format!(
-                "[memory] gate in {}: {e}",
-                letibot_provider::keys::config_file().display()
-            )
-        })?;
-        crate::mergequeue::gate::set_gate_memory(gate);
+        // The FILE is handed over and not the value: the gate reads `[memory] gate` again at the
+        // start of every run, so a person who edits it and asks for a gate gets the number in the
+        // file. This call still parses it NOW, so a malformed value is refused where the daemon
+        // starts, naming the file - and it is not a `let _ =`: a set that cannot take effect is an
+        // error, not silence.
+        crate::mergequeue::gate::set_gate_memory_from_file(&letibot_provider::keys::config_file())?;
         // The daemon's own throttle : `memory.high` on its leaf, so a daemon that grows
         // without bound is slowed by the kernel instead of taking the box - 16 GiB unless
         // `daemon_high` says otherwise (`max` turns it off). Only in a delegated scope
