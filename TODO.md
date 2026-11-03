@@ -563,7 +563,7 @@ own right**, addressed as R93.<id>; the list below groups them by what to fix fi
 
 ---
 
-## R65 — The model chooses each tool call's memory cap, knowing what is free and what a cap costs — **LANDED on main 2026-10-11 (073c1ea, 51dd340); left: item 2 (what is free is not said where the model decides - `memory_arg` is rendered from the policy alone, because the schema is the session's stable prefix), item 5 (an ordinary call's peak is still withheld unless it was killed at or near its cap), item 6's test, the above-ceiling card answered by a person in a head, and the cross-session ledger**
+## R65 — The model chooses each tool call's memory cap, knowing what is free and what a cap costs — **LANDED on main 2026-10-11 (073c1ea, 51dd340), and its remaining items on 2026-11-03 (71ebd8e7, a1824340, 389dca2f, 1228e425, 31b496e1); left: the cross-session ledger only, which is a proposal the operator has not decided**
 
 The operator: *"the question is how many for 2. I think model should try to decide, so it should
 know the free, how much it can ask and what are the consequences"*.
@@ -576,10 +576,15 @@ with `Killed`, rc 137.
    — ✓ fixed in d755bf51, test uncapped_is_an_ask_and_a_blank_is_the_default
 2. **The model knows what is free** — said where it decides, in the tool's description or the
    turn's disclosure: the box's total, `MemAvailable` now, swap, and what this daemon's live
-   calls and jobs already hold under their caps. — OPEN: what is free is still not said where
-   it decides — the description is rendered from the policy alone
-   (`crates/tools/src/builtins/bash.rs:51`) and `Meminfo::clause`
-   (`crates/tools/src/exec/memory.rs:205`) has no caller.
+   calls and jobs already hold under their caps. — ✓ fixed in 71ebd8e7 and a1824340, test
+   every_round_says_what_is_free_and_no_schema_carries_it (`crates/harnessd/tests/memory_line.rs`).
+   The description cannot carry it - a tool schema is the session's stable prefix, and this number
+   moves every second - so it rides the ROUND'S TAIL instead: `harness::memory::memory_tail`
+   composes one `[memory - the harness's own line]` item per round from `Meminfo::round_clause`
+   (`crates/tools/src/exec/memory.rs`, which replaced the callerless `Meminfo::clause`) and
+   `Holds::of` (the daemon's open scopes: their caps added up and their peaks). The test reads two
+   real requests off a fake provider: the line is in both, once each - never in the transcript -
+   and the two requests' `tools` are byte-identical.
 3. **The model knows how much it can ask** — a ceiling per call, derived from what is free at
    call time. An ask over it is refused with the numbers, not silently clipped. — ✓ fixed in
    d755bf51, test
@@ -592,12 +597,13 @@ with `Killed`, rc 137.
    a_kill_at_the_cap_says_what_to_ask_for_next_and_where_the_default_lives
 5. **Every result reports its peak** (`memory.peak` of the call's scope), so the model learns
    what its commands cost instead of guessing again next time; a job's peak is in `job_list`.
-   — OPEN: a peak is withheld from the result unless the job was killed at or came near its cap
-   (`crates/tools/src/builtins/bash.rs:84`), so an ordinary call still cannot learn what it cost.
+   — ✓ fixed in 389dca2f, test a_finished_call_reports_its_peak: a call that ended well inside
+   its cap now ends `memory: peak 12 MiB of a 64 MiB cap.`, and `MemoryUse::worth_saying` - the
+   predicate that said the opposite - is gone with its test.
 6. **A box with no user systemd says so** — the call runs uncapped, and the disclosure says it
-   is uncapped. Never silently. — fixed in d755bf51 in code, untested: `MemoryCap::Uncapped`
-   names the ask and the reason in the result (`crates/tools/src/builtins/bash.rs:84`), and
-   nothing tests it
+   is uncapped. Never silently. — ✓ fixed in d755bf51, test 1228e425
+   (an_uncapped_call_names_the_ask_and_the_reason): `MemoryCap::Uncapped` names the ask and the
+   reason in the result (`crates/tools/src/builtins/bash.rs`)
 
 **The default is a config option, 64 MB out of the box** — the operator: *"default memory either
 as absolute or a fraction is a config option with 64mb being a good default"*. The setting takes
@@ -647,8 +653,8 @@ cap on its own, and `job_list` shows each job's cap and peak.
 thing in `harnessd`'s `main`; `ScopeTree::{memory_caps, cap_memory, memory_use}`;
 `SpawnRequest::memory` → `memory.max` + `memory.swap.max=0` before any process joins, carried
 across a promotion; the job's `memory.peak`/`oom_kill` read at the settle; `bash`'s `memory`
-argument, the description, the note on every model call's result (cap, peak, box free, what may
-be asked without asking), a dedicated *killed at its memory cap* outcome; `Gate::grant_memory`
+argument, the description, the note on every model call's result (the cap and the peak, now
+unconditionally), a dedicated *killed at its memory cap* outcome; `Gate::grant_memory`
 with an `AlwaysAsk` card in `AdjudicatedGate`; `providers.toml` `[memory] default` / `ceiling`,
 a malformed value refusing the start by name. The operator's own `!` run is uncapped.
 MEASURED end to end through deepseek: no `memory` → `killed at its memory cap — peak 64 MiB of a
@@ -659,11 +665,13 @@ MEASURED end to end through deepseek: no `memory` → `killed at its memory cap 
 peak, KILLED at the cap) — measured: `job_list` read `memory:  peak 97 MiB of a 128 MiB cap` for a
 backgrounded 100 MB awk.
 
-**Still open:** the card above the ceiling is built and unit-tested only through the type system — not yet
-answered by a person in a head; the cross-session ledger above. — OPEN: neither is done: the
-above-ceiling card is never answered by a person in a head (`crates/tools/src/adjudicate/tests/memory.rs:99`
-is the type-system test), and no ledger sums `memory.max` under `letibot*.scope/tree` — `flock`
-appears only in `crates/room/src/lease.rs:206`.
+**Still open:** the cross-session ledger above, and nothing else. — ✓ the card above the ceiling is
+answered by a person in a head: 31b496e1, test a_head_answers_the_memory_card_above_the_ceiling
+(`crates/harnessd/src/answers/tests.rs`) puts the ask on a `HeadAdjudicator`, has a head answer
+`grant_memory_session`, and shows the next, smaller ask is granted with no second card. — OPEN: no
+ledger sums `memory.max` under `letibot*.scope/tree` — `flock` appears only in
+`crates/room/src/lease.rs:206` — and the operator has not decided whether to build one (*"a
+proposal, not a decision"*, above).
 
 ---
 
