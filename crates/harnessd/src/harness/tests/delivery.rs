@@ -104,7 +104,15 @@ fn steering(hub: &Arc<Hub>, d: Deliveries) -> HubSteering {
         // These fixtures are about deliveries, not about the tree: a session with no parent
         // words a message `message from session `<id>`` - see `message_from_a_session`.
         parent: None,
+        at_boundary: false,
     }
+}
+
+/// One poll at a step boundary, which is the only poll a turn's results are handed over at
+/// (R91.16) - a poll between tokens answers nothing, which is its own test.
+fn boundary(s: &mut HubSteering) -> Option<SteeringMessage> {
+    s.at_a_step_boundary();
+    s.try_next()
 }
 
 fn row(when: Option<TodoCondition>, needs: Vec<TodoNeed>) -> TodoItem {
@@ -131,11 +139,11 @@ fn a_routine_completion_during_a_long_turn_is_held_and_arrives_as_one_batch() {
     let first = SystemTime::now() - Duration::from_secs(30);
     w.queue_for_test(settled("j1", "exited 0", first));
     assert!(
-        s.try_next().is_none(),
+        boundary(&mut s).is_none(),
         "a routine completion interrupted a running turn"
     );
     w.queue_for_test(settled("j2", "exited 0", SystemTime::now()));
-    assert!(s.try_next().is_none(), "the second one did too");
+    assert!(boundary(&mut s).is_none(), "the second one did too");
     assert_eq!(w.held_count(), 2, "both are held, not dropped");
     assert!(dir.records().is_empty(), "nothing has been delivered yet");
 
@@ -225,7 +233,7 @@ fn the_end_of_a_turn_with_results_held_wakes_the_session_for_them() {
     assert!(!woken(&registry), "a turn that held nothing wakes nothing");
 
     w.queue_for_test(settled("j1", "exited 0", SystemTime::now()));
-    assert!(s.try_next().is_none(), "mid-turn it is still held");
+    assert!(boundary(&mut s).is_none(), "mid-turn it is still held");
     assert_eq!(w.held_count(), 1);
     assert!(!woken(&registry), "and holding it rang nothing");
 
@@ -331,10 +339,13 @@ fn the_held_counts_are_said_on_the_hub_when_they_change() {
         kind: BackgroundKind::Subagent,
         ..settled("s-child", "failed", SystemTime::now())
     });
-    assert!(s.try_next().is_none(), "both are routine, so both are held");
+    assert!(
+        boundary(&mut s).is_none(),
+        "both are routine, so both are held"
+    );
     assert_eq!(held_said(&hub), [(1, 1, 1)]);
 
-    assert!(s.try_next().is_none());
+    assert!(boundary(&mut s).is_none());
     assert_eq!(
         held_said(&hub),
         [(1, 1, 1)],
@@ -365,7 +376,7 @@ fn a_when_job_rows_job_is_delivered_at_once() {
 
     w.queue_for_test(settled("j12", "exited 0", SystemTime::now()));
     w.queue_for_test(settled("j13", "exited 0", SystemTime::now()));
-    let got = s.try_next().expect("the plan waits on j12");
+    let got = boundary(&mut s).expect("the plan waits on j12");
     assert!(
         got.text
             .starts_with("[job] a job you backgrounded has ended:")
@@ -400,7 +411,7 @@ fn the_failure_of_a_needed_job_is_immediate() {
     let mut c = settled("j40", "exited 101", SystemTime::now());
     c.slug = Some("release-build".into());
     w.queue_for_test(c);
-    let got = s.try_next().expect("a broken dependency stops the work");
+    let got = boundary(&mut s).expect("a broken dependency stops the work");
     assert!(
         got.text.contains("`release-build · j40` exited 101"),
         "{}",
@@ -423,15 +434,13 @@ fn wake_now_and_a_wait_are_immediate() {
 
     w.want_now("j5", WantedNow::WakeNow);
     w.queue_for_test(settled("j5", "exited 0", SystemTime::now()));
-    let got = s.try_next().expect("wake: now");
+    let got = boundary(&mut s).expect("wake: now");
     assert!(got.text.contains("`j5`"), "{}", got.text);
 
     w.queue_for_test(settled("j6", "exited 0", SystemTime::now()));
-    assert!(s.try_next().is_none(), "j6 is routine and held");
+    assert!(boundary(&mut s).is_none(), "j6 is routine and held");
     w.want_now("j6", WantedNow::Awaited);
-    let got = s
-        .try_next()
-        .expect("a job_wait on a held result promotes it");
+    let got = boundary(&mut s).expect("a job_wait on a held result promotes it");
     assert!(got.text.contains("`j6`"), "{}", got.text);
     assert_eq!(w.held_count(), 0);
 
@@ -441,6 +450,35 @@ fn wake_now_and_a_wait_are_immediate() {
         .map(|r| r["rule"].as_str().unwrap().to_string())
         .collect();
     assert_eq!(rules, ["immediate:wake_now", "immediate:awaited"]);
+}
+
+/// **The sort runs at a step boundary, not on every streamed delta** (R91.16): what a turn may
+/// deliver is read from the whole board and taken out of the held set, so a poll between tokens
+/// answers nothing and the boundary the engine marks is where the result comes in - once.
+#[test]
+fn a_result_waits_for_the_step_boundary_and_not_for_a_token() {
+    let dir = Scratch::new("r79-boundary");
+    let hub = Hub::new("s-r79");
+    let w = watchers(&hub, false);
+    let mut s = steering(
+        &hub,
+        deliveries(&w, Vec::new(), &dir, Duration::from_secs(600)),
+    );
+
+    w.want_now("j9", WantedNow::WakeNow);
+    w.queue_for_test(settled("j9", "exited 0", SystemTime::now()));
+    assert!(
+        s.try_next().is_none(),
+        "a poll between tokens delivered a result, which is the whole board read per token"
+    );
+    assert!(w.pending(), "it is still the queue's: nothing was taken");
+    assert!(dir.records().is_empty(), "and nothing was recorded");
+
+    s.at_a_step_boundary();
+    let got = s.try_next().expect("the boundary hands over an immediate");
+    assert!(got.text.contains("`j9`"), "{}", got.text);
+    assert!(s.try_next().is_none(), "one boundary, one handover");
+    assert_eq!(dir.records().len(), 1, "{:?}", dir.records());
 }
 
 /// **The starvation cap**: a turn running with a result held past the (here shortened) cap gets
@@ -455,9 +493,12 @@ fn the_starvation_cap_releases_the_batch_mid_turn() {
 
     w.queue_for_test(settled("j7", "exited 0", SystemTime::now()));
     w.queue_for_test(settled("j8", "exited 1", SystemTime::now()));
-    assert!(s.try_next().is_none(), "inside the cap, nothing comes in");
+    assert!(
+        boundary(&mut s).is_none(),
+        "inside the cap, nothing comes in"
+    );
     std::thread::sleep(cap + Duration::from_millis(50));
-    let got = s.try_next().expect("past the cap, the batch is released");
+    let got = boundary(&mut s).expect("past the cap, the batch is released");
     assert!(
         got.text
             .starts_with("[meanwhile] Finished while you were working:"),
@@ -469,7 +510,7 @@ fn the_starvation_cap_releases_the_batch_mid_turn() {
         "{}",
         got.text
     );
-    assert!(s.try_next().is_none(), "one note, once");
+    assert!(boundary(&mut s).is_none(), "one note, once");
     let rec = dir.records();
     assert_eq!(rec.len(), 2);
     assert!(
@@ -607,7 +648,7 @@ fn a_wait_ons_grace_lasts_until_the_turn_after_the_completion_was_read() {
     );
 
     // 2. Delivered at the running turn's round boundary, and that turn ends.
-    let got = s.try_next().expect("a needed job is immediate");
+    let got = boundary(&mut s).expect("a needed job is immediate");
     assert!(got.text.contains("`j12` exited 0"), "{}", got.text);
     assert!(
         askable(&board, &w, cap, SystemTime::now()).is_empty(),
@@ -811,7 +852,7 @@ fn a_want_is_forgotten_when_its_result_is_delivered_in_a_batch_or_already_was() 
     let mut s = steering(&hub, d.clone());
 
     w.queue_for_test(settled("j1", "exited 0", SystemTime::now()));
-    assert!(s.try_next().is_none(), "a routine completion is held");
+    assert!(boundary(&mut s).is_none(), "a routine completion is held");
     assert_eq!(w.held_count(), 1);
     // Wanted only now, while it is held - and then handed over with the batch.
     w.want_now("j1", WantedNow::Awaited);

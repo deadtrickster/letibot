@@ -135,6 +135,11 @@ pub trait SteeringSource {
     /// source's queue and appending it would advance the ledger on an error path. No default
     /// body, because a default that silently drops is the loss this exists to prevent.
     fn give_back(&mut self, msgs: Vec<SteeringMessage>);
+
+    /// The next drain is a real step boundary rather than one token of a stream. A source whose
+    /// answer costs a read of the whole session - the results a turn may deliver do - gives it
+    /// here and on no other poll, so the cost is once per round instead of once per token.
+    fn at_a_step_boundary(&mut self) {}
 }
 
 /// Nothing ever arrives. The default for a turn with no head attached.

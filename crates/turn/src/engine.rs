@@ -565,6 +565,7 @@ impl TurnEngine {
         // Take the operator's words before spending a prompt, not after: anything
         // waiting when a generation begins goes in FIRST, so the model reads it in this
         // prompt. An urgent message is held for the stream loop's first poll.
+        steering.at_a_step_boundary();
         if let Some(u) = pending.absorb(steering) {
             pending.hold_urgent(u);
         }
@@ -1037,6 +1038,7 @@ impl TurnEngine {
         // §5.8's step boundary: the generation is complete, so anything that arrived
         // during it goes in now as a plain user append. An urgent returned by `absorb`
         // is held for the next poll, never dropped - dropping it is silence.
+        steering.at_a_step_boundary();
         if let Some(u) = pending.absorb(steering) {
             pending.hold_urgent(u);
         }
@@ -1126,6 +1128,7 @@ impl TurnEngine {
         // Greedy, for the same reason as the local path: whatever was typed while the last
         // tool ran is in THIS request. An urgent `absorb` returns is held for the stream
         // loop's first poll, never dropped.
+        steering.at_a_step_boundary();
         if let Some(u) = pending.absorb(steering) {
             pending.hold_urgent(u);
         }
@@ -1389,6 +1392,7 @@ impl TurnEngine {
         // A held urgent is held, not dropped: `absorb` returns it rather than queueing it,
         // and this site ignored the return, so an interrupt with no generation to stop was
         // discarded. Dropping it turns an interrupt into silence.
+        steering.at_a_step_boundary();
         if let Some(u) = pending.absorb(steering) {
             pending.hold_urgent(u);
         }

@@ -130,6 +130,9 @@ pub struct HubSteering {
     /// a message correctly. A message says "your parent session" only when the sender IS this
     /// session's parent, and the between-turns door reads the same field off the config.
     pub(crate) parent: Option<String>,
+    /// Whether the next poll is a step boundary, which is the only poll that may read the
+    /// session's results: see [`SteeringSource::at_a_step_boundary`].
+    pub(crate) at_boundary: bool,
 }
 
 impl HubSteering {
@@ -146,6 +149,7 @@ impl HubSteering {
             stopped: Default::default(),
             todos: None,
             parent: None,
+            at_boundary: false,
         }
     }
 }
@@ -268,10 +272,11 @@ impl SteeringSource for HubSteering {
             }
             return Some(SteeringMessage::normal(text));
         }
-        // Then a background job or subagent of THIS session's own that has ended, above the monitors
-        // because that block returns early with no registry, and a read-only seat with `task` and no
-        // monitors is exactly this case. Only what the work waits on comes in mid-turn.
+        // Then a background job or subagent of THIS session's own that has ended, above the
+        // monitors because that block returns early with no registry. **Only at a step boundary**:
+        // saying it reads the whole board and takes the held set (R91.16).
         if let Some(d) = &self.deliveries
+            && std::mem::take(&mut self.at_boundary)
             && let Some(text) = d.at_round_boundary()
         {
             if let Some(t) = &self.trail {
@@ -320,5 +325,11 @@ impl SteeringSource for HubSteering {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .extend(msgs);
+    }
+
+    /// The engine's word that the next drain is a round's boundary: the one poll that reads the
+    /// session's results.
+    fn at_a_step_boundary(&mut self) {
+        self.at_boundary = true;
     }
 }

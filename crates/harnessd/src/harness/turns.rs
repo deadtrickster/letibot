@@ -2781,6 +2781,7 @@ impl Harness {
             // runs - the same field `submit_a_parents_message` reads, so the two doors word it
             // identically.
             parent: self.cfg.parent_session_id.clone(),
+            at_boundary: false,
         }
     }
 
