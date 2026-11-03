@@ -29,8 +29,8 @@ const ANSWER: &str = "answer-marker: done";
 const PATIENCE: Duration = Duration::from_secs(60);
 
 /// **How long each phase is measured over.** Long enough that a full core shows up as seconds
-/// rather than as a rounding error - and not the whole of this file's wall clock: six windows are
-/// 18 s of sleeping, and every one is opened by a settle that itself costs at least [`cpu::SPAN`].
+/// rather than as a rounding error - and not the whole of this file's wall clock: seven windows are
+/// 21 s of sleeping, each opened by a settle of at least [`cpu::SPAN`], so 28 s is the floor.
 const WINDOW: Duration = Duration::from_secs(3);
 
 /// **What counts as idle.** A spinning session thread spends about WINDOW of CPU; a waiting
