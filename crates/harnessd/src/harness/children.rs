@@ -138,6 +138,9 @@ pub(crate) struct TaskSlot {
     /// The newest answer of the child's turns AFTER the one this slot settled: `task_result` reads
     /// it, since the first answer is no longer the child's last word.
     again: std::sync::Mutex<Option<String>>,
+    /// Whether the child's record kept that later answer. It is what decides whether a reader being
+    /// handed the text lets the slot drop its copy: where no row landed, the slot's is the only one.
+    again_durable: std::sync::atomic::AtomicBool,
     /// **The tree this child's branch lives in**, when it has one. `finish_child_thread` reaps it
     /// once the child has failed: nothing else removes a refused, failed or killed child's tree, and
     /// a tree left behind is a copy of a branch that already holds the work.
@@ -208,6 +211,7 @@ impl TaskSlot {
             exited: std::sync::atomic::AtomicBool::new(false),
             parked: std::sync::atomic::AtomicBool::new(false),
             handed_over: std::sync::atomic::AtomicBool::new(false),
+            again_durable: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -223,8 +227,15 @@ impl TaskSlot {
     }
 
     /// Drop this slot's answer body, keeping the state it settled with. A reader has the text, so what
-    /// is left is the fact that the child answered and the sentence saying where to read it.
+    /// is left is the fact that the child answered and the sentence saying where to read it. A later
+    /// turn's answer goes with it only where the record kept it: a slot is never the last copy.
     pub(crate) fn hand_over_answer(&self) {
+        if self
+            .again_durable
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            *self.again.lock().expect("task slot") = None;
+        }
         let mut g = self.state.lock().expect("task slot");
         if let letibot_tools::builtins::task::TaskStatus::Done { answer, .. } = &mut *g
             && !self
@@ -404,9 +415,13 @@ impl TaskSlot {
     /// would otherwise hand a parent the first answer for ever under the name of its last word. The
     /// record goes with it, because the daemon that heard this one may not be the one asked next.
     pub(crate) fn spoke_again(&self, answer: &str) {
-        if let Some(record) = &self.record {
-            record.answered_again(answer);
-        }
+        // Written down first, because whether that worked is what the slot's own copy is for.
+        let durable = self
+            .record
+            .as_ref()
+            .is_some_and(|r| r.answered_again(answer));
+        self.again_durable
+            .store(durable, std::sync::atomic::Ordering::SeqCst);
         *self.again.lock().expect("task slot") = Some(answer.to_string());
     }
 
@@ -414,6 +429,24 @@ impl TaskSlot {
     #[cfg(test)]
     pub(crate) fn answers_kept(&self) -> usize {
         usize::from(self.again.lock().expect("task slot").is_some())
+    }
+
+    /// The bytes of what the child said that this slot still holds: the answer it settled with and
+    /// the newest later one. A bound on a tree's retention is read from here, because a flag can say
+    /// *dropped* while the body is still in the slot.
+    #[cfg(test)]
+    pub(crate) fn body_bytes(&self) -> usize {
+        let settled = match &*self.state.lock().expect("task slot") {
+            letibot_tools::builtins::task::TaskStatus::Done { answer, .. } => answer.len(),
+            _ => 0,
+        };
+        settled
+            + self
+                .again
+                .lock()
+                .expect("task slot")
+                .as_ref()
+                .map_or(0, String::len)
     }
 
     /// The newest answer of the child's later turns, `None` for a child that has run none.

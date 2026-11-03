@@ -1331,6 +1331,115 @@ fn a_delivered_answer_is_not_kept_for_the_daemons_life() {
     assert_eq!(owed_answers(&slots), 0);
 }
 
+/// **A later answer is let go when a reader has it and the record keeps it, and never before.** The
+/// slot holds one only while it is owed; a child whose row never landed has no other copy, so that
+/// answer stays where it is.
+#[test]
+fn a_later_answer_the_record_keeps_is_not_kept_twice() {
+    let later = "what the child said when it was asked again\n".repeat(400);
+    let slots = recorded_slots("a-later-answer", 20, &later);
+    let held = |slots: &[(String, Arc<TaskSlot>)]| -> usize {
+        slots.iter().map(|(_, s)| s.body_bytes()).sum()
+    };
+    assert!(
+        held(&slots) >= slots.len() * later.len(),
+        "a later answer is owed to whoever asks for it, so every child's is here"
+    );
+    for (handle, _) in &slots {
+        release_delivered(&slots, handle);
+    }
+    assert_eq!(owed_answers(&slots), 0);
+    // What is left is the sentence saying where the text is, not the text: a fixed handful of bytes
+    // a child however much it said.
+    assert!(
+        held(&slots) <= slots.len() * 512,
+        "the tree holds {} byte(s) of the later answers it has handed over",
+        held(&slots)
+    );
+    // And the ROW is what a tree keeps per child once the body is gone: a few hundred bytes, so a
+    // field that makes a slot thousands is the retention coming back.
+    assert!(
+        std::mem::size_of::<TaskSlot>() <= 512,
+        "one slot is {} bytes before its strings",
+        std::mem::size_of::<TaskSlot>()
+    );
+    let _ = std::fs::remove_dir_all(recorded_store_dir("a-later-answer"));
+}
+
+/// **The slot is the only copy for a child whose row never landed**, so a reader being handed the
+/// text does not take it away: the answer a restart would have read is here or nowhere.
+#[test]
+fn a_later_answer_no_record_kept_stays_the_slots_own() {
+    use letibot_tools::builtins::task::TaskStatus;
+    let later = "what the child said when it was asked again\n".repeat(400);
+    let slot = TaskSlot::new("s-parent");
+    slot.settle(TaskStatus::Done {
+        answer: "done".into(),
+        child: None,
+    });
+    slot.spoke_again(&later);
+    slot.hand_over_answer();
+    assert_eq!(
+        slot.newest_again().as_deref(),
+        Some(later.as_str()),
+        "nothing else holds this child's last words, so the slot must"
+    );
+    assert!(slot.body_bytes() >= later.len());
+}
+
+/// `count` slots of a session that ANSWERS, each with a record in a store of its own: the shape a
+/// child the daemon wrote down has, and the one whose answer a second reader must still be given.
+fn recorded_slots(tag: &str, count: usize, later: &str) -> Vec<(String, Arc<TaskSlot>)> {
+    use crate::subagent_record::{RunStore, SubagentRecord};
+    use letibot_tokencore::store::SubagentRun;
+    use letibot_tools::builtins::task::TaskStatus;
+    let dir = recorded_store_dir(tag);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let path = dir.join("sessions.db");
+    let store = Store::open(&path).expect("the store");
+    (0..count)
+        .map(|i| {
+            let child = format!("s-parent-sub-{i}");
+            store
+                .put_subagent_run(&SubagentRun {
+                    child_id: child.clone(),
+                    parent_id: "s-parent".into(),
+                    state: "running".into(),
+                    prompt: "do the thing".into(),
+                    spec_json: "{}".into(),
+                    instance: "i-1".into(),
+                    resumes: 0,
+                    outcome: None,
+                    later_answer: None,
+                    delivered: false,
+                    started_ms: 1,
+                    updated_ms: 1,
+                })
+                .expect("the child's row");
+            let record = SubagentRecord {
+                store: RunStore {
+                    path: path.clone(),
+                    cell: Default::default(),
+                },
+                child: child.clone(),
+                registry: letibot_sessionlog::registry::Registry::new(),
+                pending: None,
+            };
+            let slot = Arc::new(TaskSlot::recorded("s-parent", Some(record)));
+            slot.settle(TaskStatus::Done {
+                answer: "done".into(),
+                child: None,
+            });
+            slot.spoke_again(later);
+            (child, slot)
+        })
+        .collect()
+}
+
+fn recorded_store_dir(tag: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("{tag}-{}", std::process::id()))
+}
+
 fn reply(text: &str) -> Reply {
     Reply {
         text: text.into(),

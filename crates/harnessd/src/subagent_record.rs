@@ -267,12 +267,13 @@ impl SubagentRecord {
 
     /// **A turn of the child AFTER the one this record settled answered `answer`**: kept beside the
     /// first answer, which stays, so a daemon that was not running when the child spoke again still
-    /// hands its parent the last word.
-    pub fn answered_again(&self, answer: &str) {
+    /// hands its parent the last word. `false` when no row was written, which is the slot's cue that
+    /// its own copy is the only one there is.
+    pub fn answered_again(&self, answer: &str) -> bool {
         // The daemon's own interruption is not the child's last word: `run_turn` hands back the text
         // it had when the stop arrived, and recording that delivers a fragment after a restart.
         if self.registry.is_stopping() {
-            return;
+            return false;
         }
         self.ensure_written();
         if let Err(why) = self.store.with(|s| {
@@ -284,7 +285,9 @@ impl SubagentRecord {
                  it",
                 self.child
             );
+            return false;
         }
+        true
     }
 
     /// A later turn of this child begins - a parent's `task_message`, a later prompt, a wake.
