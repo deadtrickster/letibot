@@ -6153,3 +6153,326 @@ The head draws the rungs now and rano's appended id is gone, with the click rang
     (`app/keyhints.rs scan_row`). [keys 33] — ✓ fixed in 9d327dce, test the_waiting_line_is_about_what_is_not_on_the_screen
 
 ---
+
+## R19 — stream backwards: the head holds a window, not a buffer — **SETTLED 2026-11-05 — the ring over rendered lines is built (`App::hist_limit`), a row it let go is drawn again when the reader comes back to it, and the head's one door for rows is `FetchRows`**
+
+> so in a way we are looking back right, instead of looking in the future, interesting
+> challenge for treesitter
+
+> render chrome asap, then render the very current frame of text, then some scroll up
+> buffer if needed — mind the bounds of blocks, etc
+
+The implementation of R18.4's design, which is the operator's and was written down there
+only after a first pass around it. Three stages, in order, and the first is head-side
+only with no protocol change.
+
+### R19.1 — wire `tail_cut` into the walk — ✓ fixed in 4146bf56, test a_tail_frame_is_far_cheaper_than_a_full_walk
+
+`crates/tui/src/markdown.rs::tail_cut(src, min_bytes)` is committed and tested
+(`815200e`, `ad0a10a`) and has **no caller**. `lex(tail)[1..]` is the document's own
+blocks — exact below a possibly-ragged first block that goes off the top — and a 4 KB
+tail of 152 KB measures **3.0%** of the whole's cost.
+
+`App::body_window` still lexes every row in full from row 0, then slices the bottom
+`room` rows out of `segs`. The change: render the **tail** of the conversation, from the
+end, until the window is covered — the current frame first. `retarget_before(k)` already
+scans backward for the per-row call context, and the other per-row inputs (`edit`,
+`decision`, `elapsed_ms`, `answered`) are maps keyed by item id, so nothing about them
+depends on direction. The one fiddly part is `hist_marks`, which is dense and indexed by
+absolute row; a tail walk wants a floor and an "N lines above" count instead.
+
+**Measured, and it rules out one wrong idea**: the forward walk is *not* the cost. A cold
+frame over 6000 rows is 41 ms and every frame after is 0.06 ms. So this is not
+"the walk is slow" — it is that a 160 MB session's *lex* is, and a tail avoids it.
+
+### R19.2 — a row is a logical string; the head holds a viewport — **DONE 2026-09-20 (the paging half)** — ✓ fixed in 076d6f1c, test a_long_payload_can_be_paged_to_its_end
+
+**Done**: a payload past its first screenful is now reachable. `ctrl-t` opens the fold
+*and* a view on the newest payload row; `↑`/`↓` page inside it; the seam says which key
+does what (`… +N lines · ↓ pages down · esc closes`, and `… end of output` at the end);
+`esc` closes the view and gives the arrows back to the transcript.
+
+**The bug was that `ctrl-t` revealed nothing.** It raised the *budget* — how many rows a
+card may draw — and there was **no offset**. So a 418 KB payload drew its head, said
+`… +N lines · ctrl-t`, and the chord showed you none of them. The rest was unreachable.
+
+Three things this needed, each found by a test rather than reasoned out:
+
+- **The view is keyed on the item id, not the call id.** The first version keyed it on
+the call id, which `item_lines` does not hold — so the view was silently closed and the
+seam went on saying `ctrl-t pages` while `ctrl-t` had been pressed.
+- **A page move must invalidate the history buffer.** `hist_lines` is a cache of rendered
+rows and a page offset changes what one of them renders to, so `redraw` alone
+re-drew the old lines: the page said 10 and the screen said line 0.
+- **`Up` at the top is a no-op, not a bug.** A test asserting "the arrows page" with `Up`
+was wrong, not the code.
+
+**A contract that changed, and it is a real one**: while the view is open the arrows page
+it rather than scrolling the transcript. `scroll_still_works_after_ctrl_t` — written for
+the mouse-reporting bug — now asserts the *new* contract explicitly, including that `esc`
+gives the arrows back. A view that held them for ever would be the same defect with a new
+cause.
+
+**Still open** — two layers, and they are one design: *the head must not hold what it is not
+looking at.*
+
+**Measured 2026-09-20** (400 messages, 80×24, scrolled to the top): 23 KB of source becomes
+**67 KB of rendered lines** — wrapping and escape codes make rendering about **3×** the source
+— and `hist_lines` holds every line from the floor down, **for ever**. It never shrinks. So the
+coarse bound is `3 × ViewBounds::item_bytes` ≈ 24 MB today, and the moment anything can fetch
+rows on demand it becomes unbounded: scrolling through a 160 MB conversation would render all
+of it and keep all of it.
+
+**First, a correction about what "dropped" means, because an earlier version of this item got it
+wrong in a way that changes the design.** There are not one but **two rings in the daemon's
+memory**, with two different bounds, plus the disk:
+
+| where | holds | bound | who reads it |
+|---|---|---|---|
+| **view** (`ViewBounds`) | materialised rows, bodies included | 2,000 rows / 8 MiB | the `Hello` snapshot |
+| **log** (`LogBounds`) | *every event*, including `TranscriptContent` — **which carries the body** | 20,000 events / 16 MiB | **`Peek`**, and a resume gap |
+| store | every row, forever | disk | resume, `--replay` |
+
+So a row trimmed from the **view** may still be whole in the **log**, and `Peek` already reads
+the log (`hub.retained()`) — the mechanism exists and is wired. `FetchRow`'s `None` for a trimmed
+row is therefore **not necessarily final**; the parts below say what to try before reaching for
+the disk. A row costs several events (`TranscriptAppended`, `TranscriptContent`, and for a call
+`ToolStarted`/`ToolProgress`/`ToolFinished`), so the log's window is a few thousand rows rather
+than 20,000 — larger than the view's 2,000, not unlimited.
+
+**(a) A ring over rendered lines — the head holds a window, not a history.** `hist_lines` is a
+`Vec<String>` indexed by *absolute line* (`take_window` slices `[start, end)` across the
+concatenation of segs, with `hist_lines` as seg 0). Two things make this more than a `VecDeque`
+swap, and both were found by trying to write it down:
+
+- **It only makes sense in tail mode.** In an ordinary session `hist_floor == 0` and the window
+*is* the history; a session small enough to walk fully is small enough to hold. So the ring
+is a tail-mode mechanism, which keeps it away from `hist_marks` — the forward walk's rewind
+index, which is empty exactly when tail mode is on.
+- **Eviction needs a per-row line count that tail mode does not keep.** Dropping whole rows from
+the front means knowing how many *lines* they became, and `hist_marks` is the only row→line map
+— empty in tail mode. So the ring needs one small parallel structure of its own: the line
+count per rendered row of the window. Then `hist_line_base` (lines evicted above) and its
+counterpart (lines evicted below, which must still count towards `total`, or the scroll
+position jumps when a row is re-rendered).
+
+With those, eviction is at both ends around the viewport, refilled by `fill_backward` above and a
+matching `fill_forward` below — both the same shape as the existing one, since rendering a row is
+`item_lines` and nothing else. **This half pays for itself with no protocol traffic at all**: the
+head can re-render any row it holds, so a ring costs a re-render and saves the memory. — ✓ fixed 2026-11-05: `App::hist_limit` (3 × `HELD_LIMIT`) and `App::trim_history` are the ring's bound, and `Span::class` is the per-row structure it needed — what a row starts at, how many lines it drew, and the class the walk drew it as, which is the separator the walk owes the next row. Eviction is at both ends and the far end from the reader pays first; the refill below is `App::release_below` plus a budget in `walk_history` rather than a second walk, and `App::reanchor_at_tail` is the way back to the session's end. Tests: `a_long_session_keeps_the_head_to_a_window_of_lines`, `a_row_the_ring_let_go_comes_back_when_the_reader_scrolls_to_it`, `a_window_that_stops_short_of_the_session_draws_no_tail`, `a_window_the_ring_cut_stays_one_run_of_the_session`.
+
+**Four things building it taught, which the design above did not name**:
+
+- **The window's end has to be a row and not a line count.** The walk renders rows, so the only
+honest place for the buffer to stop is a row: `App::hist_ceiling` is the row `hist_lines` stops
+before, `None` when the buffer reaches the last row the head holds. A line budget alone is
+fought by every frame — the fill adds a screen, the trim takes it away.
+- **`hist_upto` had to learn the ceiling.** `fill_backward_until` set it to `items.len()`
+unconditionally, which told the walk that the rows below a window that stops short were already
+accounted for; the ceiling was then cleared on the next frame and the window silently claimed to
+hold the session's end.
+- **The walk's `want` had to be counted from the reader.** It was an absolute line index from the
+buffer's first line, which is the session's first line only until the ring cuts: in a window
+with nothing above the reader it says *enough* about a frame that has nothing above them.
+`fill_backward` now counts lines above the reader.
+- **The bottom of the window is not the bottom of the session.** `App::hold` returned the reader
+to following whenever it reached the last drawn line, so a scroll back down from a window that
+had let rows go fell into following and re-anchored at the tail — the rows between were never
+drawn. It follows only when nothing is held back below.
+
+**(b) `FetchRow`, and the daemon is a *proxy*.** The operator's framing, and it is the right
+one: *"it is a cache problem - the daemon is optimized for normal usecase - heads show the latest
++ some scroll back. if a head wants something in the way past - daemon is simply a proxy from the
+store to the head."*
+
+So the two in-memory rings are not tiers a head navigates — they are **a cache tuned for the
+normal case**, and a request outside them is an ordinary cache miss that the daemon resolves from
+the store. The head asks **once**, by ordinal, and never learns which of the three answered. That
+is why the frame takes an ordinal and not a tier, and why `body: None` means *the row does not
+exist* rather than *ask somewhere else*.
+
+This also replaces the "three steps" an earlier draft of this item had, which had the head
+reasoning about log ring versus store. It does not: resolution belongs behind the frame.
+
+**What is still missing:**
+
+1. **The head does not ask yet** — no flag for "this ordinal is missing", no tracking of an
+answer, and no partial-body render. Blocking, and independent of where the answer comes from. — ✓ fixed 2026-11-05: the ask is `ClientFrame::FetchRows` / `ServerFrame::RowsFetched` (R19.4), one page by ordinal each way, and `Action::FetchRow` is **deleted** — it had no constructor and no head-side reader, and the frame it sent cannot carry a row's kind. `crates/tui/src/app/events/frames.rs` still answers a `RowFetched` explicitly, so a daemon that sends one is visible rather than swallowed.
+2. **The daemon does not proxy yet.** `row_body_at` answers from the view and returns `None` on a
+miss (`crates/sessionlog/src/view.rs`), so today a trimmed row answers `None` even though the
+log ring — and the store — still have it. Resolution wants to be one method: view, then log
+ring, then the store through
+[`SessionSource`](crates/sessionlog/src/registry.rs), the trait that already exists for
+exactly this reason (*"A **trait and not a `Store`**… the daemon passes an implementation in"*),
+implemented as `StoreSessions` in `crates/harnessd/src/sessions.rs`. — ✓ fixed in a17be5cb, test an_ordinal_names_window_and_trimmed_rows_alike
+
+**What the store path has to answer**, recorded because it would otherwise be found by a row
+landing in the wrong place: **a session is not one table of rows.** Resume forks make the rows a
+*chain* of transcripts — `crates/harnessd/src/transcript_source.rs:129` walks `transcript` ordered
+by `created_at` rather than querying `transcript_item` directly — so the ordinal the head counts
+must be the sequence that chain produces.
+
+**And the head's window and the daemon's ring are allowed to disagree** — the operator's call:
+*"regarding different heads that can display disjoint sets - it is their problem essentially"*.
+The daemon serves rows **by session ordinal**, and that ordinal is a property of the session, not
+of any head's buffer. Whether a given head can render what it asked for is the head's business: a
+head holding its own rendered window, a head showing forty rows, a head that never scrolls — the
+daemon satisfies none of them individually and all of them by answering "row N". So there is no
+reconciliation to design between `ViewBounds`, `LogBounds` and the head's ring; they are three
+different windows over one sequence, and only the sequence is shared.
+
+That is what makes the pieces independent rather than a single design:
+
+| piece | whose | needs |
+|---|---|---|
+| a ring over **rendered lines** | the head | nothing — stop holding every line it has drawn |
+| asking for a **missing ordinal** | the head | `items_dropped` plus its own index; no flag on the wire |
+| answering **by ordinal** | the daemon | the store read, behind the `SessionSource` seam |
+| heads with disjoint sets | theirs | — |
+
+**Still to write, in this order** — the order changed once the two rings above were separated out:
+
+1. **The head does not ask yet.** It has no flag for "this ordinal is missing", no tracking of an
+answer, and no partial-body render. This is the blocking piece; the two below are about where
+the answer comes from. — ✓ fixed 2026-11-05: the head asks by ordinal in both directions and tracks the ask (`App::fetch_asked`, `App::fetch_below`), and a row it is not looking at needs no flag of its own — the window says which rows it holds and where (`items_base`, `items_below`, `hist_ceiling`).
+2. **A row trimmed from the *view* is probably still in the log.** `Peek` already reads it, and
+`TranscriptContent` carries the body. So the cheap next step is not a new store read but a
+**log-ring read shaped like `FetchRow`** — same ordinal, same window, one source. Worth
+measuring first how many rows the log's 20,000 events actually cover, since a row costs several
+events and the honest answer may be "a few thousand more than the view, not a different order". — **NOT BUILT, and settled as not needed**: resolution is the view and then the store (`crates/sessionlog/src/server.rs`), which is the operator's own framing of the daemon as a proxy from the store; the log tier is an optimisation between two tiers that already answer, and the measurement that would argue for it was never taken here. Nothing in this tree depends on it.
+3. **Only past both rings does the disk matter** — and the seam it needs **already exists**.
+`SessionSource` (`crates/sessionlog/src/registry.rs:311`) is a trait `sessionlog` defines and
+`harnessd` implements as `StoreSessions` (`crates/harnessd/src/sessions.rs:1809`), introduced
+for exactly this reason: *"A **trait and not a `Store`**: `letibot-sessionlog` does not depend
+on `letibot-tokencore` and should not start… the daemon passes an implementation in, and a
+registry with no source behaves exactly as it did before."* So a `row_body(session_id, ordinal)`
+method on that trait is the whole of step 3, with no new direction of dependency —
+`crates/harnessd/src/transcript_source.rs` already reads the rows in order
+(`SELECT … FROM transcript_item WHERE transcript_id = ?1 ORDER BY seq ASC`). — ✓ fixed in a17be5cb, test a_row_is_readable_by_ordinal_without_loading_its_transcript
+
+**What step 3 does have to answer** is that a session is not one table of rows: resume forks
+mean the rows reaching the head are a **chain** of transcripts, which is why
+`crates/harnessd/src/transcript_source.rs:129` walks `SELECT … FROM transcript … WHERE
+t.session_id = ?1 ORDER BY t.created_at DESC` rather than querying items directly. The ordinal
+the head counts must be the same sequence the chain produces, or a fetched row lands in the
+wrong place.
+
+**(a) is the one that matters first**, and it is also the smaller: it needs no daemon change, no
+store read and no protocol, and it is what makes (b) safe to add — without it, giving the head
+access to more rows would only move the memory problem from the daemon to the head.
+
+**And it is not `Peek`, which an earlier draft of this item said.** `Peek` fetches a whole
+session's scrollback and has **no position**: you name a session, you get all of it. That is
+right for the picker — "what was that session about" is a whole-thing question — and it is the
+wrong shape for this, which is positional. The *pattern* worth reusing is that it reads without
+moving your seat; the cursor and the window are new.
+
+**Checked before building, 2026-09-20**: across the whole store there are **8 rows over
+64 KB**, and the largest is a `tool_result` (418 KB) — which never goes through the
+markdown lex at all, because a tool result is drawn as payload text with its own bound.
+The largest *markdown* rows are a 42 KB assistant answer and an 86 KB reasoning block.
+At ~450 ns/byte those are ~19 ms and ~39 ms, once each.
+
+So a single huge row is **not** where a 160 MB session's cost lives — it is thousands of
+ordinary rows, which R19.1 now renders only the tail of. The stage below stays worth
+doing for its own sake (an unfolded row is unreachable past the fold today: `render_bounded`
+draws a tail and an elision count, and nothing fetches the rest), but it is a *fidelity*
+fix rather than the performance one, and the number that said otherwise was never taken.
+
+### R19.2 (detail) — a row is a logical string; the head holds a viewport — ✓ fixed in 076d6f1c, test a_long_payload_can_be_paged_to_its_end
+
+The operator's framing, and it is the correct one: a 418 KB tool result is a **logical**
+string that wraps to thousands of **display** lines, of which 40 are on screen. Wrapping
+exists (61 call sites); **paging** does not, so an unfolded row is unreachable past the
+fold.
+
+So the fix is the editor's, not a cap: the daemon owns the buffer, the head holds the
+window, and a row is fetched when it is unfolded. `Peek` already fetches a stored
+conversation for the session picker — this needs a row-shaped form of it rather than a
+new mechanism.
+
+**Not the fix**: capping a row's payload at the source. That cuts a logical string to
+solve a display problem, which is the editor mistake. A `read` of a large file, a build
+log: the bytes are the truth and the screen shows 40 lines of them.
+
+### R19.3 — bound the snapshot in bytes — **DONE 2026-09-20** — ✓ fixed in 0c5d4d02, test a_view_drops_the_oldest_rows_to_stay_inside_its_byte_bound
+
+`ViewBounds::items: 2_000` bounded a **count**, and the operator has sessions of **160 MB
+and thousands of turns** where one row may be 418 KB — so the daemon's snapshot could be
+most of a gigabyte, cloned per attach and sent over the socket.
+
+Done: `ViewBounds::item_bytes` (default 8 MB) beside the count, and one `trim()` that
+both bounds run through. Three things the implementation needed that a one-liner would
+have missed:
+
+- **Two places can go over, not one.** A row is *announced* before it is filled, so the
+count is checked at the announcement and the **bytes at the fill** — a row that arrives
+empty and lands 418 KB later blows the bound the moment it lands, and trimming only on
+the next announcement would leave the snapshot oversized until one came.
+- **The newest row is kept whatever its size.** A view with nothing in it cannot be read
+or scrolled, and a bound that emptied the transcript would break the thing it exists to
+protect.
+- **`TranscriptItem::bytes` is the one definition** of "how big is this row", in
+`letibot-transcript` where both sides can see it — the daemon bounds by it and the head
+decides whether a transcript is too big to walk by it. The head had its own copy before
+this, which is exactly the drift the shared one prevents.
+
+`items_dropped` reports the trim, so a head can say "N rows above" honestly.
+
+**Done when.** Attaching to a 160 MB session draws the current frame at the same cost as
+attaching to a 1 MB one; scroll-up extends it without a full lex; an unfolded 418 KB row
+is reachable rather than truncated; and `eval` stays out of it — no logical string is cut
+to fit a screen.
+
+### R19.4 — the head holds a window, and scrolls above it by asking — **DONE**
+
+The head-side half of (a) and (b) together, because they are one thing: a window is only bounded
+if what is above it can be fetched back.
+
+- **`App::held_limit`** (8 MiB, a field so a test can shrink it) and **`App::trim_held`**: once
+the head's copy of the rows is over it, the oldest rows above the reader's window are let go and
+the window is rendered again from what is left. The rendered lines go with them, so the buffer
+is one window and not every line ever drawn. Before this, `hist_lines` never shrank: a session
+that started small and grew stayed in forward-walk mode for ever and the head grew with it.
+- **`App::items_base`**, from the snapshot's `items_dropped`: where `items[0]` sits in the
+session. That is what makes an ordinal nameable after a window has been trimmed.
+- **`ClientFrame::FetchRows`/`ServerFrame::RowsFetched`** (`PROTOCOL_VERSION` 56): a page of
+whole rows by ordinal. The daemon answers from its view and falls through to the store behind
+`RowSource::row_items` for the rest, one query per page. `FetchRow` was the wrong shape here: a
+byte window inside one row's body does not carry the row's kind.
+- **The ask**: `App::ask_for_rows_above` fires when the reader has scrolled to the oldest row
+the head holds, one page (100 rows) in flight at a time, and stops for good once a page comes
+back empty. The page is prepended, every row index shifts with it, and the reader's held row
+does not move on their screen.
+
+**Both ends of one window, DONE.** Trimming used to let go of rows *above* the reader only, so a
+reader parked up in history while the session kept appending still grew the head with the rows
+arriving below them. `App::items_below` is now how many rows sit below the window,
+`App::trim_held_below` lets them go (a screen of rows stays under the held row, and only when the
+rows above cannot pay for the overflow), and `App::ask_for_rows_below` brings them back a page at a
+time, by ordinal, when the reader comes down to the end of what is held. The tail follows again
+from the last page on.
+
+Three things the implementation needed that the design did not name:
+
+- **A row arriving while the gap is open is counted, not held.** The window is one contiguous run
+of the session, so a row spliced onto its end would take the ordinal of a row still missing. It
+is counted until the page that fills the gap arrives, and the page carries it whole.
+- **A body for a released row is not an orphan.** `record_item` warned about every body with no
+row; for a head that holds a window that is the ordinary case, above and below it, and the page
+is what brings the words back.
+- **The wheel's "is the stream moving" is the session's row count**, not the window's: the window
+stops growing exactly when rows start landing in the gap, and a park out of which the tail keeps
+running has to stay walkable.
+
+**Still not done, and it is the same shape as the last time.** Nothing on the screen says the tail
+is not held: a window that ends forty rows above the session's end draws as if it ended the
+session. The count is there to say it with; no seam prints it yet. — ✓ fixed 2026-11-05: a window that stops short of the session draws no live pane and no queued echo, and says `N row(s) below this window — ↓ comes down to them` on the step below its last row. Two things put the tail below the window and both are counted: rows the ring let go of as lines, and rows the byte window let go of whole (`App::items_below`). Tests: `a_window_that_stops_short_of_the_session_draws_no_tail`, `a_window_that_let_rows_go_whole_draws_no_tail_of_the_session`.
+
+**Landed on this branch, and what is left**: the head's rendered buffer is a window with a bound
+of its own (`App::hist_limit`, 3 × `HELD_LIMIT`), the rows farthest from the reader are let go at
+either end and drawn again when the reader comes back to them, the walk stops at a row the reader
+has not come down to rather than at the session's end, and the head's one door for rows is
+`FetchRows` by ordinal. Nothing about the daemon changed. The one thing in this entry that was
+written down and not built is the **log-ring tier** (b.2): the store answers, and the middle tier
+was an optimisation nobody measured the need for.
