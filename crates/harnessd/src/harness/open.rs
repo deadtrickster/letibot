@@ -640,6 +640,59 @@ impl Harness {
         mode_source
     }
 
+    /// A Mac whose boundary could not be built is unconfined and says so, on the session's hub
+    /// and in the daemon's log.
+    #[cfg(target_os = "macos")]
+    fn say_boundary_absent(hub: &Arc<Hub>, e: &dyn std::fmt::Display) {
+        let said = format!(
+            "this session is UNCONFINED, and its commands run with this user's \
+             rights over this whole host. A macOS boundary was asked for and could \
+             not be built: {e}\n\nWhat that means here, in the words the gate uses: \
+             a command that runs code (a test runner, a build) is decided per \
+             command by the operator, because nothing else is stopping what that \
+             code can read. `docs/boundary-and-adjudication.md` §4k says what the \
+             boundary would have given and why the probe refused."
+        );
+        eprintln!("letibot: {said}");
+        hub.publish(SessionEvent::Warning {
+            code: BOUNDARY_ABSENT.into(),
+            detail: said,
+            compaction: None,
+        });
+    }
+
+    /// The default local seat on a Mac: commands inside the seatbelt boundary over the checkout,
+    /// file tools still rooted at `/`. `None` where the seat asks for no command, off a Mac, or
+    /// where the probe refuses (said on the hub, and the caller falls back to unconfined).
+    #[cfg(target_os = "macos")]
+    fn seatbelt_for_unconfined_seat(
+        cfg: &Config,
+        hub: &Arc<Hub>,
+        may_exec: bool,
+    ) -> Option<HostBackend> {
+        if !(cfg.unconfined && cfg.allow_bash && may_exec) {
+            return None;
+        }
+        let built = HostBackend::confined_over(
+            "/",
+            &cfg.workspace,
+            confined_grants(cfg, cfg.landing_root.as_deref()),
+        )
+        .and_then(|b| b.with_cwd(&cfg.workspace));
+        match built {
+            Ok(b) => Some(b),
+            Err(e) => {
+                Self::say_boundary_absent(hub, &e);
+                None
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn seatbelt_for_unconfined_seat(_: &Config, _: &Arc<Hub>, _: bool) -> Option<HostBackend> {
+        None
+    }
+
     /// **Where this session's tools run, and what bounds them**: the host backend the seat needs, a
     /// firecode VM, or a checkout on another machine - then the home, the promote channel and the
     /// scratch directory every one of them shares. The constructor is the disclosure, so this is the
@@ -702,6 +755,8 @@ impl Harness {
             // `SshBackend::place` below, which probes the host.
             HostBackend::new(&cfg.workspace)
                 .map_err(|e| HarnessError::Setup(format!("workspace {:?}: {e}", cfg.workspace)))?
+        } else if let Some(b) = Self::seatbelt_for_unconfined_seat(cfg, hub, may_exec) {
+            b
         } else if cfg.unconfined {
             if cfg.allow_bash && may_exec {
                 HostBackend::executable("/")
@@ -729,21 +784,7 @@ impl Harness {
                 // and a delegated cgroup are things a host can be fixed to have.
                 #[cfg(target_os = "macos")]
                 Err(e) => {
-                    let said = format!(
-                        "this session is UNCONFINED, and its commands run with this user's \
-                     rights over this whole host. A macOS boundary was asked for and could \
-                     not be built: {e}\n\nWhat that means here, in the words the gate uses: \
-                     a command that runs code (a test runner, a build) is decided per \
-                     command by the operator, because nothing else is stopping what that \
-                     code can read. `docs/boundary-and-adjudication.md` §4k says what the \
-                     boundary would have given and why the probe refused."
-                    );
-                    eprintln!("letibot: {said}");
-                    hub.publish(SessionEvent::Warning {
-                        code: BOUNDARY_ABSENT.into(),
-                        detail: said,
-                        compaction: None,
-                    });
+                    Self::say_boundary_absent(hub, &e);
                     let b = if cfg.allow_bash {
                         HostBackend::executable("/")
                     } else {
@@ -3929,5 +3970,90 @@ mod prefix_fingerprint_tests {
             }),
             "`MM-DD HH:MM`, the launcher's own spelling: {said}"
         );
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod mac_default_seat_tests {
+    use super::*;
+
+    fn checkout() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("letibot-macseat-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a checkout");
+        dir.canonicalize().expect("a checkout path")
+    }
+
+    fn placed(allow_bash: bool) -> (Placed, bool) {
+        let dir = checkout();
+        let mut cfg = Config::for_this_box(&dir);
+        cfg.seat = Seat::Leticode;
+        cfg.unconfined = true;
+        cfg.allow_bash = allow_bash;
+        cfg.session_id = format!("mac-seat-{allow_bash}");
+        let hub = Hub::new(&cfg.session_id);
+        let head = hub
+            .attach("h", "tui", letibot_sessionlog::protocol::Caps::default(), 0)
+            .head_id;
+        let registry = letibot_sessionlog::registry::Registry::new();
+        let p = Harness::place_the_tools(&mut cfg, &hub, &registry).expect("places");
+        hub.close();
+        let warned = match hub.next_batch(&head, 256) {
+            letibot_sessionlog::hub::Delivery::Events(b) => b.events().iter().any(|e| {
+                matches!(&e.event, SessionEvent::Warning { code, .. } if code == BOUNDARY_ABSENT)
+            }),
+            _ => false,
+        };
+        (p, warned)
+    }
+
+    fn probe_works() -> bool {
+        let view = letibot_tools::exec::confine::ViewSpec::project_only(checkout());
+        letibot_tools::exec::confine::probe(view, letibot_tools::exec::confine::Egress::Denied)
+            .is_ok()
+    }
+
+    #[test]
+    fn the_default_seat_with_bash_runs_inside_the_seatbelt_boundary() {
+        if !probe_works() {
+            eprintln!("skipped: the seatbelt probe refuses on this Mac");
+            return;
+        }
+        let (p, warned) = placed(true);
+        assert!(p.confined, "no boundary: {}", p.described);
+        assert!(p.backend.boundary().is_some());
+        assert!(!warned, "a boundary was built and still warned");
+    }
+
+    #[test]
+    fn its_commands_write_the_checkout_and_are_refused_outside_it() {
+        if !probe_works() {
+            eprintln!("skipped: the seatbelt probe refuses on this Mac");
+            return;
+        }
+        let (p, _) = placed(true);
+        let dir = checkout();
+        let outside =
+            std::env::temp_dir().join(format!("letibot-macseat-out-{}", std::process::id()));
+        std::fs::create_dir_all(&outside).expect("a directory outside the checkout");
+        let run = |script: String| {
+            p.backend
+                .run(&letibot_tools::backend::Command {
+                    argv: vec!["/bin/sh".into(), "-c".into(), script],
+                    cwd: String::new(),
+                    env: Vec::new(),
+                })
+                .expect("the backend runs a command")
+                .exit
+        };
+        assert_eq!(run("touch inside.txt".to_string()), 0);
+        assert!(dir.join("inside.txt").exists());
+        assert_ne!(run(format!("touch '{}/outside.txt'", outside.display())), 0);
+        assert!(!outside.join("outside.txt").exists());
+    }
+
+    #[test]
+    fn the_default_seat_without_bash_asks_for_no_boundary() {
+        let (p, _) = placed(false);
+        assert!(!p.confined);
     }
 }
