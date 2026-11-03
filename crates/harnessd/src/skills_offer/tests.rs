@@ -135,6 +135,27 @@ fn a_prompt_about_slides_composes_the_offer_of_the_slides_skill() {
     );
 }
 
+/// **One name is one line.** Two skills sharing a name are one skill to every door that keys by
+/// name - a pin, a `skill load`, an offer - so a round offers it once rather than twice.
+#[test]
+fn two_skills_with_one_name_are_offered_once() {
+    // The same skill twice, over the fixture's corpus: two identical documents in a corpus of two
+    // make every term common and nothing distinctive, which is a different test.
+    let mut skills = registry().skills.clone();
+    skills.push(Skill {
+        source: SkillSource::Installed(None),
+        ..slides()
+    });
+    let twice = SkillRegistry::new(skills);
+    let mut offers = Offers::new();
+    assert!(offers.compose(
+        &twice,
+        &subject(&prompt("make me a latex presentation for the talk"), &[]),
+    ));
+    let made = offers.tail();
+    assert_eq!(made.len(), 1, "one name, one line: {made:?}");
+}
+
 /// What the model has worked out counts, and a note's subject does not read it: the reasoning of the
 /// round before is what makes the next round's offer.
 #[test]

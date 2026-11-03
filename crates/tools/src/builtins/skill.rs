@@ -575,11 +575,20 @@ impl SkillRegistry {
                 )
             }));
         }
-        crate::similarity::Corpus::of_texts(&docs)
-            .ranked(query, most)
-            .into_iter()
-            .map(|(path, score)| (path.display().to_string(), score))
-            .collect()
+        // One name is one skill here - a pin, a `load` and an offer all key by it - so a second
+        // document under the same name would be the same row twice in a request that carries both.
+        let mut out: Vec<(String, f64)> = Vec::with_capacity(most.min(docs.len()));
+        for (path, score) in crate::similarity::Corpus::of_texts(&docs).ranked(query, usize::MAX) {
+            if out.len() >= most {
+                break;
+            }
+            let name = path.display().to_string();
+            if out.iter().any(|(seen, _)| *seen == name) {
+                continue;
+            }
+            out.push((name, score));
+        }
+        out
     }
 
     /// The tools a set of declared skills allows: the union of their `allowed-tools`, or `None`
