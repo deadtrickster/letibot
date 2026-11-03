@@ -1432,6 +1432,24 @@ mod tests {
         );
     }
 
+    /// A box with no user systemd runs the call uncapped, and the result says so - the ask that
+    /// could not be honoured and the reason, never a silent uncapped run.
+    #[test]
+    fn an_uncapped_call_names_the_ask_and_the_reason() {
+        use crate::exec::MemoryCap;
+        let job = settled(
+            MemoryCap::Uncapped {
+                asked: 512 << 20,
+                why: "no memory controller".into(),
+            },
+            None,
+        );
+        let note = memory_note(&job).expect("a cap that could not be set is said");
+        assert!(note.contains("ran UNCAPPED"), "{note}");
+        assert!(note.contains("512 MiB was asked for"), "{note}");
+        assert!(note.contains("no memory controller"), "{note}");
+    }
+
     #[test]
     fn the_description_declares_exec_and_says_how_to_use_the_tool() {
         let s = Bash::default().schema();
