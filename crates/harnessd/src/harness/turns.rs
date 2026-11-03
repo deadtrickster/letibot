@@ -116,6 +116,12 @@ pub(crate) fn reconcile_rows(
 // The authorisation trail
 // ---------------------------------------------------------------------------
 
+/// How one round ends, for a decision that is not the round's: the loop goes on, or the turn does.
+enum RoundEnd {
+    Go(TurnOk),
+    Again,
+}
+
 impl Harness {
     /// The loop: one user message in, one answer out, however many tool rounds that takes. This is
     /// the one door the operator's own words come through, and the only place that records them as
@@ -1645,113 +1651,9 @@ impl Harness {
             // matters most is the error that propagates. A failure whose turn id is only recorded on the success path
             // is a failure the daemon cannot name.
             self.last_turn_id = sink.turn_id.clone().unwrap_or_default();
-            let ok: TurnOk = match outcome {
-                Ok(ok) => ok,
-                // Nothing was committed, so there is no tool-call row to answer and the notice is a user item. Bounded
-                // by the engine's own salvage budget: the round after this one either succeeds or comes back as
-                // `SalvageExhausted`.
-                Err(TurnFailure::BatchTruncated { notices, .. }) => {
-                    self.append_notice(letibot_plugin::notice::SALVAGE, &notices.join("\n"))?;
-                    continue;
-                }
-                // The operator's own sentence, because it is the only one with evidence: three machine notices
-                // produced three more empty turns, and one imperative line produced the work. So: no question and no
-                // condition, naming the behaviour rather than the mechanism.
-                Err(TurnFailure::EmptyLength { .. }) => {
-                    self.append_notice(
-                        letibot_plugin::notice::NUDGE,
-                        "Your reply was all reasoning and nothing was kept. Make the tool call \
-                         or give the answer now.",
-                    )?;
-                    continue;
-                }
-                // The turn stopped inside its own reasoning and said nothing. GLM's end-of-turn token doubles as a
-                // nameable string, so this is self-inflicted, and the answer is the same shape as the arms above:
-                // tell the model and let the loop run, bounded by the same salvage budget.
-                Err(TurnFailure::UnfinishedReasoning { .. }) => {
-                    // R93.D2: this arm is the turn ending INSIDE its reasoning, not running out.
-                    self.append_notice(
-                        letibot_plugin::notice::NUDGE,
-                        "Your reply ended inside reasoning with no output. Make the tool call \
-                         or give the answer now.",
-                    )?;
-                    continue;
-                }
-                Err(TurnFailure::Http(e)) => {
-                    // A context-length refusal IS the wall: the provider owns the window and has said the prompt does
-                    // not fit, and every recovery `Sessions` has is gated on `ContextWall`. The error carries this
-                    // box's own counts and the warning names the provider's two beside them, never a blend.
-                    if let letibot_turn::HttpError::Status { body, .. } = &e
-                        && let Some(refusal) = context_length_refusal(body)
-                    {
-                        let r = self.measure_resident().tokens;
-                        let resident = self.session.ledger.len() as u64;
-                        let window = self
-                            .cfg
-                            .planning_window()
-                            .or(self.cfg.context_window)
-                            .unwrap_or(0);
-                        let (w, h) = self.cfg.shown_wall();
-                        let unit = self.token_unit();
-                        let theirs = match (refusal.requested, refusal.limit) {
-                            (Some(req), Some(lim)) => format!(
-                                " The provider's own count: {req} tokens against a {lim} \
-                                 window."
-                            ),
-                            (Some(req), None) => {
-                                format!(
-                                    " The provider's own count: {req} tokens; it did \
-                                     not name its window."
-                                )
-                            }
-                            (None, Some(lim)) => format!(
-                                " The provider named a {lim}-token window but not this \
-                                 prompt's size."
-                            ),
-                            (None, None) => String::new(),
-                        };
-                        let no_window = if self.cfg.context_window.is_none() {
-                            " This box has no --context-window set, so its own checks \
-                                 could not have seen this coming; the provider's refusal \
-                                 is the first measurement of this session's wall."
-                        } else {
-                            ""
-                        };
-                        self.hub.publish(SessionEvent::Warning {
-                            code: "context_wall".into(),
-                            detail: format!(
-                                "stopping this turn after {round} round(s): the PROVIDER \
-                                 refused the prompt for length. This box counts {r} \
-                                 of {w} {unit} resident with {h} reserved for the next \
-                                 round.{theirs}{no_window} Everything already produced is \
-                                 committed, and the session compacts before the next turn \
-                                 — this is the wall, not a failure of the work.",
-                            ),
-                            compaction: None,
-                        });
-                        eprintln!(
-                            "  {}: context wall: the provider refused the prompt for \
-                             length after {round} round(s) at {r} of {w} {unit} ({resident} \
-                             of {window} ledger tokens)",
-                            self.cfg.session_id
-                        );
-                        return Err(HarnessError::ContextWall {
-                            rounds: round,
-                            resident: r,
-                            window: w,
-                            unit,
-                            ledger: (resident, window),
-                        });
-                    }
-                    // The whole account of the failure, not just the last call of it: the ladder knows how many times
-                    // it tried and for how long, so the ending is its sentence rather than one call's error under
-                    // `FAILED` with no count. The typed cause rides along, since `switch_back_notice` asks which 4xx.
-                    return Err(HarnessError::Endpoint {
-                        said: ladder.ending(&e),
-                        cause: e,
-                    });
-                }
-                Err(e) => return Err(e.into()),
+            let ok: TurnOk = match self.judge_the_round(outcome, &ladder, round)? {
+                RoundEnd::Go(ok) => ok,
+                RoundEnd::Again => continue,
             };
 
             // Pair against everything the ledger took, not just the model's rows: a steering message goes through
@@ -2086,6 +1988,127 @@ impl Harness {
         // process reaches - and honest if the bound is ever set back.
         Err(HarnessError::LoopBound { rounds: backstop })
     }
+
+    /// **What a round's own failure means.** Two arms carry a notice the model answers and the
+    /// loop goes on; two end the turn - one of them as the wall the provider itself named, which is
+    /// the only measurement of a session whose box set no window.
+    fn judge_the_round(
+        &mut self,
+        outcome: Result<TurnOk, TurnFailure>,
+        ladder: &letibot_http::retry::Ladder,
+        round: usize,
+    ) -> Result<RoundEnd, HarnessError> {
+        let ok: TurnOk = match outcome {
+            Ok(ok) => ok,
+            // Nothing was committed, so there is no tool-call row to answer and the notice is a user item. Bounded
+            // by the engine's own salvage budget: the round after this one either succeeds or comes back as
+            // `SalvageExhausted`.
+            Err(TurnFailure::BatchTruncated { notices, .. }) => {
+                self.append_notice(letibot_plugin::notice::SALVAGE, &notices.join("\n"))?;
+                return Ok(RoundEnd::Again);
+            }
+            // The operator's own sentence, because it is the only one with evidence: three machine notices
+            // produced three more empty turns, and one imperative line produced the work. So: no question and no
+            // condition, naming the behaviour rather than the mechanism.
+            Err(TurnFailure::EmptyLength { .. }) => {
+                self.append_notice(
+                    letibot_plugin::notice::NUDGE,
+                    "Your reply was all reasoning and nothing was kept. Make the tool call \
+                     or give the answer now.",
+                )?;
+                return Ok(RoundEnd::Again);
+            }
+            // The turn stopped inside its own reasoning and said nothing. GLM's end-of-turn token doubles as a
+            // nameable string, so this is self-inflicted, and the answer is the same shape as the arms above:
+            // tell the model and let the loop run, bounded by the same salvage budget.
+            Err(TurnFailure::UnfinishedReasoning { .. }) => {
+                // R93.D2: this arm is the turn ending INSIDE its reasoning, not running out.
+                self.append_notice(
+                    letibot_plugin::notice::NUDGE,
+                    "Your reply ended inside reasoning with no output. Make the tool call \
+                     or give the answer now.",
+                )?;
+                return Ok(RoundEnd::Again);
+            }
+            Err(TurnFailure::Http(e)) => {
+                // A context-length refusal IS the wall: the provider owns the window and has said the prompt does
+                // not fit, and every recovery `Sessions` has is gated on `ContextWall`. The error carries this
+                // box's own counts and the warning names the provider's two beside them, never a blend.
+                if let letibot_turn::HttpError::Status { body, .. } = &e
+                    && let Some(refusal) = context_length_refusal(body)
+                {
+                    let r = self.measure_resident().tokens;
+                    let resident = self.session.ledger.len() as u64;
+                    let window = self
+                        .cfg
+                        .planning_window()
+                        .or(self.cfg.context_window)
+                        .unwrap_or(0);
+                    let (w, h) = self.cfg.shown_wall();
+                    let unit = self.token_unit();
+                    let theirs = match (refusal.requested, refusal.limit) {
+                        (Some(req), Some(lim)) => format!(
+                            " The provider's own count: {req} tokens against a {lim} \
+                             window."
+                        ),
+                        (Some(req), None) => {
+                            format!(
+                                " The provider's own count: {req} tokens; it did \
+                                 not name its window."
+                            )
+                        }
+                        (None, Some(lim)) => format!(
+                            " The provider named a {lim}-token window but not this \
+                             prompt's size."
+                        ),
+                        (None, None) => String::new(),
+                    };
+                    let no_window = if self.cfg.context_window.is_none() {
+                        " This box has no --context-window set, so its own checks \
+                             could not have seen this coming; the provider's refusal \
+                             is the first measurement of this session's wall."
+                    } else {
+                        ""
+                    };
+                    self.hub.publish(SessionEvent::Warning {
+                        code: "context_wall".into(),
+                        detail: format!(
+                            "stopping this turn after {round} round(s): the PROVIDER \
+                             refused the prompt for length. This box counts {r} \
+                             of {w} {unit} resident with {h} reserved for the next \
+                             round.{theirs}{no_window} Everything already produced is \
+                             committed, and the session compacts before the next turn \
+                             — this is the wall, not a failure of the work.",
+                        ),
+                        compaction: None,
+                    });
+                    eprintln!(
+                        "  {}: context wall: the provider refused the prompt for \
+                         length after {round} round(s) at {r} of {w} {unit} ({resident} \
+                         of {window} ledger tokens)",
+                        self.cfg.session_id
+                    );
+                    return Err(HarnessError::ContextWall {
+                        rounds: round,
+                        resident: r,
+                        window: w,
+                        unit,
+                        ledger: (resident, window),
+                    });
+                }
+                // The whole account of the failure, not just the last call of it: the ladder knows how many times
+                // it tried and for how long, so the ending is its sentence rather than one call's error under
+                // `FAILED` with no count. The typed cause rides along, since `switch_back_notice` asks which 4xx.
+                return Err(HarnessError::Endpoint {
+                    said: ladder.ending(&e),
+                    cause: e,
+                });
+            }
+            Err(e) => return Err(e.into()),
+        };
+        Ok(RoundEnd::Go(ok))
+    }
+
 
     /// **One round as the provider took it**, and the ladder that decides whether it is taken
     /// again: an endpoint failure is retried here rather than in `rounds`, because a retry produced
