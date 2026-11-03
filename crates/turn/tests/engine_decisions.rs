@@ -427,7 +427,12 @@ fn a_truncated_tool_argument_refuses_the_entire_batch() {
                 2,
                 "both calls are told, not just the bad one"
             );
-            assert!(notices.iter().all(|n| n.contains("Re-issue")));
+            // R93.D3: what to do, in the words the model now reads.
+            assert!(
+                notices
+                    .iter()
+                    .all(|n| n.contains("was cut off and not run"))
+            );
         }
         other => panic!("{other:?}"),
     }
