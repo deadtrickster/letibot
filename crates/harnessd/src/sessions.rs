@@ -2376,14 +2376,21 @@ impl<'a> Sessions<'a> {
                 s.open.get(&seen).and_then(|h| h.close_backend())
             }) {
                 Some(Some(line)) => said.push(line),
-                // A session with no placement says nothing; one that never answered is said,
-                // because a settlement nobody waited for is otherwise a silence.
+                // A session with no placement says nothing; one that could not be asked at all is
+                // said, because a settlement nobody waited for is otherwise a silence.
                 Some(None) => {}
-                None => said.push(format!(
-                    "{id} · its placement was NOT brought home: the session did not answer within \
-                     {} s, so its work is still on the machine it ran on",
-                    SETTLE_PATIENCE.as_secs()
-                )),
+                None => {
+                    let why = match &court.thread {
+                        Some(t) if !t.is_finished() => {
+                            format!("did not answer within {} s", SETTLE_PATIENCE.as_secs())
+                        }
+                        _ => "had already gone".to_string(),
+                    };
+                    said.push(format!(
+                        "{id} · its placement was NOT settled here: the session's own thread \
+                         {why}, so what it committed is still wherever its tools ran"
+                    ));
+                }
             }
         }
         said
