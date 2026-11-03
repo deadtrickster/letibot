@@ -176,6 +176,53 @@ mod tests {
         );
     }
 
+    /// A body outlives the memory the map lives in: with `--spill-dir` the store keeps it across a
+    /// restart, and a new process has no map to consult. The store is the authority on an id, so
+    /// the body opens rather than being refused as an id this session's map never named.
+    #[test]
+    fn a_body_the_store_kept_is_opened_without_a_map() {
+        let dir = crate::backend::tempdir::TempDir::new();
+        let session = "s-recall-restart";
+        let store = crate::spill::FileStore::new(dir.path(), session).expect("the directory store");
+        let text = body();
+        let id = store
+            .put("read", text.as_bytes())
+            .expect("the fixture store takes it");
+
+        // The daemon that evicted it: a map naming the id.
+        let recall = Recall::new(Some(262_144));
+        recall.remember([(
+            id.clone(),
+            Evicted {
+                kind: "read".into(),
+                named: "src/a.rs".into(),
+                bytes: text.len(),
+            },
+        )]);
+        let mut first = harness_with_spiller(Spiller::new(
+            Box::new(NoBudget),
+            Box::new(crate::spill::FileStore::new(dir.path(), session).unwrap()),
+        ));
+        first.rt.recall = Some(Arc::new(recall));
+        assert_eq!(
+            first.call("recall", &format!(r#"{{"id":"{id}"}}"#)).payload,
+            text
+        );
+
+        // The daemon that restarted: the same directory, and a map no process refilled.
+        let mut after = harness_with_spiller(Spiller::new(
+            Box::new(NoBudget),
+            Box::new(crate::spill::FileStore::new(dir.path(), session).unwrap()),
+        ));
+        after.rt.recall = Some(Arc::new(Recall::new(Some(262_144))));
+        let r = after.call("recall", &format!(r#"{{"id":"{id}"}}"#));
+        assert!(r.is_grounded(), "{}", r.payload);
+        assert_eq!(
+            r.payload, text,
+            "the body outlived the map, so it still opens"
+        );
+    }
+
     /// A unit on the map whose body the store has lost says exactly that, rather than reading as a
     /// typo: the spill store keeps nothing across a restart unless it was given a directory.
     #[test]
