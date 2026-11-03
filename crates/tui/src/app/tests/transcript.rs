@@ -1138,7 +1138,13 @@ fn the_ladder_cycles_through_the_conversation_rung_by_name() {
         field: ReasoningField::ReasoningContent,
         truncated: false,
     };
-    for kept in [&user, &answer] {
+    // **A delivery is the conversation**: a monitor's firing is the session being told what
+    // happened, not the model working, so the narrowest rung keeps it.
+    let delivery = T::Notice {
+        kind: letibot_transcript::NoticeKind::Monitor,
+        text: "[monitor] `pr-watch` fired: the pull request was merged.".into(),
+    };
+    for kept in [&user, &answer, &delivery] {
         assert!(Verbosity::Conversation.keeps(kept), "{kept:?}");
     }
     assert!(!Verbosity::Conversation.keeps(&thought));

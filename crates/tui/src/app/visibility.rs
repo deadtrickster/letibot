@@ -73,7 +73,12 @@ impl Verbosity {
         if operator_act(item) {
             return true;
         }
-        matches!(item, T::User { .. } | T::Assistant { .. })
+        // A delivery is the conversation too: the session being told what happened between turns is
+        // not the model's working, so no rung may hide it.
+        matches!(
+            item,
+            T::User { .. } | T::Assistant { .. } | T::Notice { .. }
+        )
     }
 }
 
