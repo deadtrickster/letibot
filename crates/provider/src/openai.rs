@@ -206,6 +206,20 @@ fn shape(body: &Value, bytes: usize) -> String {
     out
 }
 
+/// **Whether an interrupted send is asked again.** One retry covers the daemon's own Ctrl-C, and
+/// a loop that never gives up re-posts the whole history once per interruption: billed, and none
+/// of those streams is ever read, because the first answer ends the loop.
+fn ask_again(err: &ureq::Error, retried: &mut u32) -> bool {
+    if let ureq::Error::Io(e) = err
+        && e.kind() == std::io::ErrorKind::Interrupted
+        && *retried == 0
+    {
+        *retried = 1;
+        return true;
+    }
+    false
+}
+
 /// One message of a [`shape`] dump. `absent` and `null` are different answers.
 fn one_message(m: &Value) -> String {
     let mut bits = vec![format!(
@@ -411,6 +425,7 @@ impl OpenAiProvider {
         // A signal is not the provider failing: the answer bound makes this wait a timed read,
         // and a timed read ends with `EINTR` when the daemon's own Ctrl-C arrives. Nothing of the
         // answer has been read, so ask again rather than report a signal as an unreachable model.
+        let mut retried = 0u32;
         let resp = loop {
             match self
                 .agent
@@ -421,7 +436,7 @@ impl OpenAiProvider {
                 .send(payload.as_bytes())
             {
                 Ok(resp) => break resp,
-                Err(ureq::Error::Io(e)) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(e) if ask_again(&e, &mut retried) => {}
                 Err(e) => return Err(BackendError::Unreachable(e.to_string())),
             }
         };
@@ -692,6 +707,30 @@ impl Accumulator {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **One interruption is asked again and the second is not.** A loop with no counter sends the
+    /// whole prompt again for every signal that lands, so a held Ctrl-C bills N completions whose
+    /// streams nobody reads. The rule is the whole of the bound, so the rule is what is asserted.
+    #[test]
+    fn an_interrupted_send_is_asked_again_once() {
+        let interrupted = ureq::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::Interrupted,
+            "EINTR",
+        ));
+        let mut retried = 0;
+        assert!(
+            ask_again(&interrupted, &mut retried),
+            "the daemon's own Ctrl-C is not the provider failing"
+        );
+        assert!(
+            !ask_again(&interrupted, &mut retried),
+            "a second interruption is a storm, and re-posting for it is a duplicate completion"
+        );
+        // Any other transport failure is the provider being unreachable on the first attempt.
+        let down = ureq::Error::Io(std::io::Error::other("connection refused"));
+        let mut fresh = 0;
+        assert!(!ask_again(&down, &mut fresh));
+    }
 
     /// The refused-request dump says what a diagnosis needs and leaks nothing: the distinctions a
     /// theory turns on (absent against present-and-null, character counts, role order, truncated
