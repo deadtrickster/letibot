@@ -1188,7 +1188,7 @@ box). The watch now names the term that grows, so the next daemon to do it says 
 
 ---
 
-## R67 — Stabilization: the contained fixes the 2026-10-11 review found — **OPEN, each one small, each with a test**
+## R67 — Stabilization: the contained fixes the 2026-10-11 review found — **2026-10-11; left: 12 (the queue's store-error retry, no test drives an error through the loop), 14 ("only items since the last sweep"), 17 and 18 (the seams and `apparatus::absent` routing, no test pins either), 23 (documentation only), 24 (the 400 ms deadline and the 10 ms polls, kept on purpose), 26 (the once-per-tip landing line, untested), 27 (`by_id`/`index`, behaviour-neutral, untested)**
 
 The operator: *"goal is stabilization. many features recently, things arent stable or follwoing
 the same path, like mouse clicks - sometimes they work, sometimes they dont, per pane key maps
