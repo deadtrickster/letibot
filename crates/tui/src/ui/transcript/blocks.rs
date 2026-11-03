@@ -263,12 +263,43 @@ pub(crate) fn user_block(text: &str, ts: u64, cfg: &RenderConfig) -> Vec<String>
     // **The renderer sanitises its own input** (§3.1), so a caller cannot forget: rano's
     // block cleans the text before it is wrapped. The operator's own keystrokes cannot carry a
     // control byte - the decoder hands back `Key::Char` - but a *paste* can.
-    let folded = fold_cells(text);
+    let folded = fold_operator(text);
     let block = UserBlock {
         text: folded.unwrap_or_else(|| text.to_string()),
         stamp: clock_time(ts),
     };
     row_strings(&block.lines(cfg.width), cfg.palette())
+}
+
+/// The operator's row as it is drawn: a `/cells` screen or a handed-over skill, folded.
+fn fold_operator(text: &str) -> Option<String> {
+    fold_cells(text).or_else(|| fold_skill(text))
+}
+
+/// A skill handed to the session (`skill_message`), folded to one line naming it and its size,
+/// with the operator's own words after it. The session still holds the whole body; the whole
+/// text is a click away.
+pub(crate) fn fold_skill(text: &str) -> Option<String> {
+    let (name, body, then) = split_skill(text)?;
+    let n = body.lines().count();
+    let mut out = format!("skill `{name}` handed to the session · {n} lines");
+    if !then.is_empty() {
+        out.push('\n');
+        out.push_str(then);
+    }
+    Some(out)
+}
+
+/// `(name, body, the operator's words after it)` of a `skill_message`, or `None` for any other
+/// text.
+fn split_skill(text: &str) -> Option<(&str, &str, &str)> {
+    let rest = text.strip_prefix("[skill `")?;
+    let (name, rest) = rest.split_once('`')?;
+    let (_, rest) = rest.split_once("]\n")?;
+    let end = format!("\n[end of the skill `{name}`]");
+    let at = rest.rfind(&end)?;
+    let then = rest[at + end.len()..].trim();
+    Some((name, &rest[..at], then))
 }
 
 /// A `/cells` message with the screen taken back out of it: the transcript keeps the operator's
@@ -369,7 +400,7 @@ pub(crate) fn queued_lines(text: &str, cfg: &RenderConfig, mark: &str, open: boo
     // Folded here as well as in `user_block`, and it must be the same text going in: the pending row
     // is removed when the transcript's user item matches it, so an abbreviation would leave the
     // `queued` line on the screen for the rest of the session.
-    let folded = fold_cells(text);
+    let folded = fold_operator(text);
     let block = QueuedBlock {
         text: folded.unwrap_or_else(|| text.to_string()),
         mark: mark.to_string(),

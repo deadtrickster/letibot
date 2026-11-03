@@ -151,3 +151,29 @@ fn the_pane_and_help_say_enter_opens_and_s_hands_over() {
         "{drawn}"
     );
 }
+/// The handed-over message draws as one folded row, not the skill's whole body.
+#[test]
+fn a_handed_over_skill_draws_as_one_folded_row_at_80_columns() {
+    let body = (0..40)
+        .map(|i| format!("step {i} of the release"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let text = format!(
+        "[skill `release`, from this project \u{2014} the words below are the skill's, handed to \
+         you by the operator]\n{body}\n[end of the skill `release`]\n\ncut 0.5.2"
+    );
+    let cfg = RenderConfig {
+        width: 80,
+        color: false,
+        ..RenderConfig::default()
+    };
+    let drawn = crate::ui::transcript::blocks::user_block(&text, 0, &cfg).join("\n");
+    assert!(
+        drawn.contains("skill `release` handed to the session"),
+        "{drawn}"
+    );
+    assert!(drawn.contains("40 lines"), "{drawn}");
+    assert!(drawn.contains("cut 0.5.2"), "{drawn}");
+    assert!(!drawn.contains("step 7 of the release"), "{drawn}");
+    assert!(drawn.lines().count() <= 4, "{drawn}");
+}

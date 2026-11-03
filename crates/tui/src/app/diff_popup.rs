@@ -142,6 +142,11 @@ impl App {
             });
             return;
         }
+        // A skill the operator handed over is drawn as one folded line; the click reads it whole.
+        if let Some(text) = skill_row_text(it) {
+            self.open_text_popup(text, ("skill handed to the session".into(), Role::Faint));
+            return;
+        }
         // **And every row the session spoke is one** (R89): a card's, a job's, a fold's, or the
         // fallback's line - each is a summary, and the popup is the text.
         let Some(mut text) = agent_row_text(it) else {
@@ -323,6 +328,10 @@ impl App {
                     // each is drawn as notice lines - a card's, a job's, a fold's or the
                     // fallback's - and a click opens the text whole.
                     let is = text.is_some()
+                        || self
+                            .items
+                            .get(sp.row)
+                            .is_some_and(|it| skill_row_text(it).is_some())
                         || self
                             .items
                             .get(sp.row)
@@ -673,6 +682,20 @@ pub(crate) fn whole_file_before(now: &str, c: &rano::review::Change) -> Option<S
 
 /// **A System row's text, and whether it is the prompt the session opened with** - `None` for
 /// any other row.
+/// The text of an operator row that hands a skill over, or `None` for any other row.
+pub(crate) fn skill_row_text(it: &letibot_sessionlog::view::SnapshotItem) -> Option<String> {
+    match it.item.as_ref()? {
+        letibot_transcript::TranscriptItem::User {
+            parts,
+            speaker: letibot_transcript::Speaker::Operator,
+        } => {
+            let text = crate::ui::transcript::user::user_text(parts);
+            crate::ui::transcript::blocks::fold_skill(&text).map(|_| text)
+        }
+        _ => None,
+    }
+}
+
 pub(crate) fn system_row_text(
     it: &letibot_sessionlog::view::SnapshotItem,
 ) -> Option<(String, bool)> {
