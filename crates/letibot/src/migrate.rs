@@ -1698,6 +1698,11 @@ pub fn is_far_verb(word: &str) -> bool {
     FAR_VERBS.contains(&word)
 }
 
+/// **A mistake is two lines**, and the second is where the verb is explained. Both of these
+/// printed the whole usage after one wrong word.
+const WHERE_THE_FLAGS_ARE: &str =
+    "         run `letibot migrate --help` for the flags, their defaults and one example";
+
 /// `letibot --migrate SESSION --to NAME`, `letibot migrate …`, `letibot --reattach SESSION`, and
 /// the sub-verbs the far side of a move runs.
 pub fn run(args: &[String]) -> ExitCode {
@@ -1766,7 +1771,9 @@ fn run_inner(args: &[String]) -> Result<(), String> {
                 return Ok(());
             }
             other if other.starts_with('-') && other.len() > 1 => {
-                return Err(format!("{other} is not a migration flag.\n{}", usage()));
+                return Err(format!(
+                    "{other} is not a migration flag\n{WHERE_THE_FLAGS_ARE}"
+                ));
             }
             other => {
                 if session.is_some() {
@@ -1875,7 +1882,7 @@ fn run_inner(args: &[String]) -> Result<(), String> {
     }
 
     // --- the move -------------------------------------------------------------------------
-    let session = session.ok_or_else(|| format!("which session?\n{}", usage()))?;
+    let session = session.ok_or_else(|| format!("migrate needs SESSION\n{WHERE_THE_FLAGS_ARE}"))?;
     let local = Endpoint {
         name: LOCAL.to_string(),
         ssh: None,

@@ -188,6 +188,75 @@ fn the_metrics_help_gives_an_example_for_each_verb() {
     }
 }
 
+/// **A mistake is two lines: what went wrong, and where that verb is explained.** Both metric
+/// verbs printed their whole usage after one wrong word, so a typo was answered with a wall.
+#[test]
+fn a_metrics_mistake_is_two_lines_and_names_the_verb_to_ask() {
+    for (args, what) in [
+        (vec!["stats", "turn"], "unknown verb"),
+        (vec!["fb"], "--session"),
+    ] {
+        let (code, _, stderr) = run(&args);
+        assert_eq!(code, Some(2), "`letibot {args:?}` is a mistake: {stderr}");
+        let lines: Vec<&str> = stderr.lines().collect();
+        assert_eq!(lines.len(), 2, "two lines, not a usage wall: {stderr:?}");
+        assert!(
+            lines[0].contains(what),
+            "the first line names the mistake (`{what}`): {stderr:?}"
+        );
+        assert!(
+            lines[1].contains(&format!("letibot {} --help", args[0])),
+            "the second names the next step: {stderr:?}"
+        );
+    }
+}
+
+/// **`migrate` refuses a missing session and an unknown flag in two lines too**, and the second
+/// line is where the flags with their defaults are. Both used to print the whole usage.
+#[test]
+fn the_migration_refusals_are_two_lines_and_name_its_help() {
+    for (args, what) in [
+        (vec!["migrate"], "SESSION"),
+        (vec!["migrate", "--bogus", "s-1"], "--bogus"),
+    ] {
+        let (code, _, stderr) = run(&args);
+        assert_ne!(code, Some(0), "`letibot {args:?}` is a mistake: {stderr}");
+        let lines: Vec<&str> = stderr.lines().collect();
+        assert_eq!(lines.len(), 2, "two lines, not a usage wall: {stderr:?}");
+        assert!(
+            lines[0].contains(what),
+            "the first line names the mistake (`{what}`): {stderr:?}"
+        );
+        assert!(
+            lines[1].contains("letibot migrate --help"),
+            "the second names the next step: {stderr:?}"
+        );
+    }
+}
+
+/// **`attach`'s refusal is two lines and names the word that is missing** — the source, or the
+/// scope — and the help line is the scope's own example, not a parenthetical clause.
+#[test]
+fn the_attach_refusal_names_the_missing_word_in_two_lines() {
+    for (args, what) in [
+        (vec!["attach"], "source"),
+        (vec!["attach", "github"], "scope"),
+    ] {
+        let (code, _, stderr) = run(&args);
+        assert_eq!(code, Some(2), "`letibot {args:?}` is a mistake: {stderr}");
+        let lines: Vec<&str> = stderr.lines().collect();
+        assert_eq!(lines.len(), 2, "two lines, not one long one: {stderr:?}");
+        assert!(
+            lines[0].contains(what),
+            "the first line names the missing `{what}`: {stderr:?}"
+        );
+        assert!(
+            lines[1].contains("letibot attach github"),
+            "the second shows the command: {stderr:?}"
+        );
+    }
+}
+
 /// **`letibot` answers for itself**, and a typo is refused by name rather than resolving
 /// to a role - the dispatcher's own name is not in the table, which is what stops
 /// `letibot` from becoming the daemon by substring.

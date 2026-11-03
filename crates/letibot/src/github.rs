@@ -18,29 +18,30 @@ use letibot_metrics::now_ms;
 /// exposed on this box and a poll is not.
 const POLL_MS: u64 = 60_000;
 
+/// The command that has both words, for the second line of a refusal. The one-line version ran to
+/// 150 columns, so it wrapped into a paragraph wherever a person read it.
+const THE_VERB: &str =
+    "         `letibot attach github <org|owner/repo>` — an org, or one repository";
+
+/// **A mistake is two lines**: what is missing, and the command that carries it.
+fn needs(what: &str) -> String {
+    format!("attach needs {what}\n{THE_VERB}")
+}
+
 /// **The scope this invocation names.** `attach github <scope>` and nothing else: a second source
 /// is a second seat with its own identity, and a missing scope would poll whatever the default is.
 pub fn scope_from(args: &[String]) -> Result<&str, String> {
     let Some(source) = args.first() else {
-        return Err(
-            "attach takes a source: `letibot attach github <org|owner/repo>` \
-             (`letibot attach github --help` says what it does)"
-                .into(),
-        );
+        return Err(needs("a source: github"));
     };
     if source != "github" {
         return Err(format!(
-            "attach knows one source and it is `github`, not `{source}` \
-             (`letibot attach github <org|owner/repo>`)"
+            "attach knows one source and it is `github`, not `{source}`\n{THE_VERB}"
         ));
     }
     match args.get(1) {
         Some(scope) if !scope.is_empty() => Ok(scope),
-        _ => Err(
-            "attach takes a scope: `letibot attach github <org|owner/repo>` \
-             (`letibot attach github --help` says what it does)"
-                .into(),
-        ),
+        _ => Err(needs("a scope")),
     }
 }
 

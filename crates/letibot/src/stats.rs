@@ -107,6 +107,12 @@ fn say(r: Result<(), String>, help: &str) -> ExitCode {
     }
 }
 
+/// **A mistake is two lines**, and the second is where that verb is explained. Both verbs printed
+/// their whole usage after one wrong word, so a typo was answered with a wall to read.
+fn mistake(problem: &str, verb: &str) -> String {
+    format!("{problem}\n         run `letibot {verb} --help` for what it takes and one example")
+}
+
 /// `letibot stats …`
 pub fn run_stats(args: &[String]) -> ExitCode {
     say(stats_text(args).map(|t| print!("{t}")), STATS_USAGE)
@@ -120,10 +126,8 @@ pub fn stats_text(args: &[String]) -> Result<String, String> {
     // The verb is a fact about the command line, so it is answered before the file is opened:
     // on a box with no metrics file the old order blamed the file for a typo.
     if !known_verb(&verb) {
-        return Err(format!(
-            "stats: unknown verb {:?}\n\n{STATS_USAGE}",
-            verb.join(" ")
-        ));
+        let problem = format!("stats: unknown verb {:?}", verb.join(" "));
+        return Err(mistake(&problem, "stats"));
     }
     let c = stats::open(&a.db)?;
     let tables = match verb.as_slice() {
@@ -136,7 +140,12 @@ pub fn stats_text(args: &[String]) -> Result<String, String> {
         ["feedback"] => vec![stats::feedback(&c, since, a.session.as_deref(), a.bad)?],
         ["session", id] => vec![stats::session(&c, id)?],
         ["sql", q @ ..] if !q.is_empty() => vec![stats::query(&c, "", &q.join(" "), &[])?],
-        _ => return Err(format!("stats: unknown verb {:?}", verb.join(" "))),
+        _ => {
+            return Err(mistake(
+                &format!("stats: unknown verb {:?}", verb.join(" ")),
+                "stats",
+            ));
+        }
     };
     Ok(tables
         .iter()
@@ -177,7 +186,7 @@ pub fn fb(args: &[String]) -> Result<String, String> {
     let session = a
         .session
         .clone()
-        .ok_or_else(|| format!("fb: --session is required\n\n{FB_USAGE}"))?;
+        .ok_or_else(|| mistake("fb: --session S is required", "fb"))?;
     let mut words = a.verb.clone();
     let polarity = match words.first().map(String::as_str) {
         Some("+") => {
@@ -192,7 +201,7 @@ pub fn fb(args: &[String]) -> Result<String, String> {
     };
     let note = words.join(" ");
     if polarity == "note" && note.trim().is_empty() {
-        return Err(format!("fb: a note, or + / -\n\n{FB_USAGE}"));
+        return Err(mistake("fb: a note, or + / -", "fb"));
     }
     if !a.db.exists() {
         return Err(format!(
