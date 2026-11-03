@@ -961,7 +961,9 @@ pub enum ServerFrame {
         session_id: String,
         todos: Vec<crate::event::TodoEntry>,
     },
-    /// The answer to [`ClientFrame::Settings`].
+    /// The answer to [`ClientFrame::Settings`], and pushed to every head attached to the session
+    /// whenever one of the rows changes: a head draws these, so an unasked frame means what an
+    /// answer means, and no protocol version moves for it.
     Settings { rows: Vec<SettingRow> },
     /// The answer to [`ClientFrame::ListJobs`]: the whole list as of now. Later
     /// changes arrive as [`crate::SessionEvent::JobSettled`], the way todos work.

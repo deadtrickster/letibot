@@ -450,8 +450,8 @@ struct Entry {
     /// registry rather than from the store.
     parent_session_id: Option<String>,
     /// The settings this session runs under, as its harness last published them. A mailbox
-    /// because the server thread answers `Settings` and cannot reach the harness; the harness
-    /// pushes on open and on every runtime change, so a head reads what is running.
+    /// because the server thread answers `Settings` and cannot reach the harness; a change is
+    /// also fanned out to the attached heads, so a head reads what is running.
     settings: Vec<crate::protocol::SettingRow>,
     /// What this session's harness said about its frozen prefix, or `None` when it had nothing to
     /// say. The sentence and not a flag: only the harness can judge it.
@@ -1342,31 +1342,37 @@ impl Registry {
 
     /// Publish the settings a session runs under. See `Entry::settings`.
     ///
-    /// A `model` row that MOVED is also said on the session's hub: the rows are an answer to a
-    /// request, so without this a head that did not make the switch keeps naming the old model.
+    /// A changed set is PUSHED to the heads attached to this session, because the rows are drawn
+    /// from; and a `model` row that MOVED is also a warning, which is history a later head reads.
     pub fn set_settings(&self, session_id: &str, rows: Vec<crate::protocol::SettingRow>) {
         let now = model_row(&rows);
-        let (hub, moved) = {
+        let (hub, changed, moved) = {
             let mut g = self.lock();
             let Some(e) = g.entry_mut(session_id) else {
                 return;
             };
             let was = model_row(&e.settings);
-            e.settings = rows;
+            let changed = e.settings != rows;
+            if changed {
+                e.settings = rows.clone();
+            }
             // The first publish is what a head reads on attaching; only a move is news.
             let moved = match (was, now) {
                 (Some(was), Some(now)) if was != now => Some(now),
                 _ => None,
             };
-            (e.hub.clone(), moved)
+            (e.hub.clone(), changed, moved)
         };
+        // Only a CHANGE: a flush that republishes what a head already draws must not redraw it.
+        if changed {
+            hub.push_frame(crate::protocol::ServerFrame::Settings { rows });
+        }
         let Some(moved) = moved else {
             return;
         };
         // Nobody to tell, and the publish is what would make the row history.
         if hub.attached_heads() == 0 {
             return;
-        }
         hub.publish(crate::SessionEvent::Warning {
             code: crate::protocol::MODEL_SET.into(),
             detail: moved,

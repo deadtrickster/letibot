@@ -650,8 +650,9 @@ fn a_peek_at_an_unknown_session_is_rejected_by_name() {
 }
 
 /// A head asks for the settings its session runs under and gets what the harness last
-/// published - and nothing, honestly, for a session whose harness has not published yet.
-/// The connection does not move either way.
+/// published - and nothing, honestly, for a session whose harness has not published yet. A
+/// publish after that is pushed to it too, so the answer is not the only arrival. The
+/// connection does not move either way.
 #[test]
 fn settings_are_answered_from_what_the_harness_published() {
     let registry = Registry::new();
@@ -687,7 +688,8 @@ fn settings_are_answered_from_what_the_harness_published() {
         other => panic!("expected Settings, got {other:?}"),
     }
 
-    // The harness publishes; the next ask sees it.
+    // The harness publishes, and the change is pushed to this head without it asking - then the
+    // ask of its own is answered with the same rows.
     registry.set_settings(
         "s-1",
         vec![letibot_sessionlog::protocol::SettingRow {
@@ -699,15 +701,19 @@ fn settings_are_answered_from_what_the_harness_published() {
             choices: vec!["automode".into(), "automode-edits".into()],
         }],
     );
-    w.write(&ClientFrame::Settings).expect("settings");
-    match r.read::<ServerFrame>().expect("settings") {
-        ServerFrame::Settings { rows } => {
-            assert_eq!(rows.len(), 1);
-            assert_eq!(rows[0].key, "mode");
-            assert_eq!(rows[0].value, "automode");
-        }
+    let rows_of = |frame: ServerFrame| match frame {
+        ServerFrame::Settings { rows } => rows,
         other => panic!("expected Settings, got {other:?}"),
-    }
+    };
+    let pushed = rows_of(r.read::<ServerFrame>().expect("the push"));
+    assert_eq!(pushed.len(), 1);
+    assert_eq!(pushed[0].key, "mode");
+    assert_eq!(pushed[0].value, "automode");
+    w.write(&ClientFrame::Settings).expect("settings");
+    let answered = rows_of(r.read::<ServerFrame>().expect("settings"));
+    assert_eq!(answered.len(), 1);
+    assert_eq!(answered[0].key, "mode");
+    assert_eq!(answered[0].value, "automode");
 
     // Still seated on s-1: a live event arrives on the same stream.
     hub.publish(delta("t1", "still here"));
