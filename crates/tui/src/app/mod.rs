@@ -301,8 +301,20 @@ pub struct App {
     pub(crate) hist_upto: usize,
     /// The first item index represented in `hist_lines`: a head attaching to a session too big to
     /// lex renders its tail and this is how many rows it did not render. Scrolling up decreases
-    /// it; nothing else does.
+    /// it, and the ring raises it again.
     pub(crate) hist_floor: usize,
+    /// The row `hist_lines` stops before, when it stops short of the session: the rows below are
+    /// held and not drawn, which is what a reader who is not looking at them costs nothing. `None`
+    /// is a buffer that reaches the last row this head holds.
+    pub(crate) hist_ceiling: Option<usize>,
+    /// How many bytes of rendered lines `hist_lines` keeps before the rows farthest from the reader
+    /// are let go. A window and not a history: the head that scrolls through a long session would
+    /// otherwise render every row it passed and keep all of it. A field, so a test can shrink it.
+    pub(crate) hist_limit: usize,
+    /// How many lines the forward walk may add on this frame. `usize::MAX` for an ordinary frame; a
+    /// screen when the reader has come down to the end of the window, so walking toward the tail is
+    /// a screen's work rather than a session's.
+    pub(crate) walk_ahead: usize,
     /// The row `items[0]` sits at in the SESSION, oldest first: the rows above the window this head
     /// holds, counted from what the snapshot said it left out. It is what makes a scrolling reader's
     /// position nameable after the window has been trimmed or paged.
@@ -1147,6 +1159,9 @@ impl App {
             hist_lines: Vec::new(),
             hist_upto: 0,
             hist_floor: 0,
+            hist_ceiling: None,
+            hist_limit: HIST_LIMIT,
+            walk_ahead: usize::MAX,
             items_base: 0,
             items_lead: 0,
             items_below: 0,

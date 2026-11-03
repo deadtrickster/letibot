@@ -5383,3 +5383,257 @@ fn a_refused_page_spends_its_ask_and_says_the_daemons_reason() {
         "a refused page closed the direction for good"
     );
 }
+
+/// A session of `rows` rows, each of them more than one line tall: enough for the ring to have
+/// something to let go of, and every row's text names its own index so a frame can be read off.
+fn a_long_session(a: &mut App, rows: u64, body: &str) {
+    for i in 0..rows {
+        a.apply(ServerFrame::Event(env(
+            i * 2 + 1,
+            testing::appended(&format!("s.{i}"), "user"),
+        )));
+        a.apply(ServerFrame::Event(env(
+            i * 2 + 2,
+            testing::content(&format!("s.{i}"), &format!("row {i}\n{body}")),
+        )));
+    }
+}
+
+/// The body the ring's fixture is made of: a row that wraps, with a code block in it, so a row
+/// costs several rendered lines and the buffer's size is a real number.
+const RING_BODY: &str = "and enough words to make a row cost its bytes on the way out\n\n\
+                         ```rust\nfn f() { let n = 1; }\n```\n";
+
+/// **A long session keeps the head to a window of lines.** `hist_lines` never shrank: a reader who
+/// scrolled back through a session rendered every row they passed and kept it for the life of the
+/// head, so the head's memory was the whole rendered transcript however far they had come.
+#[test]
+fn a_long_session_keeps_the_head_to_a_window_of_lines() {
+    let mut a = app();
+    a.walk_limit = 1;
+    a.hist_limit = 24 * 1024;
+    a_long_session(&mut a, 200, RING_BODY);
+    let _ = a.screen(100, 40);
+    assert!(a.hist_floor > 0, "the tail path was not taken");
+
+    // The same session rendered whole, which is what the ring must not keep.
+    let mut whole = app();
+    whole.walk_limit = usize::MAX;
+    a_long_session(&mut whole, 200, RING_BODY);
+    let _ = whole.screen(100, 40);
+    assert!(
+        whole.hist_bytes() > 2 * a.hist_limit,
+        "the fixture is too small to say anything: {} bytes rendered against a {} byte window",
+        whole.hist_bytes(),
+        a.hist_limit
+    );
+
+    for _ in 0..120 {
+        a.key(Key::PageUp);
+        let _ = a.screen(100, 40);
+        assert!(
+            a.hist_bytes() <= a.hist_limit,
+            "the head held {} bytes of rendered lines over a {} byte window ({} lines)",
+            a.hist_bytes(),
+            a.hist_limit,
+            a.hist_lines.len()
+        );
+    }
+    // And it really did scroll through the session: the reader is on the oldest row.
+    assert_eq!(
+        a.anchor.as_ref().map(|h| h.ordinal),
+        Some(0),
+        "the fixture never reached the top, so it says nothing about a whole session"
+    );
+}
+
+/// **A row the ring let go is drawn again when the reader comes back to it.** The ring drops the
+/// rows at the end the reader has left; the row is still held, so coming back down to it is a
+/// re-render and not a page, and it lands where it belongs.
+#[test]
+fn a_row_the_ring_let_go_comes_back_when_the_reader_scrolls_to_it() {
+    let mut a = app();
+    a.walk_limit = 1;
+    a.hist_limit = 24 * 1024;
+    a_long_session(&mut a, 400, RING_BODY);
+    let _ = a.screen(100, 40);
+    for _ in 0..30 {
+        a.key(Key::PageUp);
+        let _ = a.screen(100, 40);
+    }
+    let let_go = a
+        .hist_ceiling
+        .expect("the ring let nothing go, so this asserts nothing");
+    let item = a.items[let_go].item_id.clone();
+    assert!(
+        a.span_for(&item).is_none(),
+        "the row at {let_go} was never let go"
+    );
+
+    let mut back = false;
+    for _ in 0..40 {
+        a.key(Key::PageDown);
+        let _ = a.screen(100, 40);
+        if a.span_for(&item).is_some() {
+            back = true;
+            break;
+        }
+    }
+    assert!(
+        back,
+        "the row the ring let go at {let_go} never came back: ceiling {:?}, {} rows drawn",
+        a.hist_ceiling,
+        a.spans.len()
+    );
+    // And one more step of the reader's puts it on the glass, drawn once and in its place.
+    let mut text = a.screen(100, 40).join("\n");
+    for _ in 0..6 {
+        if text.contains(&format!("row {let_go}")) {
+            break;
+        }
+        a.key(Key::PageDown);
+        text = a.screen(100, 40).join("\n");
+    }
+    assert_eq!(
+        text.matches(&format!("row {let_go}")).count(),
+        1,
+        "the row came back drawn twice, or not at all:\n{text}"
+    );
+    // And it is the same row: the lines a span covers are that row's own.
+    let sp = a.span_for(&item).expect("the row is held");
+    assert!(
+        a.hist_lines[sp.at..sp.at + sp.lines]
+            .iter()
+            .any(|l| l.contains(&format!("row {let_go}"))),
+        "the span of row {let_go} holds lines of another row: {:?}",
+        &a.hist_lines[sp.at..sp.at + sp.lines]
+    );
+}
+
+/// **A window that stops short of the session draws nothing of its tail.** The live pane and the
+/// queued echo belong under the newest row, and a row from long ago with `Responding` under it is a
+/// claim about where the reader is that is not true.
+#[test]
+fn a_window_that_stops_short_of_the_session_draws_no_tail() {
+    let mut a = app();
+    a.walk_limit = 1;
+    a.hist_limit = 24 * 1024;
+    a_long_session(&mut a, 400, RING_BODY);
+    let _ = a.screen(100, 40);
+    // A turn running, whose pane belongs under the newest row and nowhere else.
+    a.apply(ServerFrame::Event(env_at(
+        100_000,
+        1_000,
+        testing::turn_started("t1"),
+    )));
+    // And a prompt this head has sent and the daemon has not taken: its echo belongs under the
+    // newest row, and under a row from long ago it would be words nobody typed there.
+    typed(&mut a, "half a thought");
+    a.key(Key::Enter);
+    let _ = a.screen(100, 40);
+    assert!(
+        a.screen(100, 40).join("\n").contains("half a thought"),
+        "the fixture never drew the echo at the tail"
+    );
+    for _ in 0..30 {
+        a.key(Key::PageUp);
+        let _ = a.screen(100, 40);
+    }
+    assert!(
+        a.hist_ceiling.is_some(),
+        "the ring let nothing go, so this asserts nothing"
+    );
+    let parked = a.screen(100, 40).join("\n");
+    assert!(
+        !parked.contains("half a thought"),
+        "the queued echo is drawn under a row it does not belong to:\n{parked}"
+    );
+    assert!(
+        !parked.contains("row 399"),
+        "the newest row is drawn as the foot of a window that stops short of it:\n{parked}"
+    );
+
+    // And the tail is where it belongs again once the reader comes back down to it.
+    for _ in 0..80 {
+        a.key(Key::PageDown);
+        let _ = a.screen(100, 40);
+    }
+    let at_tail = a.screen(100, 40).join("\n");
+    assert!(
+        a.hist_ceiling.is_none(),
+        "the reader never got back to the tail of the session"
+    );
+    assert!(
+        at_tail.contains("row 399"),
+        "the window follows the tail and does not show its end:\n{at_tail}"
+    );
+}
+
+/// **The window stays one run of the session.** Whatever the ring cuts, the spans are a single
+/// ascending run inside the buffer, every one of them is a row this head holds, and the lines a
+/// span covers are that row's own.
+#[test]
+fn a_window_the_ring_cut_stays_one_run_of_the_session() {
+    let mut a = app();
+    a.walk_limit = 1;
+    a.hist_limit = 24 * 1024;
+    a_long_session(&mut a, 300, RING_BODY);
+    let _ = a.screen(100, 40);
+    for step in 0..60 {
+        if step % 3 == 2 {
+            a.key(Key::PageDown);
+        } else {
+            a.key(Key::PageUp);
+        }
+        let _ = a.screen(100, 40);
+        let screen = a.screen(100, 40).join("\n");
+        let mut last: Option<Span> = None;
+        for sp in a.spans.clone() {
+            assert!(
+                sp.row < a.items.len(),
+                "row {} of the window is not a row this head holds ({} held):\n{screen}",
+                sp.row,
+                a.items.len()
+            );
+            assert!(
+                sp.at + sp.lines <= a.hist_lines.len(),
+                "row {} is drawn past the end of the buffer:\n{screen}",
+                sp.row
+            );
+            assert!(
+                sp.row >= a.hist_floor && sp.row < a.hist_upto,
+                "row {} is in the spans but outside the window [{}, {}):\n{screen}",
+                sp.row,
+                a.hist_floor,
+                a.hist_upto
+            );
+            if let Some(p) = last {
+                assert!(
+                    sp.row > p.row,
+                    "rows {} and {} are in the window out of order:\n{screen}",
+                    p.row,
+                    sp.row
+                );
+                assert!(
+                    sp.at >= p.at + p.lines,
+                    "rows {} and {} overlap in the buffer:\n{screen}",
+                    p.row,
+                    sp.row
+                );
+            }
+            // The lines a span covers are that row's own: the fixture's every row names itself.
+            let said = format!("row {}", sp.row);
+            let mine = a.hist_lines[sp.at..sp.at + sp.lines]
+                .iter()
+                .any(|l| l.contains(&said));
+            let named = a.items[sp.row].item_id == format!("s.{}", sp.row);
+            assert!(
+                mine || !named,
+                "the span of row {} holds lines of another row: {:?}\n{screen}",
+                sp.row,
+                &a.hist_lines[sp.at..sp.at + sp.lines]
+            );
+            last = Some(sp);
+        }
+    }
+}

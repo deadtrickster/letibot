@@ -86,6 +86,12 @@ impl App {
                     .iter()
                     .all(|c| matches!(c.state, CallState::Finished { .. }))
         });
+        // **Following the tail means showing its end.** A buffer that stopped short of the session is
+        // a window the reader left behind, and drawn as if it followed it would put a row from
+        // however long ago at the foot of the screen as the newest one.
+        if self.anchor.is_none() && self.hist_ceiling.is_some() {
+            self.reanchor_at_tail(room);
+        }
         // A conversation too big to walk is rendered from its end and the held row rendered down to it: the
         // frame's half of [`App::render_held`], which is where the bootstrap lives now so a scroll key between
         // frames can run the same two steps.
@@ -146,6 +152,8 @@ impl App {
             &in_flight,
             &turn_rows,
         );
+        // The budget `release_below` set is spent by the walk that used it, and no other frame's.
+        self.walk_ahead = usize::MAX;
 
         // A marker with no row joins the sentence above it, and the joining happens here: the pane pushes the
         // marker while `hist_lines` is lent to the frame, so the mutation of that buffer's last line is decided
@@ -200,6 +208,9 @@ impl App {
         let live_joins = live.work() > 0
             && !superseded
             && !walk_carried_live
+            // The marker belongs to the newest row, which a window that stops short of the session
+            // is not drawing: joining it here would put the counts on a row from long ago.
+            && self.hist_ceiling.is_none()
             && self.visibility.hides_the_working()
             && self
                 .spans
@@ -244,6 +255,9 @@ impl App {
         // **The window has a budget, and everything this frame drew is in it.** Run after the walks
         // and the fill above, so what is measured is what the head would go on holding.
         self.trim_held(room);
+        // And the lines those rows were drawn as are a window too: the second bound, run last so it
+        // measures everything the frame put in the buffer.
+        self.trim_history(room);
         // And when the reader has scrolled up past the oldest row this head holds, the rows above it
         // are somebody else's: the daemon answers them, in pages. `hist_floor == 0` alone is
         // *everything I hold is rendered*, which is also true at the tail of a short session, so
@@ -314,13 +328,37 @@ impl App {
             segs.push(Seg::Borrowed(&gap));
         }
 
+        // **A window that stops short of the session draws nothing of its tail.** The live pane and
+        // the queued echo belong to the newest rows, and drawing them under a row from long ago is
+        // the lie this seam exists to refuse.
+        let parked = self.hist_ceiling.is_some();
+        let below_seam: Vec<String> = if parked {
+            let below = items.len().saturating_sub(self.hist_upto);
+            row_strings(
+                &rano::agent::screens::system_row(
+                    "window",
+                    &format!(
+                        "{below} row(s) below this window — \u{2193} comes down to them, and the \
+                         working is under the newest of them",
+                    ),
+                    cfg.width,
+                ),
+                cfg.palette(),
+            )
+        } else {
+            Vec::new()
+        };
+        if parked {
+            segs.push(Seg::Borrowed(&below_seam));
+        }
+
         // The queued echo is split by one fact and the fact decides where it is drawn: words nothing has taken
         // go to the tail, below the live pane, because nothing under them is an answer to them; once the daemon
         // takes them they move into their row's own place.
         let mut tail_echo: Vec<String> = Vec::new();
         // The prompts this head has sent that the transcript does not hold yet. See
         // `pending_prompts` for why this is the head's own queue and not the hub's.
-        if !self.pending_prompts.is_empty() {
+        if !parked && !self.pending_prompts.is_empty() {
             // The air goes after the echo and not before it, because that is where a landed row's air is: a row in
             // `hist_lines` has its blank below it, and an echo's blank in front put it one row higher than the row
             // that replaces it.
@@ -381,7 +419,9 @@ impl App {
         // **The call cards this frame draws, and the call each row belongs to** — recorded here
         // and turned into window rows below, with every other `*_rows` record.
         let mut cards: Vec<(usize, String)> = Vec::new();
-        if let Some(t) = turn {
+        if let Some(t) = turn
+            && !parked
+        {
             cards = push_turn_pane(
                 &mut segs,
                 t,
@@ -402,7 +442,7 @@ impl App {
 
         // The un-taken words wait below the pane, and the leading blank is what keeps them from reading as the
         // last line of the working: nothing in the pane is an answer to words the daemon has not taken.
-        if !tail_echo.is_empty() {
+        if !parked && !tail_echo.is_empty() {
             segs.push(Seg::Owned(vec![String::new()]));
             segs.push(Seg::Owned(tail_echo));
         }
@@ -712,6 +752,8 @@ impl App {
             hist_class,
             hist_first_class,
             hist_floor,
+            hist_ceiling,
+            walk_ahead,
             hist_renders,
             diff_split,
             payload_sel,
@@ -735,6 +777,17 @@ impl App {
         // The run `ctrl-t` opens, computed once per frame: the seam names the chord only on the run it acts on,
         // and asking per row would be a scan of the transcript for every row drawn.
         let newest_run = newest_unseen_run(items, *visibility, bound_prompts, live);
+        // **Where the window ends.** The ring's own end while it has rows let go, and the session's
+        // end once the budget `release_below` set is buying the reader the next screen of them: a
+        // walk to `items.len()` with nothing stopped it would be the whole session.
+        let stop = if *walk_ahead == usize::MAX {
+            (*hist_ceiling).unwrap_or(items.len())
+        } else {
+            items.len()
+        }
+        .min(items.len());
+        // The lines this frame's walk has added, against the budget `release_below` set.
+        let mut added = 0usize;
         loop {
             // A note with no seam in this window is stepped over, not drawn: either it happened before the
             // conversation this head holds, or its seam is below `hist_floor` and its row is above the window.
@@ -833,7 +886,7 @@ impl App {
                 && in_flight.contains(&items[*hist_upto].item_id)
             {
                 break;
-            } else if *hist_upto < items.len() && *hist_upto >= *hist_floor {
+            } else if *hist_upto < stop && *hist_upto >= *hist_floor {
                 // Where the walk stands before this row, so a later "from row k on" comes back to exactly here.
                 // Recorded for every row including one that renders to nothing, since the marks are indexed by row
                 // and a gap would misalign every mark after it.
@@ -1038,6 +1091,7 @@ impl App {
                     Some(_) => (body_class, body),
                     None => (body_class, body),
                 };
+                let before = hist_lines.len();
                 // A row that rendered nothing gets no separator either: a tool-calling round's assistant row has
                 // no visible text and its calls are drawn by their own result rows, and paying two blanks for it
                 // puts a hole in the transcript.
@@ -1060,14 +1114,26 @@ impl App {
                         row: *hist_upto,
                         at: hist_lines.len(),
                         lines: rows.len(),
+                        class,
                     });
                     hist_lines.extend(rows);
                     *hist_class = Some(class);
                 }
                 *hist_upto += 1;
+                added += hist_lines.len() - before;
+                if added >= *walk_ahead && *hist_upto < items.len() {
+                    // **The window ends here.** The rows below are held and not drawn until the reader
+                    // comes down to them: this frame's budget is a screen, not the session.
+                    *hist_ceiling = Some(*hist_upto);
+                    break;
+                }
             } else {
                 break;
             }
+        }
+        // The buffer reaches the session's end, so nothing is being held back below it.
+        if *hist_upto == items.len() {
+            *hist_ceiling = None;
         }
     }
 }

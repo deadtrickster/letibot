@@ -22,9 +22,16 @@ impl App {
     /// Not a repaint: the painter writes only rows whose text changed, so a rebuild that produces
     /// the same lines writes no bytes.
     pub(crate) fn invalidate_history_from(&mut self, k: usize) {
+        // A row at or below the buffer's end changes nothing this head drew: the window stops above
+        // it, and the body or the marker it carries is drawn when the reader comes down to it.
+        if self.hist_ceiling.is_some_and(|end| k >= end) {
+            return;
+        }
         if k == 0 {
             self.hist_lines.clear();
             self.hist_marks.clear();
+            self.hist_ceiling = None;
+            self.walk_ahead = usize::MAX;
             // **The anchor's map goes with the lines it describes.** A stale span would
             // place the viewport inside a frame that no longer exists.
             self.spans.clear();
@@ -156,7 +163,8 @@ impl App {
 
     /// Render the tail of a conversation rather than all of it: the frame shows the end of a session
     /// and walking from row 0 to draw the bottom forty lexes every row above them. It walks backward
-    /// from the floor with the same renderer and the same targets taken by field. Returns the count.
+    /// from the floor with the same renderer and the same targets taken by field. `want` is how many
+    /// lines the reader needs ABOVE them, returns the count of rows drawn.
     pub(crate) fn fill_backward(&mut self, want: usize) -> usize {
         self.fill_backward_until(want, None)
     }
@@ -191,8 +199,12 @@ impl App {
         // would be a scan of `items` for every row drawn.
         let newest_payload = self.newest_payload_row();
         let mut k = self.hist_floor;
+        // `want` is counted from the reader and not from the buffer's first line: the ring cuts rows
+        // off the top, so an absolute line index would say *enough* about a window that has none
+        // above it. With nothing drawn yet the reader is the buffer's start, which is the first frame.
+        let held = self.held_line().min(self.hist_lines.len());
         let covered = |built: &[Built]| {
-            self.hist_lines.len()
+            self.hist_lines.len().saturating_sub(held)
                 + built
                     .iter()
                     .map(|(_, _, l, _, _)| l.len() + 1)
@@ -412,6 +424,7 @@ impl App {
                                 row: *row,
                                 at: block.len(),
                                 lines: rows.len() - 1,
+                                class: *class,
                             });
                             block.extend(rows[1..].iter().cloned());
                             prev = Some(*class);
@@ -431,6 +444,7 @@ impl App {
                     row: *row,
                     at: block.len(),
                     lines: rows.len(),
+                    class: *class,
                 });
                 block.extend(rows.iter().cloned());
                 prev = Some(*class);
@@ -467,8 +481,11 @@ impl App {
             }
         }
         self.hist_floor = k;
-        // Accounted for, so the forward walk has no work until a new row arrives.
-        self.hist_upto = self.hist_upto.max(self.items.len());
+        // Accounted for, so the forward walk has no work until a new row arrives - and no further
+        // than the window reaches: the rows below a buffer that stopped short are still its work.
+        self.hist_upto = self
+            .hist_upto
+            .max(self.hist_ceiling.unwrap_or(self.items.len()));
         rendered
     }
 
@@ -665,9 +682,9 @@ impl App {
         // reader turns around. Every way of going up means the same thing.
         self.wheel_run = 0;
         if self.hist_floor > 0 {
-            // A screen past where the reader is going, so the next press has rows to move into. `view_top` is
-            // the last frame's own top line, which is the best estimate the key handler has.
-            self.fill_backward(self.view_top.saturating_sub(by) + self.screen_rows + TAIL_SLACK);
+            // A screen past where the reader is going, so the next press has rows to move into. In
+            // lines above the reader, which is what the fill counts in.
+            self.fill_backward(by + self.screen_rows + TAIL_SLACK);
         }
         self.hold(-(by as isize));
     }
@@ -692,6 +709,9 @@ impl App {
             self.hist_floor = self.items.len();
             self.fill_backward(room + TAIL_SLACK);
         }
+        // Before the anchor is asked for, since a reader at the end of the buffer is the one whose
+        // next step down has nothing drawn under it yet.
+        self.release_below(room);
         if let Some(h) = self.anchor.clone() {
             let drawn = self.span_for(&h.item_id).is_some();
             if !drawn && self.items.iter().any(|it| it.item_id == h.item_id) {
@@ -856,6 +876,146 @@ impl App {
         self.fill_backward_until(room + TAIL_SLACK, stop);
     }
 
+    /// **The rendered history is a window too.** A reader who scrolls through a long session draws
+    /// every row they pass, and nothing else lets those lines go: over `hist_limit` the rows at
+    /// whichever end is farther from the reader go, and the walk draws them again when the reader
+    /// comes back. Nothing is asked of the daemon - the row is still in `items` - and the bound is
+    /// bytes, because a rendered line is what the head's memory is.
+    pub(crate) fn trim_history(&mut self, room: usize) {
+        // An ordinary session walks from row 0 and is bounded by `walk_limit`; only a head that
+        // rendered its tail holds lines its reader can leave behind.
+        if self.hist_floor == 0 || !self.hist_marks.is_empty() {
+            return;
+        }
+        let over = self
+            .hist_bytes()
+            .saturating_sub(self.hist_limit.saturating_sub(self.hist_limit / 4));
+        if over == 0 {
+            return;
+        }
+        let line = self.held_line().min(self.hist_lines.len());
+        // A screen on each side of the reader is never let go: the window has to be drawable, and a
+        // bound smaller than that is a bound the head cannot keep.
+        let above = line.saturating_sub(room + TAIL_SLACK);
+        let below = line + room + 2 * TAIL_SLACK;
+        // **The end farther from the reader pays first**, since it is the one nobody is reading.
+        let ends = if self.hist_lines.len().saturating_sub(line + room) >= line {
+            [(true, below), (false, above)]
+        } else {
+            [(false, above), (true, below)]
+        };
+        let mut left = over;
+        for (from_below, keep) in ends {
+            if left == 0 {
+                break;
+            }
+            left = left.saturating_sub(self.let_lines_go(from_below, keep, left));
+        }
+    }
+
+    /// How many bytes the rendered lines are: the size this head pays for the transcript on screen.
+    pub(crate) fn hist_bytes(&self) -> usize {
+        self.hist_lines.iter().map(String::len).sum::<usize>() + self.hist_lines.len()
+    }
+
+    /// Let rendered rows go from one end of the buffer until `need` bytes are freed or `keep` (a line
+    /// index) would be crossed. Returns the bytes freed. Rows, not lines: a half row on the screen is
+    /// a row cut in two.
+    fn let_lines_go(&mut self, from_below: bool, keep: usize, need: usize) -> usize {
+        if from_below {
+            let (mut freed, mut n) = (0, self.spans.len());
+            while n > 0 {
+                let sp = self.spans[n - 1];
+                if sp.at < keep || freed >= need {
+                    break;
+                }
+                freed += self.hist_lines[sp.at..sp.at + sp.lines]
+                    .iter()
+                    .map(|l| l.len() + 1)
+                    .sum::<usize>()
+                    + 1;
+                n -= 1;
+            }
+            if n == self.spans.len() {
+                return 0;
+            }
+            if n == 0 {
+                // Every row is below the lines the reader needs, which cannot happen while their own
+                // row is in the buffer; a cut here would empty the window rather than trim it.
+                return 0;
+            }
+            // The cut is the first line of the first row let go - its separator goes with it - and
+            // the row below it is the one the reader's next step down draws again.
+            let cut = self.spans[n].at;
+            let first_gone = self.spans[n].row;
+            self.hist_lines.truncate(cut);
+            self.spans.truncate(n);
+            self.note_cards.retain(|c| c.at < cut);
+            self.hist_upto = first_gone;
+            self.hist_ceiling = Some(first_gone);
+            self.hist_class = self.spans.last().map(|s| s.class);
+            // The notes those rows drew are drawn again with them.
+            self.note_upto = self
+                .notes
+                .iter()
+                .position(|(p, _)| !matches!(p, Placed::Seam(at) if *at < first_gone))
+                .unwrap_or(self.notes.len());
+            return freed;
+        }
+        let (mut freed, mut n) = (0, 0);
+        while let Some(sp) = self.spans.get(n).copied() {
+            if sp.at + sp.lines > keep || freed >= need {
+                break;
+            }
+            freed += self.hist_lines[sp.at..sp.at + sp.lines]
+                .iter()
+                .map(|l| l.len() + 1)
+                .sum::<usize>()
+                + 1;
+            n += 1;
+        }
+        if n == 0 {
+            return 0;
+        }
+        let kept = self.spans[n];
+        let cut = kept.at;
+        self.hist_lines.drain(..cut);
+        self.spans.drain(..n);
+        for sp in &mut self.spans {
+            sp.at -= cut;
+        }
+        for c in &mut self.note_cards {
+            c.at = c.at.saturating_sub(cut);
+        }
+        self.note_cards.retain(|c| c.at > 0);
+        self.hist_floor = kept.row;
+        self.hist_first_class = Some(kept.class);
+        freed
+    }
+
+    /// **The window may need the rows below it.** A reader who has come down to the end of what this
+    /// head drew gets the next screen of it rendered on this frame, and the walk stops again at its
+    /// end: a screen's work, not the session between the reader and the tail. The ceiling stays where
+    /// it is until that walk has run, so a key handler asking *are there rows below* is answered.
+    pub(crate) fn release_below(&mut self, room: usize) {
+        if self.hist_ceiling.is_none() || self.anchor.is_none() {
+            return;
+        }
+        if self.held_line() + room + TAIL_SLACK < self.hist_lines.len() {
+            return;
+        }
+        self.walk_ahead = room + TAIL_SLACK;
+    }
+
+    /// **Back to the end of the session.** A head that follows the tail must show its newest row, and
+    /// a window that stopped short of it would draw a row from however long ago as the newest. One
+    /// window's work, once, and only for a reader who came back down to the tail.
+    pub(crate) fn reanchor_at_tail(&mut self, room: usize) {
+        self.invalidate_history_from(0);
+        self.hist_floor = self.items.len();
+        self.fill_backward(room + TAIL_SLACK);
+    }
+
     /// Ask the daemon for the rows above the window, when the reader has scrolled past the oldest
     /// one this head holds. One ask in flight and none once the daemon has answered that there is
     /// nothing above, so a held key is pages and not a flood.
@@ -934,6 +1094,9 @@ impl App {
             };
             shift(&mut self.hist_floor);
             shift(&mut self.hist_upto);
+            if let Some(end) = &mut self.hist_ceiling {
+                shift(end);
+            }
             for s in &mut self.spans {
                 shift(&mut s.row);
             }
@@ -996,7 +1159,9 @@ impl App {
             now.saturating_add(delta as usize)
         };
         let bottom = self.body_len.saturating_sub(self.view_room.max(1));
-        if want >= bottom && delta > 0 {
+        // **The bottom of the window is not the bottom of the session.** With rows below it this head
+        // has not drawn, reaching the last drawn line is a page and not a return to following.
+        if want >= bottom && delta > 0 && self.hist_ceiling.is_none() {
             self.anchor = None;
             self.scroll = 0;
             // **No `redraw` here either** - this is the flag's second home on the scroll path.
@@ -1076,10 +1241,7 @@ impl App {
     /// very row the viewport holds and leave the anchor unresolvable.
     pub(crate) fn fill_to_row(&mut self, row: usize) {
         if self.hist_floor > row {
-            self.fill_backward_until(
-                self.view_top.saturating_sub(1) + self.screen_rows + TAIL_SLACK,
-                Some(row),
-            );
+            self.fill_backward_until(self.screen_rows + TAIL_SLACK, Some(row));
         }
     }
 
@@ -1313,6 +1475,11 @@ pub(crate) const SELF_WALK_LIMIT: usize = 2 * 1024 * 1024;
 /// the head's copy, and without it a session that runs for hours grows the head with it.
 pub(crate) const HELD_LIMIT: usize = 8 * 1024 * 1024;
 
+/// How many bytes of rendered lines `hist_lines` keeps. Rendering costs about three times the source
+/// it came from, so this is the head's counterpart to `HELD_LIMIT` and not a second history: over it,
+/// the rows farthest from the reader go and are drawn again when the reader comes back to them.
+pub(crate) const HIST_LIMIT: usize = 3 * HELD_LIMIT;
+
 /// How many rows one page asks the daemon for. A page is what a screenful of scrolling consumes
 /// several times over, so a reader holding a key is not one round trip per screen, and small enough
 /// that a reader who paged too far did not pay for a transcript.
@@ -1477,4 +1644,7 @@ pub(crate) struct Span {
     pub(crate) row: usize,
     pub(crate) at: usize,
     pub(crate) lines: usize,
+    /// The class the walk drew it as. Kept per row because the ring cuts rows off both ends of the
+    /// buffer, and the separator the walk owes the next row is the class of the last one kept.
+    pub(crate) class: RowClass,
 }
