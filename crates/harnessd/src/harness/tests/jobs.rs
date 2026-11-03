@@ -950,6 +950,36 @@ fn a_later_turn_is_its_own_sentence_and_not_a_second_finish() {
         "{:?}",
         pair[0]
     );
+
+    // **And a later turn handed UP from a session below is not one this session started** - the
+    // same rule the finish sentence keeps, which this one used to lose by taking no account of
+    // whose batch it was reading.
+    let theirs = JobCompletion {
+        arrived: std::time::SystemTime::UNIX_EPOCH,
+        later: true,
+        kind: BackgroundKind::Subagent,
+        owner: "s-child".into(),
+        job: "s-1-sub-1".into(),
+        command: String::new(),
+        slug: Some("fix-login".into()),
+        state: "done".into(),
+        produced: 0,
+        elapsed_ms: 0,
+        detail: "the second half".into(),
+        memory: None,
+    };
+    let said = completion_notices(vec![theirs], "s-me", &[]);
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(
+        !said[0].contains("you started"),
+        "a child of a session below was announced as this session's own: {:?}",
+        said[0]
+    );
+    assert!(
+        said[0].contains("a session below this one started"),
+        "{:?}",
+        said[0]
+    );
 }
 
 /// A settlement handed up says WHOSE it was, and points at no door: `stop` hands a stopped session's undrained

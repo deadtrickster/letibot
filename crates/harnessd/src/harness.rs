@@ -1161,20 +1161,29 @@ fn completion_notices(done: Vec<JobCompletion>, me: &str, rows: &[TodoItem]) -> 
             out.push(s);
         }
         if !again.is_empty() {
-            out.push(later_turn_notice(&again));
+            out.push(later_turn_notice(&again, mine));
         }
     }
     out
 }
 
 /// One line per later turn of a child the model has already been told about, named the way every
-/// sentence names a child (`slug · handle`), with the first line of the new answer.
-fn later_turn_notice(done: &[JobCompletion]) -> String {
+/// sentence names a child (`slug · handle`), with the first line of the new answer. `mine` decides
+/// whose child it is: a later turn handed up from a session below is not one "you started".
+fn later_turn_notice(done: &[JobCompletion], mine: bool) -> String {
     let mut s = String::from("[task] ");
-    match done.len() {
-        1 => s.push_str("a subagent you started has answered again on a later turn:\n"),
-        n => s.push_str(&format!(
-            "{n} subagents you started have answered again on later turns:\n"
+    match (mine, done.len() == 1) {
+        (true, true) => s.push_str("a subagent you started has answered again on a later turn:\n"),
+        (true, false) => s.push_str(&format!(
+            "{} subagents you started have answered again on later turns:\n",
+            done.len()
+        )),
+        (false, true) => s.push_str(
+            "a subagent a session below this one started has answered again on a later turn:\n",
+        ),
+        (false, false) => s.push_str(&format!(
+            "{} subagents a session below this one started have answered again on later turns:\n",
+            done.len()
         )),
     }
     for c in done {
