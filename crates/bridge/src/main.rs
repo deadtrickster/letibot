@@ -119,7 +119,7 @@ fn serve() -> i32 {
     let bridge = Bridge::new().streaming_rooms();
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
-    match mcp::serve(stdin.lock(), stdout.lock(), &bridge) {
+    match mcp::serve(stdin.lock(), stdout, &bridge) {
         Ok(()) => 0,
         Err(e) => {
             // A writer error is the client leaving; a reader error is the pipe. Neither is
