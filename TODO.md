@@ -383,7 +383,7 @@ and:
   only (`src/term/decode.rs:402-421`, `482-512`), so `CSI 99;9u` decodes to `Key::Char('c')` with
   empty mods; — ✓ fixed in 46f8409b (rano f4c624e), test a_cmd_chord_arrives_as_a_chord_and_never_as_a_typed_letter
 * and the one door to the raw bytes is lossy the same way — `Terminal::raw_input` answers
-  `legacy_bytes` under the kitty keyboard (`src/term/terminal.rs:504-514`). — OPEN: rano's `legacy_bytes` still turns a `CSI … u` into the legacy spelling (`crates/tui/src/app/keys/input.rs:571` pins it) and that is the door a `!term` pane's program reads (`crates/tui/src/head.rs:1041`), so ⌘C still types a `c` into a pane — a decision, not a line.
+  `legacy_bytes` under the kitty keyboard (`src/term/terminal.rs:504-514`). — OPEN: rano's `legacy_bytes` still turns a `CSI … u` into the legacy spelling (`crates/tui/src/app/keys/input.rs:571` pins it) and that is the door a `!term` pane's program reads (`crates/tui/src/head.rs:1041`), so ⌘C still types a `c` into a pane — a decision, not a line. Rechecked at rano v0.10.1 (4e16345f): the super bit is still carried and the head's chord test passes on it, and `Terminal::raw_input` still answers `legacy_bytes`, so this bullet stays open.
 
 **The fix is two lines in rano**, not in this tree: keep the bit in `Mods::from_bits`, and in
 `kitty_key` emit `Char(ch)` **with its mods** when a bit the legacy spelling cannot carry is set.
