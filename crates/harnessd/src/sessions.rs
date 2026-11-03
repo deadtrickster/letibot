@@ -5860,6 +5860,8 @@ mod a_childs_state_is_read_from_the_right_facts {
             usage: Usage::default(),
             timings: Timings::default(),
             ends_turn: false,
+            prefix_check: None,
+            dialect_template_sha: String::new(),
         });
     }
 

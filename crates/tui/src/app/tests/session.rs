@@ -1703,6 +1703,8 @@ fn a_head_that_attaches_after_a_restart_shows_the_context_from_the_session_row()
         },
         timings: Default::default(),
         ends_turn: true,
+        prefix_check: None,
+        dialect_template_sha: String::new(),
     });
     let mut a = app();
     let mut b = brief("s", "the cache question", false);
@@ -2483,6 +2485,8 @@ fn switching_replaces_the_previous_sessions_facts_and_does_not_carry_them_over()
         },
         timings: Default::default(),
         ends_turn: true,
+        prefix_check: None,
+        dialect_template_sha: String::new(),
     });
     a.apply(hello("s1", vec![brief("s1", "one", false)], one.snapshot()));
     assert!(a.header_line(200).contains("4470 ctx"));

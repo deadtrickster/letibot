@@ -127,6 +127,8 @@ fn the_activity_follows_a_session_through_a_turn_a_card_and_a_settlement() {
         usage: letibot_sessionlog::Usage::default(),
         timings: letibot_sessionlog::Timings::default(),
         ends_turn: false,
+        prefix_check: None,
+        dialect_template_sha: String::new(),
     });
     assert_eq!(
         hub.activity(),
@@ -160,6 +162,8 @@ fn the_activity_follows_a_session_through_a_turn_a_card_and_a_settlement() {
         usage: letibot_sessionlog::Usage::default(),
         timings: letibot_sessionlog::Timings::default(),
         ends_turn: false,
+        prefix_check: None,
+        dialect_template_sha: String::new(),
     });
     assert!(
         hub.activity().is_quiet(),
@@ -202,6 +206,8 @@ fn the_activity_follows_a_session_through_a_turn_a_card_and_a_settlement() {
         usage: letibot_sessionlog::Usage::default(),
         timings: letibot_sessionlog::Timings::default(),
         ends_turn: false,
+        prefix_check: None,
+        dialect_template_sha: String::new(),
     });
     hub.publish(letibot_sessionlog::testing::requested("adj-2", "git push"));
     let busy = hub.activity();
@@ -245,6 +251,8 @@ fn the_activity_follows_a_session_through_a_turn_a_card_and_a_settlement() {
         usage: letibot_sessionlog::Usage::default(),
         timings: letibot_sessionlog::Timings::default(),
         ends_turn: false,
+        prefix_check: None,
+        dialect_template_sha: String::new(),
     });
     assert!(
         hub.activity().is_quiet(),

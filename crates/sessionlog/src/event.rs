@@ -9,7 +9,8 @@
 //! DecisionRequested{req_id, kind, call_id, summary, options, deadline, on_timeout}
 //! DecisionAnswered{req_id, outcome, by, basis, late: bool}
 //! ToolStarted / ToolProgress / ToolFinished{call_id, outcome, ...}
-//! TurnFinished{turn_id, finish_reason, usage, timings, ends_turn}
+//! TurnFinished{turn_id, finish_reason, usage, timings, ends_turn,
+//!              prefix_check, dialect_template_sha}
 //! TurnInterrupted{turn_id, reason, partial_kept: bool}
 //! TurnFailed{turn_id, error, partial_kept: bool}   — not §4.5's; see the variant
 //! ProviderTrouble{kind, model, detail, reset_ms, count, switched_to}
@@ -481,6 +482,29 @@ impl FinishReason {
             FinishReason::Other(s) => s,
         }
     }
+}
+
+/// §18.1-I1's verdict on one turn: the wire twin of `letibot_turn::PrefixCheck`. `Held` with a
+/// shortfall is the server's cache; `Violated` is a prompt of ours that did not extend the last,
+/// which is the only verdict here that is a defect in us.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PrefixCheck {
+    /// Nothing to compare against yet. Not a pass and not a failure.
+    FirstTurn,
+    /// The invariant held; `shortfall` is how far the server's reuse fell below what it permits.
+    Held {
+        expected_cached_min: u64,
+        cached: u64,
+        shortfall: u64,
+    },
+    Violated {
+        detail: String,
+    },
+    /// The check did not run, with the backend's own sentence saying so.
+    Skipped {
+        reason: String,
+    },
 }
 
 /// What one turn cost in tokens, and which slot served it. `cached_tokens` is prompt tokens
@@ -1117,6 +1141,16 @@ pub enum SessionEvent {
         /// head reading the round's finish alone drew *Responded* and then *Responding* again.
         #[serde(default = "an_ending")]
         ends_turn: bool,
+        /// §18.1-I1's verdict, without which a head cannot tell a slot that did not hold the
+        /// history from a prompt of ours that diverged: zero reuse is one number for both. `None`
+        /// from a daemon older than the field, which measured nothing a head can read.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prefix_check: Option<PrefixCheck>,
+        /// The dialect's `template_sha` as it was for this turn, so a model update reads as a
+        /// different dialect rather than as an unexplained cache miss. Empty from a daemon older
+        /// than the field.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        dialect_template_sha: String,
     },
     TurnInterrupted {
         turn_id: String,
@@ -1653,6 +1687,60 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    /// §18.2's question - a scheduling fact or a prefix divergence - is answered by the check and
+    /// not by the reuse number beside it, so the verdict travels on the ending with the dialect
+    /// that produced it. A frame from a daemon older than the two fields must read as *nothing
+    /// said*, which is not `Violated`.
+    #[test]
+    fn an_endings_prefix_check_and_dialect_sha_survive_the_wire() {
+        for check in [
+            PrefixCheck::FirstTurn,
+            PrefixCheck::Held {
+                expected_cached_min: 900,
+                cached: 880,
+                shortfall: 20,
+            },
+            PrefixCheck::Violated {
+                detail: "request N+1 does not extend request N".into(),
+            },
+            PrefixCheck::Skipped {
+                reason: "a messages backend sends no ledger tokens".into(),
+            },
+        ] {
+            let event = SessionEvent::TurnFinished {
+                turn_id: "t1".into(),
+                finish_reason: FinishReason::Eos,
+                usage: Usage::default(),
+                timings: Timings::default(),
+                ends_turn: true,
+                prefix_check: Some(check.clone()),
+                dialect_template_sha: "3f2a".into(),
+            };
+            let json = serde_json::to_string(&event).expect("an event is serialisable");
+            assert_eq!(
+                serde_json::from_str::<SessionEvent>(&json).expect("and readable"),
+                event,
+                "{check:?} did not survive the wire: {json}"
+            );
+        }
+
+        // An older daemon's ending, which has neither field.
+        let old = r#"{"event":"turn_finished","turn_id":"t1","finish_reason":"eos",
+                      "usage":{"prompt_tokens":10,"cached_tokens":0,"predicted_tokens":2},
+                      "timings":{"prompt_ms":1.0,"predicted_ms":2.0,"wall_ms":3}}"#;
+        match serde_json::from_str::<SessionEvent>(old).expect("an older daemon's frame parses") {
+            SessionEvent::TurnFinished {
+                prefix_check,
+                dialect_template_sha,
+                ..
+            } => {
+                assert_eq!(prefix_check, None, "an older daemon measured nothing");
+                assert!(dialect_template_sha.is_empty(), "and named no dialect");
+            }
+            other => panic!("an ending, not {other:?}"),
+        }
     }
 
     /// The wire's title rule is the STORE's title rule: the test that makes a copy safe. The enum

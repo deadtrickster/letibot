@@ -3781,6 +3781,8 @@ fn two_complete_turns_draw_each_reply_once() {
                 usage: Default::default(),
                 timings: Default::default(),
                 ends_turn: true,
+                prefix_check: None,
+                dialect_template_sha: String::new(),
             },
         )));
         seq += 1;

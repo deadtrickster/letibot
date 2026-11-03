@@ -320,6 +320,8 @@ mod tests {
                 usage: Usage::default(),
                 timings: Timings::default(),
                 ends_turn: true,
+                prefix_check: None,
+                dialect_template_sha: String::new(),
             },
         );
         assert_eq!(t.now().state, "idle");

@@ -325,6 +325,8 @@ fn a_turn_that_was_cut_short_does_not_read_like_one_that_finished() {
             usage: Default::default(),
             timings: Default::default(),
             ends_turn: true,
+            prefix_check: None,
+            dialect_template_sha: String::new(),
         },
     )));
     let screen = a.screen(120, 16).join("\n");
@@ -663,6 +665,8 @@ fn the_session_header_degrades_by_deletion_and_never_wraps() {
         },
         timings: Default::default(),
         ends_turn: true,
+        prefix_check: None,
+        dialect_template_sha: String::new(),
     });
     a.apply(hello(
         "s",
@@ -715,6 +719,8 @@ fn the_turns_numbers_live_in_the_header_and_an_ordinary_ending_has_no_footer() {
                 wall_ms: 12_300,
             },
             ends_turn: true,
+            prefix_check: None,
+            dialect_template_sha: String::new(),
         },
     )));
     let header = a.header_line(200);
@@ -762,6 +768,8 @@ fn while_a_turn_runs_the_header_shows_no_clock() {
                 wall_ms: 4_474,
             },
             ends_turn: true,
+            prefix_check: None,
+            dialect_template_sha: String::new(),
         },
     )));
     // A call of that round is still running, which is what makes the turn BUSY across the round
@@ -1431,6 +1439,8 @@ fn thinking_that_is_still_arriving_is_one_fold_with_the_run_it_will_join() {
             usage: Usage::default(),
             timings: Default::default(),
             ends_turn: true,
+            prefix_check: None,
+            dialect_template_sha: String::new(),
         },
     )));
     seq += 1;

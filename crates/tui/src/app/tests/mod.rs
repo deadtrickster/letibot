@@ -231,6 +231,8 @@ fn finished_costing(turn: &str, micros: Option<u64>) -> SessionEvent {
             wall_ms: 2,
         },
         ends_turn: true,
+        prefix_check: None,
+        dialect_template_sha: String::new(),
     }
 }
 

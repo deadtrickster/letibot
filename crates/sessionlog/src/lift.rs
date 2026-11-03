@@ -4,11 +4,11 @@
 //! `&mut dyn EventSink`, and [`LogSink`] is one - which is what lets the TUI depend on the log
 //! without linking `libllama`.
 //!
-//! The seam is lossy in two places, both reported rather than papered over. `TurnFinished` carries
-//! `{usage, timings}` and not all of the engine's metrics: `prefix_check` has no wire twin yet, and
-//! `dialect_template_sha` is a model fact a head already has from its wiring. The slot and the load
-//! do reach a head, through `Usage::served`, because zero reuse means two different things without
-//! them. And `TranscriptAppended` has no content: see [`crate::view::SessionView::record_item`].
+//! A turn's ending carries what the engine measured and a head reads: `usage` (with the slot and
+//! the load), `timings`, the §18.1-I1 `prefix_check`, and the `dialect_template_sha` the prompt was
+//! rendered under. Without the check, zero reuse is one number for a slot that did not hold the
+//! history and for a prompt that diverged. The server's own prompt counters -
+//! `prompt_tokens_server`, `prompt_processed` - stay in the `turn_metrics` row.
 
 use letibot_turn::{DeltaTarget as TurnDelta, EventSink, TurnEvent};
 
@@ -137,6 +137,11 @@ pub fn from_turn_event(e: TurnEvent) -> SessionEvent {
                 predicted_ms: metrics.predicted_ms,
                 wall_ms: metrics.wall_ms,
             },
+            // The verdict and the dialect it was measured under: a head that can read the check
+            // knows whether zero reuse was a slot or a divergence, and the sha says which
+            // template produced the prompt it is judging.
+            prefix_check: Some(lift_prefix(&metrics.prefix_check)),
+            dialect_template_sha: metrics.dialect_template_sha.clone(),
         },
         TurnEvent::TurnInterrupted {
             turn_id,
@@ -166,6 +171,30 @@ fn lift_finish(f: letibot_turn::FinishReason) -> FinishReason {
         // The string survives. Folding an unrecognised reason into a neighbour on
         // the way to a head is the same defect the engine refuses to commit.
         F::Other(s) => FinishReason::Other(s.to_string()),
+    }
+}
+
+/// The engine's verdict as the wire's. One function because the four variants are a closed set
+/// and a match written twice is a variant that lifts differently in two places.
+fn lift_prefix(check: &letibot_turn::PrefixCheck) -> crate::event::PrefixCheck {
+    use letibot_turn::PrefixCheck as P;
+    match check {
+        P::FirstTurn => crate::event::PrefixCheck::FirstTurn,
+        P::Held {
+            expected_cached_min,
+            cached,
+            shortfall,
+        } => crate::event::PrefixCheck::Held {
+            expected_cached_min: *expected_cached_min,
+            cached: *cached,
+            shortfall: *shortfall,
+        },
+        P::Violated { detail } => crate::event::PrefixCheck::Violated {
+            detail: detail.clone(),
+        },
+        P::Skipped { reason } => crate::event::PrefixCheck::Skipped {
+            reason: reason.clone(),
+        },
     }
 }
 
@@ -301,6 +330,55 @@ mod tests {
                 id_slot: Some(0),
                 n_busy_slots: None,
             }
+        );
+    }
+
+    /// The check and the dialect that made the turn reach a head, in the engine's own terms: the
+    /// verdict decided, and the template identity a changed model shows up as.
+    #[test]
+    fn a_turns_prefix_check_and_dialect_reach_a_head() {
+        let lifted = |check: letibot_turn::PrefixCheck| {
+            let mut m = metrics(0, None);
+            m.prefix_check = check;
+            m.dialect_template_sha = "3f2a".into();
+            match from_turn_event(TurnEvent::TurnFinished {
+                turn_id: "t1".into(),
+                finish_reason: letibot_turn::FinishReason::Eos,
+                proposed_calls: false,
+                metrics: Box::new(m),
+            }) {
+                SessionEvent::TurnFinished {
+                    prefix_check,
+                    dialect_template_sha,
+                    ..
+                } => (prefix_check, dialect_template_sha),
+                other => panic!("a finished turn lifts to TurnFinished, not {other:?}"),
+            }
+        };
+        assert_eq!(
+            lifted(letibot_turn::PrefixCheck::Held {
+                expected_cached_min: 900,
+                cached: 880,
+                shortfall: 20,
+            }),
+            (
+                Some(crate::event::PrefixCheck::Held {
+                    expected_cached_min: 900,
+                    cached: 880,
+                    shortfall: 20,
+                }),
+                "3f2a".to_string()
+            )
+        );
+        // `Violated` is our own defect and the one verdict that must never be lost on the way.
+        assert_eq!(
+            lifted(letibot_turn::PrefixCheck::Violated {
+                detail: "request N+1 does not extend request N".into(),
+            })
+            .0,
+            Some(crate::event::PrefixCheck::Violated {
+                detail: "request N+1 does not extend request N".into(),
+            })
         );
     }
 

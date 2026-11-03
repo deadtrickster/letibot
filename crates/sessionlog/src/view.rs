@@ -589,6 +589,10 @@ impl SessionView {
                 // Not read: this view answers *is the model generating*, which a round's end
                 // does settle. Whether the PROMPT is over is a head's rule, from the field.
                 ends_turn: _,
+                // Also not read here: the check and the dialect are a turn's record, and this
+                // view's finished state is what a head draws about the turn that just stopped.
+                prefix_check: _,
+                dialect_template_sha: _,
             } => {
                 if let Some(t) = self.turn.as_mut()
                     && &t.turn_id == turn_id

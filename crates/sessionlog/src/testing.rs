@@ -189,6 +189,10 @@ pub fn turn_finished(turn_id: &str) -> SessionEvent {
             wall_ms: 950,
         },
         ends_turn: true,
+        // Nothing measured, for the reason `served` above says: no slot served this fixture, so
+        // nothing compared its prompt against a previous one.
+        prefix_check: None,
+        dialect_template_sha: String::new(),
     }
 }
 
@@ -201,6 +205,8 @@ pub fn turn_finished_round(turn_id: &str) -> SessionEvent {
             finish_reason,
             usage,
             timings,
+            prefix_check,
+            dialect_template_sha,
             ..
         } => SessionEvent::TurnFinished {
             turn_id,
@@ -208,6 +214,8 @@ pub fn turn_finished_round(turn_id: &str) -> SessionEvent {
             usage,
             timings,
             ends_turn: false,
+            prefix_check,
+            dialect_template_sha,
         },
         _ => unreachable!("turn_finished answers a TurnFinished"),
     }

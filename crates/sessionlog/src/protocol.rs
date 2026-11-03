@@ -16,7 +16,7 @@ use crate::view::Snapshot;
 /// Bumped when a frame's meaning changes in a way the other side cannot parse: a new variant is a
 /// deserialisation fault in the middle of a turn. Both sides compare it at ATTACH and refuse a
 /// mismatch by name.
-pub const PROTOCOL_VERSION: u32 = 62;
+pub const PROTOCOL_VERSION: u32 = 63;
 
 /// The names an operator may run through the head-run door: read-only and bounded, which admits
 /// `web_fetch` and not a tool that writes.
@@ -1333,8 +1333,14 @@ mod tests {
         let _ = event;
         let _ = server;
         assert_eq!(
-            PROTOCOL_VERSION, 62,
-            "the match above was last reconciled with the frame list at 62. 62 gave \
+            PROTOCOL_VERSION, 63,
+            "the match above was last reconciled with the frame list at 63. 63 gave \
+             `SessionEvent::TurnFinished` its `prefix_check` and `dialect_template_sha`: a head \
+             could not tell a slot that did not hold the history from a prompt of ours that \
+             diverged, which is §18.2's question, and could not say which template produced the \
+             turn. Both fields are defaulted and skipped when absent, so a 62 head and a 63 daemon \
+             still parse each other's frames; what the bump records is that an ending now says \
+             what the engine measured. 62 gave \
              `view::Snapshot` an `items_lead`, the count of its rows that sit above the base and are \
              numbered by nothing: a resume republishes a compaction's ancestors in the same list, and \
              a head that guessed zero asked for every page above its window that many rows too far \

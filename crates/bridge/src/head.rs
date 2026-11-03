@@ -2319,6 +2319,8 @@ mod tests {
                 mut usage,
                 timings,
                 ends_turn,
+                prefix_check,
+                dialect_template_sha,
             } => {
                 usage.cost_micros_usd = Some(micros);
                 SessionEvent::TurnFinished {
@@ -2327,6 +2329,8 @@ mod tests {
                     usage,
                     timings,
                     ends_turn,
+                    prefix_check,
+                    dialect_template_sha,
                 }
             }
             _ => unreachable!(),
