@@ -4316,6 +4316,127 @@ fn scrolling_above_the_window_asks_for_the_rows_it_is_missing() {
     );
 }
 
+/// Rows a daemon would answer a page with, oldest first.
+fn page_of(from: usize, count: usize) -> Vec<SnapshotItem> {
+    (from..from + count)
+        .map(|i| SnapshotItem {
+            item_id: format!("p.{i}"),
+            kind: "user".into(),
+            ledger_head: String::new(),
+            ts: 0,
+            item: Some(TranscriptItem::User {
+                speaker: Default::default(),
+                parts: vec![letibot_transcript::UserPart::Text {
+                    text: format!("older row {i}\n"),
+                }],
+            }),
+            citations: Vec::new(),
+        })
+        .collect()
+}
+
+/// A head holding a window the daemon trimmed `base` rows above, with `rows` rows in it and the
+/// reader scrolled to the top of what it holds: the state the page ask exists for.
+fn at_the_top_of_a_window(base: usize, rows: u64) -> App {
+    let mut a = app();
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", false)],
+        Hub::new("s").snapshot(),
+    ));
+    a.items_base = base;
+    for i in 0..rows {
+        a.apply(ServerFrame::Event(env(
+            i * 2 + 1,
+            testing::appended(&format!("s.{i}"), "user"),
+        )));
+        a.apply(ServerFrame::Event(env(
+            i * 2 + 2,
+            testing::content(&format!("s.{i}"), &format!("row {i}\n")),
+        )));
+    }
+    a.walk_limit = 1;
+    let _ = a.screen(100, 20);
+    a.scroll = 100_000;
+    let _ = a.screen(100, 20);
+    a
+}
+
+/// The page the head asked for, as `(from, count)`, if it asked for one.
+fn asked_for(a: &App) -> Option<(usize, usize)> {
+    a.queued.iter().rev().find_map(|x| match x {
+        Action::FetchRows { from, count, .. } => Some((*from, *count)),
+        _ => None,
+    })
+}
+
+/// **A page that does not join the window is the last one.** The daemon answers short when a row
+/// in the page is one this build cannot read, and the head dropped such a page and then asked for
+/// it again on every frame, for ever: nothing drawn, nothing said.
+#[test]
+fn a_page_that_does_not_join_the_window_is_not_asked_for_again() {
+    let mut a = at_the_top_of_a_window(300, 20);
+    let (from, count) = asked_for(&a).expect("the fixture never asked for a page");
+    assert_eq!(
+        (from, count),
+        (200, 100),
+        "the fixture asked for another page"
+    );
+    // One row short of the window: the row the daemon could not read was left out.
+    a.apply(ServerFrame::RowsFetched {
+        session_id: "s".into(),
+        from,
+        rows: page_of(from, count - 1),
+    });
+    a.queued.clear();
+    a.scroll = 100_000;
+    let _ = a.screen(100, 20);
+    assert!(
+        asked_for(&a).is_none(),
+        "the head asked again for the page it just dropped: {:?}",
+        asked_for(&a)
+    );
+    assert!(
+        a.notice
+            .as_deref()
+            .is_some_and(|n| n.contains("did not join")),
+        "the head dropped a page and said nothing: {:?}",
+        a.notice
+    );
+}
+
+/// **An empty page says where the transcript begins.** At `from == 0` the head cleared the ask and
+/// set nothing else, so the same request went out on every frame and the reader was told nothing
+/// about why the rows above are not there.
+#[test]
+fn an_empty_page_says_the_window_holds_the_beginning() {
+    let mut a = at_the_top_of_a_window(100, 20);
+    let (from, count) = asked_for(&a).expect("the fixture never asked for a page");
+    assert_eq!(
+        (from, count),
+        (0, 100),
+        "the fixture asked for another page"
+    );
+    a.apply(ServerFrame::RowsFetched {
+        session_id: "s".into(),
+        from,
+        rows: Vec::new(),
+    });
+    a.queued.clear();
+    a.scroll = 100_000;
+    let _ = a.screen(100, 20);
+    assert!(
+        asked_for(&a).is_none(),
+        "the head asked again for the page it just dropped: {:?}",
+        asked_for(&a)
+    );
+    assert!(
+        a.notice.as_deref().is_some_and(|n| n.contains("above")),
+        "an empty page at row 0 said nothing: {:?}",
+        a.notice
+    );
+}
+
 /// **A head at the tail asks for nothing.** `hist_floor == 0` means *everything this head holds is
 /// rendered*, which is true at the tail of every session short enough to walk whole - and the page
 /// ask read it as *the reader has scrolled up*, so a head that had just attached pulled the rows

@@ -295,9 +295,9 @@ impl App {
             // ordinal it starts at, so the window stays one contiguous run of the session, and the
             // direction is decided by that ordinal rather than by a second field to keep in step.
             ServerFrame::RowsFetched { from, rows, .. } => {
-                // The ask is spent whatever came back, and an empty page is the daemon's answer
-                // that nothing is there - above the window or below it - so asking again is a loop.
-                // Which ask it was is the ordinal it names, the same rule `apply_rows` places by.
+                // The ask is spent whatever came back. Which ask it was is the ordinal it names, the
+                // same rule `apply_rows` places by, and what a page that does not join means - the
+                // daemon's last word - is settled there too, so nothing is asked again here.
                 if from >= self.items_base + self.items.len() {
                     self.fetch_below = None;
                 } else {

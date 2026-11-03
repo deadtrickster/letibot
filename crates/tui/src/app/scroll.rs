@@ -851,7 +851,7 @@ impl App {
 
     /// A page of rows the daemon answered, placed on the end of the window it asked about. Every
     /// row this head holds is one contiguous run of the session, so a page lands where it joins
-    /// that run or not at all.
+    /// that run or not at all - and one that does not join is the daemon's last word above it.
     pub(crate) fn apply_rows(&mut self, from: usize, rows: Vec<SnapshotItem>) {
         let end = self.items_base + self.items.len();
         // **A page below the window** is the tail the reader is coming back down to: it joins the
@@ -870,7 +870,7 @@ impl App {
             return;
         }
         // **A page above**: the ask's answer joins the window at its front, or nowhere.
-        if from.saturating_add(rows.len()) == self.items_base {
+        if !rows.is_empty() && from.saturating_add(rows.len()) == self.items_base {
             let n = rows.len();
             let mut page = rows;
             page.append(&mut self.items);
@@ -898,14 +898,19 @@ impl App {
                 self.invalidate_history_from(0);
                 self.hist_upto = 0;
             }
-        } else if rows.is_empty() && from < self.items_base {
-            // Nothing above: the transcript begins at the window's first row, and asking again
-            // would be a loop.
-            self.no_more_above = true;
+            return;
         }
-        // **A page that is neither side of the window is dropped rather than spliced in.** This head
-        // holds one contiguous run of the session; a page that would leave a hole in it is an answer
-        // to a question this head did not ask, and drawing it would put rows in the wrong places.
+        // **The page was empty or short of the window, so what is above cannot be reached.** Empty
+        // means nothing is above; short means a row in it could not be read, and every later page
+        // would be short the same way. Splicing it in leaves a hole, so it is dropped and said.
+        self.no_more_above = true;
+        self.say(if rows.is_empty() {
+            "nothing is above this window — the daemon holds no rows above the oldest one this \
+             head has, so the transcript stops here"
+        } else {
+            "the page above this window did not join it: a row in it could not be read, so the \
+             transcript above stops here"
+        });
     }
 
     /// Move the held viewport by `delta` lines, staying on a row: the line-to-row conversion happens here and
