@@ -221,9 +221,7 @@ fn gate_host_slot() -> std::sync::MutexGuard<'static, Option<String>> {
 /// No file is re-read here, unlike the cap: the name comes from the project's `leticode.toml` AND
 /// from `--gate-host`, and the flag wins over the file - a re-read would quietly undo the flag.
 pub fn set_gate_host(host: Option<String>) {
-    *gate_host_slot() = host
-        .map(|h| h.trim().to_string())
-        .filter(|h| !h.is_empty());
+    *gate_host_slot() = host.map(|h| h.trim().to_string()).filter(|h| !h.is_empty());
 }
 
 /// The host the gate runs on, or `None` for this machine - [`set_gate_host`]'s value.
