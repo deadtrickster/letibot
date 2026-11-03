@@ -1733,6 +1733,8 @@ pub enum Action {
     },
     /// `--attach [N|DIR]`: connect only, starting nothing.
     Attach { target: String },
+    /// `attach github <scope>`: the reviewer seat on an org or one repository.
+    Github { scope: String },
     /// `--continue`: reopen the newest session in THIS workspace.
     Continue,
     /// `--session ID`.
@@ -1816,6 +1818,27 @@ pub fn decide(args: &[String]) -> Result<(Seat, Action), String> {
             id: rest.get(1).cloned().unwrap_or_default(),
         },
         "--ls" | "--list-all" => Action::ListAll,
+        // **`attach github <scope>` is a verb, not the `--attach` flag**, and the two words after
+        // it are checked here so the shell's arm and this model refuse the same mistakes.
+        "attach" => {
+            let source = rest.get(1).map(String::as_str).unwrap_or_default();
+            if source != "github" {
+                return Err(format!(
+                    "attach takes a source and it is `github`, not `{source}` \
+                     (`letibot attach github <org|owner/repo>`)"
+                ));
+            }
+            match rest.get(2) {
+                Some(scope) if !scope.is_empty() => Action::Github {
+                    scope: scope.clone(),
+                },
+                _ => {
+                    return Err(
+                        "attach takes a scope: `letibot attach github <org|owner/repo>`".into(),
+                    );
+                }
+            }
+        }
         "--daemons" => Action::Daemons,
         "--status" => Action::Status,
         "--stop" => {
@@ -1924,6 +1947,30 @@ mod dispatch_tests {
         assert_eq!(act(&["--list-all"]), Action::ListAll);
         assert_eq!(act(&["--continue"]), Action::Continue);
         assert_eq!(act(&["-c"]), Action::Continue);
+    }
+
+    /// **`attach github <scope>` is a verb and not a prompt.** A word the launcher does not know is
+    /// sent to the model as a prompt, which is a billed turn for a typo's mistake.
+    #[test]
+    fn attach_github_takes_a_source_and_a_scope() {
+        assert_eq!(
+            act(&["attach", "github", "stroppy-io"]),
+            Action::Github {
+                scope: "stroppy-io".into()
+            }
+        );
+        assert_eq!(
+            act(&["attach", "github", "stroppy-io/letibot"]),
+            Action::Github {
+                scope: "stroppy-io/letibot".into()
+            }
+        );
+        let e = decide(&v(&["attach", "gitlab", "stroppy-io"])).unwrap_err();
+        assert!(e.contains("gitlab") && e.contains("github"), "{e}");
+        let e = decide(&v(&["attach", "github"])).unwrap_err();
+        assert!(e.contains("scope") && e.contains("attach github"), "{e}");
+        let e = decide(&v(&["attach"])).unwrap_err();
+        assert!(e.contains("github"), "{e}");
     }
 
     /// `--stop` takes a target, and `--all`/`--force` are not targets.

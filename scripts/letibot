@@ -467,6 +467,12 @@ already up, then attaches the TUI head to it.
                               wherever it lives now. --copy-keys sends providers.toml too
                               (mode 600, never printed). docs/remote-hosts.md RH4
   letibot --reattach ID       re-establish a moved session's daemon and forwarded socket
+  letibot attach github S     the GitHub reviewer SEAT on an org (`stroppy-io`) or one repository
+                              (`stroppy-io/letibot`): poll the open pull requests, one letibot
+                              session per PR, one review per push, a mention answered by that
+                              PR's session. Nothing is posted until `[github] post = true` and
+                              `token_path` name a token file at mode 0600 — until then a review
+                              is a draft on the seat's own row
   letibot "some prompt"       one-shot: run it, print, exit (no TUI)
   letibot --glm               GLM's dialect+vocab; providers.toml names the address
   letibot --stop              stop the daemon
@@ -2240,6 +2246,15 @@ SESSIONS_EOF
       echo "NOT SERVING"
     fi
     exit 0 ;;
+  attach)
+    # **The GitHub reviewer seat** (R118): one long-lived poll of one scope. It drafts until
+    # `[github] post` and a token are set, so this verb posts nothing by itself; the seat is the
+    # binary's, because a poll that opens sessions belongs next to the sessions.
+    [ "$#" -ge 3 ] || die "attach takes a source and a scope: letibot attach github <org|owner/repo>"
+    [ "${2:-}" = github ] || die "attach knows one source and it is \`github\`, not ${2:-}"
+    [ -x "$BIN/letibot" ] || die "no letibot at $BIN (the reviewer seat lives there)"
+    shift
+    exec "$BIN/letibot" attach "$@" ;;
   --attach)
     # Connect only. A second argument names another folder's daemon — as a
     # directory, or as the number `letibot --ls` printed beside it.

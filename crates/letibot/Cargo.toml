@@ -56,6 +56,12 @@ libc = "0.2"
 # on `tools` — so this names a crate that was in the build already, and it is the reason two
 # spellings of one ssh command line cannot come back.
 letibot-tools.workspace = true
+# **`letibot attach github <scope>`**: the reviewer seat, started from a terminal. The seat is a
+# poll and a state machine, so this binary reads the config and prints what it does.
+letibot-github.workspace = true
+# The `[github] post` and `token_path` a seat starts with come from `leticode.toml`, which is the
+# one layer that knows where the user's own file is.
+leticode-config.workspace = true
 
 [dev-dependencies]
 # The apparatus machinery, for the one test that needs a machine with listening

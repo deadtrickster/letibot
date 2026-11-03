@@ -147,6 +147,8 @@ letibot-metrics = { path = "crates/metrics" }
 letibot-http = { path = "crates/http" }
 letibot-flowy = { path = "crates/flowy" }
 letibot-room = { path = "crates/room" }
+# The GitHub reviewer seat: a pull request's facts behind one trait, and the seat that reviews it.
+letibot-github = { path = "crates/github" }
 letibot-provider = { path = "crates/provider" }
 letibot-websearch = { path = "crates/websearch" }
 letibot-webfetch = { path = "crates/webfetch" }

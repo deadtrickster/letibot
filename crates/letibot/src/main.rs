@@ -59,6 +59,7 @@ use std::ffi::OsStr;
 use std::path::Path;
 use std::process::ExitCode;
 
+mod github;
 pub mod launcher;
 pub mod migrate;
 mod roles;
@@ -293,6 +294,10 @@ fn main() -> ExitCode {
                     // **The spelling the operator and the brief use**, so the launcher can pass
                     // its own line through unchanged: `letibot --migrate SESSION --to NAME`.
                     migrate::run(&tail())
+                } else if word == "attach" {
+                    // `letibot attach github <org|owner/repo>`: a source and then a scope, checked
+                    // before anything is polled so a typo is not a seat on somebody else's repo.
+                    github::run(&tail())
                 } else if word == "--help" || word == "-h" || word == "help" {
                     print_usage();
                     ExitCode::SUCCESS
@@ -336,6 +341,10 @@ fn print_usage() {
            stats [VERB]                read metrics.db: today, waits, deliveries, tools, models,\n  \
                                        turns, feedback, session ID, sql (`letibot stats --help`)\n  \
            fb --session S [+|-] NOTE   mark a session's last turn from a shell\n\n\
+          GITHUB\n  \
+            attach github <scope>       the reviewer seat on an org or `owner/repo`: one session\n  \
+                                        per open pull request, one review per push, and drafts\n  \
+                                        until `[github] post` and a token are set\n\n\
          A role is reachable by its own name through a symlink, which is how anything\n\
          that invokes a PATH rather than typing a command reaches it — `sudo` runs the\n\
          askpass helper with no arguments but the prompt.\n",

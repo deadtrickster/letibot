@@ -923,6 +923,7 @@ version = "0.5.1"
 dependencies = [
  "letibot-dialect-glm",
  "letibot-dialect-qwen",
+ "letibot-github",
  "letibot-harnessd",
  "letibot-metrics",
  "letibot-sessionlog",
@@ -930,6 +931,7 @@ dependencies = [
  "letibot-tools",
  "letibot-transcript",
  "letibot-tui",
+ "leticode-config",
  "libc",
  "serde_json",
  "sha2",
