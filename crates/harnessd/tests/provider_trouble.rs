@@ -120,9 +120,9 @@ impl Fake {
                         );
                         let _ = s.flush();
                     }
-                    // Longer than any `provider_timeout` a scenario sets, and then the socket closes -
-                    // a client still waiting answers its own deadline first.
-                    Act::Silent => std::thread::sleep(Duration::from_secs(5)),
+                    // Longer than any `provider_timeout` a scenario sets, by enough that a loaded box
+                    // cannot let the close become the round's ending: the deadline is the subject.
+                    Act::Silent => std::thread::sleep(Duration::from_secs(30)),
                     Act::Stall => {
                         std::thread::sleep(Duration::from_secs(16));
                         answer(&mut s);
@@ -536,10 +536,15 @@ fn the_four_provider_troubles_reach_the_wire_as_types() {
         f.script(&[Act::Quota, Act::Answer]);
         client.prompt(0, PROMPT).expect("the prompt is accepted");
         let mut rec = Rec::default();
-        // The continuation turn is the daemon's own, so the wait is for its request rather than for
-        // anything the driver sends.
+        // The wait is for a request that NAMES the fallback, not for one more request: the quota
+        // request is already on the wire when the trouble is published, so a count of requests
+        // returns before the continuation is sent and the assertion below races it.
         watch(rx, &mut rec, |rec| {
-            rec.troubles.len() == 1 && f.models().len() > requests_before
+            rec.troubles.len() == 1
+                && f.models()
+                    .iter()
+                    .skip(requests_before)
+                    .any(|m| m == "glm-4.6")
         });
         rec
     });
@@ -562,11 +567,9 @@ fn the_four_provider_troubles_reach_the_wire_as_types() {
     // G. **Two timeouts in a row move it, and one does not.** A timeout says nothing about the model
     // on its own, so the budget is what makes it evidence: at two, the first turn stays where it is and
     // the second moves the session with the same `switched_to` announcement.
-    let mut cfg = config(
-        &scratch,
-        "timeout-fallback",
-        Some(Duration::from_millis(400)),
-    );
+    // Three seconds and not four hundred milliseconds: the deadline still ends a silent round, and a
+    // loaded box now has room to put the request on the wire before it fires.
+    let mut cfg = config(&scratch, "timeout-fallback", Some(Duration::from_secs(3)));
     cfg.fallback = vec!["glm/glm-4.6".to_string()];
     cfg.fallback_after_timeouts = 2;
     let f = fake.clone();
@@ -578,7 +581,11 @@ fn the_four_provider_troubles_reach_the_wire_as_types() {
         watch(rx, &mut rec, |rec| rec.troubles.len() == 1);
         client.prompt(0, PROMPT).expect("the prompt is accepted");
         watch(rx, &mut rec, |rec| {
-            rec.troubles.len() == 2 && f.models().len() > requests_before + 2
+            rec.troubles.len() == 2
+                && f.models()
+                    .iter()
+                    .skip(requests_before)
+                    .any(|m| m == "glm-4.6")
         });
         rec
     });
