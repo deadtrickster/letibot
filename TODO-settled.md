@@ -5939,3 +5939,101 @@ comment at line 19 states the gap.
 gap explicit **rather than widening it unilaterally**, which was the right call: this
 changes the head protocol. The question for the operator is one line — *does the event
 carry the content, or a handle the head resolves?* — and after that it is code.
+## R91 — Results, restore, reseat and the store: messages lost and wrong states — **SETTLED 2026-11-03: items 9, 10, 15, 16 and 18 finished in this pass, 1–8, 11–14 and 17 were already fixed, and every item carries the commit that settled it**
+
+Ranked severity × likelihood. **1 and 2 lose data; 3 fires waits on the wrong job.**
+
+1. **Messages handed back by a failed or interrupted round are dropped.** `harness.rs:11188` makes
+   a new `HubSteering` (`self.steering()`, `:12214`, empty `held`) on every pass of the HTTP retry
+   loop; `give_back` (`turn/src/engine.rs:1418/1438/1464/1474`, local 760–987) pushes into
+   `HubSteering::held` (`:1686`), which is dropped. Lost: an operator follow-up typed mid-stream
+   then esc-esc or a provider drop; R79 immediates already marked delivered in the store
+   (`at_round_boundary` `:1628`); monitor firings (cursor advanced, `:1646`); parent messages;
+   AnswerTodo lines. The operator's words are already in the authorisation trail (`:1522`). Fix:
+   build `steering` once per round outside the retry loop; on final failure push the rest back.
+   CONFIRMED. [delivery 1] — ✓ fixed in `b88c1702`, `c444fe2a`, `e6a74aa4`
+2. **A fork registers the new transcript before writing its rows.** `put_fork` (`:10464`),
+   `set_prefix_fingerprint` (`:10483`), `set_stale_prefix(None)` (`:10498`) all before
+   `engine.open` (`:10502`), `append_items` (`:10631`) and the chunked persist (`:10685-10699`). A
+   crash mid-carry resumes onto a partial conversation; an error after `put_fork` leaves the dead
+   fork newest and clears the reseat offer; `reingest` returns at `:9880` before `self.prefix =
+   next` (`:9892`), so metered turns send old schemas against the new transcript, and the operator
+   is told "Nothing was changed". CONFIRMED (write order). [delivery 2] — ✓ fixed in `654dff4b`,
+   `1036ded1`
+3. **Job handles restart at `j1` every daemon life** (`tools/src/exec/jobs.rs:44-48`); the store's
+   `job`/`job_context` upsert by `(session_id, handle)` keeps the old command and overwrites history
+   (`store.rs:490-501, :3352, :3357-3361`); `is_running`, `job_fate` (`harness.rs:13719-13730`),
+   `delivery::names` (`delivery.rs:247-249`) and the TUI link (`app/todos.rs:763-860`) match a
+   pre-restart `j7` to the new one. Also reported by the lifecycle review. CONFIRMED. [delivery 3,
+   lifecycle B13] — ✓ fixed in `0e0f0069`
+4. **An interrupt is followed at once by a turn nobody asked for** — `note_turn_ended`
+   (`:10779, :5481`) runs however the turn ended, `JobWatchers::turn_ended`
+   (`jobwatch.rs:660-671`) rings the wake when anything is held, and `stop_children_first`
+   (`:1535`) makes children settle right after. Failed turns too. Fix: tell `turn_ended` it was
+   interrupted; ring nothing; batch for the next operator turn. CONFIRMED. [delivery 4] — ✓ fixed in
+   `e3b3b575`, test `a_stopped_or_failed_turn_does_not_wake_the_session_for_its_held_results`
+5. **A job result held when the daemon stops is never delivered** — restore collects only
+   `state == "running"` (`:8784-8787`); `job` has no `delivered` column. CONFIRMED. [delivery 5] —
+   ✓ fixed in `152b0b6a`
+6. **Store writes that skip the busy retry**: all of `tokencore/src/store/subagents.rs`
+   (`put_subagent_run` 167, `settle` 201, `interrupt` 212, `deliver` 222, `put_monitor` 267,
+   `end_monitor` 281, `put_job_context` 316, `life_*` 355/366/375) — a failed deliver redelivers,
+   a failed interrupt counts toward `RESUME_LIMIT`. And `persist_context(..)?` (`:11561`),
+   `flush_todos()?` (`:11791`) and the fork writes end the turn after 60 s instead of waiting.
+   CONFIRMED. [delivery 6] — ✓ fixed in `0ce71dd3`, `835a9b9b`
+7. **A failed todo write is never retried** — `flush_todos` sets `todos_version` before
+   `put_todos` (`:12478-12487`); a restart then reverts answers, waits and consumed conditions.
+   CONFIRMED. [delivery 7] — ✓ fixed in `835a9b9b`, test
+   `a_todo_write_the_store_refused_is_made_by_the_next_flush`
+8. **The one-hour restore threshold measures daemon downtime, not stop → reopen**
+   (`back_ms = started_ms()`, `:8762, :8831, :8885`); a lazy reopen 4 h later reads "down 5m" and
+   monitors get a fresh TTL. CONFIRMED. [delivery 8] — ✓ fixed in `271a31d3`
+9. **Restore treats any other daemon instance as gone** (`:8771-8781`; `subagent_record` decide
+   263, resumable 355); `sessions.db` is shared by every daemon, the flock is per folder — double
+   resume possible. SUSPECTED. [delivery 9] — ✓ fixed in `fe21a277`: `restart::is_running` (no
+   stop, a heartbeat inside two, and a pid that is a live process) is what the restore's four
+   filters, `decide`, `resumable` and the empty restart's dating read. Tests
+   `a_daemon_is_running_only_while_it_stops_beating`,
+   `a_record_whose_daemon_is_still_beating_is_left_alone`,
+   `what_another_daemon_that_is_still_beating_owns_is_left_alone`.
+10. **The 30-minute busy wait stalls the worker and ignores interrupts** (`persist_reporting`
+    `:12711-12745`, `sleep_unless_closed` `:12631-12641`); other sessions show only "queued";
+    patience counts from the start, not the first busy. CONFIRMED. [delivery 10] — ✓ fixed in
+    `e6a74aa4`: `busy_after` ends the wait on a stop (the transcript's rows stay in memory for the
+    next write; a write nobody can make later fails, saying the stop), and `say_the_store_is_busy`
+    tells every other session this daemon holds. Patience from the first busy was already in both
+    loops. Tests `a_stop_ends_the_wait_on_a_busy_store`,
+    `a_wait_on_the_store_is_said_on_every_other_session_too`.
+11. **A wake marks results delivered before the turn that delivers them can fail**
+    (`:8631-8641, :8569`, `submit_item` `:8691`, `:10774-10776`). CONFIRMED. [delivery 11] — ✓ fixed
+    in `9585d2b5`
+12. **The held-results counter goes stale after attach/reconnect** — `HeldResults` is ephemeral
+    (`scrub.rs:102`), published only on change (`jobwatch.rs:768-784`), the head keeps the last
+    value (`tui/src/app/events/turn.rs:44`). CONFIRMED. [delivery 12] — ✓ fixed in `06a2c0de`
+13. **Reseat side effects before success**: `reseat_tight` published before the fork
+    (`:9805-9819`); `reseat_target` changes `cfg.system` (`:9655`) and writes a `stable_prefix` row
+    (`:9683`) even when refused Over (`:9780`). CONFIRMED. [delivery 13] — ✓ fixed in `654dff4b`
+14. **An interrupt absorbed at the end of a successful round is dropped**
+    (`turn/src/engine.rs:1229-1250, :1614-1631`). CONFIRMED. [delivery 14] — ✓ fixed in `d668c04e`
+15. **A child can answer its parent and then run a `[meanwhile]` turn nobody hears**
+    (`jobwatch.rs:669`, `harness.rs:15316`). SUSPECTED. [delivery 15] — ✓ fixed in `13518088`: the
+    later turn's settlement (`fe55e487`, `cf44e17d`) is what carries it, and which door is somebody's
+    word is now one function, `children::somebody_spoke`, with `Door::Wake` in it. Test
+    `a_childs_wake_turn_is_news_and_its_own_clock_is_not`, beside
+    `a_childs_later_turn_reaches_its_parent_too`.
+16. **The R79 sort runs per streamed delta** (copies the board, `todo.rs:746`). Cost only.
+    CONFIRMED. [delivery 16] — ✓ fixed in `04c8a392`: `SteeringSource::at_a_step_boundary`, set by
+    the engine at each round boundary, is the only poll `HubSteering` reads the session's results at.
+    Test `a_result_waits_for_the_step_boundary_and_not_for_a_token`.
+17. **The `wanted` map leaks** (`delivery.rs:286`). SUSPECTED. [delivery 17] — ✓ fixed in `14c82566`
+18. **Closing a root session drops held and queued results** (`jobwatch.rs:868-886`,
+    `sessions.rs:2595-2598`). CONFIRMED; may be intended. [delivery 18] — ✓ fixed in `493f818c`: the
+    watcher's queue dies with the harness, and `deliver_settlements_left_undelivered` re-queues the
+    row at the next open of the same session in the same daemon. Test
+    `a_settlement_held_when_the_session_closed_is_said_at_the_next_open`.
+
+Checked sound: a result arriving exactly at turn end; prompt vs wake ordering; compaction is not a
+turn end; `wait_on` on an ended job refused; restored subagents keep their id; a removed worktree
+is abandoned with the reason; same-daemon reopen does not double-restore; two heads reseating.
+
+---
