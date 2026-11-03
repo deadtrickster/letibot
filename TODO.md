@@ -1210,7 +1210,7 @@ fails on `435bb88` and passes after. The four reviews these come from are in ful
 
 ---
 
-## R74 — What the 2026-10-11 landings left open — **AUDITED 2026-11: nine fixed, seven already done, six not a session's to settle; left: 4 (the queue verbs a person at a head cannot run), 11 (reasoning left out of the sent count), 12 (the ratio across a non-verbatim fork), 16 (a tool-call round under a context excuse), 20 (the one report sink), 23 (cards off the surface stack), 25 (a real head answering `grant_memory`), 33 (its three skip-green holes), 37 (the workspace clippy step), 39 (a live gate on lubuntu1/2), 40 (the inline blocks over 800 lines)**
+## R74 — What the 2026-10-11 landings left open — **AUDITED 2026-11: nine fixed, seven already done, six not a session's to settle, and 37 since settled — the workspace-wide clippy step is the merge gate's own; left: 4 (the queue verbs a person at a head cannot run), 11 (reasoning left out of the sent count), 12 (the ratio across a non-verbatim fork), 16 (a tool-call round under a context excuse), 20 (the one report sink), 23 (cards off the surface stack), 25 (a real head answering `grant_memory`), 33 (its three skip-green holes), 39 (a live gate on lubuntu1/2), 40 (the inline blocks over 800 lines)**
 
 Everything merged on 2026-10-11 (main `cf47e65`: R61, R64, R65, R66 instrumentation, R67, R68, R69,
 R71, R72 + follow-up, R73, the no-llama build), and the gaps each landing reported or a check
@@ -1438,7 +1438,9 @@ nothing to design.
     AGENTS.md says not to run broadly (they skipped — nothing listened on 8080).
     — OPEN: the `*_live` files are still in the package's test directory (`crates/harnessd/tests/compact_live.rs:1`), so a `-p` run still reaches them.
 37. The workspace-wide `cargo clippy --all-targets` gate step has not been run on the result.
-    — OPEN: not code — the workspace-wide clippy step has still not been run.
+    — ✓ settled: it is the merge gate's own step now — `sh scripts/clippy-gate.sh --all-targets --
+    -D warnings …` (`agents.md:98`), which touches every member's root first so a warm target cannot
+    answer for the lints (`3feb2606`).
 
 **Open work, in order**
 38. R63 — a thread per root session (unblocked by R68).
