@@ -152,36 +152,209 @@ pub fn candidates(read: &dyn Fn(&str) -> Option<String>, workflows: &[String]) -
 /// narrowed to tags. R62 took this repository's gate off GitHub Actions, and what is left there is
 /// the release, which only a tag starts and which is nobody's merge gate. Pure.
 pub fn judges_a_branch(text: &str) -> bool {
-    let lines: Vec<&str> = text
-        .lines()
-        .filter(|l| !l.trim_start().starts_with('#'))
-        .collect();
-    if lines
+    triggers(text).iter().any(|(event, tags_only)| {
+        event.starts_with("pull_request") || (event == "push" && !tags_only)
+    })
+}
+
+/// What a workflow's `on:` answers, one entry per event with whether it is narrowed to tags. Every
+/// spelling YAML allows is read - a scalar, a flow sequence, a flow mapping, a block mapping or a
+/// block sequence - because a guard that knows one spelling is a guard a new file walks around.
+pub fn triggers(text: &str) -> Vec<(String, bool)> {
+    let lines: Vec<&str> = text.lines().map(uncommented).collect();
+    let Some((at, rest)) = lines
         .iter()
-        .any(|l| l.trim_start().starts_with("pull_request"))
-    {
-        return true;
+        .enumerate()
+        .find_map(|(i, line)| top_level_key(line, "on").map(|rest| (i, rest)))
+    else {
+        return Vec::new();
+    };
+    if rest.is_empty() {
+        return block_events(&lines[at + 1..]);
     }
-    for (i, line) in lines.iter().enumerate() {
-        if line.trim_start() != "push:" {
+    if rest.starts_with('[') || rest.starts_with('{') {
+        let flow = balanced(rest, &lines[at + 1..]);
+        return flow_events(&flow);
+    }
+    vec![(scalar(rest).to_string(), false)]
+}
+
+/// A line with a trailing comment removed, and `#` inside quotes left alone: a workflow may name a
+/// trigger in a note, and may have `#` in a branch name.
+fn uncommented(line: &str) -> &str {
+    let mut quote: Option<char> = None;
+    let mut prev = ' ';
+    for (at, c) in line.char_indices() {
+        match (quote, c) {
+            (Some(q), c) if c == q => quote = None,
+            (None, '\'' | '"') => quote = Some(c),
+            (None, '#') if prev.is_whitespace() => return &line[..at],
+            _ => {}
+        }
+        prev = c;
+    }
+    line
+}
+
+/// The value after a top-level `<key>:`, when this line is that key. A nested `on:` is a value of
+/// something else and is not the workflow's trigger.
+fn top_level_key<'a>(line: &'a str, key: &str) -> Option<&'a str> {
+    if line.len() != line.trim_start().len() {
+        return None;
+    }
+    let rest = line.trim_start().strip_prefix(key)?.trim_start();
+    Some(rest.strip_prefix(':')?.trim())
+}
+
+/// A flow collection that a line opened and later lines finish.
+fn balanced(first: &str, rest: &[&str]) -> String {
+    let mut text = first.to_string();
+    let mut depth = depth_of(&text);
+    for line in rest {
+        if depth <= 0 {
+            break;
+        }
+        text.push(' ');
+        text.push_str(line.trim());
+        depth = depth_of(&text);
+    }
+    text
+}
+
+/// How many `[`/`{` a text has opened and not closed, outside quotes.
+fn depth_of(text: &str) -> i32 {
+    let mut quote: Option<char> = None;
+    let mut depth = 0;
+    for c in text.chars() {
+        match (quote, c) {
+            (Some(q), c) if c == q => quote = None,
+            (None, '\'' | '"') => quote = Some(c),
+            (None, '[' | '{') => depth += 1,
+            (None, ']' | '}') => depth -= 1,
+            _ => {}
+        }
+    }
+    depth
+}
+
+/// The items of a flow collection, split on the commas that are not inside a nested one.
+fn flow_items(inner: &str) -> Vec<&str> {
+    let mut items = Vec::new();
+    let mut quote: Option<char> = None;
+    let mut depth = 0;
+    let mut from = 0;
+    for (at, c) in inner.char_indices() {
+        match (quote, c) {
+            (Some(q), c) if c == q => quote = None,
+            (None, '\'' | '"') => quote = Some(c),
+            (None, '[' | '{') => depth += 1,
+            (None, ']' | '}') => depth -= 1,
+            (None, ',') if depth == 0 => {
+                items.push(inner[from..at].trim());
+                from = at + c.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    items.push(inner[from..].trim());
+    items.retain(|i| !i.is_empty());
+    items
+}
+
+/// The events of `on: [...]` or `on: {...}`.
+fn flow_events(text: &str) -> Vec<(String, bool)> {
+    let text = text.trim();
+    let (inner, mapping) = match (text.strip_prefix('['), text.strip_prefix('{')) {
+        (Some(inner), _) => (inner, false),
+        (None, Some(inner)) => (inner, true),
+        (None, None) => return Vec::new(),
+    };
+    let inner = inner
+        .strip_suffix(']')
+        .or_else(|| inner.strip_suffix('}'))
+        .unwrap_or(inner);
+    let mut out = Vec::new();
+    for item in flow_items(inner) {
+        match (mapping, item.split_once(':')) {
+            (true, Some((key, value))) => out.push((scalar(key).to_string(), tags_only(value))),
+            _ => out.push((scalar(item).to_string(), false)),
+        }
+    }
+    out
+}
+
+/// The events of a block collection under `on:`, one entry per line at the collection's own indent.
+fn block_events(rest: &[&str]) -> Vec<(String, bool)> {
+    let Some(base) = rest
+        .iter()
+        .find(|l| !l.trim().is_empty())
+        .map(|l| indent(l))
+    else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < rest.len() {
+        let line = rest[i];
+        if line.trim().is_empty() {
+            i += 1;
             continue;
         }
-        let indent = line.len() - line.trim_start().len();
-        let mut tags_only = false;
-        for next in &lines[i + 1..] {
-            let deeper = next.len() - next.trim_start().len() > indent;
-            if next.trim().is_empty() || !deeper {
-                break;
-            }
-            if next.trim_start().starts_with("tags:") {
-                tags_only = true;
-            }
+        let at = indent(line);
+        if at < base {
+            break;
         }
-        if !tags_only {
-            return true;
+        if at > base {
+            i += 1;
+            continue;
         }
+        let trimmed = line.trim_start();
+        if let Some(item) = trimmed.strip_prefix("- ") {
+            out.push((scalar(item).to_string(), false));
+            i += 1;
+            continue;
+        }
+        let Some((key, value)) = trimmed.split_once(':') else {
+            i += 1;
+            continue;
+        };
+        let mut nested = Vec::new();
+        let mut j = i + 1;
+        while j < rest.len() && (rest[j].trim().is_empty() || indent(rest[j]) > at) {
+            nested.push(rest[j]);
+            j += 1;
+        }
+        let only_tags = if value.trim().is_empty() {
+            let has = |key: &str| nested.iter().any(|l| l.trim_start().starts_with(key));
+            has("tags:") || has("tags-ignore:")
+        } else {
+            tags_only(value)
+        };
+        // `branches:` beside `tags:` is the shape that runs on both, and it is not a release.
+        let branches = nested.iter().any(|l| {
+            l.trim_start().starts_with("branches:")
+                || l.trim_start().starts_with("branches-ignore:")
+        });
+        out.push((scalar(key).to_string(), only_tags && !branches));
+        i = j;
     }
-    false
+    out
+}
+
+/// Whether a push's own lines narrow it to tags. `branches:` beside `tags:` says it runs on both.
+fn tags_only(value: &str) -> bool {
+    let tags = value.contains("tags");
+    tags && !value.contains("branches")
+}
+
+/// A YAML scalar with its quotes taken off.
+fn scalar(text: &str) -> &str {
+    text.trim().trim_matches(|c| c == '\'' || c == '"').trim()
+}
+
+/// How far a line is indented, in bytes: every level of this file's mappings is spaces.
+fn indent(line: &str) -> usize {
+    line.len() - line.trim_start().len()
 }
 
 impl Tool for MergeGate {
@@ -347,6 +520,23 @@ mod tests {
         assert!(!judges_a_branch(
             "on:\n  workflow_dispatch:\n# pull_request: disabled\n"
         ));
+        // A push that runs on a branch AND on tags is a branch judgement: `branches:` is the key
+        // that says so, and the one-file shape everybody writes must not be read as a release.
+        assert!(judges_a_branch(
+            "on:\n  push:\n    branches: [main]\n    tags: ['v*']\n"
+        ));
+        assert!(!judges_a_branch("on:\n  push:\n    tags-ignore: ['v*']\n"));
+        // And the trigger is the same trigger wherever YAML puts it.
+        assert!(judges_a_branch("on: push\n"));
+        assert!(judges_a_branch("on: push # every branch\n"));
+        assert!(judges_a_branch("on: [push, pull_request]\n"));
+        assert!(judges_a_branch("on:\n  - push\n  - pull_request\n"));
+        assert!(judges_a_branch("on: {pull_request: ~}\n"));
+        assert!(judges_a_branch(
+            "on: {push: {branches: [main], tags: ['v*']}}\n"
+        ));
+        assert!(!judges_a_branch("on: {push: {tags: ['v*']}}\n"));
+        assert!(!judges_a_branch("on: workflow_dispatch\n"));
     }
 
     #[test]
