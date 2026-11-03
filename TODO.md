@@ -1407,7 +1407,11 @@ a toolchain instead of a secret.
    always did, which is why every unconfined prefix is unchanged. Tests
    `the_model_is_told_what_its_view_holds_before_anything_fails`,
    `a_confined_seat_is_told_what_its_view_holds_and_an_unconfined_one_is_not`,
-   `the_prompts_view_comes_from_the_boundary_that_was_measured`.
+   `the_prompts_view_comes_from_the_boundary_that_was_measured`. Left under this one: a
+   firecode VM is a boundary by construction and has no `Boundary` to ask
+   (`FirecodeBackend::boundary` is the trait's `None`), so a VM-placed session gets no
+   `view` section at all — its facts are `Config::vm_copy_source` and the mount rules, and
+   the sentence has not been written.
 2. **An absence does not say what would fix it.** `cargo: command not found` or a missing
    registry should come back as *absent because outside the view*, with the grant that
    would change it — the same shape as `edit`'s read-before-write refusal and R8's
