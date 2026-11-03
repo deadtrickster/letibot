@@ -311,6 +311,25 @@ else
   note "a stopped run with --clean-target still gives its dir back"
 fi
 
+# **The other half of that**: a run stopped while it is still QUEUED has built nothing in the dir and
+# must not remove it, because the dir belongs to the run ahead of it.
+new_run "$T/r-hold"
+start_runner "$T/r-hold" "$T/target-shared" "$(json_steps "until [ -f $T/release-hold ]; do sleep 0.05; done")"
+reaches "$T/r-hold" running "a run holds a shared dir"
+new_run "$T/r-drop"
+start_runner "$T/r-drop" "$T/target-shared" '["true"]' clean
+queued_pid="${runners[${#runners[@]} - 1]}"
+reaches "$T/r-drop" queued "  ...and a second queues behind it"
+kill -TERM "$queued_pid"
+reaches "$T/r-drop" stopped "  ...and is stopped while it waits"
+if [ -d "$T/target-shared" ]; then
+  note "a stopped queued run leaves the dir it never used"
+else
+  fail "a stopped queued run leaves the dir it never used"
+fi
+touch "$T/release-hold"
+reaches "$T/r-hold" passed "  ...so the run that holds it still passes"
+
 # The runner's own default, for a caller that sets no CARGO_TARGET_DIR at all: the checkout's
 # target, which is the one dir a lone run can be sure nobody else has.
 new_run "$T/r-seven"

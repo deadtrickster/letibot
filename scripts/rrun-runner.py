@@ -27,12 +27,15 @@ status = json.load(open(status_path))
 target = os.environ.get("CARGO_TARGET_DIR") or os.path.join(run_dir, "tree", "target")
 # The dir is this run's own, so a run told to clean gives it back when it ends.
 clean_target = os.environ.get("RRUN_CLEAN_TARGET") == "1"
+# What decides whether the dir is this run's to remove at all: a run stopped while it is still
+# queued has built nothing in it, and the run ahead of it is still building there.
+holding = False
 
 
 def remove_run_dirs():
     """The checkout, and the target dir when the run was told to give it back."""
     shutil.rmtree(os.path.join(run_dir, "tree"), ignore_errors=True)
-    if clean_target:
+    if clean_target and holding:
         shutil.rmtree(target, ignore_errors=True)
 
 
@@ -103,10 +106,12 @@ os.makedirs(target, exist_ok=True)
 lock = open(target.rstrip("/") + ".rrun.lock", "w")
 try:
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    holding = True
 except BlockingIOError:
     status["state"] = "queued"
     save()
     fcntl.flock(lock, fcntl.LOCK_EX)
+    holding = True
     status["started"] = int(time.time())
 
 status["state"] = "running"
