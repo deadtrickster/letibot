@@ -1024,3 +1024,50 @@ fn a_session_switch_keeps_the_answer_being_typed() {
         a.notice
     );
 }
+
+// ────────────────────── a card in the chrome is what holds the keyboard ──────────────────────
+
+/// **No surface under a card is focused.** A card is drawn in the chrome slot with the pane still on
+/// the screen above it, and every key the reader presses is the card's - so a pane that answered
+/// `Some(s)` put the wheel, a hover and a click on rows nothing could act on.
+#[test]
+fn a_card_in_the_chrome_leaves_no_surface_focused() {
+    let mut a = app();
+    a.push_surface(Surface::Help);
+    assert_eq!(
+        a.focused_surface(),
+        Some(Surface::Help),
+        "the premise: a pane nothing covers has the keys"
+    );
+    assert_eq!(a.card_up(), None);
+
+    // A running program asks a question: the card is in the slot, and the pane under it is not.
+    ask(
+        &mut a,
+        1,
+        SessionEvent::PromptRequested {
+            req_id: "r1".into(),
+            job: "j1".into(),
+            command: "! sudo apt install mc".into(),
+            question: Some("Continue? [Y/n]".into()),
+            reading: letibot_sessionlog::PromptReading::Blocked,
+        },
+    );
+    assert_eq!(a.card_up(), Some(Card::Prompt));
+    assert_eq!(
+        a.focused_surface(),
+        None,
+        "the card holds every key, so the pane under it is not focused"
+    );
+    // The bar says the card, and not the pane's own chords.
+    assert!(
+        a.hint_bar(300).contains("type the line"),
+        "{}",
+        a.hint_bar(300)
+    );
+
+    // Put the card aside with Esc, which is what the bar promises: the pane has the keys again.
+    assert_eq!(a.key(Key::Esc), None);
+    assert!(a.prompt_away);
+    assert_eq!(a.focused_surface(), Some(Surface::Help));
+}

@@ -100,6 +100,25 @@ impl Surface {
     ];
 }
 
+/// **A card in the chrome that owns every key**, in the order `App::key` asks them. One list, so the
+/// keyboard, the bottom bar and [`App::focused_surface`] cannot disagree about which card is up: a
+/// surface under a card is not focused, whatever it is, because the next keystroke is the card's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Card {
+    /// `allow-all` needs a person's confirmation.
+    ModeConfirm,
+    /// A password, or the daemon's key ask (the same card, worded for a key).
+    Secret,
+    /// The confirmation that ends a `!term` pane.
+    TermAsk,
+    /// A question a running program is blocked on.
+    Prompt,
+    /// The daemon asking for a provider key.
+    KeyAsk,
+    /// A new todo being written into the plan.
+    TodoDraft,
+}
+
 /// What the conversation's rectangle holds this frame - the one value `main_area` draws, `App::key`
 /// routes and the hint bar describes. The three layers above the stack are answered HERE, in the
 /// order the frame draws them, so a pane under rano is not drawn and its Enter is not swallowed.
@@ -149,11 +168,37 @@ impl App {
     }
 
     /// **The surface that is drawn and has the keys**, or nothing — the stack's top, unless a
-    /// `!term` pane, the diff popup or rano is in front of it.
+    /// `!term` pane, the diff popup or rano is in front of it, or a card in the chrome holds every
+    /// key. A card is drawn over the chrome slot and the pane under it stays on the screen, but the
+    /// reader's next keystroke is the card's, so a pane that answered as focused put the wheel, a
+    /// hover and a click on rows nothing could act on.
     pub(crate) fn focused_surface(&self) -> Option<Surface> {
+        if self.card_up().is_some() {
+            return None;
+        }
         match self.drawn() {
             Drawn::Surface(s) => Some(s),
             _ => None,
+        }
+    }
+
+    /// The card holding the keyboard, if any. `prompt_away` is the prompt card put aside by Esc:
+    /// still drawn in the slot, and no longer owning a key.
+    pub(crate) fn card_up(&self) -> Option<Card> {
+        if self.mode_confirm.is_some() {
+            Some(Card::ModeConfirm)
+        } else if self.secret.is_some() {
+            Some(Card::Secret)
+        } else if self.term_ask.is_some() {
+            Some(Card::TermAsk)
+        } else if self.prompt.is_some() && !self.prompt_away {
+            Some(Card::Prompt)
+        } else if self.key_ask.is_some() {
+            Some(Card::KeyAsk)
+        } else if self.todo_draft.is_some() {
+            Some(Card::TodoDraft)
+        } else {
+            None
         }
     }
 

@@ -66,42 +66,37 @@ impl App {
         }
     }
 
-    /// **The bar of a card that owns the keyboard**, in `App::key`'s order (R90.19): the tail,
-    /// and whether the composer's half stays (only the todo card types into the composer).
+    /// **The bar of a card that owns the keyboard** (R90.19): the tail, and whether the composer's
+    /// half stays (only the todo card types into the composer). Which card is up is
+    /// [`App::card_up`]'s answer, so this bar, `App::key` and `App::focused_surface` read one list.
     pub(crate) fn card_hint(&self) -> Option<(String, bool)> {
+        use crate::app::Card;
         use crate::ui::cards::decision::PUT_AWAY_HINT;
-        let (tail, composer) = if self.mode_confirm.is_some() {
-            (
+        let (tail, composer) = match self.card_up()? {
+            Card::ModeConfirm => (
                 "y or enter confirms allow-all · any other key cancels".to_string(),
                 false,
-            )
-        } else if self.secret.is_some() {
-            (
+            ),
+            Card::Secret => (
                 "type the password · enter gives it · esc refuses".to_string(),
                 false,
-            )
-        } else if self.term_ask.is_some() {
-            (
+            ),
+            Card::TermAsk => (
                 "y ends it · any other key keeps it running".to_string(),
                 false,
-            )
-        } else if self.prompt.is_some() && !self.prompt_away {
-            (
+            ),
+            Card::Prompt => (
                 format!("type the line · enter sends it · {PUT_AWAY_HINT}"),
                 false,
-            )
-        } else if self.key_ask.is_some() {
-            (
+            ),
+            Card::KeyAsk => (
                 "type the key · enter stores it · esc cancels".to_string(),
                 false,
-            )
-        } else if self.todo_draft.is_some() {
-            (
+            ),
+            Card::TodoDraft => (
                 "tab next field · enter adds it · esc cancels".to_string(),
                 true,
-            )
-        } else {
-            return None;
+            ),
         };
         Some((tail, composer))
     }
