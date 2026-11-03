@@ -307,9 +307,15 @@ pub struct App {
     /// holds, counted from what the snapshot said it left out. It is what makes a scrolling reader's
     /// position nameable after the window has been trimmed or paged.
     pub(crate) items_base: usize,
+    /// How many rows sit BELOW the window this head holds: the tail it let go because the reader was
+    /// parked above it, counted so coming back down knows how much is missing and where it starts.
+    pub(crate) items_below: usize,
     /// The page of rows above the window this head has asked for and not been answered: the `from`
     /// it named. One ask at a time, so a reader holding a key does not queue a page per frame.
     pub(crate) fetch_asked: Option<usize>,
+    /// The same for the page below the window. Its own field, because the two are independent
+    /// questions and a page above that has not come back must not hold up the tail.
+    pub(crate) fetch_below: Option<usize>,
     /// The daemon answered a page and had nothing above it: the head stops asking and says the
     /// transcript begins there.
     pub(crate) no_more_above: bool,
@@ -1135,7 +1141,9 @@ impl App {
             hist_upto: 0,
             hist_floor: 0,
             items_base: 0,
+            items_below: 0,
             fetch_asked: None,
+            fetch_below: None,
             no_more_above: false,
             held_limit: HELD_LIMIT,
             model_from_settings_at: 0,

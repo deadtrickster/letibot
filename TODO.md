@@ -2652,11 +2652,29 @@ the head holds, one page (100 rows) in flight at a time, and stops for good once
 back empty. The page is prepended, every row index shifts with it, and the reader's held row
 does not move on their screen.
 
-**Still open, and named so it is not found as a bug.** Trimming only lets go of rows *above* the
-reader. A reader parked up in history while the session keeps appending still grows the head with
-the rows arriving below them; bounding that needs the below-direction fetch (a count of rows not
-held, the same page in the other direction, and a seam that says the tail is not held), which is
-a second piece and not a smaller one.
+**Both ends of one window, DONE.** Trimming used to let go of rows *above* the reader only, so a
+reader parked up in history while the session kept appending still grew the head with the rows
+arriving below them. `App::items_below` is now how many rows sit below the window,
+`App::trim_held_below` lets them go (a screen of rows stays under the held row, and only when the
+rows above cannot pay for the overflow), and `App::ask_for_rows_below` brings them back a page at a
+time, by ordinal, when the reader comes down to the end of what is held. The tail follows again
+from the last page on.
+
+Three things the implementation needed that the design did not name:
+
+- **A row arriving while the gap is open is counted, not held.** The window is one contiguous run
+  of the session, so a row spliced onto its end would take the ordinal of a row still missing. It
+  is counted until the page that fills the gap arrives, and the page carries it whole.
+- **A body for a released row is not an orphan.** `record_item` warned about every body with no
+  row; for a head that holds a window that is the ordinary case, above and below it, and the page
+  is what brings the words back.
+- **The wheel's "is the stream moving" is the session's row count**, not the window's: the window
+  stops growing exactly when rows start landing in the gap, and a park out of which the tail keeps
+  running has to stay walkable.
+
+**Still not done, and it is the same shape as the last time.** Nothing on the screen says the tail
+is not held: a window that ends forty rows above the session's end draws as if it ended the
+session. The count is there to say it with; no seam prints it yet.
 
 ---
 

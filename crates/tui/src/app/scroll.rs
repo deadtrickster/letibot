@@ -700,10 +700,17 @@ impl App {
         }
     }
 
+    /// How many rows this session has, as far as this head can account for them: everything it let
+    /// go above the window, the window itself, and everything it let go below.
+    pub(crate) fn rows_in_session(&self) -> usize {
+        self.items_base + self.items.len() + self.items_below
+    }
+
     /// **The head holds a window, not the buffer.** A session that runs for hours appends rows for
-    /// ever, and a body this head keeps is text: once the window is over `held_limit` the oldest
-    /// rows go, and the window is rendered again from what is left. The lines go with them, which is
-    /// why this is cheap: a re-render costs one window and saves the history around it.
+    /// ever, and a body this head keeps is text: once the window is over `held_limit` the rows the
+    /// reader is not looking at go, above, and the window is rendered again from what is left. The
+    /// lines go with them, which is why this is cheap: a re-render costs one window and saves the
+    /// history around it.
     pub(crate) fn trim_held(&mut self, room: usize) {
         let over = transcript_bytes(&self.items).saturating_sub(self.held_limit);
         if over == 0 {
@@ -721,6 +728,34 @@ impl App {
         }
         if n > 0 {
             self.drop_rows_above(n, room);
+        }
+        self.trim_held_below(room);
+    }
+
+    /// **And the other end of the same window.** A reader parked above the tail is not reading what
+    /// arrives below them, and over the limit with nothing left above the held row to free is the
+    /// only moment those rows are what there is to let go. They go with a margin rather than the
+    /// byte that tipped it over: this re-renders the window, so once per arriving row is a screen
+    /// each.
+    fn trim_held_below(&mut self, room: usize) {
+        let left = transcript_bytes(&self.items);
+        let Some(held) = self.anchor.as_ref().map(|h| h.ordinal) else {
+            return;
+        };
+        if left <= self.held_limit {
+            return;
+        }
+        let over = left.saturating_sub(self.held_limit / 2);
+        // A screen of rows stays below the reader: a window that freed everything under them would
+        // be one row tall, and everything else is a page away in the direction the session runs.
+        let keep = (held + 1 + room).min(self.items.len());
+        let (mut freed, mut end) = (0, self.items.len());
+        while end > keep && freed < over {
+            end -= 1;
+            freed += self.items[end].item.as_ref().map_or(0, |i| i.bytes());
+        }
+        if end < self.items.len() {
+            self.drop_rows_below(self.items.len() - end, room);
         }
     }
 
@@ -754,6 +789,28 @@ impl App {
         self.fill_backward_until(room + TAIL_SLACK, stop);
     }
 
+    /// The rows below the window, let go: nothing this head draws is of rows it no longer holds,
+    /// so the history is rendered again from the end back to the reader's row.
+    fn drop_rows_below(&mut self, m: usize, room: usize) {
+        let keep = self.items.len().saturating_sub(m);
+        if keep == 0 {
+            return;
+        }
+        self.items.truncate(keep);
+        self.items_below += m;
+        // A note filed past the window is one the head no longer draws, the rule a fork's seams
+        // follow: reachable through `/notes`, which is where a note off the screen is read.
+        for (place, _) in &mut self.notes {
+            if matches!(place, Placed::Seam(at) if *at > keep) {
+                *place = Placed::Before;
+            }
+        }
+        self.invalidate_history_from(0);
+        let stop = self.anchor.as_ref().map(|h| h.ordinal);
+        self.hist_floor = self.items.len();
+        self.fill_backward_until(room + TAIL_SLACK, stop);
+    }
+
     /// Ask the daemon for the rows above the window, when the reader has scrolled past the oldest
     /// one this head holds. One ask in flight and none once the daemon has answered that there is
     /// nothing above, so a held key is pages and not a flood.
@@ -775,13 +832,44 @@ impl App {
         });
     }
 
-    /// A page of rows the daemon answered, placed above the window it asked about. Every row this
-    /// head holds is one contiguous run of the session, so a page lands where it joins that run or
-    /// not at all.
-    pub(crate) fn apply_rows(&mut self, from: usize, rows: Vec<SnapshotItem>) {
-        if rows.is_empty() {
+    /// The same ask in the other direction: the reader is at the end of what this head holds and
+    /// the session went on below it, so the tail is behind a page. One in flight, and none at all
+    /// once the daemon answers that nothing is at that ordinal.
+    pub(crate) fn ask_for_rows_below(&mut self) {
+        if self.items_below == 0 || self.anchor.is_some() || self.fetch_below.is_some() {
             return;
         }
+        let from = self.items_base + self.items.len();
+        let count = self.items_below.min(PAGE_ROWS);
+        self.fetch_below = Some(from);
+        self.queued.push(Action::FetchRows {
+            session: self.session_id.clone(),
+            from,
+            count,
+        });
+    }
+
+    /// A page of rows the daemon answered, placed on the end of the window it asked about. Every
+    /// row this head holds is one contiguous run of the session, so a page lands where it joins
+    /// that run or not at all.
+    pub(crate) fn apply_rows(&mut self, from: usize, rows: Vec<SnapshotItem>) {
+        let end = self.items_base + self.items.len();
+        // **A page below the window** is the tail the reader is coming back down to: it joins the
+        // rows where they end, and what is above it is unchanged, so no index moves.
+        if from == end {
+            if rows.is_empty() {
+                // Nothing at that ordinal, so the session ends where this window does and the
+                // count the head was holding was stale. The next arriving row is pushed normally.
+                self.items_below = 0;
+                return;
+            }
+            let n = rows.len();
+            self.items.extend(rows);
+            // A row appended while the page was in flight is one this head still does not hold.
+            self.items_below = self.items_below.saturating_sub(n);
+            return;
+        }
+        // **A page above**: the ask's answer joins the window at its front, or nowhere.
         if from.saturating_add(rows.len()) == self.items_base {
             let n = rows.len();
             let mut page = rows;
@@ -810,6 +898,10 @@ impl App {
                 self.invalidate_history_from(0);
                 self.hist_upto = 0;
             }
+        } else if rows.is_empty() && from < self.items_base {
+            // Nothing above: the transcript begins at the window's first row, and asking again
+            // would be a loop.
+            self.no_more_above = true;
         }
         // **A page that is neither side of the window is dropped rather than spliced in.** This head
         // holds one contiguous run of the session; a page that would leave a hole in it is an answer
@@ -895,9 +987,10 @@ impl App {
         self.wheel_last_ms = self.now_ms;
         // **The one fact that separates the walk from the run**: did rows arrive since
         // the last notch down? A still transcript is walked whatever the distance; a
-        // living one is the case the walk was outrun by.
-        let stream = self.items.len() != self.wheel_items;
-        self.wheel_items = self.items.len();
+        // living one is the case the walk was outrun by. The session's count and not this
+        // head's window, which stops growing the moment the window is what rows land in.
+        let stream = self.rows_in_session() != self.wheel_items;
+        self.wheel_items = self.rows_in_session();
         self.wheel_run = self.wheel_run.saturating_add(1);
         if !stream {
             return 3;

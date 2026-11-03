@@ -292,13 +292,16 @@ impl App {
             // day is visible here instead of swallowed.
             ServerFrame::RowFetched { .. } => Disposition::Control,
             // The rows above the window, or the ones filling the gap to the tail: a page names the
-            // ordinal it starts at, so the window stays one contiguous run of the session.
+            // ordinal it starts at, so the window stays one contiguous run of the session, and the
+            // direction is decided by that ordinal rather than by a second field to keep in step.
             ServerFrame::RowsFetched { from, rows, .. } => {
-                // The ask is spent whatever came back, and a page with nothing above it is the
-                // daemon's answer that the transcript begins there: asking again would be a loop.
-                self.fetch_asked = None;
-                if rows.is_empty() && from > 0 {
-                    self.no_more_above = true;
+                // The ask is spent whatever came back, and an empty page is the daemon's answer
+                // that nothing is there - above the window or below it - so asking again is a loop.
+                // Which ask it was is the ordinal it names, the same rule `apply_rows` places by.
+                if from >= self.items_base + self.items.len() {
+                    self.fetch_below = None;
+                } else {
+                    self.fetch_asked = None;
                 }
                 self.apply_rows(from, rows);
                 Disposition::Rendered

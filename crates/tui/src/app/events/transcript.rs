@@ -14,6 +14,14 @@ impl App {
                 kind,
                 ledger_head,
             } => {
+                // **A row that arrives below the window is counted and not held.** This head let
+                // the tail go (see `App::drop_rows_below`), so a row spliced onto the end here
+                // would take the ordinal of one still missing: the page the reader comes down to
+                // is what fills that gap, and until then the count is the truth.
+                if self.items_below > 0 {
+                    self.items_below += 1;
+                    return Disposition::Rendered;
+                }
                 // A tool result's facts - duration, edit pair, decision - ride across at the
                 // announcement, positionally (a round's rows are appended in call order and the ids
                 // repeat). The CARD waits for its body in `record_item`, or the call flickers out.

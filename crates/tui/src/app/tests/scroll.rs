@@ -4372,3 +4372,269 @@ fn a_fresh_attach_to_a_long_session_draws_its_tail() {
         "the rows above the window are not counted"
     );
 }
+
+/// **The window has two ends.** A reader parked far above the tail is not reading what arrives
+/// below them, so those rows are let go and counted; coming back down asks for them a page at a
+/// time, in the direction the session runs, and the tail follows again once the window reaches it.
+/// The row bodies are generated from the ordinal, so a page the fixture answers is the row the
+/// session really had there.
+#[test]
+fn rows_below_a_parked_reader_are_let_go_and_fetched_back() {
+    const ROWS: u64 = 6_000;
+    const PARKED_AT: u64 = 1_000;
+    let body = "a line of conversation, and enough of them to make a row cost its bytes\n\n\
+                ```rust\nfn f() { let n = 1; }\n```\n";
+    let words = |i: u64| format!("row {i} says a thing\n{body}");
+    let row_at = |i: u64| SnapshotItem {
+        citations: Vec::new(),
+        item_id: format!("s.{i}"),
+        kind: "user".into(),
+        ledger_head: String::new(),
+        ts: 0,
+        item: Some(TranscriptItem::User {
+            speaker: Default::default(),
+            parts: vec![letibot_transcript::UserPart::Text { text: words(i) }],
+        }),
+    };
+    let mut a = app();
+    a.walk_limit = 1;
+    // A window a test can reach: a few hundred bytes a row is over this in a dozen rows.
+    a.held_limit = 64 * 1024;
+    let arrive = |a: &mut App, i: u64| {
+        a.apply(ServerFrame::Event(env(
+            i * 2 + 1,
+            testing::appended(&format!("s.{i}"), "user"),
+        )));
+        a.apply(ServerFrame::Event(env(
+            i * 2 + 2,
+            testing::content(&format!("s.{i}"), &words(i)),
+        )));
+    };
+    for i in 0..PARKED_AT {
+        arrive(&mut a, i);
+        if i % 200 == 0 {
+            let _ = a.screen(100, 40);
+        }
+    }
+    let _ = a.screen(100, 40);
+    // The reader goes up into the window and stays there while the session runs on below them: up
+    // by a screenful of notches, so there are rows above them the window has not rendered and
+    // nothing asks for the rows above a window it is still drawing.
+    a.scroll_up(400);
+    let _ = a.screen(100, 40);
+    assert!(
+        a.anchor.is_some(),
+        "the reader is following the tail, so nothing is parked above it"
+    );
+    assert!(
+        a.hist_floor > 0,
+        "the whole of the window is rendered, so this is not the window this test is about"
+    );
+    for i in PARKED_AT..ROWS {
+        arrive(&mut a, i);
+        if i % 100 == 0 {
+            let _ = a.screen(100, 40);
+        }
+    }
+    let _ = a.screen(100, 40);
+    // **And the wheel still knows the session is moving.** The window stopped growing when it became
+    // a window, so a count of what this head holds would call a living session still: a park the
+    // tail keeps running away from is walked out of, not notched out of at three lines.
+    let mut step: Vec<usize> = Vec::new();
+    for i in ROWS..ROWS + 3 {
+        arrive(&mut a, i);
+        let _ = a.screen(100, 40);
+        step.push(a.wheel_down_notch());
+    }
+    assert!(
+        step[2] > step[0],
+        "the wheel stopped gathering speed under a stream it should be walking out of: {step:?}"
+    );
+    let total = ROWS + 3;
+
+    // **The window is bounded at both ends.** The rows arriving below the reader are not the rows
+    // the reader is reading, so they are a count and not a copy.
+    assert!(
+        a.items_below > 0,
+        "the tail was never let go, so this asserts nothing about a window"
+    );
+    assert!(
+        transcript_bytes(&a.items) <= a.held_limit,
+        "the head holds {} bytes of {} rows, over its {} byte window",
+        transcript_bytes(&a.items),
+        a.items.len(),
+        a.held_limit
+    );
+    // A window and not the tail: the count is the window's, which is the limit over a row's size,
+    // and not the session's. Every row of a session that ran for another hour would still be here.
+    assert!(
+        a.items.len() < 1_000,
+        "the head kept {} rows of a {} row session (base {}, below {}, anchor {:?})",
+        a.items.len(),
+        total,
+        a.items_base,
+        a.items_below,
+        a.anchor.as_ref().map(|h| h.ordinal)
+    );
+    // And every row is accounted for exactly once: above the window, in it, or below it.
+    assert_eq!(
+        a.rows_in_session(),
+        total as usize,
+        "the window lost or double-counted a row"
+    );
+
+    // The reader comes down to the end, and what is below the window is fetched back a page at a
+    // time: every page starts where the window ends, so nothing is skipped and nothing is doubled.
+    a.hold(100_000);
+    assert!(a.anchor.is_none(), "the reader is not at the tail");
+    let mut pages = 0;
+    let mut above = 0;
+    for _ in 0..400 {
+        let _ = a.screen(100, 40);
+        let Some(at) = a
+            .queued
+            .iter()
+            .position(|x| matches!(x, Action::FetchRows { .. }))
+        else {
+            break;
+        };
+        let Action::FetchRows { from, count, .. } = a.queued.remove(at) else {
+            unreachable!("the position was of a FetchRows")
+        };
+        // The head asks in both directions and the daemon answers both: a page above ends where
+        // the window begins, a page below starts where it ends, and neither leaves a hole.
+        let below = a.items_base + a.items.len();
+        if from != below {
+            assert_eq!(
+                from + count,
+                a.items_base,
+                "a page above does not end where the window begins"
+            );
+            above += 1;
+        }
+        let end = (from as u64 + count as u64).min(total) as usize;
+        let rows: Vec<SnapshotItem> = (from..end).map(|i| row_at(i as u64)).collect();
+        a.apply(ServerFrame::RowsFetched {
+            session_id: "s".into(),
+            from,
+            rows,
+        });
+        pages += 1;
+    }
+    // The paging here is the tail's: the head asks above once, when the reader's own row is the
+    // oldest one it holds, and a page per frame above would be a loop rather than a fetch.
+    assert!(
+        above < 5,
+        "the head asked for {above} pages above the window while fetching the tail"
+    );
+    assert_eq!(
+        a.items_below,
+        0,
+        "the window never reached the tail (base {}, {} rows, below ask {:?}, {pages} pages, {above} above)",
+        a.items_base,
+        a.items.len(),
+        a.fetch_below,
+    );
+    assert_eq!(
+        a.items_base + a.items.len(),
+        total as usize,
+        "the window does not end where the session does"
+    );
+    assert!(
+        pages > 1,
+        "one page covered the whole tail, so this asserts nothing about paging"
+    );
+
+    // The newest row is on the screen, and the rows drawn above it are in order: a page placed
+    // wrongly draws a row twice or leaves one out.
+    let frame = a.screen(100, 40);
+    let drawn = frame.join("\n");
+    assert!(
+        drawn.contains(&format!("row {} says a thing", total - 1)),
+        "the newest row is not on the screen:\n{drawn}"
+    );
+    let numbers: Vec<u64> = frame
+        .iter()
+        .filter_map(|l| {
+            let at = l.find("row ")? + 4;
+            let n: String = l[at..].chars().take_while(char::is_ascii_digit).collect();
+            n.parse().ok()
+        })
+        .collect();
+    assert!(
+        numbers.windows(2).all(|w| w[0] < w[1]),
+        "the window drew a row twice or out of order: {numbers:?}"
+    );
+
+    // And the live tail resumes at the bottom: a row arriving now is held, drawn, and is not
+    // something the reader has to ask for a page at a time.
+    arrive(&mut a, total);
+    arrive(&mut a, total + 1);
+    let live = a.screen(100, 40).join("\n");
+    assert!(
+        live.contains(&format!("row {} says a thing", total + 1)),
+        "the tail did not resume at the bottom:\n{live}"
+    );
+    assert_eq!(
+        a.items_below, 0,
+        "a row arriving below the window was let go"
+    );
+}
+
+/// **The count below the window is a guess and the daemon's answer is the truth.** A page that
+/// comes back empty says the session ends where the window does, and asking again would be a
+/// loop on a number nothing can pay.
+#[test]
+fn an_empty_page_below_the_window_ends_the_asking() {
+    let mut a = app();
+    a.walk_limit = 1;
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", false)],
+        Hub::new("s").snapshot(),
+    ));
+    for i in 0..20u64 {
+        a.apply(ServerFrame::Event(env(
+            i * 2 + 1,
+            testing::appended(&format!("s.{i}"), "user"),
+        )));
+        a.apply(ServerFrame::Event(env(
+            i * 2 + 2,
+            testing::content(&format!("s.{i}"), &format!("row {i}\n")),
+        )));
+    }
+    // A window whose end the head believes is 40 rows short of the session's.
+    a.items_below = 40;
+    let _ = a.screen(100, 20);
+    a.hold(100_000);
+    let _ = a.screen(100, 20);
+    let at = a
+        .queued
+        .iter()
+        .position(|x| matches!(x, Action::FetchRows { .. }))
+        .expect("no page below the window was asked for");
+    let Action::FetchRows { from, .. } = a.queued.remove(at) else {
+        unreachable!("the position was of a FetchRows")
+    };
+
+    // The daemon has nothing at that ordinal.
+    a.apply(ServerFrame::RowsFetched {
+        session_id: "s".into(),
+        from,
+        rows: Vec::new(),
+    });
+    assert_eq!(a.items_below, 0, "the empty answer did not end the count");
+    let _ = a.screen(100, 20);
+    assert!(
+        !a.queued
+            .iter()
+            .any(|x| matches!(x, Action::FetchRows { .. })),
+        "a page was asked for below a window the daemon said ends the session"
+    );
+    // And a row arriving now is held rather than counted: the window reaches the end again.
+    a.apply(ServerFrame::Event(env(
+        99,
+        testing::appended("s.new", "user"),
+    )));
+    assert_eq!(a.items.last().map(|r| r.item_id.as_str()), Some("s.new"));
+}

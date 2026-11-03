@@ -228,9 +228,13 @@ impl App {
         // ordinal is how it asks for the rows above: `items_dropped` is that count and it is already on
         // the wire. A resync replaces the window, so what the head knew about rows below it goes too.
         self.items_base = s.items_dropped as usize;
+        // **And a snapshot reaches the tail**, so nothing sits below this window: the count a
+        // parked reader was holding names rows of the transcript this one replaced.
+        self.items_below = 0;
         // A page asked for against the transcript this one replaced is a page nobody will place, and
         // the rows the head was told do not exist above may be another session's entirely.
         self.fetch_asked = None;
+        self.fetch_below = None;
         self.no_more_above = false;
         // A collapse is about a row, so it goes only with the rows that went: the pairing is keyed by `item_id`
         // and a snapshot hands the same ids back. A retired one outlives even the session, since a hide the
@@ -602,6 +606,9 @@ impl App {
             .position(|r| r.item_id.starts_with(gone.as_str()))
             .unwrap_or(self.items.len());
         self.items.retain(|r| !r.item_id.starts_with(gone.as_str()));
+        // A fork's rows are not the ones this head counted below the window, and they arrive as
+        // appends: the gap goes with the transcript it was a gap in.
+        self.items_below = 0;
         // The one thing this head keeps by row INDEX goes with the rows: the seams its notes were filed at. A
         // seam into the rows that went joins the history, which is the rule `load` applies to a seam the new
         // transcript no longer has.
@@ -769,6 +776,12 @@ impl App {
             }
         }
         let Some(idx) = self.items.iter().position(|r| r.item_id == item_id) else {
+            // **A head holding a window is sent bodies for rows it let go**, above and below it:
+            // the page the reader asks for brings the row back whole, so this is the window doing
+            // its job and not a body with nowhere to go.
+            if self.items_base > 0 || self.items_below > 0 {
+                return;
+            }
             // A body with no row to land on is counted and never silent: the announcement was replaced by a
             // snapshot that no longer carries this id, so the words arrive with nowhere to go. Counted rather
             // than made to work, because there is nothing to recover.

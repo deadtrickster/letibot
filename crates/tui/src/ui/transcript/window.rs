@@ -249,6 +249,11 @@ impl App {
         if self.hist_floor == 0 {
             self.ask_for_rows_above();
         }
+        // And the same at the other end: a reader at the end of what is held, with the session gone
+        // on below it, has a tail one page away in the direction the session runs.
+        if self.anchor.is_none() {
+            self.ask_for_rows_below();
+        }
 
         // One walk, two numbers, and the numerator cannot exceed its denominator: how many rows have arrived out
         // of how many there are, both counted off one pass over `items`. The version this replaces kept a
