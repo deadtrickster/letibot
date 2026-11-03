@@ -1028,13 +1028,14 @@ fn attempt_beside(stem: &Path) -> Result<(PathBuf, PathBuf), String> {
     Err(format!("every name beside `{}` is taken", stem.display()))
 }
 
-/// A file the daemon itself wrote into a workspace - `.letibot/<name>.jsonl`, the logs older
-/// builds kept there. Not the child's work, so it neither keeps a tree nor is the child nudged about
-/// it. `path` is a porcelain path, relative to the tree.
+/// A file the daemon itself wrote into a workspace - anything it keeps directly in `.letibot/`:
+/// the delivery log, the head's notes, a monitor record. Not the child's work, so it neither keeps
+/// a tree nor is the child nudged about it. A SUBDIRECTORY there is the project's (`plugins`,
+/// `notes`) and stays the child's. `path` is a porcelain path, relative to the tree.
 pub fn daemon_leftover(path: &str) -> bool {
     let path = path.trim().trim_matches('"');
     path.strip_prefix(".letibot/")
-        .is_some_and(|rest| !rest.contains('/') && rest.ends_with(".jsonl"))
+        .is_some_and(|rest| !rest.contains('/'))
 }
 
 /// `git status --porcelain`'s lines that are the tree's own work - every untracked file named
