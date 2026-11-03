@@ -33,13 +33,6 @@ const PROPOSE_A_TOOL: u8 = 2;
 /// Bytes one history row carries.
 const ROW_BYTES: usize = 64 * 1024;
 
-/// What one `System` row costs the ledger beyond its own bytes: role framing and a separator.
-const ROW_FRAMING: usize = 64;
-
-/// The most two attempts asking the same words may differ by: the first row of a run carries a role
-/// boundary the ones after it do not.
-const ROLE_BOUNDARY: usize = 8;
-
 /// The answer the fake gives when it is asked for a summary.
 const SUMMARY: &str = "## Objective\n- measure what a failed compaction leaves\n";
 
@@ -295,12 +288,11 @@ fn instructions(h: &Harness) -> Vec<String> {
         .collect()
 }
 
-/// What ONE refused compaction attempt leaves behind, measured over `attempts` of them on a
-/// conversation of `rows` × 64 KiB. The residue is one instruction row and its tokens: nothing the
-/// attempt rendered, cloned or tokenised is kept, and the cost per attempt does not move with the
-/// conversation's size.
+/// What ONE refused compaction attempt leaves behind: nothing. Forty of them on a 2 MiB conversation
+/// leave the transcript where each attempt found it, because a fold that fails rolls back its own
+/// instruction, and the cost per attempt does not move with the conversation's size.
 #[test]
-fn a_refused_compaction_leaves_one_instruction_row_and_nothing_it_rendered() {
+fn a_refused_compaction_leaves_the_transcript_where_it_found_it() {
     let _serial = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
     let fake = Fake::start();
     let dir = TempDir::new("harnessd-r66-compaction-refused");
@@ -325,7 +317,6 @@ fn a_refused_compaction_leaves_one_instruction_row_and_nothing_it_rendered() {
     fake.answer_with(REFUSE);
     let asked_before = fake.asked.load(Ordering::Relaxed);
     let mut per: Vec<Held> = Vec::new();
-    let mut said: Vec<String> = Vec::new();
     let mut prev = base;
     for i in 0..40 {
         let out = h.compact();
@@ -345,76 +336,41 @@ fn a_refused_compaction_leaves_one_instruction_row_and_nothing_it_rendered() {
         }
         per.push(now);
         prev = now;
-        let mut left = instructions(&h);
         assert_eq!(
-            left.len(),
-            i + 1,
-            "attempt {} must leave its instruction and nothing else that asks for a record",
+            instructions(&h).len(),
+            0,
+            "attempt {} left a row that asks for a record",
             i + 1
         );
-        said.push(left.pop().expect("the attempt's own instruction"));
     }
     let end = *per.last().expect("forty attempts");
     let asked = fake.asked.load(Ordering::Relaxed) - asked_before;
 
-    // (1) One item per attempt, and it is the instruction: the rows that ASK for a record are
-    // exactly the text the attempts added, and each is the size of an ask rather than of a
-    // conversation.
-    assert_eq!(said.len(), 40, "one instruction row per attempt");
-    let asked_bytes: usize = said.iter().map(String::len).sum();
+    // (1) The transcript is what it was. Not one row, one byte or one token of the forty
+    // instructions, and none of the notices a salvage wrote beside them, stays behind: a session
+    // whose folds keep failing would otherwise carry a copy of the instruction per attempt.
     assert_eq!(
-        end.text - base.text,
-        asked_bytes,
-        "the only text 40 refused attempts added is the 40 instructions"
+        end.items,
+        base.items,
+        "40 refused attempts left {} item(s) within",
+        end.items.saturating_sub(base.items)
     );
     assert_eq!(
-        end.items - base.items,
-        40,
-        "a refused attempt appends the instruction and nothing else"
+        end.text,
+        base.text,
+        "40 refused attempts left {} byte(s) of text",
+        end.text.saturating_sub(base.text)
     );
-    assert_eq!(asked, 40, "each attempt reached the model exactly once");
-    let biggest = said.iter().map(String::len).max().unwrap_or(0);
+    assert_eq!(
+        end.tokens, base.tokens,
+        "the token region is where the first attempt found it"
+    );
     assert!(
-        biggest < 8 * 1024,
-        "the largest instruction is {biggest} byte(s), which on a {} conversation is a copy of \
-         something rather than an ask",
-        mb(base.text as f64)
+        asked >= 40,
+        "each attempt must reach the model at least once, and {asked} of 40 did"
     );
 
-    // (2) The token region grows by one instruction's rendering: attempts that asked the same words
-    // rendered the same number of tokens, and no attempt grew the ledger by more than its own ask.
-    let mut seen: Vec<(&str, usize)> = Vec::new();
-    for (i, now) in per.iter().enumerate() {
-        let before = if i == 0 {
-            base.tokens
-        } else {
-            per[i - 1].tokens
-        };
-        let added = now.tokens - before;
-        let text = said[i].as_str();
-        assert!(
-            added <= text.len() + ROW_FRAMING,
-            "attempt {} grew the ledger by {added} token(s) for an instruction of {} byte(s)",
-            i + 1,
-            text.len()
-        );
-        match seen.iter().find(|(t, _)| *t == text) {
-            Some((_, was)) => assert!(
-                added.abs_diff(*was) <= ROLE_BOUNDARY,
-                "two attempts asking the same words rendered {added} and {was} token(s)"
-            ),
-            None => seen.push((text, added)),
-        }
-    }
-    let steady = per[1].tokens - per[0].tokens;
-    println!(
-        "per attempt: +1 item, +{} byte(s) of text, +{steady} token(s) of ledger, {} distinct ask(s) \
-         in 40",
-        said[1].len(),
-        seen.len()
-    );
-
-    // (3) The heap cost per attempt is flat, and it is nothing like a copy of the conversation.
+    // (2) The heap cost per attempt is flat, and it is nothing like a copy of the conversation.
     let early = (per[9].heap - base.heap) as f64 / 10.0;
     let late = (end.heap - per[29].heap) as f64 / 10.0;
     println!(
@@ -433,13 +389,13 @@ fn a_refused_compaction_leaves_one_instruction_row_and_nothing_it_rendered() {
     );
     assert!(
         end.heap - base.heap < 40 * 64 * 1024,
-        "40 refused attempts grew the heap by {} on a {} conversation — more than 40 × 64 KiB is \
-         something retained per attempt that is not the instruction",
+        "40 refused attempts grew the heap by {} on a {} conversation: more than 40 × 64 KiB is \
+         something retained per attempt",
         mb(end.heap.saturating_sub(base.heap) as f64),
         mb(base.text as f64)
     );
 
-    // (4) The census has walked the rows the attempts left, so the watchdog sees them.
+    // (3) The census has walked the transcript the attempts left, so the watchdog sees it.
     assert_eq!(
         end.census,
         end.text,
@@ -499,7 +455,9 @@ fn a_refused_reseat_leaves_the_census_walking_its_instruction() {
 
 /// The other failure: the summary turn RAN, wrote its answer, and the compaction was refused for
 /// what the answer proposed. What stays behind is the instruction plus that answer - one turn's
-/// output per attempt, not the conversation.
+/// output per attempt, not the conversation. This one is main's design and not the rollback's: the
+/// hub pairs the refusal's warning with that instruction, and the error tells the model to try
+/// again on the transcript it can see.
 #[test]
 fn a_compaction_that_ran_and_was_refused_leaves_its_own_answer_too() {
     let _serial = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
@@ -572,9 +530,9 @@ fn a_compaction_that_ran_and_was_refused_leaves_its_own_answer_too() {
     );
 }
 
-/// The control, and the reason a session that cannot compact grows: a compaction that LANDS
-/// replaces the conversation with one row, so the whole history goes back. A failed one leaves
-/// every row it was meant to fold, plus the instruction.
+/// The control, and the reason a session that cannot compact stays where it is: a compaction that
+/// LANDS replaces the conversation with one row, so the whole history goes back. A failed one
+/// leaves every row it was meant to fold, and adds none.
 #[test]
 fn a_compaction_that_lands_gives_the_conversation_back_and_a_failed_one_does_not() {
     let _serial = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
@@ -591,14 +549,13 @@ fn a_compaction_that_lands_gives_the_conversation_back_and_a_failed_one_does_not
         before.tokens
     );
 
-    // Refused first: the conversation stays, and the instruction joins it.
+    // Refused first: the conversation stays exactly as it was, and nothing joins it.
     fake.answer_with(REFUSE);
     assert!(h.compact().is_err(), "the refusal must fail the compaction");
     let after_refusal = held(&h);
     assert_eq!(
-        after_refusal.items,
-        before.items + 1,
-        "a refused compaction leaves the conversation and adds the instruction"
+        after_refusal.items, before.items,
+        "a refused compaction leaves the conversation where it found it"
     );
 
     // Then allowed: the same conversation, folded, is one row.
