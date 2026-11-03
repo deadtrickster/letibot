@@ -281,17 +281,18 @@ fn every_review_warning_draws_as_one_line_and_opens_whole() {
     }
 }
 
-/// **A narrow screen cuts the line with the head's `…`** - it never wraps.
+/// **A narrow screen cuts the line with the head's `…`** - it never wraps. Narrower than the hint
+/// and a stub of the facts, the line is cut whole: the tail goes last, and 30 columns is under it.
 #[test]
 fn a_narrow_screen_cuts_the_line() {
     let mut a = with_notice(CANNOT_DECIDE);
-    let screen = a.screen(70, 30);
-    let rows = rows_with(&screen, "review · agent/panic-groupingsets-join");
+    let screen = a.screen(30, 30);
+    let rows = rows_with(&screen, "review ·");
     assert_eq!(rows.len(), 1, "{}", screen.join("\n"));
     assert!(rows[0].contains('…'), "{rows:?}");
     assert!(!rows[0].contains("click for details"), "{rows:?}");
     for l in &screen {
-        assert!(visible_width(l) <= 70, "{l:?}");
+        assert!(visible_width(l) <= 30, "{l:?}");
     }
     assert_eq!(a.notice_rows.len(), 1);
 }

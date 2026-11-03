@@ -4,6 +4,14 @@
 use super::redcard::{holds, popup_text, rows_with, with_notice, with_warning};
 use super::*;
 
+// The daemon's own texts, one per card whose line is long enough for a width to matter - a
+// verdict, its refusal, a red target, a restart. Pinned byte for byte by `harnessd`'s
+// `the_tuis_review_card_fixtures_are_what_the_queue_writes` and its neighbours.
+const REVIEW_VERDICT: &str = include_str!("fixtures/review_cannot_decide_notice.txt");
+const REVIEW_REFUSAL: &str = include_str!("fixtures/review_refused_message.txt");
+const RED_TARGET: &str = include_str!("fixtures/red_main_notice.txt");
+const RESTARTED: &str = include_str!("fixtures/restart_restored_notice.txt");
+
 /// How many of the frame's rows say `needle`.
 fn rows(screen: &[String], needle: &str) -> usize {
     rows_with(screen, needle).len()
@@ -206,6 +214,50 @@ fn a_narrow_screen_cuts_the_facts_and_keeps_the_hint() {
     assert!(line.contains("… · click for details"), "{line}");
     for l in &screen {
         assert!(visible_width(l) <= 80, "{l:?}");
+    }
+}
+
+/// **The hint outlives the facts at every width a terminal comes in.** A reader who cannot see
+/// `click for details` never learns the row opens, so the facts give way first and the hint goes
+/// last - only when not even a stub of them fits beside it.
+#[test]
+fn a_hint_outlives_the_facts_at_sixty_eighty_and_a_hundred_and_twenty() {
+    for (what, text, lead) in [
+        ("a verdict", REVIEW_VERDICT, "review ·"),
+        ("a refusal", REVIEW_REFUSAL, "review ·"),
+        ("a red target", RED_TARGET, "‼ main RED"),
+        ("a restart", RESTARTED, "restarted ·"),
+    ] {
+        let one = |cols: usize| {
+            let mut a = with_notice(text);
+            let screen = a.screen(cols, 40);
+            let row = rows_with(&screen, lead)
+                .first()
+                .map(|l| l.to_string())
+                .unwrap_or_else(|| panic!("{what} at {cols}: {}", screen.join("\n")));
+            assert!(visible_width(&row) <= cols, "{what} at {cols}: {row:?}");
+            assert_eq!(
+                a.notice_rows.len(),
+                1,
+                "{what} at {cols}: one line, not two"
+            );
+            row
+        };
+        for cols in [60, 80, 120] {
+            let row = one(cols);
+            let subject = row
+                .strip_suffix(" · click for details")
+                .unwrap_or_else(|| panic!("{what} at {cols} lost the hint: {row:?}"));
+            // Whole only when it fits; a cut line gives way in the facts and says so.
+            assert!(
+                subject.ends_with('…') || visible_width(&row) < cols,
+                "{what} at {cols} cut the subject without saying so: {row:?}"
+            );
+        }
+        // Narrower than the hint and a stub of the facts, the tail goes last.
+        let row = one(30);
+        assert!(!row.contains("click for details"), "{what}: {row:?}");
+        assert!(row.contains('…'), "{what}: {row:?}");
     }
 }
 

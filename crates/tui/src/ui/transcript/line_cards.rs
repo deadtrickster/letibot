@@ -63,19 +63,16 @@ impl Card {
     }
 
     /// The line cut to `cols` with the head's ellipsis, the accent kept to what survived the cut. The
-    /// hint is cut LAST, so the words that say a click opens the rest survive any width the lead
-    /// still fits in - at the end of a line it was the first thing a narrow terminal took.
+    /// hint is cut LAST, because a reader who cannot see it never learns the row opens: the facts
+    /// give way to it, and it goes only when the facts could not keep a stub beside it.
     pub(crate) fn cut(&self, cols: usize) -> CardLine {
         let hint = format!(" · {CLICK}");
         // The facts keep at least this much beside the hint; narrower, the line is cut whole.
         const FACTS: usize = 16;
-        let lead = visible_width(&self.line[..self.accent.end.min(self.line.len())]);
+        let hint_cols = visible_width(&hint);
         let text = match self.line.strip_suffix(hint.as_str()) {
-            Some(facts)
-                if visible_width(&self.line) > cols
-                    && cols >= visible_width(&hint) + lead + FACTS =>
-            {
-                format!("{}{hint}", trim_to(facts, cols - visible_width(&hint)))
+            Some(facts) if visible_width(&self.line) > cols && cols >= hint_cols + FACTS => {
+                format!("{}{hint}", trim_to(facts, cols - hint_cols))
             }
             _ => trim_to(&self.line, cols),
         };
