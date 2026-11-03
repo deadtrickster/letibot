@@ -228,7 +228,8 @@ pub fn render_profile(view: &ViewSpec, egress: &Egress, l: &Layout) -> String {
     // starts at all; a profile that allows it and nothing else is a program that cannot run.
     s.push_str("(allow process*)\n");
     s.push_str("(allow sysctl-read)\n");
-    s.push_str("(allow signal (target self))\n");
+    // `same-sandbox`, not `self`: a test runner stops the child it started, and both are inside.
+    s.push_str("(allow signal (target same-sandbox))\n");
     s.push_str("(allow mach-lookup\n");
     for m in MACH_SERVICES {
         s.push_str(&format!("  (global-name \"{m}\")\n"));
@@ -350,6 +351,7 @@ if : > \"$3\" 2>/dev/null; then p write-inside wrote; else p write-inside denied
 if /bin/sh -c true 2>/dev/null; then p fork-exec ran; else p fork-exec failed; fi
 if /bin/sh -c \"test -r \\\"$1\\\"\" 2>/dev/null; then p nested-read allowed; else p nested-read denied; fi
 if kill -0 \"$4\" 2>/dev/null; then p signal-outside reached; else p signal-outside denied; fi
+sleep 5 & c=$!; if kill $c 2>/dev/null; then p signal-child reached; else p signal-child denied; fi
 if command -v nc >/dev/null 2>&1; then
   m=$(nc -v -z -G 1 -w 1 127.0.0.1 1 2>&1)
   case \"$m\" in *\"permitted\"*) p net-loopback denied;; *\"refused\"*) p net-loopback allowed;; *) p net-loopback unverified;; esac
@@ -682,13 +684,16 @@ fn judged(
         },
     };
 
-    let signal = match f("signal-outside") {
-        Some(Outcome::Denied) => PropState::Held {
+    let signal = match (f("signal-outside"), f("signal-child")) {
+        (Some(Outcome::Denied), Some(Outcome::Denied)) => PropState::Absent {
+            why: "a command inside could not stop its own background child".into(),
+        },
+        (Some(Outcome::Denied), _) => PropState::Held {
             how: "`kill -0 <this process's own launcher>` from inside was `EPERM`, and a child \
                   of the command stayed killable"
                 .into(),
         },
-        Some(Outcome::Reached) => PropState::Absent {
+        (Some(Outcome::Reached), _) => PropState::Absent {
             why: "a signal from inside reached a process outside the boundary".into(),
         },
         other => PropState::Unverified {
@@ -1045,7 +1050,7 @@ mod tests {
 ; --- a process, a syscall table, and the system services a shell needs ---
 (allow process*)
 (allow sysctl-read)
-(allow signal (target self))
+(allow signal (target same-sandbox))
 (allow mach-lookup
   (global-name \"com.apple.system.logger\")
   (global-name \"com.apple.system.notification_center\")

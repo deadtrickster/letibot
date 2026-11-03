@@ -359,3 +359,20 @@ fn a_command_inside_the_profile_cannot_connect_to_a_hidden_unix_socket() {
     let _ = std::fs::remove_file(&sock);
     assert!(!out.contains("CONNECTED"), "{out}");
 }
+
+#[test]
+fn a_command_inside_the_profile_can_stop_its_own_child() {
+    // A test runner's timeout kills the child it started; a profile that lets a process signal
+    // only itself turns every such deadline into the child's whole lifetime.
+    let f = Fixture::new("own-child");
+    let s = match f.probe(Egress::Denied) {
+        Ok(s) => s,
+        Err(e) => panic!("the macOS boundary did not measure on this box: {e}"),
+    };
+    let (rc, out) = run_in(
+        &s,
+        &f.project(),
+        "sleep 30 & c=$!; if kill -9 $c 2>&1; then echo KILLED; else echo REFUSED; fi; wait $c",
+    );
+    assert!(out.contains("KILLED"), "rc={rc}: {out}");
+}
