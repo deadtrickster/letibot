@@ -520,6 +520,29 @@ fn the_starvation_cap_releases_the_batch_mid_turn() {
     );
 }
 
+/// **A held batch with a row waiting on it** says the plan line and a head that does not deny
+/// it: the head used to say "nothing in your plan was waiting on it" over a line naming the row
+/// that was.
+#[test]
+fn a_held_batch_never_denies_the_plan_line_under_it() {
+    let board = waiting_board();
+    let text = meanwhile_notice(
+        vec![settled("j12", "exited 0", SystemTime::UNIX_EPOCH)],
+        "s-r79",
+        crate::delivery::Rule::Batch,
+        crate::delivery::HELD_RESULTS_CAP,
+        &board,
+    );
+    assert!(
+        text.contains("Waiting on this: \"make tier 1 green\""),
+        "the row that waited on it is named: {text}"
+    );
+    assert!(
+        !text.to_lowercase().contains("nothing in your plan"),
+        "a head that says the plan was not waiting contradicts the line under it: {text}"
+    );
+}
+
 /// **The batch's own words are pinned for the head**: `[meanwhile] …` and then the `[job]` group
 /// exactly as `completion_notice` writes it, so the head's compact job rows parse it. Written to
 /// the head's fixture and compared byte for byte, as `job_notice_*.txt` are.
