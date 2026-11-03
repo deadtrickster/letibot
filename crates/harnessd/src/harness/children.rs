@@ -146,12 +146,37 @@ pub(crate) struct TaskSlot {
     /// Whether the answer the PARENT was handed was a failure. The reap reads this and not the
     /// slot's latest status: a later turn's error says nothing about the task it was started for.
     answer_failed: std::sync::atomic::AtomicBool,
+    /// Whether the answer this slot settled with has been handed to a reader and dropped from the slot.
+    /// One answer is 5-120 KB, and nothing used to remove one, so a tree held every child's whole
+    /// output for the daemon's life. Cleared by each settlement: a second answer is a new debt.
+    handed_over: std::sync::atomic::AtomicBool,
 }
+
+/// What a slot's answer becomes once a reader has it: the body is in the child's own session, and this
+/// is the sentence a second reader is owed instead of a copy the tree kept for nobody.
+pub(crate) const ANSWER_HANDED_OVER: &str = "this answer was handed over and the tree does not keep a copy of it — `transcript` with this \
+     handle reads the child's own session, which holds everything it said";
 
 /// The handles one runner has handed out, with the slot each knocks on, in the order the
 /// children were started.
 pub(crate) type TaskSlots =
     std::sync::Arc<std::sync::Mutex<Vec<(String, std::sync::Arc<TaskSlot>)>>>;
+
+/// The slots whose answer a reader has not been handed yet: the whole of what a tree still owes a
+/// parent. Every other slot's body has been dropped - see [`TaskSlot::hand_over_answer`].
+#[cfg(test)]
+pub(crate) fn owed_answers(slots: &[(String, Arc<TaskSlot>)]) -> usize {
+    slots.iter().filter(|(_, slot)| slot.holds_answer()).count()
+}
+
+/// **A reader has this child's answer, so the slot stops holding it.** `consumed` is the only door:
+/// it is where the record is marked delivered, and dropping the body anywhere else would take a
+/// child's answer away before anybody read it. A handle with no slot owes nothing and is silent.
+pub(crate) fn release_delivered(slots: &[(String, Arc<TaskSlot>)], handle: &str) {
+    if let Some((_, slot)) = slots.iter().find(|(h, _)| h == handle) {
+        slot.hand_over_answer();
+    }
+}
 
 impl TaskSlot {
     pub(crate) fn recorded(
@@ -183,6 +208,7 @@ impl TaskSlot {
             owner: owner.to_string(),
             exited: std::sync::atomic::AtomicBool::new(false),
             parked: std::sync::atomic::AtomicBool::new(false),
+            handed_over: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -195,6 +221,28 @@ impl TaskSlot {
     /// FIRST settlement and never a later one, which a `task_message` turn of a parked child makes.
     pub(crate) fn answer_failed(&self) -> bool {
         self.answer_failed.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Drop this slot's answer body, keeping the state it settled with. A reader has the text, so what
+    /// is left is the fact that the child answered and the sentence saying where to read it.
+    pub(crate) fn hand_over_answer(&self) {
+        let mut g = self.state.lock().expect("task slot");
+        if let letibot_tools::builtins::task::TaskStatus::Done { answer, .. } = &mut *g
+            && !self
+                .handed_over
+                .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            *answer = ANSWER_HANDED_OVER.to_string();
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn holds_answer(&self) -> bool {
+        !self.handed_over.load(std::sync::atomic::Ordering::SeqCst)
+            && matches!(
+                &*self.state.lock().expect("task slot"),
+                letibot_tools::builtins::task::TaskStatus::Done { .. }
+            )
     }
 
     /// The child parked as store-only. Set before [`TaskSlot::mark_exited`], on the same thread.
@@ -300,6 +348,10 @@ impl TaskSlot {
                 std::sync::atomic::Ordering::SeqCst,
             );
         }
+        // A settlement is a debt to whoever reads it, so the previous answer's release does not
+        // carry over: a child that answers again is owed again.
+        self.handed_over
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         *g = status;
         drop(g);
         self.settled.notify_all();
@@ -2521,6 +2573,10 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
     /// record is marked delivered and a restart does not announce it again. Only this session's own children
     /// are marked.
     fn consumed(&self, handle: &str) {
+        // **The body is not owed any more**, so the slot stops holding it: this reader has the text
+        // and the child's own session keeps it. Here rather than at the settlement, because until
+        // somebody reads it a `task_result` may still be handed it.
+        release_delivered(&self.slots.lock().expect("task slots"), handle);
         let Some(store) = self.run_store() else {
             return;
         };

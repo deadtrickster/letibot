@@ -1283,3 +1283,50 @@ fn a_child_that_ends_with_children_on_their_task_stops_them() {
         "nothing unsettled, nothing stopped"
     );
 }
+
+/// **An answer is kept only while it is owed to somebody.** A child's body is 5 KB to 120 KB, and
+/// a daemon that held every one of them for its life held the whole tree's output. What a reader
+/// has been handed is in the child's own session, so the slot drops it. Counted, never measured:
+/// the question is how many bodies the tree still owes, and that must not grow with the children.
+#[test]
+fn a_delivered_answer_is_not_kept_for_the_daemons_life() {
+    use letibot_tools::builtins::task::TaskStatus;
+    let body = "one line of a child's answer, and then another\n".repeat(200);
+    let mut slots: Vec<(String, Arc<TaskSlot>)> = Vec::new();
+    for i in 0..200 {
+        let slot = Arc::new(TaskSlot::new("s-parent"));
+        slot.settle(TaskStatus::Done {
+            answer: body.clone(),
+            child: None,
+        });
+        let handle = format!("s-parent-sub-{i}");
+        slots.push((handle.clone(), slot));
+        // Undelivered, the body is whole and owed: a reader may still be handed it.
+        assert_eq!(
+            owed_answers(&slots),
+            1,
+            "child {i}'s answer is owed until somebody reads it"
+        );
+        release_delivered(&slots, &handle);
+        assert_eq!(
+            owed_answers(&slots),
+            0,
+            "child {i}'s answer was read, so the tree keeps none of it"
+        );
+    }
+    // The state survives the body: a second `task_result` is told where the text is.
+    let held = slots[123].1.status();
+    assert!(
+        matches!(&held, TaskStatus::Done { answer, .. } if answer.contains("transcript")),
+        "{held:?}"
+    );
+    // And a child that answers AGAIN is owed again: the debt is per answer, not per child.
+    let again = &slots[123].1;
+    again.settle(TaskStatus::Done {
+        answer: body.clone(),
+        child: None,
+    });
+    assert_eq!(owed_answers(&slots), 1, "a fresh answer is a fresh debt");
+    again.hand_over_answer();
+    assert_eq!(owed_answers(&slots), 0);
+}

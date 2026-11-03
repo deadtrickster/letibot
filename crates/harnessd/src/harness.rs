@@ -1552,9 +1552,9 @@ pub(crate) use children::steer_for_turn;
 pub(crate) use children::{
     AnswerOnce, ChildCommand, PlacedChild, SUBAGENT_TITLE_MAX, TaskSlot,
     a_child_that_ends_stops_its_own, child_command, child_leave_said, children_stopped_notice,
-    finish_child_thread, inherited_spawn_model, mint_sub_id_at, name_repos, repos_under,
-    stoppable_children, subagent_ask_target, subagent_depth_refusal, subagent_title,
-    unsettled_children,
+    finish_child_thread, inherited_spawn_model, mint_sub_id_at, name_repos, owed_answers,
+    release_delivered, repos_under, stoppable_children, subagent_ask_target,
+    subagent_depth_refusal, subagent_title, unsettled_children,
 };
 pub use children::{
     ChildExit, ChildTurns, SubagentModel, derive_title, message_from_a_session, serve_child_under,
