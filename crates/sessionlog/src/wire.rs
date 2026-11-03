@@ -109,6 +109,32 @@ impl<W: Write> FrameWriter<W> {
         Ok(())
     }
 
+    /// Many frames, one flush: the frames are serialised into the buffer and sent together (a write
+    /// per 64 KiB at most), so a batch already queued for a head costs one syscall, not one per frame.
+    pub fn write_all<T: Serialize>(
+        &mut self,
+        frames: impl IntoIterator<Item = T>,
+    ) -> Result<(), WireError> {
+        const SEND_AT: usize = 64 * 1024;
+        self.buf.clear();
+        for frame in frames {
+            serde_json::to_writer(&mut self.buf, &frame).map_err(|e| WireError::Malformed {
+                line: String::new(),
+                detail: e.to_string(),
+            })?;
+            self.buf.push(b'\n');
+            if self.buf.len() >= SEND_AT {
+                self.inner.write_all(&self.buf)?;
+                self.buf.clear();
+            }
+        }
+        if !self.buf.is_empty() {
+            self.inner.write_all(&self.buf)?;
+        }
+        self.inner.flush()?;
+        Ok(())
+    }
+
     pub fn get_mut(&mut self) -> &mut W {
         &mut self.inner
     }
@@ -141,6 +167,52 @@ mod tests {
             r.read::<ClientFrame>().unwrap(),
             ClientFrame::Detach
         ));
+        assert!(matches!(r.read::<ClientFrame>(), Err(WireError::Eof)));
+    }
+
+    /// A writer that counts the calls it takes, which is the syscalls a socket would take.
+    struct Counting {
+        writes: usize,
+        bytes: Vec<u8>,
+    }
+    impl Write for Counting {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.writes += 1;
+            self.bytes.extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_batch_of_frames_is_one_write_and_reads_back_frame_by_frame() {
+        let mut sink = Counting {
+            writes: 0,
+            bytes: Vec::new(),
+        };
+        {
+            let mut w = FrameWriter::new(&mut sink);
+            let frames: Vec<ClientFrame> = (0..50)
+                .map(|seq| {
+                    ClientFrame::Ack(Ack {
+                        seq,
+                        rendered: 0,
+                        filtered: 0,
+                    })
+                })
+                .collect();
+            w.write_all(&frames).unwrap();
+        }
+        assert_eq!(sink.writes, 1, "fifty queued frames take one write");
+        let mut r = FrameReader::new(&sink.bytes[..]);
+        for want in 0..50 {
+            match r.read::<ClientFrame>().unwrap() {
+                ClientFrame::Ack(a) => assert_eq!(a.seq, want),
+                other => panic!("{other:?}"),
+            }
+        }
         assert!(matches!(r.read::<ClientFrame>(), Err(WireError::Eof)));
     }
 

@@ -1831,16 +1831,7 @@ fn seat_in(
                             }
                             r
                         }
-                        Delivery::Events(b) => {
-                            let mut r = Ok(());
-                            for env in b.events() {
-                                r = w.write(&ServerFrame::Event(env.clone()));
-                                if r.is_err() {
-                                    break;
-                                }
-                            }
-                            r
-                        }
+                        Delivery::Events(b) => w.write_all(b.events().iter().map(EventOut::Event)),
                         Delivery::Resync {
                             reason,
                             dropped,
@@ -1877,6 +1868,32 @@ fn seat_in(
         switching,
         pump,
     })
+}
+
+/// [`ServerFrame::Event`] by reference: the same bytes on the wire without a clone of the event.
+#[derive(serde::Serialize)]
+#[serde(tag = "frame", rename_all = "snake_case")]
+enum EventOut<'a> {
+    Event(&'a crate::event::Envelope),
+}
+
+#[cfg(test)]
+mod event_out_tests {
+    use super::*;
+
+    #[test]
+    fn the_borrowed_event_frame_is_the_owned_one() {
+        let env = crate::event::Envelope {
+            session_id: "s-1".into(),
+            seq: 7,
+            ts: 1234,
+            event: crate::testing::warn("w"),
+        };
+        assert_eq!(
+            serde_json::to_string(&EventOut::Event(&env)).unwrap(),
+            serde_json::to_string(&ServerFrame::Event(env.clone())).unwrap()
+        );
+    }
 }
 
 /// Detach from the session this seat is in, and stop its pump, without telling the head the
