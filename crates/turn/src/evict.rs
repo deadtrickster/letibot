@@ -280,10 +280,16 @@ fn plan_text(rows: &[String]) -> String {
 /// anything a plan row still names. A body the store will not keep is not evicted either.
 pub fn reduce(items: &[TranscriptItem], rows: &[String], store: &dyn BodyStore) -> Eviction {
     let plan = plan_text(rows);
-    // Everything after the last thing the operator said is the exchange the session is inside.
+    // Everything after the last thing the operator said is the exchange the session is inside -
+    // and a delivery opens one as a prompt does, so it counts as the last thing said.
     let in_hand = items
         .iter()
-        .rposition(|i| matches!(i, TranscriptItem::User { .. }))
+        .rposition(|i| {
+            matches!(
+                i,
+                TranscriptItem::User { .. } | TranscriptItem::Notice { .. }
+            )
+        })
         .map(|at| at + 1)
         .unwrap_or(0);
     let calls = calls_of(items);

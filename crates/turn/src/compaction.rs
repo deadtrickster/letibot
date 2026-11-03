@@ -224,6 +224,12 @@ pub fn carried_text(items: &[TranscriptItem]) -> String {
                     }
                 }
             }
+            // A delivery is a message the tail carries too, and one it does not mention is a tail
+            // the gate reads as having lost the news it holds.
+            TranscriptItem::Notice { text, .. } => {
+                out.push_str(text);
+                out.push('\n');
+            }
             TranscriptItem::Assistant {
                 text, tool_calls, ..
             } => {
@@ -1020,7 +1026,12 @@ pub fn plan_tail(items: &[TranscriptItem], item_tokens: &[u64], budget: u64) -> 
     // has something to plan against.
     let mut starts: Vec<usize> = vec![0];
     for (i, item) in items.iter().enumerate().take(n).skip(1) {
-        if matches!(item, TranscriptItem::User { .. }) {
+        // A delivery opens a turn the same way a prompt does: it is a message the model is handed,
+        // so a tail may begin there and must not begin in the middle of what follows it.
+        if matches!(
+            item,
+            TranscriptItem::User { .. } | TranscriptItem::Notice { .. }
+        ) {
             starts.push(i);
         }
     }
@@ -1078,11 +1089,19 @@ pub fn tail_split_of(items: &[TranscriptItem], from: usize) -> Option<TailSplit>
     if from == 0 || from >= items.len() {
         return None;
     }
-    if matches!(items[from], TranscriptItem::User { .. }) {
+    if matches!(
+        items[from],
+        TranscriptItem::User { .. } | TranscriptItem::Notice { .. }
+    ) {
         return None;
     }
     let mut start = from;
-    while start > 0 && !matches!(items[start], TranscriptItem::User { .. }) {
+    while start > 0
+        && !matches!(
+            items[start],
+            TranscriptItem::User { .. } | TranscriptItem::Notice { .. }
+        )
+    {
         start -= 1;
     }
     Some(TailSplit {
@@ -1258,6 +1277,14 @@ mod the_tail_and_the_template {
         }
     }
 
+    /// A delivery, as a wake writes it: the harness telling the session what it learned.
+    fn notice(text: &str) -> TranscriptItem {
+        TranscriptItem::Notice {
+            kind: letibot_transcript::NoticeKind::Monitor,
+            text: text.into(),
+        }
+    }
+
     /// Three exchanges of two items each: `u a u a u a`.
     fn three_exchanges() -> Vec<TranscriptItem> {
         vec![
@@ -1380,6 +1407,33 @@ mod the_tail_and_the_template {
         );
         assert_eq!(tail_budget(32_768), 8_192, "no clamp applies in the middle");
         assert_eq!(tail_budget(4_096), MIN_TAIL_TOKENS, "1024 floors at 2000");
+    }
+
+    /// **A delivery opens a turn, so a tail may begin at one.** A monitor's firing is a message the
+    /// model is handed, exactly as a prompt is; a plan that could not start there would drop the
+    /// turn the session is inside, and one that started inside it would carry half an exchange.
+    #[test]
+    fn a_tail_may_begin_at_a_notice_and_carries_its_words() {
+        let items = vec![
+            user("one"),
+            answered("one"),
+            notice("[monitor] `pr-watch` fired: the pull request was merged."),
+            answered("the review is booked"),
+        ];
+        let tokens = vec![10u64, 10, 10, 10];
+        assert_eq!(
+            plan_tail(&items, &tokens, 20),
+            TailPlan::Whole {
+                from: 2,
+                tokens: 20,
+                exchanges: 1
+            },
+            "the notice's turn is a whole exchange"
+        );
+        assert!(
+            carried_text(&items[2..]).contains("pull request was merged"),
+            "and the tail says it carries the delivery's words"
+        );
     }
 
     /// The template's sections are a contract with the next reader: a section dropped

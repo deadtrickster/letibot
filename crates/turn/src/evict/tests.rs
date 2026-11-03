@@ -527,3 +527,37 @@ fn the_span_handed_in_is_left_alone() {
     assert_ne!(out.items, before, "and the reduced span is not it either");
     assert_eq!(out.gone(), out.units.iter().map(|u| u.gone).sum::<usize>());
 }
+
+/// **A delivery opens the exchange in hand as a prompt does.** A wake's turn begins with a `Notice`
+/// row, so a span whose last message is a firing is the turn being worked on - and the read under
+/// it must not be evicted out from under a live turn.
+#[test]
+fn a_notice_opens_the_exchange_in_hand() {
+    let mut items = vec![
+        user("start"),
+        read("c1", "src/a.rs", 4_000)[0].clone(),
+        read("c1", "src/a.rs", 4_000)[1].clone(),
+        TranscriptItem::Notice {
+            kind: letibot_transcript::NoticeKind::Monitor,
+            text: "[monitor] `pr-watch` fired: the pull request was merged.".into(),
+        },
+        read("c2", "src/b.rs", 4_000)[0].clone(),
+        read("c2", "src/b.rs", 4_000)[1].clone(),
+    ];
+    // The same body twice: the first is superseded by nothing, the second would be the one this
+    // rule protects, so make them the same path and let the rule decide which goes.
+    items[4] = call("c2", "read", r#"{"path":"src/a.rs"}"#);
+    items[5] = result("c2", "read", ToolOutcome::Ok, body("src/a.rs c2", 4_000));
+    let out = reduce(&items, &[]);
+    let first = out.units.iter().find(|u| u.call_id == "c1");
+    assert!(
+        first.is_some(),
+        "the read before the notice is old and may go: {:?}",
+        out.units
+    );
+    assert!(
+        out.units.iter().all(|u| u.call_id != "c2"),
+        "the read inside the turn the notice opened stays: {:?}",
+        out.units
+    );
+}

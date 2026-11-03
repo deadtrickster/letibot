@@ -78,10 +78,14 @@ pub fn keep(
     // is left, so a keep cannot grow the prompt past the budget the plan was built for.
     let kept: u64 = tokens[from.min(n)..n].iter().sum();
     let mut free = room.saturating_sub(kept);
-    // Where an exchange can begin: the first item, and every user item after it.
+    // Where an exchange can begin: the first item, and every message after it - a delivery opens
+    // one the way a prompt does.
     let mut starts: Vec<usize> = vec![0];
     for (i, item) in items.iter().enumerate().take(from).skip(1) {
-        if matches!(item, TranscriptItem::User { .. }) {
+        if matches!(
+            item,
+            TranscriptItem::User { .. } | TranscriptItem::Notice { .. }
+        ) {
             starts.push(i);
         }
     }
