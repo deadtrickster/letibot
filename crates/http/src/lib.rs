@@ -172,6 +172,20 @@ impl Body {
         Ok(String::from_utf8_lossy(&out).into_owned())
     }
 
+    /// Consume the whole body into a writer, byte for byte, and say how many bytes arrived.
+    /// A download is not text: `read_to_string` replaces every non-UTF-8 sequence on the way,
+    /// so a checkpoint read through it would hash to something nobody pinned.
+    pub fn read_to_writer<W: Write>(mut self, out: &mut W) -> Result<u64, HttpError> {
+        let mut total = 0u64;
+        let mut chunk = Vec::new();
+        while self.next_bytes(&mut chunk)? {
+            out.write_all(&chunk)?;
+            total += chunk.len() as u64;
+        }
+        out.flush()?;
+        Ok(total)
+    }
+
     /// Call `on_event` once per `data:` payload of a `text/event-stream`. Returning
     /// `Flow::Stop` closes the connection at once, which is the only abort the
     /// fallback path has: llama.cpp notices the dropped socket and frees the slot.
@@ -447,5 +461,36 @@ mod tests {
     fn find_locates_a_frame_boundary_that_straddles_nothing() {
         assert_eq!(find(b"abc\n\ndef", b"\n\n"), Some(3));
         assert_eq!(find(b"abc\ndef", b"\n\n"), None);
+    }
+
+    /// A body read into a writer keeps every byte, the ones that are not UTF-8 included: a
+    /// checkpoint read as text would hash to something nobody pinned.
+    #[test]
+    fn a_body_reads_into_a_writer_byte_for_byte() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        std::thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut reader = BufReader::new(stream.try_clone().expect("clone"));
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                    break;
+                }
+            }
+            let body: [u8; 4] = [0x00, 0xff, 0x80, b'x'];
+            let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len());
+            let _ = stream.write_all(head.as_bytes());
+            let _ = stream.write_all(&body);
+            let _ = stream.flush();
+        });
+        let endpoint = Endpoint::new("127.0.0.1", port);
+        let mut out: Vec<u8> = Vec::new();
+        let body = send(&endpoint, Request::get("/checkpoint")).expect("send");
+        let read = body.read_to_writer(&mut out).expect("read");
+        assert_eq!(read, 4);
+        assert_eq!(out, vec![0x00, 0xff, 0x80, b'x']);
     }
 }

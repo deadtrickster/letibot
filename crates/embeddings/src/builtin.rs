@@ -6,6 +6,8 @@
 
 use std::path::{Path, PathBuf};
 
+use sha2::{Digest, Sha256};
+
 use crate::model::BUILTIN_MODEL;
 
 /// The commit the three files are pinned at. A branch would move under a box that fetched
@@ -116,9 +118,257 @@ fn is_hex(text: &str, len: usize) -> bool {
     text.len() == len && text.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+/// Why the built-in model is not in the data directory, in the words the one sentence a box
+/// says about it uses. Every variant names what to act on: a URL, a file, or a path.
+#[derive(Debug)]
+pub enum DownloadError {
+    /// The pin is a placeholder: this build does not know which bytes to trust.
+    Unpinned,
+    /// A URL this build's client cannot fetch.
+    Url(String),
+    /// No answer, or an answer that was refused, after the ladder.
+    Http {
+        file: &'static str,
+        url: String,
+        why: String,
+    },
+    /// The bytes are not the ones the pin names, so they were not renamed into place.
+    Hash {
+        file: &'static str,
+        url: String,
+        want: String,
+        got: String,
+    },
+    /// The data directory would not take a file.
+    Io { path: PathBuf, why: String },
+}
+
+impl std::fmt::Display for DownloadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DownloadError::Unpinned => write!(
+                f,
+                "the built-in model is not pinned in this build - its revision and the three \
+                 file hashes are placeholders - so nothing was fetched"
+            ),
+            DownloadError::Url(url) => write!(
+                f,
+                "the built-in model is at {url}, and this build's HTTP client cannot fetch it: \
+                 the client speaks http:// only, with no TLS"
+            ),
+            DownloadError::Http { file, url, why } => {
+                write!(f, "fetching {file} from {url}: {why}")
+            }
+            DownloadError::Hash {
+                file,
+                url,
+                want,
+                got,
+            } => write!(
+                f,
+                "{url} served {file} with sha-256 {got} and the pin says {want}, so it was not \
+                 renamed into place and the built-in model is still absent"
+            ),
+            DownloadError::Io { path, why } => write!(f, "{}: {why}", path.display()),
+        }
+    }
+}
+
+impl std::error::Error for DownloadError {}
+
+/// **Make the pinned model present in the data directory, fetching it if it is not.**
+///
+/// Called on the path that opens the box's embedder, which is daemon start: a fetch therefore
+/// never runs inside a turn, and until it lands every caller scores the words alone. `say` is
+/// handed one sentence, before anything is written, and only when a fetch is about to happen.
+pub fn ensure(
+    pin: &Pin,
+    data_dir: &Path,
+    policy: letibot_http::retry::Policy,
+    say: &mut dyn FnMut(&str),
+) -> Result<PathBuf, DownloadError> {
+    let dir = pin.dir(data_dir);
+    if pin.present(&dir) {
+        return Ok(dir);
+    }
+    if !pin.is_filled() {
+        return Err(DownloadError::Unpinned);
+    }
+    say(&sentence(pin, &dir));
+    std::fs::create_dir_all(&dir).map_err(|e| DownloadError::Io {
+        path: dir.clone(),
+        why: e.to_string(),
+    })?;
+    for source in pin.sources() {
+        // One file in place is one file that hashed right: a rename is the last act, so a
+        // fetch that stopped midway is resumed and not repeated.
+        if dir.join(source.file).is_file() {
+            continue;
+        }
+        fetch(source, &pin.url(source.file), &dir, policy)?;
+    }
+    Ok(dir)
+}
+
+/// The one sentence a box says before it fetches: what, from where, how much, where it is
+/// kept, and the fact that it happens once.
+fn sentence(pin: &Pin, dir: &Path) -> String {
+    let bytes: u64 = pin.sources().iter().map(|s| s.bytes).sum();
+    format!(
+        "the built-in embedding model {} at commit {} is not in {}, so it is being fetched from \
+         {} ({} files, {}): this happens once, and every score this box makes is the words alone \
+         until it lands",
+        crate::model::BUILTIN_MODEL,
+        &pin.revision()[..pin.revision().len().min(12)],
+        dir.display(),
+        pin.base,
+        pin.sources().len(),
+        weigh(bytes)
+    )
+}
+
+fn weigh(bytes: u64) -> String {
+    if bytes >= 1024 * 1024 {
+        format!("{} MiB", bytes / (1024 * 1024))
+    } else {
+        format!("{} KiB", bytes.div_ceil(1024))
+    }
+}
+
+/// One file, over the ladder: a transport failure or a *not now* is tried again after the
+/// wait the tree's rule names, and a refusal, a hash mismatch or a disk error ends it at once.
+fn fetch(
+    source: &Source,
+    url: &str,
+    dir: &Path,
+    policy: letibot_http::retry::Policy,
+) -> Result<(), DownloadError> {
+    let (endpoint, path) = split(url)?;
+    let temp = dir.join(format!("{}.part", source.file));
+    let mut ladder = letibot_http::retry::Ladder::new(policy);
+    loop {
+        match attempt(&endpoint, &path, &temp, source, url) {
+            Ok(()) => return Ok(()),
+            Err(Attempt::Http(e)) => {
+                let Some(wait) = ladder.failed(&e) else {
+                    let _ = std::fs::remove_file(&temp);
+                    return Err(DownloadError::Http {
+                        file: source.file,
+                        url: url.to_string(),
+                        why: ladder.ending(&e),
+                    });
+                };
+                std::thread::sleep(wait);
+            }
+            Err(Attempt::Done(e)) => {
+                let _ = std::fs::remove_file(&temp);
+                return Err(e);
+            }
+        }
+    }
+}
+
+/// A failure of one attempt: one the ladder may take again, and one it may not.
+enum Attempt {
+    Http(letibot_http::HttpError),
+    Done(DownloadError),
+}
+
+/// One request, into the temp name, hashed on the way in. The rename is the only way a file
+/// reaches its real name, and it happens only for bytes that matched the pin.
+fn attempt(
+    endpoint: &letibot_http::Endpoint,
+    path: &str,
+    temp: &Path,
+    source: &Source,
+    url: &str,
+) -> Result<(), Attempt> {
+    let body = letibot_http::send(endpoint, letibot_http::Request::get(path)).map_err(Attempt::Http)?;
+    let file = std::fs::File::create(temp).map_err(|e| io(temp, e))?;
+    let mut sink = Hashing {
+        out: file,
+        hash: Sha256::new(),
+    };
+    body.read_to_writer(&mut sink).map_err(Attempt::Http)?;
+    let (got, file) = sink.finish();
+    drop(file);
+    if got != source.sha256 {
+        return Err(Attempt::Done(DownloadError::Hash {
+            file: source.file,
+            url: url.to_string(),
+            want: source.sha256.to_string(),
+            got,
+        }));
+    }
+    let into = temp.with_file_name(source.file);
+    std::fs::rename(temp, &into).map_err(|e| io(&into, e))
+}
+
+fn io(path: &Path, e: std::io::Error) -> Attempt {
+    Attempt::Done(DownloadError::Io {
+        path: path.to_path_buf(),
+        why: e.to_string(),
+    })
+}
+
+/// `http://HOST[:PORT][/path]` into the two halves this client takes. A scheme it cannot
+/// speak is refused by name rather than attempted: it is HTTP/1.1 with no TLS.
+fn split(url: &str) -> Result<(letibot_http::Endpoint, String), DownloadError> {
+    let rest = url
+        .strip_prefix("http://")
+        .ok_or_else(|| DownloadError::Url(url.to_string()))?;
+    let (authority, path) = match rest.find('/') {
+        Some(at) => (&rest[..at], &rest[at..]),
+        None => (rest, "/"),
+    };
+    if authority.is_empty() {
+        return Err(DownloadError::Url(url.to_string()));
+    }
+    let endpoint = if authority.contains(':') {
+        letibot_http::Endpoint::parse(authority)
+            .map_err(|e| DownloadError::Url(format!("{url}: {e}")))?
+    } else {
+        letibot_http::Endpoint::new(authority, 80)
+    };
+    Ok((endpoint, path.to_string()))
+}
+
+/// A writer that hashes what it writes. The pin is checked on the bytes as they land, so a
+/// hundred megabytes is never held in memory to be hashed afterwards.
+struct Hashing<W> {
+    out: W,
+    hash: Sha256,
+}
+
+impl<W> Hashing<W> {
+    fn finish(self) -> (String, W) {
+        (format!("{:x}", self.hash.finalize()), self.out)
+    }
+}
+
+impl<W: std::io::Write> std::io::Write for Hashing<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let written = self.out.write(buf)?;
+        self.hash.update(&buf[..written]);
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.out.flush()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing as fixture;
+    use std::collections::BTreeMap;
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpListener;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    use letibot_http::retry::Policy;
 
     /// **The pin is the whole trust story.** A box that fetched whatever a branch held would
     /// embed with bytes nobody reviewed, so this fails until the table holds the real commit
@@ -155,4 +405,281 @@ mod tests {
             .url("config.json")
             .ends_with(&format!("/{REVISION}/config.json")));
     }
+
+    /// A scratch directory that removes itself, so a fixture never outlives its test.
+    struct Dir(PathBuf);
+
+    impl Dir {
+        fn new(tag: &str) -> Dir {
+            static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let p = std::env::temp_dir().join(format!(
+                "letibot-builtin-{tag}-{}-{}-{}",
+                std::process::id(),
+                letibot_metrics::now_ms(),
+                N.fetch_add(1, Ordering::Relaxed)
+            ));
+            std::fs::create_dir_all(&p).expect("scratch dir");
+            Dir(p)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for Dir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// **The three files a fetch has to find.** They are the tiny BERT's, so the bytes served
+    /// are the bytes of a checkpoint this build can open: the download is measured end to end
+    /// and the model that comes out of it is a real one.
+    struct Checkpoint {
+        files: BTreeMap<&'static str, Vec<u8>>,
+    }
+
+    impl Checkpoint {
+        fn new() -> Checkpoint {
+            let dir = Dir::new("bytes");
+            fixture::tiny_bert(dir.path()).expect("write the fixture");
+            let files = SOURCES
+                .iter()
+                .map(|s| {
+                    let bytes = std::fs::read(dir.path().join(s.file)).expect("read the fixture");
+                    (s.file, bytes)
+                })
+                .collect();
+            Checkpoint { files }
+        }
+
+        /// One file, as this checkpoint's bytes, with `mutate` applied to them.
+        fn bytes(&self, file: &str) -> Vec<u8> {
+            self.files.get(file).cloned().expect("a known file")
+        }
+
+        /// The pin over these bytes, served from `base`: the shipped revision, a test's hashes.
+        fn pin(&self, base: &str) -> Pin {
+            Pin::new(
+                base,
+                REVISION,
+                SOURCES
+                    .iter()
+                    .map(|s| {
+                        let bytes = self.bytes(s.file);
+                        Source {
+                            file: s.file,
+                            sha256: owned_hash(&bytes),
+                            bytes: bytes.len() as u64,
+                        }
+                    })
+                    .collect(),
+            )
+        }
+    }
+
+    /// A `Source`'s hash is a `&'static str` in the table, and a test's is computed, so the
+    /// string it computed is leaked: a handful of bytes for the life of the test binary.
+    fn owned_hash(bytes: &[u8]) -> &'static str {
+        let text = format!("{:x}", <sha2::Sha256 as sha2::Digest>::digest(bytes));
+        Box::leak(text.into_boxed_str())
+    }
+
+    /// A loopback HTTP server that answers each request with the bytes a test names, and
+    /// counts them. The client is the real one; only the socket is local, so no test reaches
+    /// the network.
+    struct Fake {
+        port: u16,
+        seen: Arc<Mutex<Vec<String>>>,
+        stop: Arc<AtomicBool>,
+    }
+
+    impl Fake {
+        fn new(route: impl Fn(&str) -> Vec<u8> + Send + Sync + 'static) -> Fake {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+            listener.set_nonblocking(true).expect("nonblocking");
+            let port = listener.local_addr().expect("addr").port();
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let stop = Arc::new(AtomicBool::new(false));
+            let (log, flag, route) = (seen.clone(), stop.clone(), Arc::new(route));
+            std::thread::spawn(move || {
+                while !flag.load(Ordering::Relaxed) {
+                    let Ok((stream, _)) = listener.accept() else {
+                        std::thread::sleep(std::time::Duration::from_millis(2));
+                        continue;
+                    };
+                    let mut reader = BufReader::new(stream.try_clone().expect("clone"));
+                    let mut path = String::new();
+                    loop {
+                        let mut line = String::new();
+                        if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                            break;
+                        }
+                        if path.is_empty() {
+                            path = line.split_whitespace().nth(1).unwrap_or("").to_string();
+                        }
+                    }
+                    log.lock().expect("log").push(path.clone());
+                    let mut out = stream;
+                    let _ = out.write_all(&route(&path));
+                    let _ = out.flush();
+                }
+            });
+            Fake { port, seen, stop }
+        }
+
+        fn base(&self) -> String {
+            format!("http://127.0.0.1:{}", self.port)
+        }
+
+        /// How many requests arrived, under any path.
+        fn requests(&self) -> usize {
+            self.seen.lock().expect("log").len()
+        }
+    }
+
+    impl Drop for Fake {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// One whole answer, with its length, so the client reads it as a finished body.
+    fn answer(body: &[u8]) -> Vec<u8> {
+        let mut out = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len()).into_bytes();
+        out.extend_from_slice(body);
+        out
+    }
+
+    /// **The first use fetches the three files and the second start does not.** The bytes
+    /// served are a checkpoint this build opens, so the assertion is not that files appeared
+    /// but that the model underneath them works.
+    #[test]
+    fn the_builtin_model_is_fetched_once_and_then_found_on_disk() {
+        let files = Checkpoint::new();
+        let served = files.files.clone();
+        let fake = Fake::new(move |path| {
+            let file = path.rsplit('/').next().unwrap_or("");
+            match served.get(file) {
+                Some(bytes) => answer(bytes),
+                None => b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n".to_vec(),
+            }
+        });
+        let pin = files.pin(&fake.base());
+        let data = Dir::new("fetched");
+
+        let mut said: Vec<String> = Vec::new();
+        let dir = ensure(&pin, data.path(), Policy::none(), &mut |line| {
+            said.push(line.to_string())
+        })
+        .expect("the fetch");
+        assert!(pin.present(&dir), "{} is not whole", dir.display());
+        assert_eq!(fake.requests(), 3, "one request per file");
+
+        // The sentence before the fetch: what, from where, how much, and that it is once.
+        let sentence = said.join("\n");
+        assert_eq!(said.len(), 1, "{sentence}");
+        assert!(sentence.contains(crate::model::BUILTIN_MODEL), "{sentence}");
+        assert!(sentence.contains(&fake.base()), "{sentence}");
+        assert!(sentence.contains(&REVISION[..12]), "{sentence}");
+        assert!(sentence.contains("once"), "{sentence}");
+        assert!(sentence.contains(&dir.display().to_string()), "{sentence}");
+
+        // What was fetched opens as the model it is, from the shipped revision's directory.
+        let model = crate::model::Model::open_builtin(data.path()).expect("the fetched model");
+        assert_eq!(model.dim(), fixture::HIDDEN);
+
+        // A second start finds it: no request at all, and nothing is said.
+        let mut again: Vec<String> = Vec::new();
+        let second = ensure(&pin, data.path(), Policy::none(), &mut |line| {
+            again.push(line.to_string())
+        })
+        .expect("the cache");
+        assert_eq!(second, dir);
+        assert_eq!(fake.requests(), 3, "a model already on disk is not fetched again");
+        assert!(again.is_empty(), "nothing is fetched, so nothing is said");
+    }
+
+    /// A file whose bytes are not the pinned ones is refused and never renamed into place:
+    /// the directory is not left holding a checkpoint made of one good file and one bad.
+    #[test]
+    fn a_file_that_does_not_hash_to_the_pin_is_not_renamed_into_place() {
+        let files = Checkpoint::new();
+        let served = files.files.clone();
+        let fake = Fake::new(move |path| {
+            let file = path.rsplit('/').next().unwrap_or("");
+            match served.get(file) {
+                // One byte changed: the length is right and the hash is not.
+                Some(bytes) if file == "config.json" => {
+                    let mut altered = bytes.clone();
+                    altered[0] ^= 0xff;
+                    answer(&altered)
+                }
+                Some(bytes) => answer(bytes),
+                None => b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n".to_vec(),
+            }
+        });
+        let pin = files.pin(&fake.base());
+        let data = Dir::new("hash");
+        let err = ensure(&pin, data.path(), Policy::none(), &mut |_| {})
+            .expect_err("a hash mismatch is a refusal");
+        assert!(
+            matches!(err, DownloadError::Hash { file: "config.json", .. }),
+            "{err}"
+        );
+        assert!(err.to_string().contains("sha-256"), "{err}");
+        assert!(err.to_string().contains(&pin.url("config.json")), "{err}");
+        let dir = pin.dir(data.path());
+        assert!(!dir.join("config.json").is_file(), "it was renamed anyway");
+        assert!(!dir.join("config.json.part").exists(), "the temp was left");
+        assert!(!pin.present(&dir));
+    }
+
+    /// A body that stops early is a failure and not a short file: the pin is what says so,
+    /// and the temp name is what keeps it out of the model.
+    #[test]
+    fn a_cut_off_download_leaves_nothing_behind() {
+        let fake = Fake::new(|path| {
+            let file = path.rsplit('/').next().unwrap_or("");
+            // A length the connection then does not honour, which is what a dropped
+            // connection looks like to the reader.
+            let mut out = b"HTTP/1.1 200 OK\r\nContent-Length: 4096\r\n\r\n".to_vec();
+            out.extend_from_slice(format!("{file}").as_bytes());
+            out
+        });
+        let files = Checkpoint::new();
+        let pin = files.pin(&fake.base());
+        let data = Dir::new("cut");
+        let err = ensure(&pin, data.path(), Policy::none(), &mut |_| {})
+            .expect_err("a cut-off body is a refusal");
+        assert!(
+            matches!(err, DownloadError::Http { file: "config.json", .. }),
+            "{err}"
+        );
+        let said = err.to_string();
+        assert!(said.contains("config.json"), "{said}");
+        assert!(said.contains(&pin.url("config.json")), "{said}");
+        let dir = pin.dir(data.path());
+        assert!(!dir.join("config.json").is_file(), "a short file was renamed");
+        assert!(!dir.join("config.json.part").exists(), "the temp was left");
+    }
+
+    /// The placeholder table cannot fetch anything, and it must not reach the server to find
+    /// that out: a box must never embed with bytes nobody pinned.
+    #[test]
+    fn an_unfilled_pin_is_refused_before_anything_is_fetched() {
+        let fake = Fake::new(|_| b"HTTP/1.1 500 Oops\r\nContent-Length: 0\r\n\r\n".to_vec());
+        let data = Dir::new("unpinned");
+        let err = ensure(
+            &Pin::shipped(),
+            data.path(),
+            Policy::none(),
+            &mut |_| panic!("nothing is announced when nothing is fetched"),
+        )
+        .expect_err("a placeholder pin is a refusal");
+        assert!(matches!(err, DownloadError::Unpinned), "{err}");
+        assert_eq!(fake.requests(), 0);
+    }
 }
+

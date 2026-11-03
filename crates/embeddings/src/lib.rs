@@ -34,7 +34,7 @@ pub mod tier;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 
-pub use builtin::{Pin, Source};
+pub use builtin::{DownloadError, Pin, Source};
 pub use cache::{Cache, CacheError, Hit, db_path};
 pub use config::{ConfigError, Mode, Settings};
 pub use cosine::{Index, cosine};
