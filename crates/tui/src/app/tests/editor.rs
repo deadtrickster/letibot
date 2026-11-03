@@ -1497,3 +1497,37 @@ fn a_click_that_opens_the_popup_leaves_no_light_on_it() {
         );
     }
 }
+
+/// Opens `name` in the pane at `w` x 40 and returns the app, ready for a frame.
+fn open_file_in_pane(ws: &Workspace, name: &str, w: usize) -> App {
+    let mut a = app();
+    a.session_id = "s".into();
+    a.screen(w, 40);
+    a.key(Key::CtrlE);
+    route_text(&mut a, &ws.0.join(name).display().to_string());
+    a.route(vec![key(KeyCode::Enter, Mods::NONE)]);
+    settle(&mut a);
+    a.screen(w, 40);
+    a
+}
+
+/// A markdown preview in a wide pane keeps rano's centred 100-column prose.
+#[test]
+fn a_markdown_preview_is_centred_in_a_wide_pane() {
+    let ws = workspace("centre");
+    let words = "alpha beta gamma delta ".repeat(30);
+    std::fs::write(ws.0.join("doc.md"), format!("# Title\n\n{words}\n")).unwrap();
+    let mut a = open_file_in_pane(&ws, "doc.md", 220);
+    a.route(vec![Event::Key(KeyEvent::new(
+        KeyCode::Char('p'),
+        Mods::ALT,
+    ))]);
+    settle(&mut a);
+    let screen = a.screen(220, 40);
+    let line = screen
+        .iter()
+        .find(|l| l.contains("alpha beta"))
+        .unwrap_or_else(|| panic!("the prose is drawn: {screen:#?}"));
+    let lead = line.chars().take_while(|c| *c == ' ').count();
+    assert!(lead >= 40, "prose is centred, not at the left: {lead} {line:?}");
+}
