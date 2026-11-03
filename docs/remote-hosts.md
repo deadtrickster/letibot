@@ -226,7 +226,7 @@ ssh is the transport, the ControlMaster is the connection pool, the remote shell
 1. **A deadline on every call**, enforced by killing the local ssh and never by trusting the remote:
    `STEP_BOUND` 20 s for every call that is not a command (a model's `run` carries it too), `CANCEL_BOUND`
    10 s for the extra call that kills a group, `POLL_BOUND` 5 s for a job's status poll, `GIT_BOUND` 5 min
-   for a streamed transfer, `MASTER_BOUND` 3 s for an `-O check`.
+   for a whole fetch - its slot wait, its run and its retry together - `MASTER_BOUND` 3 s for an `-O check`.
 2. **Failure detection** by `ServerAliveInterval`/`ServerAliveCountMax`; a stale ControlMaster is checked and
    replaced (`ssh -O check`, then the socket is removed so the next call dials afresh).
 3. **Retries follow idempotency.** `read`, `stat`, `list`, `list_tree`, `workdir`, a probe, `job_output` and
@@ -255,7 +255,9 @@ ssh is the transport, the ControlMaster is the connection pool, the remote shell
    on the host. A call beyond the bound **waits for a slot under its own deadline**; `-O check`/`-O exit` take
    no slot. The git master has **a queue of its own** with the same bound (`rpc::enter_git`): `git fetch`
    starts that ssh itself, so a fanout of sessions closing at once would otherwise ask one connection for a
-   session each and lose the branches the server refused.
+   session each and lose the branches the server refused. That queue's wait is the connection's own bound,
+   and a retry after a refusal dials a socket of its own instead of removing the one every session of this
+   daemon multiplexes over.
 
 `crates/tools/src/rpc.rs` is the one implementation of 5-8, its state `static` and keyed by host name,
 because three private breakers would mean a host that is down costs each caller its own three timeouts. The
