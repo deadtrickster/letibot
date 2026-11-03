@@ -146,7 +146,7 @@ fn the_builtin_queue_layer_draws_the_pane() {
         "the finished row is behind the fold, not on the frame: {screen}"
     );
     assert!(
-        screen.contains("finished · 1"),
+        screen.contains("finished: 1 row"),
         "and the fold says how many there are: {screen}"
     );
     // The host pane's own title is nowhere - this is the layer's pane.
@@ -401,7 +401,7 @@ fn enter_on_the_history_row_opens_the_fold_and_the_next_frame_draws_it() {
         "folded to begin with: {screen}"
     );
     assert!(
-        screen.contains("enter opens it"),
+        screen.contains("enter shows them"),
         "and the row says which key opens it: {screen}"
     );
     // Walk the cursor to the history row: the live rows, then it.
@@ -429,7 +429,7 @@ fn enter_on_the_history_row_opens_the_fold_and_the_next_frame_draws_it() {
         "the finished row is drawn once the fold is open:\n{screen}"
     );
     assert!(
-        screen.contains("enter folds it away"),
+        screen.contains("enter hides them"),
         "and the row now says how to close it:\n{screen}"
     );
 
@@ -454,13 +454,13 @@ fn the_bars_enter_names_the_fold_when_the_cursor_is_on_it() {
     a.queue_sel = 0;
     let bar = a.hint_bar(1000);
     assert!(
-        bar.contains("opens the row: the ask, the verdict"),
+        bar.contains("opens it whole"),
         "over a live row Enter opens the entry: {bar}"
     );
     a.queue_sel = a.queue_plugin_stops - 1;
     let bar = a.hint_bar(1000);
     assert!(
-        bar.contains("opens the history"),
+        bar.contains("shows the finished rows"),
         "over the folded history it opens it: {bar}"
     );
     // **And once it is open, the bar says the other direction** - a bar that went on offering
@@ -469,7 +469,7 @@ fn the_bars_enter_names_the_fold_when_the_cursor_is_on_it() {
     a.screen(120, 30);
     a.queue_sel = a.queue_plugin_stops - 1;
     let bar = a.hint_bar(1000);
-    assert!(bar.contains("closes the history"), "{bar}");
+    assert!(bar.contains("closes the finished rows"), "{bar}");
 }
 
 /// **Enter on a LIVE row still opens the entry**, so the fold's key did not swallow the pane's own  -
@@ -942,7 +942,7 @@ fn the_detail_of_a_running_gate_names_the_step_and_the_tail() {
         "and the end of what it has written:\n{screen}"
     );
     assert!(
-        screen.contains("12345 byte(s) written"),
+        screen.contains("12 KB written"),
         "how much it has written in all:\n{screen}"
     );
 }
