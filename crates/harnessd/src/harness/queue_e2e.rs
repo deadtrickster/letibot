@@ -609,6 +609,52 @@ fn a_second_finish_of_one_child_is_one_row() {
     assert_eq!(rows[0].id, handle);
 }
 
+/// **A later commit puts the branch back in line.** The queue writes a row's head once, at the
+/// enqueue, and `insert or ignore` makes every later enqueue silent - so a row withdrawn for
+/// carrying nothing stayed withdrawn while the child went on committing, and nothing ever asked
+/// a reviewer to look at the work.
+#[test]
+fn a_later_commit_puts_a_withdrawn_row_back_in_line() {
+    let Some(fx) = Fixture::new("later") else {
+        return;
+    };
+    let (_root, base_sha, branches) =
+        repo_with_children(fx.dir.path(), &[(SLUG, "ONE\ntwo\nthree\n")]);
+    let child = &branches[0];
+    let handle = "s-parent-sub-1";
+    let placed = PlacedChild::of(handle, "the ask", &child.placement(&base_sha))
+        .expect("a worktree child is recorded");
+    let runner = fx.runner(vec![placed]);
+    runner.enqueue_finished(handle);
+    let s = fx.store();
+    let row = s.review_row(handle).expect("reads").expect("the row");
+    assert_eq!(row.state, ReviewState::Waiting);
+    assert_eq!(row.head_sha, child.sha);
+    // What the queue does to a branch it finds nothing to review on - and the row is then
+    // terminal, which is the whole of the trap: nothing re-opens it.
+    s.move_review(
+        handle,
+        ReviewState::Waiting,
+        ReviewState::Withdrawn,
+        &Move::new("queue", "nothing was committed on it"),
+        2,
+    )
+    .expect("withdraws");
+    std::fs::write(child.worktree.join("b.txt"), "later\n").expect("write");
+    git(&child.worktree, &["add", "-A"]);
+    git(&child.worktree, &["commit", "-qm", "the later work"]);
+    let later = sha(&child.worktree, "HEAD");
+    assert_ne!(later, child.sha);
+    runner.enqueue_finished(handle);
+    let rows = fx.store().review_rows(None).expect("reads");
+    assert_eq!(rows.len(), 1, "one child is one row: {rows:?}");
+    assert_eq!(rows[0].state, ReviewState::Waiting, "{rows:?}");
+    assert_eq!(
+        rows[0].head_sha, later,
+        "the row carries the head the branch is at"
+    );
+}
+
 /// A daemon with no `--store` refuses by name rather than dropping the branch.
 #[test]
 fn a_daemon_with_no_store_refuses_by_name() {

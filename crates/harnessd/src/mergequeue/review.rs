@@ -1003,6 +1003,16 @@ fn live_session_in_workspace(
     best.map(|(id, workspace, _)| (id, workspace))
 }
 
+/// What an enqueue did: the row, and whether it is news - born, or put back in line by a head
+/// nobody has judged. A row that was already in line answers `false`, so a second finish of one
+/// child says nothing twice.
+pub struct Enqueued {
+    /// The row, or `None` for a child that left no branch of its own to land.
+    pub row: Option<ReviewRow>,
+    /// The row is new, or it was withdrawn and the branch has since moved past that head.
+    pub news: bool,
+}
+
 /// A finished `task_start` child's branch, put up for review - the enqueue. The repository
 /// is the worktree's own, the target is the project's, and the head is read now.
 pub fn enqueue_finished(
@@ -1012,9 +1022,12 @@ pub fn enqueue_finished(
     placement: &letibot_tools::builtins::task::WorktreePlacement,
     settings: &dyn Fn(&Path) -> Result<QueueSettings, String>,
     now: u64,
-) -> Result<Option<ReviewRow>, String> {
+) -> Result<Enqueued, String> {
     if placement.main_tree {
-        return Ok(None);
+        return Ok(Enqueued {
+            row: None,
+            news: false,
+        });
     }
     let wt = Path::new(&placement.path);
     let repo = git::repo_of_worktree(wt).ok_or_else(|| {
@@ -1075,10 +1088,42 @@ pub fn enqueue_finished(
             None => format!("put up for review onto `{target}`"),
         },
     };
-    store
+    let born = store
         .enqueue_review(&new, handle, now)
         .map_err(|e| format!("the review row for `{handle}` could not be written: {e}"))?;
-    store.review_row(handle).map_err(|e| e.to_string())
+    let Some(row) = store.review_row(handle).map_err(|e| e.to_string())? else {
+        return Err(format!("the review row for `{handle}` was written and read back as nothing"));
+    };
+    // A row already there is not rewritten by the insert, and a WITHDRAWN one records a branch
+    // that had nothing on it: a later commit is a head no reviewer has judged, and the row is
+    // terminal, so this is the only door that can put the work back in line.
+    if row.state == ReviewState::Withdrawn && row.head_sha != new.head_sha {
+        let why = format!(
+            "`{}` moved to {} after the row was withdrawn ({}), so the new head is put up for \
+             review",
+            new.branch, new.head_sha, row.evidence
+        );
+        store
+            .move_review(
+                handle,
+                ReviewState::Withdrawn,
+                ReviewState::Waiting,
+                &Move::new("enqueue", why)
+                    .set("head_sha", new.head_sha.clone())
+                    .clear("verdict")
+                    .clear("verdict_by")
+                    .clear("reviewed_sha")
+                    .set("attempts", 0u32),
+                now,
+            )
+            .map_err(|e| format!("the review row for `{handle}` could not be put back in line: {e}"))?;
+        let row = store.review_row(handle).map_err(|e| e.to_string())?;
+        return Ok(Enqueued { row, news: true });
+    }
+    Ok(Enqueued {
+        row: Some(row),
+        news: born,
+    })
 }
 
 #[cfg(test)]

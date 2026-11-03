@@ -2858,7 +2858,7 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
     /// `task_result` on a `Done`. A plain `task` or main-checkout child answers `NoBranch`; no store is a refusal.
     fn finished(&self, handle: &str) -> Result<letibot_tools::builtins::task::Finished, String> {
         use letibot_tools::builtins::task::Finished;
-        match self.enqueue_entry(handle)? {
+        match self.enqueue_entry(handle)?.row {
             Some(entry) => Ok(Finished::Queued {
                 id: entry.id,
                 branch: entry.branch,
@@ -3097,7 +3097,12 @@ impl HarnessTaskRunner {
     /// one; unprompted, because a queue nothing announces is one nobody watches. The `QueueMoved` is broadcast.
     pub(crate) fn enqueue_finished(&self, sub_id: &str) {
         match self.enqueue_entry(sub_id) {
-            Ok(Some(entry)) => {
+            // **Only what is news**: a second finish of one child, whose row is already in line, says
+            // nothing - and this is called after every parked child's later turns as well.
+            Ok(enqueued) if enqueued.news => {
+                let Some(entry) = enqueued.row else {
+                    return;
+                };
                 // **The pane's move**, for every session - see the doc above for why this one is
                 // broadcast and the sentence below is not.
                 self.registry
@@ -3124,7 +3129,7 @@ impl HarnessTaskRunner {
             // **The ordinary case for a plain `task`, and it says nothing.** A child that works
             // in the parent's own tree leaves no branch to land, and a line per such child would
             // be noise on every `task` call there is.
-            Ok(None) => {}
+            Ok(_) => {}
             Err(why) => {
                 if let Some(hub) = self.registry.get(&self.base.session_id) {
                     hub.publish(letibot_sessionlog::SessionEvent::Warning {
@@ -3143,11 +3148,11 @@ impl HarnessTaskRunner {
 
     /// The write, and a store that will not open is a refusal rather than a silent drop: the half of
     /// `finished` that does the work, on its own so the trait method and the enqueue's own notice can have
-    /// different shapes of one answer. `Ok(None)` is no branch of its own to land, which is not a failure.
+    /// different shapes of one answer. A `row` of `None` is no branch of its own to land, which is not a failure.
     fn enqueue_entry(
         &self,
         handle: &str,
-    ) -> Result<Option<letibot_tokencore::store::ReviewRow>, String> {
+    ) -> Result<crate::mergequeue::review::Enqueued, String> {
         let Some(child) = self
             .placed
             .lock()
@@ -3156,7 +3161,10 @@ impl HarnessTaskRunner {
             .find(|c| c.handle == handle)
             .cloned()
         else {
-            return Ok(None);
+            return Ok(crate::mergequeue::review::Enqueued {
+                row: None,
+                news: false,
+            });
         };
         let Some(path) = self.base.store.clone() else {
             return Err(format!(
@@ -3882,6 +3890,10 @@ impl HarnessTaskRunner {
         if serve_child(&mut sub, &sub_hub, &sub_id, turns) == ChildExit::Parked {
             slot.mark_parked();
         }
+        // **And once more, because the turns after the answer can commit too.** This child parked
+        // only after serving every later turn, and the queue reads a branch's head once, at the
+        // enqueue: without this call the work done after the answer is never put up for review.
+        self.enqueue_finished(&sub_id);
         // **And again, for the turns it ran after answering** - a child that was woken, worked and parked
         // started its processes after the answer above settled its estate. This one cannot ride the
         // settlement (it is given), so it goes on the parent's hub, where the head draws the child's
