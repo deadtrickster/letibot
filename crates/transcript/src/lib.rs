@@ -61,6 +61,15 @@ impl Speaker {
     }
 }
 
+/// What a [`TranscriptItem::Notice`] is about. A closed set rather than a string so a head that
+/// draws one cannot be handed a word it has never seen and draw nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NoticeKind {
+    /// A monitor fired, expired or was retired: the condition somebody asked to be told about.
+    Monitor,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 /// One entry in the conversation, in the order the model produced or consumed it.
@@ -121,6 +130,15 @@ pub enum TranscriptItem {
         /// round would be a picture the model saw and then forgot.
         #[serde(default)]
         media: Option<media::Media>,
+    },
+    /// **A delivery, not words.** Something the session learned while nobody was typing - a
+    /// monitor's firing, folded and bounded - carried as a kind of its own. A `User` row cannot
+    /// say this: its `speaker` defaults to the operator, so a row written without one reads as
+    /// their words, and a firing is not an instruction anybody gave.
+    Notice {
+        /// What sort of news, so a head draws it and a reader counts it.
+        kind: NoticeKind,
+        text: String,
     },
     /// A zero-width delimiter that renders to nothing, kept so per-segment decay and
     /// user-assisted compaction have something to address later. If those never arrive it
@@ -183,6 +201,7 @@ impl TranscriptItem {
                         .unwrap_or(0)
                     + media.as_ref().map(|m| m.data_ref.len()).unwrap_or(0)
             }
+            TranscriptItem::Notice { text, .. } => text.len(),
             TranscriptItem::SegmentMark { label, .. } => label.len(),
         }
     }

@@ -83,6 +83,16 @@ fn carried_row(item: &TranscriptItem, reasoning: bool) -> Option<Value> {
             }
             row
         }
+        // **A delivery, as its own kind on the wire**: a bridge reader that draws the operator's
+        // words differently from the session's must not have to infer which this is.
+        TranscriptItem::Notice { kind, text } => json!({
+            "kind": "notice",
+            "of": match kind {
+                letibot_transcript::NoticeKind::Monitor => "monitor",
+            },
+            "text": cut(text).0,
+            "cut": cut(text).1,
+        }),
         // **The model's own thinking, and only when asked for.** It is the one part of a
         // transcript nothing downstream reads (the compaction tail's own note), and a caller
         // following a package wants the work rather than 25 000 tokens of `+ 0 + 0`.

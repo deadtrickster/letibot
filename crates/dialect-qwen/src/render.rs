@@ -299,6 +299,19 @@ fn render_items(
                 lit(out, "\n");
             }
 
+            // A delivery, rendered where this template puts the harness's own words: a user turn
+            // with the text trimmed as a user part is - the same span a `User` row of one text
+            // part rendered before this kind existed.
+            TranscriptItem::Notice { text, .. } => {
+                close_assistant(st, out);
+                close_tool_turn(st, out);
+                ctl(out, &tk::IM_START);
+                lit(out, "user\n");
+                data(out, trim(text));
+                ctl(out, &tk::IM_END);
+                lit(out, "\n");
+            }
+
             // A message carries exactly one `reasoning_content`, so a second `Reasoning` item is a second
             // message and closes the one before it. An `Assistant` item is not: it is the visible half of the
             // message the reasoning already opened, and closing here would split one turn into two.

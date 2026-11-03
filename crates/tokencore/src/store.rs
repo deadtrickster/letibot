@@ -191,7 +191,7 @@ pub struct ShapelessAdmit {
 /// The schema version: what the FILE holds. [`floor`] says what a reader must know, and the
 /// two are separate on purpose: a migration that only adds leaves the floor alone, and one
 /// that rewrites what an older reader reads declares itself in [`READER_ARMS`].
-pub const SCHEMA_VERSION: i64 = 36;
+pub const SCHEMA_VERSION: i64 = 37;
 
 /// What this row's columns mean. Stamped on every corpus row, because a column can keep its
 /// name and its type while changing what it records, and a trainer that pools two meanings
@@ -629,6 +629,7 @@ pub fn item_kind(item: &TranscriptItem) -> &'static str {
         TranscriptItem::Reasoning { .. } => "reasoning",
         TranscriptItem::Assistant { .. } => "assistant",
         TranscriptItem::ToolResult { .. } => "tool_result",
+        TranscriptItem::Notice { .. } => "notice",
         TranscriptItem::SegmentMark { .. } => "segment_mark",
     }
 }
@@ -1946,6 +1947,11 @@ impl Store {
                 self.conn()
                     .execute_batch("ALTER TABLE subagent_run ADD COLUMN later_answer TEXT")?;
             }
+        }
+        if from < 37 {
+            // v37: nothing in the SCHEMA changes - the new thing is a transcript row KIND (`notice`),
+            // which a younger reader meets as an unknown variant and refuses by name. The floor
+            // exists for exactly this, so it moves and this arm does nothing else.
         }
         Ok(())
     }

@@ -962,7 +962,8 @@ pub fn body_of(item: &TranscriptItem) -> String {
         // answer's bytes gets them rather than a silence it would have to interpret.
         TranscriptItem::Assistant { text, .. }
         | TranscriptItem::Reasoning { text, .. }
-        | TranscriptItem::System { text, .. } => text.clone(),
+        | TranscriptItem::System { text, .. }
+        | TranscriptItem::Notice { text, .. } => text.clone(),
         TranscriptItem::User { parts, .. } => parts
             .iter()
             .filter_map(|p| match p {

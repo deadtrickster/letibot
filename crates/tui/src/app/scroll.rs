@@ -1561,6 +1561,7 @@ pub(crate) struct Carry {
 pub(crate) fn row_words(it: &SnapshotItem) -> Option<String> {
     match it.item.as_ref()? {
         TranscriptItem::System { text, .. }
+        | TranscriptItem::Notice { text, .. }
         | TranscriptItem::Assistant { text, .. }
         | TranscriptItem::Reasoning { text, .. } => (!text.is_empty()).then(|| text.clone()),
         TranscriptItem::ToolResult { payload, .. } => {
@@ -1588,6 +1589,7 @@ pub(crate) fn row_says(it: &SnapshotItem, words: &str) -> bool {
     match it.item.as_ref() {
         None => false,
         Some(TranscriptItem::System { text, .. })
+        | Some(TranscriptItem::Notice { text, .. })
         | Some(TranscriptItem::Assistant { text, .. })
         | Some(TranscriptItem::Reasoning { text, .. }) => text == words,
         Some(TranscriptItem::ToolResult { payload, .. }) => payload == words,

@@ -176,6 +176,14 @@ fn render_items(items: &[TranscriptItem], st: &mut State, out: &mut Vec<RenderSp
                 ctl(out, &IM_END);
                 text(out, "\n");
             }
+            // A notice, as this fixture renders the harness's own words: a user turn.
+            TranscriptItem::Notice { text: s, .. } => {
+                close_turn(st, out);
+                ctl(out, &IM_START);
+                text(out, format!("user\n{s}"));
+                ctl(out, &IM_END);
+                text(out, "\n");
+            }
             TranscriptItem::Reasoning { text: s, .. } => {
                 open_assistant(st, out);
                 if st.think == Think::None {

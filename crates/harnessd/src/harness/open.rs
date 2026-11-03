@@ -3371,6 +3371,7 @@ impl Harness {
                     ..
                 } => format!("  {name} -> {outcome:?}: {}", one_line(payload, 70)),
                 TranscriptItem::System { text, .. } => format!("  system: {}", one_line(text, 80)),
+                TranscriptItem::Notice { text, .. } => format!("  notice: {}", one_line(text, 80)),
                 // The two that carry no facts about the RUN: reasoning is the model thinking and a segment mark is
                 // the head's boundary between runs. A log tail looking for what happened to this call names neither.
                 TranscriptItem::Reasoning { .. } | TranscriptItem::SegmentMark { .. } => continue,

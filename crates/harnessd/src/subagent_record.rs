@@ -649,7 +649,9 @@ impl EndedIn {
             Some(TranscriptItem::ToolResult { name, .. }) => EndedIn::AfterTool(name.clone()),
             Some(TranscriptItem::User { .. }) => EndedIn::OnPrompt,
             Some(TranscriptItem::Reasoning { .. }) => EndedIn::MidThought,
-            Some(TranscriptItem::System { .. }) => EndedIn::OnNotice,
+            Some(TranscriptItem::System { .. } | TranscriptItem::Notice { .. }) => {
+                EndedIn::OnNotice
+            }
             Some(TranscriptItem::SegmentMark { .. }) => EndedIn::OnMark,
         }
     }

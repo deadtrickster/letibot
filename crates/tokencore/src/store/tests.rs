@@ -201,6 +201,35 @@ fn an_ordinal_follows_the_fork_to_the_new_base() {
     assert_eq!(s.row_json_at("tr-2", 0).unwrap(), None);
 }
 
+/// **A delivery is a kind of row, not a way of writing somebody's words.** A monitor's firing is
+/// stored as a `notice`: the kind is on the row so a head draws it as news, and no `speaker`
+/// default can make it read as the operator's.
+#[test]
+fn a_notice_row_is_stored_with_its_own_kind_and_reads_back_as_a_delivery() {
+    let s = store();
+    let (tr, _) = seeded(&s);
+    let mut ledger = TokenLedger::new(&tr, &[1, 2, 3, 4]).unwrap();
+    let item = TranscriptItem::Notice {
+        kind: letibot_transcript::NoticeKind::Monitor,
+        text: "[monitor] `watch` fired: the file changed.".into(),
+    };
+    let toks = vec![10];
+    let row = ledger.append("it-0", &toks).unwrap().clone();
+    s.append_item(&tr, 0, &item, &row, &toks).unwrap();
+
+    let page = s.rows_json_from(&tr, 0, 1).unwrap();
+    assert_eq!(
+        page[0].2, "notice",
+        "the kind rides with the row, and it is the row's own"
+    );
+    let back: TranscriptItem = serde_json::from_str(&page[0].3).unwrap();
+    assert_eq!(back, item, "a notice round-trips as itself");
+    assert!(
+        !matches!(back, TranscriptItem::User { .. }),
+        "a delivery is not somebody's message"
+    );
+}
+
 /// A page of rows costs one query and comes back in ordinal order with the id and kind a head
 /// needs to draw them: the read a head scrolling above its window makes.
 #[test]
@@ -2443,9 +2472,9 @@ mod reader_floor {
         .unwrap();
     }
 
-    /// **The arithmetic, and the numbers this tree actually carries.** A store at 33 is readable by
-    /// anything that knows 24 and by nothing older, because v24 is where the queue's tables changed
-    /// shape under an older reader.
+    /// **The arithmetic, and the numbers this tree actually carries.** A store at 37 is readable by
+    /// anything that knows 37 and by nothing older, because v37 is where a transcript row took a kind
+    /// a younger reader cannot deserialize.
     #[test]
     fn the_floor_is_the_newest_breaking_arm_at_or_below_the_version() {
         assert_eq!(reader_floor_for(FIRST_SCHEMA), FIRST_SCHEMA);
@@ -2460,10 +2489,19 @@ mod reader_floor {
             24,
             "the arm that took the tables away"
         );
-        assert_eq!(reader_floor_for(SCHEMA_VERSION), 24);
+        assert_eq!(
+            reader_floor_for(36),
+            24,
+            "the versions between the two breaking arms leave it where it was"
+        );
+        assert_eq!(
+            reader_floor_for(SCHEMA_VERSION),
+            37,
+            "the notice row a younger reader cannot read"
+        );
         assert_eq!(
             reader_floor_for(SCHEMA_VERSION + 1),
-            24,
+            37,
             "a version this build has never seen cannot raise the floor it knows"
         );
     }

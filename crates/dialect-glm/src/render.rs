@@ -207,6 +207,15 @@ fn render_item(item: &TranscriptItem, st: &mut State, out: &mut Vec<RenderSpan>)
             text(out, t.clone());
         }
 
+        // The harness reporting, and rendered where a notice has always been rendered: a user
+        // turn. The template has no third voice, and a mid-history system message raises on it.
+        TranscriptItem::Notice { text: t, .. } => {
+            close_turn(st);
+            st.prev_was_tool_result = false;
+            ctl(out, &tk::USER);
+            text(out, t.clone());
+        }
+
         TranscriptItem::User { parts, .. } => {
             close_turn(st);
             st.prev_was_tool_result = false;

@@ -415,6 +415,12 @@ pub fn convert_with_tail(
             TranscriptItem::System { text, .. } => {
                 out.push(json!({"role": "system", "content": text}));
             }
+            // **A delivery reaches the model where a notice has always reached it** - as a user
+            // turn whose words are the harness's own, said as such in the text. A dialect that
+            // cannot take a mid-history system message would refuse the other shape.
+            TranscriptItem::Notice { text, .. } => {
+                out.push(json!({"role": "user", "content": text}));
+            }
             TranscriptItem::User { parts, .. } => {
                 // An image part is SENT to a model that takes pictures and NAMED to one that does
                 // not. The shape for a model that sees is a content ARRAY; a text-only message keeps

@@ -273,6 +273,13 @@ fn line_for(
             skipped.system += 1;
             return None;
         }
+        // The harness's own news, written where a notice has always been written: a user line
+        // marked `agent`, which is Claude's spelling for text the person did not type.
+        TranscriptItem::Notice { text, .. } => (
+            "user",
+            Value::Array(vec![json!({"type": "text", "text": text})]),
+            true,
+        ),
         TranscriptItem::SegmentMark { .. } => {
             skipped.marks += 1;
             return None;
@@ -377,6 +384,11 @@ fn markdown_for(item: &TranscriptItem) -> String {
         TranscriptItem::System { text, .. } => {
             format!("> _system_ — {}\n\n", one_line(text, 200))
         }
+        // The session's own voice, named as such - the same caption a `User` row with
+        // `Speaker::Agent` is given, since a firing is the same kind of utterance.
+        TranscriptItem::Notice { text, .. } => format!(
+            "**letibot (the session's own voice, not the operator's)**\n\n{text}\n\n"
+        ),
         TranscriptItem::SegmentMark { label, .. } => format!("> *{label}*\n\n"),
     }
 }

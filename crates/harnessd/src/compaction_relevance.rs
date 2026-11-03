@@ -124,6 +124,7 @@ pub fn text_of(item: &TranscriptItem) -> String {
     let whole = match item {
         TranscriptItem::System { text, .. }
         | TranscriptItem::Reasoning { text, .. }
+        | TranscriptItem::Notice { text, .. }
         | TranscriptItem::Assistant { text, .. } => text.clone(),
         TranscriptItem::User { parts, .. } => parts
             .iter()

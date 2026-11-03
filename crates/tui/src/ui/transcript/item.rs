@@ -190,6 +190,18 @@ pub(crate) fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec
         TranscriptItem::System { text, origin } => {
             (RowClass::Other, system_row_lines(text, *origin, it.ts, cfg))
         }
+        // A delivery is drawn exactly where the session's own voice has always been drawn - one
+        // line a notice, never the operator's block - because the ROW is the harness's, not theirs.
+        TranscriptItem::Notice { text, .. } => (
+            RowClass::Other,
+            crate::ui::transcript::user::session_row_lines(
+                text,
+                it.ts,
+                cfg,
+                ctx.subagents,
+                ctx.job_tails,
+            ),
+        ),
         TranscriptItem::User { .. } => user_row_lines(it, item, ctx),
         TranscriptItem::Reasoning { .. } => reasoning_row_lines(item, ctx, ind),
         TranscriptItem::Assistant { .. } => assistant_row_lines(it, item, ctx, ind),

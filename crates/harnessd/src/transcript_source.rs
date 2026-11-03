@@ -279,7 +279,7 @@ fn tool_name(item: &TranscriptItem) -> String {
 /// `match=kind` hits every row in the store.
 fn visible_text(item: &TranscriptItem) -> String {
     match item {
-        TranscriptItem::System { text, .. } => text.clone(),
+        TranscriptItem::System { text, .. } | TranscriptItem::Notice { text, .. } => text.clone(),
         TranscriptItem::User { parts, .. } => parts
             .iter()
             .map(|p| match p {

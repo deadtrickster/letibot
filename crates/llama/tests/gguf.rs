@@ -386,6 +386,13 @@ mod tests {
                     ctl(ControlRole::TurnEnd),
                 ]
             }
+            // A delivery, in the fixture's user turn - where a notice was rendered before it had
+            // a kind of its own.
+            TranscriptItem::Notice { text, .. } => vec![
+                ctl(ControlRole::TurnStartUser),
+                RenderSpan::Text(format!("user\n{text}\n")),
+                ctl(ControlRole::TurnEnd),
+            ],
             TranscriptItem::Reasoning { text, .. } => vec![
                 ctl(ControlRole::ThinkOpen),
                 RenderSpan::Text(text.clone()),
