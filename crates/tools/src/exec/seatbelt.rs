@@ -62,6 +62,7 @@ pub const TOOLCHAIN_UNDER_HOME: &[&str] = &[
     "Projects/llama.cpp",
     "models",
     ".gitconfig",
+    ".config/git",
 ];
 
 /// Denied for read and write after every allow, whatever the view grants, and relative to the
@@ -120,6 +121,9 @@ pub struct Layout {
     /// `CARGO_HOME`/`RUSTUP_HOME` for the wrapped command, when the toolchain is in the view.
     pub cargo_home: Option<PathBuf>,
     pub rustup_home: Option<PathBuf>,
+    /// The operator's git config, which `GIT_CONFIG_GLOBAL` names because the session's `$HOME`
+    /// is a throwaway and a commit would otherwise have no author.
+    pub git_config: Option<PathBuf>,
     /// Denied for read and write after every allow: the operator's credentials and profiles,
     /// plus whatever a caller added (the probe's canary).
     pub deny: Vec<PathBuf>,
@@ -159,6 +163,7 @@ impl Layout {
         let mut toolchain = Vec::new();
         let mut cargo_home = None;
         let mut rustup_home = None;
+        let mut git_config = None;
         for rel in TOOLCHAIN_UNDER_HOME {
             let p = operator_home.join(rel);
             if !p.exists() {
@@ -170,6 +175,14 @@ impl Layout {
                 _ => {}
             }
             toolchain.push(p);
+        }
+        // The dotfile wins: with `GIT_CONFIG_GLOBAL` set git reads that one file alone.
+        for rel in [".gitconfig", ".config/git/config"] {
+            let p = operator_home.join(rel);
+            if p.is_file() {
+                git_config = Some(p);
+                break;
+            }
         }
         let mut deny: Vec<PathBuf> = DENY_UNDER_HOME
             .iter()
@@ -199,6 +212,7 @@ impl Layout {
             toolchain,
             cargo_home,
             rustup_home,
+            git_config,
             deny,
             user_temp,
         }
@@ -434,6 +448,7 @@ pub struct Seatbelt {
     tmp: PathBuf,
     cargo_home: Option<PathBuf>,
     rustup_home: Option<PathBuf>,
+    git_config: Option<PathBuf>,
     boundary: Boundary,
 }
 
@@ -453,9 +468,19 @@ impl Seatbelt {
         egress: Egress,
         extra_deny: Vec<PathBuf>,
     ) -> Result<Seatbelt, ExecError> {
+        Seatbelt::probe_as(view, egress, extra_deny, operator_home())
+    }
+
+    /// [`Seatbelt::probe_with`] for a named operator home, so a test can put a fixture's
+    /// `.gitconfig` where the real one would be.
+    pub fn probe_as(
+        view: ViewSpec,
+        egress: Egress,
+        extra_deny: Vec<PathBuf>,
+        operator_home: PathBuf,
+    ) -> Result<Seatbelt, ExecError> {
         let helper = find_helper()?;
         let view = super::confine::prepared(view)?;
-        let operator_home = operator_home();
         let dir = profile_dir()?;
         let layout = Layout::of(&view, &operator_home, &dir);
 
@@ -506,6 +531,7 @@ impl Seatbelt {
             &layout.tmp,
             layout.cargo_home.as_deref(),
             layout.rustup_home.as_deref(),
+            layout.git_config.as_deref(),
         );
         let out = std::process::Command::new(&argv[0])
             .args(&argv[1..])
@@ -775,6 +801,7 @@ fn judged(
         tmp: layout.tmp,
         cargo_home: layout.cargo_home,
         rustup_home: layout.rustup_home,
+        git_config: layout.git_config,
         boundary,
     })
 }
@@ -789,6 +816,7 @@ fn wrap_with(
     tmp: &Path,
     cargo_home: Option<&Path>,
     rustup_home: Option<&Path>,
+    git_config: Option<&Path>,
 ) -> Vec<String> {
     let mut export = format!(
         "export HOME={} TMPDIR={}",
@@ -805,6 +833,12 @@ fn wrap_with(
         export.push_str(&format!(
             " RUSTUP_HOME={}",
             crate::remote::quote(&r.display().to_string())
+        ));
+    }
+    if let Some(g) = git_config {
+        export.push_str(&format!(
+            " GIT_CONFIG_GLOBAL={}",
+            crate::remote::quote(&g.display().to_string())
         ));
     }
     export.push_str("; exec \"$@\"");
@@ -842,6 +876,7 @@ impl Confinement for Seatbelt {
             &self.tmp,
             self.cargo_home.as_deref(),
             self.rustup_home.as_deref(),
+            self.git_config.as_deref(),
         ))
     }
 
@@ -984,6 +1019,7 @@ mod tests {
             toolchain: vec![PathBuf::from("/Users/x/.cargo")],
             cargo_home: Some(PathBuf::from("/Users/x/.cargo")),
             rustup_home: None,
+            git_config: None,
             deny: vec![
                 PathBuf::from("/Users/x/.ssh"),
                 PathBuf::from("/Users/x/.zshrc"),
@@ -1384,6 +1420,7 @@ probe nonsense whatever
             tmp: PathBuf::from("/var/lib/lt/tmp"),
             cargo_home: None,
             rustup_home: None,
+            git_config: None,
             boundary: Boundary {
                 mechanism: "sandbox-exec (fixture)".into(),
                 platform: Mechanism::Policy,

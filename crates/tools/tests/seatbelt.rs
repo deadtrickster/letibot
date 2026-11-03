@@ -396,9 +396,7 @@ fn a_host_egress_profile_resolves_names_and_connects_and_a_denied_one_does_neith
     let port = l.local_addr().expect("addr").port();
     let f = Fixture::new("host-net");
     let host = f
-        .probe(Egress::Host {
-            why: "test".into(),
-        })
+        .probe(Egress::Host { why: "test".into() })
         .unwrap_or_else(|e| panic!("the macOS boundary did not measure on this box: {e}"));
     let out = net_probe(&host, &f, port);
     assert!(out.contains("DNS=ok"), "{out}");
@@ -408,4 +406,42 @@ fn a_host_egress_profile_resolves_names_and_connects_and_a_denied_one_does_neith
         .unwrap_or_else(|e| panic!("the macOS boundary did not measure on this box: {e}"));
     let out = net_probe(&denied, &f, port);
     assert!(out.contains("TCP=fail"), "{out}");
+}
+
+#[test]
+fn git_inside_the_profile_reads_the_operators_gitconfig_read_only() {
+    let f = Fixture::new("gitconfig");
+    let op = f.root.join("operator");
+    std::fs::create_dir_all(&op).expect("a fake operator home");
+    std::fs::write(
+        op.join(".gitconfig"),
+        "[user]\n\temail = fixture@example.test\n",
+    )
+    .expect("a fixture gitconfig");
+    let s = Seatbelt::probe_as(f.view(), Egress::Denied, vec![f.denied()], op.clone())
+        .unwrap_or_else(|e| panic!("the macOS boundary did not measure on this box: {e}"));
+    let (_, out) = run_in(&s, &f.project(), "git config user.email");
+    assert_eq!(out.trim(), "fixture@example.test", "{out}");
+    let (rc, out) = run_in(
+        &s,
+        &f.project(),
+        &format!("echo x >> '{}/.gitconfig'", op.display()),
+    );
+    assert_ne!(rc, 0, "the grant is read-only: {out}");
+}
+
+#[test]
+fn the_xdg_git_config_is_the_identity_when_there_is_no_dotfile() {
+    let f = Fixture::new("xdg-gitconfig");
+    let op = f.root.join("operator");
+    std::fs::create_dir_all(op.join(".config/git")).expect("a fake operator home");
+    std::fs::write(
+        op.join(".config/git/config"),
+        "[user]\n\temail = xdg@example.test\n",
+    )
+    .expect("a fixture gitconfig");
+    let s = Seatbelt::probe_as(f.view(), Egress::Denied, vec![f.denied()], op)
+        .unwrap_or_else(|e| panic!("the macOS boundary did not measure on this box: {e}"));
+    let (_, out) = run_in(&s, &f.project(), "git config user.email");
+    assert_eq!(out.trim(), "xdg@example.test", "{out}");
 }
