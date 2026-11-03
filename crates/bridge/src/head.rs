@@ -1983,6 +1983,12 @@ pub fn open_default(d: &Daemon) -> Result<String, String> {
 /// this is a control connection that creates and leaves, and the head that will hold the
 /// session attaches afterwards: the socket a head holds must be that session's from frame one.
 pub fn create_session(d: &Daemon, title: &str) -> Result<String, String> {
+    create_session_in(d, title, &d.workspace.display().to_string())
+}
+
+/// The same, with the tree the session is about named: a review's session stands in the pull
+/// request's own worktree, which is not the daemon's workspace.
+pub fn create_session_in(d: &Daemon, title: &str, workspace: &str) -> Result<String, String> {
     // A daemon always opens one session eagerly, so a bare attach lands somewhere; a daemon
     // that holds none yet is a build this cannot create a session on, and says so by name.
     let (mut client, hello, reader) = HeadClient::attach(
@@ -2004,7 +2010,7 @@ pub fn create_session(d: &Daemon, title: &str) -> Result<String, String> {
         .spawn(move || pump(reader, tx))
         .ok();
     client
-        .new_session(title, &d.workspace.display().to_string())
+        .new_session(title, workspace)
         .map_err(|e| e.to_string())?;
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {

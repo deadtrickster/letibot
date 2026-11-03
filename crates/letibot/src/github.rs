@@ -1,16 +1,19 @@
 //! `letibot attach github <org|owner/repo>`: the reviewer seat, started from a terminal.
 //!
 //! The seat itself is `letibot_github`'s, and it is a poll: what is open in the scope, what changed,
-//! which row is owed a review, which comment mentioned it.
-//! **The reviewer worker is the other half** - it opens a session with a worktree at the head and
-//! runs the queue's reviewer in it - so on this build every row says by name what it is waiting for
-//! instead of the run looking idle.
+//! which row is owed a review, which comment mentioned it. The worker is the other half: a review
+//! is a brief run in that pull request's own letibot session, and what it answers is the draft a
+//! person decides about.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::{Duration, Instant};
 
-use letibot_github::seat::{Config, Job, Reviewer, Seat, Session};
-use letibot_github::{Pull, Review, Scope, Standing};
+use letibot_bridge::daemon::{self, Daemon};
+use letibot_bridge::head::{Attention, Head, create_session_in};
+use letibot_github::seat::{Config, Seat, Session};
+use letibot_github::worker::{Sessions, Worker};
+use letibot_github::{Pull, Scope, Standing};
 // The seat is asked the tree's own clock, so a poll's instant and an event's `ts_ms` are one clock.
 use letibot_metrics::now_ms;
 
@@ -98,34 +101,6 @@ pub fn plan(
     Ok((scope, config))
 }
 
-/// **Nothing runs a pull request's code, and this build cannot review at all**: a row says so, so
-/// `attach github` is honest about what it is instead of looking like a seat with no work.
-struct Unwired;
-
-impl Reviewer for Unwired {
-    fn open(&mut self, pull: &Pull, standing: Standing) -> Result<Session, String> {
-        Err(format!(
-            "{} is {} and the reviewer worker does not open sessions yet",
-            pull.key(),
-            match standing {
-                Standing::ReadOnly => "a fork, so it is read only",
-                Standing::Trusted => "this repository's",
-            }
-        ))
-    }
-
-    fn review(&mut self, job: &Job<'_>) -> Result<Review, String> {
-        Err(format!("{} has no reviewer worker yet", job.pull.key()))
-    }
-
-    fn answer(&mut self, session: &Session, _: &str) -> Result<String, String> {
-        Err(format!(
-            "{} cannot answer: no reviewer worker yet",
-            session.id
-        ))
-    }
-}
-
 /// `letibot attach github <scope>`, with the scope and the source already named.
 pub fn run(args: &[String]) -> ExitCode {
     if wants_help(args) {
@@ -173,8 +148,15 @@ pub fn run(args: &[String]) -> ExitCode {
     }
     println!("  polling every {}s", POLL_MS / 1_000);
 
+    let sessions = match DaemonSessions::at(&cwd) {
+        Ok(sessions) => sessions,
+        Err(why) => {
+            eprintln!("letibot: {why}");
+            return ExitCode::from(2);
+        }
+    };
     let source = letibot_github::gh::Gh::new(config.token.clone());
-    let mut reviewer = Unwired;
+    let mut reviewer = Worker::new(sessions);
     let mut seat = Seat::new(vec![scope], config);
     loop {
         for said in seat.poll(&source, &mut reviewer, now_ms()) {
@@ -184,12 +166,264 @@ pub fn run(args: &[String]) -> ExitCode {
     }
 }
 
+/// **Nothing runs a pull request's code, and the session it runs in is the daemon's.** The seat asks
+/// this for a review and an answer; where the session comes from is the daemon's own business.
+pub struct DaemonSessions {
+    /// This folder's daemon: the sessions are its own, so the operator attaches to them as they do
+    /// to any other, and the trees are worktrees of the checkout it was started for.
+    daemon: Daemon,
+    /// Where the pull requests' worktrees go: one per pull request, under this folder's key.
+    trees: PathBuf,
+}
+
+impl DaemonSessions {
+    /// The seat's sessions in the daemon of `workspace`. A daemon that is not up is refused by
+    /// name: a seat that started one itself would choose the flags of a daemon the operator runs.
+    pub fn at(workspace: &Path) -> Result<DaemonSessions, String> {
+        let daemon = daemon::resolve(workspace)?;
+        if !daemon::is_up(&daemon.socket) {
+            return Err(format!(
+                "no daemon is listening for {}: a review runs in that daemon's session, so start \
+                 it there first (`letibot` in that folder) and attach the seat beside it",
+                daemon.workspace.display()
+            ));
+        }
+        let home = std::env::var_os("HOME").map(PathBuf::from).ok_or_else(|| {
+            "no $HOME: the pull requests' trees have no home without one".to_string()
+        })?;
+        let trees = home.join(".local/share/letibot/github").join(&daemon.key);
+        Ok(DaemonSessions { daemon, trees })
+    }
+
+    /// **One tree per pull request, at its head.** The head is fetched from `origin` as GitHub's
+    /// `refs/pull/<n>/head`, which is the same ref for a fork's pull request, and the tree is a
+    /// detached worktree of the checkout the seat was started in.
+    fn tree_for(&self, pull: &Pull) -> Result<PathBuf, String> {
+        let here = origin_slug(&self.daemon.workspace);
+        if here.as_deref() != Some(pull.repo.as_str()) {
+            return Err(format!(
+                "{} is {}'s pull request and this seat runs in {}, so it has no tree for it: \
+                 run the seat in a checkout of {}",
+                pull.key(),
+                pull.repo,
+                self.daemon.workspace.display(),
+                pull.repo
+            ));
+        }
+        let reference = format!("refs/letibot/pr/{}", pull.number);
+        let tree = self.trees.join(tree_name(pull));
+        git(
+            &self.daemon.workspace,
+            &[
+                "fetch",
+                "--quiet",
+                "origin",
+                &format!("+refs/pull/{}/head:{reference}", pull.number),
+            ],
+        )?;
+        if tree.is_dir() {
+            // A tree a previous review was made in: the head may have moved, and what a reviewer
+            // left in it is not work anybody keeps.
+            git(
+                &tree,
+                &["checkout", "--quiet", "--force", "--detach", &reference],
+            )?;
+        } else {
+            std::fs::create_dir_all(&self.trees)
+                .map_err(|e| format!("{}: {e}", self.trees.display()))?;
+            git(
+                &self.daemon.workspace,
+                &[
+                    "worktree",
+                    "add",
+                    "--quiet",
+                    "--detach",
+                    &tree.display().to_string(),
+                    &reference,
+                ],
+            )?;
+        }
+        Ok(tree)
+    }
+}
+
+impl Sessions for DaemonSessions {
+    fn open(&mut self, pull: &Pull, standing: Standing) -> Result<Session, String> {
+        let tree = self.tree_for(pull)?;
+        let title = match standing {
+            Standing::ReadOnly => format!("review {} (a fork: nothing of it runs)", pull.key()),
+            Standing::Trusted => format!("review {}", pull.key()),
+        };
+        let id = create_session_in(&self.daemon, &title, &tree.display().to_string())?;
+        Ok(Session { id, worktree: tree })
+    }
+
+    fn ask(&mut self, session: &Session, brief: &str) -> Result<String, String> {
+        let head = Head::attach(&self.daemon, &session.id)?;
+        head.prompt(brief)?;
+        match head.wait(Instant::now() + REVIEW_PATIENCE) {
+            Attention::TurnEnded { message } => Ok(message),
+            Attention::Failed { why } => Err(why),
+            Attention::Trouble(t) => Err(format!("the provider is {}: {}", t.kind, t.detail)),
+            Attention::Ask(card) => Err(format!(
+                "{} asked `{}`, and a seat answers no cards: the review is owed again",
+                session.id, card.summary
+            )),
+            Attention::Timeout => Err(format!(
+                "{} was still reviewing after {}s",
+                session.id,
+                REVIEW_PATIENCE.as_secs()
+            )),
+        }
+    }
+}
+
+/// One review may take this long before its row is owed again.
+const REVIEW_PATIENCE: Duration = Duration::from_secs(20 * 60);
+
+/// **The `owner/name` a remote URL names**, or `None` for a host this seat does not review. The
+/// three spellings are one repository, and a checkout that cannot say is a tree the seat refuses.
+fn slug_of_url(url: &str) -> Option<String> {
+    let url = url.trim();
+    let rest = url
+        .strip_prefix("https://github.com/")
+        .or_else(|| url.strip_prefix("ssh://git@github.com/"))
+        .or_else(|| url.strip_prefix("git@github.com:"))?;
+    let rest = rest.trim_end_matches('/').trim_end_matches(".git");
+    let (owner, name) = rest.split_once('/')?;
+    if owner.is_empty() || name.is_empty() || name.contains('/') {
+        return None;
+    }
+    Some(format!("{owner}/{name}"))
+}
+
+/// The `owner/name` of a checkout's `origin`, when it has one.
+fn origin_slug(workspace: &Path) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(workspace)
+        .args(["remote", "get-url", "origin"])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    slug_of_url(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// One pull request's tree's name: its repository and number, which is one path per pull request.
+fn tree_name(pull: &Pull) -> String {
+    format!("{}-{}", pull.repo.replace('/', "-"), pull.number)
+}
+
+/// `git`, in `dir`, with a refusal that carries git's own words.
+fn git(dir: &Path, args: &[&str]) -> Result<(), String> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("`git {}` could not be run ({e})", args.join(" ")))?;
+    if out.status.success() {
+        return Ok(());
+    }
+    Err(format!(
+        "`git {}` in {} failed: {}",
+        args.join(" "),
+        dir.display(),
+        String::from_utf8_lossy(&out.stderr).trim()
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn v(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn a_pull(repo: &str, number: u64) -> Pull {
+        Pull {
+            repo: repo.into(),
+            number,
+            head_sha: "c1".into(),
+            base_sha: "b0".into(),
+            branch: "topic".into(),
+            from_fork: false,
+            title: "a fix".into(),
+            description: String::new(),
+            author: "someone".into(),
+            updated_ms: 0,
+        }
+    }
+
+    /// The sessions a seat would hold, over a folder with no daemon: what a test needs to reach the
+    /// refusals that happen before anything is asked of one.
+    fn sessions_over(dir: &Path) -> DaemonSessions {
+        DaemonSessions {
+            daemon: daemon::resolve(dir).expect("a folder resolves to a daemon"),
+            trees: dir.join("trees"),
+        }
+    }
+
+    /// **The three spellings of one GitHub remote are one repository.** This is the one comparison
+    /// that decides whether this checkout can produce a pull request's tree at all.
+    #[test]
+    fn a_remote_url_names_its_github_repository() {
+        for (url, want) in [
+            (
+                "https://github.com/stroppy-io/letibot.git",
+                Some("stroppy-io/letibot"),
+            ),
+            (
+                "https://github.com/stroppy-io/letibot",
+                Some("stroppy-io/letibot"),
+            ),
+            (
+                "git@github.com:stroppy-io/letibot.git",
+                Some("stroppy-io/letibot"),
+            ),
+            (
+                "git@github.com:stroppy-io/letibot",
+                Some("stroppy-io/letibot"),
+            ),
+            (
+                "ssh://git@github.com/stroppy-io/letibot.git",
+                Some("stroppy-io/letibot"),
+            ),
+            ("https://gitlab.com/stroppy-io/letibot.git", None),
+            ("", None),
+        ] {
+            assert_eq!(slug_of_url(url).as_deref(), want, "{url}");
+        }
+    }
+
+    /// A pull request's tree is one path per pull request, so a re-review lands in the tree the
+    /// last one was made in rather than in a second copy of it.
+    #[test]
+    fn a_pull_requests_tree_is_named_by_its_repository_and_number() {
+        assert_eq!(
+            tree_name(&a_pull("stroppy-io/letibot", 12)),
+            "stroppy-io-letibot-12"
+        );
+    }
+
+    /// **A pull request of another repository is refused by name.** The trees are worktrees of the
+    /// checkout the seat was started in, so a stranger's repository has none.
+    #[test]
+    fn a_pull_request_of_another_repository_is_refused_by_name() {
+        let dir = std::env::temp_dir().join(format!("letibot-seat-trees-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut sessions = sessions_over(&dir);
+        let why = sessions
+            .open(&a_pull("somebody/else", 12), Standing::Trusted)
+            .expect_err("no tree for a stranger's repository");
+        assert!(why.contains("somebody/else#12"), "{why}");
+        assert!(why.contains("somebody/else"), "{why}");
     }
 
     /// The scope is the third word and nothing else, and each refusal names what is missing.
