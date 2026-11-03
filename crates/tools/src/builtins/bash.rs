@@ -81,9 +81,11 @@ fn memory_note(job: &crate::exec::jobs::Job) -> Option<String> {
     use crate::exec::MemoryCap;
     let used = job.memory_used();
     match (job.memory_cap(), used) {
-        (MemoryCap::Uncapped { asked, why }, _) => Some(format!(
-            "memory: ran UNCAPPED — {} was asked for and could not be set: {why}",
-            crate::exec::human_bytes(*asked)
+        (MemoryCap::Uncapped { asked, why }, used) => Some(format!(
+            "memory: ran UNCAPPED — {} was asked for and could not be set: {why}{}",
+            crate::exec::human_bytes(*asked),
+            used.map(|u| format!("; it peaked at {}", crate::exec::human_bytes(u.peak)))
+                .unwrap_or_default()
         )),
         (_, Some(u)) if u.killed_at_cap() => Some(format!(
             "memory: {}; the kernel killed {} process(es) inside it at the cap",
@@ -1386,9 +1388,12 @@ mod tests {
     }
 
     /// A job as the note sees it: a cap, and what the kernel counted for it once it settled.
-    fn settled(cap: crate::exec::MemoryCap, used: Option<(u64, u64)>) -> crate::exec::jobs::Job {
+    fn settled(
+        cap: crate::exec::MemoryCap,
+        used: Option<crate::exec::scope::MemoryUse>,
+    ) -> crate::exec::jobs::Job {
         use crate::exec::jobs::{Job, JobId, Lifetime, Stdin};
-        use crate::exec::scope::{MemoryUse, ScopeId, ScopeKind};
+        use crate::exec::scope::{ScopeId, ScopeKind};
         let scope = |name: &str| ScopeId {
             kind: ScopeKind::Turn,
             name: name.into(),
@@ -1409,12 +1414,8 @@ mod tests {
             Stdin::none(),
         )
         .with_memory_cap(cap);
-        if let Some((peak, oom_kills)) = used {
-            job.record_memory(MemoryUse {
-                cap: Some(64 << 20),
-                peak,
-                oom_kills,
-            });
+        if let Some(used) = used {
+            job.record_memory(used);
         }
         job
     }
@@ -1424,7 +1425,15 @@ mod tests {
     #[test]
     fn a_finished_call_reports_its_peak() {
         use crate::exec::MemoryCap;
-        let job = settled(MemoryCap::Capped(64 << 20), Some((12 << 20, 0)));
+        use crate::exec::scope::MemoryUse;
+        let job = settled(
+            MemoryCap::Capped(64 << 20),
+            Some(MemoryUse {
+                cap: Some(64 << 20),
+                peak: 12 << 20,
+                oom_kills: 0,
+            }),
+        );
         assert_eq!(
             memory_note(&job).as_deref(),
             Some("memory: peak 12 MiB of a 64 MiB cap."),
@@ -1433,21 +1442,27 @@ mod tests {
     }
 
     /// A box with no user systemd runs the call uncapped, and the result says so - the ask that
-    /// could not be honoured and the reason, never a silent uncapped run.
+    /// could not be honoured, the reason, and what the run peaked at - never a silent uncapped run.
     #[test]
     fn an_uncapped_call_names_the_ask_and_the_reason() {
         use crate::exec::MemoryCap;
+        use crate::exec::scope::MemoryUse;
         let job = settled(
             MemoryCap::Uncapped {
                 asked: 512 << 20,
                 why: "no memory controller".into(),
             },
-            None,
+            Some(MemoryUse {
+                cap: None,
+                peak: 200 << 20,
+                oom_kills: 0,
+            }),
         );
         let note = memory_note(&job).expect("a cap that could not be set is said");
         assert!(note.contains("ran UNCAPPED"), "{note}");
         assert!(note.contains("512 MiB was asked for"), "{note}");
         assert!(note.contains("no memory controller"), "{note}");
+        assert!(note.contains("it peaked at 200 MiB"), "{note}");
     }
 
     #[test]
