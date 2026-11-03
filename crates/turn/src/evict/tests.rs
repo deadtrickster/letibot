@@ -548,7 +548,7 @@ fn a_notice_opens_the_exchange_in_hand() {
     // rule protects, so make them the same path and let the rule decide which goes.
     items[4] = call("c2", "read", r#"{"path":"src/a.rs"}"#);
     items[5] = result("c2", "read", ToolOutcome::Ok, body("src/a.rs c2", 4_000));
-    let out = reduce(&items, &[]);
+    let out = reduce(&items, &[], &Kept::default());
     let first = out.units.iter().find(|u| u.call_id == "c1");
     assert!(
         first.is_some(),
