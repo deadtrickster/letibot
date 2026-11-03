@@ -22,7 +22,11 @@ const POLL_MS: u64 = 60_000;
 /// is a second seat with its own identity, and a missing scope would poll whatever the default is.
 pub fn scope_from(args: &[String]) -> Result<&str, String> {
     let Some(source) = args.first() else {
-        return Err("attach takes a source: `letibot attach github <org|owner/repo>`".into());
+        return Err(
+            "attach takes a source: `letibot attach github <org|owner/repo>` \
+             (`letibot attach github --help` says what it does)"
+                .into(),
+        );
     };
     if source != "github" {
         return Err(format!(
@@ -32,8 +36,33 @@ pub fn scope_from(args: &[String]) -> Result<&str, String> {
     }
     match args.get(1) {
         Some(scope) if !scope.is_empty() => Ok(scope),
-        _ => Err("attach takes a scope: `letibot attach github <org|owner/repo>`".into()),
+        _ => Err(
+            "attach takes a scope: `letibot attach github <org|owner/repo>` \
+             (`letibot attach github --help` says what it does)"
+                .into(),
+        ),
     }
+}
+
+/// **What the seat does, what it needs, and one example.** Without it `--help` was read as the
+/// scope and the seat polled a repository named `--help`.
+const USAGE: &str = "\
+letibot attach github <org|owner/repo>
+  The GitHub reviewer seat: poll the scope's open pull requests, one letibot session per
+  pull request and one review per push.
+
+  <org|owner/repo>        the scope to watch: `stroppy-io` for every repository in the org,
+                          or `stroppy-io/letibot` for one
+
+  Drafting is the default: nothing is posted to GitHub until `[github] post = true` and
+  `[github] token_path` (a file at mode 0600) are set in ~/.config/letibot/leticode.toml.
+
+  example:
+    letibot attach github stroppy-io/letibot";
+
+/// Whether this invocation asked for help, wherever the word sits on its line.
+fn wants_help(args: &[String]) -> bool {
+    args.iter().any(|a| a == "--help" || a == "-h")
 }
 
 /// **What the seat will do and what it is allowed to send**, worked out before anything is polled:
@@ -84,6 +113,10 @@ impl Reviewer for Unwired {
 
 /// `letibot attach github <scope>`, with the scope and the source already named.
 pub fn run(args: &[String]) -> ExitCode {
+    if wants_help(args) {
+        println!("{USAGE}");
+        return ExitCode::SUCCESS;
+    }
     let scope = match scope_from(args) {
         Ok(scope) => scope,
         Err(why) => {

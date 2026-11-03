@@ -127,7 +127,51 @@ fn a_stats_verb_that_does_not_exist_is_named_before_the_file_is_opened() {
     );
 }
 
-/// Every verb answers for itself, and `stats` and `fb` show one example each - an example is
+/// **`migrate --help` names every flag with its default and one example.** The synopsis alone
+/// left `--to local`, the way a move comes back, in the launcher's prose only.
+#[test]
+fn the_migrate_help_names_its_flags_defaults_and_one_example() {
+    let (code, stdout, stderr) = run(&["migrate", "--help"]);
+    assert_eq!(code, Some(0), "`migrate --help` is not a failure: {stderr}");
+    for needle in [
+        "SESSION",
+        "--to",
+        "--copy-keys",
+        "--hosts FILE",
+        "--store PATH",
+        "--src DIR",
+        "--patience SECS",
+        "--build-timeout SECS",
+        "default",
+        "example",
+        "letibot migrate s-",
+    ] {
+        assert!(
+            stdout.contains(needle),
+            "`migrate --help` must say `{needle}`:\n{stdout}"
+        );
+    }
+}
+
+/// **`attach github --help` is help, not a scope.** The seat read `--help` as the repository's
+/// name and polled a scope called `--help`.
+#[test]
+fn the_github_seat_answers_help_instead_of_polling_it() {
+    let (code, stdout, stderr) = run(&["attach", "github", "--help"]);
+    assert_eq!(
+        code,
+        Some(0),
+        "`attach github --help` is not a failure: {stderr}"
+    );
+    for needle in ["attach github <org|owner/repo>", "example", "[github] post"] {
+        assert!(
+            stdout.contains(needle),
+            "`attach github --help` must say `{needle}`:\n{stdout}"
+        );
+    }
+}
+
+/// **Every verb answers for itself, and `stats` and `fb` show one example each** - an example is
 /// what a person copies, and neither usage block had one.
 #[test]
 fn the_metrics_help_gives_an_example_for_each_verb() {

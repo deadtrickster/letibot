@@ -2013,13 +2013,32 @@ fn default_src() -> Option<PathBuf> {
     None
 }
 
+/// **Every flag, its default, and one runnable example.** The synopsis alone made a person read
+/// the launcher's prose to learn that `--to local` is how a move comes back.
 fn usage() -> String {
-    "letibot --migrate SESSION --to NAME [--copy-keys] [--hosts FILE] [--store PATH]\n\
-     \x20                             [--src DIR] [--patience SECS]\n\
-     \x20 --to local|NAME   where the session goes: `local`, or a `[host.NAME]` in\n\
-     \x20                  ~/.config/letibot/hosts.toml\n\
-     \x20 --copy-keys       copy this box's providers.toml to the host (mode 600, never printed)\n\
-     letibot --reattach SESSION    re-establish a moved session's daemon and forwarded socket"
+    "\
+letibot migrate SESSION --to HOST [--copy-keys] [--hosts FILE] [--store PATH]
+                [--src DIR] [--patience SECS] [--build-timeout SECS]
+  Moves a session's whole daemon - its rows, its checkout and a harnessd on the host -
+  and leaves a marked copy here. `--to local` brings it back.
+
+  SESSION                 the session to move (`letibot --sessions` lists them)
+  --to local|NAME         where it goes: `local`, or a `[host.NAME]` in the host table;
+                          required, unless --reattach
+  --copy-keys             copy this box's providers.toml to the host, mode 600, never printed
+  --hosts FILE            the host table (default $LETIBOT_HOSTS, else
+                          ~/.config/letibot/hosts.toml)
+  --store PATH            the store (default $LETIBOT_STORE, else
+                          ~/.local/share/letibot/sessions.db)
+  --src DIR               the checkout to build on the host (default: the tree this binary
+                          was built from, else $LETIBOT_SRC)
+  --patience SECS         how long to wait for the session to go quiet (default 60)
+  --build-timeout SECS    how long the host's cargo build may take (default 1800)
+
+  example:
+    letibot migrate s-1789919514688401228 --to lab2x1
+
+letibot --reattach SESSION   re-establish a moved session's daemon and forwarded socket"
         .to_string()
 }
 
