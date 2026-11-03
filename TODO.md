@@ -178,7 +178,7 @@ Record: `docs/review/2026-11-01-ab5f7841-90dd9c84.md` (three reviewers, two roun
 
 ---
 
-## R95 — A variable an earlier command assigned is unread in the next one — **filed 2026-10-27; left: the environment the gate reads is only the spawn seed, because no production code opens a `ShellSession` — `SessionEnv::observe` and `shell_path` are reached by tests alone, so an `export` in one `bash` call still does not reach the next (the corpus counterfactual: 108 + 12 commands)**
+## R95 — A variable an earlier command assigned is unread in the next one — **filed 2026-10-27; the design note, the resolver, the card and a placement-true seed are BUILT 2026-11-03; left: an `export` in one `bash` call still does not reach the next, because the model's command is a one-shot spawn and `SessionEnv::observe` has no production caller — closing it makes the session's shell stateful, which §4j.5 says needs its own decision (a deny-list for names that change what a program does without appearing in any text)**
 
 About 500 recorded commands (`$p`, `$d`, `$pr`, `$CARGO_TARGET_DIR`, …) use a variable the
 session set in an EARLIER `bash` call, and G3 resolves only a variable assigned earlier in the
@@ -202,6 +202,25 @@ bare name finds today, so a grant given for one binary cannot settle a stage tha
 
 **Still open?** grep the corpus replay's unread list for variables with no assignment in the
 same command.
+
+**What is built (2026-11-03).** §4j is the design note; the resolver reads the tracked environment
+(`intent::env`, `parameters::value_at`), and the card names the value and its source for both of the
+sources this tree has — the pairs a spawn is given, and a shell's report. The seed is now the
+environment this box's spawn really gives, on this box only: a remote host's and a guest's spawn
+export the CALL's own pairs into their own shell, so `surroundings_for` seeds nothing there and a
+command using one stays unread rather than being placed on a machine it is not on
+(`a_placement_that_is_not_this_box_seeds_no_environment`). The corpus counterfactual is built
+(`Report::env_fixed`) and needs `~/letibot-corpus/<host>.json`, which this box has not got.
+
+**What is left, precisely.** Nothing observes a `bash` call's own environment, so an `export` in
+one call is still not in the next: the model's command is a one-shot `/bin/sh -c` that exits with
+whatever it exported, and `ShellSession` — the only thing in the tree whose trailer reports an
+environment — is opened by its own tests and no production code. A trailer appended to each call
+would report it; carrying that report into the next spawn's pairs is what makes the session's
+shell stateful, and §4j.5 refuses that without a deny-list for the names that change what a
+program does without appearing in any text (`LD_PRELOAD`, `BASH_ENV`, `PATH` itself). That is the
+operator's call, not this item's: with it, R95's remaining sentence is one trailer and one pair
+merge; without it, the seed is the whole of what the gate can honestly resolve.
 
 ---
 

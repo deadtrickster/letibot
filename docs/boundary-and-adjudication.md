@@ -550,9 +550,12 @@ What the next call will really see is exactly the pairs the harness sets, which 
 it spawns - so a tracked environment *seeded from those pairs* is true by construction
 (`harness::surroundings_for`): the pinned `PATH`, `HOME` and `Config::build_env`, and the keep-list a
 boundary passes through (`exec::confine::KEEP_ENV`), which is `--clearenv`'d and re-`--setenv`'d from
-*this* process's environment and so is seeded for a local placement only. Nothing observes a call's own
-final environment or carries it forward: doing either makes the shell stateful, which is the class of
-change `sets_state_for_later` exists to refuse a durable rule over.
+*this* process's environment. All of it is seeded for `Placement::Host` and for nothing else: a remote
+host's and a guest's spawn export the **call's** own pairs into their own shell (`SshBackend`'s launcher
+gets `export NAME=value` lines, a firecode guest its own), so a seed built here would read a command as
+placed on a machine it is not on - the over-claim direction - and the honest answer there is the unread
+one. Nothing observes a call's own final environment or carries it forward: doing either makes the shell
+stateful, which is the class of change `sets_state_for_later` exists to refuse a durable rule over.
 
 ### 4j.2 Where it is observed: the trailer
 
