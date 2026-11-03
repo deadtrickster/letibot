@@ -839,13 +839,24 @@ fn live_lease(leases: &[QueueLease], repo: &str) -> bool {
 }
 
 /// Rows counted by state, in the queue's own order - only the states that are there, so a line says
-/// `2 waiting for a reviewer · 1 the gate is running` and never `0 of nine things`. The word is
-/// [`plain_state`]'s, so a count cannot say a name no row says.
+/// `3 waiting · 1 timed out` and never `0 of nine things`. Never the store's own code: a summary
+/// line is repeated to a person, and `cannot_decide` is not a word one uses.
 pub(super) fn states_of(states: impl Iterator<Item = &'static str>) -> Vec<String> {
     counts_of(states)
         .into_iter()
-        .map(|(s, n)| format!("{n} {}", plain_state(s)))
+        .map(|(s, n)| format!("{n} {}", count_word(s)))
         .collect()
+}
+
+/// A state as a COUNT on a summary line, where a row says the whole sentence: `1 timed out` beside
+/// `the gate timed out`, and never the store's `timed_out` or a bare `cannot_decide`.
+fn count_word(state: &str) -> String {
+    match state {
+        "cannot_decide" => "undecided".to_string(),
+        "rejected" => "refused".to_string(),
+        "conflict" => "in conflict".to_string(),
+        other => other.replace('_', " "),
+    }
 }
 
 /// [`states_of`]'s counts, unformatted - the same `FLOW` order and the same rule, for a reader that
@@ -1178,14 +1189,7 @@ mod tests {
             said.contains("target `main` in") && said.contains("the gate is red"),
             "{said}"
         );
-        assert!(
-            said.contains("review queue: 1 waiting for a reviewer"),
-            "{said}"
-        );
-        assert!(
-            said.contains("review queue: 1 waiting for a reviewer"),
-            "{said}"
-        );
+        assert!(said.contains("review queue: 1 waiting"), "{said}");
         assert!(said.contains("merge queue: 0 open"), "{said}");
     }
 
@@ -1230,16 +1234,19 @@ mod tests {
         );
     }
 
-    /// **The counts are the rows' words.** `1 waiting` is the store's column name, on a line read
-    /// beside rows that say `waiting for a reviewer`; one table reads both, so a count can never
-    /// say a word no row says.
+    /// **The counts are a word of their own.** `1 waiting` is a count, read beside rows that say
+    /// `waiting for a reviewer`: a count names the state, and never the store's own code.
     #[test]
-    fn the_counts_say_the_rows_words() {
+    fn the_counts_say_a_word_a_reader_uses() {
         for state in FLOW {
             assert_eq!(
                 states_of(std::iter::once(state)),
-                [format!("1 {}", plain_state(state))],
+                [format!("1 {}", count_word(state))],
                 "{state}"
+            );
+            assert!(
+                !count_word(state).contains('_'),
+                "a count says the store's code: {state}"
             );
         }
     }
@@ -1266,13 +1273,13 @@ mod tests {
             lines
                 .iter()
                 .any(|l| l
-                    .starts_with("mine  the gate is red · 1 waiting for a reviewer · unserved")),
+                    .starts_with("mine  the gate is red · 1 waiting · unserved")),
             "{said}"
         );
         assert!(
             lines
                 .iter()
-                .any(|l| l.starts_with("other  no target · 1 waiting for a reviewer · unserved")),
+                .any(|l| l.starts_with("other  no target · 1 waiting · unserved")),
             "a repository whose target was never gated says so: {said}"
         );
         assert!(
@@ -1418,7 +1425,7 @@ mod tests {
 
         let said = desk.status(false, None).unwrap();
         assert!(
-            said.contains("review queue: 11 waiting for a reviewer · 1 refused"),
+            said.contains("review queue: 11 waiting · 1 refused"),
             "{said}"
         );
         assert!(said.contains("r-parked"), "the parked row is kept: {said}");
@@ -1622,7 +1629,7 @@ mod tests {
             .unwrap_or_else(|| panic!("the other repository's line: {said}"));
         assert!(
             line.starts_with("mine  the gate is running · step 3 of 4 · ")
-                && line.contains(" · 1 waiting for a reviewer"),
+                && line.contains(" · 1 waiting"),
             "the state, the step, its clock, then what is open: {line}"
         );
         assert!(
@@ -1635,7 +1642,7 @@ mod tests {
             .find(|l| l.starts_with("other  "))
             .unwrap_or_else(|| panic!("{said}"));
         assert_eq!(
-            quiet, "other  no target · 1 waiting for a reviewer · unserved",
+            quiet, "other  no target · 1 waiting · unserved",
             "{said}"
         );
         drop(gate::step_guard(&wt));
