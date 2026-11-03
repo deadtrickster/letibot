@@ -931,6 +931,10 @@ struct Told {
     /// the line alone: a program that asks the same question twice after saying something in
     /// between has asked twice, and the second ask is a second thing to answer.
     raised: Option<(u64, Option<String>)>,
+    /// The reading the beat before took. The card is raised only from one that has stood still
+    /// since then: the capture trails the pipe, so the beat a block is first seen on can hold
+    /// nothing of what the program already wrote, or half a line of it.
+    seen: Option<(u64, Option<String>)>,
     /// Whether the daemon has already said this run is slow. Once per run: the
     /// condition does not un-cross, and a line every 500 ms for one fact is the
     /// liveness signal this loop refuses to be.
@@ -939,6 +943,21 @@ struct Told {
     /// per run: it is a disclosure about a condition, and the condition does not change while
     /// the run lasts.
     unreadable: bool,
+}
+
+impl Told {
+    /// Whether a card may be raised from this beat's reading: only from one that is the beat
+    /// before's, because the capture trails the pipe and nothing revises a card once it is up,
+    /// and never from the one the last card was about.
+    fn speaks_now(&mut self, reading: &(u64, Option<String>)) -> bool {
+        let stood_still = self.seen.as_ref() == Some(reading);
+        self.seen = Some(reading.clone());
+        if !stood_still || self.raised.as_ref() == Some(reading) {
+            return false;
+        }
+        self.raised = Some(reading.clone());
+        true
+    }
 }
 
 /// Wait, emitting progress that measures work rather than a heartbeat, and honour a head's Ctrl+B by
@@ -1083,19 +1102,45 @@ fn ask_if_waiting(
         )
         .ok()
         .and_then(|s| crate::exec::ask::last_line(&s.text()));
-    if told.raised == Some((v.produced, shown.clone())) {
+    let reading = (v.produced, shown);
+    if !told.speaks_now(&reading) {
         return;
     }
-    told.raised = Some((v.produced, shown.clone()));
     ctx.operator_run(OperatorRun::Waiting {
         job: &id.0,
-        question: shown.as_deref(),
+        question: reading.1.as_deref(),
     });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The capture trails the pipe, so the beat a block is first seen on can hold nothing of what
+    /// the program already wrote - and a card is never revised once it is up. The first reading
+    /// warms the decision and the second makes it; a run that wrote nothing still gets its card.
+    #[test]
+    fn a_card_is_raised_from_a_reading_that_stood_still_for_a_beat() {
+        let line = (16u64, Some("Continue? [Y/n]".to_string()));
+        let mut told = Told::default();
+        assert!(!told.speaks_now(&line), "no card from the first beat alone");
+        assert!(
+            told.speaks_now(&line),
+            "the same reading on the next beat does"
+        );
+        assert!(
+            !told.speaks_now(&line),
+            "and the reading a card was raised from is not raised twice"
+        );
+
+        let empty = (0u64, None);
+        let mut silent = Told::default();
+        assert!(!silent.speaks_now(&empty));
+        assert!(
+            silent.speaks_now(&empty),
+            "a program that wrote nothing is a card too, once the beat has shown it is not a lag"
+        );
+    }
 
     /// A name is never invented from the command, which is the whole point of the parameter: a
     /// guessed slug is worse than none, since the command is already on the row. A test where
