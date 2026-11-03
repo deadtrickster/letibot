@@ -186,14 +186,16 @@ Record: `docs/review/2026-11-01-ab5f7841-90dd9c84.md` (three reviewers, two roun
 ## R106 - A session that joins a running daemon ignores its own `model` - **OPEN, filed 2026-11-01**
 
 `leticode_start {model: "deepseek"}` on a worktree whose daemon a glm session had started answered with glm's own 429 ("余额不足", code 1113): the second session's turns went to the first session's provider. Each session's model must be its own, or a join with a different model must be refused by name.
-**Still open?** start two sessions on one worktree with different `model`s and compare `leticode_status`.
+**Landed: the session's model is its own.** `crates/bridge/tests/model_per_session.rs` drives a join with another model through `leticode_start` and asserts the turns run on it (`ecae1af7`, `a_session_that_joins_a_daemon_runs_its_own_model`); `leticode_model` moves a running session another session's daemon started (`crates/bridge/tests/provider_trouble.rs`).
+**Still open?** nothing in the code. The live half, two sessions on one worktree with different `model`s compared through `leticode_status`, has not been run on a box.
 
 ---
 
 ## R107 - `wait --until attention` returns at once while the session waits on its own background job - **OPEN, filed 2026-10-27**
 
 A session idle with `jobs_open` non-empty and `waiting_on` empty makes `letibot-mcp wait` exit 0 immediately, though the job's settlement will wake the model (PG, 2026-10-27, job `j15647`). The daemon's `Activity` must count a job whose settlement wakes the model, and `wait` must hold until that turn ends; a job whose settlement wakes nothing (a server) must not hold it.
-**Still open?** a session that starts a background `sleep 30` and ends its turn: `wait` should take about 30 s.
+**Landed: a running job holds the wait, and a parked one does not.** `Head::wait`'s `armed` counts `Waiting::Job` and `Waiting::Child` (`crates/bridge/src/head.rs:1789`, `f1e7f9ec`); the two halves are `crates/bridge/tests/wait_jobs.rs`'s `a_wait_holds_on_a_running_job_and_not_on_the_one_the_model_parked` and `crates/bridge/tests/wait_activity.rs`'s `a_wait_holds_on_a_running_job_and_trusts_the_daemons_quiet`. A subagent's end was the same hole one step out, and is `crates/bridge/tests/wait_children.rs`.
+**Still open?** nothing.
 
 ---
 
