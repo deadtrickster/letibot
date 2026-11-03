@@ -522,13 +522,13 @@ fn one_outage_is_one_row_with_a_counter() {
     let ep = endpoint.clone();
     let rec = drive(&parts, cfg, move |client, rx, _hub, rec| {
         client.prompt(0, PROMPT).expect("the prompt is accepted");
-        watch(rx, rec, |rec| !rec.answered.is_empty());
+        watch(rx, rec, |rec| answers(hub) >= 1 && !rec.answered.is_empty());
         // The second outage, in the same session and against the same endpoint.
         ep.refuse(1);
         client
             .prompt(0, NEXT)
             .expect("the second prompt is accepted");
-        watch(rx, rec, |rec| rec.answered.len() >= 2);
+        watch(rx, rec, |rec| answers(hub) >= 2 && rec.answered.len() >= 2);
     });
     assert_eq!(
         rec.answered.len(),
