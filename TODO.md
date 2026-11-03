@@ -668,7 +668,7 @@ is abandoned with the reason; same-daemon reopen does not double-restore; two he
 
 ---
 
-## R92 — Lifecycle, jobs, the queue and worktrees as the operator meets them — **OPEN, filed 2026-10-12**
+## R92 — Lifecycle, jobs, the queue and worktrees as the operator meets them — **OPEN, filed 2026-10-12; left: items 11 (later commits never re-enqueued), 12 (the main checkout's `.cargo/config.toml` still patches rano), 15 (worktree debris nothing reaps) and 34 (only firecode's capacity wording recognised)**
 
 Ranked by how often the operator hits it.
 
@@ -784,7 +784,7 @@ Ranked by how often the operator hits it.
 
 ---
 
-## R93 — What the model is told: tics, leaked numbers, contradictions, schema mismatches — **OPEN, filed 2026-10-12**
+## R93 — What the model is told: tics, leaked numbers, contradictions, schema mismatches — **OPEN, filed 2026-10-12; left: items 1 (A2, A5, A6), 3 (B4, B7, B8, B13), 4 (C5, C6, C9–C14), 5 (D3, D4), 6 (E2–E6, E9–E13, E16), 7 (the F findings the named ones do not cover) and 8 (a fabric memory body no tool reads, and the fabric block's time changing per open)**
 
 From real data (`sessions.db`, fork copies removed: 4,347 injected items) and the code. The full
 report has the exact text and a replacement for every item — work from it. **Every lettered item
@@ -803,7 +803,7 @@ own right**, addressed as R93.<id>; the list below groups them by what to fix fi
 
 ---
 
-## R62 — The gate runs locally and on the fleet, never on GitHub — **DONE 2026-11-02: the GitHub half, which was the only one left**
+## R62 — The gate runs locally and on the fleet, never on GitHub — **DONE 2026-11-02; left: item 3 (`~/.actrc` pinning `ubuntu-latest`) — nothing to pin, the gate runs the project's own steps over ssh and `act` is not in the path**
 
 The operator: *"this is mostly local concern - i've been rate limited on github recently with
 actions, so _act_ is our friend. we can use other machines like lubuntu2 to run tests"*, *"so we
