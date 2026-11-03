@@ -5840,7 +5840,13 @@ user     = "root"
 
         let bound = Duration::from_secs(2);
         let began = Instant::now();
-        let out = ssh.fetch_within(&program, &dir, "https://example.invalid/repo", "main", bound);
+        let out = ssh.fetch_within(
+            &program,
+            &dir,
+            "https://example.invalid/repo",
+            "main",
+            bound,
+        );
         let spent = began.elapsed();
         queue.join().expect("the queue thread");
         assert!(
