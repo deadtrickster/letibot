@@ -675,6 +675,9 @@ pub struct HostProcesses {
     /// its own rather than a field on [`Job`], because a job of jobs has no process, no cgroup
     /// and no waiter thread; the two tables are read together, which is why `jobs()` lists both.
     aggregates: Mutex<std::collections::HashMap<JobId, Arc<dyn Aggregate>>>,
+    /// The job scopes a settled job left a process in, so the next spawn can look at them again:
+    /// the waiter thread returns after its one look, and nothing else revisits a job's scope.
+    kept_scopes: Arc<Mutex<Vec<ScopeId>>>,
     /// What this host calls its session scope. Unique per host, not the constant `s`: two
     /// sessions in one daemon share a cgroup root, so a fixed name would put both sessions'
     /// processes in one cgroup and ending either would reap the other's jobs.
@@ -821,13 +824,25 @@ fn scope_kind_of(scope: &str) -> (super::scope::ScopeKind, String) {
     }
 }
 
-/// Release a job's own scope once its leader has gone. Only an EMPTY one goes: a scope still
-/// holding a process is one the command left behind and somebody's live work, and `end` would
-/// kill it. Left alone, each of these is a cgroup directory per command a session ever ran.
-fn release_settled_scope(tree: &dyn ScopeTree, scope: &ScopeId) {
-    if tree.members(scope).is_ok_and(|m| m.is_empty()) {
-        let _ = tree.end(scope);
+/// Release a job's own scope once its leader has gone, and say whether it went. Only an EMPTY one
+/// goes: a scope still holding a process is one the command left behind and somebody's live work,
+/// and `end` would kill it. Left alone, each of these is a cgroup directory per command a session
+/// ever ran - which is why the caller remembers the ones that stayed.
+fn release_settled_scope(tree: &dyn ScopeTree, scope: &ScopeId) -> bool {
+    if !tree.members(scope).is_ok_and(|m| m.is_empty()) {
+        return false;
     }
+    let _ = tree.end(scope);
+    true
+}
+
+/// The same look, remembering a scope that could not be released: the last process in it can leave
+/// long after its leader, and the only other moment this host touches the tree is a spawn.
+fn settle_scope(tree: &dyn ScopeTree, kept: &Mutex<Vec<ScopeId>>, scope: &ScopeId) {
+    if release_settled_scope(tree, scope) {
+        return;
+    }
+    kept.lock().unwrap_or_else(|e| e.into_inner()).push(scope.clone());
 }
 
 impl HostProcesses {
@@ -849,6 +864,13 @@ impl HostProcesses {
                 held += here;
             }
         }
+    }
+
+    /// The scopes [`settle_scope`] had to leave alone, looked at again: a process can leave one long
+    /// after the leader that started it, and a spawn is when this host already does this housekeeping.
+    fn release_kept_scopes(&self) {
+        let mut kept = self.kept_scopes.lock().unwrap_or_else(|e| e.into_inner());
+        kept.retain(|scope| !release_settled_scope(self.tree.as_ref(), scope));
     }
 
     /// Drop the finished jobs past a window of `keep`, oldest first, and any finished one settled
@@ -935,6 +957,7 @@ impl HostProcesses {
             shell: vec!["/bin/sh".into(), "-c".into()],
             console_shell: super::console::shell(),
             aggregates: Mutex::new(std::collections::HashMap::new()),
+            kept_scopes: Arc::new(Mutex::new(Vec::new())),
             session_name: unique("s"),
         };
         h.protect_self_and_ancestors();
@@ -1533,6 +1556,7 @@ impl ProcessHost for HostProcesses {
 
         let waiter = Arc::clone(&job);
         let tree = Arc::clone(&self.tree);
+        let kept = Arc::clone(&self.kept_scopes);
         std::thread::Builder::new()
             .name(format!("letibot-job-{id}"))
             .spawn(move || {
@@ -1592,8 +1616,8 @@ impl ProcessHost for HostProcesses {
                 waiter.settle(state);
                 // The leader is gone, so its own scope is debris unless the command left a
                 // process in it: one directory per command ever run otherwise, and a scope still
-                // holding work is somebody's live process and stays.
-                release_settled_scope(tree.as_ref(), &waiter.lifetime().scope);
+                // holding work is somebody's live process and stays - for the next spawn to look at.
+                settle_scope(tree.as_ref(), &kept, &waiter.lifetime().scope);
             })
             .map_err(|e| ExecError::Spawn(e.to_string()))?;
 
@@ -1638,6 +1662,7 @@ impl ProcessHost for HostProcesses {
             .insert(job.id.clone(), Arc::clone(&job));
         self.jobs.lock().expect("jobs").push(job);
         self.release_settled_captures(SETTLED_CAPTURE_BUDGET);
+        self.release_kept_scopes();
         self.prune_finished(KEPT_FINISHED_JOBS, FINISHED_JOB_GRACE, SystemTime::now());
         Ok(id)
     }
@@ -1717,6 +1742,7 @@ impl ProcessHost for HostProcesses {
         let pid = a.pid;
         let watched = Arc::clone(&job);
         let tree = Arc::clone(&self.tree);
+        let kept = Arc::clone(&self.kept_scopes);
         let _ = std::thread::Builder::new()
             .name(format!("adopted-{}", &a.handle[..a.handle.len().min(20)]))
             .spawn(move || {
@@ -1727,7 +1753,7 @@ impl ProcessHost for HostProcesses {
                         // process is not there.
                         _ => {
                             watched.settle(JobState::Dead);
-                            release_settled_scope(tree.as_ref(), &watched.lifetime().scope);
+                            settle_scope(tree.as_ref(), &kept, &watched.lifetime().scope);
                             break;
                         }
                     }
@@ -2513,6 +2539,145 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
             .unwrap_err();
         assert!(format!("{e}").contains("no cgroup v2 here"), "{e}");
         assert!(format!("{e}").contains("nothing would reap it"), "{e}");
+    }
+
+    /// **A scope a settled job left a process in is looked at again.** The waiter thread returns
+    /// after its one look, and nothing else in the tree revisits a job's scope - so without this a
+    /// session that started a background server per checkout keeps one cgroup directory each.
+    #[test]
+    fn a_scope_a_job_left_a_process_in_is_released_by_the_next_spawn() {
+        let root = std::env::temp_dir().join(format!("letibot-kept-scope-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("a root");
+        let h = HostProcesses::with_tree(&root, PlainTree::over(root.join("tree")));
+        let tree = Arc::clone(&h.tree);
+        let scope = tree
+            .open(ScopeKind::Session, "job-kept", None)
+            .expect("a scope");
+        // A command that left something behind: this test's own pid stands in for the child, and
+        // the process has to be a live one, or the scope is empty and goes at once.
+        std::fs::write(scope.path.join("cgroup.procs"), std::process::id().to_string())
+            .expect("a member");
+        settle_scope(tree.as_ref(), &h.kept_scopes, &scope);
+        assert!(
+            scope.path.exists(),
+            "a scope still holding a process is somebody's live work and must not be ended"
+        );
+        assert_eq!(
+            h.kept_scopes.lock().expect("kept").len(),
+            1,
+            "the scope that stayed is kept for the next look"
+        );
+
+        // The process goes, and the next spawn is what notices.
+        std::fs::write(scope.path.join("cgroup.procs"), "").expect("an empty scope");
+        h.spawn(&SpawnRequest {
+            command: "true".into(),
+            slug: None,
+            cwd: "/".into(),
+            scope: ScopeKind::Session,
+            scope_name: None,
+            background: true,
+            env: vec![],
+            tty: false,
+            memory: None,
+        })
+        .expect("a job runs");
+        assert!(
+            !scope.path.exists(),
+            "a kept scope nothing revisits is one cgroup directory per command a session ever ran"
+        );
+        assert!(
+            h.kept_scopes.lock().expect("kept").is_empty(),
+            "the kept list does not grow for ever"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A directory per scope and a `cgroup.procs` a test writes into: what a kernel would answer,
+    /// on a box with no cgroup v2 to delegate. The join script writes a real pid, so the spawn path
+    /// under test is the host's own rather than a fake of it.
+    struct PlainTree {
+        root: PathBuf,
+    }
+
+    impl PlainTree {
+        fn over(root: PathBuf) -> Box<dyn ScopeTree> {
+            let _ = std::fs::create_dir_all(&root);
+            Box::new(PlainTree { root })
+        }
+    }
+
+    impl ScopeTree for PlainTree {
+        fn describe(&self) -> String {
+            format!("plain directories under {}", self.root.display())
+        }
+
+        fn root(&self) -> Option<PathBuf> {
+            Some(self.root.clone())
+        }
+
+        fn open(
+            &self,
+            kind: ScopeKind,
+            name: &str,
+            parent: Option<&ScopeId>,
+        ) -> Result<ScopeId, ExecError> {
+            let base = parent
+                .map(|p| p.path.clone())
+                .unwrap_or_else(|| self.root.clone());
+            let path = base.join(format!("{}.{name}", kind.as_str()));
+            std::fs::create_dir_all(&path)
+                .map_err(|e| ExecError::Spawn(format!("{}: {e}", path.display())))?;
+            std::fs::write(path.join("cgroup.procs"), b"")
+                .map_err(|e| ExecError::Spawn(format!("{}: {e}", path.display())))?;
+            Ok(ScopeId {
+                kind,
+                name: name.to_string(),
+                path,
+            })
+        }
+
+        /// What the kernel would answer: the pids the join script wrote, less the ones that have
+        /// exited - the kernel drops a pid from the file when its process goes.
+        fn members(&self, scope: &ScopeId) -> Result<Vec<u32>, ExecError> {
+            let body = std::fs::read_to_string(scope.path.join("cgroup.procs"))
+                .map_err(|e| ExecError::NoSuchScope(format!("{}: {e}", scope.path.display())))?;
+            Ok(body
+                .lines()
+                .filter_map(|l| l.trim().parse().ok())
+                .filter(|pid| super::super::procs::read(*pid).is_some())
+                .collect())
+        }
+
+        /// Nothing is signalled here, on purpose: a test stands its own pid in for the process a
+        /// command left behind, and a fake that killed it would take the test with it.
+        fn end(&self, scope: &ScopeId) -> Reaping {
+            let observed = self
+                .members(scope)
+                .unwrap_or_default()
+                .into_iter()
+                .map(Reaped::observe)
+                .collect();
+            let removed = std::fs::remove_dir_all(&scope.path).is_ok();
+            Reaping {
+                scope: scope.clone(),
+                at: SystemTime::now(),
+                mechanism: "nothing to kill",
+                observed,
+                survivors: Vec::new(),
+                waited: Duration::ZERO,
+                removed,
+                note: None,
+            }
+        }
+
+        fn migrate(&self, _from: &ScopeId, _to: &ScopeId) -> Result<Migration, ExecError> {
+            Err(ExecError::Spawn("this tree cannot move a process".into()))
+        }
+
+        fn list(&self) -> Vec<ScopeId> {
+            Vec::new()
+        }
     }
 
     /// **The record of what a host did is bounded, and the oldest go first**: a reaping, a promotion
