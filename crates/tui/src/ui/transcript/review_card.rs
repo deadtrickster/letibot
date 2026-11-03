@@ -134,6 +134,10 @@ pub(crate) struct Review {
     pub(crate) verdict: Verdict,
     /// The branch, or `main's red tip 60bf819c` for the review of a red target.
     pub(crate) subject: String,
+    /// **Who judged it** - the reviewer's session when the text names one, `you` for the
+    /// operator's own veto. `None` when the daemon's words do not say, and the line then says
+    /// nothing rather than inventing a name.
+    pub(crate) by: Option<String>,
     /// The first clause of the decisive reason, when there is one.
     pub(crate) reason: Option<String>,
 }
@@ -143,17 +147,31 @@ impl Review {
         Review {
             verdict,
             subject,
+            by: None,
             reason: reason.filter(|r| !r.is_empty()),
+        }
+    }
+
+    /// The same, naming who judged it.
+    fn by(mut self, who: Option<&str>) -> Review {
+        self.by = who
+            .map(|w| w.trim_start_matches("reviewer:").trim().to_string())
+            .filter(|w| !w.is_empty());
+        self
+    }
+
+    /// **The verdict's whole phrase** - `refused by s-gatekeeper-0123`, so the outcome and who
+    /// judged it are read together and cannot be parted by a cut.
+    pub(crate) fn verdict_words(&self) -> String {
+        match &self.by {
+            Some(who) => format!("{} by {who}", self.verdict.word()),
+            None => self.verdict.word().to_string(),
         }
     }
 
     /// **The whole line, uncut.**
     pub(crate) fn line(&self) -> String {
-        let mut parts = vec![
-            REVIEW.to_string(),
-            self.subject.clone(),
-            self.verdict.word().to_string(),
-        ];
+        let mut parts = vec![REVIEW.to_string(), self.subject.clone(), self.verdict_words()];
         if let Some(r) = &self.reason {
             parts.push(r.clone());
         }
@@ -161,9 +179,9 @@ impl Review {
         parts.join(" · ")
     }
 
-    /// The popup's top edge: the branch and the verdict.
+    /// The popup's top edge: the branch, the verdict, and who judged it.
     pub(crate) fn title(&self) -> String {
-        format!("{REVIEW} · {} · {}", self.subject, self.verdict.word())
+        format!("{REVIEW} · {} · {}", self.subject, self.verdict_words())
     }
 
     /// **The card**: the verdict's word in its role.
@@ -220,8 +238,9 @@ fn warning_card(detail: &str) -> Option<Card> {
 
 /// A message between sessions, unwrapped: the two openings `message_from_a_session` writes,
 /// which say which way the edge runs. Knowing only the parent one would draw every refusal
-/// with its envelope on.
-fn unwrap_message(text: &str) -> &str {
+/// with its envelope on. Answers the SENDER too - for a refusal that is the reviewer, and the
+/// line says who judged the branch.
+fn unwrap_message(text: &str) -> (Option<&str>, &str) {
     [
         "message from your parent session `",
         "message from session `",
@@ -230,9 +249,9 @@ fn unwrap_message(text: &str) -> &str {
     .find_map(|open| {
         text.strip_prefix(open)
             .and_then(|r| r.split_once("`: "))
-            .map(|(_, body)| body)
+            .map(|(who, body)| (Some(who), body))
     })
-    .unwrap_or(text)
+    .unwrap_or((None, text))
 }
 
 /// **A branch's name, up to its closing backtick** - `(name, the rest)`; `None` for an empty
@@ -265,7 +284,7 @@ fn parked_subject(s: &str) -> Option<(String, &str)> {
 
 /// The opening of a notice this module reads, and what follows it.
 fn opening(text: &str) -> Option<(&'static str, &str)> {
-    let body = unwrap_message(text);
+    let (_, body) = unwrap_message(text);
     [
         "The reviewer of `",
         "The review of `",
@@ -336,31 +355,25 @@ pub(crate) fn notice_review(text: &str) -> Option<Review> {
             if !r.contains("REFUSED it at ") {
                 return None;
             }
-            Some(Review::new(
-                Verdict::Refused,
-                branch.to_string(),
-                reasons_listed(r),
-            ))
+            Some(
+                Review::new(Verdict::Refused, branch.to_string(), reasons_listed(r))
+                    .by(unwrap_message(text).0),
+            )
         }
-        // `refused`.
+        // `refused`: the sender of the message IS the reviewer that judged the branch.
         "Your branch `" => {
             let (branch, r) = ticked(r)?;
-            Some(Review::new(
-                Verdict::Refused,
-                branch.to_string(),
-                reasons_listed(r),
-            ))
+            Some(
+                Review::new(Verdict::Refused, branch.to_string(), reasons_listed(r))
+                    .by(unwrap_message(text).0),
+            )
         }
         // `vetoed`: `: WORDS. It does not land.`
         "The operator VETOED `" => {
             let (branch, r) = ticked(r)?;
             let words = r.strip_prefix(": ")?;
             let (words, _) = words.rsplit_once(". It does not land.")?;
-            Some(Review::new(
-                Verdict::Vetoed,
-                branch.to_string(),
-                decisive(words),
-            ))
+            Some(Review::new(Verdict::Vetoed, branch.to_string(), decisive(words)).by(Some("you")))
         }
         // `handed_over`: `(row `ID`): FAILURE This project merges such a branch`.
         "The review queue could not review `" => {
@@ -421,29 +434,28 @@ pub(crate) fn warning_review(detail: &str) -> Option<Review> {
     // The red tip's `queue_needs_human`: `` main`'s red tip (`ID`) stops for a person… ``.
     if let Some(r) = r.strip_prefix("'s red tip (`") {
         let (_, r) = r.split_once("`) ")?;
-        let (head, reason) = stops_for_a_person(r)?;
-        return Some(Review::new(
-            Verdict::CouldNotDecide,
-            format!("{name}'s red tip {head}"),
-            reason,
-        ));
+        let (head, by, reason) = stops_for_a_person(r)?;
+        return Some(
+            Review::new(
+                Verdict::CouldNotDecide,
+                format!("{name}'s red tip {head}"),
+                reason,
+            )
+            .by(by),
+        );
     }
     let r = r.strip_prefix(" (`")?;
     let (_, r) = r.split_once("`) ")?;
     let branch = name.to_string();
-    if let Some((_, reason)) = stops_for_a_person(r) {
-        return Some(Review::new(Verdict::CouldNotDecide, branch, reason));
+    if let Some((_, by, reason)) = stops_for_a_person(r) {
+        return Some(Review::new(Verdict::CouldNotDecide, branch, reason).by(by));
     }
     if let Some(r) = r.strip_prefix("cannot decide — ") {
         // `queue_needs_human` before R86: `BY could not decide at SHA: REASONS. `/queue approve …`
-        let (_, r) = r.split_once(" could not decide at ")?;
+        let (by, r) = r.split_once(" could not decide at ")?;
         let (_, reasons) = r.split_once(": ")?;
         let (reasons, _) = reasons.rsplit_once(". `/queue approve ")?;
-        return Some(Review::new(
-            Verdict::CouldNotDecide,
-            branch,
-            decisive(reasons),
-        ));
+        return Some(Review::new(Verdict::CouldNotDecide, branch, decisive(reasons)).by(Some(by)));
     }
     if let Some(r) = r.strip_prefix("is BLOCKED: ") {
         // `queue_blocked`, attempts spent: `N attempts to review it at HEAD ended without a
@@ -497,13 +509,13 @@ pub(crate) fn warning_review(detail: &str) -> Option<Review> {
 }
 
 /// **`stops for a person: the reviewer could not decide at HEAD - "DECISIVE" (BY; …`** - the
-/// head, and the decisive sentence's first clause.
-fn stops_for_a_person(r: &str) -> Option<(String, Option<String>)> {
+/// head, the reviewer that could not decide, and the decisive sentence's first clause.
+fn stops_for_a_person(r: &str) -> Option<(String, Option<&str>, Option<String>)> {
     let r = r.strip_prefix("stops for a person: the reviewer could not decide at ")?;
     let (head, r) = r.split_once(" — \"")?;
     let (said, _) = r.split_once("; every reason is on the row)")?;
-    let (said, _) = said.rsplit_once("\" (")?;
-    Some((head.to_string(), decisive(said)))
+    let (said, by) = said.rsplit_once("\" (")?;
+    Some((head.to_string(), Some(by), decisive(said)))
 }
 
 /// *"4 of 4 VM slots are busy"* as the line says it: *"4 of 4 busy"*.

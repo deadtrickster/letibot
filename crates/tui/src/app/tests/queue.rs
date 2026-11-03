@@ -64,13 +64,13 @@ fn tab_switches_between_the_review_queue_and_the_merge_queue() {
     )));
     let screen = a.screen(140, 40).join("\n");
     assert!(
-        screen.contains("review queue (1) · merge queue (1)"),
+        screen.contains("1 in review · 1 to land"),
         "the drawn view leads: {screen}"
     );
     assert_eq!(a.key(Key::Tab), None);
     let screen = a.screen(140, 40).join("\n");
     assert!(
-        screen.contains("merge queue (1) · review queue (1)"),
+        screen.contains("1 to land · 1 in review"),
         "and follows the key: {screen}"
     );
     assert!(
@@ -118,7 +118,7 @@ fn a_repository_that_is_not_queued_is_one_muted_line_and_no_count() {
     let rows = a.screen(239, 61);
     let screen = rows.join("\n");
     assert!(
-        screen.contains("no `Merge gate` section in its AGENTS.md"),
+        screen.contains("it declares no `Merge gate` in its AGENTS.md"),
         "{screen}"
     );
     assert!(
@@ -154,10 +154,10 @@ fn a_red_target_is_an_alarm_and_its_review_reads_as_the_target() {
     a.apply(queue_frame(snap));
     let rows = a.screen(160, 40);
     let screen = rows.join("\n");
-    assert!(screen.contains("RED main letibot"), "the alarm: {screen}");
+    assert!(screen.contains("main in letibot is red"), "the alarm: {screen}");
     assert!(screen.contains("`cargo test` failed"), "{screen}");
     assert!(
-        screen.contains("RED TARGET main"),
+        screen.contains("main's own tip"),
         "the target's own review reads as a target: {screen}"
     );
     assert!(
@@ -217,13 +217,15 @@ fn the_selected_row_shows_its_moves_and_enter_opens_it_whole() {
     a.screen(140, 40);
     a.queue_sel = stop_of(&a, "agent/one");
     let screen = a.screen(140, 40).join("\n");
-    assert!(screen.contains("waiting → reviewing"), "{screen}");
+    assert!(
+        screen.contains("waiting for a reviewer → a reviewer is reading it"),
+        "{screen}"
+    );
     assert_eq!(a.key(Key::Enter), None);
     assert_eq!(a.queue_open.as_deref(), Some("one"));
     let screen = a.screen(160, 60).join("\n");
     assert!(screen.contains("its moves"), "{screen}");
     assert!(screen.contains("(new) → waiting"), "{screen}");
-    assert!(screen.contains("make the widget blue"), "the ask: {screen}");
     a.key(Key::Esc);
     assert!(a.queue_open.is_none());
     assert!(a.is_open(Surface::Queue), "esc goes back to the queue");
@@ -281,11 +283,11 @@ fn a_merge_rows_gate_steps_draw_and_timed_out_is_its_own_word() {
     assert_eq!(a.key(Key::Enter), None);
     let screen = a.screen(160, 60).join("\n");
     assert!(
-        screen.contains("cargo test · TIMED OUT after 30m"),
+        screen.contains("timed out: cargo test · 30m"),
         "{screen}"
     );
     assert!(
-        screen.contains("cargo build --release · not run"),
+        screen.contains("not run: cargo build --release · 0s"),
         "{screen}"
     );
     assert!(screen.contains("timed out"), "{screen}");
@@ -493,7 +495,7 @@ fn the_queue_pane_and_the_edge_are_scoped_to_the_sessions_repository() {
     assert!(screen.contains("agent/mine"), "{screen}");
     assert!(!screen.contains("agent/theirs"), "{screen}");
     assert!(
-        !screen.contains("RED main pg-noop"),
+        !screen.contains("main in pg-noop is red"),
         "another repository's red target is not this pane's emergency: {screen}"
     );
     assert!(screen.contains("this session's repository"), "{screen}");
@@ -508,7 +510,7 @@ fn the_queue_pane_and_the_edge_are_scoped_to_the_sessions_repository() {
     a.screen(140, 40);
     let screen = a.screen(160, 40).join("\n");
     assert!(screen.contains("agent/theirs"), "{screen}");
-    assert!(screen.contains("RED main pg-noop"), "{screen}");
+    assert!(screen.contains("main in pg-noop is red"), "{screen}");
     assert!(screen.contains("every repository"), "{screen}");
     assert!(
         edge_row(&a.screen(160, 40)).contains("1 in review")
@@ -628,7 +630,7 @@ fn the_edge_counts_the_queues_and_is_silent_when_nothing_stands() {
     )));
     let screen = a.screen(120, 24).join("\n");
     assert!(
-        screen.contains("1 in review · 1 being merged · 2 stuck"),
+        screen.contains("queue: 1 in review · 1 to land · 2 stuck"),
         "{screen}"
     );
 }
@@ -646,7 +648,7 @@ fn the_edge_says_the_four_columns_and_a_landing_stands_on_its_own() {
         ],
     )));
     let screen = a.screen(140, 24).join("\n");
-    assert!(screen.contains("2 landed"), "{screen}");
+    assert!(screen.contains("queue: 2 done"), "{screen}");
     assert!(!screen.contains("0 in review"), "a zero is drawn: {screen}");
 }
 
@@ -699,7 +701,7 @@ fn a_landing_older_than_the_recent_window_is_not_counted() {
     a.apply(queue_frame(snap));
     let screen = a.screen(140, 24).join("\n");
     assert!(
-        !screen.contains("landed"),
+        !screen.contains("done"),
         "a landing outside the window is not today's work: {screen}"
     );
 
@@ -709,7 +711,7 @@ fn a_landing_older_than_the_recent_window_is_not_counted() {
     snap.merges[0].state_ms = snap.at_ms - (crate::ui::panes::queue::RECENT_MS - 1_000);
     a.apply(queue_frame(snap));
     let screen = a.screen(140, 24).join("\n");
-    assert!(screen.contains("1 landed"), "{screen}");
+    assert!(screen.contains("1 done"), "{screen}");
 }
 
 /// **A red target still leads at its own severity**, and neither the word nor the role is a
@@ -722,7 +724,7 @@ fn a_red_target_still_leads_the_grown_columns_at_its_own_severity() {
     snap.here = Some(here_in(LETIBOT));
     a.apply(queue_frame(snap));
     let screen = a.screen(160, 24).join("\n");
-    assert!(screen.contains("1 red · 1 landed"), "{screen}");
+    assert!(screen.contains("1 red · 1 done"), "{screen}");
     assert_eq!(
         a.queue_standings().role(),
         rano::style::Role::Failure,
@@ -761,10 +763,10 @@ fn a_red_target_alone_reads_as_one_red_and_no_zeros() {
     let rows = a.screen(120, 24);
     let edge = edge_row(&rows);
     assert!(edge.contains("1 red"), "{edge:?}");
-    for zero in ["0 in review", "0 being merged", "0 stuck", "0 landed"] {
+    for zero in ["0 in review", "0 to land", "0 stuck", "0 landed"] {
         assert!(!edge.contains(zero), "a zero is drawn — {zero} in {edge:?}");
     }
-    assert_eq!(a.queue_standings().words().as_deref(), Some("1 red"));
+    assert_eq!(a.queue_standings().words().as_deref(), Some("queue: 1 red"));
     assert_eq!(
         a.queue_standings().role(),
         rano::style::Role::Failure,
@@ -803,7 +805,7 @@ fn an_all_green_repository_reads_the_columns_and_no_target_word() {
     a.apply(queue_frame(snap));
     let rows = a.screen(120, 24);
     let edge = edge_row(&rows);
-    assert!(edge.contains("1 in review · 1 being merged"), "{edge:?}");
+    assert!(edge.contains("queue: 1 in review · 1 to land"), "{edge:?}");
     assert!(
         !edge.contains("red"),
         "a green target says nothing: {edge:?}"
@@ -813,13 +815,13 @@ fn an_all_green_repository_reads_the_columns_and_no_target_word() {
     assert!(!edge.contains("landed"), "{edge:?}");
     assert_eq!(
         a.queue_standings().words().as_deref(),
-        Some("1 in review · 1 being merged")
+        Some("queue: 1 in review · 1 to land")
     );
 }
 
 /// The longest line this head can draw fits an 80-column edge: both target words and all four
-/// columns non-zero is 70 cells, and the composer's edge is 76 inside the gutters. A cell narrower
-/// and `rano`'s `truncate` eats the right end, which is why the emergency leads the line.
+/// columns non-zero is 70 cells, and the composer's edge is 76 inside the gutters - which is why
+/// the day's successes say `done` and the emergency leads the line.
 #[test]
 fn the_longest_standings_fit_on_an_eighty_column_edge() {
     let mut a = app();
@@ -838,7 +840,7 @@ fn the_longest_standings_fit_on_an_eighty_column_edge() {
     a.apply(queue_frame(snap));
     let rows = a.screen(80, 24);
     let edge = edge_row(&rows);
-    let words = "1 red · 1 unjudged · 1 in review · 1 being merged · 1 stuck · 2 landed";
+    let words = "queue: 1 red · 1 unjudged · 1 in review · 1 to land · 1 stuck · 2 done";
     assert!(edge.contains(words), "the whole line at 80: {edge:?}");
     assert_eq!(
         line_width(&edge),
@@ -902,17 +904,17 @@ fn the_edge_names_the_gates_step_at_eighty_columns() {
     // The words first, because they are what the line is made of.
     assert_eq!(
         a.queue_standings().words().as_deref(),
-        Some("2 being merged (gate step 3 of 4)"),
+        Some("queue: 2 to land (gate step 3 of 4)"),
         "the merge queue's own word, with the gate's step beside it"
     );
     let rows = a.screen(80, 24);
     let edge = edge_row(&rows);
     assert!(
-        edge.contains("2 being merged (gate step 3 of 4)"),
+        edge.contains("queue: 2 to land (gate step 3 of 4)"),
         "drawn whole at eighty columns: {edge:?}"
     );
     // **And it is still the door** - the span the frame drew is the span a click acts on.
-    let words = "2 being merged (gate step 3 of 4)";
+    let words = "queue: 2 to land (gate step 3 of 4)";
     let rect = standings_rect(&a);
     assert_eq!(column_of(&edge, words), rect.x, "{edge:?}");
     assert_eq!(
@@ -922,8 +924,8 @@ fn the_edge_names_the_gates_step_at_eighty_columns() {
     );
 }
 
-/// **A target that is not gating reads as it always did** - a green target leaves `1 being
-/// merged` alone, and a `gating` target whose snapshot carries no step does not invent one.
+/// **A target that is not gating reads as it always did** - a green target leaves `1 to land`
+/// alone, and a `gating` target whose snapshot carries no step does not invent one.
 #[test]
 fn a_target_that_is_not_gating_keeps_the_old_word() {
     let mut a = app();
@@ -933,9 +935,9 @@ fn a_target_that_is_not_gating_keeps_the_old_word() {
     a.apply(queue_frame(snap));
     assert_eq!(
         a.queue_standings().words().as_deref(),
-        Some("1 being merged")
+        Some("queue: 1 to land")
     );
-    assert!(edge_row(&a.screen(120, 24)).contains("1 being merged"));
+    assert!(edge_row(&a.screen(120, 24)).contains("queue: 1 to land"));
 
     // A gate between two steps: the target is `gating` and there is no step to name.
     let mut a = app();
@@ -945,7 +947,7 @@ fn a_target_that_is_not_gating_keeps_the_old_word() {
     a.apply(queue_frame(snap));
     assert_eq!(
         a.queue_standings().words().as_deref(),
-        Some("1 being merged"),
+        Some("queue: 1 to land"),
         "no step is running, so none is claimed"
     );
 }
@@ -998,7 +1000,7 @@ fn a_click_on_the_standings_opens_the_queue() {
     a.apply(queue_frame(snap));
     let screen = a.screen(120, 24);
     let rect = standings_rect(&a);
-    let words = "1 in review";
+    let words = "queue: 1 in review";
     // The record and the glass agree — the rectangle IS the span the frame drew, gutter and
     // all — or the click below proves nothing.
     let row = screen
@@ -1059,7 +1061,7 @@ fn the_standings_target_covers_the_words_they_grew_into() {
     a.apply(queue_frame(snap));
     let screen = a.screen(200, 30);
     let rect = standings_rect(&a);
-    let words = "1 red · 1 unjudged · 1 in review · 1 being merged · 1 stuck · 2 landed";
+    let words = "queue: 1 red · 1 unjudged · 1 in review · 1 to land · 1 stuck · 2 done";
     let row = screen
         .get(rect.y)
         .unwrap_or_else(|| panic!("the recorded row is not in the frame: {rect:?}"));
@@ -1095,7 +1097,7 @@ fn a_click_one_cell_outside_the_standings_asks_for_nothing() {
     a.apply(queue_frame(snap));
     let screen = a.screen(120, 24);
     let rect = standings_rect(&a);
-    let words = "1 in review";
+    let words = "queue: 1 in review";
     let row = screen
         .get(rect.y)
         .expect("the recorded row is in the frame");
@@ -1118,7 +1120,7 @@ fn a_click_one_cell_outside_the_standings_asks_for_nothing() {
 /// **The two target alarms carry their own word, and the click still opens the queue.**
 #[test]
 fn a_click_on_the_standings_with_an_alarm_prefix_opens_the_queue() {
-    for (state, prefix) in [("timed_out", "1 unjudged"), ("red", "1 red")] {
+    for (state, prefix) in [("timed_out", "queue: 1 unjudged"), ("red", "queue: 1 red")] {
         let mut a = app();
         let mut snap = queues(Vec::new(), Vec::new());
         snap.targets.push(target(LETIBOT, state));
@@ -1316,13 +1318,14 @@ fn the_wheel_and_page_keys_scroll_the_queue_pane() {
     assert!(a.pane_scroll > 3);
 }
 
-/// **The bar names the verbs** - generated from the `QUEUE` table, in the daemon's own words.
+/// **The bar names the verbs in the words a person uses** - generated from the `QUEUE` table, so a
+/// key cannot be advertised with a word the pane no longer uses (`rm` is `withdraw` now).
 #[test]
 fn the_hint_line_names_the_person_verbs() {
     let mut a = layer(app());
     a.command("queue");
     let bar = a.hint_bar(160);
-    for want in ["a approve", "v veto", "d rm", "r restart"] {
+    for want in ["a approve", "v veto", "d withdraw", "r restart"] {
         assert!(bar.contains(want), "the bar names `{want}`: {bar}");
     }
 }

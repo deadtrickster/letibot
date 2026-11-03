@@ -69,24 +69,24 @@ fn session_shapes() -> Vec<(&'static str, &'static str, String)> {
             "the refusal, to the child",
             REFUSED,
             format!(
-                "review · {BRANCH} · refused · The panic is gone, but the patch catches it rather \
-                 than removing its cause… · click for details"
+                "review · {BRANCH} · refused by s-gatekeeper-0123456789ab · The panic is gone, \
+                 but the patch catches it rather than removing its cause… · click for details"
             ),
         ),
         (
             "the refusal, to the root",
             REFUSED_ROOT,
             format!(
-                "review · {BRANCH} · refused · The panic is gone, but the patch catches it rather \
-                 than removing its cause… · click for details"
+                "review · {BRANCH} · refused by s-gatekeeper-0123456789ab · The panic is gone, \
+                 but the patch catches it rather than removing its cause… · click for details"
             ),
         ),
         (
             "the veto",
             VETOED,
             format!(
-                "review · {BRANCH} · vetoed · the acceptance query has to return rows on the \
-                 branch · click for details"
+                "review · {BRANCH} · vetoed by you · the acceptance query has to return rows on \
+                 the branch · click for details"
             ),
         ),
         (
@@ -103,7 +103,16 @@ fn session_shapes() -> Vec<(&'static str, &'static str, String)> {
 /// **Every hub warning shape**: its code, its detail, and the line it draws.
 fn warning_shapes() -> Vec<(&'static str, &'static str, String)> {
     vec![
-        ("queue_needs_human", NEEDS_HUMAN, OPERATORS_LINE.to_string()),
+        (
+            "queue_needs_human",
+            NEEDS_HUMAN,
+            // **The warning names the reviewer that could not decide** - the session notice about
+            // the same row carries no sender, so its line is the operator's own shape.
+            format!(
+                "review · {BRANCH} · could not decide by s-gatekeeper-sub-17917 · BUT the ask's \
+                 acceptance cannot be met on this base… · click for details"
+            ),
+        ),
         (
             "queue_blocked",
             BLOCKED_AFTER,
@@ -136,8 +145,8 @@ fn warning_shapes() -> Vec<(&'static str, &'static str, String)> {
         (
             "queue_needs_human",
             NEEDS_HUMAN_RED_TIP,
-            "review · main's red tip 60bf819 · could not decide · BUT neither commit's own gate \
-             run was kept… · click for details"
+            "review · main's red tip 60bf819 · could not decide by s-gatekeeper-sub-17930 · BUT \
+             neither commit's own gate run was kept… · click for details"
                 .to_string(),
         ),
         (

@@ -356,6 +356,11 @@ impl Standings {
     /// The words, and a count of nothing is not a word: a repository whose only live fact is a red
     /// target reads `1 red` and not four zeros. The order is the pane's and `red` leads it, because
     /// the edge is cut from its right end. The step is parenthesised and last, so it is lost first.
+    ///
+    /// **What the numbers are about is the first thing said**, because the edge is a person's only
+    /// sight of the queue until they open the pane: `queue:` and then one noun per count, and the
+    /// longest stand of six still fits inside an eighty-column edge (see
+    /// `the_longest_standings_fit_on_an_eighty_column_edge`).
     pub(crate) fn words(&self) -> Option<String> {
         let mut words: Vec<String> = Vec::new();
         if self.red > 0 {
@@ -366,21 +371,25 @@ impl Standings {
         }
         for (n, word) in [
             (self.review, "in review"),
-            (self.merging, "being merged"),
+            (self.merging, "to land"),
+            // **Rows a person has to move** - the store's `stuck`, said as what it wants.
             (self.stuck, "stuck"),
-            (self.landed, "landed"),
+            // **`done`, not `landed`**: the edge's whole line has to fit eighty columns (see
+            // `the_longest_standings_fit_on_an_eighty_column_edge`), and the day's successes are
+            // the one column that asks nothing of the reader.
+            (self.landed, "done"),
         ] {
             if n == 0 {
                 continue;
             }
             match (word, self.gate) {
-                ("being merged", Some((step, of))) => {
-                    words.push(format!("{n} being merged (gate step {step} of {of})"))
+                ("to land", Some((step, of))) => {
+                    words.push(format!("{n} to land (gate step {step} of {of})"))
                 }
                 _ => words.push(format!("{n} {word}")),
             }
         }
-        (!words.is_empty()).then(|| words.join(" · "))
+        (!words.is_empty()).then(|| format!("queue: {}", words.join(" · ")))
     }
 
     pub(crate) fn role(&self) -> rano::style::Role {

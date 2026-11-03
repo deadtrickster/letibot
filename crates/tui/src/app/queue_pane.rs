@@ -476,6 +476,47 @@ impl App {
             .then(|| self.queue_folds.get(&id).copied().unwrap_or(false))
     }
 
+    /// **Would this key move the row under the cursor?** The bar asks it for every verb, so the keys
+    /// it names are the ones that would act on the row it is under: `a` is not offered over a landing
+    /// (approved already) and `o` only over a row that has a reviewer. A head with no row drawn yet
+    /// answers yes, because a bar that hid everything before the first frame would say nothing.
+    pub(crate) fn queue_key_moves(&self, act: crate::app::keys::bindings::Act) -> bool {
+        use crate::app::keys::bindings::Act;
+        let verb = match act {
+            Act::Verb(v) => v,
+            Act::Reviewer => return self.queue_row_has_a_reviewer(),
+            _ => return true,
+        };
+        let Some(id) = self.queue_selected_id() else {
+            return true;
+        };
+        let row = self
+            .queues
+            .reviews
+            .iter()
+            .find(|r| r.id == id)
+            .map(Selected::Review)
+            .or_else(|| {
+                self.queues
+                    .merges
+                    .iter()
+                    .find(|m| m.id == id)
+                    .map(Selected::Merge)
+            });
+        row.is_none_or(|row| verb_moves(verb, &row).is_ok())
+    }
+
+    /// Whether the entry the row under the cursor names has a reviewer to go into.
+    fn queue_row_has_a_reviewer(&self) -> bool {
+        let Some(id) = self.queue_selected_id() else {
+            return true;
+        };
+        self.queues
+            .reviews
+            .iter()
+            .any(|r| r.id == id && r.reviewer.as_deref().is_some_and(|s| !s.is_empty()))
+    }
+
     /// Enter on a row that folds - the host's `folded` map, keyed by the row's own id, so a fold is
     /// instant, costs no call and survives the next answer (C3's rule). Answers whether the row under
     /// the cursor folded, so Enter can fall through to its own meaning when it did not.

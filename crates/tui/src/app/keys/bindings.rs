@@ -252,6 +252,23 @@ const TODO_ROW: &[Binding] = &[
 ];
 const QUEUE: &[Binding] = &[
     LIST,
+    // **The verbs first, and the two that are not about the row last.** A bar at eighty columns
+    // keeps its head, so the keys that act on the row under the cursor come before Enter, and
+    // Enter before `g` (the row's TARGET) and `o` (another session).
+    b(
+        &[On::Char('a')],
+        Empty,
+        Act::Verb(Verb::Approve),
+        Text("approve"),
+    ),
+    b(&[On::Char('v')], Empty, Act::Verb(Verb::Veto), Text("veto")),
+    b(&[On::Char('d')], Empty, Act::Verb(Verb::Rm), Text("withdraw")),
+    b(
+        &[On::Char('r')],
+        Empty,
+        Act::Verb(Verb::Restart),
+        Text("restart"),
+    ),
     b(
         &[On::Enter],
         Always,
@@ -260,32 +277,18 @@ const QUEUE: &[Binding] = &[
         // entry whole, and it opens the history's fold (`App::row_says`).
         Row,
     ),
-    b(&[On::Tab], Always, Act::View, Text("switches the view")),
+    b(&[On::Tab], Always, Act::View, Text("switches the queue")),
     b(
-        &[On::Char('a')],
+        &[On::Char('o')],
         Empty,
-        Act::Verb(Verb::Approve),
-        Text("approve"),
-    ),
-    b(&[On::Char('v')], Empty, Act::Verb(Verb::Veto), Text("veto")),
-    b(&[On::Char('d')], Empty, Act::Verb(Verb::Rm), Text("rm")),
-    b(
-        &[On::Char('r')],
-        Empty,
-        Act::Verb(Verb::Restart),
-        Text("restart"),
+        Act::Reviewer,
+        Text("the reviewer's session"),
     ),
     b(
         &[On::Char('g')],
         Empty,
         Act::Verb(Verb::Regate),
-        Text("re-gates the row's target"),
-    ),
-    b(
-        &[On::Char('o')],
-        Empty,
-        Act::Reviewer,
-        Text("goes into the reviewer's session"),
+        Text("the target gated again"),
     ),
     PAGE,
     WHEEL,
@@ -621,9 +624,9 @@ impl App {
             // the two this row is - the same question the key answers (`App::queue_fold`).
             (Surface::Queue, Act::Open) => Some(
                 match self.queue_row_folds() {
-                    Some(true) => "closes the history",
-                    Some(false) => "opens the history",
-                    None => "opens the row: the ask, the verdict, the gate's words, every move",
+                    Some(true) => "closes the finished rows",
+                    Some(false) => "shows the finished rows",
+                    None => "opens it whole",
                 }
                 .to_string(),
             ),
@@ -660,6 +663,12 @@ impl App {
                     None => continue,
                 },
             };
+            // **The queue's verbs are the ROW's**: the bar names the keys that would move the row
+            // under the cursor, so it never offers an action the daemon would refuse, and the keys
+            // that would are not pushed off a narrow bar by ones that would not.
+            if s == Surface::Queue && !self.queue_key_moves(b.act) {
+                continue;
+            }
             let label = keys_label(b.on);
             // Navigation keys that do the same thing read as one run (`↑↓ pgup/pgdn scroll`);
             // two keys for one act read as a choice (`enter or tab opens the card`).
