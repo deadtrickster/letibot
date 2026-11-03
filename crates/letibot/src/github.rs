@@ -66,6 +66,20 @@ fn wants_help(args: &[String]) -> bool {
     args.iter().any(|a| a == "--help" || a == "-h")
 }
 
+/// **Both levels of `leticode.toml`, merged.** `plan` is given this and not the user's file alone:
+/// a repository whose own file says `post = false` must be able to stop a seat the user file
+/// started, and a project file that will not parse may be the one carrying that `false`.
+fn merged(
+    user: leticode_config::LeticodeConfig,
+    cwd: &Path,
+) -> Result<leticode_config::LeticodeConfig, String> {
+    let Some(path) = leticode_config::LeticodeConfig::discover(cwd) else {
+        return Ok(user);
+    };
+    let project = leticode_config::LeticodeConfig::load(&path)?;
+    Ok(user.overridden_by(&project))
+}
+
 /// **What the seat will do and what it is allowed to send**, worked out before anything is polled:
 /// the scope as typed, and the config with the token file resolved and its mode checked.
 pub fn plan(
@@ -132,8 +146,16 @@ pub fn run(args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let config_file = match merged(user, &cwd) {
+        Ok(file) => file,
+        Err(why) => {
+            eprintln!("letibot: {why}");
+            return ExitCode::from(2);
+        }
+    };
     let home = std::env::var("HOME").unwrap_or_default();
-    let (scope, config) = match plan(scope, &user, Path::new(&home)) {
+    let (scope, config) = match plan(scope, &config_file, Path::new(&home)) {
         Ok(planned) => planned,
         Err(why) => {
             eprintln!("letibot: {why}");
@@ -206,5 +228,34 @@ mod tests {
         posting.github.post = Some(true);
         let why = plan("stroppy-io", &posting, home).unwrap_err();
         assert!(why.contains("token_path"), "{why}");
+    }
+
+    /// **A project file may stop the seat, so this verb reads it.** A repository whose own file
+    /// says `post = false` - a client's pull requests, say - must not be posted to because the
+    /// user file said `post = true`; and a project file that will not parse is a refusal, because
+    /// it may be the one carrying that `false`.
+    #[test]
+    fn a_projects_file_stops_the_seat_and_its_syntax_is_not_ignored() {
+        let dir =
+            std::env::temp_dir().join(format!("letibot-attach-github-{}", std::process::id()));
+        let repo = dir.join("repo");
+        std::fs::create_dir_all(repo.join("crates/x")).unwrap();
+        std::fs::write(repo.join("leticode.toml"), "[github]\npost = false\n").unwrap();
+
+        let mut user = leticode_config::LeticodeConfig::default();
+        user.github.post = Some(true);
+        user.github.token_path = Some("/run/secrets/github.token".into());
+        assert!(user.github.posting(), "the user level alone would post");
+
+        let stopped = merged(user.clone(), &repo.join("crates/x")).expect("the project parses");
+        assert!(
+            !stopped.github.posting(),
+            "the project's own stop is the one direction that must always hold"
+        );
+
+        // A file that will not parse is refused by name: a seat that guessed would post.
+        std::fs::write(repo.join("leticode.toml"), "[github]\npost = \n").unwrap();
+        let why = merged(user, &repo).expect_err("a file that does not parse is not a guess");
+        assert!(why.contains("leticode.toml"), "{why}");
     }
 }
