@@ -184,9 +184,7 @@ impl Sessions for FakeSessions {
 
     fn ask(&mut self, session: &Session, brief: &str) -> Result<String, String> {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        inner
-            .briefs
-            .push((session.id.clone(), brief.to_string()));
+        inner.briefs.push((session.id.clone(), brief.to_string()));
         if inner.answers.len() > 1 {
             return Ok(inner.answers.remove(0));
         }

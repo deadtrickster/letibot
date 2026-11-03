@@ -7,8 +7,9 @@
 use std::path::PathBuf;
 
 use super::*;
-use crate::fake::{Commit, FakeSource};
+use crate::fake::{Commit, FakeSessions, FakeSource};
 use crate::source::{Event, Inline};
+use crate::worker::Worker;
 
 /// One review the seat asked for, as the fake reviewer saw it.
 #[derive(Debug, Clone, PartialEq)]
@@ -487,4 +488,186 @@ fn posting_needs_a_token_file_only_the_operator_can_read() {
     )
     .unwrap();
     assert_eq!(cfg.token.as_deref(), Some(token.to_str().unwrap()));
+}
+
+// ---- the worker's path: the brief, the session, the draft, and the gate ----------
+
+/// A seat whose reviewer is the real one over faked sessions: what the operator's four claims are
+/// about, since the fake reviewer elsewhere answers a review without a session at all.
+fn a_worker_seat(sessions: FakeSessions, config: Config) -> (Seat, Worker<FakeSessions>) {
+    (
+        Seat::new(vec![Scope::Org("stroppy-io".into())], config),
+        Worker::new(sessions),
+    )
+}
+
+/// A session's answer that is a review: a summary and one comment on a line.
+const A_REVIEW: &str = "This loads the widget once now.\n\ncrates/tui/src/widget.rs:42: this leaks";
+
+/// **A push is one more draft, and its brief is the new commits only.** A second review of the same
+/// commits is the defect this measures: the row is owed one review per push and no more.
+#[test]
+fn a_new_push_is_one_more_draft_and_its_brief_is_the_new_commits() {
+    let source = a_source();
+    let sessions = FakeSessions::answering(A_REVIEW);
+    let (mut seat, mut worker) = a_worker_seat(sessions, Config::default());
+    seat.poll(&source, &mut worker, 1_000);
+    assert_eq!(seat.drafts().len(), 1);
+    assert!(
+        matches!(&seat.drafts()[0], Draft::Review { for_sha, review }
+        if for_sha == "c1" && review.comments[0].path == "crates/tui/src/widget.rs")
+    );
+
+    source.push(
+        "stroppy-io/letibot",
+        12,
+        Commit::new("c2", "-second\n+second change"),
+    );
+    seat.poll(&source, &mut worker, 2_000);
+    let drafts = seat.drafts();
+    assert_eq!(drafts.len(), 2, "one draft per push");
+    assert!(
+        matches!(&drafts[1], Draft::Review { for_sha, .. } if for_sha == "c2"),
+        "{drafts:#?}"
+    );
+
+    // Both reviews ran in the same session, and the second one was told what it is measured
+    // against so it does not review the whole pull request again.
+    let briefs = worker.sessions().briefs();
+    assert_eq!(briefs.len(), 2, "{briefs:#?}");
+    assert_eq!(briefs[0].0, briefs[1].0, "one session per pull request");
+    assert!(
+        briefs[0].1.contains("-first\n+first change"),
+        "{}",
+        briefs[0].1
+    );
+    assert!(
+        briefs[1].1.contains("-second\n+second change"),
+        "{}",
+        briefs[1].1
+    );
+    assert!(
+        briefs[1].1.contains("since c1"),
+        "the re-review's own commits: {}",
+        briefs[1].1
+    );
+    assert_eq!(worker.sessions().opened().len(), 1, "the session is reused");
+
+    // And a poll with nothing new asks nothing: one review per push.
+    seat.poll(&source, &mut worker, 3_000);
+    assert_eq!(seat.drafts().len(), 2);
+    assert_eq!(worker.sessions().briefs().len(), 2);
+}
+
+/// **A mention is answered by that pull request's session** - the one the review ran in - and the
+/// answer is kept as a draft while nothing is posted.
+#[test]
+fn a_mention_is_answered_by_that_pull_request_s_session() {
+    let source = a_source();
+    let sessions = FakeSessions::new();
+    sessions.say(A_REVIEW);
+    sessions.say("Because the second load raced the first.");
+    let (mut seat, mut worker) = a_worker_seat(sessions, Config::default());
+    seat.poll(&source, &mut worker, 1_000);
+    let session = seat.rows()[0]
+        .session
+        .as_ref()
+        .expect("a session to answer in")
+        .id
+        .clone();
+
+    source.comment(
+        "stroppy-io/letibot",
+        12,
+        Comment {
+            id: 7,
+            author: "someone".into(),
+            body: "@letibot is this safe to merge?".into(),
+            created_ms: 2_000,
+            in_review: false,
+        },
+    );
+    seat.poll(&source, &mut worker, 3_000);
+    let drafts = seat.drafts();
+    assert_eq!(drafts.len(), 2, "the review and the answer");
+    assert!(
+        matches!(&drafts[1], Draft::Reply { comment: 7, body } if body.contains("raced the first")),
+        "{drafts:#?}"
+    );
+    let briefs = worker.sessions().briefs();
+    assert_eq!(briefs.len(), 2, "{briefs:#?}");
+    assert_eq!(briefs[1].0, session, "the pull request's own session");
+    assert!(
+        briefs[1].1.contains("is this safe to merge?"),
+        "{}",
+        briefs[1].1
+    );
+    assert!(source.replies().is_empty(), "nothing is posted");
+}
+
+/// **`post = false` is a gate, not a default**: with a token file in hand and everything reviewed,
+/// not one review or answer leaves the box.
+#[test]
+fn posting_is_refused_while_post_is_false() {
+    let source = a_source();
+    let sessions = FakeSessions::answering(A_REVIEW);
+    let (mut seat, mut worker) = a_worker_seat(
+        sessions,
+        Config {
+            post: false,
+            token: Some("/run/secrets/github.token".into()),
+            ..Config::default()
+        },
+    );
+    seat.poll(&source, &mut worker, 1_000);
+    source.comment(
+        "stroppy-io/letibot",
+        12,
+        Comment {
+            id: 7,
+            author: "someone".into(),
+            body: "@letibot why?".into(),
+            created_ms: 2_000,
+            in_review: false,
+        },
+    );
+    seat.poll(&source, &mut worker, 3_000);
+
+    assert_eq!(seat.drafts().len(), 2, "both are kept, neither is sent");
+    assert!(source.reviews().is_empty(), "no review was posted");
+    assert!(source.replies().is_empty(), "no answer was posted");
+    assert_eq!(seat.rows()[0].state, ReviewState::Drafted);
+    assert!(!seat.snapshot().posting);
+}
+
+/// **Six reviews an hour per repository, and the seventh waits** - then it is owed again once the
+/// hour has passed, rather than lost.
+#[test]
+fn the_hourly_cap_holds_at_six_and_frees_the_seventh_an_hour_later() {
+    let source = FakeSource::new();
+    for number in 1..=7u64 {
+        source.open(
+            &a_pull(number, &format!("c{number}")),
+            vec![Commit::new(format!("c{number}"), "-a\n+b")],
+        );
+    }
+    let sessions = FakeSessions::answering(A_REVIEW);
+    let (mut seat, mut worker) = a_worker_seat(sessions, Config::default());
+    assert_eq!(seat.config().reviews_per_hour, 6, "the fixed cap");
+
+    seat.poll(&source, &mut worker, 1_000);
+    assert_eq!(seat.drafts().len(), 6, "six of seven reviewed");
+    assert_eq!(seat.rows()[6].state, ReviewState::Queued);
+    assert_eq!(seat.snapshot().scopes[0].state, "rate-limited");
+    assert!(
+        seat.rows()[6].last_action.contains("hourly cap")
+            || seat.snapshot().scopes[0].why.contains("cap"),
+        "the row or the scope says why: {}",
+        seat.rows()[6].last_action
+    );
+
+    // An hour later the window has moved, so the seventh is owed a review and gets one.
+    seat.poll(&source, &mut worker, 1_000 + 3_600_001);
+    assert_eq!(seat.drafts().len(), 7);
+    assert_eq!(seat.rows()[6].state, ReviewState::Drafted);
 }
