@@ -5921,6 +5921,25 @@ placement among the six unlocks "none landed", and nothing in `crates/turn` plac
 or re-enters a rewind (`grep checkpoint` finds only `crates/turn/src/prefix.rs`'s shortfall
 reason), so the `d > 516` cliff still stands.
 
+**Status — read with `docs/kv-representation.md`.** Rows 1 and 2 stay settled and the rewrite
+question is answered: the only rewrite left would re-buy, for a fork of
+`llama_memory_recurrent` and three models to keep, what a checkpoint placement buys for one
+flag. Row 3 should **not** be built as written yet, because the code says this harness never
+asks for a long-suffix trim — there is no rewind, no backtrack and no truncate on the token
+region, so the one request in this tree whose prompt shrinks is a **local compaction**
+(`plan_compaction_tail` returns `TailPlan::None` when `!remote`,
+`crates/harnessd/src/harness/wall.rs:1171`), whose new base is stable prefix + one summary
+item and which therefore re-enters at the *end of the stable prefix* — a position no chat
+checkpoint is due at, so the arithmetic says its first turn re-prefills from token 0. That is
+a prediction and not a measurement, and it is invisible today: the witness lives on the engine
+`Session` and a fork opens a new one (`crates/turn/src/engine.rs:390`), so the first turn of
+any new base is `FirstTurn` and `cache_reuse_shortfall` cannot fire on it. What row 3 should
+chase is §3.4.1 in placement form — **one checkpoint at `TokenLedger::prefix_len()`**, the
+position the harness knows and the server cannot guess — and the one experiment that settles
+whether even that pays is §6 of the doc: a post-compaction turn's `cached_tokens` at 40 k and
+120 k, with `--checkpoint-min-step` at its default and lowered, `/slots` for the bytes. Arm B
+needs the operator: the :8080 server is never restarted for a measurement.
+
 ---
 
 
