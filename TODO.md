@@ -823,7 +823,7 @@ appears only in `crates/room/src/lease.rs:206`.
 
 ---
 
-## R66 — A harnessd reached 113 GB — **OPEN: instrumented (memwatch, 4eb1dbb) and now MEASURED on a scratch daemon (2026-11-02) — 40 turns with a refused compaction each grow nothing; the two-threads-per-subagent leak is explained in R68.3 / R67.13 and closed on `r68-lifecycle`; only the LOCAL-model route is untried**
+## R66 — A harnessd reached 113 GB — **OPEN: instrumented (memwatch, 4eb1dbb) and MEASURED on a scratch daemon (2026-11-02, extended 2026-11-03) — 40 turns with a refused compaction each grow nothing, and what a tree keeps of a CHILD is now bounded by a test; the two-threads-per-subagent leak is explained in R68.3 / R67.13 and closed on `r68-lifecycle`; left: the LOCAL-model route, which needs a local server and a GGUF on this box and so is the operator's, and the incident's own 113 GB**
 
 MEASURED in the kernel's OOM report, 2026-10-11 00:47:00: `Killed process 3985588 (harnessd)
 anon-rss:113190136kB` — the daemon's own heap, not a child's. It was the `/home/dead/Projects/letibot`
@@ -903,14 +903,21 @@ and removed at close; `Outcome` is a return value; activity is rebuilt per publi
 bounded channel. **Two maps were unbounded per JOB and are now bounded**: `JobWatchers.settled` (one
 name per backgrounded job, never removed) and `ReadRecord.seen` (one entry per delivered completion),
 which also made `want_now`'s guard read a record with no history.
-- **What is per CHILD, and still holds an answer after the child is gone:** `TaskSlots`
-(`harness/children.rs:140`) is a `Vec` that only grows, and a slot keeps `TaskStatus::Done { answer }`
-— the child's whole answer — after it has parked, been collected or died: measured **5 271 B for a
-closed child whose answer was 2 bytes, 119 593 B for one that answered 16 KB, 351 767 B while it is
-still open**. At the 519 children that tree ran that is tens of MB, not 113 GB, and it is the same
-class as the threads R68.2 closed. `HostProcesses` also keeps a row per command ever run (1.1 KB a
-row, per HARNESS and not per daemon, its capture already bounded at 64 MiB), which is what makes
-`job_output j12` answer at all.
+- **What is per CHILD, and what still holds an answer after the child is gone:** `TaskSlots`
+(`harness/children.rs`) is a `Vec` that only grows, one row a child of **at most 512 bytes** — a
+handle is an address and not a payload — and a slot keeps an answer only while it is OWED. A reader
+handed one drops it: both the answer the slot settled with and the last answer a later turn gave,
+where the child's row kept that one (a slot is never the last copy, and the case it does keep is a
+child whose row never landed — `TaskSlot::hand_over_answer`, `SubagentRecord::answered_again`). The
+later answer was a real leak, found 2026-11-03: `spoke_again` wrote a whole answer into the slot and
+no reader ever removed it, so a parent that steers its children held one answer each for the
+daemon's life. MEASURED (`harness/tests/children.rs`,
+`a_later_answer_the_record_keeps_is_not_kept_twice`, 20 children of a 17 600-byte later answer):
+**355 200 B held before, 3 200 after, against a bound of 512 a child** — what is left is the
+~160-byte sentence naming where the text is. What is left per child is the row; what a child costs
+in its parent's transcript is the conversation and not the tree. `HostProcesses` also keeps a row per
+command ever run (1.1 KB a row, per HARNESS and not per daemon, its capture already bounded at
+64 MiB), which is what makes `job_output j12` answer at all.
 - **One failed fold** leaves exactly one row — the 1 470-byte `SUMMARY_INSTRUCTION` — and 1 511
 ledger tokens, and no failure arm takes it back (`crates/turn/src/compaction.rs:210`). Measured over
 40 attempts on a 2 MiB conversation: +0.19 MiB of heap in total, flat. It compounds the *prompt*
