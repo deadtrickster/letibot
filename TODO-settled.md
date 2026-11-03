@@ -4671,3 +4671,32 @@ from the daemon's workspace gets the daemon's number for its pane. The record is
 pane scope whose record was lost (a wiped data dir) is debris nobody claims.
 
 ---
+
+# Settled 2026-11-03 — the entries a packaging pass closed against main
+
+Each entry below was filed in `TODO.md`, and its work is on main: the entry names the commits that
+landed it and the test that proves it. Every entry is verbatim as it was filed except its status
+line, which now says DONE and names the commits. Where an entry had something left in it, it stayed
+in `TODO.md` and says what is left.
+
+<!-- range A -->
+
+<!-- range B -->
+
+<!-- range C -->
+
+<!-- range D -->
+
+<!-- range E -->
+
+<!-- range F -->
+
+<!-- range G -->
+
+<!-- range H -->
+
+<!-- range I -->
+
+<!-- range J -->
+
+<!-- range K -->
