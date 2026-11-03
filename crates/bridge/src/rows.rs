@@ -265,6 +265,7 @@ mod tests {
             seq: 0,
             dropped: 0,
             items_dropped,
+            items_lead: 0,
             items: rows,
             turn: None,
             open_decisions: Vec::new(),

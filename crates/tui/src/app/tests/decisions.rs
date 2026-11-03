@@ -1287,6 +1287,7 @@ fn a_deadline_arriving_in_a_snapshot_reads_the_same_as_one_arriving_live() {
             seq: 0,
             dropped: 0,
             items_dropped: 0,
+            items_lead: 0,
             items: Vec::new(),
             turn: None,
             open_decisions: vec![d.clone()],

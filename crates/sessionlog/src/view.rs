@@ -234,6 +234,12 @@ pub struct Snapshot {
     pub dropped: u64,
     /// Transcript rows trimmed out of this snapshot. Present and zero, same rule.
     pub items_dropped: u64,
+    /// **How many of `items` are above the base and numbered by nothing.** A resume republishes
+    /// the ancestors of the transcript a compaction left behind, and they arrive in the same list:
+    /// ordinal 0 is the first row past this count. Defaulted, so a daemon that has no lead says
+    /// zero and an older head decodes the frame.
+    #[serde(default)]
+    pub items_lead: usize,
     pub items: Vec<SnapshotItem>,
     pub turn: Option<TurnView>,
     /// Only decisions genuinely still open. A settled one cannot appear here.
@@ -909,6 +915,9 @@ impl SessionView {
             seq,
             dropped,
             items_dropped: self.items_dropped,
+            // Read off the same `lead` the ordinals are: a head that guessed this was five rows
+            // out on every page it asked for, and nothing announced the drift.
+            items_lead: self.lead(),
             items: self.items.clone(),
             turn: self.turn.clone(),
             open_decisions: self.open.clone(),
@@ -1521,6 +1530,14 @@ mod tests {
             "ordinal 0 names a row above the base"
         );
         assert_eq!(v.snapshot(100, 0).items_dropped, 0);
+        // **And the snapshot says how many of its rows sit above that base**, because a head cannot
+        // work it out: the daemon's own trim adds `n - lead`, and a head that guessed zero drifted
+        // five rows on every page it asked for.
+        assert_eq!(
+            v.snapshot(100, 0).items_lead,
+            5,
+            "the five ancestors are numbered by nothing, and the snapshot does not say so"
+        );
     }
 
     #[test]

@@ -1098,6 +1098,7 @@ fn the_head_retires_every_note_the_file_it_wrote_says_it_retired() {
         seq: 1,
         dropped: 0,
         items_dropped: 0,
+        items_lead: 0,
         items: Vec::new(),
         turn: None,
         open_decisions: Vec::new(),

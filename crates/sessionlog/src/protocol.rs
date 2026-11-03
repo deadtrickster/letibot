@@ -16,7 +16,7 @@ use crate::view::Snapshot;
 /// Bumped when a frame's meaning changes in a way the other side cannot parse: a new variant is a
 /// deserialisation fault in the middle of a turn. Both sides compare it at ATTACH and refuse a
 /// mismatch by name.
-pub const PROTOCOL_VERSION: u32 = 61;
+pub const PROTOCOL_VERSION: u32 = 62;
 
 /// The names an operator may run through the head-run door: read-only and bounded, which admits
 /// `web_fetch` and not a tool that writes.
@@ -1333,8 +1333,13 @@ mod tests {
         let _ = event;
         let _ = server;
         assert_eq!(
-            PROTOCOL_VERSION, 61,
-            "the match above was last reconciled with the frame list at 61. 61 added \
+            PROTOCOL_VERSION, 62,
+            "the match above was last reconciled with the frame list at 62. 62 gave \
+             `view::Snapshot` an `items_lead`, the count of its rows that sit above the base and are \
+             numbered by nothing: a resume republishes a compaction's ancestors in the same list, and \
+             a head that guessed zero asked for every page above its window that many rows too far \
+             into the conversation. The field is `serde(default)`, so a version-61 head still parses \
+             every frame this daemon sends and simply ignores it. 61 added \
              `ClientFrame::RoomChat` and `ServerFrame::RoomChat`, the operator's chat through the \
              daemon: a version-60 daemon cannot decode the request, so the number moves. 60 put the row's body \
              on `SessionEvent::TranscriptAppended` (`item`, `body_bytes`) and gave `Caps` \

@@ -230,10 +230,10 @@ impl App {
         // ordinal is how it asks for the rows above: `items_dropped` is that count and it is already on
         // the wire. A resync replaces the window, so what the head knew about rows below it goes too.
         self.items_base = s.items_dropped as usize;
-        // A snapshot does not say which of its rows are above the base - a resume's republished
-        // ancestors and the base's own rows arrive as one list - so the head takes them all as the
-        // base's until a fork tells it otherwise.
-        self.items_lead = 0;
+        // And how many of those rows are ABOVE the base: a resume's republished ancestors arrive in
+        // the same list, and a head that took them as the base's own asked for every page above its
+        // window that many rows too far into the conversation.
+        self.items_lead = s.items_lead;
         // **And a snapshot reaches the tail**, so nothing sits below this window: the count a
         // parked reader was holding names rows of the transcript this one replaced.
         self.items_below = 0;

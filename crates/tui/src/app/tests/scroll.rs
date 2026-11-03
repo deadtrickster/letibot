@@ -5017,6 +5017,61 @@ fn a_page_for_a_session_the_head_has_left_lands_nowhere() {
     );
 }
 
+/// **A snapshot says where its base starts.** A resume republishes the ancestors of the transcript
+/// a compaction put behind this one, and they arrive in the same list as the base's own rows - so a
+/// head that took the lead as zero believed its first row was ordinal 0 while the daemon called it
+/// row five, and every page it asked for above the window was answered five rows too far in.
+#[test]
+fn a_snapshot_tells_the_head_where_its_base_starts() {
+    use letibot_sessionlog::view::{SessionView, ViewBounds};
+
+    // The chain a resume leaves behind, as the daemon's own view folds it: rows of the transcript
+    // two forks back, the one the fork replaced, the statement, and the base's own rows.
+    let mut view = SessionView::new("s", ViewBounds::default());
+    let mut seq = 0u64;
+    let mut apply = |view: &mut SessionView, event: SessionEvent| {
+        seq += 1;
+        view.apply(&env(seq, event));
+    };
+    for i in 0..5 {
+        apply(
+            &mut view,
+            testing::appended(&format!("s#t0.{i}"), "assistant"),
+        );
+    }
+    for i in 0..3 {
+        apply(
+            &mut view,
+            testing::appended(&format!("s#t1.{i}"), "assistant"),
+        );
+    }
+    apply(&mut view, testing::forked("s#t2", "s#t1"));
+    for i in 0..10 {
+        apply(
+            &mut view,
+            testing::appended(&format!("s#t2.{i}"), "assistant"),
+        );
+    }
+    let snap = view.snapshot(seq, 0);
+    assert_eq!(snap.items_lead, 5, "the daemon's own lead: {snap:?}");
+    assert_eq!(
+        snap.items_dropped, 0,
+        "and the base starts at its first row"
+    );
+
+    let mut a = app();
+    a.apply(hello("s", Vec::new(), snap));
+    assert_eq!(
+        a.items_lead, 5,
+        "the head took the republished ancestors as the base's own rows"
+    );
+    assert_eq!(a.items_base, 0, "the base starts where the daemon said");
+    assert_eq!(
+        a.items[a.items_lead].item_id, "s#t2.0",
+        "row five is the base's first row, which is what makes the ordinals line up"
+    );
+}
+
 /// A head holding the state a fork leaves: two rows above a base that does not number them, and a
 /// tail below the window it does not hold.
 fn above_a_base_with_a_lead(lead: usize, rows: u64, base: usize, below: usize) -> App {
