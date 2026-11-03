@@ -751,13 +751,25 @@ dependency cannot fetch it into the registry from inside the boundary and fails 
 
 `HostBackend::confined` / `confined_granting` ask `confine::probe`, so on macOS a `coder` or `runner`
 session gets the policy boundary and `backend_confined` is true - which is what makes `allow-all`
-available on a Mac at all (`Prereq::Confinement`). Sessions that already run unconfined (`leticode`)
-are untouched. Every widening re-probes through the same dispatch (`with_session_tmp`,
+available on a Mac at all (`Prereq::Confinement`). The default local seat (`leticode`) with `bash` on
+runs its commands in the same boundary, over the checkout, while its file tools stay rooted at `/`
+(`HostBackend::confined_over`, chosen in `Harness::place_the_tools`); a refused probe leaves it
+unconfined with `boundary_absent`, exactly as above. Every widening re-probes through the same dispatch (`with_session_tmp`,
 `grant_into_view_impl`), so what is described is what runs. `bash`, background jobs and the persistent
 shell all go through `Confinement::wrap`, which for this mechanism is `sandbox-exec -f <profile>
 /bin/sh -c 'export HOME=… TMPDIR=…; exec "$@"'` - the shim exists because a profile cannot set an
 environment variable and `wrap` returns an argv: `HOME` must be the session's own directory, `TMPDIR`
 the session's own, and `CARGO_HOME`/`RUSTUP_HOME` the operator's read-only toolchain.
+
+Measured on a Mac (Darwin 25.6, 2026-11-03): `cargo test --offline -p letibot-tools --test seatbelt
+--test seatbelt_no_helper` passes 8/8 (the toolchain runs, the checkout is written, a write outside is
+refused, egress is denied, the deny list stays unreadable). Before the default seat was moved inside,
+a live `writes-allowed` session asked a card for `cargo test --offline` saying "this host has no
+boundary" and published no `boundary_absent`: `place_the_tools` took the confined arm only for the
+`runner`, `coder` and `gatekeeper` seats. Now the `harness::open::mac_default_seat_tests` unit tests
+place the default seat on this Mac and find the boundary built, no warning, a command writing the
+checkout and the same command refused a write outside it. What is not measured here is the live card:
+that needs a built daemon, see R98 in TODO.md for the step.
 
 If `sandbox-exec` is missing or the probe refuses, the daemon **seats an unconfined whole-host session,
 says so on the session's log as `boundary_absent`, and prints the refusal's own words**. On Linux the
@@ -985,4 +997,4 @@ the case the ruling is about, and 24 `cargo test`. Most of the 834 stays free be
 outside it: the point admits exec by its own disposition, before any standing answer is consulted. So
 a box already at `allow-all` did not get noisier; a box at `writes-allowed` gained 24 `cargo test`
 cards on the mac's record. Half 2 is designed to take those away again - a Mac session inside a
-measured seatbelt boundary is admitted by D16 (§4k) - and that has not been measured on a Mac yet.
+measured seatbelt boundary is admitted by D16 (§4k) - and §4k now says where that is measured.

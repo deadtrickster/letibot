@@ -201,7 +201,7 @@ same command.
 
 ---
 
-## R98 — macOS has no boundary for a command, so tests there must ask (D16, amended) — **half 1 BUILT 2026-10-27 (the policy, `runs_project_code_unconfined`), and half 2's code is in the tree (`crates/tools/src/exec/seatbelt.rs`, `crates/tools/tests/seatbelt.rs`); left: the one run on a Mac — `cargo test -p letibot-tools --test seatbelt`, then a session at `writes-allowed` — which no Linux box can stand in for**
+## R98 — macOS has no boundary for a command, so tests there must ask (D16, amended) — **half 1 BUILT 2026-10-27 (the policy), half 2 BUILT, and the default local seat on a Mac now runs inside it; one live card check is left**
 
 D16 admits a command without a card only inside a measured boundary, and its amendment says
 that on a raw host a command that executes code the agent wrote (a test runner) must keep
@@ -261,11 +261,20 @@ mount namespace to make `.ssh` and the profiles *absent*, so they are **denied**
 the probe measures the denial, and the description says which of the two it is holding. The
 `bwrap` half is measured on this box; the seatbelt half is not.
 
-**Still open?** One run, on a Mac: `cargo test -p letibot-tools --test seatbelt` (seven real
-measurements, no skip), then a session at `writes-allowed` — inside the seatbelt boundary `cargo
-test` must be admitted with no card (D16), and on a Mac whose boundary cannot be built it must ask
-every time with the card saying *no boundary* (R98 (1)). Half 1's half of that sentence is proved on
-Linux; half 2's is a reading of a profile until that run happens.
+**Measured on a Mac, 2026-11-03**: `cargo test --offline -p letibot-tools --test seatbelt --test
+seatbelt_no_helper` passes 8/8. The default local session (`leticode` seat, `bash` on) was NOT inside
+the boundary: a live `writes-allowed` session asked a card for `cargo test --offline` ("this host has
+no boundary") and published no `boundary_absent`, because only `runner`/`coder`/`gatekeeper` took the
+confined arm in `place_the_tools`. Fixed: on macOS that seat's commands run in the seatbelt boundary
+over the checkout (`HostBackend::confined_over`, file tools still rooted at `/`), `backend.boundary()`
+is set so `Prereq::Confinement` and the D16 gate see it, and a refused probe stays unconfined with
+`boundary_absent`. Tests: `harness::open::mac_default_seat_tests` (boundary built, no warning, write
+inside ok, write outside refused). Linux is untouched (the new arm is `cfg(target_os = "macos")`).
+
+**Still open**: the live card. Build the daemon with this branch, start a default local session at
+`writes-allowed` in a checkout, ask it to run `cargo test --offline`: it must run with no card and no
+`boundary_absent`. The refused-probe arm is the old path and is exercised only on a Mac where the probe fails. Expect that a
+build needing a new dependency fails inside the boundary (toolchain is read-only, offline only).
 
 ---
 
