@@ -80,48 +80,6 @@ pub(crate) const TRAIL_SCAN: usize = 60;
 /// says it was clipped. It is also how much is stored.
 pub(crate) const UTTERANCE_CHARS: usize = 600;
 
-/// Everything the engine borrows for the life of the daemon. Held apart from [`Harness`] because
-/// `TurnEngine<'a>` borrows the vocabulary and the renderer, and a struct owning both the borrow and
-/// the borrowed would be self-referential. Every field is an `Arc`, so a clone is a few refcounts.
-#[derive(Clone)]
-pub struct Parts {
-    pub vocab: std::sync::Arc<Vocab>,
-    pub wiring: std::sync::Arc<Wiring>,
-    /// Per-project mode store, loaded once at daemon start: a session's point is its project's row
-    /// (longest ancestor wins), not the daemon's `--mode` flag. Locked because `/mode` writes it
-    /// while session opens read it.
-    pub mode_store: std::sync::Arc<std::sync::RwLock<crate::modes::ModeStore>>,
-    /// The subagent (task) journal, shared with every subagent runner so spawns and
-    /// finishes land in one place and reach the dashboard's state file.
-    pub tasks: std::sync::Arc<crate::tasks::TaskJournal>,
-    /// The language servers this daemon can reach, shared with the `lsp` tool and
-    /// the dashboard's `lsp` panel.
-    pub lsp: std::sync::Arc<letibot_tools::builtins::lsp::LspConfig>,
-    /// The loaded skills, shared with the `skill` tool and the dashboard's `skills`
-    /// panel.
-    pub skills: std::sync::Arc<letibot_tools::builtins::skill::SkillRegistry>,
-    /// Every live todo board this daemon holds, by session id: the map a parent's `todo_write` with
-    /// a `target` resolves its child through. It rides [`Parts`] because it belongs to the daemon,
-    /// and the store path rides along because the resolver's flush runs on another thread.
-    pub child_boards: std::sync::Arc<crate::child_todos::ChildBoards>,
-    /// The watcher set of the subagent TREE this session belongs to, when it is a child (R58).
-    /// `None` for a root, whose set is its own; a child carries its parent's, so the tree shares the
-    /// watching bookkeeping, the level above and the ROOT a permission card can be drawn by.
-    pub tree_watch: Option<std::sync::Arc<crate::jobwatch::JobWatchers>>,
-    /// The subagent handle list a child of this session shares (R58): `None` for a root, `Some` for a
-    /// child, so the whole tree hands out and collects one list. Without it a settlement names a
-    /// handle no runner in `open` holds.
-    pub(crate) tree_slots: Option<TaskSlots>,
-    /// The head's answers, as the whole tree reaches them: a child has no head, so its gate's card is
-    /// posted to the tree's ROOT and settled by that session's `Answers`, or nothing could answer it.
-    /// `None` for a root, whose own are built at open.
-    pub tree_head: Option<std::sync::Arc<crate::answers::Answers>>,
-    /// The daemon's review desk: who is reviewing what, and what they have handed in. It rides
-    /// [`Parts`] because a review has two sides in two sessions, and one `Arc` is what makes them one
-    /// act. Not a store: the durable row is the queue's own.
-    pub reviews: std::sync::Arc<letibot_tools::builtins::verdict::ReviewDesk>,
-}
-
 /// How many ledger rows a resume announces between progress ticks: a tick per row overflowed a
 /// head's queue and demoted it, so the restore's own progress bar was killed by the events carrying it.
 const FILLING_STRIDE: usize = 64;
@@ -130,181 +88,6 @@ const FILLING_STRIDE: usize = 64;
 /// chunk here is exactly one `BEGIN IMMEDIATE`, so a committed chunk, a tick of the carry's
 /// `Filling` line and the `persisted` count all mean the same rows.
 const PERSIST_CHUNK: usize = letibot_tokencore::store::Store::APPEND_CHUNK;
-
-impl Parts {
-    pub fn load(cfg: &Config) -> Result<Parts, HarnessError> {
-        let wiring = cfg.dialect.wiring(cfg.effort.as_deref());
-        // Which vocabulary, decided by what the turns need: a GGUF is read by llama.cpp, and no GGUF
-        // with a provider means the byte vocabulary, whose ids never leave this machine. No GGUF and no
-        // provider is the same byte vocabulary and no refusal: a turn on the local route is what is.
-        let vocab = match &cfg.vocab_gguf {
-            Some(path) => {
-                if !path.is_file() {
-                    return Err(HarnessError::Setup(format!(
-                        "no vocabulary GGUF at {}. For a split model, pass the first shard.",
-                        path.display()
-                    )));
-                }
-                load_gguf(path)
-                    .map_err(|e| HarnessError::Setup(format!("loading the vocabulary: {e}")))?
-            }
-            None => {
-                let spec = wiring.spec();
-                Vocab::bytes(
-                    spec.control_tokens
-                        .as_slice()
-                        .iter()
-                        .map(|t| t.literal.as_ref())
-                        .chain(spec.stop_tokens.iter().map(|t| t.literal.as_ref())),
-                    spec.stop_tokens.iter().map(|t| t.literal.as_ref()),
-                )
-            }
-        };
-        let skills = std::sync::Arc::new(
-            letibot_tools::builtins::skill::SkillRegistry::load_for(&cfg.skill_dirs())
-                .with_pins(cfg.skills_pin().iter().cloned()),
-        );
-        let lsp = std::sync::Arc::new(letibot_tools::builtins::lsp::LspConfig::default());
-        let tasks = std::sync::Arc::new(crate::tasks::TaskJournal::new(
-            crate::tasks::default_state_path(),
-            lsp.clone(),
-            skills.clone(),
-        ));
-        Ok(Parts {
-            vocab: std::sync::Arc::new(vocab),
-            wiring: std::sync::Arc::new(wiring),
-            mode_store: std::sync::Arc::new(std::sync::RwLock::new(crate::modes::ModeStore::open(
-                cfg.store.as_deref(),
-            ))),
-            tasks,
-            lsp,
-            skills,
-            // The daemon-wide board map, over the same store the sessions write - see the
-            // field's doc for why it is here and not on a harness.
-            child_boards: crate::child_todos::ChildBoards::shared(cfg.store.clone()),
-            // A root session is its own tree; it has no parent's watcher set to join.
-            tree_watch: None,
-            // Nor a parent's handle list: a root's runner gets a fresh one (R58).
-            tree_slots: None,
-            // **Nor a parent's head answers**: a root's own are built as its gate is, and a
-            // root with no head-wired adjudicator has none to pass down. See `tree_head`.
-            tree_head: None,
-            // The daemon's review desk, empty: the queue's session opens a review on it when it
-            // starts a gatekeeper, and the child hands its verdict back through the same one.
-            reviews: std::sync::Arc::new(letibot_tools::builtins::verdict::ReviewDesk::new()),
-        })
-    }
-}
-
-#[derive(Debug)]
-pub enum HarnessError {
-    Setup(String),
-    Turn(TurnFailure),
-    Store(String),
-    /// The model went round the tool loop `max_tool_rounds` times and was still producing results:
-    /// the backstop, not a judgement about the work, and reported rather than silently truncated to
-    /// whatever the last round happened to say.
-    LoopBound {
-        rounds: usize,
-    },
-    /// The turn stopped because the next round would not fit the window: not a failure of the work,
-    /// since everything produced is committed and `Sessions` compacts before the next turn.
-    /// `resident` and `window` are in `unit`, and `ledger` keeps the box's own pair for the parenthesis.
-    ContextWall {
-        rounds: usize,
-        resident: u64,
-        window: u64,
-        unit: String,
-        ledger: (u64, u64),
-    },
-    /// The progress check fired: `stall_rounds` consecutive rounds produced nothing this turn had not
-    /// already seen. `evidence` names what the detector saw, because a stop that cites evidence is one
-    /// an operator can contradict and a round count is not.
-    NoProgress {
-        evidence: String,
-    },
-    /// The endpoint failed, and this is the whole account of it: the class, how many times the call
-    /// was tried and for how long, and the provider's own last words. `cause` stays typed because two
-    /// questions are asked of a failure after it is said, and nothing about it is secret.
-    Endpoint {
-        said: String,
-        cause: letibot_turn::HttpError,
-    },
-}
-
-impl HarnessError {
-    /// **The HTTP failure underneath this error**, for the two questions asked after it is
-    /// said - never for re-deciding whether to retry, which the ladder already answered.
-    pub fn http_cause(&self) -> Option<&letibot_turn::HttpError> {
-        match self {
-            HarnessError::Turn(TurnFailure::Http(e)) | HarnessError::Endpoint { cause: e, .. } => {
-                Some(e)
-            }
-            _ => None,
-        }
-    }
-}
-
-impl std::fmt::Display for HarnessError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            HarnessError::Setup(s) => write!(f, "{s}"),
-            HarnessError::Turn(e) => write!(f, "{e}"),
-            // **The whole account of one endpoint failure**: what it was, how many calls it
-            // took, and what the provider said last. See [`HarnessError::Endpoint`].
-            HarnessError::Endpoint { said, .. } => write!(f, "{said}"),
-            HarnessError::Store(s) => write!(f, "store: {s}"),
-            // Never "the model called tools N times without answering": it WAS answering and had not
-            // finished, and reaching here means every round still produced new results, which is a fact
-            // about the size of the task and not about the model.
-            HarnessError::ContextWall {
-                rounds,
-                resident,
-                window,
-                unit,
-                ledger,
-            } => write!(
-                f,
-                "stopped after {rounds} round(s) at the context wall: {resident} of \
-                 {window} {unit} resident{} and the next round would not fit. Everything \
-                 this turn produced is committed. A compaction was ATTEMPTED — whether \
-                 it succeeded is its own line above, because a summary turn can refuse \
-                 (it may not call tools) and saying it worked when it did not is the \
-                 failure this whole check exists to avoid. If it compacted, the turn \
-                 continues on the summary by itself, a bounded number of times; if the \
-                 wall comes back after those, the task does not fit the window and \
-                 `/compact` or a fresh session is the way past it.",
-                if *ledger == (*resident, *window) {
-                    String::new()
-                } else {
-                    format!(" ({} of {} ledger tokens)", ledger.0, ledger.1)
-                }
-            ),
-            HarnessError::LoopBound { rounds } => write!(
-                f,
-                "stopped after {rounds} rounds — the round backstop, and it is not a \
-                 judgement about the work: the turn was still producing results it had \
-                 not seen before when the bound was reached. The progress check did not \
-                 fire. Raise --max-tool-rounds if the task is this big."
-            ),
-            HarnessError::NoProgress { evidence } => write!(f, "{evidence}"),
-        }
-    }
-}
-
-impl std::error::Error for HarnessError {}
-
-impl From<TurnFailure> for HarnessError {
-    fn from(e: TurnFailure) -> Self {
-        HarnessError::Turn(e)
-    }
-}
-
-impl From<letibot_turn::EngineError> for HarnessError {
-    fn from(e: letibot_turn::EngineError) -> Self {
-        HarnessError::Turn(TurnFailure::Engine(e))
-    }
-}
 
 /// Which question a compaction door is answering. Two questions share `Config::at_the_wall`'s
 /// arithmetic and differ in exactly one gate, which is why they are one body with a parameter rather
@@ -1753,6 +1536,7 @@ mod children;
 mod estate;
 pub use estate::{Estate, estate_said, settle_estate};
 mod deliveries;
+mod error;
 mod hub_io;
 mod job_window;
 mod jobs;
@@ -1760,6 +1544,7 @@ mod models;
 mod nags;
 mod open;
 mod opshell;
+mod parts;
 mod prefix_repair;
 mod queue;
 mod room;
@@ -1786,7 +1571,9 @@ pub(crate) use children::{
 };
 pub use job_window::{JobFate, JobWindow};
 pub use deliveries::{JOB_CLOSING, MONITORS_ENDED_SHOWN};
+pub use error::HarnessError;
 pub use hub_io::{HubAdmissions, HubDenials, HubSteering};
+pub use parts::Parts;
 pub use trail::TrailMirror;
 pub(crate) use trail::{
     ASK_USER_QUESTION, asked_rows, operator_answer_text, question_row_text,
