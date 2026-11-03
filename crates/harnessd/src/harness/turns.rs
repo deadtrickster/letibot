@@ -1824,60 +1824,13 @@ impl Harness {
             let (results, backgrounded) =
                 self.run_the_rounds_calls(&calls, &turn_id, &mut progress);
             let round_verdict = progress.end_round();
-            let mut sink = CapturingSink::new(self.hub.clone());
-            self.session
-                .append_items(&self.engine, &results, &mut sink)?;
-            self.reconcile(&mut sink, &results);
-            // And the calls this round's gate admitted without asking anybody, said after the results and never
-            // between them: a notice between a call and its result closes the pairing window.
-            self.flush_gate_admissions()?;
-            // A round can have started or ended a job; refill the mailbox now so a
-            // pane opened mid-turn answers with this round's table, not last
-            // round's. Cheap: the list is filtered before it is built.
-            self.publish_jobs();
-            // And a mode change the operator made while this turn was running: it sat in the queue until the turn
-            // ended, so `/mode` moved nothing while the turn went on asking under the old point. Applied here, the
-            // very next call is governed by it.
-            self.apply_queued_mode();
-            // And a tool the operator ran while this turn was running, which is what the door is FOR: the operator
-            // drops the doc in and the next round of this same turn reads it, rather than waiting out a turn that can
-            // run for minutes.
-            self.apply_queued_head_run();
-            // And the merge-queue reviews this session hosts, at the same boundary: they are work whose point is to
-            // happen DURING a turn, and the door that would take them is the one this turn holds shut. One indexed
-            // `SELECT` against a round that is a generation.
-            let served = self.serve_reviews();
-            if served > 0 {
-                eprintln!(
-                    "  {} · reviews -> {served} gatekeeper(s)",
-                    self.hub.session_id()
-                );
-            }
-            self.persist()?;
-            // The calls of this round have run; if the model revised its plan,
-            // the store and the heads hear about it now, at the round boundary  -
-            // not when the turn ends, which is after the work the plan describes.
-            self.flush_todos()?;
-            // A turn that ran tools also gets the diff, since a completion marked done while nothing succeeded is
-            // just as much the error signal. It goes through the steering queue, because the loop is about to
-            // generate again.
-            if nudges_left > 0
-                && let Some(steer) = self.close_the_turn(&turn_id, &appended)
-            {
-                nudges_left -= 1;
-                self.injected
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .push_back(steer);
-            }
-            // And a context claim made by a round that went on to call tools: the model is
-            // still working, so the correction rides the step boundary like the nudge above.
-            if let Some(steer) = context_claim {
-                self.injected
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .push_back(steer);
-            }
+            self.after_the_round(
+                &results,
+                &turn_id,
+                &appended,
+                context_claim,
+                &mut nudges_left,
+            )?;
 
             // A backgrounded job gives the floor back to the OPERATOR, not to the model: ending only the `bash` call
             // handed control straight back, and the model's next move was a bounded wait. So the turn ends here, and
@@ -1914,6 +1867,75 @@ impl Harness {
         // process reaches - and honest if the bound is ever set back.
         Err(HarnessError::LoopBound { rounds: backstop })
     }
+
+    /// **What happens once the round's results are in**: they are appended in one batch, the gate's
+    /// admissions are said after them, the doors a running turn holds shut are answered at this
+    /// boundary, and the two corrections ride the next step - the intent diff and a context claim.
+    fn after_the_round(
+        &mut self,
+        results: &[TranscriptItem],
+        turn_id: &str,
+        appended: &[TranscriptItem],
+        context_claim: Option<String>,
+        nudges_left: &mut usize,
+    ) -> Result<(), HarnessError> {
+        let mut sink = CapturingSink::new(self.hub.clone());
+        self.session
+            .append_items(&self.engine, &results, &mut sink)?;
+        self.reconcile(&mut sink, &results);
+        // And the calls this round's gate admitted without asking anybody, said after the results and never
+        // between them: a notice between a call and its result closes the pairing window.
+        self.flush_gate_admissions()?;
+        // A round can have started or ended a job; refill the mailbox now so a
+        // pane opened mid-turn answers with this round's table, not last
+        // round's. Cheap: the list is filtered before it is built.
+        self.publish_jobs();
+        // And a mode change the operator made while this turn was running: it sat in the queue until the turn
+        // ended, so `/mode` moved nothing while the turn went on asking under the old point. Applied here, the
+        // very next call is governed by it.
+        self.apply_queued_mode();
+        // And a tool the operator ran while this turn was running, which is what the door is FOR: the operator
+        // drops the doc in and the next round of this same turn reads it, rather than waiting out a turn that can
+        // run for minutes.
+        self.apply_queued_head_run();
+        // And the merge-queue reviews this session hosts, at the same boundary: they are work whose point is to
+        // happen DURING a turn, and the door that would take them is the one this turn holds shut. One indexed
+        // `SELECT` against a round that is a generation.
+        let served = self.serve_reviews();
+        if served > 0 {
+            eprintln!(
+                "  {} · reviews -> {served} gatekeeper(s)",
+                self.hub.session_id()
+            );
+        }
+        self.persist()?;
+        // The calls of this round have run; if the model revised its plan,
+        // the store and the heads hear about it now, at the round boundary  -
+        // not when the turn ends, which is after the work the plan describes.
+        self.flush_todos()?;
+        // A turn that ran tools also gets the diff, since a completion marked done while nothing succeeded is
+        // just as much the error signal. It goes through the steering queue, because the loop is about to
+        // generate again.
+        if *nudges_left > 0
+            && let Some(steer) = self.close_the_turn(turn_id, appended)
+        {
+            *nudges_left -= 1;
+            self.injected
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push_back(steer);
+        }
+        // And a context claim made by a round that went on to call tools: the model is
+        // still working, so the correction rides the step boundary like the nudge above.
+        if let Some(steer) = context_claim {
+            self.injected
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push_back(steer);
+        }
+        Ok(())
+    }
+
 
     /// **The round's calls, run in the order they were proposed, each as the row it is appended as.**
     /// The order is the contract: GLM's template sorts results by call order, so a batch run any other
