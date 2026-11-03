@@ -13,9 +13,10 @@ use crate::cosine::Index;
 use crate::model::{Model, ModelError};
 use crate::remote::{Remote, RemoteError};
 
-/// Where a vector comes from, once the mode has been read.
+/// Where a vector comes from, once the mode has been read. Boxed because a loaded
+/// checkpoint is megabytes beside a URL's few fields, and a tier is held behind a lock.
 pub enum Engine {
-    Internal(Model),
+    Internal(Box<Model>),
     Remote(Remote),
 }
 
@@ -106,8 +107,12 @@ impl Tier {
         let engine = match &settings.mode {
             Mode::Off => return Ok(None),
             Mode::Internal { model } => match model {
-                Some(dir) => Engine::Internal(Model::open(dir).map_err(TierError::Model)?),
-                None => Engine::Internal(Model::open_builtin(data_dir).map_err(TierError::Model)?),
+                Some(dir) => {
+                    Engine::Internal(Box::new(Model::open(dir).map_err(TierError::Model)?))
+                }
+                None => Engine::Internal(Box::new(
+                    Model::open_builtin(data_dir).map_err(TierError::Model)?,
+                )),
             },
             Mode::Remote { url, model } => {
                 Engine::Remote(Remote::open(url, model).map_err(TierError::Remote)?)
@@ -186,7 +191,7 @@ impl Tier {
                     self.engine
                         .embed(t)
                         .map_err(|e| e.to_string())
-                        .map(|v| normalise(v))
+                        .map(normalise)
                 })
                 .map_err(|e| match e {
                     crate::cache::EmbedOrCacheError::Cache(c) => TierError::Cache(c),

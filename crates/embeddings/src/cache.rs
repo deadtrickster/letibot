@@ -281,12 +281,14 @@ fn pack(vector: &[f32]) -> Vec<u8> {
 }
 
 fn unpack(blob: &[u8], dim: i64) -> Option<Vec<f32>> {
-    if blob.len() % 4 != 0 || blob.len() / 4 != dim as usize {
+    if !blob.len().is_multiple_of(4) || blob.len() / 4 != dim as usize {
         return None;
     }
     Some(
-        blob.chunks_exact(4)
-            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        blob.as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| f32::from_le_bytes(*c))
             .collect(),
     )
 }

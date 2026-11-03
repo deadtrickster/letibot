@@ -18,8 +18,10 @@ pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
         na += x * x;
         nb += y * y;
     }
-    let den = (na.sqrt()) * (nb.sqrt());
-    if !(den > 0.0) {
+    let den = na.sqrt() * nb.sqrt();
+    // A zero or a NaN denominator is two vectors with no direction between them, and a
+    // NaN score is a floor nothing can be applied to.
+    if den <= 0.0 || den.is_nan() {
         return 0.0;
     }
     (dot / den).clamp(0.0, 1.0)
