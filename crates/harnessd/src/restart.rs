@@ -1293,14 +1293,14 @@ mod tests {
             !super::is_running(&store, &live, now),
             "a daemon that stopped beating is gone"
         );
-        // A beat that is fresh but a pid that is gone - killed hard, and the clock left behind.
-        // Pid 1 is not this process, and no instance of pid 0 exists: this is a pid nobody has.
+        // A beat that is fresh but a pid that is gone - killed hard, and the clock left behind. Pid
+        // 0 is nobody's, so this is the one instance whose process cannot be read.
         let dead = "d-0-3-0";
         store.life_started(dead, now - 90_000).unwrap();
         store.life_beat(dead, now).unwrap();
         assert!(!super::is_running(&store, dead, now));
         // No life row at all: nothing says it is running.
-        assert!(!super::is_running(&store, "d-1-4-0-nothing", now));
+        assert!(!super::is_running(&store, "no-instance-at-all", now));
     }
 
     /// The orderly stop is recorded although a newer build migrated the store meanwhile - the
