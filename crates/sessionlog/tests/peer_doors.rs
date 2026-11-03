@@ -19,7 +19,8 @@ use letibot_sessionlog::event::SessionEvent;
 use letibot_sessionlog::hub::Hub;
 use letibot_sessionlog::protocol::{Caps, ServerFrame};
 use letibot_sessionlog::registry::{Registry, SessionWiring};
-use letibot_sessionlog::server::{ServerHandle, serve, serve_registry};
+use letibot_sessionlog::server::{ServerHandle, serve, serve_registry, serve_registry_rooted};
+use letibot_sessionlog::testing::FOREIGN_TREE;
 use letibot_sessionlog::wire::FrameReader;
 
 /// How long one refused door may take to answer, in the child.
@@ -34,6 +35,8 @@ const CHILD: &str = "LETIBOT_PEER_DOORS_CHILD";
 /// Set in the seat child's environment, the same way.
 const SEAT_CHILD: &str = "LETIBOT_PEER_SEAT_CHILD";
 /// The socket the child connects to.
+/// Set in the launcher child's environment, the same way.
+const LAUNCHER_CHILD: &str = "LETIBOT_PEER_LAUNCHER_CHILD";
 const CHILD_SOCKET: &str = "LETIBOT_PEER_DOORS_SOCKET";
 
 fn socket_path(tag: &str) -> std::path::PathBuf {
@@ -386,4 +389,53 @@ fn a_head_that_is_not_inside_the_tree_keeps_every_door() {
             _ => {}
         }
     }
+}
+
+/// The launcher child: attaches and asks for the session list, an operator door.
+#[test]
+fn the_launcher_child() {
+    if std::env::var(LAUNCHER_CHILD).as_deref() != Ok("1") {
+        return;
+    }
+    let socket = std::env::var(CHILD_SOCKET).expect("the socket to connect to");
+    let (mut client, _hello, mut reader) =
+        HeadClient::attach(&socket, "s", 0, "tui", "launcher", Caps::default())
+            .expect("the launcher attaches");
+    client.list_sessions().expect("the question is written");
+    let deadline = Instant::now() + PATIENCE;
+    loop {
+        assert!(Instant::now() < deadline, "no answer in {PATIENCE:?}");
+        match reader.read::<ServerFrame>().expect("a frame") {
+            ServerFrame::Sessions { .. } => {
+                println!("LISTED");
+                return;
+            }
+            other @ ServerFrame::Rejected { .. } => println!("REFUSED :: {other:?}"),
+            _ => {}
+        }
+    }
+}
+
+/// **A daemon rooted elsewhere.** An in-process server that names a tree root the child does not
+/// descend from serves that child every door, and the default `serve_registry` (the other tests)
+/// still refuses a descendant.
+#[test]
+fn a_child_of_a_daemon_rooted_elsewhere_keeps_every_door() {
+    let registry = Registry::new();
+    registry
+        .create("s", "a session", SessionWiring::default())
+        .expect("a session");
+    let server =
+        serve_registry_rooted(registry, socket_path("rooted"), FOREIGN_TREE).expect("bind");
+    let out = std::process::Command::new(std::env::current_exe().expect("this test binary"))
+        .args(["--exact", "the_launcher_child", "--nocapture"])
+        .env(LAUNCHER_CHILD, "1")
+        .env(CHILD_SOCKET, server.path())
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("the child runs");
+    let said = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "the child failed: {said}");
+    assert!(said.contains("LISTED"), "the child was refused: {said}");
+    assert!(!said.contains("REFUSED"), "{said}");
 }

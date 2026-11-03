@@ -23,11 +23,11 @@ pub struct Peer {
 impl Peer {
     /// Classify a connection. An unreadable peer is `inside`: a platform that cannot answer, or a
     /// process that exited under the question, must fall on the side that refuses.
-    pub fn of(stream: &UnixStream) -> Peer {
+    pub fn of(stream: &UnixStream, tree_root: i32) -> Peer {
         let pid = peer_pid(stream);
         Peer {
             pid,
-            inside: inside(pid),
+            inside: inside(pid, tree_root),
         }
     }
 
@@ -42,11 +42,11 @@ impl Peer {
 }
 
 /// The rule on its own, so the refusing side of an unreadable peer is one line to see: a pid the
-/// kernel would not give is treated as a tool call, never as a head.
-fn inside(pid: Option<i32>) -> bool {
-    let me = std::process::id() as i32;
+/// kernel would not give is treated as a tool call, never as a head. `tree_root` is the pid whose
+/// tree is the daemon's: the daemon's own pid in production.
+fn inside(pid: Option<i32>, tree_root: i32) -> bool {
     match pid {
-        Some(p) => descended_from(p, me) || in_daemon_tree(p, me),
+        Some(p) => descended_from(p, tree_root) || in_daemon_tree(p, tree_root),
         None => true,
     }
 }
@@ -299,12 +299,12 @@ mod tests {
     #[test]
     fn a_peer_the_kernel_would_not_name_is_on_the_refusing_side() {
         assert!(
-            inside(None),
+            inside(None, std::process::id() as i32),
             "an unreadable peer is a tool call: a platform that cannot answer, or a process that \
              exited under the question, must never be handed the operator's doors"
         );
         assert!(
-            !inside(Some(std::process::id() as i32)),
+            !inside(Some(std::process::id() as i32), std::process::id() as i32),
             "the daemon's own pid is not inside its own tree"
         );
     }

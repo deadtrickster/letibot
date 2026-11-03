@@ -13,7 +13,8 @@ use std::process::{Command, Output};
 use letibot_sessionlog::SessionEvent;
 use letibot_sessionlog::activity::{Activity, Waiting};
 use letibot_sessionlog::registry::{Registry, SessionWiring};
-use letibot_sessionlog::server::serve_registry;
+use letibot_sessionlog::server::serve_registry_rooted;
+use letibot_sessionlog::testing::FOREIGN_TREE;
 use letibot_tokencore::store::{SessionRecord, StablePrefixRecord, Store};
 use letibot_transcript::TranscriptItem;
 
@@ -614,7 +615,7 @@ fn a_session_stopped_on_a_card_is_refused_and_nothing_moves() {
     let rundir = f.run.join("letibot");
     std::fs::create_dir_all(&rundir).unwrap();
     let socket = rundir.join(format!("{}.sock", key12(&f.checkout)));
-    let server = serve_registry(registry.clone(), &socket).expect("bind");
+    let server = serve_registry_rooted(registry.clone(), &socket, FOREIGN_TREE).expect("bind");
 
     let out = f.migrate(&[SESSION, "--to", "lab2x1", "--patience", "2"]);
     let text = said(&out);

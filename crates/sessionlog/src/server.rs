@@ -297,8 +297,19 @@ fn clamp_char(s: &str, at: usize) -> usize {
     at
 }
 
-/// Bind and start accepting for every session in `registry`.
+/// Bind and start accepting for every session in `registry`. The daemon is this process, so a
+/// connection from inside this process's tree is a tool call.
 pub fn serve_registry(registry: Arc<Registry>, path: impl AsRef<Path>) -> io::Result<ServerHandle> {
+    serve_registry_rooted(registry, path, std::process::id() as i32)
+}
+
+/// As [`serve_registry`], judging descent against `tree_root` instead of this process. For a test
+/// that serves in-process and runs a head as its own child: production never calls this.
+pub fn serve_registry_rooted(
+    registry: Arc<Registry>,
+    path: impl AsRef<Path>,
+    tree_root: i32,
+) -> io::Result<ServerHandle> {
     let path = path.as_ref().to_path_buf();
     // THE CLAIM COMES FIRST, AND IT DOES NOT ASK WHETHER THE FILE IS THERE. The check below is
     // gated on `path.exists()`, which a racing binder makes true and stale.
@@ -396,7 +407,7 @@ pub fn serve_registry(registry: Arc<Registry>, path: impl AsRef<Path>) -> io::Re
                             std::thread::Builder::new()
                                 .name("head-conn".into())
                                 .spawn(move || {
-                                    if let Err(e) = serve_conn(r2, s) {
+                                    if let Err(e) = serve_conn_rooted(r2, s, tree_root) {
                                         // A head going away is the normal case and not
                                         // worth a line; anything else is.
                                         if !matches!(e, WireError::Eof) {
@@ -476,10 +487,19 @@ impl Drop for Seat {
 
 /// One connection, from ATTACH to detach - through however many sessions.
 pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), WireError> {
+    serve_conn_rooted(registry, stream, std::process::id() as i32)
+}
+
+/// As [`serve_conn`], judging descent against `tree_root`.
+pub fn serve_conn_rooted(
+    registry: Arc<Registry>,
+    stream: UnixStream,
+    tree_root: i32,
+) -> Result<(), WireError> {
     let out = stream.try_clone()?;
     // Read before the stream is handed to the reader, because the peer is a fact about the
     // connection the kernel filled in at `connect` and nothing later can be asked about it.
-    let peer = crate::peer::Peer::of(&stream);
+    let peer = crate::peer::Peer::of(&stream, tree_root);
     let mut reader = FrameReader::new(stream);
     let writer = Arc::new(Mutex::new(FrameWriter::new(out)));
 
