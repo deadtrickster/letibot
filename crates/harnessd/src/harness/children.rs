@@ -1095,16 +1095,21 @@ fn later_turn(
             | crate::turn_tail::Door::Message
             | crate::turn_tail::Door::Wake
     );
+    // Whether the slot had already settled when this turn began. A turn before that is part of the
+    // answer the slot is waiting for, not news of its own.
+    let settled_before = turns.slot.as_ref().is_some_and(|s| s.has_settled());
     let out = crate::turn_tail::run_turn(sub, turns, door, turn);
     if let (Some(r), Some(prior)) = (&record, &prior) {
         r.later_turn_ended(prior);
     }
-    // Whether the slot had already settled when this turn began. A turn before that is part of the
-    // answer the slot is waiting for, not news of its own.
-    let settled_before = turns.slot.as_ref().is_some_and(|s| s.has_settled());
+    // **A later turn that answered nothing is not news.** The slot already holds the child's last
+    // word, and settling again would replace it with silence and wake the parent for a turn with
+    // nothing in it. Only a turn that ends having said something is a settlement.
+    let silent = settled_before && matches!(&out, Some(Ok(reply)) if reply.text.trim().is_empty());
     if let Some(slot) = &turns.slot
         && somebody_spoke
         && let Some(ended) = &out
+        && !silent
     {
         let status = match ended {
             Ok(reply) => letibot_tools::builtins::task::TaskStatus::Done {
@@ -1126,10 +1131,10 @@ fn later_turn(
             ),
         };
         slot.settle(status);
-        // **This turn's answer is the child's last word**, kept where `collect` reads it: the
-        // settlement above replaces the slot's state, and an empty reply says nothing new.
-        let again = match (&out, settled_before) {
-            (Some(Ok(reply)), true) if !reply.text.trim().is_empty() => {
+        // **This turn's answer is the child's last word**, kept where `collect` reads it: a later
+        // turn's reply is what `task_result` answers with, not the first one it gave.
+        let again = match &out {
+            Some(Ok(reply)) if settled_before => {
                 slot.spoke_again(reply.text.trim());
                 true
             }
