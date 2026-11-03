@@ -1659,6 +1659,8 @@ impl AdjudicatedGate {
             tier: req.tier.as_str(),
             outcome,
             repeat,
+            // A session opened without a store keeps no corpus row, and `/gate` reads the store.
+            recorded: self.corpus_sink.is_some(),
             // Offer the remedy that exists. A refusal the HARNESS made is not one a grant can
             // lift - no adjudicator was consulted and none would be on a retry - so what helps
             // is re-issuing the command in a form the grammar can read.
@@ -1677,11 +1679,12 @@ impl AdjudicatedGate {
             } else if decision.by.starts_with("model") {
                 // The guard decided this one, and there is no pending decision: an oracle's
                 // refusal is a decision in its own right, so no card was raised and the remedy
-                // that exists is the operator's grant, since the row is on `/gate`.
+                // that exists is the operator's grant by name. Where the row lives is the
+                // refusal's own sentence, built where the store is known.
                 format!(
                     "the guard refused this one — no card was raised for it, and nothing is \
                      waiting for an answer. Nothing was executed and nothing changed. The \
-                     row is on `/gate`, where the operator can lift it: `grant {}` ({}).",
+                     grant that lifts it is `grant {}` ({}).",
                     req.id, req.tool
                 )
             } else {

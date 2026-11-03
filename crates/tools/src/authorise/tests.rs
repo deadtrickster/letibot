@@ -640,6 +640,7 @@ fn notice(outcome: &'static str, repeat: BreakerState) -> DenialNotice {
         outcome,
         repeat,
         grant: "reply `grant adj-1` to allow it once".into(),
+        recorded: true,
     }
 }
 
@@ -697,6 +698,18 @@ fn a_refusal_whose_ask_is_still_open_says_an_answer_given_then_is_read() {
         "what makes a later answer readable: {t}"
     );
     assert!(t.contains("/gate recent"), "{t}");
+}
+
+#[test]
+fn a_refusal_with_no_store_says_nothing_keeps_it_rather_than_naming_a_verb() {
+    // `/gate recent` reads the store's corpus, so a daemon opened without one has no row to
+    // list. Naming the verb there sends somebody to a door that answers "no corpus".
+    let mut n = notice("not_run", BreakerState::Closed);
+    n.recorded = false;
+    let t = refusal_text(&n, Reach::Nobody);
+    assert!(!t.contains("/gate recent"), "{t}");
+    assert!(t.contains("without a session store"), "{t}");
+    assert!(t.contains("`adj-1`"), "the row's own id is still named: {t}");
 }
 
 #[test]
@@ -880,9 +893,11 @@ fn an_always_ask_rule_is_answered_by_the_oracle_and_its_verdict_is_followed() {
             assert!(tell.contains("REFUSED"), "{tell}");
             assert!(tell.contains("no witness"), "{tell}");
             assert!(tell.contains("the guard refused this one"), "{tell}");
-            // The row is where the remedy lives; whether a person has looked at it is a fact
-            // about a screen, and this sink reached none.
-            assert!(tell.contains("row is on `/gate`"), "{tell}");
+            // Whether a person has looked at it is a fact about a screen, and this sink reached
+            // none; whether `/gate` can list it is a fact about the store, and this gate has
+            // none either, so the sentence says which.
+            assert!(!tell.contains("row is on `/gate`"), "{tell}");
+            assert!(tell.contains("without a session store"), "{tell}");
             assert!(!tell.contains("saw it"), "{tell}");
             assert!(
                 !tell.contains("answer the pending decision"),

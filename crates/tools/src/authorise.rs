@@ -1258,6 +1258,10 @@ pub struct DenialNotice {
     /// around teaches people to route around refusals, and a grant path that arrives after
     /// the task has died is the same thing with an extra step.
     pub grant: String,
+    /// Whether this decision is written where `/gate` reads it. A daemon opened without a
+    /// session store keeps no corpus row, and the refusal must not send a person to a door
+    /// that answers "no store is configured".
+    pub recorded: bool,
 }
 
 impl DenialNotice {
@@ -1390,26 +1394,39 @@ pub fn refusal_text(notice: &DenialNotice, reached: Reach) -> String {
 /// neither, and then the model must not wait for anybody.
 fn telling(notice: &DenialNotice, reached: Reach) -> String {
     let id = &notice.request_id;
+    // What a person finds after the window. A gate with a store keeps a corpus row per decision
+    // and `/gate` reads it; one with no store keeps nothing, and naming the verb there sends
+    // somebody to a door that answers "no store is configured".
+    let recorded = if notice.recorded {
+        format!(
+            "It is recorded as the row `{id}`; `/gate recent` lists it and `/gate grant {id}` \
+             rules on it."
+        )
+    } else {
+        format!(
+            "Nothing keeps it: this session was opened without a session store, so no `/gate` \
+             verb has the row `{id}` and the refusal survives only in the transcript of the \
+             call that made it."
+        )
+    };
     match reached {
         Reach::OnScreen => format!(
             "The operator has been told, with this: {}\n\
-             It is recorded as the row `{id}`, which `/gate recent` lists. Do not retry a \
-             variant. Say what you were trying to achieve and wait, or ask for the grant by name.",
+             {recorded} Do not retry a variant. Say what you were trying to achieve and wait, \
+             or ask for the grant by name.",
             notice.grant
         ),
         Reach::OpenAsk => format!(
             "Nobody is watching this session just now: no operator screen is attached, so this \
              decision is on no screen. The ask is still open, and a head that attaches is handed \
-             it, so an answer given then is read. It is recorded as the row `{id}`, which \
-             `/gate recent` lists. What would allow it: {}\n\
+             it, so an answer given then is read. {recorded} What would allow it: {}\n\
              Do not retry a variant. Say what you were trying to achieve and what would allow \
              it.",
             notice.grant
         ),
         Reach::Nobody => format!(
             "Nobody has been told: no operator screen is attached to this session, so this \
-             decision reached no head and the operator has not seen it. It is recorded as the \
-             row `{id}`; `/gate recent` lists it and `/gate grant {id}` rules on it. Nothing is \
+             decision reached no head and the operator has not seen it. {recorded} Nothing is \
              waiting for an answer, and the same call asked again reaches the same verdict. What \
              would allow it: {}\n\
              Do not retry a variant. Say what you were trying to achieve and what would \
