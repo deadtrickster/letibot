@@ -193,19 +193,13 @@ fn jobs_dirs(root: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// Is this port listening on this box right now? Asked of the kernel rather than of the tool's
-/// own row, which is what makes it a measurement of the teardown.
+/// Is this port accepting on this box right now? Asked of the kernel rather than of the tool's own
+/// row, which is what makes it a measurement of the teardown. A connect rather than a shell: this
+/// box's `/bin/sh` is dash, whose `exec 3<>/dev/tcp` is an error, and an absence that cannot be
+/// false is not evidence.
 pub fn listening(port: u16) -> bool {
-    let out = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(format!(
-            "(exec 3<>/dev/tcp/127.0.0.1/{port}) 2>/dev/null && echo yes || echo no"
-        ))
-        .output();
-    match out {
-        Ok(o) => String::from_utf8_lossy(&o.stdout).trim() == "yes",
-        Err(_) => false,
-    }
+    let at = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    std::net::TcpStream::connect_timeout(&at, Duration::from_millis(500)).is_ok()
 }
 
 /// A port nothing is listening on right now: bound once, then released, so the service under test
