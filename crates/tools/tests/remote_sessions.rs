@@ -776,6 +776,20 @@ fn refuses_the_first_pack(tag: &str) -> Fake {
     )
 }
 
+/// The `ControlPath=` each fetch's ssh was handed, in the order the fake saw them.
+fn fetch_sockets(fake: &Fake) -> Vec<String> {
+    fake.calls()
+        .iter()
+        .filter(|line| line.contains("git-upload-pack"))
+        .filter_map(|line| {
+            let at = line.find("ControlPath=")? + "ControlPath=".len();
+            let rest = &line[at..];
+            let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+            Some(rest[..end].to_string())
+        })
+        .collect()
+}
+
 /// The git socket belongs to the DAEMON: every session on that host multiplexes over it, so a fetch
 /// that was refused must not remove it. The name is planted where ssh would have left it, and a
 /// refused fetch that retried must leave it where it was.
@@ -805,6 +819,41 @@ fn a_refused_fetch_leaves_the_shared_git_socket_alone() {
     assert!(
         said.contains("came back here"),
         "and the refused fetch was retried, so the branch came back: {said}"
+    );
+    git(&repo, &["rev-parse", "--verify", b.back_branch()]);
+}
+
+/// A refusal says the master behind that socket may be the thing that is full, so the retry dials a
+/// socket of its own. Two attempts over one socket would ask the same full master again, which is
+/// what the retry exists not to do.
+#[test]
+fn a_refused_fetch_retries_over_a_socket_of_its_own() {
+    let fake = refuses_the_first_pack("git-socket-retry");
+    let (repo, paths) = repo_and_paths(&fake.dir.join("rig"));
+    let b = SshBackend::place(&spec_for(
+        &repo,
+        &paths,
+        &fake.program,
+        Duration::from_secs(30),
+    ))
+    .expect("placed");
+
+    let said = b.close().expect("a close says where the work went");
+    assert_eq!(fake.refusals(), 1, "exactly one fetch was refused");
+    let sockets = fetch_sockets(&fake);
+    assert_eq!(
+        sockets.len(),
+        2,
+        "two attempts, one ssh each: {sockets:?} from {:#?}",
+        fake.calls()
+    );
+    assert_ne!(
+        sockets[0], sockets[1],
+        "the retry dialled a socket of its own: {sockets:?}"
+    );
+    assert!(
+        said.contains("came back here"),
+        "and the branch came back over it: {said}"
     );
     git(&repo, &["rev-parse", "--verify", b.back_branch()]);
 }
