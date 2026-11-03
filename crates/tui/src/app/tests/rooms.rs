@@ -401,3 +401,352 @@ fn a_mention_is_a_name_not_a_prefix() {
     assert!(!mentions_operator(&m("s-a", None, "mail me@operator")));
     assert!(!mentions_operator(&m("operator", None, "@operator")));
 }
+
+// -- drawing ----------------------------------------------------------------------------------
+
+const WIDTHS: [usize; 2] = [80, 120];
+
+fn screen(a: &mut App, cols: usize) -> Vec<String> {
+    a.screen(cols, 24)
+}
+
+fn row_with<'a>(rows: &'a [String], needle: &str) -> &'a str {
+    rows.iter()
+        .find(|r| r.contains(needle))
+        .unwrap_or_else(|| panic!("no row has {needle:?}:\n{}", rows.join("\n")))
+}
+
+fn fits(rows: &[String], cols: usize) {
+    for r in rows {
+        assert!(
+            crate::ui::render::visible_width(r) <= cols,
+            "{cols} columns, row of {}: {r:?}",
+            crate::ui::render::visible_width(r)
+        );
+    }
+}
+
+/// The left column of a row: the channel list's width at that screen width.
+fn left_of(row: &str, cols: usize) -> String {
+    let lw = if cols >= 110 { 28 } else { 22 };
+    // Two columns of gutter, then the list.
+    row.chars().skip(2).take(lw).collect()
+}
+
+#[test]
+fn before_any_answer_the_view_says_it_is_asking() {
+    for cols in WIDTHS {
+        let mut a = opened(1_000);
+        let rows = screen(&mut a, cols);
+        fits(&rows, cols);
+        let all = rows.join("\n");
+        assert!(all.contains("channels"), "{all}");
+        assert!(all.contains("▸ host"), "{all}");
+        assert!(all.contains("asking the coordinator"), "{all}");
+    }
+}
+
+#[test]
+fn an_empty_channel_says_so() {
+    for cols in WIDTHS {
+        let mut a = opened(1_000);
+        reply(&mut a, rooms_reply(&[("host", 1, 0, 0)]));
+        reply(&mut a, history("host", vec![]));
+        let rows = screen(&mut a, cols);
+        fits(&rows, cols);
+        let all = rows.join("\n");
+        assert!(all.contains("nothing here yet"), "{all}");
+        assert!(all.contains("host room"), "{all}");
+        assert!(all.contains("1 here"), "{all}");
+    }
+}
+
+#[test]
+fn one_channel_draws_its_messages_with_authors_and_a_divider() {
+    for cols in WIDTHS {
+        let mut a = opened(1_000);
+        reply(&mut a, rooms_reply(&[("host", 2, 2, 0)]));
+        reply(
+            &mut a,
+            history(
+                "host",
+                vec![
+                    msg(1, "host", "s-a", "session", "who has the disk?"),
+                    msg(2, "host", "operator", "operator", "s-b does"),
+                ],
+            ),
+        );
+        let rows = screen(&mut a, cols);
+        fits(&rows, cols);
+        let first = row_with(&rows, "<s-a>");
+        assert!(first.contains("who has the disk?"), "{first}");
+        assert!(first.contains(" │ "), "the divider: {first}");
+        let second = row_with(&rows, "<operator>");
+        assert!(second.contains("s-b does"), "{second}");
+        assert!(
+            rows.iter().position(|r| r.contains("<s-a>"))
+                < rows.iter().position(|r| r.contains("<operator>")),
+            "oldest first"
+        );
+    }
+}
+
+#[test]
+fn many_channels_show_their_unread_counts_and_the_selected_one_shows_none() {
+    for cols in WIDTHS {
+        let mut a = opened(1_000);
+        reply(
+            &mut a,
+            rooms_reply(&[
+                ("host", 3, 20, 5),
+                ("project/ab12cd34ef56", 2, 21, 3),
+                ("project/ffeeddccbbaa", 1, 22, 12),
+            ]),
+        );
+        let rows = screen(&mut a, cols);
+        fits(&rows, cols);
+        let host = left_of(row_with(&rows, "▸ host"), cols);
+        assert_eq!(
+            host.trim_end(),
+            "▸ host",
+            "the selected channel has no count"
+        );
+        let one = left_of(row_with(&rows, "#ab12cd34"), cols);
+        assert!(one.trim_end().ends_with(" 3"), "{one:?}");
+        let two = left_of(row_with(&rows, "#ffeeddcc"), cols);
+        assert!(two.trim_end().ends_with("12"), "{two:?}");
+    }
+}
+
+#[test]
+fn many_more_channels_than_rows_keep_the_selected_one_on_screen() {
+    let mut a = opened(1_000);
+    let ids: Vec<String> = (0..40).map(|i| format!("project/{i:08x}0000")).collect();
+    let mut rows: Vec<(&str, u64, u64, u64)> = vec![("host", 1, 0, 0)];
+    rows.extend(ids.iter().map(|i| (i.as_str(), 1, 0, 0)));
+    reply(&mut a, rooms_reply(&rows));
+    for _ in 0..30 {
+        a.key(Key::Down);
+    }
+    let shown = screen(&mut a, 80);
+    fits(&shown, 80);
+    let all = shown.join("\n");
+    assert!(all.contains("▸ #0000001d"), "{all}");
+    assert!(!all.contains("#00000000"), "{all}");
+}
+
+#[test]
+fn a_mention_is_marked_and_a_plain_message_is_not() {
+    for cols in WIDTHS {
+        let mut a = opened(1_000);
+        reply(&mut a, rooms_reply(&[("host", 2, 2, 0)]));
+        reply(
+            &mut a,
+            history(
+                "host",
+                vec![
+                    msg(1, "host", "s-a", "session", "build is green"),
+                    msg(2, "host", "s-b", "session", "@operator the disk is full"),
+                ],
+            ),
+        );
+        let rows = screen(&mut a, cols);
+        let named = row_with(&rows, "the disk is full");
+        assert!(named.contains("!"), "{named}");
+        let plain = row_with(&rows, "build is green");
+        assert!(!plain.contains("!"), "{plain}");
+    }
+}
+
+#[test]
+fn a_reply_carries_a_marker_with_the_number_it_answers() {
+    for cols in WIDTHS {
+        let mut a = opened(1_000);
+        reply(&mut a, rooms_reply(&[("host", 2, 2, 0)]));
+        let mut answer = msg(5, "host", "s-b", "session", "no, the other one");
+        answer["thread"] = json!(3);
+        reply(
+            &mut a,
+            history(
+                "host",
+                vec![msg(3, "host", "s-a", "session", "which disk?"), answer],
+            ),
+        );
+        let rows = screen(&mut a, cols);
+        let line = row_with(&rows, "no, the other one");
+        assert!(line.contains("↳3 no, the other one"), "{line}");
+        assert!(!row_with(&rows, "which disk?").contains('↳'));
+    }
+}
+
+#[test]
+fn a_todo_or_queue_line_is_one_quiet_row_with_its_ref() {
+    for cols in WIDTHS {
+        let mut a = opened(1_000);
+        reply(&mut a, rooms_reply(&[("host", 2, 2, 0)]));
+        let mut line = msg(2, "host", "todo", "system", "done: write the doc");
+        line["refs"] = json!([{"kind": "todo", "id": "s-a/write the doc"}]);
+        let mut queue = msg(3, "host", "queue", "system", "merged to main");
+        queue["refs"] = json!([{"kind": "queue", "id": "m-41"}]);
+        reply(&mut a, history("host", vec![line, queue]));
+        let rows = screen(&mut a, cols);
+        fits(&rows, cols);
+        let todo = row_with(&rows, "write the doc");
+        assert!(todo.contains("· todo: done: write the doc"), "{todo}");
+        assert!(
+            todo.contains("[todo s-a/write the doc]") || cols == 80,
+            "{todo}"
+        );
+        assert!(
+            !todo.contains("<todo>"),
+            "a system line has no speaker brackets: {todo}"
+        );
+        let q = row_with(&rows, "merged to main");
+        assert!(q.contains("[queue m-41]"), "{q}");
+        assert_eq!(
+            rows.iter().filter(|r| r.contains("merged to main")).count(),
+            1
+        );
+    }
+}
+
+#[test]
+fn a_long_message_wraps_inside_the_chat_column_and_loses_no_words() {
+    for cols in WIDTHS {
+        let mut a = opened(1_000);
+        reply(&mut a, rooms_reply(&[("host", 2, 2, 0)]));
+        let words: Vec<String> = (0..60).map(|i| format!("word{i}")).collect();
+        let long = words.join(" ");
+        reply(
+            &mut a,
+            history("host", vec![msg(1, "host", "s-a", "session", &long)]),
+        );
+        let rows = screen(&mut a, cols);
+        fits(&rows, cols);
+        let all = rows.join("\n");
+        for w in &words {
+            assert!(all.contains(w.as_str()), "{w} was lost at {cols}:\n{all}");
+        }
+        let used = rows.iter().filter(|r| r.contains("word")).count();
+        assert!(used >= 3, "{used} rows at {cols}:\n{all}");
+        // Continuation rows keep the chat column: the divider is still where it was.
+        let at = |r: &str| r.chars().position(|c| c == '│');
+        let first = at(row_with(&rows, "<s-a>"));
+        for r in rows
+            .iter()
+            .filter(|r| r.contains("word") && !r.contains("<s-a>"))
+        {
+            assert_eq!(at(r), first, "{r:?}");
+        }
+    }
+}
+
+#[test]
+fn a_dm_channel_is_listed_under_direct_messages_with_its_unread_count() {
+    for cols in WIDTHS {
+        let mut a = opened(1_000);
+        reply(&mut a, rooms_reply(&[("host", 2, 0, 0)]));
+        let mut first = msg(4, "dm", "s-a", "session", "psst");
+        first["to"] = json!("operator");
+        reply(&mut a, history("dm", vec![first]));
+        let rows = screen(&mut a, cols);
+        fits(&rows, cols);
+        assert!(rows.join("\n").contains("direct messages"));
+        let entry = left_of(row_with(&rows, "s-a"), cols);
+        assert!(entry.trim_end().ends_with('1'), "{entry:?}");
+
+        a.key(Key::Down);
+        let rows = screen(&mut a, cols);
+        let all = rows.join("\n");
+        assert!(all.contains("dm with s-a"), "{all}");
+        assert!(row_with(&rows, "psst").contains("<s-a>"));
+        assert_eq!(left_of(row_with(&rows, "▸ s-a"), cols).trim_end(), "▸ s-a");
+    }
+}
+
+#[test]
+fn the_roster_replaces_the_chat_and_goes_back() {
+    for cols in WIDTHS {
+        let mut a = opened(1_000);
+        reply(&mut a, rooms_reply(&[("host", 2, 1, 0)]));
+        reply(
+            &mut a,
+            history(
+                "host",
+                vec![msg(1, "host", "s-a", "session", "hello there")],
+            ),
+        );
+        a.key(Key::Char('r'));
+        reply(
+            &mut a,
+            json!({"type": "roster", "room": "host", "rows": [
+                {"name": "operator", "kind": "operator", "connected": true, "project": "", "label": ""},
+                {"name": "s-a", "kind": "session", "connected": false, "project": "", "label": "the doc writer"},
+            ]}),
+        );
+        let rows = screen(&mut a, cols);
+        fits(&rows, cols);
+        let all = rows.join("\n");
+        assert!(all.contains("2 in this channel"), "{all}");
+        assert!(row_with(&rows, "operator  operator").contains('●'));
+        assert!(row_with(&rows, "the doc writer").contains('○'));
+        assert!(!all.contains("hello there"), "{all}");
+        a.key(Key::Char('r'));
+        assert!(screen(&mut a, cols).join("\n").contains("hello there"));
+    }
+}
+
+#[test]
+fn an_error_is_drawn_under_the_chat() {
+    let mut a = opened(1_000);
+    reply(
+        &mut a,
+        json!({"error": "the room coordinator is not reachable"}),
+    );
+    let all = screen(&mut a, 80).join("\n");
+    assert!(
+        all.contains("the room coordinator is not reachable"),
+        "{all}"
+    );
+}
+
+#[test]
+fn the_chat_stays_on_the_newest_message_and_page_up_goes_back() {
+    let mut a = opened(1_000);
+    reply(&mut a, rooms_reply(&[("host", 2, 60, 0)]));
+    let rows: Vec<Value> = (1..=60)
+        .map(|i| msg(i, "host", "s-a", "session", &format!("line number {i}")))
+        .collect();
+    reply(&mut a, history("host", rows));
+    let all = screen(&mut a, 120).join("\n");
+    assert!(all.contains("line number 60"), "{all}");
+    assert!(!all.contains("line number 1 "), "{all}");
+    a.key(Key::PageUp);
+    let all = screen(&mut a, 120).join("\n");
+    assert!(!all.contains("line number 60"), "{all}");
+    // New news arrives while scrolled back: the view stays where it was.
+    reply(
+        &mut a,
+        history(
+            "host",
+            vec![msg(61, "host", "s-a", "session", "line number 61")],
+        ),
+    );
+    let all = screen(&mut a, 120).join("\n");
+    assert!(!all.contains("line number 61"), "{all}");
+    a.key(Key::PageDown);
+    a.key(Key::PageDown);
+    a.key(Key::PageDown);
+    let all = screen(&mut a, 120).join("\n");
+    assert!(all.contains("line number 61"), "{all}");
+}
+
+#[test]
+fn the_view_survives_a_tiny_window() {
+    let mut a = opened(1_000);
+    reply(&mut a, rooms_reply(&[("host", 2, 1, 0)]));
+    for (cols, h) in [(20, 8), (30, 4), (80, 3)] {
+        let rows = a.screen(cols, h);
+        fits(&rows, cols);
+    }
+}
