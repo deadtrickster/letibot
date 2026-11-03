@@ -443,10 +443,10 @@ impl Harness {
         let ok = compacted.is_ok();
         match compacted {
             Ok(report) => {
-                // The new base measured in its own right - the fork re-bases the anchor
-                // (`roll_resident`), so the after-count is the base's, not the old
-                // history's ratio applied to it.
-                let base = self.measure_resident();
+                // The new base measured in its own right: the fork re-bases the anchor
+                // (`roll_resident`), so the wall's next judgement is on that roll and not on the
+                // old history's ratio. The screen's sentence carries the after-count.
+                self.measure_resident();
                 // An estimate is said as one, with `≈`, until the next round measures it. The report used to print
                 // the base's estimate in the same breath as the measured count it was folded from, and the guard
                 // below JUDGED that estimate.
@@ -461,9 +461,10 @@ impl Harness {
                     unit: Some(unit.clone()),
                     estimated,
                 };
+                let sentence = crate::sessions::compaction_said(&report, scales.clone());
                 self.hub.publish(SessionEvent::Warning {
                     code: "compacted".into(),
-                    detail: crate::sessions::compaction_said(&report, scales.clone()),
+                    detail: sentence.clone(),
                     compaction: Some(Box::new(crate::sessions::compaction_wire(
                         &report,
                         "compacted",
@@ -478,15 +479,21 @@ impl Harness {
                 // where the count is exact. Either way the controller said it, once.
                 //
                 // The report is the one row this compaction leaves: a second row here repeated
-                // these numbers and drew a second size for one fold. The log keeps the short
-                // line an operator reads in a tail.
+                // these numbers and drew a second size for one fold, and the log is the account
+                // an operator reads in a tail.
                 let cut = if report.fork.truncated {
                     crate::sessions::SUMMARY_CUT_OFF
                 } else {
                     ""
                 };
-                let said = compacted_line(r, base, &self.token_unit(), self.provider.is_some());
-                eprintln!("  {}: {said}{cut}", self.cfg.session_id);
+                // The log carries the screen's sentence, plus the cut remark only this door has to
+                // say. It printed `compacted_line` here, a shorter account of the same compaction,
+                // so one compaction was two accounts.
+                eprintln!(
+                    "  {}: {}",
+                    self.cfg.session_id,
+                    compaction_logged(&sentence, cut)
+                );
             }
             Err(e) => {
                 // Announced and swallowed, as the sibling does: the room check in `submit_as_a_normal_session`
@@ -1894,6 +1901,12 @@ pub(crate) fn compacted_line(before: u64, after: Resident, unit: &str, metered: 
         );
     }
     format!("compacted: {before} → {} {unit} resident.", after.tokens)
+}
+
+/// The line a compaction leaves in the daemon's log: the sentence the head is given, plus the cut
+/// remark the sentence has no room for, so one compaction is not two accounts.
+pub(crate) fn compaction_logged(sentence: &str, cut: &str) -> String {
+    format!("{sentence}{cut}")
 }
 
 /// Where the provider last counted this conversation, and its own count of that prompt. The wall used to be judged

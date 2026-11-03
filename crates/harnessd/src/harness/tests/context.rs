@@ -268,6 +268,37 @@ fn the_compacted_line_is_one_unit_said_once() {
     );
 }
 
+/// The daemon's log line for a compaction is the sentence the head is given, with the cut remark
+/// only this door has to say: the two are read side by side, and they must not describe one
+/// compaction two ways.
+#[test]
+fn the_compactions_log_line_is_the_sentence_the_screen_carries() {
+    let sentence = "compacted: 940188 → 9181 tokens, on transcript s-1#t2. 7 item(s) of the most \
+                    recent exchange(s) were carried over verbatim rather than summarised.";
+    assert_eq!(
+        super::wall::compaction_logged(sentence, ""),
+        sentence,
+        "the log says what the row says, word for word"
+    );
+    // The one thing the sentence has no room for, and only the automatic door has to say.
+    let cut = crate::sessions::SUMMARY_CUT_OFF;
+    assert_eq!(
+        super::wall::compaction_logged(sentence, cut),
+        format!("{sentence}{cut}")
+    );
+    // And it is not the resident line: no transcript, no after-count in the head's units, which is
+    // the disagreement this pins.
+    let base = super::Resident {
+        tokens: 9_181,
+        measured: None,
+        since: 0,
+    };
+    assert_ne!(
+        super::wall::compaction_logged(sentence, ""),
+        super::compacted_line(940_188, base, "tokens", false)
+    );
+}
+
 /// The wall's turn failure is the provider's count with its unit: the head drew a ledger pair with no unit against a
 /// window nobody configured, while the log for the same wall named the provider's two.
 #[test]
