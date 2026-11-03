@@ -100,7 +100,9 @@ fn the_default_session_is_read_only_and_seats_exactly_what_it_did() {
     assert_eq!(w.role, "orchestrator");
     // `todo_write` is the session's own list and `flowy` the door to the room - a door with
     // nothing behind it in a session opened without a seat, which says so and names `/flowy
-    // login`.
+    // login`. `recall` arrived with the compacted base's map: a session that reads one of those
+    // ids has a tool to open it with, which is a re-prefill for every stored session and a
+    // capability change, so it is asserted here rather than assumed.
     assert_eq!(
         w.seated,
         vec![
@@ -110,6 +112,7 @@ fn the_default_session_is_read_only_and_seats_exactly_what_it_did() {
             "ask_code",
             "ask_corpus",
             "read_spill",
+            "recall",
             "todo_write",
             "room",
             "flowy"
