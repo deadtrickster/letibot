@@ -21,6 +21,11 @@ pub const DEFAULT_TTL: Duration = Duration::from_secs(300);
 /// How often the poller looks. Unhurried on purpose: a monitor exists because nobody is waiting
 /// on it this instant.
 const TICK: Duration = Duration::from_millis(250);
+/// **The pace a monitor may speak at**, besides its TTL: one ring a window. A condition that holds
+/// every tick records a firing every tick, and a ring is a turn - so a watch somebody left on a
+/// busy file would spend a generation a tick until its TTL ran out. Thirty seconds is above the
+/// 15 s `promote` threshold, so no routine turn is held back by it, and far below any watch's TTL.
+pub const FIRING_RATE: Duration = Duration::from_secs(30);
 
 /// What a monitor watches. The built-in conditions are the first-class, listable
 /// ones; [`Watch::Custom`] carries a caller-supplied [`Condition`].
