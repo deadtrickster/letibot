@@ -2375,11 +2375,9 @@ impl Harness {
         });
     }
 
-    /// Push the settings this session runs under to the registry, where the
-    /// server answers a head's `Settings` from. On open and on every runtime
-    /// change, so the pane never shows a mode that was true a minute ago; a change
-    /// is also pushed to the heads already attached, so none of them is left at the
-    /// rows it read when it attached.
+    /// Push the settings this session runs under to the registry, where the server answers a
+    /// head's `Settings` from. On open and on every runtime change, so a head draws what is
+    /// running rather than the rows it read when it attached.
     fn publish_settings(&self) {
         let mut rows = self.cfg.settings(
             &self.mode_source,
