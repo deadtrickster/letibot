@@ -57,7 +57,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use letibot_tools::similarity::{self, Corpus, MIN_TERM, Weights};
+use letibot_tools::similarity::{self, Corpus, MIN_TERM, Weights, blended};
+
+use letibot_embeddings::Tier;
 
 /// The score a sentence has to reach before it is a claim - above every one of 641 negatives
 /// (max 0.228), below 63 of 79 positives. See the module doc for the measurement.
@@ -206,6 +208,14 @@ struct Detector {
     exemplars: Vec<Weights>,
 }
 
+impl Detector {
+    /// Put the exemplars and the holdings in a caller's tier, keyed as [`score_with`] reads them:
+    /// one call a turn, because the corpus behind them is a constant.
+    fn fill(&self, tier: &Tier) {
+        let _ = self.corpus.fill(Some(tier));
+    }
+}
+
 fn detector() -> &'static Detector {
     static D: OnceLock<Detector> = OnceLock::new();
     D.get_or_init(|| {
@@ -248,6 +258,14 @@ fn detector() -> &'static Detector {
 /// against its nearest exemplar. `0.0` when the sentence has no [`ANCHORS`] noun, or no window
 /// around one says whose context it is.
 pub fn score(sentence: &str) -> f64 {
+    score_with(sentence, None)
+}
+
+/// [`score`] with the box's second tier attached: each window is compared to the exemplars and
+/// the holdings as [`blended`] of the words and the cosine, so an excuse in words no exemplar
+/// uses still reads as one. The window's vector is made once per window, never once per
+/// document.
+pub fn score_with(sentence: &str, tier: Option<&Tier>) -> f64 {
     let d = detector();
     let ws = words(sentence);
     let mut best = 0.0f64;
@@ -259,17 +277,26 @@ pub fn score(sentence: &str) -> f64 {
         if !window.iter().any(|w| OWNERS.contains(&w.as_str())) {
             continue;
         }
-        let q = d.corpus.weigh(&window.join(" "));
-        let excuse = d
-            .exemplars
-            .iter()
-            .map(|e| similarity::similarity(&q, e))
-            .fold(0.0f64, f64::max);
-        let holds = d
-            .holding
-            .iter()
-            .map(|h| similarity::similarity(&q, h))
-            .fold(0.0f64, f64::max);
+        let text = window.join(" ");
+        let q = d.corpus.weigh(&text);
+        let query = tier.and_then(|t| t.query(&text, letibot_metrics::now_ms() as i64).ok());
+        // The tier's keys are the labels the detector built its corpus with, so a cosine is
+        // looked up by the same spelling the document was filled under.
+        let nearest = |against: &[Weights], kind: &str| {
+            against
+                .iter()
+                .enumerate()
+                .map(|(k, w)| {
+                    let meaning = match (tier, &query) {
+                        (Some(t), Some(qv)) => t.cosine(&format!("{kind}/{k}"), qv),
+                        _ => None,
+                    };
+                    blended(similarity::similarity(&q, w), meaning)
+                })
+                .fold(0.0f64, f64::max)
+        };
+        let excuse = nearest(&d.exemplars, "excuse");
+        let holds = nearest(&d.holding, "holding");
         // A window nearer "it is in my context" than any excuse says something is THERE.
         if excuse > holds {
             best = best.max(excuse);
@@ -346,9 +373,14 @@ pub struct Claim {
 /// The claim in a round's prose, if there is one: the best-scoring sentence at or
 /// over [`FLOOR`]. Ties keep the earlier sentence.
 pub fn find(text: &str) -> Option<Claim> {
+    find_with(text, None)
+}
+
+/// [`find`] with the box's second tier attached, which is what the harness calls.
+pub fn find_with(text: &str, tier: Option<&Tier>) -> Option<Claim> {
     let mut best: Option<Claim> = None;
     for s in sentences(text) {
-        let score = score(&s);
+        let score = score_with(&s, tier);
         if score < FLOOR {
             continue;
         }
@@ -503,11 +535,22 @@ impl Finding {
 pub struct Check {
     slapped: bool,
     warned: bool,
+    /// The box's second tier, when it has one, and whether its exemplars are in it: filled on
+    /// the first round of the turn, because the corpus behind them is a constant.
+    tier: Option<Tier>,
+    filled: bool,
 }
 
 impl Check {
     pub fn new() -> Check {
         Check::default()
+    }
+
+    /// Judge with the box's second tier. Off is `None`, and then this check is the one it was
+    /// before the tier existed; the floor is unchanged either way.
+    pub fn with_tier(mut self, tier: Option<Tier>) -> Check {
+        self.tier = tier;
+        self
     }
 
     /// Judge one round's prose against the measured fill. `None` when the prose holds no claim
@@ -523,7 +566,13 @@ impl Check {
     }
 
     fn judge_from(&mut self, source: Source, text: &str, fill: Option<Fill>) -> Option<Finding> {
-        let claim = find(text)?;
+        if let Some(tier) = &self.tier
+            && !self.filled
+        {
+            detector().fill(tier);
+            self.filled = true;
+        }
+        let claim = find_with(text, self.tier.as_ref())?;
         let verdict = match fill {
             // Not a measurement, or the claim is true: the wall is handled where it
             // always was, and there is nothing to correct.
@@ -821,5 +870,38 @@ mod tests {
         assert_eq!(row["slapped"], true);
         assert!(row["score"].as_f64().unwrap() >= FLOOR);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **The same excuse in words no exemplar uses.** `brimming`, `shall` and `halt` are in
+    /// none of [`EXEMPLARS`], so the words score the sentence under [`FLOOR`] - and the second
+    /// tier's cosine, over the three planted as synonyms, carries it over.
+    #[test]
+    fn a_paraphrase_the_words_score_under_the_floor_is_a_claim_with_the_tier() {
+        let said = "my context is brimming, so I shall halt here";
+        let words_only = score(said);
+        assert!(
+            words_only < FLOOR,
+            "the words alone scored {words_only:.3}, so there is a gap to show"
+        );
+        let data =
+            std::env::temp_dir().join(format!("context-claim-tier-{}-{}", std::process::id(), {
+                static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            }));
+        let tier = letibot_embeddings::testing::planted(
+            &data,
+            &[&["full", "brimming"], &["stop", "halt"], &["will", "shall"]],
+        );
+        let mut check = Check::new().with_tier(Some(tier));
+        let finding = check
+            .judge(said, Some(LOW))
+            .expect("the tier makes it a claim");
+        assert!(
+            finding.claim.score >= FLOOR,
+            "scored {:.3} with the tier",
+            finding.claim.score
+        );
+        assert!(matches!(finding.verdict, Verdict::Slap(_)), "{finding:?}");
+        let _ = std::fs::remove_dir_all(&data);
     }
 }
