@@ -1063,6 +1063,35 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// A scratch directory that removes itself however the test ends. The lease and the restart
+    /// note in it are read as history, so a copy left by a panic is a room this run already had.
+    struct Scratch(std::path::PathBuf);
+
+    impl Scratch {
+        fn new(tag: &str) -> Scratch {
+            let p = std::env::temp_dir().join(format!(
+                "letibot-room-{tag}-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&p).expect("a scratch directory");
+            Scratch(p)
+        }
+
+        fn join(&self, name: &str) -> std::path::PathBuf {
+            self.0.join(name)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     #[test]
     fn every_verb_becomes_a_frame_with_a_request_id() {
         let cases = [
@@ -1601,9 +1630,8 @@ mod tests {
             }
         }
 
-        let dir = std::env::temp_dir().join(format!("letibot-room-restart-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("room.sock");
+        let scratch = Scratch::new("restart");
+        let path = scratch.join("room.sock");
         let server = letibot_room::Server::serve(&path, letibot_room::Room::new())
             .expect("a room to talk to");
         let rec = Arc::new(Recorder(StdMutex::new(Vec::new())));
@@ -1636,6 +1664,9 @@ mod tests {
         assert_eq!(note.room_started_ms, 0, "there is no lease to read");
 
         // A live lease: this IS a restart, and the note names the session and the room it made.
+        // The pane's reader polls once a second and reads a room it has not seen as a crash, so
+        // this link is told the instance first - the act must not race a note about itself.
+        *me.seen.lock().unwrap() = Some(7000);
         let lease =
             letibot_room::CoordinatorLease::owned_by(path.with_extension("lease"), "box/1/1");
         std::fs::write(
@@ -1658,7 +1689,6 @@ mod tests {
 
         drop(me);
         server.stop();
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A supervisor that refuses leaves the room alone and says why - and writes no note
