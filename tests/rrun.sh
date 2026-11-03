@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
-# **The runner's first act: a checkout that waited for the lock is never older than the artifacts.**
-# A run queued behind another was cloned before that build finished, and cargo calls a source that
-# is not NEWER than its artifact fresh, so the run built the other branch's code. Two real crates,
-# one shared target dir, and each run must build its own.
+# shellcheck disable=SC2016 # a literal a remote command line carries, never a local expansion
+# **rrun, from its argv to the build, with no host in between.** The launcher's flags become one
+# remote command line a stub ssh records, and the runner builds what it was handed; the case behind
+# both is a run that waited on the lock and must still build its own code rather than another's.
 #
-# Nothing here reaches a host: the runner is run directly, on local paths only.
+# `ssh` on the PATH is a file that records what it was sent, so nothing here reaches a host.
 #
 #   tests/rrun.sh            # from the repo root; exits non-zero on a failure
 set -u
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+RRUN="$ROOT/scripts/rrun"
 RUNNER="$ROOT/scripts/rrun-runner.py"
 T="$(mktemp -d)"
 # The runner processes this file starts, so a case that fails before its own wait does not leave one
@@ -20,7 +21,48 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mkdir -p "$T/home"
+mkdir -p "$T/bin" "$T/home/.config/letibot" "$T/files"
+# **The stub ssh.** A `cat > path` is a payload, so its bytes are kept under their own name and a
+# case can read back what rrun shipped; a `cat .../status.json` is the watcher's read, and the run
+# it asks about has ended. Everything else only has to exit 0.
+cat > "$T/bin/ssh" << 'STUB'
+#!/usr/bin/env python3
+import os
+import re
+import shutil
+import sys
+
+cmd = sys.argv[-1] if len(sys.argv) > 1 else ""
+with open(os.environ["RRUN_SSH_LOG"], "a") as log:
+    log.write(cmd + "\n")
+payload = re.match(r"cat > (\S+)\s*$", cmd)
+if payload:
+    dest = os.path.join(os.environ["RRUN_SSH_FILES"], os.path.basename(payload.group(1)))
+    with open(dest, "wb") as f:
+        shutil.copyfileobj(sys.stdin.buffer, f)
+elif re.match(r"cat \S+/status\.json\s*$", cmd):
+    sys.stdout.write('{"state": "passed"}')
+sys.exit(0)
+STUB
+# The launcher's watcher sleeps 15 s between reads of the run's status; every other duration
+# belongs to a step or to this file and gets the real thing.
+cat > "$T/bin/sleep" << 'STUB'
+#!/usr/bin/env bash
+[ "${1:-}" = "15" ] && exit 0
+exec /bin/sleep "$@"
+STUB
+chmod +x "$T/bin/ssh" "$T/bin/sleep"
+# The address a host's name resolves to comes from hosts.toml, which awk reads before any ssh.
+printf '[host.lab2x1]\nhostname = "192.0.2.10"\n' > "$T/home/.config/letibot/hosts.toml"
+# A worktree rrun can bundle: HEAD and main, which is what the shipped bundle asks for.
+git init -q -b main "$T/repo"
+git -C "$T/repo" config user.name tester
+git -C "$T/repo" config user.email tester@example.invalid
+git -C "$T/repo" config commit.gpgsign false
+echo one > "$T/repo/README"
+git -C "$T/repo" add README
+git -C "$T/repo" commit -qm first
+
 fails=0
 note() { echo "ok   $1"; }
 fail() {
@@ -29,7 +71,33 @@ fail() {
   fails=$((fails + 1))
 }
 json_steps() { python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "$@"; }
+# expect NAME PATTERN -- the stub was sent a command line holding this text.
+expect() {
+  if grep -qF -- "$2" "$T/ssh.log" 2> /dev/null; then note "$1"; else fail "$1" "$(cat "$T/ssh.log" 2> /dev/null)"; fi
+}
+# refuse NAME PATTERN -- and none held it.
+refuse() {
+  if grep -qF -- "$2" "$T/ssh.log" 2> /dev/null; then fail "$1" "$(cat "$T/ssh.log" 2> /dev/null)"; else note "$1"; fi
+}
 
+# run_rrun ARGS... -- the launcher's combined output, with the stubs on the PATH and nothing of
+# the operator's environment: the throwaway HOME holds the status file it writes.
+run_rrun() {
+  (cd "$ROOT" && env -i PATH="$T/bin:/usr/bin:/bin" HOME="$T/home" USER=tester \
+    RRUN_SSH_LOG="$T/ssh.log" RRUN_SSH_FILES="$T/files" \
+    "$(command -v bash)" "$RRUN" "$@" 2>&1 < /dev/null)
+}
+
+# ---------------------------------------------------------------------------------------
+# The launcher: the target dir a run is handed.
+: > "$T/ssh.log"
+out="$(run_rrun one "$T/repo" -- true)"
+st=$?
+[ "$st" -eq 0 ] || fail "a run with no flags starts" "$out"
+expect "the default target is still the host's one dir" 'CARGO_TARGET_DIR=$HOME/remote-runs/target'
+
+# ---------------------------------------------------------------------------------------
+# The runner: a checkout that waited for the lock is never older than the artifacts it shares.
 new_run() {
   mkdir -p "$1/tree"
   python3 - "$1/status.json" << 'PY'
