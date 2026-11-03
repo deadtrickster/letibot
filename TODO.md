@@ -43,7 +43,7 @@ go stale.*
 
 ---
 
-## R120 - One seat and a working automode, instead of roles - **OPEN, filed 2026-11-03, the operator's direction**
+## R120 - One seat and a working automode, instead of roles - **PARKED 2026-11-03: no oracle passes yet**
 
 The operator, deciding N4: "the more i use things the more i understand the roles were overcomplication - we need working automode". N4 (a coder can write a test and cannot run it) is superseded: the answer is not a shaped verb for one role, it is fewer roles.
 
@@ -52,6 +52,8 @@ The operator, deciding N4: "the more i use things the more i understand the role
 - It must be predictable: the same call in the same context gets the same answer, and the operator can read why.
 
 N4 moves to TODO-settled.md as superseded by this entry.
+
+Parked by the operator the same day. There is no default oracle because every open, locally hosted model tried so far FAILED the oracle tests (the etalon corpus, `crates/harnessd/src/etalon_oracle.rs`), and automode without a passing oracle is a model approving its own actions. The work resumes when a model passes the corpus; until then the seats keep today's modes.
 
 ## R119 - Automation reacts to rate limits and model timeouts, and can move a running session to another model - **OPEN, filed 2026-11-03, the operator's ask**
 
