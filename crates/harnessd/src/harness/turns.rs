@@ -1772,8 +1772,7 @@ impl Harness {
                 // turn is over and the loop continuing is what makes it a correction rather than a report.
                 let mut notices: Vec<String> = Vec::new();
                 let mut goes_on = false;
-                if let Some(steer) = &context_claim {
-                    notices.push(steer.clone());
+                if context_claim.is_some() {
                     goes_on = !claim_in_reasoning;
                 }
                 // The turn boundary, and the one the error signal is about: a turn that ends with no tool call is
@@ -1802,6 +1801,12 @@ impl Harness {
                 // answered by nobody. The loop continues, and a round with nothing queued returns below.
                 if !goes_on && !ok.steering_applied.is_empty() {
                     goes_on = true;
+                }
+                // A claim in the reasoning does not continue the turn, so its line is only worth saying when something
+                // else does: appended to a turn that then ended it is the last item in the transcript, read at the
+                // head of the next, unrelated turn.
+                if goes_on && let Some(steer) = &context_claim {
+                    notices.insert(0, steer.clone());
                 }
                 // Said from the decision rather than from the calls: a round nudged into another one is not
                 // the turn's end, and a head told it was drew `Responded` and then `Responding` again.

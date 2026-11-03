@@ -61,7 +61,18 @@ fn config(dir: &TempDir, session_id: &str) -> Config {
 /// A round that answers in plain text and makes no tool call - the shape that ends a turn. `n_prompt`
 /// is what the provider reports the prompt cost, the other half of the ratio the wall is judged in.
 fn a_plain_answer(vocab: &letibot_tokencore::Vocab, answer: &str, n_prompt: u64) -> Reply {
-    let thought = vocab.tokenize_text("thinking").expect("tokenizes");
+    a_thoughtful_answer(vocab, "thinking", answer, n_prompt)
+}
+
+/// The same, with the round's THINKING spelled by the caller - the shape a claim about the model's
+/// own context comes in, since that is where a model cuts its work to a budget.
+fn a_thoughtful_answer(
+    vocab: &letibot_tokencore::Vocab,
+    thought: &str,
+    answer: &str,
+    n_prompt: u64,
+) -> Reply {
+    let thought = vocab.tokenize_text(thought).expect("tokenizes");
     let answer_ids = vocab.tokenize_text(answer).expect("tokenizes");
     let mut frames = vec![canned::Frame::Progress {
         total: n_prompt,
@@ -216,6 +227,51 @@ fn an_excuse_at_low_fill_is_answered_with_the_measured_fill_and_the_turn_continu
     // landed a token off.
     let window = row["window"].as_u64().expect("a measured window");
     assert_eq!(window, 1_000_000, "{row}");
+}
+
+/// **R93.A6: a claim found in the reasoning is not left lying at the head of the next turn.** The
+/// reasoning's line does not continue the turn, so on a turn that ends cleanly there is nothing for
+/// it to correct - said there it is the last item in the transcript, read at the start of an
+/// unrelated later turn. The claim is still measured and logged.
+#[test]
+fn a_reasoning_claim_on_a_turn_that_ends_is_not_said() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let dir = TempDir::new("harnessd-reasoning-claim-end");
+    let mut cfg = config(&dir, "reasoning-claim-end");
+    cfg.context_window = Some(1_000_000);
+    let parts = Parts::load(&cfg).expect("the vocabulary must load");
+    let vocab = &parts.vocab;
+    let serv = canned::Canned::serve_replies(
+        vec![a_thoughtful_answer(
+            vocab,
+            "My context is at 49%, so one call.",
+            "Landed the port; the tests are green.",
+            30,
+        )],
+        1,
+    );
+    cfg.endpoint = serv.endpoint.clone();
+
+    let hub = Hub::new("reasoning-claim-end");
+    let mut h = Harness::open(&parts, cfg, hub.clone()).expect("the session opens");
+    let reply = h
+        .submit("port the rest of the emulator")
+        .expect("the turn runs");
+
+    assert_eq!(reply.rounds, 1, "nothing continued the turn: {reply:?}");
+    let checks = context_checks(&h);
+    assert!(
+        checks.is_empty(),
+        "a turn that ended is told nothing it cannot act on: {checks:#?}"
+    );
+    // Measured all the same: the floor is tuned from what a turn's reasoning said, told or not.
+    let log =
+        std::fs::read_to_string(dir.path.join(".letibot").join(LOG)).expect("the claim is logged");
+    let row: serde_json::Value =
+        serde_json::from_str(log.lines().next().expect("one line")).expect("json");
+    assert_eq!(row["source"], "reasoning", "{row}");
 }
 
 /// The same sentence AT the wall is true - no line, and the turn ends where the model ended it. The
