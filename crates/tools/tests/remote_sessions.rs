@@ -79,12 +79,23 @@ impl Fake {
                  export PATH='{bin}':$PATH\n\
                  export HOME='{home}'\n\
                  for last; do :; done\n\
+                 socket() {{\n\
+                   local rest=\"$*\"\n\
+                   case \"$rest\" in\n\
+                     *ControlPath=*) rest=\"${{rest#*ControlPath=}}\"; printf '%s' \"${{rest%% *}}\" ;;\n\
+                     *) printf '(none)' ;;\n\
+                   esac\n\
+                 }}\n\
+                 key=$(socket \"$@\" | tr '/ .' '___')\n\
+                 open_on() {{ ls \"{d}/opens/$key\" 2>/dev/null | wc -l | tr -d ' '; }}\n\
+                 mkdir -p \"{d}/opens/$key\"\n\
                  live_now() {{ ls '{d}/live' 2>/dev/null | wc -l | tr -d ' '; }}\n\
                  mark() {{ printf '%s;' \"$1\" >> '{d}/events'; }}\n\
                  first_time() {{ [ -f '{d}'/\"$1\" ] && return 1; : > '{d}'/\"$1\"; return 0; }}\n\
                  : > \"{d}/live/$$\"\n\
-                 printf 'start %s %s;' \"$$\" \"$(live_now)\" >> '{d}/events'\n\
-                 trap 'rm -f \"{d}/live/$$\"; rm -f \"{d}/pack/$$\"; printf '\\''end %s;'\\'' \"$$\" >> {d}/events' EXIT\n\
+                 : > \"{d}/opens/$key/$$\"\n\
+                 printf 'start %s %s %s %s;' \"$$\" \"$(live_now)\" \"$key\" \"$(open_on)\" >> '{d}/events'\n\
+                 trap 'rm -f \"{d}/live/$$\"; rm -f \"{d}/pack/$$\"; rm -f \"{d}/opens/$key/$$\"; printf '\\''end %s;'\\'' \"$$\" >> {d}/events' EXIT\n\
                  {body}\n\
                  bash -lc \"$last\"\n\
                  exit $?\n",
@@ -158,6 +169,44 @@ impl Fake {
     /// How many times a body wrote `mark refused`.
     fn refusals(&self) -> usize {
         self.events().iter().filter(|e| *e == "refused").count()
+    }
+
+    /// Every session the fake opened, as the connection it multiplexed over and how many were open
+    /// on that one connection at that instant: `MaxSessions` counts a connection, not a host.
+    fn starts(&self) -> Vec<(String, usize)> {
+        self.events()
+            .iter()
+            .filter_map(|e| e.strip_prefix("start "))
+            .filter_map(|rest| {
+                let mut field = rest.split_whitespace();
+                field.next()?;
+                field.next()?;
+                let connection = field.next()?.to_string();
+                let open = field.next()?.parse().ok()?;
+                Some((connection, open))
+            })
+            .collect()
+    }
+
+    /// The most sessions any ONE connection was asked to carry at once - the number sshd's
+    /// `MaxSessions` compares against, which is not [`Self::peak`].
+    fn peak_per_connection(&self) -> usize {
+        self.starts()
+            .iter()
+            .map(|(_, open)| *open)
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// The connections the fake was asked to multiplex over, in the order it first saw each.
+    fn connections(&self) -> Vec<String> {
+        let mut seen: Vec<String> = Vec::new();
+        for (connection, _) in self.starts() {
+            if !seen.contains(&connection) {
+                seen.push(connection);
+            }
+        }
+        seen
     }
 
     /// The most `git-upload-pack` sessions a body saw live at once, counting the one asking.
@@ -768,18 +817,33 @@ fn refuses_the_first_pack(tag: &str) -> Fake {
     )
 }
 
-/// The `ControlPath=` each fetch's ssh was handed, in the order the fake saw them.
-fn fetch_sockets(fake: &Fake) -> Vec<String> {
+/// The `ControlPath=` in one invocation's argv: the connection that session multiplexed over.
+fn control_path_in(line: &str) -> Option<String> {
+    let at = line.find("ControlPath=")? + "ControlPath=".len();
+    let rest = &line[at..];
+    let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+    Some(rest[..end].to_string())
+}
+
+/// The connection each session whose argv names `needle` multiplexed over, one entry per session.
+fn control_paths(fake: &Fake, needle: &str) -> Vec<String> {
     fake.calls()
         .iter()
-        .filter(|line| line.contains("git-upload-pack"))
-        .filter_map(|line| {
-            let at = line.find("ControlPath=")? + "ControlPath=".len();
-            let rest = &line[at..];
-            let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
-            Some(rest[..end].to_string())
-        })
+        .filter(|line| line.contains(needle))
+        .filter_map(|line| control_path_in(line))
         .collect()
+}
+
+/// The same names, once each, in a stable order.
+fn distinct(mut names: Vec<String>) -> Vec<String> {
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// The `ControlPath=` each fetch's ssh was handed, in the order the fake saw them.
+fn fetch_sockets(fake: &Fake) -> Vec<String> {
+    control_paths(fake, "git-upload-pack")
 }
 
 /// The git socket belongs to the DAEMON: every session on that host multiplexes over it, so a fetch
@@ -838,4 +902,395 @@ fn a_refused_fetch_retries_over_a_socket_of_its_own() {
         "and the branch came back over it: {said}"
     );
     git(&repo, &["rev-parse", "--verify", b.back_branch()]);
+}
+
+// ---------------------------------------------------------------------------
+// Six sessions on one host at once: the entry's own proof
+// ---------------------------------------------------------------------------
+
+/// `sshd` with its default `MaxSessions`: the eleventh session on ONE connection is refused, in the
+/// words the real server's channel refusal prints. Counting per connection and not per host is the
+/// whole of it - ten sessions of one daemon are fine, eleven is the session it drops.
+const SSHD_REFUSES_THE_ELEVENTH: &str = "sleep 0.05\n\
+ if [ \"$(open_on)\" -gt 10 ]; then\n\
+   mark refused\n\
+   echo 'channel 0: open failed: administratively prohibited: open failed' >&2\n\
+   exit 255\n\
+ fi";
+
+/// Six sessions placed on one machine at once all place, work and come back, and the host never
+/// refuses one - because every one of them multiplexed over ONE connection, which is the thing that
+/// needs a bound. The fake counts sessions per connection, as `sshd` does.
+#[test]
+fn six_sessions_at_once_on_one_host_all_place_over_one_connection() {
+    let fake = Fake::new("six-at-once", SSHD_REFUSES_THE_ELEVENTH);
+    let (repo, paths) = repo_and_paths(&fake.dir.join("rig"));
+
+    // Six placements at once, the way six packages start together. Every spec is built before any
+    // thread runs: `spec_for` rewrites the known-hosts file, and a placement that read it mid-write
+    // would be refused a host key that is there.
+    let specs: Vec<SshSpec> = (0..6)
+        .map(|i| {
+            let mut spec = spec_for(&fake, &repo, &paths, Duration::from_secs(120));
+            spec.name = format!("s-{i:02}abcdef");
+            spec
+        })
+        .collect();
+    let mut placers = Vec::new();
+    for (i, spec) in specs.into_iter().enumerate() {
+        placers.push(std::thread::spawn(move || {
+            SshBackend::place(&spec).unwrap_or_else(|e| panic!("session {i} was not placed: {e}"))
+        }));
+    }
+    let placed: Vec<SshBackend> = placers
+        .into_iter()
+        .enumerate()
+        .map(|(i, t)| {
+            t.join()
+                .unwrap_or_else(|_| panic!("placement {i} panicked"))
+        })
+        .collect();
+    let placed = std::sync::Arc::new(placed);
+
+    // Then all six work at once, each with TWO things in flight - a write and a command - which is
+    // six packages' writes and polls together: TWELVE sessions on one connection, more than the
+    // server allows, so the bound is the only thing that keeps the host from refusing one.
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(13));
+    let mut workers = Vec::new();
+    for k in 0..12 {
+        let b = placed.clone();
+        let barrier = barrier.clone();
+        let i = k % 6;
+        workers.push(std::thread::spawn(move || {
+            barrier.wait();
+            if k < 6 {
+                let bytes = payload(256 * 1024 + i);
+                b[i].write(&format!("at-once-{i}.bin"), &bytes)
+                    .unwrap_or_else(|e| panic!("session {i} write: {e}"));
+                assert_eq!(
+                    b[i].read(&format!("at-once-{i}.bin"))
+                        .expect("it reads back"),
+                    bytes,
+                    "session {i} read back what it wrote"
+                );
+                return;
+            }
+            let out = b[i]
+                .run(&Command {
+                    argv: vec![
+                        "sh".into(),
+                        "-c".into(),
+                        format!("sleep 0.3; echo session-{i}"),
+                    ],
+                    cwd: String::new(),
+                    env: Vec::new(),
+                })
+                .unwrap_or_else(|e| panic!("session {i} run: {e}"));
+            assert_eq!(out.exit, 0, "session {i}'s command answered");
+            assert!(
+                String::from_utf8_lossy(&out.stdout).contains(&format!("session-{i}")),
+                "session {i}'s own output came back"
+            );
+        }));
+    }
+    barrier.wait();
+    for (k, t) in workers.into_iter().enumerate() {
+        t.join().unwrap_or_else(|_| panic!("worker {k} panicked"));
+    }
+
+    // And all six close at once, which is the fetch each brings its branch back with.
+    let mut closers = Vec::new();
+    for i in 0..6 {
+        let b = placed.clone();
+        closers.push(std::thread::spawn(move || b[i].close()));
+    }
+    for (i, t) in closers.into_iter().enumerate() {
+        let said = t
+            .join()
+            .unwrap_or_else(|_| panic!("close {i} panicked"))
+            .unwrap_or_else(|| panic!("session {i}'s close said nothing"));
+        assert!(
+            said.contains("came back here"),
+            "session {i}'s branch came back: {said}"
+        );
+    }
+
+    let bound = letibot_tools::rpc::MAX_SESSIONS_PER_HOST;
+    assert_eq!(
+        fake.refusals(),
+        0,
+        "six sessions on one host at once and the host never had to refuse one: {} sessions, \
+         the most on any ONE connection {}",
+        fake.sessions(),
+        fake.peak_per_connection()
+    );
+    assert!(
+        fake.peak_per_connection() <= bound,
+        "at most {bound} sessions on one connection, the bound and two below the server's \
+         MaxSessions of 10: the peak was {} over {:?}",
+        fake.peak_per_connection(),
+        fake.connections()
+    );
+    assert!(
+        fake.peak_per_connection() >= 6,
+        "the load was real: twelve sessions asked at once and the peak on one connection was {}",
+        fake.peak_per_connection()
+    );
+
+    // The master is SHARED, which is the reason a bound is needed at all: one connection carried
+    // every call of all six sessions, and git's fetches a second one of their own.
+    let calls = distinct(
+        fake.calls()
+            .iter()
+            .filter(|line| !line.contains("git-upload-pack"))
+            .filter_map(|line| control_path_in(line))
+            .collect(),
+    );
+    let fetches = distinct(fetch_sockets(&fake));
+    assert_eq!(
+        calls.len(),
+        1,
+        "every call of all six sessions multiplexed over ONE connection: {calls:?}"
+    );
+    assert_eq!(
+        fetches.len(),
+        1,
+        "and every fetch over one git connection: {fetches:?}"
+    );
+    assert_ne!(
+        calls[0], fetches[0],
+        "git's connection is its own, so a fetch is never the ninth session of the call one"
+    );
+    assert_eq!(
+        fake.still_live(),
+        0,
+        "every session reached its own trap: none was left holding a place"
+    );
+}
+
+/// A host whose own `MaxSessions` is LOWER than the bound cannot be kept under by a client that
+/// counts to eight: a server configured with one refuses the second session on a connection. What
+/// must hold then is that the refusal is reported by name - never as the command's exit, and never
+/// as *it may be running there*.
+#[test]
+fn a_cap_below_the_bound_is_reported_by_name() {
+    let fake = Fake::new(
+        "low-cap",
+        "if [[ \"$last\" == *'the-held-open-command'* ]]; then\n\
+           if [ \"$(open_on)\" -gt 1 ]; then\n\
+             mark refused\n\
+             echo 'channel 0: open failed: administratively prohibited: open failed' >&2\n\
+             exit 255\n\
+           fi\n\
+           sleep 0.4\n\
+         fi",
+    );
+    let (repo, paths) = repo_and_paths(&fake.dir.join("rig"));
+    let b = std::sync::Arc::new(
+        SshBackend::place(&spec_for(&fake, &repo, &paths, Duration::from_secs(20)))
+            .expect("placed"),
+    );
+
+    // Six at once on a connection the server lets one session onto. The barrier makes them ask at
+    // one instant, so the five losers are the second session while the winner is still inside.
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(7));
+    let mut threads = Vec::new();
+    for i in 0..6 {
+        let b = b.clone();
+        let barrier = barrier.clone();
+        threads.push(std::thread::spawn(move || {
+            barrier.wait();
+            b.run(&Command {
+                argv: vec!["sh".into(), "-c".into(), "the-held-open-command".into()],
+                cwd: String::new(),
+                env: Vec::new(),
+            })
+            .map(|_| i)
+            .map_err(|e| format!("{e}"))
+        }));
+    }
+    barrier.wait();
+    let said: Vec<String> = threads
+        .into_iter()
+        .filter_map(|t| {
+            t.join()
+                .unwrap_or_else(|_| panic!("a thread panicked"))
+                .err()
+        })
+        .collect();
+
+    assert!(
+        !said.is_empty(),
+        "at least one of six lost the session: the server lets one on and {} refusals were seen",
+        fake.refusals()
+    );
+    for s in &said {
+        assert!(
+            s.contains("ssh's multiplexer lost the session"),
+            "the sentence says the session was lost, not the command: {s}"
+        );
+        assert!(
+            s.contains("the server refused the channel (MaxSessions)"),
+            "and names the cap it was refused by: {s}"
+        );
+        assert!(
+            s.contains("did NOT run"),
+            "a session that never opened cannot be *running there*: {s}"
+        );
+        assert!(
+            !s.contains("may have run"),
+            "nothing reached the far side, so nothing may have: {s}"
+        );
+    }
+}
+
+/// The entry's own *Done when*, on a real machine: six sessions placed on one host at once all
+/// place, work and come back, and no call of theirs is refused, dropped or timed out. Nothing is
+/// faked here - this is the one test in the tree that needs a real sshd - so it runs only when
+/// asked, and `LETIBOT_R99_HOST` names a host from the operator's `hosts.toml`:
+///
+/// ```sh
+/// LETIBOT_R99_HOST=lab2x1 cargo test --offline -p letibot-tools --test remote_sessions \
+///   -- --ignored six_packages_on_a_real_host_at_once_are_never_refused
+/// ```
+///
+/// `LETIBOT_R99_N` is the number of sessions (six, what the entry measured) and `LETIBOT_R99_SOURCE`
+/// the repository they are placed from, this tree by default. Each close leaves its branch here as
+/// `remote/<host>/<short id>`, exactly as a real placement does.
+#[ignore = "live: places six sessions on a real host - LETIBOT_R99_HOST=<name> and --ignored"]
+#[test]
+fn six_packages_on_a_real_host_at_once_are_never_refused() {
+    let name = std::env::var("LETIBOT_R99_HOST")
+        .expect("LETIBOT_R99_HOST: a host name from the operator's hosts.toml");
+    let n: usize = match std::env::var("LETIBOT_R99_N") {
+        Ok(v) => v.parse().expect("LETIBOT_R99_N: a count of sessions"),
+        Err(_) => 6,
+    };
+    let source = std::env::var_os("LETIBOT_R99_SOURCE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."));
+    let hosts = letibot_tools::remote::Hosts::load();
+    let host = hosts
+        .get(&name)
+        .unwrap_or_else(|| {
+            panic!(
+                "`{name}` is not a host in {}",
+                letibot_tools::remote::hosts_file().display()
+            )
+        })
+        .clone();
+    let repo = PathBuf::from(git(&source, &["rev-parse", "--show-toplevel"]).trim());
+    let paths = Paths::from_env();
+
+    // One connection per host per process, so these are one fact and not one per session: that is
+    // what makes `MaxSessions` a bound on a daemon rather than on a session.
+    let pid = std::process::id();
+    let calls = letibot_tools::remote::control_path(&name, pid);
+    let fetches = letibot_tools::remote::git_control_path(&name, pid);
+    assert_ne!(calls, fetches, "git rides a connection of its own");
+
+    let mut placers = Vec::new();
+    for i in 0..n {
+        let spec = SshSpec {
+            host: host.clone(),
+            name: format!("s-r99-{i}"),
+            source: repo.clone(),
+            writable: true,
+            exec: true,
+            ssh: None,
+            paths: Some(paths.clone()),
+            bound: Some(Duration::from_secs(120)),
+            egress: Egress::Denied,
+            // Production's own answer: ask the host whether it can confine, and use what it says.
+            confine: None,
+            vm: false,
+        };
+        placers.push(std::thread::spawn(move || {
+            SshBackend::place(&spec)
+                .map_err(|e| format!("{e}"))
+                .map(|b| (i, b))
+        }));
+    }
+    let mut placed = Vec::new();
+    for t in placers {
+        let (i, b) = t
+            .join()
+            .unwrap_or_else(|_| panic!("placement panicked"))
+            .unwrap_or_else(|e| panic!("{n} sessions at once and one was not placed: {e}"));
+        placed.push((i, b));
+    }
+    let placed = std::sync::Arc::new(placed);
+
+    // A write big enough to be a bundle's shape, read back; a command that overlaps its neighbours;
+    // then every branch fetched home at once, which is the git connection's own load.
+    let mut workers = Vec::new();
+    for slot in 0..n {
+        let placed = placed.clone();
+        workers.push(std::thread::spawn(move || {
+            let (i, b) = &placed[slot];
+            let bytes = payload(2 * 1024 * 1024 + *i);
+            b.write(&format!("at-once-{i}.bin"), &bytes)
+                .map_err(|e| format!("{e}"))?;
+            let back = b
+                .read(&format!("at-once-{i}.bin"))
+                .map_err(|e| format!("{e}"))?;
+            if back != bytes {
+                return Err(format!("session {i} read back {} bytes", back.len()));
+            }
+            b.run(&Command {
+                argv: vec!["sh".into(), "-c".into(), format!("sleep 0.5; echo {i}")],
+                cwd: String::new(),
+                env: Vec::new(),
+            })
+            .map_err(|e| format!("{e}"))?;
+            Ok(())
+        }));
+    }
+    for (slot, t) in workers.into_iter().enumerate() {
+        t.join()
+            .unwrap_or_else(|_| panic!("session {slot} panicked"))
+            .unwrap_or_else(|e| panic!("session {slot}: {e}"));
+    }
+
+    let mut closers = Vec::new();
+    for slot in 0..n {
+        let placed = placed.clone();
+        closers.push(std::thread::spawn(move || placed[slot].1.close()));
+    }
+    for t in closers {
+        let said = t
+            .join()
+            .unwrap_or_else(|_| panic!("a close panicked"))
+            .unwrap_or_else(|| panic!("a close said nothing"));
+        assert!(
+            said.contains("came back here"),
+            "a branch did not come back: {said}"
+        );
+    }
+
+    // The one oracle for *was a session refused*: this process records a call that did not answer,
+    // and a refusal that was retried still leaves its record. A heartbeat that answered is not one.
+    let failed: Vec<String> = letibot_tools::rpc::recent(&name, letibot_tools::rpc::RECORD_RING)
+        .into_iter()
+        .filter(|r| r.outcome != letibot_tools::rpc::Outcome::Ok)
+        .map(|r| format!("{} {} {} ms", r.step, r.outcome.as_str(), r.millis))
+        .collect();
+    assert!(
+        failed.is_empty(),
+        "{n} sessions on {name} at once and not one call of theirs was refused, dropped or timed \
+         out: {failed:#?}"
+    );
+    assert!(
+        matches!(
+            letibot_tools::rpc::standing(&name),
+            letibot_tools::rpc::Standing::Closed
+        ),
+        "not one connection failure in a row, so the breaker never opened"
+    );
+    println!(
+        "{n} sessions placed, worked and came back on {name} at once, with no refused session; \
+         their calls shared {} and their fetches {}",
+        calls.display(),
+        fetches.display()
+    );
 }
