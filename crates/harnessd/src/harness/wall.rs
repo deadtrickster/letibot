@@ -1080,6 +1080,23 @@ impl Harness {
                 // detail: the turn appends its instruction and its answer to this session, and a tail that could reach
                 // those would put the question and its answer into the record that replaces them.
                 let items: Vec<TranscriptItem> = self.session.items.clone();
+                // **The work in hand, scored against the old half.** With the second tier on, an
+                // old exchange that is about a row on the board is kept whole instead of
+                // summarised; mode `off` scores nothing and both plans below stay as they were.
+                let tier = self.cfg.tier();
+                let relevant = crate::compaction_relevance::scores(
+                    &items,
+                    &self.todos.snapshot(),
+                    tier.as_ref(),
+                );
+                // The room a fold's verbatim tail may spend: the number `plan_fold` plans against
+                // itself, halved where the smaller-tail fold halves its budget.
+                let fold_room = {
+                    let room = window
+                        .saturating_sub(prefix_tokens)
+                        .saturating_sub(self.cfg.headroom());
+                    if smaller { room / 2 } else { room }
+                };
                 // The first choice when a remote backend can afford it: the fold is the cleanest of the three
                 // strategies, and what it costs is the cache. Asked with the door's own reserve and not the window's, so
                 // a resumed session does not have the whole history summarised down to a 15,000-token tail.
@@ -1094,6 +1111,12 @@ impl Harness {
                         } else {
                             split
                         }
+                    })
+                    .map(|split| match &relevant {
+                        Some(scores) => crate::compaction_relevance::keep(
+                            &items, &per_item, split, fold_room, scores,
+                        ),
+                        None => split,
                     });
                 if let Some(split) = folded {
                     self.hub.publish(SessionEvent::Warning {
@@ -1156,7 +1179,25 @@ impl Harness {
                     plan_compaction_tail(&items, &per_item, window, remote)
                 };
                 let tail: Vec<TranscriptItem> = match tail_plan.from() {
-                    Some(from) => items[from..].to_vec(),
+                    // A WHOLE-exchange tail may take in an old exchange that is about the plan; a
+                    // split one already starts inside the newest exchange, and its `dropped` count
+                    // is what the fork discloses, so nothing is moved there.
+                    Some(from) => {
+                        let room = if smaller {
+                            tail_budget(window) / 2
+                        } else {
+                            tail_budget(window)
+                        };
+                        let from = match (&relevant, &tail_plan) {
+                            (Some(scores), letibot_turn::TailPlan::Whole { .. }) => {
+                                crate::compaction_relevance::keep(
+                                    &items, &per_item, from, room, scores,
+                                )
+                            }
+                            _ => from,
+                        };
+                        items[from..].to_vec()
+                    }
                     None => Vec::new(),
                 };
                 // **What this record is asked for** (R22): a size, and the facts the tail already carries, so a

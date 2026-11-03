@@ -27,6 +27,7 @@ pub mod changelog_scope;
 pub mod child_todos;
 pub mod citations;
 pub mod cli;
+pub mod compaction_relevance;
 pub mod config;
 pub mod context_claim;
 pub mod corpus;
