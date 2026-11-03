@@ -357,7 +357,7 @@ have largely landed; the server track has not.
 | § | milestone | exit |
 |---|---|---|
 | **M0** | the conformance suite with no harness: proxy, corpus, gate, then C1-C10 against opencode | a baseline of `f_keep` p10/p50/p99, p99 re-prefill and C1-C10 pass/fail |
-| **M1** | `harnessd`, one head and read-only tools, entirely on the fallback | C1-C10 pass where opencode failed, `f_keep` p10 >= 0.99 over a scripted session |
+| **M1** | `harnessd`, one head and read-only tools, entirely on the fallback | C1-C10 pass where opencode failed; `f_keep` in §18.2's settled form, `lcp / cached_entry`, p10 >= 0.99 over a scripted session |
 | **M2** | firecode integration and write tools, with the `boundary` adjudicator | the host project unmodified, a destructive `bash` harmless, a row per gated call |
 | **M3** | the flowy connector, chat first, before M4 because the async decision shape cannot be retrofitted | a decision answered from a phone, and `no_human_channel` exercised |
 | **M3.5** | Falsifier B, one measurement at 20k/60k/150k | a number, and a written decision to keep or revise §9.1 |
