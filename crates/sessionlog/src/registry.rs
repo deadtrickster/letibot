@@ -572,6 +572,12 @@ pub trait TerminalDriver: Send + Sync {
     /// End the pane: ends its scope, which kills the program and everything it started. Quiet when
     /// there is no pane, because stop is not a request that can fail.
     fn close(&self, session_id: &str, pane: u32) -> Result<(), String>;
+    /// End every pane this session holds, and answer how many programs were still running in one.
+    /// A pane is that session's work, so its close and its park both come here: a program drawing
+    /// into a pane nobody can open is a process nobody can end. `0` for a driver that holds none.
+    fn end_session(&self, _session_id: &str) -> usize {
+        0
+    }
 }
 
 /// Who can write to a running command's stdin: the answer to `PromptAnswer` and to `!send`. A
