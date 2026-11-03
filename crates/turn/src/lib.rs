@@ -25,6 +25,7 @@ pub mod capture;
 pub mod compaction;
 pub mod completion;
 pub mod engine;
+pub mod evict;
 pub mod events;
 pub mod fidelity;
 pub mod guards;
