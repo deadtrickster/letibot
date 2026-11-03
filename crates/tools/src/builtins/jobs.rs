@@ -1321,6 +1321,30 @@ mod tests {
         assert!(matches!(pick_job(&table, "j2"), Picked::One(1)));
     }
 
+    /// The miss for an id nothing holds: the subject names the id it refused, and the table it
+    /// looked in is counted in words, so a table of one is not reported as `1 jobs`.
+    #[test]
+    fn an_unknown_job_names_the_id_and_counts_the_table_in_words() {
+        let one = unknown_job(&[view("j1", None)], "j999");
+        match &one.outcome {
+            letibot_transcript::ToolOutcome::Failed { reason } => {
+                assert_eq!(reason, "no job called `j999`")
+            }
+            other => panic!("a miss is a refusal: {other:?}"),
+        }
+        assert!(
+            one.payload.starts_with("this session has 1 job:"),
+            "{}",
+            one.payload
+        );
+        let many = unknown_job(&[view("j1", None), view("j2", None)], "j999");
+        assert!(
+            many.payload.starts_with("this session has 2 jobs:"),
+            "{}",
+            many.payload
+        );
+    }
+
     /// A refusal names the job the way it was ASKED FOR, while the rows beneath it, which
     /// answer which job is which, are drawn by [`JobView::label`]. Asserted together
     /// because the point is the difference between them.
