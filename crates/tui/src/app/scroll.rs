@@ -984,10 +984,12 @@ impl App {
         for sp in &mut self.spans {
             sp.at -= cut;
         }
+        // The cards are filed by line, so the ones above the cut move up with it and the ones the
+        // dropped rows drew go with them.
+        self.note_cards.retain(|c| c.at >= cut);
         for c in &mut self.note_cards {
-            c.at = c.at.saturating_sub(cut);
+            c.at -= cut;
         }
-        self.note_cards.retain(|c| c.at > 0);
         self.hist_floor = kept.row;
         self.hist_first_class = Some(kept.class);
         freed

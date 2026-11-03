@@ -5384,10 +5384,10 @@ fn a_refused_page_spends_its_ask_and_says_the_daemons_reason() {
     );
 }
 
-/// A session of `rows` rows, each of them more than one line tall: enough for the ring to have
-/// something to let go of, and every row's text names its own index so a frame can be read off.
-fn a_long_session(a: &mut App, rows: u64, body: &str) {
-    for i in 0..rows {
+/// Rows `from..to` of a long session, each of them more than one line tall: enough for the ring to
+/// have something to let go of, and every row's text names its own index so a frame can be read off.
+fn a_long_session(a: &mut App, from: u64, to: u64, body: &str) {
+    for i in from..to {
         a.apply(ServerFrame::Event(env(
             i * 2 + 1,
             testing::appended(&format!("s.{i}"), "user"),
@@ -5412,14 +5412,14 @@ fn a_long_session_keeps_the_head_to_a_window_of_lines() {
     let mut a = app();
     a.walk_limit = 1;
     a.hist_limit = 24 * 1024;
-    a_long_session(&mut a, 200, RING_BODY);
+    a_long_session(&mut a, 0, 200, RING_BODY);
     let _ = a.screen(100, 40);
     assert!(a.hist_floor > 0, "the tail path was not taken");
 
     // The same session rendered whole, which is what the ring must not keep.
     let mut whole = app();
     whole.walk_limit = usize::MAX;
-    a_long_session(&mut whole, 200, RING_BODY);
+    a_long_session(&mut whole, 0, 200, RING_BODY);
     let _ = whole.screen(100, 40);
     assert!(
         whole.hist_bytes() > 2 * a.hist_limit,
@@ -5455,7 +5455,7 @@ fn a_row_the_ring_let_go_comes_back_when_the_reader_scrolls_to_it() {
     let mut a = app();
     a.walk_limit = 1;
     a.hist_limit = 24 * 1024;
-    a_long_session(&mut a, 400, RING_BODY);
+    a_long_session(&mut a, 0, 400, RING_BODY);
     let _ = a.screen(100, 40);
     for _ in 0..30 {
         a.key(Key::PageUp);
@@ -5518,7 +5518,7 @@ fn a_window_that_stops_short_of_the_session_draws_no_tail() {
     let mut a = app();
     a.walk_limit = 1;
     a.hist_limit = 24 * 1024;
-    a_long_session(&mut a, 400, RING_BODY);
+    a_long_session(&mut a, 0, 400, RING_BODY);
     let _ = a.screen(100, 40);
     // A turn running, whose pane belongs under the newest row and nowhere else.
     a.apply(ServerFrame::Event(env_at(
@@ -5577,7 +5577,7 @@ fn a_window_the_ring_cut_stays_one_run_of_the_session() {
     let mut a = app();
     a.walk_limit = 1;
     a.hist_limit = 24 * 1024;
-    a_long_session(&mut a, 300, RING_BODY);
+    a_long_session(&mut a, 0, 300, RING_BODY);
     let _ = a.screen(100, 40);
     for step in 0..60 {
         if step % 3 == 2 {
@@ -5636,4 +5636,85 @@ fn a_window_the_ring_cut_stays_one_run_of_the_session() {
             last = Some(sp);
         }
     }
+}
+
+/// **A window whose tail was let go of whole draws no tail either.** The rows under a parked
+/// reader's window are a count and not a copy, so the live pane and the echo belong where the
+/// session ends - not under the last row the window happens to hold.
+#[test]
+fn a_window_that_let_rows_go_whole_draws_no_tail_of_the_session() {
+    let mut a = app();
+    a.session_id = "s".into();
+    a.walk_limit = 1;
+    a.held_limit = 8 * 1024;
+    a_long_session(&mut a, 0, 120, RING_BODY);
+    let _ = a.screen(100, 40);
+    // The reader parks up in the window, and the session runs on below them until the rows under
+    // the window are what the byte bound lets go of.
+    let last = a.items.last().map(|i| i.item_id.clone()).expect("rows");
+    a.anchor = Some(Held {
+        item_id: last,
+        ordinal: a.items.len() - 1,
+        into: 0,
+    });
+    typed(&mut a, "half a thought");
+    a.key(Key::Enter);
+    a_long_session(&mut a, 120, 400, RING_BODY);
+    let _ = a.screen(100, 40);
+    assert!(
+        a.items_below > 0,
+        "the byte window never let a row go, so this asserts nothing: {} rows held",
+        a.items.len()
+    );
+    let parked = a.screen(100, 40).join("\n");
+    assert!(
+        !parked.contains("half a thought"),
+        "the queued echo is drawn under a row the session does not end at:\n{parked}"
+    );
+
+    // And the tail is where it belongs once the reader comes down to it.
+    a.hold(100_000);
+    for _ in 0..400 {
+        let _ = a.screen(100, 40);
+        let Some(at) = a
+            .queued
+            .iter()
+            .position(|x| matches!(x, Action::FetchRows { .. }))
+        else {
+            break;
+        };
+        let Action::FetchRows { from, count, .. } = a.queued.remove(at) else {
+            unreachable!("the position was of a FetchRows")
+        };
+        let rows: Vec<SnapshotItem> = (from..from + count)
+            .filter(|i| *i < 400)
+            .map(|i| SnapshotItem {
+                citations: Vec::new(),
+                item_id: format!("s.{i}"),
+                kind: "user".into(),
+                ledger_head: String::new(),
+                ts: 0,
+                item: Some(TranscriptItem::User {
+                    speaker: Default::default(),
+                    parts: vec![letibot_transcript::UserPart::Text {
+                        text: format!("row {i}\n{RING_BODY}"),
+                    }],
+                }),
+            })
+            .collect();
+        a.apply(ServerFrame::RowsFetched {
+            session_id: "s".into(),
+            from,
+            rows,
+        });
+    }
+    let at_tail = a.screen(100, 40).join("\n");
+    assert!(
+        at_tail.contains("row 399"),
+        "the window never came back down to the end of the session:\n{at_tail}"
+    );
+    assert!(
+        at_tail.contains("half a thought"),
+        "the echo did not come back with the tail:\n{at_tail}"
+    );
 }

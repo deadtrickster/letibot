@@ -203,6 +203,9 @@ impl App {
                     .unwrap_or_default(),
             );
         }
+        // **A window that stops short of the session draws nothing of its tail.** The live pane and the
+        // queued echo belong to the newest rows, and drawn under the last row this head has they would
+        // claim the working is at a row it is not at. See `below`, which is counted after the trims.
         // And not when the walk has already carried the counts, the same guard the standalone push below carries:
         // the two paths are two ways of drawing one marker, so a guard on one is a guard on neither.
         let live_joins = live.work() > 0
@@ -211,6 +214,7 @@ impl App {
             // The marker belongs to the newest row, which a window that stops short of the session
             // is not drawing: joining it here would put the counts on a row from long ago.
             && self.hist_ceiling.is_none()
+            && self.items_below == 0
             && self.visibility.hides_the_working()
             && self
                 .spans
@@ -328,12 +332,14 @@ impl App {
             segs.push(Seg::Borrowed(&gap));
         }
 
-        // **A window that stops short of the session draws nothing of its tail.** The live pane and
-        // the queued echo belong to the newest rows, and drawing them under a row from long ago is
-        // the lie this seam exists to refuse.
-        let parked = self.hist_ceiling.is_some();
+        // **A window that stops short of the session draws nothing of its tail, and says where the
+        // tail is.** Two things put the tail below the window: rows let go of as lines (the ring) and
+        // rows let go of whole (the byte window a parked reader kept a screen of). Counted here, after
+        // the walks and the trims, so the seam and the pane are this frame's facts.
+        let unheld = items.len().saturating_sub(self.hist_upto);
+        let below = self.hist_ceiling.map_or(0, |_| unheld) + self.items_below;
+        let parked = below > 0;
         let below_seam: Vec<String> = if parked {
-            let below = items.len().saturating_sub(self.hist_upto);
             row_strings(
                 &rano::agent::screens::system_row(
                     "window",
