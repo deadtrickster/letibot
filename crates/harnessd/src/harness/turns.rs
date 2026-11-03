@@ -1623,6 +1623,11 @@ impl Harness {
                     // has already given up on.
                     Waited::Interrupted => {
                         let reason = self.hub.take_queued_interrupt().unwrap_or_default();
+                        // The whole stop, not only this wait's end: the steering door that takes an
+                        // interrupt stops the subtree and tells the turn's ending, and a stop taken
+                        // here is the same act arriving at a different door.
+                        stop_children_first(Some(&self.subagents), &self.hub);
+                        self.stopped.store(true, Ordering::SeqCst);
                         self.settle_outage(false);
                         return Err(HarnessError::Endpoint {
                             said: stopped_in_the_wait(&reason, &ladder, &e),

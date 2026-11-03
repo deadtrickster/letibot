@@ -3284,8 +3284,10 @@ impl Harness {
         n
     }
 
-    #[cfg(test)]
-    pub(crate) fn set_subagents_for_test(
+    /// Install the runner from outside this crate, which an integration test needs to stand a
+    /// child in: a real one is a session and a thread, and the claim is about who is told to stop.
+    #[doc(hidden)]
+    pub fn set_subagents_for_test(
         &mut self,
         runner: Arc<dyn letibot_tools::builtins::task::TaskRunner>,
     ) {
