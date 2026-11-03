@@ -3,6 +3,8 @@
 
 Usage: runner.py RUN_DIR STEPS_JSON
 RUN_DIR holds the checkout (tree/), the log of each step (step-N.log) and status.json.
+CARGO_TARGET_DIR is the dir the steps build in and the one the lock is taken on;
+RRUN_CLEAN_TARGET=1 removes that dir when the run ends.
 """
 import fcntl
 import json
@@ -19,6 +21,19 @@ run_dir = sys.argv[1]
 steps = json.load(open(sys.argv[2])) if os.path.isfile(sys.argv[2]) else json.loads(sys.argv[2])
 status_path = os.path.join(run_dir, "status.json")
 status = json.load(open(status_path))
+
+# **What this run builds in.** `rrun --target` sets CARGO_TARGET_DIR, so two runs handed two dirs
+# build at once, and the lock below is about this one path and nothing else.
+target = os.environ.get("CARGO_TARGET_DIR") or os.path.join(run_dir, "tree", "target")
+# The dir is this run's own, so a run told to clean gives it back when it ends.
+clean_target = os.environ.get("RRUN_CLEAN_TARGET") == "1"
+
+
+def remove_run_dirs():
+    """The checkout, and the target dir when the run was told to give it back."""
+    shutil.rmtree(os.path.join(run_dir, "tree"), ignore_errors=True)
+    if clean_target:
+        shutil.rmtree(target, ignore_errors=True)
 
 
 def load():
@@ -66,7 +81,7 @@ def stopped(signum, _frame):
         if st.get("state") in ("running", "waiting"):
             st["state"] = "stopped"
     save()
-    shutil.rmtree(os.path.join(run_dir, "tree"), ignore_errors=True)
+    remove_run_dirs()
     sys.exit(128 + signum)
 
 
@@ -82,9 +97,10 @@ FAILURE = re.compile(
 # hashes, so a second run in the shared target overwrites the rlibs the first is still linking
 # against (it once failed a doctest with an import the other branch did not have). The lock is
 # held until this process exits; a run waiting for it reads "queued".
-target = os.environ.get("CARGO_TARGET_DIR") or os.path.join(run_dir, "tree", "target")
 os.makedirs(target, exist_ok=True)
-lock = open(os.path.join(target, ".rrun.lock"), "w")
+# Beside the dir, not in it: --clean-target deletes the dir at the end, and a lock inside it would
+# let the next run mint a fresh inode and build alongside one that is still queued on the old one.
+lock = open(target.rstrip("/") + ".rrun.lock", "w")
 try:
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
 except BlockingIOError:
@@ -129,6 +145,7 @@ for i, cmd in enumerate(steps):
 status["state"] = "failed" if failed else "passed"
 status["ended"] = int(time.time())
 save()
-# The shared target records build-script triggers as absolute paths into this tree, and a
-# later run in another tree would see them unchanged and skip the rebuild. Gone, they rerun.
-shutil.rmtree(os.path.join(run_dir, "tree"), ignore_errors=True)
+# The target records build-script triggers as absolute paths into this tree, and a later run in
+# another tree would see them unchanged and skip the rebuild. Gone, they rerun; and the dir goes
+# with the tree when this run was told to clean it.
+remove_run_dirs()

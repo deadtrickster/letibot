@@ -95,6 +95,7 @@ out="$(run_rrun one "$T/repo" -- true)"
 st=$?
 [ "$st" -eq 0 ] || fail "a run with no flags starts" "$out"
 expect "the default target is still the host's one dir" 'CARGO_TARGET_DIR=$HOME/remote-runs/target'
+refuse "  ...and nothing is told to clean it" 'RRUN_CLEAN_TARGET'
 
 : > "$T/ssh.log"
 out="$(run_rrun two "$T/repo" --target /srv/runs/two -- true)"
@@ -104,6 +105,11 @@ refuse "  ...in place of the host's one" 'CARGO_TARGET_DIR=$HOME/remote-runs/tar
 : > "$T/ssh.log"
 out="$(run_rrun three "$T/repo" --target per-run/three -- true)"
 expect "a relative --target is under the host's HOME" 'CARGO_TARGET_DIR=$HOME/per-run/three'
+
+: > "$T/ssh.log"
+out="$(run_rrun four "$T/repo" --target /srv/runs/four --clean-target -- true)"
+expect "--clean-target reaches the runner" 'RRUN_CLEAN_TARGET=1'
+expect "  ...beside the dir it belongs to" 'CARGO_TARGET_DIR=/srv/runs/four'
 
 # The steps still travel as a file, whatever the target: the option must not eat the argv.
 : > "$T/ssh.log"
@@ -167,6 +173,12 @@ wait_state() {
 reaches() {
   if wait_state "$1" "$2"; then note "$3"; else fail "$3" "$(cat "$1/runner.out" 2> /dev/null)"; fi
 }
+# start_runner DIR TARGET STEPS_JSON [clean] -- in the background, with the runner's own environment.
+start_runner() {
+  env -i PATH=/usr/bin:/bin HOME="$T/home" USER=tester ${4:+RRUN_CLEAN_TARGET=1} \
+    CARGO_TARGET_DIR="$2" python3 "$RUNNER" "$1" "$3" > "$1/runner.out" 2>&1 &
+  runners+=("$!")
+}
 # A checkout the launcher's clone would produce: the files, and git TRACKING them, which is what the
 # runner reads to know which mtimes are its own to move.
 a_checkout() {
@@ -217,6 +229,92 @@ if command -v cargo > /dev/null 2>&1 && command -v rustc > /dev/null 2>&1; then
   fi
 else
   echo "skip the mtime case: no cargo or rustc to build a crate with"
+fi
+
+new_run "$T/r-one"
+start_runner "$T/r-one" "$T/target-one" "$(json_steps "until [ -f $T/release-one ]; do sleep 0.05; done")"
+reaches "$T/r-one" running "a run with its own target starts"
+
+new_run "$T/r-two"
+start_runner "$T/r-two" "$T/target-two" '["true"]'
+reaches "$T/r-two" passed "a second run on another target finishes at once"
+if [ "$(state_of "$T/r-one")" = running ]; then
+  note "  ...while the first is still building"
+else
+  fail "  ...while the first is still building" "$(state_of "$T/r-one")"
+fi
+
+new_run "$T/r-three"
+start_runner "$T/r-three" "$T/target-one" '["true"]'
+reaches "$T/r-three" queued "a run naming a dir another run holds says it queues"
+sleep 0.3
+if [ "$(state_of "$T/r-three")" = queued ]; then
+  note "  ...and stays queued while the lock is held"
+else
+  fail "  ...and stays queued while the lock is held" "$(state_of "$T/r-three")"
+fi
+if [ -f "$T/target-one.rrun.lock" ]; then
+  note "the lock is taken beside the dir, so a later run names the same one"
+else
+  fail "the lock is taken beside the dir, so a later run names the same one"
+fi
+
+touch "$T/release-one"
+reaches "$T/r-one" passed "the first run passes once its step is let go"
+reaches "$T/r-three" passed "  ...and the queued one runs after it, not beside it"
+
+# A step builds in the dir the run was given, so that is the dir the flag is about.
+new_run "$T/r-four"
+start_runner "$T/r-four" "$T/target-four" "$(json_steps "printf '%s' \"\$CARGO_TARGET_DIR\" > $T/seen")"
+reaches "$T/r-four" passed "a step builds in the run's own target"
+if [ "$(cat "$T/seen" 2> /dev/null)" = "$T/target-four" ]; then
+  note "  ...the dir the runner locked"
+else
+  fail "  ...the dir the runner locked" "$(cat "$T/seen" 2> /dev/null)"
+fi
+if [ -d "$T/target-four" ]; then note "a run without --clean-target keeps its dir"; else fail "a run without --clean-target keeps its dir"; fi
+if [ -e "$T/target-four/.rrun.lock" ]; then
+  fail "  ...and the lock does not live inside it"
+else
+  note "  ...and the lock does not live inside it"
+fi
+
+new_run "$T/r-five"
+start_runner "$T/r-five" "$T/target-five" '["true"]' clean
+reaches "$T/r-five" passed "a run with --clean-target passes"
+if [ -e "$T/target-five" ]; then
+  fail "--clean-target removes the dir the run locked"
+else
+  note "--clean-target removes the dir the run locked"
+fi
+if [ -d "$T/target-four" ]; then note "  ...and only that one"; else fail "  ...and only that one" "$(ls "$T")"; fi
+
+# A stopped run gives its dir back too: SIGTERM is what `systemctl --user stop rrun-NAME` sends.
+new_run "$T/r-six"
+start_runner "$T/r-six" "$T/target-six" "$(json_steps "until [ -f $T/never ]; do sleep 0.05; done")" clean
+stopped_pid="${runners[${#runners[@]} - 1]}"
+reaches "$T/r-six" running "a run whose dir is to be cleaned starts"
+kill -TERM "$stopped_pid"
+i=0
+while [ "$i" -lt 200 ] && [ -e "$T/target-six" ]; do
+  sleep 0.05
+  i=$((i + 1))
+done
+if [ -e "$T/target-six" ]; then
+  fail "a stopped run with --clean-target still gives its dir back"
+else
+  note "a stopped run with --clean-target still gives its dir back"
+fi
+
+# The runner's own default, for a caller that sets no CARGO_TARGET_DIR at all: the checkout's
+# target, which is the one dir a lone run can be sure nobody else has.
+new_run "$T/r-seven"
+env -i PATH=/usr/bin:/bin HOME="$T/home" USER=tester python3 "$RUNNER" "$T/r-seven" '["true"]' \
+  > "$T/r-seven/runner.out" 2>&1
+if [ "$(state_of "$T/r-seven")" = passed ] && [ ! -e "$T/r-seven/tree" ]; then
+  note "with no target set the runner builds in the checkout and clears it"
+else
+  fail "with no target set the runner builds in the checkout and clears it" "$(cat "$T/r-seven/runner.out")"
 fi
 
 if [ "$fails" -ne 0 ]; then
