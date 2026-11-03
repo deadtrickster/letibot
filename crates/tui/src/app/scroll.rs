@@ -882,8 +882,9 @@ impl App {
     /// comes back. Nothing is asked of the daemon - the row is still in `items` - and the bound is
     /// bytes, because a rendered line is what the head's memory is.
     pub(crate) fn trim_history(&mut self, room: usize) {
-        // An ordinary session walks from row 0 and is bounded by `walk_limit`; only a head that
-        // rendered its tail holds lines its reader can leave behind.
+        // An ordinary session walks from row 0 and is bounded by `walk_limit`, and a head that still
+        // holds a rewind table has one indexed by absolute row that a cut would leave pointing at
+        // the wrong place. Only a tail-mode head holds lines its reader can leave behind.
         if self.hist_floor == 0 || !self.hist_marks.is_empty() {
             return;
         }
