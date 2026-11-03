@@ -694,6 +694,53 @@ fn the_session_header_degrades_by_deletion_and_never_wraps() {
     }
 }
 
+/// §18.2's question, answered on the head's own status: the ending says which check judged the
+/// turn, so zero reuse is read as a slot or a divergence rather than guessed at, and the dialect
+/// that rendered the prompt is named beside it.
+#[test]
+fn the_status_names_the_last_turns_prefix_check_and_dialect() {
+    let ending = |check: letibot_sessionlog::event::PrefixCheck| SessionEvent::TurnFinished {
+        turn_id: "t1".into(),
+        finish_reason: letibot_sessionlog::event::FinishReason::Eos,
+        usage: Usage::default(),
+        timings: Default::default(),
+        ends_turn: true,
+        prefix_check: Some(check),
+        dialect_template_sha: "3f2a9c".into(),
+    };
+    let mut a = app();
+    a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+    a.apply(ServerFrame::Event(env(
+        2,
+        ending(letibot_sessionlog::event::PrefixCheck::Held {
+            expected_cached_min: 12_340,
+            cached: 12_300,
+            shortfall: 40,
+        }),
+    )));
+    let status = a.status_lines(200).join("\n");
+    assert!(status.contains("prefix"), "{status}");
+    assert!(
+        status.contains("short by 40"),
+        "the shortfall is the number that says the server's cache and not ours: {status}"
+    );
+    assert!(status.contains("3f2a9c"), "the dialect: {status}");
+
+    // A divergence is our own defect, and the row says which one it is rather than `held`.
+    a.apply(ServerFrame::Event(env(
+        3,
+        ending(letibot_sessionlog::event::PrefixCheck::Violated {
+            detail: "request N+1 does not extend request N".into(),
+        }),
+    )));
+    let status = a.status_lines(200).join("\n");
+    assert!(status.contains("DIVERGED"), "{status}");
+    assert!(
+        status.contains("does not extend"),
+        "the engine's own sentence, not a paraphrase: {status}"
+    );
+}
+
 #[test]
 fn the_turns_numbers_live_in_the_header_and_an_ordinary_ending_has_no_footer() {
     // One fact, one place: the turn's numbers live in the header, and an ordinary

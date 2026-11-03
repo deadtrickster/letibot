@@ -293,6 +293,13 @@ pub struct App {
     /// The last turn's `timings`, kept past the end of the turn so the header can show the
     /// decode rate while nothing is running.
     pub(crate) last_timings: Option<Timings>,
+    /// §18.1-I1's verdict on the last turn's ending, as the daemon sent it. Without it zero reuse
+    /// is one number for a slot that did not hold the history and for a prompt that diverged;
+    /// `None` is a daemon older than the field, which measured nothing a head can read.
+    pub(crate) prefix_check: Option<letibot_sessionlog::event::PrefixCheck>,
+    /// The dialect's `template_sha` on the last turn's ending: a model update reads as a different
+    /// dialect rather than as an unexplained cache miss. Empty when the daemon did not say.
+    pub(crate) dialect_template_sha: String,
     pub(crate) items: Vec<SnapshotItem>,
     /// The rendered transcript, every row as the bytes that reach the terminal. Once a row is
     /// rendered nothing about it changes on its own except the live marker's counts and a
@@ -1157,6 +1164,8 @@ impl App {
             usage: None,
             usage_cache_measured: true,
             last_timings: None,
+            prefix_check: None,
+            dialect_template_sha: String::new(),
             items: Vec::new(),
             hist_lines: Vec::new(),
             hist_upto: 0,

@@ -444,6 +444,29 @@ impl App {
              conversation is not different because of it.",
         );
 
+        // **What the last turn's ending measured.** §18.2's trap is that zero reuse is one number for
+        // a slot that did not hold the history and for a prompt of ours that diverged; the check is
+        // the daemon's verdict on which, and the dialect names the template it was judged under.
+        row(
+            "prefix",
+            self.prefix_check_line(),
+            "The post-flight check on the last turn's ending, as the daemon sent it. `held` with \
+             a shortfall is the SERVER's cache - the prompts are proven identical over that span - \
+             while `DIVERGED` is a prompt of ours that did not extend the last one, which is the \
+             only verdict here that is a defect in us. `not run` deliberately does not look like \
+             a pass: a check nobody ran is not a check that held. Nothing said is a daemon older \
+             than the field, or a session with no ending since this head attached.",
+        );
+        if !self.dialect_template_sha.is_empty() {
+            row(
+                "dialect",
+                self.dialect_template_sha.clone(),
+                "The dialect's `template_sha` on the last turn's ending: the prompt's own \
+                 identity. A model update that changes the template shows up here as a \
+                 different dialect rather than as an unexplained cache miss.",
+            );
+        }
+
         // The names, which is the pair `orphan` was missing: that counts bodies with no row, this
         // counts rows with no body. Named and not counted because a count is not checkable, and on
         // `/status` rather than the line because a name is long and the line is trimmed to the frame.
@@ -547,6 +570,31 @@ impl App {
             footer: "/status or esc closes this".into(),
         };
         row_strings(&pane.lines(w), self.cfg.palette())
+    }
+
+    /// The last ending's §18.1-I1 verdict as one value, in the words a reader acts on: `held` with
+    /// its shortfall, `DIVERGED` with the engine's sentence, `not run` with the backend's reason.
+    pub(crate) fn prefix_check_line(&self) -> String {
+        use letibot_sessionlog::event::PrefixCheck as P;
+        match &self.prefix_check {
+            None => "not told".to_string(),
+            Some(P::FirstTurn) => "first turn: nothing to compare against".to_string(),
+            Some(P::Held {
+                expected_cached_min,
+                cached,
+                shortfall: 0,
+            }) => format!("held: {cached} of {expected_cached_min} token(s) reused"),
+            Some(P::Held {
+                expected_cached_min,
+                cached,
+                shortfall,
+            }) => format!(
+                "held: short by {shortfall}, {cached} of the {expected_cached_min} token(s) it \
+                 could have reused"
+            ),
+            Some(P::Violated { detail }) => format!("DIVERGED: {detail}"),
+            Some(P::Skipped { reason }) => format!("not run: {reason}"),
+        }
     }
 }
 

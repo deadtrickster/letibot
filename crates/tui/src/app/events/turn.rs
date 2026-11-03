@@ -238,6 +238,8 @@ impl App {
                 usage,
                 timings,
                 ends_turn,
+                prefix_check,
+                dialect_template_sha,
                 ..
             } => {
                 // Kept on the head, not only on the pane: the header says how much context the
@@ -253,6 +255,11 @@ impl App {
                 }
                 self.usage_cache_measured = true;
                 self.last_timings = Some(timings);
+                // The ending's own record of what the engine measured: a head that cannot read the
+                // check reads zero reuse as a prompt that diverged, and the sha names the dialect it
+                // was measured under. Read by `/status`; never derived from the numbers here.
+                self.prefix_check = prefix_check;
+                self.dialect_template_sha = dialect_template_sha;
                 // The count is re-read at the turn's end: a job already running when this head
                 // attached is announced by no event at all - the `ToolFinished` that started it came
                 // before the attach, and a `JobSettled` may be an hour away.
