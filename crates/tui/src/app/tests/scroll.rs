@@ -3171,8 +3171,18 @@ fn a_fork_re_bases_the_window_on_the_transcript_it_left() {
     );
     let held: Vec<&str> = a.items.iter().map(|r| r.item_id.as_str()).collect();
     assert!(
-        held.iter().all(|id| id.starts_with("s#t2.")),
-        "a row the new base does not carry is still held: {held:?}"
+        !held.iter().any(|id| id.starts_with("s#t1.")),
+        "a row of the transcript the fork replaced is still held: {held:?}"
+    );
+    // And the rows the resume republished above the base are still here, above it: the reader
+    // draws them, and no ordinal names them.
+    assert_eq!(
+        a.items_lead, 5,
+        "the head does not know where the base begins: {held:?}"
+    );
+    assert_eq!(
+        a.items[a.items_lead].item_id, "s#t2.0",
+        "the base does not start at the first row of the new transcript"
     );
 }
 

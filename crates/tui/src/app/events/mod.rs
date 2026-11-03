@@ -228,6 +228,10 @@ impl App {
         // ordinal is how it asks for the rows above: `items_dropped` is that count and it is already on
         // the wire. A resync replaces the window, so what the head knew about rows below it goes too.
         self.items_base = s.items_dropped as usize;
+        // A snapshot does not say which of its rows are above the base - a resume's republished
+        // ancestors and the base's own rows arrive as one list - so the head takes them all as the
+        // base's until a fork tells it otherwise.
+        self.items_lead = 0;
         // **And a snapshot reaches the tail**, so nothing sits below this window: the count a
         // parked reader was holding names rows of the transcript this one replaced.
         self.items_below = 0;
@@ -582,8 +586,9 @@ impl App {
 
     /// The rows this head holds that are numbered in a transcript the session has left: the head's half of
     /// `TranscriptForked`, whose carried rows are all published under new ids, so not one held id is in the
-    /// carry. What is left is a window of the NEW base, and `items_base` is where that window starts.
-    pub(crate) fn rows_replaced(&mut self, transcript_id: &str, _parent_id: &str) {
+    /// carry. What it keeps above the new base is history; `items_base` is where the base starts.
+    pub(crate) fn rows_replaced(&mut self, transcript_id: &str, parent_id: &str) {
+        let gone = format!("{parent_id}.");
         let here = format!("{transcript_id}.");
         // The reader's place, taken before the rows go: the live door onto a replacement and the one `load`
         // cannot answer, since a fork's rows travel as appends. The row's own words and the line are taken here,
@@ -597,18 +602,25 @@ impl App {
             line: self.held_line(),
             arriving,
         });
-        // **Everything the new base does not carry goes, ancestors included**: a fork numbers the
-        // conversation from zero, so a row of an older transcript is neither part of the base nor an
-        // ordinal of it, and a page asked for by ordinal would land among the wrong rows.
+        // **The rows before the first one that goes keep their places** - a resume republishes the tail
+        // of the transcripts a compaction put behind the current one, and the reader draws them.
         let kept = self
+            .items
+            .iter()
+            .position(|r| r.item_id.starts_with(gone.as_str()))
+            .unwrap_or(self.items.len());
+        self.items.retain(|r| !r.item_id.starts_with(gone.as_str()));
+        // **But the ordinal space is the new base's.** It is numbered from zero, so the rows held
+        // above it are rows no ordinal names: `items_lead` says where the base starts, and a page
+        // above the window belongs there and not at the front.
+        self.items_lead = self
             .items
             .iter()
             .position(|r| r.item_id.starts_with(here.as_str()))
             .unwrap_or(self.items.len());
-        self.items.retain(|r| r.item_id.starts_with(here.as_str()));
         self.items_base = self
             .items
-            .first()
+            .get(self.items_lead)
             .and_then(|r| letibot_sessionlog::view::ordinal_in(&r.item_id, &here))
             .unwrap_or(0);
         // A page in flight was asked for by an ordinal of the transcript that just went, and the rows
@@ -621,14 +633,10 @@ impl App {
         self.items_below = 0;
         // The one thing this head keeps by row INDEX goes with the rows: the seams its notes were filed at. A
         // seam into the rows that went joins the history, which is the rule `load` applies to a seam the new
-        // transcript no longer has.
+        // transcript no longer has - and every row from `kept` on went, so every seam there goes with them.
         for (place, _) in &mut self.notes {
-            if let Placed::Seam(at) = place {
-                *place = if *at >= kept {
-                    Placed::Seam(*at - kept)
-                } else {
-                    Placed::Before
-                };
+            if matches!(place, Placed::Seam(at) if *at >= kept) {
+                *place = Placed::Before;
             }
         }
         // And the offset goes with the rows it was measured against: `scroll` is lines hidden below the

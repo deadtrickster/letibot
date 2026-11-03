@@ -764,7 +764,10 @@ impl App {
         // gone, and the nearest surviving one is the oldest this head keeps.
         let held_gone = self.anchor.as_ref().is_some_and(|h| h.ordinal < n);
         self.items.drain(..n);
-        self.items_base += n;
+        // A row above the base is history no ordinal names, so letting it go does not move the
+        // base: only the base's own rows that went count.
+        self.items_base += n.saturating_sub(self.items_lead);
+        self.items_lead = self.items_lead.saturating_sub(n);
         if let Some(h) = &mut self.anchor {
             h.ordinal = h.ordinal.saturating_sub(n);
         }
@@ -884,23 +887,32 @@ impl App {
         // **A page above**: the ask's answer joins the window at its front, or nowhere.
         if !rows.is_empty() && from.saturating_add(rows.len()) == self.items_base {
             let n = rows.len();
-            let mut page = rows;
-            page.append(&mut self.items);
-            self.items = page;
+            let lead = self.items_lead;
+            // **The page lands where the base begins**, which is not the front of the list when a
+            // resume republished the transcripts a compaction put behind it: those rows are above
+            // the base, and a page of the base belongs under them.
+            self.items.splice(lead..lead, rows);
+            self.items_lead += n;
             self.items_base = from;
             // Everything indexed by row moves down by the page, and the anchor is a row: without
             // this the reader's held row would be a page's worth of rows away from their screen.
-            self.hist_floor += n;
-            self.hist_upto += n;
+            // The rows ABOVE the base do not move.
+            let shift = |at: &mut usize| {
+                if *at >= lead {
+                    *at += n;
+                }
+            };
+            shift(&mut self.hist_floor);
+            shift(&mut self.hist_upto);
             for s in &mut self.spans {
-                s.row += n;
+                shift(&mut s.row);
             }
             if let Some(h) = &mut self.anchor {
-                h.ordinal += n;
+                shift(&mut h.ordinal);
             }
             for (place, _) in &mut self.notes {
                 if let Placed::Seam(at) = place {
-                    *place = Placed::Seam(*at + n);
+                    shift(at);
                 }
             }
             // The marks are a row-indexed rewind table and a page above them moves every index it

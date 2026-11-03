@@ -307,6 +307,10 @@ pub struct App {
     /// holds, counted from what the snapshot said it left out. It is what makes a scrolling reader's
     /// position nameable after the window has been trimmed or paged.
     pub(crate) items_base: usize,
+    /// How many of the rows this head holds are ABOVE that base - the tail of the transcripts a
+    /// resume republished, which a fork's base does not number. Ordinal `items_base` is the row at
+    /// this index, and a page of the base belongs here rather than at the front of the list.
+    pub(crate) items_lead: usize,
     /// How many rows sit BELOW the window this head holds: the tail it let go because the reader was
     /// parked above it, counted so coming back down knows how much is missing and where it starts.
     pub(crate) items_below: usize,
@@ -1141,6 +1145,7 @@ impl App {
             hist_upto: 0,
             hist_floor: 0,
             items_base: 0,
+            items_lead: 0,
             items_below: 0,
             fetch_asked: None,
             fetch_below: None,

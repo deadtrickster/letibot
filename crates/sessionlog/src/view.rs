@@ -316,6 +316,9 @@ pub struct SessionView {
     bounds: ViewBounds,
     items: Vec<SnapshotItem>,
     items_dropped: u64,
+    /// The transcript the session is speaking: the one every ordinal names. Empty until a fork says
+    /// which it is, when the rows a resume republished above the base cannot be told apart.
+    transcript: String,
     turn: Option<TurnView>,
     open: Vec<OpenDecision>,
     settled: Vec<SettledDecision>,
@@ -361,6 +364,7 @@ impl SessionView {
             bounds,
             items: Vec::new(),
             items_dropped: 0,
+            transcript: String::new(),
             turn: None,
             open: Vec::new(),
             settled: Vec::new(),
@@ -662,15 +666,21 @@ impl SessionView {
                 }
             }
             // **A fork numbers the conversation from zero.** The rows of the transcript it replaced
-            // are not ordinals of the new base, and neither are the rows of the transcripts behind
-            // it, which the base already carries: what the view holds after a fork is a window of
-            // the new base, and where that window starts is `items_dropped`.
-            SessionEvent::TranscriptForked { transcript_id, .. } => {
+            // are not ordinals of the new base, and the rows a resume republished above the base are
+            // history no ordinal names - so the view says which transcript it is speaking, and
+            // `items_dropped` is where the base's own window starts.
+            SessionEvent::TranscriptForked {
+                transcript_id,
+                parent_id,
+            } => {
+                let gone = format!("{parent_id}.");
+                self.items.retain(|r| !r.item_id.starts_with(gone.as_str()));
+                self.transcript = transcript_id.clone();
                 let here = format!("{transcript_id}.");
-                self.items.retain(|r| r.item_id.starts_with(here.as_str()));
                 self.items_dropped = self
                     .items
-                    .first()
+                    .iter()
+                    .find(|r| r.item_id.starts_with(here.as_str()))
                     .and_then(|r| ordinal_in(&r.item_id, &here))
                     .unwrap_or(0) as u64;
             }
@@ -805,10 +815,24 @@ impl SessionView {
             .find(|c| c.call_id == call_id)
     }
 
+    /// **How many of the rows this view holds are above the base.** A resume republishes the tail of
+    /// the transcripts a compaction put behind the current one, and those rows are not ordinals of
+    /// it: ordinal 0 is the base's first row, which is the first one past this count.
+    fn lead(&self) -> usize {
+        if self.transcript.is_empty() {
+            return 0;
+        }
+        let here = format!("{}.", self.transcript);
+        self.items
+            .iter()
+            .take_while(|r| !r.item_id.starts_with(here.as_str()))
+            .count()
+    }
+
     /// One row's body, whole, by the row's position in the session. `row` is the session ordinal,
     /// where 0 is the first row of the conversation.
     pub fn row_body_at(&self, row: usize) -> Option<String> {
-        let idx = row.checked_sub(self.items_dropped as usize)?;
+        let idx = row.checked_sub(self.items_dropped as usize)? + self.lead();
         let item = self.items.get(idx)?.item.as_ref()?;
         Some(body_of(item))
     }
@@ -816,7 +840,7 @@ impl SessionView {
     /// One whole row by the same ordinal: a head scrolling above its window needs the block and
     /// its kind, not only the text, or it could draw the words as the wrong thing.
     pub fn row_at(&self, row: usize) -> Option<SnapshotItem> {
-        let idx = row.checked_sub(self.items_dropped as usize)?;
+        let idx = row.checked_sub(self.items_dropped as usize)? + self.lead();
         self.items.get(idx).cloned()
     }
 
@@ -836,8 +860,7 @@ impl SessionView {
     fn trim(&mut self) {
         let over = self.items.len().saturating_sub(self.bounds.items);
         if over > 0 {
-            self.items.drain(..over);
-            self.items_dropped += over as u64;
+            self.drop_front(over);
         }
         let bytes_of = |r: &SnapshotItem| r.item.as_ref().map(|i| i.bytes()).unwrap_or(0);
         let mut total: usize = self.items.iter().map(bytes_of).sum();
@@ -847,9 +870,16 @@ impl SessionView {
             drop += 1;
         }
         if drop > 0 {
-            self.items.drain(..drop);
-            self.items_dropped += drop as u64;
+            self.drop_front(drop);
         }
+    }
+
+    /// Drop `n` rows off the front, counting the ones the base lost. A row above the base is
+    /// history the conversation no longer numbers, so dropping it does not move `items_dropped`.
+    fn drop_front(&mut self, n: usize) {
+        let lead = self.lead();
+        self.items.drain(..n);
+        self.items_dropped += n.saturating_sub(lead) as u64;
     }
 
     /// Cut a snapshot true as of `seq`.
@@ -1405,12 +1435,11 @@ mod tests {
         );
     }
 
-    /// **A fork leaves the rows of the transcript the session speaks, and no others.** The chain a
-    /// resume leaves behind holds rows of three transcripts, and an ancestor's row is neither part
-    /// of the new base nor an ordinal of it - drawing it would put a row the conversation no longer
-    /// has above one that it does, and a page asked for by ordinal would miss it.
+    /// **A fork drops the rows of the transcript it replaced and no others.** A resume republishes
+    /// the tail of the transcripts a compaction put behind the current one, and the head draws those
+    /// rows - they are not ordinals of the new base, and the base starts past them.
     #[test]
-    fn a_fork_leaves_only_the_rows_of_the_transcript_the_session_speaks() {
+    fn a_fork_leaves_the_rows_of_the_transcripts_it_did_not_replace() {
         let mut log = SessionLog::new("s", LogBounds::default());
         // The chain a resume leaves behind, oldest transcript first.
         for i in 0..5u64 {
@@ -1439,20 +1468,25 @@ mod tests {
 
         let snap = fold(&log).snapshot(100, 0);
         let ids: Vec<&str> = snap.items.iter().map(|r| r.item_id.as_str()).collect();
-        assert_eq!(
-            ids.len(),
-            20,
-            "the 20 carried rows, and nothing behind them: {ids:?}"
-        );
+        assert_eq!(ids.len(), 25, "5 ancestors plus 20 carried: {ids:?}");
         assert!(
-            !ids.iter()
-                .any(|id| id.starts_with("s#t1.") || id.starts_with("s#t2.")),
-            "a row of a transcript the new base does not carry is still held: {ids:?}"
+            !ids.iter().any(|id| id.starts_with("s#t2.")),
+            "a row of the transcript the fork replaced is still held: {ids:?}"
         );
         assert_eq!(
-            snap.items_dropped, 0,
-            "the new base is numbered from zero, so nothing of it is above this window"
+            ids.iter().filter(|id| id.starts_with("s#t1.")).count(),
+            5,
+            "a fork took the rows of a transcript it did not replace: {ids:?}"
         );
+        // **And the ordinals are the new base's.** They start past the rows above it, so ordinal 0
+        // is the fork's first row and not an ancestor's.
+        let v = fold(&log);
+        assert_eq!(
+            v.row_at(0).map(|r| r.item_id),
+            Some("s#t3.0".to_string()),
+            "ordinal 0 names a row above the base"
+        );
+        assert_eq!(v.snapshot(100, 0).items_dropped, 0);
     }
 
     #[test]
