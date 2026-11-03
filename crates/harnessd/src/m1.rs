@@ -473,6 +473,38 @@ fn c6(tool_call_only: usize, owning_no_tokens: usize) -> String {
     format!("C6  FAIL  {owning_no_tokens} of {tool_call_only} such turns own no tokens")
 }
 
+/// C8: `finish_reason` reaches `turn_metrics` on every submission, and a `length` is never
+/// recorded as a completed turn. The second half is a type, since `TurnOk`'s constructor refuses
+/// a hard-fail verdict, and its policy is exercised in `letibot_turn::length`; what a live run
+/// adds is the server producing a `length` at all, so a run that saw none has not finished C8.
+fn c8(rows: &[Row]) -> String {
+    let dropped = rows
+        .iter()
+        .filter(|r| r.m.finish_reason.as_str().is_empty())
+        .count();
+    if dropped > 0 {
+        return format!(
+            "C8  FAIL  {dropped} of {} submissions reached turn_metrics with no finish_reason",
+            rows.len()
+        );
+    }
+    if rows.is_empty() {
+        return "C8  NOT RUN  the run recorded no submission to read a finish_reason off"
+            .to_string();
+    }
+    let lengths = rows
+        .iter()
+        .filter(|r| r.m.finish_reason == letibot_turn::FinishReason::Length)
+        .count();
+    format!(
+        "C8  PARTIAL  finish_reason reached turn_metrics on all {} submissions; {lengths} were \
+         `length`. A `length` with nothing usable is not constructible as a completed turn, \
+         since TurnOk's constructor asserts the verdict, so the half of C8 that is a decision is \
+         a type and not a check.",
+        rows.len()
+    )
+}
+
 fn judge(
     rows: &[Row],
     vectors: &[Vec<TokenId>],
@@ -532,19 +564,7 @@ fn judge(
          exhaustively offline in letibot_turn::length."
             .to_string(),
     );
-    let carried = rows.iter().all(|r| !r.m.finish_reason.as_str().is_empty());
-    let any_length = rows
-        .iter()
-        .any(|r| r.m.finish_reason == letibot_turn::FinishReason::Length);
-    out.push(format!(
-        "C8  {}  finish_reason reached turn_metrics on all {} submissions; {} were `length`. \
-         A `length` with nothing usable is not constructible as a completed turn — TurnOk's \
-         constructor asserts the verdict — so the half of C8 that is a decision is a type, \
-         not a check.",
-        if carried { "PARTIAL" } else { "FAIL" },
-        rows.len(),
-        if any_length { "some" } else { "none" },
-    ));
+    out.push(c8(rows));
 
     // ---- C9: a mid-session system change ----------------------------------
     let now = harness.tokens();
@@ -913,6 +933,35 @@ mod tests {
 
         let unread = c5(&[row(0, 1_000, 990, 1_000)]);
         assert!(unread.contains("C5  NOT RUN"), "{unread}");
+    }
+
+    /// C8's three verdicts. A submission whose reason never reached the metrics is the failure,
+    /// a run with no submission to read one off has not been asked, and a run that read them all
+    /// but saw no `length` has the evidence half and not the server half.
+    #[test]
+    fn c8_reads_the_reason_off_every_submission() {
+        let partial = c8(&[row(0, 1_000, 990, 1_000)]);
+        assert!(partial.contains("C8  PARTIAL"), "{partial}");
+        assert!(partial.contains("0 were `length`"), "{partial}");
+        let mut cut = row(1, 1_100, 1_000, 1_000);
+        cut.m.finish_reason = FinishReason::Length;
+        let seen = c8(&[cut]);
+        assert!(seen.contains("1 were `length`"), "{seen}");
+        let mut lost = row(2, 1_200, 1_100, 1_100);
+        lost.m.finish_reason = FinishReason::Other("");
+        let fail = c8(&[lost]);
+        assert!(fail.contains("C8  FAIL"), "{fail}");
+        assert!(fail.contains("1 of 1"), "{fail}");
+    }
+
+    /// A run that recorded nothing read no reason off anything.
+    #[test]
+    fn a_run_with_no_submission_does_not_pass_c8_by_vacancy() {
+        let line = c8(&[]);
+        assert!(
+            line.contains("C8  NOT RUN"),
+            "an empty run was reported as a reading: {line}"
+        );
     }
 
     /// C6's three verdicts. A tool-call-only turn that owns tokens is the token path's answer to
