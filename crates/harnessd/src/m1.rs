@@ -457,6 +457,22 @@ fn c5(rows: &[Row]) -> String {
     }
 }
 
+/// C6: `content: ""` never becomes `null` on the token path, which shows as a tool-call-only
+/// assistant item that still owns ledger tokens. Both numbers are counted where the ledger row
+/// index and the item index are the same one.
+fn c6(tool_call_only: usize, owning_no_tokens: usize) -> String {
+    if tool_call_only == 0 {
+        return "C6  NOT RUN  the session produced no tool-call-only assistant turn".to_string();
+    }
+    if owning_no_tokens == 0 {
+        return format!(
+            "C6  PASS  {tool_call_only} tool-call-only assistant turn(s), all with non-empty \
+             ledger rows (the token-path form of content:\"\" never null)"
+        );
+    }
+    format!("C6  FAIL  {owning_no_tokens} of {tool_call_only} such turns own no tokens")
+}
+
 fn judge(
     rows: &[Row],
     vectors: &[Vec<TokenId>],
@@ -506,16 +522,7 @@ fn judge(
             }
         }
     }
-    out.push(if c6_total == 0 {
-        "C6  NOT RUN  the session produced no tool-call-only assistant turn".to_string()
-    } else if c6_bad == 0 {
-        format!(
-            "C6  PASS  {c6_total} tool-call-only assistant turn(s), all with non-empty \
-             ledger rows (the token-path form of content:\"\" never null)"
-        )
-    } else {
-        format!("C6  FAIL  {c6_bad} of {c6_total} such turns own no tokens")
-    });
+    out.push(c6(c6_total, c6_bad));
 
     // ---- C7 / C8 ----------------------------------------------------------
     out.push(
@@ -906,6 +913,21 @@ mod tests {
 
         let unread = c5(&[row(0, 1_000, 990, 1_000)]);
         assert!(unread.contains("C5  NOT RUN"), "{unread}");
+    }
+
+    /// C6's three verdicts. A tool-call-only turn that owns tokens is the token path's answer to
+    /// `content: ""` never being `null`, one that owns none is the failure, and a session that
+    /// never made such a turn was not asked the question.
+    #[test]
+    fn c6_reads_the_turns_that_carry_a_call_and_no_text() {
+        let pass = c6(3, 0);
+        assert!(pass.contains("C6  PASS"), "{pass}");
+        assert!(pass.contains("3 tool-call-only"), "{pass}");
+        let fail = c6(3, 1);
+        assert!(fail.contains("C6  FAIL"), "{fail}");
+        assert!(fail.contains("1 of 3"), "{fail}");
+        let none = c6(0, 0);
+        assert!(none.contains("C6  NOT RUN"), "{none}");
     }
 
     /// A thought belongs to the turn that made it. Reading the whole transcript backwards marked
