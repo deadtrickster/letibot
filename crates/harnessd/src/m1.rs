@@ -630,7 +630,7 @@ fn c4(rows: &[Row]) -> Vec<String> {
     lines.push(format!(
         "C4  {}  f_keep (D11: cached / the entry we left behind) p10 {:.4} p50 {:.4} \
          p99 {:.4} min {:.4} over {} comparable submissions; re-prefill p50 {:.0} \
-         p99 {:.0} tokens  [exit criterion: p10 >= 0.99]",
+         p99 {:.0} tokens  [exit criterion: p10 >= {C4_KEEP}]",
         if p10 >= C4_KEEP { "PASS" } else { "FAIL" },
         p10,
         percentile(&keeps, 0.50),
@@ -848,6 +848,22 @@ mod tests {
             lines[0]
         );
         assert!(lines[0].contains("p10 NaN"), "{}", lines[0]);
+    }
+
+    /// The bar the line prints is the bar the line judged by. They were written twice, so a bar
+    /// that moved would leave a line saying PASS beside a criterion that reads differently.
+    #[test]
+    fn c4_prints_the_bar_it_judges_by() {
+        let lines = c4(&[row(0, 1_000, 990, 1_000), row(1, 1_000, 990, 1_000)]);
+        assert!(
+            lines[0].contains(&format!("exit criterion: p10 >= {C4_KEEP}")),
+            "{}",
+            lines[0]
+        );
+        // Exactly the bar is a pass; a hair under it is not.
+        assert!(lines[0].contains("C4  PASS"), "{}", lines[0]);
+        let under = c4(&[row(0, 1_000, 989, 1_000), row(1, 1_000, 989, 1_000)]);
+        assert!(under[0].contains("C4  FAIL"), "{}", under[0]);
     }
 
     /// C1's reading, both ways: a prompt that does not extend the last one fails and says where,
