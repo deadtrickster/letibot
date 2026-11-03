@@ -252,6 +252,41 @@ fn a_vm_child_of_a_folder_of_repositories_copies_the_one_it_names() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// **A VM placement is the boundary, so the session inside it is allow-all** - on this box and on a
+/// declared host, the second of which is the arm a host placement must not reach.
+#[test]
+fn a_vm_placement_runs_allow_all_and_a_host_placement_keeps_the_asked_mode() {
+    use crate::harness::mode_in_vm;
+    use letibot_tools::builtins::task::Placement;
+    use letibot_tools::mode::Mode;
+    let asked = Mode::ALWAYS_ASK;
+    assert_eq!(
+        mode_in_vm(asked, &Placement::Firecode, false),
+        Mode::ALLOW_ALL,
+        "a guest booted here is the boundary"
+    );
+    assert_eq!(
+        mode_in_vm(asked, &Placement::RemoteVm("lab2x1".into()), false),
+        Mode::ALLOW_ALL,
+        "and one booted on a declared host is the same boundary, which is R100's pair"
+    );
+    assert_eq!(
+        mode_in_vm(asked, &Placement::Host, true),
+        Mode::ALLOW_ALL,
+        "a session attached to an ancestor's VM is inside it too"
+    );
+    assert_eq!(
+        mode_in_vm(asked, &Placement::Host, false),
+        asked,
+        "a host placement is no boundary, so it keeps the point it was opened with"
+    );
+    assert_eq!(
+        mode_in_vm(asked, &Placement::Remote("lab2x1".into()), false),
+        asked,
+        "and another machine is not one either"
+    );
+}
+
 /// **What a held answer waits on: this session's children still on their task** - not one that
 /// has answered and sits idle (it would hold for ever), not one whose thread has ended, and not
 /// a child of another session.

@@ -1595,8 +1595,9 @@ pub(crate) use open::{
     render_sampling, tool_names, tool_schemas, vocab_basename, wire_turns,
 };
 pub use open::{
-    VerbatimFit, build_provider, engine_for, instructions_of, prefix_fingerprint, scratch_dir,
-    stale_prefix_sentence, surroundings_for, verbatim_fit, vm_copy_for, worktree_build_env,
+    VerbatimFit, build_provider, engine_for, instructions_of, mode_in_vm, prefix_fingerprint,
+    scratch_dir, stale_prefix_sentence, surroundings_for, verbatim_fit, vm_copy_for,
+    worktree_build_env,
 };
 #[cfg(test)]
 pub(crate) use open::{

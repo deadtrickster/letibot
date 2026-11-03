@@ -74,6 +74,21 @@ pub fn vm_copy_for(
     Ok(None)
 }
 
+/// **The mode a placement puts a session in.** A VM is the boundary, so a session inside one runs
+/// at allow-all: `Firecode` boots one here, `RemoteVm` boots it on the declared host, and a session
+/// attached to an ancestor's VM is inside that VM too.
+pub fn mode_in_vm(
+    asked: letibot_tools::mode::Mode,
+    placement: &letibot_tools::builtins::task::Placement,
+    attached: bool,
+) -> letibot_tools::mode::Mode {
+    if placement.is_vm() || attached {
+        letibot_tools::mode::Mode::ALLOW_ALL
+    } else {
+        asked
+    }
+}
+
 /// A renderer over this box's vocabulary, with no session behind it: for a caller that needs to turn
 /// a prompt into tokens and nothing else. Built the way `open` builds its engine, so what it renders
 /// is what a session would.
@@ -640,18 +655,14 @@ impl Harness {
         use letibot_tools::schema::Access as Cls;
         let may_exec = !cfg.downgrade.denies(Cls::Exec);
         let may_write = !cfg.downgrade.denies(Cls::Write);
-        // A VM placement is the boundary, so the mode inside is allow-all, and a session attached
-        // to an ancestor's VM is inside that VM too. The downgrade still composes on top, because
-        // it is the caller's explicit ask.
-        let in_vm = cfg.placement.is_vm() || cfg.vm_attach.is_some();
         // **A VM on THIS box**, which is the local firecode backend's door. A VM on a declared
         // host is booted by that host's own `firecode` over ssh, so it goes through the
         // placement below instead.
         let local_vm = cfg.vm_attach.is_some()
             || cfg.placement == letibot_tools::builtins::task::Placement::Firecode;
-        if in_vm {
-            cfg.mode = letibot_tools::mode::Mode::ALLOW_ALL;
-        }
+        // A VM placement is the boundary, so the mode inside is allow-all, and the downgrade still
+        // composes on top because it is the caller's explicit ask.
+        cfg.mode = mode_in_vm(cfg.mode, &cfg.placement, cfg.vm_attach.is_some());
         // Where these tools run when it is another machine: not a boundary, so not an allow-all,
         // and the name is resolved here so a session reopened after the file changed fails with a
         // sentence rather than with a bare "command not found".
