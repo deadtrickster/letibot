@@ -80,6 +80,7 @@ pub(crate) fn session_notice(text: &str) -> Card {
     const READERS: &[fn(&str) -> Option<Card>] = &[
         length_cap,
         todo_check,
+        from_the_parent,
         message_from_a_session,
         intent_check,
         context_check,
@@ -293,6 +294,18 @@ fn owner_of(bullet: &str) -> (&str, Option<&'static str>, bool) {
         _ => return (b, None, in_progress),
     };
     (item.trim_end(), whose, in_progress)
+}
+
+/// `[parent] ...` - what the parent session said to this child, from after `R93.C11`. The relation
+/// is the tag and the id is gone, so the card names the edge and not a session to act on.
+fn from_the_parent(text: &str) -> Option<Card> {
+    let said = text.strip_prefix("[parent] ")?;
+    Some(card(
+        "parent",
+        Role::Pending,
+        vec![gist(said)],
+        "a message from your parent session".into(),
+    ))
 }
 
 /// `message from your parent session `ID`: ...` and `message from session `ID`: ...` - a parent

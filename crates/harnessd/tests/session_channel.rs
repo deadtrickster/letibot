@@ -996,7 +996,7 @@ fn a_refusing_verdict_goes_back_to_the_child_that_did_the_work() {
     let stub = Stub::answering_by(
         vec![work, verdict, after],
         4,
-        vec![("message from your parent session", hearing)],
+        vec![("[parent]", hearing)],
         parts.vocab.clone(),
     );
 
@@ -1037,8 +1037,8 @@ fn a_refusing_verdict_goes_back_to_the_child_that_did_the_work() {
         "the child was not told what the review said: {heard_it}"
     );
     assert!(
-        heard_it.contains(&format!("message from your parent session `{main_id}`")),
-        "and the message is the same one every door hands a session, with the sender named: \
+        heard_it.starts_with("[parent] "),
+        "and the message is the same one every door hands a session, tagged by the relation: \
          {heard_it}"
     );
     assert!(

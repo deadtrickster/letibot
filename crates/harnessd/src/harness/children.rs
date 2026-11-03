@@ -559,9 +559,9 @@ impl Drop for AnswerOnce<'_> {
 /// takes it at its next round boundary; a session between turns has one started for it.
 pub fn message_from_a_session(from: &str, text: &str, mine: Option<&str>) -> String {
     match mine {
-        Some(parent) if parent == from => {
-            format!("message from your parent session `{from}`: {text}")
-        }
+        // R93.C11: the tag is the relation and the id was the daemon's - a child has one parent
+        // and cannot act on a session id.
+        Some(parent) if parent == from => format!("[parent] {text}"),
         _ => format!("message from session `{from}`: {text}"),
     }
 }

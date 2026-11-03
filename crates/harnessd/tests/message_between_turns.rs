@@ -826,7 +826,7 @@ fn a_message_to_a_running_child_lands_in_that_turn() {
         "the message did not land in the running turn: {second}"
     );
     assert!(
-        second.contains("message from your parent session"),
+        second.contains("[parent]"),
         "and it is the parent's words the child was handed: {second}"
     );
 
@@ -1504,8 +1504,8 @@ fn a_message_the_turn_never_read_is_a_row_anyway() {
     // item, not a copy of it: one `User` row with one `Text` part.
     let found = wait_for(&child, |hub| heard(hub, MESSAGE).first().cloned());
     assert!(
-        found.contains(&format!("message from your parent session `{parent_id}`")),
-        "the parent is named in the row the child holds: {found}"
+        found.starts_with("[parent] "),
+        "the row says which relation wrote it: {found}"
     );
     assert_eq!(
         heard(&child, MESSAGE).len(),

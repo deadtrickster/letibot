@@ -152,6 +152,23 @@ fn a_parents_message_is_one_row_at_eighty_columns() {
     assert_eq!(popup, text);
 }
 
+/// **A parent's message as the daemon writes it now** (R93.C11): the tag is the relation, and the
+/// session id that the child cannot act on is gone.
+#[test]
+fn a_tagged_parent_message_is_one_row_at_eighty_columns() {
+    let text = "[parent] Two new constraints from the operator, fold them into the plan before you \
+                finish. First, the retry budget is three attempts per endpoint and the fourth \
+                refusal is final. Second, the notes go in a commit of their own.";
+    let (rows, glass, popup) = drawn(text);
+    assert_eq!(rows, 1, "{glass}");
+    assert!(
+        glass.contains("parent · Two new constraints"),
+        "{glass}"
+    );
+    assert!(!glass.contains("s-"), "no session id on the row: {glass}");
+    assert_eq!(popup, text);
+}
+
 /// The intent check's own findings list: the head of it says the counts and the board, and the
 /// rest is the popup's.
 #[test]

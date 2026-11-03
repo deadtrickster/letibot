@@ -1585,11 +1585,11 @@ pub use error::HarnessError;
 pub use hub_io::{HubAdmissions, HubDenials, HubSteering};
 pub use job_window::{JobFate, JobWindow};
 pub(crate) use job_window::{
-    VM_LOST, due_notice, fate_line, live_job_output, progress_lines, vm_jobs_lost_line,
+    VM_LOST, due_notice, live_job_output, progress_lines, vm_jobs_lost_line,
 };
 #[cfg(test)]
 pub(crate) use job_window::{
-    due_rows, fate_of, job_window_for, next_job_offset, recorded_job_lines, tail_file,
+    due_rows, fate_line, fate_of, job_window_for, next_job_offset, recorded_job_lines, tail_file,
 };
 #[cfg(test)]
 pub(crate) use models::switch_back_said;
