@@ -1285,3 +1285,41 @@ fn the_config_pane_shows_and_flips_the_todo_done_switch() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A settings frame nobody asked for is drawn: the daemon pushes the rows when one of them
+/// changes, so a head that is not the one that moved the mode reads the new value off the frame
+/// rather than off a photograph taken at attach - and sends nothing to be told.
+#[test]
+fn a_settings_frame_nobody_asked_for_is_drawn() {
+    let mut a = app();
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", true)],
+        Hub::new("s").snapshot(),
+    ));
+    assert_eq!(
+        a.command("config"),
+        Some(Action::Settings),
+        "opening asks once"
+    );
+    a.apply(mode_settings("read-only", MODES));
+    assert!(
+        a.screen(120, 30).join("\n").contains("read-only"),
+        "the premise: the pane is drawing the row it read"
+    );
+    a.take_actions();
+
+    // Another head moved the mode, and the daemon pushed the rows to this one too.
+    a.apply(mode_settings("writes allowed", MODES));
+
+    let screen = a.screen(120, 30).join("\n");
+    assert!(
+        screen.contains("writes allowed"),
+        "the pane is still drawing the mode it read at attach: {screen}"
+    );
+    assert_eq!(a.mode_current(), "writes allowed");
+    assert!(
+        a.take_actions().is_empty(),
+        "the head asked again for rows it was just handed"
+    );
+}
