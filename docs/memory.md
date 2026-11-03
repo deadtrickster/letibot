@@ -104,4 +104,7 @@ Two consequences:
    writes `SegmentMark` today.
 2. **A turn-time surfacing policy** - what fires, how much, and a threshold. This is where
    over-eagerness pollutes context: a policy, and it wants measuring rather than choosing.
-3. **A `recall` tool** that answers a segment id with its text.
+3. **A `recall` tool** that answers a segment id with its text. Compaction's half exists:
+   `crates/tools/src/builtins/recall.rs` answers the ids a compacted base's map prints, bounded by
+   the session's window. What is missing here is the producer - nothing yet turns a segment or a
+   standing note into an id that tool would answer.
