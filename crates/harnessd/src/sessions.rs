@@ -1010,6 +1010,21 @@ impl Drop for Sessions<'_> {
     }
 }
 
+/// A close's answer with the panes it ended - the sentence the daemon's log carries beside "the
+/// store keeps its rows", and the only report a PARK has, because nothing is told there. `None`
+/// only when the session was not open here and took no pane with it either.
+pub(crate) fn close_report(said: Option<String>, panes: usize) -> Option<String> {
+    let panes = match panes {
+        0 => return said,
+        n => format!("{n} pane(s) ended with it"),
+    };
+    Some(match said {
+        Some(said) if said.is_empty() => panes,
+        Some(said) => format!("{said} · {panes}"),
+        None => panes,
+    })
+}
+
 impl<'a> Sessions<'a> {
     /// Start with one session, opened eagerly. See the module header for why the
     /// first one is not lazy.
@@ -2984,6 +2999,14 @@ impl<'a> Sessions<'a> {
     /// daemon ever built and nine maps kept an entry each. The answer is `None` for a session this
     /// worker does not hold, and otherwise where the work went - see [`Sessions::close_backends`].
     pub fn close(&mut self, session_id: &str) -> Option<String> {
+        // The panes this session held go first, and they are the one thing here a head can see:
+        // the operator typed `!term` into them, and a program still drawing into a pane no session
+        // can open again is one nobody can end.
+        let panes = self
+            .registry
+            .terminal()
+            .map(|driver| driver.end_session(session_id))
+            .unwrap_or(0);
         // What this session started goes with it (RH7's supervisor): every process it owns, on
         // every host, ended and recorded. A TURN ending does not come near this: a job started to
         // outlive its turn is what `background: true` means.
@@ -3021,12 +3044,16 @@ impl<'a> Sessions<'a> {
             }
             // A court that answered is the close; one whose thread had already gone still closed
             // the session here, and says so rather than claiming where the work went.
-            return match closed {
-                Some(said) => Some(said.unwrap_or_default()),
-                None => Some(
-                    "its own thread had already gone, so where its work went was not said".into(),
-                ),
-            };
+            return close_report(
+                match closed {
+                    Some(said) => Some(said.unwrap_or_default()),
+                    None => Some(
+                        "its own thread had already gone, so where its work went was not said"
+                            .into(),
+                    ),
+                },
+                panes,
+            );
         }
         let held = self.open.remove(session_id);
         let said = match &held {
@@ -3047,7 +3074,7 @@ impl<'a> Sessions<'a> {
         // instances and the panes it drew, held for every session ever opened.
         self.plugins.remove(session_id);
         self.registry.remove(session_id);
-        held.as_ref().map(|_| said.unwrap_or_default())
+        close_report(held.as_ref().map(|_| said.unwrap_or_default()), panes)
     }
 
     /// Arm the park clock for the subagents this worker holds, a window from now - called at
