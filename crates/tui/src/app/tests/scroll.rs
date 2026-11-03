@@ -1817,15 +1817,15 @@ fn the_card_body_scrolls_without_the_ladder_moving() {
     assert!(scrolled.contains("pgup/pgdn scrolls"), "{scrolled}");
 
     // **The ladder is where it was**, which is the point of the whole item.
-    for opt in ["allow_once", "allow_session", "deny"] {
+    for opt in ["Allow once", "Allow session", "Deny"] {
         assert!(
             scrolled.contains(opt),
             "scrolling lost `{opt}`:\n{scrolled}"
         );
     }
     assert_eq!(
-        first.find("allow_once").map(|_| "in"),
-        scrolled.find("allow_once").map(|_| "in"),
+        first.find("Allow once").map(|_| "in"),
+        scrolled.find("Allow once").map(|_| "in"),
         "the ladder moved"
     );
 
@@ -1839,7 +1839,7 @@ fn the_card_body_scrolls_without_the_ladder_moving() {
         end.contains("line(s) out of view · pgup scrolls"),
         "at the tail the seam is above the window and names the way back:\n{end}"
     );
-    assert!(end.contains("allow_once"), "{end}");
+    assert!(end.contains("Allow once"), "{end}");
 
     // And back to the head, where it all started.
     for _ in 0..8 {

@@ -79,7 +79,16 @@ fn decision_with(kinds: &[letibot_sessionlog::event::OptionKind]) -> OpenDecisio
                     letibot_sessionlog::event::OptionKind::RejectAlways => "deny_always",
                 }
                 .to_string(),
-                label: "x".into(),
+                label: match k {
+                    letibot_sessionlog::event::OptionKind::AllowOnce => "Allow once",
+                    letibot_sessionlog::event::OptionKind::AllowSession => "Allow session",
+                    letibot_sessionlog::event::OptionKind::AllowAlways => "Always allow",
+                    letibot_sessionlog::event::OptionKind::RejectOnce => "Deny",
+                    letibot_sessionlog::event::OptionKind::RejectAlways => {
+                        "Deny, and tell the model why"
+                    }
+                }
+                .into(),
                 kind: *k,
             })
             .collect(),

@@ -40,7 +40,7 @@ fn the_card_states_why_it_is_asking_in_the_speakers_own_words() {
     // And it sits with the rest of the evidence, above the ladder - read before
     // the choice is made, which is the only time it can inform one.
     let because_at = drawn.find("because:").unwrap();
-    let ladder_at = drawn.find("allow_once").unwrap();
+    let ladder_at = drawn.find("Allow once").unwrap();
     assert!(because_at < ladder_at, "{drawn}");
 }
 
@@ -356,7 +356,7 @@ fn the_card_draws_the_reason_a_rung_is_missing() {
         .iter()
         .position(|l| l.contains("not offered for the session"))
         .unwrap();
-    let ladder_at = lines.iter().position(|l| l.contains("allow_once")).unwrap();
+    let ladder_at = lines.iter().position(|l| l.contains("Allow once")).unwrap();
     assert!(note_at > ladder_at, "{}", lines.join("\n"));
 }
 
@@ -477,7 +477,7 @@ fn the_card_says_the_declared_access_is_what_asks() {
             "an access of {other:?} is not why anything is being asked: {drawn}"
         );
         // The card is still a card.
-        assert!(drawn.contains("allow_once"), "{drawn}");
+        assert!(drawn.contains("Allow once"), "{drawn}");
     }
     // And a question never carries it: nothing is consulted for one, and its `access`
     // is whatever the ask's class happens to be rather than a declaration anyone
@@ -1002,6 +1002,52 @@ fn a_digit_inside_a_half_typed_line_is_not_an_answer() {
     assert_eq!(a.input(), "give me 2");
 }
 
+/// **A rung is the answer, not its id**: the card drew `Allow session  (allow_session)`, an id
+/// beside a label that already says it, on every row. Typing the id still answers and a prefix is
+/// what names the list, so the row carries the label alone.
+#[test]
+fn the_ladder_rows_carry_no_option_id() {
+    use letibot_sessionlog::event::OptionKind;
+    let a = app();
+    let d = decision_with(&[
+        OptionKind::AllowOnce,
+        OptionKind::AllowSession,
+        OptionKind::RejectOnce,
+    ]);
+    let drawn = a.decision_lines(&d, 200).join("\n");
+    for id in ["allow_once", "allow_session", "(deny)"] {
+        assert!(
+            !drawn.contains(id),
+            "`{id}` is drawn beside a row that already says the answer:\n{drawn}"
+        );
+    }
+    // And the rung is still one: its number, the marker on the one Enter takes, its words.
+    assert!(drawn.contains("▸ 1  Allow once"), "{drawn}");
+    assert!(drawn.contains("2  Allow session"), "{drawn}");
+    assert!(drawn.contains("3  Deny"), "{drawn}");
+    // The marked rung is still the one in reverse video, on a head that emits colour.
+    let painted = App::new(RenderConfig {
+        width: 200,
+        color: true,
+        ..RenderConfig::default()
+    });
+    let row = painted
+        .decision_lines(&d, 200)
+        .into_iter()
+        .find(|l| l.contains("Allow once"))
+        .expect("the first rung");
+    assert!(row.contains(sgr::REVERSE), "not the marked row: {row:?}");
+    // The id is still the way to answer by word, and a prefix still names the list.
+    assert_eq!(
+        match_option(&d, "allow_session"),
+        OptionChoice::One {
+            option_id: "allow_session".into(),
+            pattern: None,
+            note: None
+        }
+    );
+}
+
 #[test]
 fn the_ladder_survives_a_card_whose_content_is_taller_than_the_screen() {
     let mut a = tall_card(true);
@@ -1009,7 +1055,7 @@ fn the_ladder_survives_a_card_whose_content_is_taller_than_the_screen() {
 
     // **The answer is on the screen**, all of it: every option, and the line that
     // says how to press one. This is the whole of the requirement.
-    for opt in ["allow_once", "allow_session", "deny"] {
+    for opt in ["Allow once", "Allow session", "Deny"] {
         assert!(screen.contains(opt), "`{opt}` was trimmed away:\n{screen}");
     }
     assert!(
@@ -1026,7 +1072,7 @@ fn the_ladder_survives_a_card_whose_content_is_taller_than_the_screen() {
     let at_headline = screen.find("? edit a file [permission]").expect("the ask");
     let at_frame = screen.find("crates/tui/src/app.rs").expect("the target");
     let at_seam = screen.find("line(s) out of view").expect("the seam");
-    let at_ladder = screen.find("allow_once").expect("the ladder");
+    let at_ladder = screen.find("Allow once").expect("the ladder");
     assert!(
         at_headline < at_frame && at_frame < at_seam && at_seam < at_ladder,
         "the card is not read top to bottom:\n{screen}"
@@ -1096,7 +1142,7 @@ fn the_gate_card_says_how_long_there_is_and_what_silence_does() {
     // **Below the options**, because the order a person reads is the question, the
     // choices, then what happens if they do nothing.
     let at_clause = deny.find("if nobody answers").expect("the clause");
-    let at_options = deny.find("allow_once").expect("the ladder");
+    let at_options = deny.find("Allow once").expect("the ladder");
     assert!(
         at_options < at_clause,
         "the consequence is read after the choices: {deny}"
@@ -1127,7 +1173,7 @@ fn the_gate_card_says_how_long_there_is_and_what_silence_does() {
     assert!(!bare.contains("s left"), "{bare}");
     assert!(!bare.contains("if nobody answers"), "{bare}");
     assert!(
-        bare.contains("allow_once"),
+        bare.contains("Allow once"),
         "the card is still drawn: {bare}"
     );
 }

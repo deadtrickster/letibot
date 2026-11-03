@@ -48,11 +48,49 @@ fn row_body(body: &str) -> String {
 }
 
 impl App {
+    /// The rungs, in this head's words: rano puts each option's id beside a label that already says
+    /// the answer, and the id is only read where an answer takes a word after it. The ranges come out
+    /// of the same walk as the rows, so a click and the drawing cannot disagree.
+    pub(crate) fn ladder_rows(
+        &self,
+        d: &OpenDecision,
+        w: usize,
+    ) -> (Vec<rano::render::Line>, Vec<std::ops::Range<usize>>) {
+        let mut rows = Vec::new();
+        let mut spans = Vec::new();
+        let sel = self.sel.min(d.options.len().saturating_sub(1));
+        for (i, o) in d.options.iter().enumerate() {
+            let first = rows.len();
+            let picked = i == sel;
+            let marker = if picked { "▸" } else { " " };
+            for l in rano::agent::text::wrap(&format!("  {marker} {}", numbered(i, &o.label)), w) {
+                rows.push(if picked {
+                    rano::agent::text::styled(l, rano::render::Style::new().reverse())
+                } else {
+                    rano::agent::text::one(l, rano::style::Role::Pending)
+                });
+            }
+            spans.push(first..rows.len());
+        }
+        (rows, spans)
+    }
+
+    /// Where the answer half's rungs were drawn, for the click record: rano's own rows for a
+    /// question, whose answers are the model's prose, and this head's for a permission's ladder.
+    pub(crate) fn choice_rows(&self, d: &OpenDecision, w: usize) -> Vec<std::ops::Range<usize>> {
+        if d.kind == "question" {
+            self.decision_view(d).choice_rows(w)
+        } else {
+            self.ladder_rows(d, w).1
+        }
+    }
+
     /// The card, split where the split is: `content` is the question, what it is about and the
     /// evidence, a viewport that shrinks and scrolls; `choices` is the ladder and what pressing it
     /// means, never trimmed and never scrolled, because that half is the answer.
     pub(crate) fn decision_card(&self, d: &OpenDecision, w: usize) -> (Vec<String>, Vec<String>) {
-        let (content, mut choices) = self.decision_view(d).split(w);
+        let view = self.decision_view(d);
+        let (content, mut choices) = view.split(w);
         let p = self.cfg.palette();
         // The ladder's hint, in this head's words: a permission's row number marks a row and Enter
         // answers it, a question's digits are its answer so only the arrows mark, and a question
@@ -60,6 +98,12 @@ impl App {
         // the bar.
         let question = d.kind == "question";
         let rows = decision_rows(d);
+        // rano's rungs go, this head's take their place: what it draws after them - the deadline,
+        // the hints - stays, so only the answer's own rows are this head's words.
+        if !question && rows > 0 {
+            let cut = view.choice_rows(w).last().map_or(0, |r| r.end);
+            choices.splice(..cut, self.ladder_rows(d, w).0);
+        }
         for l in choices.iter_mut() {
             let plain = l.plain();
             let Some(rest) = plain.strip_prefix(RANO_LADDER_HINT) else {
@@ -123,7 +167,8 @@ impl App {
 
     /// The card's facts, in rano's words: the ask and its target, whose call it is, the files it
     /// would write, layer A's reading and the model's reason, the guard's verdict, the ladder with
-    /// this head's highlighted row, and the deadline. Nothing here preselects an option.
+    /// this head's highlighted row, and the deadline. `decision_card` drops rano's ladder rows and
+    /// puts this head's there; nothing here preselects an option.
     pub(crate) fn decision_view(&self, d: &OpenDecision) -> card::DecisionCard {
         use letibot_sessionlog::event::{OnTimeout as T, OptionKind as K};
         card::DecisionCard {

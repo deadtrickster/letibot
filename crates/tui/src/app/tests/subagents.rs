@@ -33,7 +33,7 @@ fn the_card_says_when_the_call_is_a_subagents_and_names_it() {
     // **Above the ladder**, so it is read on the same pass of the eye as the question:
     // under the wall it would be read after the answer was already chosen.
     let clause = drawn.find("a subagent's call").unwrap();
-    let ladder = drawn.find("allow_once").unwrap();
+    let ladder = drawn.find("Allow once").unwrap();
     assert!(clause < ladder, "{drawn}");
     // In the faint register, like every other clause on this card. Checked on a head that
     // emits colour, since these layout tests deliberately do not.
