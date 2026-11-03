@@ -375,9 +375,14 @@ fn a_head_attached_before_the_harness_opens_is_told_after_the_restored_rows() {
         .expect("the session must open");
     assert!(h.resumed().is_some(), "the seeded session resumes");
 
-    let events = match hub.next_batch(&head.head_id, 1_000_000) {
-        letibot_sessionlog::hub::Delivery::Events(b) => b.events().to_vec(),
-        other => panic!("the head attached before the open must be fed live, got {other:?}"),
+    // The settings the open publishes are pushed to this head too, on the side channel, so the
+    // frames are drained and the events are the batch this test is about.
+    let events = loop {
+        match hub.next_batch(&head.head_id, 1_000_000) {
+            letibot_sessionlog::hub::Delivery::Events(b) => break b.events().to_vec(),
+            letibot_sessionlog::hub::Delivery::Frames(_) => {}
+            other => panic!("the head attached before the open must be fed live, got {other:?}"),
+        }
     };
     let at = |want: &dyn Fn(&letibot_sessionlog::SessionEvent) -> bool| {
         events.iter().rposition(|e| want(&e.event))
