@@ -676,7 +676,17 @@ fn an_unknown_job_comes_back_with_the_jobs_there_are() {
         "job_output",
         &serde_json::json!({"job": "j999"}).to_string(),
     );
-    assert!(warm.payload.contains("jobs:"), "{}", warm.render());
+    // One job in the table is said as `1 job`, not `1 jobs`: the count is in words.
+    assert!(
+        warm.render().contains("no job called `j999`"),
+        "{}",
+        warm.render()
+    );
+    assert!(
+        warm.payload.contains("this session has 1 job:"),
+        "{}",
+        warm.render()
+    );
 }
 
 #[test]
