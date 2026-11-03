@@ -306,9 +306,27 @@ fn a_stopped_session_leaves_no_process_of_its_own_running_on_the_host() {
         .pid;
     let kept = Neighbour::start(&elsewhere, "s-88888888");
     assert!(alive(pid) && alive(kept.pid()), "the fixture is running");
+    // And a commit made on the host: ending the processes is not the whole of a stop, because the
+    // branch is the only way the work comes back and no close is coming to fetch it.
+    std::fs::write(elsewhere.join("stopped.rs"), b"// the work\n").expect("a file");
+    git(&elsewhere, &["add", "stopped.rs"]);
+    git(&elsewhere, &["commit", "-q", "-m", "the work the session did"]);
+    let remote_head = git(&elsewhere, &["rev-parse", "HEAD"]).trim().to_string();
 
     let ended = letibot_tools::remote::placements_down();
     assert!(gone(pid), "the stop ended the job the session left: {pid}");
+    let back = format!("remote/fake/{}", "01abcdef");
+    assert!(
+        ended
+            .iter()
+            .any(|said| said.contains(&back) && said.contains("came back")),
+        "and the stop says which branch came home: {ended:?}"
+    );
+    assert_eq!(
+        git(&repo, &["rev-parse", &back]).trim(),
+        remote_head,
+        "the last act brought the branch home: {ended:?}"
+    );
     assert!(
         ended
             .iter()

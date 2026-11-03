@@ -2926,6 +2926,21 @@ pub struct SshSpec {
     pub vm: bool,
 }
 
+/// What a placement's branch needs to come home: the local repository, the url the fetch reads and
+/// the refspec it writes, and the names the sentence says out loud. Held beside the connection,
+/// because the daemon's last act holds no backend and must still fetch.
+#[derive(Clone)]
+struct Home {
+    local_repo: PathBuf,
+    url: String,
+    refspec: String,
+    worktree: String,
+    branch: String,
+    back_branch: String,
+    /// The local branch the work started from, for the count the sentence gives.
+    base: String,
+}
+
 /// A session whose tools run on another machine.
 pub struct SshBackend {
     ssh: Ssh,
@@ -2933,8 +2948,6 @@ pub struct SshBackend {
     host: String,
     /// The resolved remote root, absolute.
     root: String,
-    /// `<root>/<repo>.git`: the bare mirror, created on first use.
-    mirror: String,
     /// `<root>/<repo>/<short id>`: the checkout the session works in.
     worktree: String,
     /// `remote/<short id>`, the branch the remote commits to.
@@ -2943,8 +2956,9 @@ pub struct SshBackend {
     back_branch: String,
     /// The local repository the tree came from and comes back to.
     local_repo: PathBuf,
-    /// The local branch (or commit) the work started from, for the report.
-    base: String,
+    /// The fetch home, gathered once here: [`bring_back`](SshBackend::bring_back) reads it, and so
+    /// does the daemon's last act, which reaches no close.
+    home: Home,
     processes: Option<Arc<RemoteProcesses>>,
     writable: bool,
     /// The boundary this session's commands run inside, when there is one: measured on the host by
@@ -3291,7 +3305,7 @@ impl SshBackend {
         // Can this machine bound a command, and in what view. Asked once per host per process
         // ([`CONFINE`]), after the checkout exists because the checkout is the writable root of the
         // view. A machine that cannot confine runs unconfined and says so, and must never claim it.
-        let mut home = None;
+        let mut session_home = None;
         let (confine, unconfined) = if let Some(vm) = &vm {
             // The VM is the boundary, and there is nothing for `bwrap` to bound: the guest holds a
             // copy of the checkout and none of that machine's filesystem, so a probe would only
@@ -3336,7 +3350,7 @@ impl SshBackend {
                     )
                     .map_err(place)?;
                     let measured = confine_a_checkout(&ssh, &dir, &worktree, &mirror, &spec.egress);
-                    home = Some(dir);
+                    session_home = Some(dir);
                     measured
                 }
             }
@@ -3355,7 +3369,7 @@ impl SshBackend {
                     .lines()
                     .next()
                     .unwrap_or("bubblewrap"),
-                home.as_deref().unwrap_or("the session's own directory")
+                session_home.as_deref().unwrap_or("the session's own directory")
             ));
         }
         let confined_env = toolchain_env(confine.as_ref());
@@ -3371,16 +3385,32 @@ impl SshBackend {
             None
         };
 
+        // The fetch home, gathered here so everything that brings a branch back - the close, the
+        // daemon's last act, a collect asked for later - reads one set of names. A guest's checkout
+        // is a clone and holds its own branch; every other placement's is a worktree of the mirror.
+        let source = match &vm {
+            Some(_) => &worktree,
+            None => &mirror,
+        };
+        let fetch = Home {
+            local_repo: local_repo.clone(),
+            url: format!("{}:{source}", ssh.destination()),
+            refspec: format!("+{branch}:refs/heads/{back_branch}"),
+            worktree: worktree.clone(),
+            branch: branch.clone(),
+            back_branch: back_branch.clone(),
+            base: base.clone(),
+        };
+
         let backend = SshBackend {
             ssh,
             host,
             root,
-            mirror,
             worktree,
             branch,
             back_branch,
             local_repo,
-            base,
+            home: fetch,
             processes,
             writable: spec.writable,
             notes,
@@ -3396,8 +3426,9 @@ impl SshBackend {
             swept: Mutex::new(None),
         };
         // What is running here is a session's work until somebody ends it, and the daemon's exit
-        // closes no backend: the last act sweeps this list for exactly that reason.
-        remember_placement(&backend.ssh);
+        // closes no backend: the last act sweeps this list, and fetches what it holds, for exactly
+        // that reason.
+        remember_placement(&backend.ssh, backend.home_for_the_last_act());
         Ok(backend)
     }
 
@@ -3607,21 +3638,27 @@ impl SshBackend {
         {
             return said;
         }
-        let url = format!(
-            "{}:{}",
-            self.ssh.destination(),
-            // A VM placement's checkout is a CLONE, so the branch is in the checkout. Every other
-            // placement's is a linked worktree of the mirror, and the mirror has it.
-            match self.vm {
-                Some(_) => &self.worktree,
-                None => &self.mirror,
-            }
-        );
-        let refspec = format!("+{}:refs/heads/{}", self.branch, self.back_branch);
-        // The ssh this fetch starts is git's own, so it rides the daemon's git master rather than the
-        // one the calls are multiplexed on. The argv is built per attempt by [`Ssh::fetch_back`],
-        // because a retry must not dial the socket that refused it.
-        let fetched = self.ssh.fetch_back(&self.local_repo, &url, &refspec);
+        let said = self
+            .home
+            .fetch(&self.ssh, &format!("the session on {} ended", self.host));
+        *self.brought_back.lock().unwrap_or_else(|e| e.into_inner()) = Some(said.clone());
+        said
+    }
+
+    /// The fetch home the daemon's last act needs, or `None` for a guest placement: its commits are
+    /// in the guest's copy until a close collects them, and a fetch made before that copy is merged
+    /// would count no commits and read as work that had been lost.
+    fn home_for_the_last_act(&self) -> Option<Home> {
+        self.vm.is_none().then(|| self.home.clone())
+    }
+}
+
+impl Home {
+    /// One placement's branch, fetched into the local repository, and the sentence that says what
+    /// arrived. `opening` is the caller's own account of why the fetch ran: a close, the daemon's
+    /// last act, or a collect asked for after the daemon that made the placement was gone.
+    fn fetch(&self, ssh: &Ssh, opening: &str) -> String {
+        let fetched = ssh.fetch_back(&self.local_repo, &self.url, &self.refspec);
         let mut said = match fetched {
             Ok(FetchEnded::Ran(out)) if out.status.success() => {
                 let commit = git(
@@ -3643,45 +3680,45 @@ impl SshBackend {
                 .trim()
                 .to_string();
                 format!(
-                    "the session on {} ended. Its branch came back here as `{}` — {} commit(s) \
+                    "{opening}. Its branch came back here as `{}` — {} commit(s) \
                      on top of `{}`, now at {}: diff it and take what you want",
-                    self.host, self.back_branch, ahead, self.base, commit
+                    self.back_branch, ahead, self.base, commit
                 )
             }
             Ok(FetchEnded::Ran(out)) => format!(
-                "the session on {} ended and its branch did NOT come back: `git fetch` said \
+                "{opening} and its branch did NOT come back: `git fetch` said \
                  \"{}\". The work is still there, in {} on that machine (branch `{}`) — reach \
-                 it with `git fetch {} {refspec}` once the cause is fixed",
-                self.host,
+                 it with `git fetch {} {}` once the cause is fixed",
                 String::from_utf8_lossy(&out.stderr).trim(),
                 self.worktree,
                 self.branch,
-                url
+                self.url,
+                self.refspec
             ),
             Ok(FetchEnded::Killed(spent)) => format!(
-                "the session on {} ended and its branch did NOT come back: `git fetch` got no \
+                "{opening} and its branch did NOT come back: `git fetch` got no \
                  answer within {} s and was killed, so the connection is the suspect. The work is \
                  still there, in {} on that machine (branch `{}`) — fetch it yourself once the \
-                 host answers: `git fetch {} {refspec}`",
-                self.host,
+                 host answers: `git fetch {} {}`",
                 spent.as_secs(),
                 self.worktree,
                 self.branch,
-                url
+                self.url,
+                self.refspec
             ),
             // No slot on the git master: either the queue never cleared, or an earlier attempt was
             // refused and the refusal is part of what `why` says.
             Err(why) => format!(
-                "the session on {} ended and its branch did NOT come back: {why}. The work is still \
+                "{opening} and its branch did NOT come back: {why}. The work is still \
                  there, in {} on that machine (branch `{}`) — fetch it yourself: `git fetch {} \
-                 {refspec}`",
-                self.host, self.worktree, self.branch, url
+                 {}`",
+                self.worktree, self.branch, self.url, self.refspec
             ),
         };
         // What was left uncommitted is not in that branch, and a report that named only the branch
         // would be a false "it is all here". `.letibot-remote/` is this backend's own job directory,
         // so it is filtered out rather than reported as the session's work.
-        if let Ok((dirty, _, 0)) = self.ssh.sh_step(
+        if let Ok((dirty, _, 0)) = ssh.sh_step(
             "listing what is still uncommitted there",
             &format!("cd {} && git status --porcelain", quote(&self.worktree)),
         ) {
@@ -3710,8 +3747,7 @@ impl SshBackend {
             }
         }
         said.push_str(&format!(". The checkout is still at {}", self.worktree));
-        *self.brought_back.lock().unwrap_or_else(|e| e.into_inner()) = Some(said.clone());
-        self.ssh.exit_master();
+        ssh.exit_master();
         said
     }
 }
@@ -3877,10 +3913,17 @@ fn write_into_guest(
 static GUESTS: std::sync::LazyLock<Mutex<Vec<(Ssh, RemoteVm)>>> =
     std::sync::LazyLock::new(|| Mutex::new(Vec::new()));
 
+/// One placement as the last act reads it: the connection, and what its branch needs to come home.
+/// A guest's is `None` - see [`SshBackend::home_for_the_last_act`].
+struct Placement {
+    ssh: Ssh,
+    home: Option<Home>,
+}
+
 /// Every placement this process made and no session has closed yet. The last act's list, for the
 /// reason [`guests_down`] is one: a forced exit closes no backend at all, and a session served on its
 /// own thread holds its backend on that thread, where `Sessions::close_backends` cannot reach it.
-static PLACEMENTS: std::sync::LazyLock<Mutex<Vec<Ssh>>> =
+static PLACEMENTS: std::sync::LazyLock<Mutex<Vec<Placement>>> =
     std::sync::LazyLock::new(|| Mutex::new(Vec::new()));
 
 /// `(host, mark)` is what makes two placements different: one host can hold two sessions at once, and
@@ -3889,12 +3932,15 @@ fn placement_key(ssh: &Ssh) -> (&str, Option<&str>) {
     (&ssh.host.name, ssh.mark.as_deref())
 }
 
-/// Take a placement onto the list the last act reads.
-fn remember_placement(ssh: &Ssh) {
+/// Take a placement onto the list the last act reads, with the fetch that brings its branch home.
+fn remember_placement(ssh: &Ssh, home: Option<Home>) {
     let key = placement_key(ssh);
     let mut all = PLACEMENTS.lock().unwrap_or_else(|e| e.into_inner());
-    if !all.iter().any(|s| placement_key(s) == key) {
-        all.push(ssh.clone());
+    if !all.iter().any(|p| placement_key(&p.ssh) == key) {
+        all.push(Placement {
+            ssh: ssh.clone(),
+            home,
+        });
     }
 }
 
@@ -3904,36 +3950,46 @@ fn forget_placement(ssh: &Ssh) {
     PLACEMENTS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .retain(|s| placement_key(s) != key);
+        .retain(|p| placement_key(&p.ssh) != key);
 }
 
-/// End what every placement this process made and no session closed left running on its host, and say
-/// what each sweep found. All at once and bounded by [`END_SESSION_BOUND`]: the daemon is on its way
-/// out, and a host that has stopped answering must not be able to hold the exit open.
+/// End what every placement this process made and no session closed left on its host: the processes
+/// it started, and the branch it committed. All at once and bounded by [`END_SESSION_BOUND`]: the
+/// daemon is on its way out, and a host that has stopped answering must not be able to hold the exit
+/// open. The branch is fetched here and not only at a close, because `--stop` reaches no close at all
+/// - which is why a stopped package's commits never came home.
 ///
 /// A sweep that got no slot in the host's queue never ran - the stop reaches this before it
 /// interrupts the session's own calls, so a full queue is the ordinary case - and it goes back on
-/// the list rather than with it: the next door to ask is the only chance that work has.
+/// the list rather than with it: the next door to ask is the only chance that work has. Nothing is
+/// fetched for it, because a process still writing in that checkout may be there when the fetch
+/// reads it.
 pub fn placements_down() -> Vec<String> {
-    let all: Vec<Ssh> = std::mem::take(&mut *PLACEMENTS.lock().unwrap_or_else(|e| e.into_inner()));
+    let all: Vec<Placement> =
+        std::mem::take(&mut *PLACEMENTS.lock().unwrap_or_else(|e| e.into_inner()));
     let running: Vec<_> = all
         .into_iter()
-        .map(|ssh| {
+        .map(|p| {
             std::thread::spawn(move || {
-                let swept = ssh.sweep();
-                (ssh, swept)
+                let swept = p.ssh.sweep();
+                (p, swept)
             })
         })
         .collect();
     let mut said = Vec::new();
     for t in running {
         // A thread that panicked has said nothing, and nothing can be said for it.
-        let Ok((ssh, swept)) = t.join() else {
+        let Ok((placement, swept)) = t.join() else {
             continue;
         };
         said.extend(swept.said);
         if !swept.asked {
-            remember_placement(&ssh);
+            remember_placement(&placement.ssh, placement.home);
+            continue;
+        }
+        if let Some(home) = &placement.home {
+            let opening = format!("the session on {} ended", placement.ssh.host.name);
+            said.push(home.fetch(&placement.ssh, &opening));
         }
     }
     said
