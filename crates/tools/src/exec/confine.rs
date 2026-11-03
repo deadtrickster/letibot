@@ -1693,6 +1693,18 @@ pub(crate) fn prepared(mut view: ViewSpec) -> Result<ViewSpec, ExecError> {
             d.display()
         )));
     }
+    // Seatbelt matches the resolved path, so `/var/folders/..` as spelled would allow nothing.
+    // Done after the create, which is what makes the path resolvable.
+    if let HomeView::Dir(d) = &mut view.home
+        && let Ok(c) = d.canonicalize()
+    {
+        *d = c;
+    }
+    if let TmpView::Session(d) = &mut view.tmp
+        && let Ok(c) = d.canonicalize()
+    {
+        *d = c;
+    }
     Ok(view)
 }
 

@@ -309,3 +309,23 @@ fn the_profile_is_written_outside_the_checkout() {
     // wrote into the checkout.
     assert!(text.contains(&f.denied().display().to_string()), "{text}");
 }
+
+#[test]
+fn a_session_tmp_spelled_through_a_symlink_is_writable() {
+    // `std::env::temp_dir()` is `/var/folders/..`, a symlink into `/private/var`, and the
+    // kernel matches the resolved path. A session tmp is handed over in the spelled form.
+    let f = Fixture::new("symtmp");
+    let spelled = std::env::temp_dir().join(format!("letibot-symtmp-{}", std::process::id()));
+    let view = ViewSpec::project_only(f.project())
+        .with_home(HomeView::Dir(f.home()))
+        .with_tmp(TmpView::Session(spelled.clone()));
+    let s = Seatbelt::probe_with(view, Egress::Denied, vec![f.denied()])
+        .unwrap_or_else(|e| panic!("probe: {e}"));
+    let (rc, out) = run_in(
+        &s,
+        &f.project(),
+        "mkdir \"$TMPDIR/d\" && echo x > \"$TMPDIR/d/f\" && cat \"$TMPDIR/d/f\"",
+    );
+    let _ = std::fs::remove_dir_all(&spelled);
+    assert_eq!(rc, 0, "the session tmp is writable: {out}");
+}
