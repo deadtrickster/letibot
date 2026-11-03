@@ -329,11 +329,21 @@ impl TaskSlot {
     }
 
     pub(crate) fn settle(&self, status: letibot_tools::builtins::task::TaskStatus) {
+        self.settle_with(status, true);
+    }
+
+    /// A turn after the answer settled the slot: the record keeps the first outcome and the later
+    /// answer, which `spoke_again` writes.
+    pub(crate) fn settle_later(&self, status: letibot_tools::builtins::task::TaskStatus) {
+        self.settle_with(status, true);
+    }
+
+    fn settle_with(&self, status: letibot_tools::builtins::task::TaskStatus, record: bool) {
         let status = self.as_settled(status);
-        // **The record moves with the slot**, from this one place every settlement passes
+        // **The record moves with the slot**, from this one place every first settlement passes
         // through - see `SubagentRecord::settled` for the one judgement it makes (a stop during
         // an orderly shutdown is the daemon's ending, not the child's).
-        if let Some(record) = &self.record {
+        if let Some(record) = self.record.as_ref().filter(|_| record) {
             record.settled(
                 &status,
                 self.killed.load(std::sync::atomic::Ordering::SeqCst),
@@ -402,6 +412,12 @@ impl TaskSlot {
             .lock()
             .expect("task slot")
             .push(answer.to_string());
+    }
+
+    /// How many later answers the slot keeps.
+    #[cfg(test)]
+    pub(crate) fn answers_kept(&self) -> usize {
+        self.again.lock().expect("task slot").len()
     }
 
     /// The newest answer of the child's later turns, `None` for a child that has run none.
@@ -1196,7 +1212,11 @@ fn later_turn(
                 }),
             ),
         };
-        slot.settle(status);
+        if settled_before {
+            slot.settle_later(status);
+        } else {
+            slot.settle(status);
+        }
         // **This turn's answer is the child's last word**, kept where `collect` reads it: a later
         // turn's reply is what `task_result` answers with, not the first one it gave.
         let again = match &out {

@@ -1368,3 +1368,84 @@ fn an_answering_turn_of_the_hold_is_not_handed_up_as_the_child_finishing() {
     );
     assert!(crate::harness::children::later_news(true, true, &out).is_some());
 }
+
+/// A later turn that fails does not rewrite the record: the child answered, and a restart must
+/// still hand its parent that answer and not the later turn's error.
+#[test]
+fn a_later_turn_that_fails_leaves_the_first_outcome_in_the_record() {
+    use crate::subagent_record::{RunStore, SubagentRecord};
+    use letibot_tokencore::store::{Store, SubagentRun};
+    use letibot_tools::builtins::task::TaskStatus;
+
+    let dir = std::env::temp_dir().join(format!(
+        "letibot-later-fails-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let path = dir.join("sessions.db");
+    let store = Store::open(&path).expect("the store");
+    store
+        .put_subagent_run(&SubagentRun {
+            child_id: "s-1-sub-1".into(),
+            parent_id: "s-1".into(),
+            state: "running".into(),
+            prompt: "do the thing".into(),
+            spec_json: "{}".into(),
+            instance: "i-1".into(),
+            resumes: 0,
+            outcome: None,
+            later_answer: None,
+            delivered: false,
+            started_ms: 1,
+            updated_ms: 1,
+        })
+        .expect("the child's row");
+    let record = SubagentRecord {
+        store: RunStore {
+            path: path.clone(),
+            cell: Default::default(),
+        },
+        child: "s-1-sub-1".into(),
+        registry: letibot_sessionlog::registry::Registry::new(),
+        pending: None,
+    };
+    let slot = TaskSlot::recorded("s-1", Some(record));
+    slot.settle(TaskStatus::Done {
+        answer: "the first answer".into(),
+        child: None,
+    });
+    slot.spoke_again("the second answer");
+    slot.settle_later(TaskStatus::Failed {
+        why: "provider refused".into(),
+    });
+
+    let row = store
+        .subagent_run("s-1-sub-1")
+        .expect("the read")
+        .expect("the child's row");
+    assert_eq!(
+        row.state, "done",
+        "a later failure became the child's verdict"
+    );
+    assert_eq!(row.outcome.as_deref(), Some("the first answer"));
+    assert_eq!(
+        row.later_answer.as_deref(),
+        Some("the second answer"),
+        "the later answer was cleared"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Only the newest later answer is ever read, so only it is kept.
+#[test]
+fn a_slot_keeps_the_newest_later_answer_and_not_every_one() {
+    let slot = TaskSlot::recorded("s-1", None);
+    slot.spoke_again("two");
+    slot.spoke_again("three");
+    assert_eq!(slot.newest_again().as_deref(), Some("three"));
+    assert_eq!(slot.answers_kept(), 1);
+}
