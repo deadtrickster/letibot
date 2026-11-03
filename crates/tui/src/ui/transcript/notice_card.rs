@@ -581,7 +581,9 @@ pub(crate) fn system_notice(text: &str, bootstrap: bool) -> Card {
     let n = text.chars().count();
     let said = if bootstrap {
         format!("the prompt the session opened with ({})", chars(n))
-    } else if text.starts_with("This conversation was compacted") {
+    } else if text.starts_with("This conversation was compacted")
+        || text.starts_with("Earlier conversation is replaced by this summary")
+    {
         format!("compacted summary ({})", chars(n))
     } else if text.starts_with("This conversation was re-seated onto a new prompt") {
         "re-seated onto a new prompt".into()

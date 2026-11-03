@@ -404,8 +404,16 @@ fn a_system_row_is_one_row_at_eighty_columns() {
          no tool calls.\n\n## Objective\n\n- {}\n",
         "THE RECORD OF TWENTY THOUSAND CHARACTERS ".repeat(400)
     );
+    // R93.E5: the note as the daemon writes it now, with no transcript id in it.
+    let now = format!(
+        "Earlier conversation is replaced by this summary (full history: `transcript` tool). The \
+         most recent messages follow verbatim. The verbatim part starts mid-exchange; its first \
+         message answers something not shown.\n\n## Objective\n\n- {}\n",
+        "THE RECORD OF TWENTY THOUSAND CHARACTERS ".repeat(400)
+    );
     for text in [
         summary,
+        now,
         "System prompt and tools updated; the conversation continues unchanged. Nothing was \
          summarised."
             .to_string(),

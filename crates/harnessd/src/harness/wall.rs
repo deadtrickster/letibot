@@ -1562,18 +1562,13 @@ impl Harness {
             // has no events table, so after a restart the item is all a reader has.
             0 if !tail.because.is_empty() => format!(" {}", tail_why_text.unwrap_or_default()),
             0 => String::new(),
-            n => format!(
-                " The last {n} item(s) of it follow this note VERBATIM — as they were \
-                 written, not as a description of them."
-            ),
+            _ => " The most recent messages follow verbatim.".to_string(),
         };
         let mid_exchange = match tail_split {
             None => String::new(),
-            Some(TailSplit { dropped }) => format!(
-                " The verbatim part begins in the MIDDLE of an exchange: {dropped} item(s) \
-                 of it were dropped from the front, so its first message answers something \
-                 that is no longer here. Stated rather than left to be discovered."
-            ),
+            Some(TailSplit { .. }) => " The verbatim part starts mid-exchange; its first \
+                 message answers something not shown."
+                .to_string(),
         };
         // What the record was not shown sits UNDER it, in the base and not in a tool's reply: a
         // reader that has the record and not the map has been told what was lost and not where it
@@ -1597,9 +1592,8 @@ impl Harness {
                         .to_string()
                 } else {
                     format!(
-                        "This conversation was compacted: what was said before this point is \
-                     replaced by the summary below, which was written over the full history \
-                     of transcript {old_id} and proposed no tool calls.{carried}{mid_exchange}{cut}\n\n{}{map}",
+                        "Earlier conversation is replaced by this summary (full history: \
+                     `transcript` tool).{carried}{mid_exchange}{cut}\n\n{}{map}",
                         outcome.summary
                     )
                 },

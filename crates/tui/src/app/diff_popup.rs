@@ -154,7 +154,10 @@ impl App {
             && let Some(summary) = self.items[..k].iter().rev().find_map(|it| {
                 system_row_text(it)
                     .map(|(t, _)| t)
-                    .filter(|t| t.starts_with("This conversation was compacted"))
+                    .filter(|t| {
+                        t.starts_with("This conversation was compacted")
+                            || t.starts_with("Earlier conversation is replaced by this summary")
+                    })
             })
         {
             text = format!("{text}\n\n── the summary it continues from ──\n\n{summary}");

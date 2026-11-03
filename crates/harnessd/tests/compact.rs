@@ -631,21 +631,31 @@ fn the_fork_says_what_it_carried_verbatim_and_never_claims_it_was_replaced() {
     let letibot_transcript::TranscriptItem::System { text, .. } = &words[0].0 else {
         panic!("the base's first item is the note");
     };
+    // R93.E3/E4: one sentence each, and no count: the model is told the shape of what it is
+    // reading, not the arithmetic behind it.
     assert!(
-        text.contains("The last 3 item(s) of it follow this note VERBATIM"),
-        "the count is stated: {text}"
+        text.contains("The most recent messages follow verbatim."),
+        "the tail is stated: {text}"
     );
     assert!(
-        text.contains("MIDDLE of an exchange: 2 item(s)"),
+        text.contains("The verbatim part starts mid-exchange; its first message answers \
+                      something not shown."),
         "a mid-exchange start is disclosed: {text}"
     );
+    assert!(!text.contains("VERBATIM"), "no shouting: {text}");
+    assert!(!text.contains("item(s)"), "no count: {text}");
     assert!(
         !text.contains("everything said before this point is replaced"),
         "the note must not claim a region was replaced while the tail shows it: {text}"
     );
+    // R93.E5: the opening says what stands in for the history, and names no transcript.
     assert!(
-        text.contains("is replaced by the summary below"),
-        "and it still says what the summary is: {text}"
+        text.starts_with("Earlier conversation is replaced by this summary (full history: "),
+        "{text}"
+    );
+    assert!(
+        !text.contains(&report.transcript_id) && !text.contains("proposed no tool calls"),
+        "no id and no acceptance detail: {text}"
     );
     // The carried items really are the tail, in order, and not a description.
     let letibot_transcript::TranscriptItem::Assistant { text, .. } = &words[3].0 else {
@@ -684,11 +694,11 @@ fn a_fork_with_no_tail_claims_nothing_about_a_tail() {
         panic!("the base's first item is the note");
     };
     assert!(
-        text.contains("is replaced by the summary below"),
+        text.contains("is replaced by this summary"),
         "the ordinary local compaction replaces the history: {text}"
     );
     assert!(
-        !text.contains("VERBATIM") && !text.contains("MIDDLE of an exchange"),
+        !text.contains("verbatim") && !text.contains("mid-exchange"),
         "and with no tail there is nothing to disclose: {text}"
     );
 }
@@ -812,7 +822,7 @@ fn the_compaction_note_says_why_it_has_no_tail() {
             "a compaction with no tail did not say why ({because}): {text}"
         );
         assert!(
-            !text.contains("follow this note VERBATIM"),
+            !text.contains("follow verbatim"),
             "the note claims a tail it does not have: {text}"
         );
     }
