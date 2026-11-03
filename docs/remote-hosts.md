@@ -118,7 +118,11 @@ The remote works on a **checkout**, not a copy of the local folder:
    `remote/<short id>`. In a guest it is a **clone**: a copy of a linked worktree carries no repository.
 2. The session works and commits there.
 3. When it ends - or when asked - its branch comes back with `git fetch` as `remote/<host>/<short id>`. That
-   branch is the result: the parent reviews it and merges what it wants.
+   branch is the result: the parent reviews it and merges what it wants. Two doors fetch it, because a
+   close reaches only the sessions this process still holds: the session's own close, and the daemon's
+   last act, which is what a `--stop` reaches. A session stopped before either could run is collected by
+   name instead - `leticode_collect {session, host}` - since the placement's host, id and repository outlive
+   the daemon that made it.
 
 Uncommitted local changes are **not** carried: the placement says so, with the list. A folder that is not a
 git repository is refused. `.letibot-remote/` (the session's job directory) goes into the checkout's

@@ -71,6 +71,7 @@ one head connection per session it started or attached to, so asks reach it.
 | `leticode_answer` | `{session, ask, option, note}` - sent as the protocol's `Answer`, so it lands in the decision corpus |
 | `leticode_diff` | `{session, full}` - the branch against its merge base: `git log --oneline`, `git diff --stat`, and the diff when `full` |
 | `leticode_stop` | `{session}` - interrupts a running turn, closes the session here and detaches; a placement settles as it closes (`branch` names the branch the work comes home on), and the rows stay on disk |
+| `leticode_collect` | `{session, host, folder, vm}` - fetches what a session that is already stopped committed on `host` into `remote/<host>/<short id>`, in `folder` or this process's own directory. A stop that never reached the close - `letibot --stop`, a daemon that died - leaves the work on that machine, and this is the way back that needs nothing of the daemon |
 | `leticode_list` | - the sessions this bridge holds, with `placement`, watched or driven |
 | `rooms`, `room_read`, `room_say`, `room_dm`, `room_roster`, `room_inbox` | see `docs/room.md` § *Claude Code*: Claude Code as the external seat `claude-code` in the host's chat rooms |
 

@@ -476,6 +476,57 @@ impl Bridge {
         Ok(answer)
     }
 
+    /// **Collect a session that is already stopped.** A placement's branch comes home as its session
+    /// closes, which a `letibot --stop` or a dead daemon reaches for nothing - so what a package
+    /// committed on a host stays there. The names it is collected by are the ones the placement was
+    /// made from: the session id, the host, and the repository the branch comes home to.
+    pub fn collect(
+        &self,
+        session: &str,
+        host: &str,
+        folder: Option<&str>,
+        vm: bool,
+    ) -> Result<Value, String> {
+        let hosts = Hosts::load();
+        let name = host.trim();
+        let Some(declared) = hosts.get(name) else {
+            return Err(format!(
+                "{} `leticode_collect` checks a `host` the same way `where: host:{name}` does, \
+                 and nothing was fetched.",
+                hosts.refusal(name)
+            ));
+        };
+        // The folder is where the branch comes home: this process's own when the caller names none,
+        // because an MCP server is started in the project it serves.
+        let repo = match folder.map(str::trim).filter(|f| !f.is_empty()) {
+            Some(folder) => std::path::PathBuf::from(folder),
+            None => std::env::current_dir().map_err(|e| {
+                format!(
+                    "no `folder` was given and this process has no working directory to collect \
+                     into: {e}"
+                )
+            })?,
+        };
+        let session = session.trim();
+        let said = letibot_tools::remote::collect(&letibot_tools::remote::CollectSpec {
+            host: declared.clone(),
+            session: session.to_string(),
+            repo,
+            ssh: None,
+            paths: letibot_tools::remote::Paths::from_env(),
+            vm,
+        })
+        .map_err(|e| e.to_string())?;
+        Ok(json!({
+            "session": session,
+            "host": name,
+            // The branch, named here because the sentence is the daemon's own words and a caller
+            // wants the ref it can diff.
+            "branch": letibot_tools::remote::back_branch_for(name, session),
+            "said": said,
+        }))
+    }
+
     /// What this bridge is holding, and what each of them is doing.
     pub fn list(&self) -> Value {
         let heads: Vec<Arc<Head>> = {
@@ -847,6 +898,25 @@ pub fn list() -> Value {
             }),
         ),
         tool(
+            "leticode_collect",
+            "Fetch what a session that is already stopped committed on its host, as the branch \
+            `remote/<host>/<short id>`. `leticode_stop` brings the branch home as it closes, \
+            but a daemon stopped underneath the session - or one that died - reaches no close, \
+            and then the work stays on that machine. Nothing of the daemon is needed: the \
+            session id, the host and the repository are the names the placement was made from. \
+            Answers `branch` and a sentence saying what arrived, or why not.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "session": { "type": "string", "description": "The session id - the one `leticode_start` answered, or any recorded for a run that is over." },
+                    "host": { "type": "string", "description": "The machine it was placed on, as `hosts.toml` names it. Checked here, and an undeclared name is refused with the list." },
+                    "folder": { "type": "string", "description": "The repository the branch comes home to. Left out, this process's own working directory is used." },
+                    "vm": { "type": "boolean", "description": "The placement ran in a firecode guest, so its commits are in that checkout and not in the mirror (default false)." }
+                },
+                "required": ["session", "host"]
+            }),
+        ),
+        tool(
             "leticode_list",
             "The sessions this bridge is holding, with their state, pending ask count, \
               where each one's tools run (`placement`) and \
@@ -885,6 +955,7 @@ fn leticode_names() -> Vec<&'static str> {
         "leticode_answer",
         "leticode_diff",
         "leticode_stop",
+        "leticode_collect",
         "leticode_list",
     ]
 }
@@ -992,6 +1063,13 @@ pub fn call(bridge: &Bridge, name: &str, args: &Value) -> Result<Value, String> 
             bridge.diff(&arg_str(args, "session")?, full)
         }
         "leticode_stop" => bridge.stop(&arg_str(args, "session")?),
+        "leticode_collect" => {
+            let session = arg_str(args, "session")?;
+            let host = arg_str(args, "host")?;
+            let folder = arg_opt_str(args, "folder")?;
+            let vm = arg_bool(args, "vm", false)?;
+            bridge.collect(&session, &host, folder.as_deref(), vm)
+        }
         "leticode_list" => Ok(bridge.list()),
         room if crate::rooms::TOOLS.contains(&room) => {
             crate::rooms::call(bridge.rooms(), room, args)
@@ -1034,14 +1112,14 @@ pub fn wait(worktree: &str, session: &str, deadline: Instant) -> (i32, String) {
 mod tests {
     use super::*;
 
-    /// **Nineteen tools (thirteen leticode, six room), each with a schema and a required list** - the count and the names the
+    /// **Twenty tools (fourteen leticode, six room), each with a schema and a required list** - the count and the names the
     /// design's table fixes. A tool added to `tools/list` and forgotten in `call` (or the other
     /// way round) is the defect this pairs against.
     #[test]
-    fn the_nineteen_tools_are_listed_with_schemas() {
+    fn the_twenty_tools_are_listed_with_schemas() {
         let listed = list();
         let tools = listed["tools"].as_array().expect("tools");
-        assert_eq!(tools.len(), 19, "{listed}");
+        assert_eq!(tools.len(), 20, "{listed}");
         let mut named: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
         named.sort_unstable();
         let mut want = names();
@@ -1064,6 +1142,25 @@ mod tests {
         // them, which is what a client sees when it asks for one that is not here.
         let e = call(&Bridge::new(), "leticode_nope", &json!({})).expect_err("unknown");
         assert!(e.contains("leticode_start"), "{e}");
+    }
+
+    /// **A collect refuses a host the operator's file does not declare**, before anything is
+    /// fetched - the same check `where: host:NAME` makes, with the list of names that would work.
+    /// A name nobody declared cannot reach a host, so this asks nothing of the network.
+    #[test]
+    fn a_collect_refuses_an_undeclared_host_by_name() {
+        let name = format!("no-such-host-{}", std::process::id());
+        let e = Bridge::new()
+            .collect("s-01abcdef", &name, Some("."), false)
+            .expect_err("an undeclared host is refused");
+        assert!(
+            e.contains(&name),
+            "the refusal names the host asked for: {e}"
+        );
+        assert!(
+            e.contains("nothing was fetched"),
+            "and it says nothing happened: {e}"
+        );
     }
 
     /// **`leticode_start` publishes `host`, and does not require it.** A field a client cannot

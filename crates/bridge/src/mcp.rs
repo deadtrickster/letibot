@@ -241,13 +241,14 @@ mod tests {
         assert_eq!(r["result"]["serverInfo"]["name"], "letibot-mcp");
     }
 
-    /// **Nineteen tools, each with a schema** — the design's table, and the shape MCP requires.
-    /// Ten from B1–B6, B8's `leticode_transcript` and `leticode_mode`, and `leticode_model`.
+    /// **Twenty tools, each with a schema** — the design's table, and the shape MCP requires.
+    /// Ten from B1–B6, B8's `leticode_transcript` and `leticode_mode`, `leticode_model`,
+    /// `leticode_collect` for a session stopped before its branch came home, and the six room tools.
     #[test]
-    fn tools_list_lists_the_nineteen_tools_with_schemas() {
+    fn tools_list_lists_the_twenty_tools_with_schemas() {
         let answers = run(&[r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#]);
         let tools = answers[0]["result"]["tools"].as_array().expect("tools");
-        assert_eq!(tools.len(), 19, "{:?}", answers[0]);
+        assert_eq!(tools.len(), 20, "{:?}", answers[0]);
         for t in tools {
             assert!(t["name"].is_string(), "{t}");
             assert!(t["description"].is_string(), "{t}");
@@ -297,6 +298,20 @@ mod tests {
         assert_eq!(
             &mode["inputSchema"]["required"],
             &json!(["session", "mode"])
+        );
+        // A collect is asked for by the names a placement was made from, so the two that cannot be
+        // inferred - the session and the host - are required and the folder is not.
+        let collect = tools
+            .iter()
+            .find(|t| t["name"] == "leticode_collect")
+            .expect("leticode_collect is in tools/list");
+        assert_eq!(
+            &collect["inputSchema"]["required"],
+            &json!(["session", "host"])
+        );
+        assert_eq!(
+            collect["inputSchema"]["properties"]["vm"]["type"],
+            "boolean"
         );
     }
 
