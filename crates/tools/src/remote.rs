@@ -4126,6 +4126,36 @@ impl ExecBackend for SshBackend {
         self.ssh.read_abs(&self.in_view(path)?)
     }
 
+    /// One round trip for a page of files, not one per file: a placed session's note corpus is
+    /// twelve reads, and at a call each that is the verb's whole cost. The stream is the VM
+    /// backend's own - each file behind a marker base64 cannot make - so a short answer is a
+    /// failure for the CALL and the caller falls back to [`Self::read`].
+    fn read_many(
+        &self,
+        paths: &[&str],
+    ) -> Result<Vec<Result<Vec<u8>, BackendError>>, BackendError> {
+        if paths.is_empty() {
+            return Ok(Vec::new());
+        }
+        let abs: Vec<String> = paths
+            .iter()
+            .map(|p| self.in_view(p))
+            .collect::<Result<_, _>>()?;
+        let asked: Vec<&str> = abs.iter().map(|s| s.as_str()).collect();
+        let (out, _, exit) = self.ssh.sh_step(
+            &format!("reading {} file(s)", paths.len()),
+            &crate::firecode::batched_read_command(&asked),
+        )?;
+        if exit != 0 {
+            return Err(BackendError::Io(format!(
+                "reading {} file(s) on {}: exit {exit}",
+                paths.len(),
+                self.host
+            )));
+        }
+        crate::firecode::parse_batched_reads(out.as_bytes(), paths)
+    }
+
     fn write(&self, path: &str, bytes: &[u8]) -> Result<(), BackendError> {
         if !self.writable {
             return Err(BackendError::Unsupported(

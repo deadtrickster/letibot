@@ -2226,3 +2226,44 @@ fn a_note_written_in_a_placed_session_lands_in_the_remote_checkout() {
     );
     let _ = std::fs::remove_dir_all(&local);
 }
+
+/// **The note corpus is one round trip per page, not one per note.** Over a placed session every
+/// read is an ssh call: a `search` over twelve notes was fourteen of them, which is the cost the
+/// same commit's stat-in-the-listing change was made to avoid.
+#[test]
+fn a_placed_session_reads_its_note_corpus_in_pages() {
+    let mut rig = Rig::new("notes-pages");
+    let backend = rig.place();
+    let worktree = rig.worktree.clone();
+    let local = std::env::temp_dir().join(format!(
+        "letibot-notes-pages-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let global = local.join("global");
+    std::fs::create_dir_all(&global).expect("the box-wide notes dir");
+    // Seeded through the filesystem: this test counts ssh calls, and a write would be part of the
+    // number it asserts on.
+    std::fs::create_dir_all(worktree.join(".letibot/notes")).expect("the notes dir");
+    for i in 0..12 {
+        std::fs::write(
+            worktree.join(format!(".letibot/notes/note-{i}.md")),
+            format!("note {i}\n"),
+        )
+        .expect("a note on the far side");
+    }
+
+    let mut h = letibot_tools::testing::harness_over(Box::new(backend), local.clone(), global);
+    let before = rig.ssh_log().matches("ARGV ").count();
+    let r = h.call("notes", r#"{"action":"search","query":"note"}"#);
+    assert!(r.is_grounded(), "{}", r.render());
+    let calls = rig.ssh_log().matches("ARGV ").count() - before;
+    assert!(
+        calls <= 4,
+        "the corpus was read one note at a time: {calls} ssh call(s) for 12 notes"
+    );
+    let _ = std::fs::remove_dir_all(&local);
+}
