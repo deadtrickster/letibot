@@ -39,6 +39,14 @@ impl HarnessView {
 
 const MAX_WARNINGS: usize = 20;
 
+/// **The warnings whose detail is written for the operator and withheld from the model** - a line
+/// that quotes the model's own words or its numbers back. Spelled here because this crate sits
+/// below the daemon that names them.
+const WITHHELD: &[&str] = &["context_claim_repeated"];
+
+/// What the view says in place of a withheld detail: the fact, and the reason there are no words.
+const WITHHELD_SAID: &str = "(withheld: this line quotes you and the fill back)";
+
 impl Tool for HarnessView {
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(
@@ -121,6 +129,12 @@ impl Tool for HarnessView {
                     }
                 );
                 for (code, detail, age) in shown {
+                    // The model reads that the thing happened; the operator keeps the words and the
+                    // numbers, which are theirs to size the session by.
+                    let detail = match WITHHELD.contains(&code.as_str()) {
+                        true => WITHHELD_SAID,
+                        false => detail.as_str(),
+                    };
                     out.push_str(&format!("\n! {code} ({}s ago)\n  {detail}\n", age));
                 }
                 Invocation::ok(out)
@@ -239,6 +253,33 @@ mod tests {
         }
     }
 
+    /// A log with the one warning whose detail is written for the OPERATOR alone.
+    struct Repeating;
+    impl HarnessFacts for Repeating {
+        fn disclosures(&self) -> Vec<(String, String, String)> {
+            Vec::new()
+        }
+        fn warnings(&self) -> Vec<(String, String, u64)> {
+            vec![(
+                "context_claim_repeated".into(),
+                "the model said its context is full again after being told it is not: \"Hmm — **my \
+                 *context* ✓** ✓ ✓\" (context 21% full — 212,408 of 1,000,000 tokens). It was told \
+                 once this turn; this one is for you, not a second notice."
+                    .into(),
+                4,
+            )]
+        }
+        fn turn(&self) -> Option<(bool, usize, String)> {
+            None
+        }
+        fn heads(&self) -> Vec<(String, String)> {
+            Vec::new()
+        }
+        fn screen(&self) -> Option<(usize, usize, Vec<String>)> {
+            None
+        }
+    }
+
     fn ask(facts: Arc<dyn HarnessFacts>, args: &str) -> crate::ToolResult {
         let mut reg = crate::runtime::Registry::new();
         reg.register(Box::new(HarnessView::new(facts))).unwrap();
@@ -339,6 +380,34 @@ mod tests {
         // And it says how to tell the two apart rather than leaving the model to guess
         // which one it hit.
         assert!(said.contains("heads"), "{}", s.payload);
+    }
+
+    /// **R93.A2: the operator's repeated-claim warning is not read out to the model.** Its detail
+    /// quotes the model's own sentence and its fill back, which is the habit the check exists to
+    /// stop, so the view says the code, the age and that the detail was withheld.
+    #[test]
+    fn the_repeated_context_claim_is_withheld_from_the_model() {
+        let w = ask(Arc::new(Repeating), r#"{"what":"warnings"}"#);
+        assert!(
+            w.payload.contains("! context_claim_repeated (4s ago)"),
+            "the warning is still said: {}",
+            w.payload
+        );
+        assert!(
+            !w.payload.contains("**my *context* ✓**"),
+            "not one word of the quote: {}",
+            w.payload
+        );
+        assert!(
+            !w.payload.contains("212,408") && !w.payload.contains("% full"),
+            "and none of the numbers: {}",
+            w.payload
+        );
+        assert!(
+            w.payload.contains("withheld"),
+            "and it says why nothing is there: {}",
+            w.payload
+        );
     }
 
     #[test]
