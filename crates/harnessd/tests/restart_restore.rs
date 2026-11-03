@@ -1497,15 +1497,16 @@ fn what_another_daemon_that_is_still_beating_owns_is_left_alone() {
     old_daemon_beating(&store);
     let child = "s-restart-parent-sub-live";
     store
-        .put_subagent_run(&run(
-            child,
-            PARENT,
-            "running",
-            &TaskSpec::default(),
-        ))
+        .put_subagent_run(&run(child, PARENT, "running", &TaskSpec::default()))
         .unwrap();
     store
-        .put_monitor(PARENT, "theirs", r#"{"name":"theirs","path":"x"}"#, OLD, 300_000)
+        .put_monitor(
+            PARENT,
+            "theirs",
+            r#"{"name":"theirs","path":"x"}"#,
+            OLD,
+            300_000,
+        )
         .unwrap();
     let mut job = a_job("j-live", "running", "sleep 600");
     job.state = "running".into();

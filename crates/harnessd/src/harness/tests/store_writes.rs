@@ -166,7 +166,10 @@ fn a_stop_ends_the_wait_on_a_busy_store() {
         took < std::time::Duration::from_secs(4),
         "the wait ran {took:?}: the stop was not read until the patience ran out"
     );
-    assert_eq!(n, 1, "one attempt: the stop ends the wait, it does not retry it");
+    assert_eq!(
+        n, 1,
+        "one attempt: the stop ends the wait, it does not retry it"
+    );
 }
 
 /// **The whole daemon is stalled by one session's wait, so every other session's head is told why**
@@ -198,15 +201,8 @@ fn a_wait_on_the_store_is_said_on_every_other_session_too() {
             )
             .expect("the session registers");
     }
-    let h = Harness::open_with_registry(
-        &parts,
-        cfg,
-        me,
-        None,
-        None,
-        Arc::clone(&registry),
-    )
-    .expect("the session opens");
+    let h = Harness::open_with_registry(&parts, cfg, me, None, None, Arc::clone(&registry))
+        .expect("the session opens");
     let busy = || {
         letibot_tokencore::store::StoreError::Sql(
             letibot_tokencore::rusqlite::Error::SqliteFailure(
