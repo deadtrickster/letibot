@@ -22,5 +22,6 @@ pub mod diff;
 pub mod head;
 pub mod mcp;
 pub mod report;
+pub mod rooms;
 pub mod rows;
 pub mod tools;

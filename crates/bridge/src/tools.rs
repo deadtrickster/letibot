@@ -41,11 +41,37 @@ pub const MODE_PATIENCE: Duration = Duration::from_secs(120);
 #[derive(Default)]
 pub struct Bridge {
     heads: Mutex<HashMap<String, Arc<Head>>>,
+    /// The `claude-code` seat on the host coordinator, opened on first use.
+    rooms: crate::rooms::RoomLink,
+    /// Push the room's messages to the client as channel notifications (set by `letibot-mcp`).
+    stream_rooms: bool,
 }
 
 impl Bridge {
     pub fn new() -> Bridge {
         Bridge::default()
+    }
+
+    /// A bridge whose room seat connects to `socket`.
+    pub fn with_room_socket(socket: impl Into<std::path::PathBuf>) -> Bridge {
+        Bridge {
+            rooms: crate::rooms::RoomLink::at(socket),
+            ..Bridge::default()
+        }
+    }
+
+    /// Deliver the room's `to_me` messages to the MCP client once it has initialized.
+    pub fn streaming_rooms(mut self) -> Bridge {
+        self.stream_rooms = true;
+        self
+    }
+
+    pub fn rooms(&self) -> &crate::rooms::RoomLink {
+        &self.rooms
+    }
+
+    pub fn stream_rooms(&self) -> bool {
+        self.stream_rooms
     }
 
     /// **Start leticode on a worktree.** A daemon this call started already holds its first
@@ -796,7 +822,7 @@ pub fn list() -> Value {
               whether each is only watched (`leticode_attach`'s default) or driven. It lists \
               what this process holds, not what the daemon has on disk.",
              json!({ "type": "object", "properties": {} })),
-    ]})
+    ].into_iter().chain(crate::rooms::tool_list()).collect::<Vec<_>>()})
 }
 
 fn tool(name: &str, description: &str, schema: Value) -> Value {
@@ -806,6 +832,12 @@ fn tool(name: &str, description: &str, schema: Value) -> Value {
 /// Which tool names this build answers - the list `tools/list` publishes, and the one
 /// `tools/call` checks against, so a name can never be in one and not the other.
 pub fn names() -> Vec<&'static str> {
+    let mut all = leticode_names();
+    all.extend(crate::rooms::TOOLS);
+    all
+}
+
+fn leticode_names() -> Vec<&'static str> {
     vec![
         "leticode_start",
         "leticode_attach",
@@ -927,6 +959,9 @@ pub fn call(bridge: &Bridge, name: &str, args: &Value) -> Result<Value, String> 
         }
         "leticode_stop" => bridge.stop(&arg_str(args, "session")?),
         "leticode_list" => Ok(bridge.list()),
+        room if crate::rooms::TOOLS.contains(&room) => {
+            crate::rooms::call(bridge.rooms(), room, args)
+        }
         other => Err(format!(
             "unknown tool `{other}`; this build serves {}",
             names().join(", ")
@@ -965,14 +1000,14 @@ pub fn wait(worktree: &str, session: &str, deadline: Instant) -> (i32, String) {
 mod tests {
     use super::*;
 
-    /// **Thirteen tools, each with a schema and a required list** - the count and the names the
+    /// **Nineteen tools (thirteen leticode, six room), each with a schema and a required list** - the count and the names the
     /// design's table fixes. A tool added to `tools/list` and forgotten in `call` (or the other
     /// way round) is the defect this pairs against.
     #[test]
-    fn the_thirteen_tools_are_listed_with_schemas() {
+    fn the_nineteen_tools_are_listed_with_schemas() {
         let listed = list();
         let tools = listed["tools"].as_array().expect("tools");
-        assert_eq!(tools.len(), 13, "{listed}");
+        assert_eq!(tools.len(), 19, "{listed}");
         let mut named: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
         named.sort_unstable();
         let mut want = names();
