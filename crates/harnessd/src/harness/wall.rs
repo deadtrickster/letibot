@@ -1749,8 +1749,9 @@ impl Harness {
             });
         }
         // The stored context size is about the OLD conversation: the last prompt the provider measured, which this
-        // fork replaced. Only a turn can put a real number here, so it is cleared rather than estimated. A verbatim
-        // fork is the exception, since it replaced nothing: its count is kept and its ledger anchor moved.
+        // fork replaced. A verbatim fork replaced nothing, so its count is kept and its ledger anchor moved. Any
+        // other fork has nothing measured on its new base - but the RATIO is not a fact about the old conversation,
+        // so it rides the fork, and a restart before any round reads the new base in the provider's units.
         if let Some(store) = &self.store {
             let kept = if verbatim {
                 store
@@ -1764,7 +1765,8 @@ impl Harness {
                         Some((row.context_tokens?, row.context_cached, ledger))
                     })
             } else {
-                None
+                self.carried_pair()
+                    .map(|(tokens, ledger)| (tokens, None, ledger))
             };
             let _ = match kept {
                 Some((tokens, cached, ledger)) => {
@@ -1795,6 +1797,28 @@ impl Harness {
             tail_turns,
             tail_because: tail.because.to_string(),
         })
+    }
+
+    /// The stored pair a fork carries across itself: the new base sized as it will be sent, and that same base
+    /// through the last measured ratio. `None` when nothing measured one - a local session, where the ledger IS the
+    /// count, or a metered one whose first round has not happened - so nothing is claimed there.
+    fn carried_pair(&self) -> Option<(u64, u64)> {
+        let (ledger_at, provider) = self.wall_anchor.as_ref()?.scale?;
+        if ledger_at == 0 || provider == 0 {
+            return None;
+        }
+        let ledger = &self.session.ledger;
+        let prefix = u64::from(ledger.prefix_len());
+        let base = prefix
+            + sent_since(
+                ledger,
+                &self.session.items,
+                prefix,
+                self.provider.is_some(),
+                self.echoes_reasoning(),
+            );
+        let tokens = ((base as u128 * provider as u128) / ledger_at as u128) as u64;
+        (base > 0 && tokens > 0).then_some((tokens, base))
     }
 
     /// Every row of the fork is stored, so make it the session's conversation: the seal, then the fingerprint and
