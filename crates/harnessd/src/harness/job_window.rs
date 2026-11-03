@@ -60,9 +60,8 @@ pub(crate) fn fate_line(handle: &str, fate: &JobFate) -> String {
         JobFate::Running => format!("`{handle}` is still running"),
         JobFate::Ended { state } => format!("`{handle}` {state}"),
         JobFate::Unknown => format!(
-            "`{handle}` is not a job this session knows — it ended before this daemon came back, \
-             or the handle is wrong. The result is not here: read it up yourself if the next step \
-             depends on it."
+            "`{handle}`: unknown job (lost in a restart, or a wrong handle); its result is \
+             unavailable."
         ),
     }
 }

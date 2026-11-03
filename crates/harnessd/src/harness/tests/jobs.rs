@@ -49,15 +49,12 @@ fn a_conditions_sentence_says_which_kind_of_gone_it_was() {
         "`j121` exited 0",
         "the job's own word, and nothing invented around it"
     );
+    // R93.C10: the sentence says what the handle is and that its result is gone, and sends the
+    // reader nowhere - "read it up yourself" named no place to read.
     let unknown = fate_line("j121", &JobFate::Unknown);
-    assert!(
-        unknown.contains("not a job this session knows"),
-        "the restart case must say the result is not here: {unknown}"
-    );
-    assert!(
-        unknown.contains("read it up yourself"),
-        "and say what the reader can do about it, since following it up is the robust half: \
-             {unknown}"
+    assert_eq!(
+        unknown,
+        "`j121`: unknown job (lost in a restart, or a wrong handle); its result is unavailable."
     );
     // A running job is not due, and the sentence exists anyway: a function that panics on the arm
     // nobody reaches is a function whose contract is a rumour, and this one is reachable the moment
