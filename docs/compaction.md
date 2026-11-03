@@ -284,8 +284,8 @@ Landed (`crates/turn/src/evict.rs` for the units, `crates/tools/src/recall.rs` f
   so a body kept on disk by `--spill-dir` still opens after a restart that left no map; an id the
   store has nothing under is refused by name, with the ids the map does have, and an id it does name
   whose body is gone says exactly that, because a store with no directory keeps bodies only for the
-  life of the daemon. Seated on every role that
-  can be compacted.
+  life of the daemon. Seated on every role that can be compacted, since a base whose map no seat can
+  open is a page of dead ends.
 - **Not an edit.** The reduced span is only the summary turn's prompt. The session, ledger and
   transcript are untouched, so no hash chain is broken. `Harvest` reports `evicted`, `gone` and the
   units themselves.
