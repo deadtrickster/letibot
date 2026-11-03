@@ -187,30 +187,25 @@ fn the_census_counts_the_rows_status_prints() {
     let census = of(&s, &[repo.to_string()]).expect("the census");
     let printed = desk::status(&s, Some(repo)).expect("status");
 
-    // The printed rows, by state word: ` `id` state `branch` → `target` at sha: …`
-    let mut counted: Vec<(&str, usize)> = Vec::new();
-    for line in printed.lines() {
-        let Some(rest) = line.trim_start().strip_prefix('`') else {
-            continue;
-        };
-        let Some((_, rest)) = rest.split_once('`') else {
-            continue;
-        };
-        let Some(word) = rest.split_whitespace().next() else {
-            continue;
-        };
-        if matches!(word, "failed" | "timed_out" | "conflict") {
-            match counted.iter_mut().find(|(w, _)| *w == word) {
-                Some(slot) => slot.1 += 1,
-                None => counted.push((word, 1)),
-            }
-        }
-    }
-    let mut census_words = census.states.clone();
-    census_words.sort();
-    counted.sort();
+    // A row's state reaches the reader in words, not as the store's code, so each state the
+    // census counted is counted by the printer's own word for it: one mapping, and never a
+    // second spelling of a state here that could drift from the one `status` prints.
+    let counted: Vec<(&str, usize)> = census
+        .states
+        .iter()
+        .map(|(state, _)| {
+            let word = desk::plain_state(state);
+            let n = printed
+                .lines()
+                .filter_map(|line| line.trim_start().strip_prefix('`'))
+                .filter_map(|rest| rest.split_once('`').map(|(_, after)| after))
+                .filter(|after| after.trim_start().starts_with(word.as_str()))
+                .count();
+            (*state, n)
+        })
+        .collect();
     assert_eq!(
-        census_words, counted,
+        census.states, counted,
         "the census and `status` count one set of rows\n{printed}"
     );
 }

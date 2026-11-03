@@ -736,7 +736,7 @@ fn first_rows(reviews: &[ReviewRow], merges: &[MergeRow]) -> (Vec<String>, usize
 /// **A state as a reader of this text understands it.** The store's column names are codes
 /// (`cannot_decide`, `timed_out`), and this answer is read by a model that repeats it to a person;
 /// an unknown state falls back to the store's own word rather than to a guess.
-fn plain_state(state: &str) -> String {
+pub(crate) fn plain_state(state: &str) -> String {
     let word = match state {
         // The review queue.
         "waiting" => "waiting for a reviewer",
