@@ -484,7 +484,7 @@ fn a_refused_reseat_leaves_the_census_walking_its_instruction() {
     }
     let end = held(&h);
     assert_eq!(
-        instructions(&h),
+        instructions(&h).len(),
         5,
         "one instruction row per refused attempt"
     );
