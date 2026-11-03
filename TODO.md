@@ -5382,7 +5382,7 @@ Re-checked because many events were added after W8. Four of the five are closed:
 
 ---
 
-## T10 — Contract gaps found by W6 — **items 1, 2, 3 and 5 SETTLED 2026-09-11, see TODO-settled.md (R1, R2, R3, R4)**
+## T10 — Contract gaps found by W6 — **items 1, 2, 3 and 5 SETTLED 2026-09-11, see TODO-settled.md (R1, R2, R3, R4), of which 3 and 5 landed in code with no test naming them; left: item 4 — `render_incremental` still takes the whole history and there is no resumable state token**
 
 The turn engine is the first real consumer of the crates below, and it found five
 things. Listed in the order I would fix them.
