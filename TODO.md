@@ -2853,11 +2853,21 @@ clock it has, and the right one, since both are facts about the same stream
 checked by mutation: with the old row-first preference restored it fails with
 `1/1 · qwen-3.8-27b` — the operator's own line.
 
-**Still open, and it is the general fix**: push the rows to attached heads when they
-change, rather than only answering. That needs a frame queue beside the head's event
-queue (`Hub`'s `queue` is a `VecDeque<Envelope>`, so a `ServerFrame` has nowhere to go
-today) — and it makes every other settings row live rather than only this one. Worth
-doing; not needed for the symptom, which is gone.
+**SETTLED 2026-11-03 — the general fix, and every settings row is live**: the rows are
+pushed, not only answered. `Registry::set_settings` compares what it is handed with what it
+holds and fans a CHANGED set out to every head attached to that session through
+`Hub::push_frame`, which already existed for cards and panes. No frame was added and no
+protocol number moved: a head that did not ask decodes `ServerFrame::Settings` and applies
+it exactly as it applies the answer, and a head older than the variant's own arrival is a
+skew `Hello` already names.
+
+Three tests, one per half. `crates/sessionlog/tests/settings_push.rs` is the fan-out and its
+two silences (the same rows again, and a head attached to another session);
+`crates/harnessd/tests/settings_live.rs` is the ticket's scene end to end - two heads, a real
+daemon, one sends `/mode`, and the other is handed the new row having sent nothing but its
+`Attach` (it fails at `the still head was not told in 30s` with the push removed); and
+`crates/tui/src/app/tests/settings.rs`'s `a_settings_frame_nobody_asked_for_is_drawn` is the
+pane drawing the frame and sending no second ask.
 
 ### R20.2 — `how to switch diff style?` — the answer is nowhere on the screen
 
