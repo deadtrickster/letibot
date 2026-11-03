@@ -389,7 +389,7 @@ fn every(store: &Store) -> Result<String, String> {
     for (repo, name) in repos.iter().zip(short_names(&repos)) {
         let health = newest(&healths, repo);
         let mut state = match health {
-            Some(h) => h.state.as_str().to_uppercase(),
+            Some(h) => plain_state(h.state.as_str()),
             None => "no target".into(),
         };
         if let Some(g) = health.and_then(running_now) {
@@ -601,7 +601,7 @@ fn targets(healths: &[TargetHealth], tail: Option<usize>) -> String {
             "target `{}` in {}: {} at {}{}\n  {}\n",
             h.target,
             h.repository,
-            h.state.as_str().to_uppercase(),
+            plain_state(h.state.as_str()),
             short_sha(&h.sha),
             running,
             h.evidence.lines().next().unwrap_or_default()
@@ -738,6 +738,9 @@ fn first_rows(reviews: &[ReviewRow], merges: &[MergeRow]) -> (Vec<String>, usize
 /// an unknown state falls back to the store's own word rather than to a guess.
 pub(crate) fn plain_state(state: &str) -> String {
     let word = match state {
+        // The target's health, which is not a row's state.
+        "red" => "the gate is red",
+        "green" => "green",
         // The review queue.
         "waiting" => "waiting for a reviewer",
         "reviewing" => "being reviewed",
@@ -1003,7 +1006,7 @@ mod tests {
 
         let said = desk.status(false, None).unwrap();
         assert!(
-            said.contains("target `main`") && said.contains("RED"),
+            said.contains("target `main`") && said.contains("the gate is red"),
             "{said}"
         );
         assert!(
@@ -1172,7 +1175,11 @@ mod tests {
         assert!(!said.contains(&other), "another project at all: {said}");
         // The shape is the one the operator already reads, plus the counts.
         assert!(
-            said.contains("target `main` in") && said.contains("RED"),
+            said.contains("target `main` in") && said.contains("the gate is red"),
+            "{said}"
+        );
+        assert!(
+            said.contains("review queue: 1 waiting for a reviewer"),
             "{said}"
         );
         assert!(
@@ -1258,7 +1265,8 @@ mod tests {
         assert!(
             lines
                 .iter()
-                .any(|l| l.starts_with("mine  RED · 1 waiting for a reviewer · unserved")),
+                .any(|l| l
+                    .starts_with("mine  the gate is red · 1 waiting for a reviewer · unserved")),
             "{said}"
         );
         assert!(
@@ -1531,7 +1539,7 @@ mod tests {
             .unwrap_or_else(|| panic!("the target's line: {said}"));
         assert!(
             line.starts_with(&format!(
-                "target `main` in {mine}: GATING at ec3cb01e8a6f · step 3 of 4 · "
+                "target `main` in {mine}: the gate is running at ec3cb01e8a6f · step 3 of 4 · "
             )),
             "the state, the tip and the step: {line}"
         );
@@ -1549,7 +1557,7 @@ mod tests {
         // And `repository:` prints it too - the third scope is the same target line, in full.
         let full = desk.status(false, Some(".")).unwrap();
         assert!(
-            full.contains("GATING at ec3cb01e8a6f · step 3 of 4 · ")
+            full.contains("the gate is running at ec3cb01e8a6f · step 3 of 4 · ")
                 && full.contains("tail moving (36 KiB)"),
             "the named scope carries the gate as well: {full}"
         );
@@ -1566,7 +1574,7 @@ mod tests {
             .unwrap_or_else(|| panic!("the target's line: {said}"));
         assert_eq!(
             line,
-            format!("target `main` in {mine}: GREEN at ec3cb01e8a6f"),
+            format!("target `main` in {mine}: green at ec3cb01e8a6f"),
             "a green target's line is unchanged: {said}"
         );
         assert!(!said.contains("step 3 of 4"), "{said}");
@@ -1613,7 +1621,7 @@ mod tests {
             .find(|l| l.starts_with("mine  "))
             .unwrap_or_else(|| panic!("the other repository's line: {said}"));
         assert!(
-            line.starts_with("mine  GATING · step 3 of 4 · ")
+            line.starts_with("mine  the gate is running · step 3 of 4 · ")
                 && line.contains(" · 1 waiting for a reviewer"),
             "the state, the step, its clock, then what is open: {line}"
         );
