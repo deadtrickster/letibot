@@ -189,14 +189,12 @@ fn a_cycle_is_refused_before_anything_starts() {
 fn after_orders_the_starts_and_a_roles_facts_resolve() {
     let rig = Rig::new("after", &["fake1"]);
     let port = free_port();
-    let client = format!(
-        // The round trip is this role's readiness, so the tool waits for it before tearing
-        // anything down; a role that ends the moment it has printed cannot answer a log check,
-        // and its exit code is the teardown's business rather than the edge's.
-        "echo peer=${{web.host}}; python3 -c \"import urllib.request; \
-         print('ok=' + str(urllib.request.urlopen('http://127.0.0.1:${{web.port}}/').status == 200))\"; \
-         sleep 60"
-    );
+    // The round trip is this role's readiness, so the tool waits for it before tearing anything
+    // down; a role that ends the moment it has printed cannot answer a log check, and its exit
+    // code is the teardown's business rather than the edge's.
+    let client = "echo peer=${web.host}; python3 -c \"import urllib.request; \
+                  print('ok=' + str(urllib.request.urlopen('http://127.0.0.1:${web.port}/').status == 200))\"; \
+                  sleep 60";
     let answer = tool(&rig).answer(
         &json!({
             "roles": {
