@@ -2341,6 +2341,12 @@ enum Query {
     },
 }
 
+/// **The id is the mistake, so the second line is how to find the right one.** `not found: session
+/// s-nope` named what was missing and left a person to guess which verb lists the ones there are.
+fn no_such_session(e: impl std::fmt::Display) -> String {
+    format!("{e}\n         `letibot --sessions` lists the sessions this store holds")
+}
+
 /// Answer a question about the store and exit. No socket, no vocabulary, no model.
 fn run_query(
     cfg: &Config,
@@ -2577,9 +2583,12 @@ fn run_query(
             Ok(0)
         }
         Query::Rename(id, title) => {
-            store
-                .set_title(&id, &title)
-                .map_err(|e| format!("renaming {id}: {e}"))?;
+            store.set_title(&id, &title).map_err(|e| match e {
+                letibot_tokencore::store::StoreError::NotFound(_) => {
+                    no_such_session(format!("no such session: {id}"))
+                }
+                e => format!("renaming {id}: {e}"),
+            })?;
             if title.is_empty() {
                 println!("{id} has no name now");
             } else {
@@ -2598,6 +2607,9 @@ fn run_query(
             Ok(()) => {
                 println!("{id} deleted");
                 Ok(0)
+            }
+            Err(letibot_tokencore::store::StoreError::NotFound(_)) => {
+                Err(no_such_session(format!("no such session: {id}")))
             }
             Err(e) => Err(e.to_string()),
         },

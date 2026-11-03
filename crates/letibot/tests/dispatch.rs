@@ -234,6 +234,36 @@ fn the_migration_refusals_are_two_lines_and_name_its_help() {
     }
 }
 
+/// **An id that is not in the store is two lines too**: what was not found, and the verb that lists
+/// what is there. It used to be the daemon's bare `not found: session s-nope`.
+#[test]
+fn an_unknown_session_id_names_the_real_ones_and_where_to_list_them() {
+    let dir = std::env::temp_dir().join(format!("letibot-cli-store-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    // The store's own directory: `Store::open` refuses to create one, so a missing parent is a
+    // different refusal from the one this test is about.
+    std::fs::create_dir_all(&dir).expect("a temp dir for the store");
+    let store = dir.join("sessions.db").to_string_lossy().into_owned();
+    for args in [
+        vec!["daemon", "--store", &store, "--delete", "s-nope"],
+        vec!["daemon", "--store", &store, "--rename", "s-nope", "x"],
+    ] {
+        let (code, _, stderr) = run(&args);
+        assert_eq!(code, Some(1), "`letibot {args:?}` is a mistake: {stderr}");
+        let lines: Vec<&str> = stderr.lines().collect();
+        assert_eq!(lines.len(), 2, "two lines, not a wall: {stderr:?}");
+        assert!(
+            lines[0].contains("s-nope"),
+            "the first line names the id nobody has: {stderr:?}"
+        );
+        assert!(
+            lines[1].contains("letibot --sessions"),
+            "the second says where the real ids are: {stderr:?}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// **`attach`'s refusal is two lines and names the word that is missing** — the source, or the
 /// scope — and the help line is the scope's own example, not a parenthetical clause.
 #[test]
