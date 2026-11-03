@@ -146,11 +146,7 @@ pub fn run(args: &[String]) -> i32 {
     let prefix_at_open: Vec<TokenId> = harness.prefix_tokens().to_vec();
 
     for (i, step) in script.iter().enumerate() {
-        let after_reasoning = harness
-            .items()
-            .iter()
-            .rev()
-            .any(|it| matches!(it, letibot_transcript::TranscriptItem::Reasoning { .. }));
+        let after_reasoning = reasoned_in_the_last_turn(harness.items());
         let started = std::time::Instant::now();
         let reply = match step {
             Step::Ask(text) => harness.submit(text),
@@ -420,6 +416,47 @@ fn c3(rows: &[Row]) -> String {
     )
 }
 
+/// Whether the turn the model is about to continue carried a thought. The turn is what sits
+/// between the user's own prompt and the end, so reasoning from an earlier turn answers for
+/// that turn only: scanning the whole transcript backwards made every later row count as one.
+fn reasoned_in_the_last_turn(items: &[letibot_transcript::TranscriptItem]) -> bool {
+    use letibot_transcript::TranscriptItem;
+    items
+        .iter()
+        .rev()
+        .take_while(|it| !matches!(it, TranscriptItem::User { .. }))
+        .any(|it| matches!(it, TranscriptItem::Reasoning { .. }))
+}
+
+/// The bar a replayed thought must clear: below this the cache collapsed on the submission that
+/// carried it, and a collapse is the defect C5 exists to see.
+const COLLAPSE_KEEP: f64 = 0.90;
+
+/// C5: the submission that follows a turn which thought must still reuse what that turn left.
+/// `f_keep` is the measure, so a collapse is a fall in the entry's reuse and not in the prompt's
+/// growth.
+fn c5(rows: &[Row]) -> String {
+    let after: Vec<&Row> = rows.iter().skip(1).filter(|r| r.after_reasoning).collect();
+    let worst = after
+        .iter()
+        .filter_map(|r| r.m.f_keep())
+        .fold(f64::INFINITY, f64::min);
+    if after.is_empty() || !worst.is_finite() {
+        return "C5  NOT RUN  no submission followed an assistant turn carrying reasoning"
+            .to_string();
+    }
+    if worst >= COLLAPSE_KEEP {
+        format!(
+            "C5  PASS  {} submissions followed a reasoning-bearing turn; the worst f_keep \
+             among them is {worst:.4}. Reasoning is in the token vector, so there is no \
+             field to forget and nothing to collapse.",
+            after.len()
+        )
+    } else {
+        format!("C5  FAIL  worst f_keep after a reasoning-bearing turn is {worst:.4}")
+    }
+}
+
 fn judge(
     rows: &[Row],
     vectors: &[Vec<TokenId>],
@@ -450,23 +487,7 @@ fn judge(
 
     // ---- C5: reasoning replay does not collapse the cache ------------------ Measured on
     // `f_keep`, which since D11 is the right metric for it.
-    let after: Vec<&Row> = rows.iter().skip(1).filter(|r| r.after_reasoning).collect();
-    let worst = after
-        .iter()
-        .filter_map(|r| r.m.f_keep())
-        .fold(f64::INFINITY, f64::min);
-    out.push(if after.is_empty() || !worst.is_finite() {
-        "C5  NOT RUN  no submission followed an assistant turn carrying reasoning".to_string()
-    } else if worst >= 0.90 {
-        format!(
-            "C5  PASS  {} submissions followed a reasoning-bearing turn; the worst f_keep \
-             among them is {worst:.4}. Reasoning is in the token vector, so there is no \
-             field to forget and nothing to collapse.",
-            after.len()
-        )
-    } else {
-        format!("C5  FAIL  worst f_keep after a reasoning-bearing turn is {worst:.4}")
-    });
+    out.push(c5(rows));
 
     // ---- C6: an empty assistant turn still owns its boundary tokens --------
     let mut c6_total = 0;
@@ -864,6 +885,58 @@ mod tests {
         assert!(lines[0].contains("C4  PASS"), "{}", lines[0]);
         let under = c4(&[row(0, 1_000, 989, 1_000), row(1, 1_000, 989, 1_000)]);
         assert!(under[0].contains("C4  FAIL"), "{}", under[0]);
+    }
+
+    /// C5's verdict, both ways: a thought that came back intact passes, a thought whose entry
+    /// the server then dropped fails, and a session that never reasoned has nothing to say.
+    #[test]
+    fn c5_fails_where_the_entry_the_thought_left_collapsed() {
+        let mut reasoned = row(0, 1_000, 990, 1_000);
+        reasoned.after_reasoning = true;
+        let mut kept = row(1, 1_100, 1_000, 1_000);
+        kept.after_reasoning = true;
+        let line = c5(&[reasoned, kept]);
+        assert!(line.contains("C5  PASS"), "{line}");
+
+        let mut dropped = row(1, 1_100, 500, 1_000);
+        dropped.after_reasoning = true;
+        let line = c5(&[row(0, 1_000, 990, 1_000), dropped]);
+        assert!(line.contains("C5  FAIL"), "{line}");
+        assert!(line.contains("0.5000"), "{line}");
+
+        let unread = c5(&[row(0, 1_000, 990, 1_000)]);
+        assert!(unread.contains("C5  NOT RUN"), "{unread}");
+    }
+
+    /// A thought belongs to the turn that made it. Reading the whole transcript backwards marked
+    /// every later submission as following a reasoning turn, which is not what C5 measures.
+    #[test]
+    fn a_thought_from_an_earlier_turn_does_not_answer_for_this_one() {
+        use letibot_transcript::{ReasoningField, Speaker, TranscriptItem, UserPart};
+        let user = |text: &str| TranscriptItem::User {
+            parts: vec![UserPart::Text {
+                text: text.to_string(),
+            }],
+            speaker: Speaker::Operator,
+        };
+        let thought = TranscriptItem::Reasoning {
+            text: "thinking it over".into(),
+            field: ReasoningField::ReasoningContent,
+            truncated: false,
+        };
+        let answer = TranscriptItem::Assistant {
+            text: "here".into(),
+            tool_calls: vec![],
+            truncated: false,
+        };
+
+        let reasoned = [user("one"), thought.clone(), answer.clone()];
+        assert!(reasoned_in_the_last_turn(&reasoned));
+        let later = [user("one"), thought, answer.clone(), user("two"), answer];
+        assert!(
+            !reasoned_in_the_last_turn(&later),
+            "the second turn reasoned nothing, and an earlier thought was counted for it"
+        );
     }
 
     /// C1's reading, both ways: a prompt that does not extend the last one fails and says where,
