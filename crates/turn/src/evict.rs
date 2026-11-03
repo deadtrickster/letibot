@@ -57,14 +57,35 @@ impl Why {
     }
 }
 
-/// One unit whose body went: which call, what tool, why, and what it cost.
+/// Where a body goes when its unit leaves the prompt, and where `recall` reads it back from.
+///
+/// `None` is a store that would not take it, and then the unit is not evicted at all: an
+/// eviction nobody can undo is the hole a summary was supposed to prevent.
+pub trait BodyStore {
+    /// Keep one body and answer the id the map and `recall` spell it by.
+    fn keep(&self, tool: &str, body: &[u8]) -> Option<String>;
+}
+
+/// The heading the new base carries above the map, so a reader knows what the lines are.
+pub const MAP_HEADER: &str = "## What was evicted before this record was written\n\n\
+    The bodies of the units below are not in this transcript, and the record above was never \
+    shown them. Each line is one unit; `recall` with its id returns that body exactly.";
+
+/// One unit whose body went: which call, what tool, what it was about, why, and what it cost.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Unit {
+    /// Where the body is: the id the map prints and `recall` takes.
+    pub id: String,
     pub call_id: String,
     pub tool: String,
+    /// What the call was about, in the words it used: the file and its window, the command, or the
+    /// child session. This is the half of a unit a reader can still see, so the map carries it.
+    pub named: String,
     pub why: Why,
     /// Bytes of body the span no longer carries.
     pub gone: usize,
+    /// What the body itself cost, which is what a reader weighing a `recall` wants to know.
+    pub bytes: usize,
 }
 
 /// The reduced span and what left it.
@@ -79,6 +100,32 @@ impl Eviction {
     pub fn gone(&self) -> usize {
         self.units.iter().map(|u| u.gone).sum()
     }
+
+    /// The map the new base carries, see [`map_text`].
+    pub fn map(&self) -> String {
+        map_text(&self.units)
+    }
+}
+
+/// The map the new base carries: one line per unit, so a reader can tell what the record was not
+/// shown and ask for any of it back. Empty when nothing was evicted, because a map with no lines
+/// under its heading reads as a compaction that lost something and is not saying what.
+pub fn map_text(units: &[Unit]) -> String {
+    if units.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from(MAP_HEADER);
+    for u in units {
+        out.push_str(&format!(
+            "\n- {} `{}` {} ({} bytes): {}",
+            u.id,
+            u.tool,
+            u.named,
+            u.bytes,
+            u.why.said()
+        ));
+    }
+    out
 }
 
 /// What a call is ABOUT, which is what decides whether a later call makes it stale: the file it
@@ -134,6 +181,22 @@ impl Subject {
         }
     }
 
+    /// What a map line calls this unit: the file and the window it was read from, the command it
+    /// ran, or the child whose transcript holds it. Clipped, because a map line is an index entry.
+    fn named(&self, child: Option<&str>) -> String {
+        if let Some(child) = child {
+            return format!("the subagent `{child}`");
+        }
+        match self {
+            // A write's `window` is the word, not a window: the whole file is what it is about.
+            Subject::File { path, write, .. } if *write => clip(path),
+            Subject::File { path, window, .. } if window.is_empty() => clip(path),
+            Subject::File { path, window, .. } => format!("{path} ({window})"),
+            Subject::Command(command) => format!("`{}`", clip(command)),
+            Subject::Other(other) => clip(other),
+        }
+    }
+
     /// Whether a LATER call of this subject leaves nothing current in `self`.
     fn covers(&self, itself: &Subject) -> bool {
         match (self, itself) {
@@ -186,6 +249,18 @@ impl Subject {
     }
 }
 
+/// How much of what a unit was about a map line quotes: enough to recognise it, not the arguments.
+pub const NAME_CLIP: usize = 100;
+
+/// One line's worth of a subject, whatever the subject's own lines were.
+fn clip(text: &str) -> String {
+    let one = text.lines().next().unwrap_or_default().trim();
+    match one.char_indices().nth(NAME_CLIP) {
+        Some((at, _)) => format!("{}…", &one[..at]),
+        None => one.to_string(),
+    }
+}
+
 /// The plan rows as one lowercased text, which is what "the plan still references it" is asked of.
 fn plan_text(rows: &[String]) -> String {
     rows.iter()
@@ -200,8 +275,8 @@ fn plan_text(rows: &[String]) -> String {
 /// The span is the part of the conversation a record is about to replace, so a body inside it is
 /// a body that buys a record a longer prompt. What is never touched: the newest exchange (the work
 /// in hand), a failure's body (an error string is the evidence), a call that is still running, and
-/// anything a plan row still names.
-pub fn reduce(items: &[TranscriptItem], rows: &[String]) -> Eviction {
+/// anything a plan row still names. A body the store will not keep is not evicted either.
+pub fn reduce(items: &[TranscriptItem], rows: &[String], store: &dyn BodyStore) -> Eviction {
     let plan = plan_text(rows);
     // Everything after the last thing the operator said is the exchange the session is inside.
     let in_hand = items
@@ -248,12 +323,19 @@ pub fn reduce(items: &[TranscriptItem], rows: &[String]) -> Eviction {
         }
         let why = match later_twin(&calls, call.at, &subject) {
             Some(by) => Why::Superseded { by },
-            None => match child {
-                Some(child) => Why::Settled { child },
+            None => match &child {
+                Some(child) => Why::Settled {
+                    child: child.clone(),
+                },
                 None => Why::Finished,
             },
         };
-        let stub = stub_of(name, &call.arguments, outcome, payload.len(), &why);
+        // The body goes to the store first, because a unit whose body cannot be got back is not
+        // one this may evict: the id the map prints is the store's answer, not a guess.
+        let Some(id) = store.keep(name, payload.as_bytes()) else {
+            continue;
+        };
+        let stub = stub_of(name, &call.arguments, outcome, payload.len(), &id, &why);
         let gone = payload.len().saturating_sub(stub.len());
         out[at] = match item.clone() {
             TranscriptItem::ToolResult {
@@ -278,10 +360,13 @@ pub fn reduce(items: &[TranscriptItem], rows: &[String]) -> Eviction {
         units.push((
             at,
             Unit {
+                id,
                 call_id: call_id.clone(),
                 tool: name.clone(),
+                named: subject.named(child.as_deref()),
                 why,
                 gone,
+                bytes: payload.len(),
             },
         ));
     }
@@ -337,9 +422,16 @@ fn later_twin(
     })
 }
 
-/// What stands where a body was: one line, the subject, the outcome, the size and the reason - and
-/// where the bytes still are, since the old transcript is kept whole.
-fn stub_of(name: &str, arguments: &str, outcome: &ToolOutcome, bytes: usize, why: &Why) -> String {
+/// What stands where a body was: one line, the subject, the outcome, the size, the reason - and the
+/// id `recall` takes, because a stub that names where the body is but not how to reach it is a hole.
+fn stub_of(
+    name: &str,
+    arguments: &str,
+    outcome: &ToolOutcome,
+    bytes: usize,
+    id: &str,
+    why: &Why,
+) -> String {
     let args: String = arguments.chars().take(STUB_ARGS).collect();
     let word = match outcome {
         ToolOutcome::Ok => "ok",
@@ -347,7 +439,7 @@ fn stub_of(name: &str, arguments: &str, outcome: &ToolOutcome, bytes: usize, why
     };
     format!(
         "[evicted before this record was written: `{name}` {args} gave {word} and {bytes} byte(s) \
-         of body; {}. The old transcript in the store still holds it.]",
+         of body, kept as `{id}`; {}. The old transcript in the store still holds it.]",
         why.said()
     )
 }

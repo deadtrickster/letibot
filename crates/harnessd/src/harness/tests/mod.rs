@@ -46,6 +46,7 @@ mod operator_ask;
 mod parentage;
 mod prefix_on_open;
 mod questions;
+mod recall;
 mod restart_notice;
 mod store_writes;
 mod workspace;

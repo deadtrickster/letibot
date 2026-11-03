@@ -242,12 +242,36 @@ fn conversation() -> Vec<TranscriptItem> {
     items
 }
 
+/// The store the summary turn's evictions land in: ids of its own minting, so a test can ask which
+/// body went under the id a unit carries.
+#[derive(Default)]
+struct Kept(std::sync::Mutex<std::collections::BTreeMap<String, String>>);
+
+impl letibot_turn::evict::BodyStore for Kept {
+    fn keep(&self, _tool: &str, body: &[u8]) -> Option<String> {
+        let mut held = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let id = format!("u{}", held.len());
+        held.insert(id.clone(), String::from_utf8_lossy(body).into_owned());
+        Some(id)
+    }
+}
+
+impl Kept {
+    fn of(&self, id: &str) -> Option<String> {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(id)
+            .cloned()
+    }
+}
+
 /// The summary turn over the whole conversation, with the plan beside it.
 fn summarise(
     items: &[TranscriptItem],
     rows: &[String],
     tag: &str,
-) -> (Recorder, letibot_turn::Harvest) {
+) -> (Recorder, letibot_turn::Harvest, Kept) {
     let mut engine = engine();
     let prefix = StablePrefix {
         system: "be terse".into(),
@@ -260,6 +284,7 @@ fn summarise(
         tools_json: &[],
     };
     let mut sink = NullSink;
+    let kept = Kept::default();
     let harvest = letibot_turn::summarise_first_half(
         &mut engine,
         &prefix,
@@ -267,11 +292,12 @@ fn summarise(
         items,
         items.len(),
         rows,
+        &kept,
         &mut sink,
         &answerer,
     )
     .expect("the summary turn answers");
-    (recorder, harvest)
+    (recorder, harvest, kept)
 }
 
 /// The whole point: the summary turn is handed the units it needs and not the bodies that are
@@ -281,7 +307,7 @@ fn the_summary_turn_is_shown_the_evicted_span() {
     let _lock = serial();
     let items = conversation();
     let before = bytes(&items);
-    let (recorder, harvest) = summarise(&items, &plan(), "evict-the-span");
+    let (recorder, harvest, kept) = summarise(&items, &plan(), "evict-the-span");
     assert!(!harvest.summary.is_empty(), "a record came back");
     let asked = recorder.asked();
 
@@ -347,6 +373,17 @@ fn the_summary_turn_is_shown_the_evicted_span() {
         harvest.gone
     );
 
+    // And what the caller is handed is addressable: every unit's id resolves in the store the
+    // span was reduced into, to that unit's body exactly. That is what the map and `recall` stand on.
+    assert_eq!(harvest.units.len(), harvest.evicted);
+    for unit in &harvest.units {
+        let body = kept
+            .of(&unit.id)
+            .unwrap_or_else(|| panic!("`{}` is in the map and not in the store", unit.id));
+        assert_eq!(body.len(), unit.bytes, "the body under `{}` is whole", unit.id);
+        assert!(!unit.named.is_empty(), "a map line names what it was about");
+    }
+
     // And the prompt is smaller by most of what went: the summariser's own cost, not only the
     // record's.
     let after = bytes(&asked);
@@ -364,7 +401,7 @@ fn the_summary_turn_is_shown_the_evicted_span() {
 fn an_empty_plan_evicts_what_a_plan_row_would_have_kept() {
     let _lock = serial();
     let items = conversation();
-    let (recorder, harvest) = summarise(&items, &[], "evict-the-span-empty");
+    let (recorder, harvest, _kept) = summarise(&items, &[], "evict-the-span-empty");
     let asked = recorder.asked();
     assert!(
         !shown(&asked, "c6").contains("READ-OF-B"),

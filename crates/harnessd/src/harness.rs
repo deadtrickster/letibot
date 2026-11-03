@@ -409,6 +409,12 @@ pub struct Harness {
     /// **The mode confirmation a head asked for and nobody has answered**
     /// (`PROTOCOL_VERSION` 54, B8). One per session: a second ask supersedes it.
     mode_confirm: Option<PendingModeConfirm>,
+    /// The map the last compaction left: the ids the new base names and `recall` opens. One handle,
+    /// shared with the runtime's tool, so the ids a model is shown are the ids it can read.
+    recall: Arc<letibot_tools::Recall>,
+    /// What the next fork's note carries below the record: one line per unit a compaction evicted,
+    /// taken by [`Harness::fork_onto`] and written into the base it makes.
+    recall_map: Vec<letibot_turn::evict::Unit>,
 }
 
 /// A confirmation of `allow-all` waiting for a person: the daemon's half of the card another head's ask

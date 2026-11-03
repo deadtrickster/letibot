@@ -808,6 +808,9 @@ pub struct Harvest {
     /// they cost: what the summariser was never shown, and so what the record cannot name.
     pub evicted: usize,
     pub gone: usize,
+    /// The units themselves, in the order the eviction spent them. The caller writes their map into
+    /// the new base and lets `recall` reach their bodies, so it needs these and not a count.
+    pub units: Vec<crate::evict::Unit>,
 }
 
 pub fn harvest(items: &[TranscriptItem]) -> Harvest {
@@ -1660,6 +1663,7 @@ pub fn summarise_overrun(
     items: &[TranscriptItem],
     plan: &OverrunPlan,
     rows: &[String],
+    store: &dyn crate::evict::BodyStore,
     sink: &mut dyn EventSink,
     answerer: &Answerer<'_>,
 ) -> Result<Harvest, TurnFailure> {
@@ -1675,6 +1679,7 @@ pub fn summarise_overrun(
         rows,
         1,
         2,
+        store,
         sink,
         answerer,
     )?;
@@ -1686,6 +1691,7 @@ pub fn summarise_overrun(
         rows,
         2,
         2,
+        store,
         sink,
         answerer,
     )?;
@@ -1709,12 +1715,15 @@ pub fn summarise_overrun(
     }
     summary.push_str(&tail.summary);
 
+    let mut units = old.units;
+    units.extend(tail.units);
     Ok(Harvest {
         summary,
         tool_calls: old.tool_calls + tail.tool_calls,
         truncated: old.truncated || tail.truncated,
-        evicted: old.evicted + tail.evicted,
-        gone: old.gone + tail.gone,
+        evicted: units.len(),
+        gone: units.iter().map(|u| u.gone).sum(),
+        units,
     })
 }
 
@@ -1801,13 +1810,14 @@ fn summarise_one(
     plan: &[String],
     half: u64,
     halves: u64,
+    store: &dyn crate::evict::BodyStore,
     sink: &mut dyn EventSink,
     answerer: &Answerer<'_>,
 ) -> Result<Harvest, TurnFailure> {
     // The rows go to a `NullSink` and stay there; see `CompactionSink` for why that is
     // the right answer for the slice and the wrong one for the progress.
     let mut quiet = NullSink;
-    let reduced = crate::evict::reduce(slice, plan);
+    let reduced = crate::evict::reduce(slice, plan, store);
     let mut scratch = engine.open(scratch_id, prefix).map_err(TurnFailure::from)?;
     scratch
         .append_items(engine, &reduced.items, &mut quiet)
@@ -1851,6 +1861,7 @@ fn summarise_one(
     Ok(Harvest {
         evicted: reduced.units.len(),
         gone: reduced.gone(),
+        units: reduced.units,
         ..harvest(&ok.items)
     })
 }
@@ -1939,6 +1950,7 @@ pub fn summarise_first_half(
     items: &[TranscriptItem],
     split: usize,
     rows: &[String],
+    store: &dyn crate::evict::BodyStore,
     sink: &mut dyn EventSink,
     answerer: &Answerer<'_>,
 ) -> Result<Harvest, TurnFailure> {
@@ -1950,6 +1962,7 @@ pub fn summarise_first_half(
         rows,
         1,
         1,
+        store,
         sink,
         answerer,
     )

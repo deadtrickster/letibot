@@ -2562,6 +2562,11 @@ impl Harness {
         };
 
         let spiller = build_spiller(&cfg)?;
+        // Where a compaction's evicted bodies go, and the window that bounds one read of one: the
+        // same handle the runtime's `recall` tool asks through, so the ids the map prints and the ids
+        // a model can open are one list. Built here, before the runtime, because the tool is seated
+        // at open and needs somewhere to look the moment the session has compacted once.
+        let recall = std::sync::Arc::new(letibot_tools::Recall::new(cfg.planning_window()));
         // The question a long tool asks before spending another minute: for the whole of a `digest` or a `job_wait`
         // nothing polls the head, so the hub's answer goes down into the runtime and a tool about to spend real time can
         // find out the operator is waiting and stop.
@@ -2576,6 +2581,7 @@ impl Harness {
         let wanting = job_watch.clone();
         let runtime = ToolRuntime::new(registry, backend)
             .with_spiller(spiller)
+            .with_recall(recall.clone())
             .with_gate(gate)
             // And the plugin layer that sees a call before the gate, and the one a `monitor` call can arm a condition
             // from: both backed by the slot the `plugin` tool asks through, so a session nobody fills the slot for runs
@@ -2929,6 +2935,9 @@ impl Harness {
             // design: a card is about now, and the head that was waiting for the answer is a
             // process that stopped with the daemon.
             mode_confirm: None,
+            recall,
+            // Nothing evicted yet: a session's first compaction is what fills this.
+            recall_map: Vec::new(),
         };
         h.announce_the_open(stale);
         h.import_the_foreign_conversation();

@@ -1022,6 +1022,23 @@ impl Harness {
         out
     }
 
+    /// What a compaction's record stands on, recorded where both halves are: the bodies are in the
+    /// spill store under these ids, the next fork writes their map under the record, and `recall`
+    /// answers from the same ids. One call, so the map and the tool cannot disagree about an id.
+    pub fn note_evicted(&mut self, units: &[letibot_turn::evict::Unit]) {
+        self.recall.remember(units.iter().map(|u| {
+            (
+                u.id.clone(),
+                letibot_tools::Evicted {
+                    kind: u.tool.clone(),
+                    named: u.named.clone(),
+                    bytes: u.bytes,
+                },
+            )
+        }));
+        self.recall_map = units.to_vec();
+    }
+
     /// The rows still owed, as text: what an eviction may not take a body from.
     fn plan_rows(&self) -> Vec<String> {
         self.todos
@@ -1048,6 +1065,9 @@ impl Harness {
         let scratch = format!("{}#overrun", self.transcript_id);
         let answerer = Self::answerer(&self.provider, &self.prefix);
         let rows = self.plan_rows();
+        // Where the evicted bodies go: the session's own spill store, which is the store `recall`
+        // reads. Cloned out of `self` first, because the summary turn needs `self.engine` mutably.
+        let runtime = self.runtime.clone();
         let harvest = summarise_first_half(
             &mut self.engine,
             &prefix,
@@ -1055,6 +1075,7 @@ impl Harness {
             items,
             split,
             &rows,
+            &Spilled(&*runtime.spiller.store),
             sink,
             &answerer,
         )
@@ -1152,6 +1173,9 @@ impl Harness {
                     });
                     let (harvest, tail, tail_split) =
                         self.compact_by_folding(&items, split, &mut sink)?;
+                    // What the record stands on: the bodies are in the store under these ids, and the
+                    // next fork writes their map under the record it carries.
+                    self.note_evicted(&harvest.units);
                     // The fold's summary ran in a scratch transcript, so its outcome is built here rather than coming
                     // back from `run_summary_turn`: none of this session's own prefix was reused and no tokens were served
                     // from its cache. The overrun arm builds the same record.
@@ -1334,6 +1358,7 @@ impl Harness {
                         // which asks less of the split.
                         None => {
                             let answerer = Self::answerer(&self.provider, &self.prefix);
+                            let runtime = self.runtime.clone();
                             let h = summarise_overrun(
                                 &mut self.engine,
                                 &prefix,
@@ -1341,6 +1366,7 @@ impl Harness {
                                 &items,
                                 &plan,
                                 &rows,
+                                &Spilled(&*runtime.spiller.store),
                                 &mut sink,
                                 &answerer,
                             )
@@ -1368,6 +1394,7 @@ impl Harness {
                         compaction: None,
                     });
                     let answerer = Self::answerer(&self.provider, &self.prefix);
+                    let runtime = self.runtime.clone();
                     let h = summarise_overrun(
                         &mut self.engine,
                         &prefix,
@@ -1375,12 +1402,16 @@ impl Harness {
                         &items,
                         &plan,
                         &rows,
+                        &Spilled(&*runtime.spiller.store),
                         &mut sink,
                         &answerer,
                     )
                     .map_err(HarnessError::Turn)?;
                     (h, Vec::new(), None)
                 };
+
+                // Both halves' units are in the store under their ids; the fork below writes their map.
+                self.note_evicted(&harvest.units);
 
                 let outcome = CompactionOutcome {
                     turn_id: format!("{}#overrun", self.transcript_id),
@@ -1555,6 +1586,16 @@ impl Harness {
                  that is no longer here. Stated rather than left to be discovered."
             ),
         };
+        // What the record was not shown sits UNDER it, in the base and not in a tool's reply: a
+        // reader that has the record and not the map has been told what was lost and not where it
+        // is. Taken rather than read, so a fork that does not use it does not leak it into the next.
+        let evicted = std::mem::take(&mut self.recall_map);
+        let map = letibot_turn::evict::map_text(&evicted);
+        let map = if map.is_empty() {
+            String::new()
+        } else {
+            format!("\n\n{map}")
+        };
         let note: TranscriptItem = match lead {
             Some(item) => item,
             None => TranscriptItem::System {
@@ -1569,7 +1610,7 @@ impl Harness {
                     format!(
                         "This conversation was compacted: what was said before this point is \
                      replaced by the summary below, which was written over the full history \
-                     of transcript {old_id} and proposed no tool calls.{carried}{mid_exchange}{cut}\n\n{}",
+                     of transcript {old_id} and proposed no tool calls.{carried}{mid_exchange}{cut}\n\n{}{map}",
                         outcome.summary
                     )
                 },
@@ -2158,5 +2199,18 @@ pub(crate) fn round_backstop(configured: usize) -> usize {
     match configured {
         0 => usize::MAX,
         n => n,
+    }
+}
+
+/// Where an evicted body goes: the session's spill store, which is also what `read_spill` and
+/// `recall` read. One store, so a compaction's bodies and a call's own overflow are one place
+/// rather than two that a memory-pressure sweep would have to know about separately.
+pub(crate) struct Spilled<'a>(pub(crate) &'a dyn letibot_tools::SpillStore);
+
+impl letibot_turn::evict::BodyStore for Spilled<'_> {
+    fn keep(&self, tool: &str, body: &[u8]) -> Option<String> {
+        // A store that refuses is the unit's answer, not the harness's: the body stays in the
+        // span, which is the safe half of the choice, and the record is asked about it.
+        self.0.put(tool, body).ok()
     }
 }

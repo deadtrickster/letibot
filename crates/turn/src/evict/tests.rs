@@ -80,6 +80,35 @@ fn span_ending_in_hand(parts: Vec<[TranscriptItem; 2]>) -> Vec<TranscriptItem> {
     out
 }
 
+/// A store with a body in it per id, minting the ids itself: so a test can say that the map's id
+/// is the one the body went in under.
+#[derive(Default)]
+struct Kept(std::sync::Mutex<std::collections::BTreeMap<String, String>>);
+
+impl BodyStore for Kept {
+    fn keep(&self, _tool: &str, body: &[u8]) -> Option<String> {
+        let mut held = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let id = format!("k{}", held.len());
+        held.insert(id.clone(), String::from_utf8_lossy(body).into_owned());
+        Some(id)
+    }
+}
+
+impl Kept {
+    fn of(&self, id: &str) -> Option<String> {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(id)
+            .cloned()
+    }
+}
+
+/// The reduction with a store that keeps everything, for the tests about which units go.
+fn reduced(items: &[TranscriptItem], rows: &[String]) -> Eviction {
+    reduce(items, rows, &Kept::default())
+}
+
 /// The payload of the result for that call, or `None` when the span does not hold it.
 fn payload_of<'a>(items: &'a [TranscriptItem], id: &str) -> Option<&'a str> {
     items.iter().find_map(|i| match i {
@@ -105,7 +134,7 @@ fn a_read_a_later_write_supersedes_is_evicted() {
             result("c2", "write", ToolOutcome::Ok, body("wrote it", 600)),
         ],
     ]);
-    let out = reduce(&items, &[]);
+    let out = reduced(&items, &[]);
     let unit = out
         .units
         .iter()
@@ -142,7 +171,7 @@ fn a_read_repeated_word_for_word_goes_and_the_last_one_stays() {
         read("c1", "src/a.rs", 4_000),
         read("c2", "src/a.rs", 4_000),
     ]);
-    let out = reduce(&items, &[]);
+    let out = reduced(&items, &[]);
     assert_eq!(
         out.units
             .iter()
@@ -181,7 +210,7 @@ fn two_windows_of_one_file_are_not_one_subject() {
             result("c2", "read", ToolOutcome::Ok, body("second window", 4_000)),
         ],
     ]);
-    let out = reduce(&items, &[]);
+    let out = reduced(&items, &[]);
     for unit in &out.units {
         assert_eq!(
             unit.why,
@@ -207,7 +236,7 @@ fn a_settled_subagent_report_goes_and_names_the_session() {
         ],
         read("c2", "src/a.rs", 2_000),
     ]);
-    let out = reduce(&items, &[]);
+    let out = reduced(&items, &[]);
     let unit = out
         .units
         .iter()
@@ -236,7 +265,7 @@ fn the_classes_go_in_order() {
         read("c2", "src/a.rs", 2_000),
         read("c3", "src/a.rs", 2_000),
     ]);
-    let out = reduce(&items, &[]);
+    let out = reduced(&items, &[]);
     let classes: Vec<u8> = out.units.iter().map(|u| u.why.class()).collect();
     assert_eq!(
         classes,
@@ -277,7 +306,7 @@ fn a_unit_the_plan_still_names_keeps_its_body() {
         "run cargo test -p letibot-turn and read the failure".to_string(),
         "collect s-abc's answer and land the branch".to_string(),
     ];
-    let out = reduce(&items, &rows);
+    let out = reduced(&items, &rows);
     assert!(
         out.units.is_empty(),
         "every one of these is named by a plan row: {:?}",
@@ -290,7 +319,7 @@ fn a_unit_the_plan_still_names_keeps_its_body() {
 #[test]
 fn a_plan_row_naming_the_file_by_its_name_keeps_it() {
     let items = span(vec![read("c1", "crates/turn/src/evict.rs", 3_000)]);
-    let out = reduce(&items, &["finish evict.rs and its doc".to_string()]);
+    let out = reduced(&items, &["finish evict.rs and its doc".to_string()]);
     assert!(out.units.is_empty(), "the basename is the name: {out:?}");
 }
 
@@ -302,7 +331,7 @@ fn the_newest_exchange_is_left_whole() {
     items.extend(read("c1", "src/old.rs", 4_000));
     items.push(user("now look at this one"));
     items.extend(read("c2", "src/new.rs", 4_000));
-    let out = reduce(&items, &[]);
+    let out = reduced(&items, &[]);
     assert_eq!(
         out.units
             .iter()
@@ -344,7 +373,7 @@ fn a_failure_and_a_running_call_keep_their_bodies() {
             ),
         ],
     ]);
-    let out = reduce(&items, &[]);
+    let out = reduced(&items, &[]);
     assert!(out.units.is_empty(), "{:?}", out.units);
 }
 
@@ -358,7 +387,7 @@ fn a_short_body_is_not_worth_a_stub() {
             result("c2", "read", ToolOutcome::Ok, body("again", 20)),
         ],
     ]);
-    let out = reduce(&items, &[]);
+    let out = reduced(&items, &[]);
     assert!(out.units.is_empty(), "{:?}", out.units);
 }
 
@@ -378,7 +407,7 @@ fn the_facts_the_gate_counts_survive_eviction() {
             result("c3", "bash", ToolOutcome::Ok, body("ok", 3_000)),
         ],
     ]);
-    let out = reduce(&items, &[]);
+    let out = reduced(&items, &[]);
     assert!(!out.units.is_empty(), "the span has units to evict");
     let before = crate::fidelity::Facts::of(&items);
     let after = crate::fidelity::Facts::of(&out.items);
@@ -400,7 +429,7 @@ fn the_stub_is_one_line_that_says_what_went() {
         read("c1", "src/a.rs", 3_000),
         read("c2", "src/a.rs", 3_000),
     ]);
-    let out = reduce(&items, &[]);
+    let out = reduced(&items, &[]);
     let stub = payload_of(&out.items, "c1").unwrap();
     assert!(
         stub.lines().count() <= 3,
@@ -415,6 +444,66 @@ fn the_stub_is_one_line_that_says_what_went() {
     assert!(stub.len() <= STUB_ARGS + 200, "{}", stub.len());
 }
 
+/// A unit in the map is a unit whose body the store holds under that same name: the map is the
+/// index of an eviction, and an index nobody can look up is a tombstone nobody can read.
+#[test]
+fn every_evicted_unit_is_named_in_the_map_and_kept() {
+    let items = span_ending_in_hand(vec![
+        read("c1", "src/a.rs", 4_000),
+        read("c2", "src/a.rs", 4_000),
+    ]);
+    let kept = Kept::default();
+    let out = reduce(&items, &[], &kept);
+    let unit = out
+        .units
+        .first()
+        .unwrap_or_else(|| panic!("the earlier read must go: {:?}", out.units));
+    assert!(!unit.id.is_empty(), "a unit without an id is not addressable");
+    assert_eq!(
+        kept.of(&unit.id).as_deref(),
+        payload_of(&items, "c1"),
+        "the store holds the body exactly, under the id the map names"
+    );
+    assert_eq!(unit.named, "src/a.rs", "the map says what the unit was about");
+
+    // The stub in the reduced span names the same id, so the summariser's own copy of the span
+    // points at the same body the map does.
+    let stub = payload_of(&out.items, "c1").unwrap();
+    assert!(stub.contains(&unit.id), "the stub names the id: {stub}");
+
+    let map = out.map();
+    assert!(
+        map.contains(&unit.id) && map.contains("read") && map.contains("src/a.rs"),
+        "one line per unit, carrying the id, the kind and what it named: {map}"
+    );
+    assert_eq!(
+        map.lines().filter(|l| l.starts_with("- ")).count(),
+        out.units.len(),
+        "exactly one line per unit: {map}"
+    );
+    assert!(map.contains("recall"), "and how to get it back: {map}");
+}
+
+/// A body the store will not take leaves the unit alone. An eviction whose body cannot be got back
+/// is the hole the whole design refuses, so the store's refusal is the unit's answer.
+#[test]
+fn a_body_the_store_refuses_is_not_evicted() {
+    struct Refuses;
+    impl BodyStore for Refuses {
+        fn keep(&self, _tool: &str, _body: &[u8]) -> Option<String> {
+            None
+        }
+    }
+    let items = span_ending_in_hand(vec![
+        read("c1", "src/a.rs", 4_000),
+        read("c2", "src/a.rs", 4_000),
+    ]);
+    let out = reduce(&items, &[], &Refuses);
+    assert!(out.units.is_empty(), "nothing could be kept: {:?}", out.units);
+    assert_eq!(out.items, items, "so the span is whole");
+    assert_eq!(out.map(), "", "and there is no map to write");
+}
+
 /// The reduction is a value: the span handed in is not touched.
 #[test]
 fn the_span_handed_in_is_left_alone() {
@@ -423,7 +512,7 @@ fn the_span_handed_in_is_left_alone() {
         read("c2", "src/a.rs", 3_000),
     ]);
     let before = items.clone();
-    let out = reduce(&items, &[]);
+    let out = reduced(&items, &[]);
     assert_eq!(items, before, "the session's own items are not edited");
     assert_ne!(out.items, before, "and the reduced span is not it either");
     assert_eq!(out.gone(), out.units.iter().map(|u| u.gone).sum::<usize>());
