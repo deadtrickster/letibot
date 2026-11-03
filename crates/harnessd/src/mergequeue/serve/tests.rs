@@ -2915,6 +2915,45 @@ fn a_target_that_does_not_exist_is_said_once() {
     );
 }
 
+/// A target can come back and go again. The warning is keyed on the tip and a target that is not
+/// there has none, so the key was one fixed spelling for the life of the store: the second
+/// disappearance was never said, and the branches waiting for it waited silently.
+#[test]
+fn a_target_that_comes_back_and_goes_again_is_said_again() {
+    let w = World::new("missingtargetagain");
+    let settings = QueueSettings {
+        target: Some("release".into()),
+        ..QueueSettings::default()
+    };
+    let q = w.worker_with(Arc::new(GreenGate), "a", settings.clone());
+    run(&q, 3);
+    assert_eq!(
+        w.door.warnings("target_unjudged").len(),
+        1,
+        "said once when it went missing"
+    );
+
+    // The operator creates it, the queue sees it there, and then it goes again. It need not be
+    // GREEN in between: a target that was gated and found red is still a target that was there.
+    commit(
+        &w.repo,
+        "broken",
+        "x\n",
+        "a hand commit that breaks the gate",
+    );
+    sh(&w.repo, &["branch", "release", "main"]);
+    let q = w.worker_with(Arc::new(LocalGate), "a", settings.clone());
+    run(&q, 2);
+    sh(&w.repo, &["branch", "-D", "release"]);
+    run(&q, 3);
+    let said = w.door.warnings("target_unjudged");
+    assert_eq!(
+        said.len(),
+        2,
+        "the second disappearance is news again: {said:?}"
+    );
+}
+
 /// A branch whose own gate could not run goes back in line, and waits its window too - the
 /// landing half of the same rule: parked `blocked` it needed `/queue restart`, and taken again on
 /// the next pass it was one ssh attempt per second at a host that was down.

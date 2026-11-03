@@ -663,12 +663,17 @@ impl RepoQueue {
     /// A target alarm, raised once per tip and cause - not again when a restarted daemon re-gates
     /// the same tip to the same verdict, and again once the target has been green in between.
     fn alarm(&self, h: &TargetHealth, code: &str, detail: String) -> Result<bool, StoreError> {
-        let key = format!("alarm:{}:{}:{}:{code}", self.key, h.target, h.sha);
+        let key = self.alarm_key(&h.target, &h.sha, code);
         if self.first_time(&key)? {
             self.raise(code, detail);
             return Ok(true);
         }
         Ok(false)
+    }
+
+    /// The key a target alarm is said under: the tip it is about, and the cause.
+    fn alarm_key(&self, target: &str, sha: &str, code: &str) -> String {
+        format!("alarm:{}:{target}:{sha}:{code}", self.key)
     }
 
     /// The targets of this repository that are RED now - the ones whose queues are halted.
@@ -1549,6 +1554,9 @@ impl RepoQueue {
             )?;
             return Ok(Health::Known(h, false));
         };
+        // The target is back: what was said about it being missing is not true any more, so a
+        // second disappearance is news again - and it need not have been green in between.
+        self.forget(&self.alarm_key(target, "", "target_unjudged"))?;
         if let Some(h) = self.store.target_health(&self.key, target)?
             && h.sha == tip
             && h.state != HealthState::Gating
