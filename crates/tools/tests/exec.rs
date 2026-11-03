@@ -262,14 +262,13 @@ fn a_scope_that_ends_records_what_it_killed_and_the_processes_are_actually_gone(
 
     // PRESENCE FIRST. `only count absence after presence`: without this loop, a
     // later empty read would be a boot window and the test would pass on a
-    // substrate that never started anything.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    // substrate that never started anything. The window is a hang detector and not
+    // a bet on the box: five forks on a loaded machine are not five seconds.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     let mut seen = 0;
     while std::time::Instant::now() < deadline {
-        seen = host.scopes().len().max(seen);
-        let members = tree_members(&host, &scope);
-        if members >= 4 {
-            seen = members;
+        seen = tree_members(&host, &scope);
+        if seen >= 4 {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
