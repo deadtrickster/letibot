@@ -1122,11 +1122,7 @@ impl Tool for JobKill {
 /// `3 jobs have settled`. The noun and the verb agree with the same number, so they are
 /// picked the same way.
 fn have(n: usize) -> &'static str {
-    if n == 1 {
-        "has"
-    } else {
-        "have"
-    }
+    if n == 1 { "has" } else { "have" }
 }
 
 /// A count, said in words: `1 job`, `3 jobs`. A placeholder is for a writer who does not
@@ -1377,10 +1373,7 @@ mod tests {
             head.contains("1 of 44 jobs this session has started are still running"),
             "{head}"
         );
-        assert!(
-            head.contains("43 jobs settled and not listed"),
-            "{head}"
-        );
+        assert!(head.contains("43 jobs settled and not listed"), "{head}");
         assert!(
             head.contains("`job_list` with `all: true`"),
             "the way back to the finished ones must be named: {head}"
@@ -1454,10 +1447,7 @@ mod tests {
         // The one that is still running leaves a count of one settled behind it, and the
         // sentence has to be grammatical for that too.
         let rest = job_list_summary(None, false, 2, 2, 1);
-        assert!(
-            rest.contains("1 job settled and not listed"),
-            "{rest}"
-        );
+        assert!(rest.contains("1 job settled and not listed"), "{rest}");
         assert!(!rest.contains("1 have"), "{rest}");
     }
 
