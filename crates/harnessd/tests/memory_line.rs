@@ -114,7 +114,7 @@ fn every_round_says_what_is_free_and_no_schema_carries_it() {
             n + 1
         );
         assert!(
-            text.contains("is free (swap") && text.contains("an ask up to"),
+            text.contains("is free, swap") && text.contains("an ask up to"),
             "the line carries the box's numbers: {text}"
         );
         assert_eq!(
