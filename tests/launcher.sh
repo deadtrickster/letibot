@@ -186,6 +186,17 @@ for f in "$ROOT"/scripts/*; do
       esac ;;
   esac
 done
+# **A script nobody can run is not a check.** The lists above are each file's documented
+# invocation, and a mode that drifts to 644 makes `tests/launcher.sh` fail with Permission
+# denied before a case runs - which is exactly how this file's own bit went missing.
+for f in $BASH32 $POSIX_SH; do
+  if [ -x "$ROOT/$f" ]; then
+    echo "ok   modes: $f is executable"
+  else
+    echo "FAIL modes: $f is not executable - a script nobody can run is not a check"
+    fails=$((fails + 1))
+  fi
+done
 # **And a run, not only a parse.** `--help` reaches the launcher's argument handling and its
 # array expansions without starting a daemon — the one path that would have caught
 # `EXTRA_ARGS[@]: unbound variable` under 3.2 — and it is run with the same scrubbed
