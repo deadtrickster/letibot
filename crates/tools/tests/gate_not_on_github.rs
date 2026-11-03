@@ -47,20 +47,62 @@ fn uncommented(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// Whether a workflow answers a pull request, in every spelling of `on:`.
+fn judges_a_pull_request(text: &str) -> bool {
+    letibot_tools::builtins::merge_gate::triggers(text)
+        .iter()
+        .any(|(event, _)| event.starts_with("pull_request"))
+}
+
 /// **No workflow judges a branch.** `pull_request` is the trigger whose red would be a second
 /// verdict on the same commit the queue is rebasing - and the one that spends the rate limit.
 #[test]
 fn no_workflow_runs_on_a_pull_request() {
     for (name, text) in workflows() {
-        for line in uncommented(&text) {
-            assert!(
-                !line.trim_start().starts_with("pull_request"),
-                "{name} runs on a pull request. Branches are gated by the merge queue, in a \
-                 landing worktree here or on `[queue] gate_host`'s machine; a workflow that \
-                 judges a push is a second gate nobody acts on, and it is the GitHub Actions \
-                 budget R62 exists to stop spending. See docs/gate.md."
-            );
-        }
+        assert!(
+            !judges_a_pull_request(&text),
+            "{name} runs on a pull request. Branches are gated by the merge queue, in a \
+             landing worktree here or on `[queue] gate_host`'s machine; a workflow that \
+             judges a push is a second gate nobody acts on, and it is the GitHub Actions \
+             budget R62 exists to stop spending. See docs/gate.md."
+        );
+    }
+}
+
+/// **And the trigger is found wherever YAML puts it.** A guard that reads a line's prefix is a
+/// guard a new file walks around: `on: [push, pull_request]` and `on: {pull_request: ~}` each
+/// judge every PR and each pass a prefix check.
+#[test]
+fn a_pull_request_trigger_is_refused_in_every_spelling() {
+    for text in [
+        "on: pull_request\n",
+        "on:\n  pull_request:\n",
+        "on:\n  pull_request:\n    branches: [main]\n",
+        "on: [push, pull_request]\n",
+        "on: [push,\n  pull_request]\n",
+        "on: {pull_request: ~}\n",
+        "on: {push: ~, pull_request: ~}\n",
+        "on:\n  - push\n  - pull_request\n",
+        "on: pull_request_target\n",
+        "on: pull_request_review\n",
+    ] {
+        assert!(
+            judges_a_pull_request(text),
+            "{text:?} judges a pull request, and a guard that reads one spelling lets it through"
+        );
+    }
+    // And a release is still a release: a tag starts it, and no branch or PR does.
+    for text in [
+        "on:\n  push:\n    tags: ['v*']\n",
+        "on: {push: {tags: ['v*']}}\n",
+        "on: workflow_dispatch\n",
+        "on: push\n",
+        "on: [push, workflow_dispatch]\n",
+    ] {
+        assert!(
+            !judges_a_pull_request(text),
+            "{text:?} is not a pull request trigger, and refusing it would hold a release"
+        );
     }
 }
 
