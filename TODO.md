@@ -55,15 +55,6 @@ N4 moves to TODO-settled.md as superseded by this entry.
 
 Parked by the operator the same day. There is no default oracle because every open, locally hosted model tried so far FAILED the oracle tests (the etalon corpus, `crates/harnessd/src/etalon_oracle.rs`), and automode without a passing oracle is a model approving its own actions. The work resumes when a model passes the corpus; until then the seats keep today's modes.
 
-## R119 - Automation reacts to rate limits and model timeouts, and can move a running session to another model - **OPEN, filed 2026-11-03, the operator's ask**
-
-The operator: "mcp and basically all automation tools must be able to react to rate limits, model api timeouts and switch running session to a different model". On 2026-11-02 a peer orchestrator ran four sessions into GLM's 5-hour quota (HTTP 429, code 1113) and had no way to move them: `/models` sent through `leticode_send` reached the model as text, and a restart was the only route.
-
-- Events: a rate limit (with the provider's reset time when it gives one), a quota exhaustion, a model API timeout and repeated first-byte stalls are typed events on the wire and in `leticode_events`, and `leticode_status` carries the current model and the last such event.
-- Wait: `letibot-mcp wait --until attention` returns on them, so an orchestrator wakes when a session is stuck on its provider, not only on asks and failures.
-- Switch: an MCP verb (`leticode_model`) and a CLI flag move a running session to another model at the next turn boundary, using the daemon's existing turn-end model switch, and say which model answered the next turn. It must work for a session that joined a daemon another session started (R106).
-- Policy: an optional per-session fallback list in config (for example `fallback = ["deepseek", "glm-coding/glm-5.3"]`) lets the daemon switch on its own after a quota error or N timeouts, and announces the switch as an event.
-
 ## R118 - A GitHub reviewer seat: `letibot attach github <org|repo>` reviews every PR and answers as @letibot - **OPEN, filed 2026-11-03, the operator's ask**
 
 The operator wants letibot to work like CodeRabbit on their own repositories, starting with stroppy-io: "it just attaches to whatever pr is on the repo given to it and does reviews ... responding as @letibot".
@@ -102,7 +93,7 @@ Today an orchestrating Claude Code session learns that a package finished throug
 
 Docs: https://code.claude.com/docs/en/channels-reference.md
 
-## R115 - A host placement's commits do not come back, its shells outlive the stop, and its notes land on the Mac - **OPEN, filed 2026-11-02**
+## R115 - A host placement's commits do not come back, its shells outlive the stop, and its notes land on the Mac - **filed 2026-11-02; left: item 1's collect verb for an already-stopped session and the branch fetched home by the daemon's last act, plus the notes block read over the backend**
 
 Three placement bugs seen running packages on lubuntu1, lubuntu2 and lab2x1.
 
@@ -116,7 +107,7 @@ Three placement bugs seen running packages on lubuntu1, lubuntu2 and lab2x1.
 **Landed (this branch): item 3.** The tool's file verbs now go through the session's `ExecBackend`, the one `write`, `read`, `grep` and `bash` use: a `NoteFs` takes the backend for any path under the backend's `workspace_path()` and `std::fs` for anything else, so the box-wide notes directory - which the harness reads on this box and the tool never writes - stays where it is. `DirEntry` gained `modified: Option<u64>`, because ordering notes newest-first and dating the caveat needed an mtime and the listing was already being read: `HostBackend` fills it from the metadata it has, `SshBackend` from `stat -c %Y` falling back to `stat -f %m` inside the shell script it already runs, and a firecode VM answers `None` because its walk carries no times. Two tests, red first: `a_note_lands_in_the_backends_tree_and_not_the_scopes_workspace`, and `remote_hosts::a_note_written_in_a_placed_session_lands_in_the_remote_checkout`, where a placed session's note lands in its own checkout and the local workspace keeps none.
 **Still open?** the harness's injected notes block is still assembled from the daemon's copy (`standing_notes::gather` reads this box), so a note written on a host is real, comes home on the branch, and does not reach this session's prompt until a base rebuild after it lands here. Reading that block over the backend is a change of its own.
 
-## R114 - Embeddings as the second similarity tier, in `letibot_tools::similarity` for every caller - **BLOCKED on R113's take-up log, filed 2026-11-02, operator's ask**
+## R114 - Embeddings as the second similarity tier, in `letibot_tools::similarity` for every caller - **filed 2026-11-02, operator's ask; left: item 3's measurement from the take-up logs (are the misses synonyms?), the paraphrase against the worst measured negative, and the per-round cost on lab2x1**
 
 `crates/tools/src/similarity.rs` is lexical, and its own measurement shows where that ends: a paraphrase of the review-queue note scored 0.126, under a docker prompt's 0.133 against an unrelated note, so no floor separates them. The skill offer (R113) will meet the same gap on synonyms (presentation and beamer).
 
@@ -138,7 +129,7 @@ More callers, from the operator on 2026-11-03:
 - Already done. Score a new brief against recent commit subjects and TODO-settled.md. A close match is offered as "looks like <sha> already did this - check before starting". On 2026-11-02 four of fifteen packages found their whole scope already fixed on main.
 - Compaction relevance. Rank old turns by their score against the current todos and plan, keep the relevant ones in full and summarise the rest, instead of cutting by age. This feeds R22.
 
-## R113 - Skills are offered like notes, the index shows only pins, and a live check proves the whole path - **OPEN, filed 2026-11-02, operator's ask**
+## R113 - Skills are offered like notes, the index shows only pins, and a live check proves the whole path - **filed 2026-11-02, operator's ask; left: item 4's live check on lab2x1 - `/skills` hands a test skill over, `task {skills}` preloads it in a child, an unknown name is refused**
 
 The prompt's skill index (`crates/tools/src/builtins/skill.rs`, `SkillRegistry::index`) sorts by source priority then name and stops at 60 rows, 4000 bytes or 800 tokens. Nothing ranks by relevance, so a box with many installed skills fills the slots alphabetically, and nothing offers a skill the way `crates/harnessd/src/notes_offer.rs` offers a note. The operator (2026-11-02): the offer is wanted, listing skills in full is not, pins are wanted.
 
@@ -180,22 +171,6 @@ Record: `docs/review/2026-11-01-ab5f7841-90dd9c84.md` (three reviewers, two roun
 9. **Unchanged**: the backlog entries further down this file are their own work.
 
 **Done when**: steps 1-8 are closed or moved to their own entries. **Still open?** step 4's live run, step 6's comment rule, step 8's two decisions, and step 9's backlog.
-
----
-
-## R106 - A session that joins a running daemon ignores its own `model` - **OPEN, filed 2026-11-01**
-
-`leticode_start {model: "deepseek"}` on a worktree whose daemon a glm session had started answered with glm's own 429 ("余额不足", code 1113): the second session's turns went to the first session's provider. Each session's model must be its own, or a join with a different model must be refused by name.
-**Landed: the session's model is its own.** `crates/bridge/tests/model_per_session.rs` drives a join with another model through `leticode_start` and asserts the turns run on it (`ecae1af7`, `a_session_that_joins_a_daemon_runs_its_own_model`); `leticode_model` moves a running session another session's daemon started (`crates/bridge/tests/provider_trouble.rs`).
-**Still open?** nothing in the code. The live half, two sessions on one worktree with different `model`s compared through `leticode_status`, has not been run on a box.
-
----
-
-## R107 - `wait --until attention` returns at once while the session waits on its own background job - **OPEN, filed 2026-10-27**
-
-A session idle with `jobs_open` non-empty and `waiting_on` empty makes `letibot-mcp wait` exit 0 immediately, though the job's settlement will wake the model (PG, 2026-10-27, job `j15647`). The daemon's `Activity` must count a job whose settlement wakes the model, and `wait` must hold until that turn ends; a job whose settlement wakes nothing (a server) must not hold it.
-**Landed: a running job holds the wait, and a parked one does not.** `Head::wait`'s `armed` counts `Waiting::Job` and `Waiting::Child` (`crates/bridge/src/head.rs:1789`, `f1e7f9ec`); the two halves are `crates/bridge/tests/wait_jobs.rs`'s `a_wait_holds_on_a_running_job_and_not_on_the_one_the_model_parked` and `crates/bridge/tests/wait_activity.rs`'s `a_wait_holds_on_a_running_job_and_trusts_the_daemons_quiet`. A subagent's end was the same hole one step out, and is `crates/bridge/tests/wait_children.rs`.
-**Still open?** nothing.
 
 ---
 

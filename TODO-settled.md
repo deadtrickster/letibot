@@ -5299,5 +5299,29 @@ retries, 1/2/4/8/16 s, six calls, 31 s), and a sentence for each ending, so `FAI
 count. `refused_for_want_of_credit` and `http_retry_after` no longer exist. The interrupt half is still
 open, and it is now a question about `sleep_unless_closed` rather than about the ladder.
 — ✓ the interrupt half landed in f3fcea73: `sleep_unless_closed` watches `has_queued_interrupt`, so scenario F of `retry_policy.rs` gets the turn back in under 2 s.
+<!-- range A -->
+
+## R107 - `wait --until attention` returns at once while the session waits on its own background job - **DONE 2026-11-03: a running job holds a wait and a parked one does not, f1e7f9ec; bridge's a_wait_holds_on_a_running_job_and_not_on_the_one_the_model_parked and harnessd's a_running_job_counts_unless_the_model_parked_it**
+
+A session idle with `jobs_open` non-empty and `waiting_on` empty makes `letibot-mcp wait` exit 0 immediately, though the job's settlement will wake the model (PG, 2026-10-27, job `j15647`). The daemon's `Activity` must count a job whose settlement wakes the model, and `wait` must hold until that turn ends; a job whose settlement wakes nothing (a server) must not hold it.
+**Still open?** a session that starts a background `sleep 30` and ends its turn: `wait` should take about 30 s.
+
+---
+
+## R106 - A session that joins a running daemon ignores its own `model` - **DONE 2026-11-03: a joined session's model is its own, ecae1af7; bridge's a_session_that_joins_a_daemon_runs_its_own_model**
+
+`leticode_start {model: "deepseek"}` on a worktree whose daemon a glm session had started answered with glm's own 429 ("余额不足", code 1113): the second session's turns went to the first session's provider. Each session's model must be its own, or a join with a different model must be refused by name.
+**Still open?** start two sessions on one worktree with different `model`s and compare `leticode_status`.
+
+---
+
+## R119 - Automation reacts to rate limits and model timeouts, and can move a running session to another model - **DONE 2026-11-03: typed provider troubles, a wait that wakes on them, a model verb and a per-session fallback, 8c14963e, 3fbbe372, adf519ed, 01f8f7bd; harnessd's the_four_provider_troubles_reach_the_wire_as_types and bridge's a_provider_trouble_wakes_the_bridge_and_the_model_verb_moves_the_session**
+
+The operator: "mcp and basically all automation tools must be able to react to rate limits, model api timeouts and switch running session to a different model". On 2026-11-02 a peer orchestrator ran four sessions into GLM's 5-hour quota (HTTP 429, code 1113) and had no way to move them: `/models` sent through `leticode_send` reached the model as text, and a restart was the only route.
+
+- Events: a rate limit (with the provider's reset time when it gives one), a quota exhaustion, a model API timeout and repeated first-byte stalls are typed events on the wire and in `leticode_events`, and `leticode_status` carries the current model and the last such event.
+- Wait: `letibot-mcp wait --until attention` returns on them, so an orchestrator wakes when a session is stuck on its provider, not only on asks and failures.
+- Switch: an MCP verb (`leticode_model`) and a CLI flag move a running session to another model at the next turn boundary, using the daemon's existing turn-end model switch, and say which model answered the next turn. It must work for a session that joined a daemon another session started (R106).
+- Policy: an optional per-session fallback list in config (for example `fallback = ["deepseek", "glm-coding/glm-5.3"]`) lets the daemon switch on its own after a quota error or N timeouts, and announces the switch as an event.
 
 ---
