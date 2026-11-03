@@ -51,6 +51,7 @@ pub mod notes_keeper;
 pub mod permission;
 pub mod project_code;
 pub mod provenance;
+pub mod recall;
 pub mod references;
 pub mod remote;
 pub mod result;
@@ -96,6 +97,7 @@ pub use runtime::{
     RegisterError, Registry, Role, RoleError, Tool, ToolRuntime, command_of_argv, roles,
 };
 pub use schema::{Access, DescriptionFinding, ToolSchema, lint_description};
+pub use recall::{Evicted, Recall};
 pub use spill::{
     FixedBudget, InlineBudget, MemoryStore, NoBudget, PerToolBudget, PredictedBudget, SpillContext,
     SpillEntry, SpillRef, SpillStore, Spiller,
@@ -116,6 +118,10 @@ pub fn read_only_tools(
     reg.register(Box::new(Ask::code(retrieval.clone())))?;
     reg.register(Box::new(Ask::corpus(retrieval)))?;
     reg.register(Box::new(builtins::read_spill::ReadSpill))?;
+    // `recall` reads the map a compaction leaves, out of the same store `read_spill` reads, so
+    // the two are registered together: what a compaction emptied out of the prompt is reachable
+    // by one name or the other, and a map whose id no seat can open is a page of dead ends.
+    reg.register(Box::new(builtins::recall::RecallTool))?;
     // `hosts` reads the operator's file at every call, so a machine added mid-session is
     // visible: a list in the prompt would go stale, and the prompt is a cached prefix, so
     // refreshing it would cost a re-prefill. It needs no infrastructure, so it lives here.
@@ -285,7 +291,7 @@ mod tests {
         // `room` resolves here because `with_session_tools` registers a `NoRoom` behind it -
         // the rule this test is about: a role that names a tool must resolve on any registry
         // this crate builds, and the tool then says what is not behind it.
-        assert_eq!(seated.len(), 8, "{:?}", seated.names());
+        assert_eq!(seated.len(), 9, "{:?}", seated.names());
         assert!(seated.len() <= DEFAULT_MAX_TOOLS, "{} tools", seated.len());
     }
 

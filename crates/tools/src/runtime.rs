@@ -301,6 +301,9 @@ pub struct InvokeCtx<'a> {
     /// Where a write's provenance goes. `None` in a runtime with no daemon behind it, and
     /// then nothing is recorded.
     provenance: Option<&'a dyn crate::provenance::Sink>,
+    /// The map a compaction left, when this session has compacted anything: `recall` reads the
+    /// bodies it names out of the spill store, and its bound is this session's window.
+    pub recall: Option<&'a crate::recall::Recall>,
 }
 
 impl InvokeCtx<'_> {
@@ -828,6 +831,9 @@ pub mod roles {
                 "glob",
                 "ask_code",
                 "ask_corpus",
+                // `recall`, everywhere a seat can be compacted: the map names ids, and a seat
+                // that cannot open one reads a record of a conversation it can never re-enter.
+                "recall",
             ],
         )
     }
@@ -843,6 +849,7 @@ pub mod roles {
                 "glob",
                 "bash",
                 "read_spill",
+                "recall",
                 // A subagent seats this role and arrives with none of the conversation it is
                 // working on. `transcript` is how it can be told what was decided earlier and
                 // go and check, rather than asking its parent to paste it.
@@ -972,6 +979,7 @@ pub mod roles {
                 "ask_code",
                 "ask_corpus",
                 "read_spill",
+                "recall",
                 "todo_write",
                 "room",
             ],
@@ -992,6 +1000,7 @@ pub mod roles {
                 "read",
                 "grep",
                 "read_spill",
+                "recall",
                 "todo_write",
             ],
         )
@@ -1012,6 +1021,7 @@ pub mod roles {
                 "write_plan",
                 "say",
                 "exit_plan_mode",
+                "recall",
             ],
         )
     }
@@ -1032,6 +1042,7 @@ pub mod roles {
                 "grep",
                 "glob",
                 "read_spill",
+                "recall",
                 "todo",
                 "bash",
                 // `notes` is seated beside `write`/`edit`, and nowhere else: a note is a write
@@ -1044,8 +1055,8 @@ pub mod roles {
                 "task_resume",
                 "task_start",
                 // `hosts`, beside `task`: this seat can place a child on another machine, so it
-                // has to be able to see which machines there are. Read-only, and the seat has
-                // the room: fifteen tools against `DEFAULT_MAX_TOOLS` (16).
+                // has to be able to see which machines there are. Read-only, and the seat has the
+                // room to the last one: sixteen tools against `DEFAULT_MAX_TOOLS` (16).
                 "hosts",
             ],
         )
@@ -1053,7 +1064,7 @@ pub mod roles {
 
     /// The only role that can run a command: the exec surface is five seats, `monitor` the
     /// sixth, and the rest read. `glob` is given up on purpose, because a shell has `find` and
-    /// nothing substitutes for `read_spill`. `max_tools` is 11 here and default elsewhere.
+    /// nothing substitutes for `read_spill`. `max_tools` is 12 here and default elsewhere.
     pub fn m2_runner() -> Role {
         let mut r = Role::new(
             "runner",
@@ -1061,6 +1072,7 @@ pub mod roles {
                 "read",
                 "grep",
                 "read_spill",
+                "recall",
                 "bash",
                 "job_list",
                 "job_output",
@@ -1071,7 +1083,7 @@ pub mod roles {
                 "scenario",
             ],
         );
-        r.max_tools = 11;
+        r.max_tools = 12;
         r
     }
 
@@ -1087,6 +1099,7 @@ pub mod roles {
                 "glob",
                 "bash",
                 "read_spill",
+                "recall",
                 crate::builtins::verdict::TOOL,
             ],
         )
@@ -1098,7 +1111,7 @@ pub mod roles {
     pub fn notes_keeper() -> Role {
         Role::new(
             "notes_keeper",
-            &["read", "grep", "glob", "read_spill", "notes"],
+            &["read", "grep", "glob", "read_spill", "recall", "notes"],
         )
     }
 }
@@ -1382,6 +1395,9 @@ pub struct ToolRuntime {
     /// writes is recorded at the write. `None` in a runtime with no daemon behind it, and then
     /// nothing is recorded.
     pub provenance: Option<std::sync::Arc<dyn crate::provenance::Sink>>,
+    /// The map a compaction left: the ids `recall` answers, and the window that bounds one read.
+    /// `None` in a runtime nobody compacts into, and then `recall` says so by name.
+    pub recall: Option<std::sync::Arc<crate::recall::Recall>>,
 }
 
 /// A call the model proposed and this layer reproposed as a different tool. One shape produces
@@ -1429,6 +1445,7 @@ impl ToolRuntime {
             one_shot: false,
             call_hook: None,
             provenance: None,
+            recall: None,
         }
     }
 
@@ -1451,6 +1468,14 @@ impl ToolRuntime {
     /// did" a property of this field rather than a promise.
     pub fn with_call_hook(mut self, hook: std::sync::Arc<dyn CallHook>) -> Self {
         self.call_hook = Some(hook);
+        self
+    }
+
+    /// Wire the map a compaction leaves. One handle is shared by the harness that fills it and the
+    /// `recall` tool that reads it, so the ids the model is shown and the ids it can open are one
+    /// list rather than two that can drift.
+    pub fn with_recall(mut self, recall: std::sync::Arc<crate::recall::Recall>) -> Self {
+        self.recall = Some(recall);
         self
     }
 
@@ -1865,6 +1890,7 @@ impl ToolRuntime {
                     .unwrap_or(false),
                 one_shot: self.one_shot,
                 provenance: self.provenance.as_deref(),
+                recall: self.recall.as_deref(),
             };
             tool.invoke(&mut ctx, &args)
         };

@@ -33,6 +33,7 @@ pub mod ps;
 pub mod queue;
 pub mod read;
 pub mod read_spill;
+pub mod recall;
 pub mod retrieval;
 pub mod room;
 pub mod scenario;
