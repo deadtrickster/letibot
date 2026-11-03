@@ -258,6 +258,29 @@ pub struct Retained {
     pub read: usize,
 }
 
+/// The level above this session's watcher set: its queue, whose session it is, that set's own stop
+/// flag, and the level above that. A stopped set has handed its own queue up, so a settlement
+/// pushed into it afterwards lands where nothing drains it - hence the hop, and the flag that says
+/// when the hop is owed.
+#[derive(Clone)]
+struct Up {
+    queue: Arc<Settlements>,
+    who: String,
+    stopped: Arc<AtomicBool>,
+    up: Option<(Arc<Settlements>, String)>,
+}
+
+impl Up {
+    /// Where a settlement goes now: this level, or the one above it when this one has stopped. The
+    /// top of a tree hands nothing further up, so its own queue is where it still goes.
+    fn route(&self) -> (&Arc<Settlements>, &str) {
+        match &self.up {
+            Some((above, who)) if self.stopped.load(Ordering::Relaxed) => (above, who),
+            _ => (&self.queue, &self.who),
+        }
+    }
+}
+
 /// The per-session set of watched background jobs and subagents: fed by [`JobWatchSink`] as
 /// backgrounded results pass through it, stopped when the session's backend closes.
 pub struct JobWatchers {
@@ -278,7 +301,7 @@ pub struct JobWatchers {
     completions: Arc<Settlements>,
     /// The queue of the set this one was built from, and whose session owns it - the parent's
     /// for a child.
-    parent: Option<(Arc<Settlements>, String)>,
+    parent: Option<Up>,
     /// A settlement left this queue to be said, and the turn that says it has not begun -
     /// between the two the activity would read quiet and a `wait` would answer the turn that
     /// STARTED the job. [`JobWatchers::turn_began`] ends it.
@@ -496,7 +519,15 @@ impl JobWatchers {
             in_flight: Arc::clone(&self.in_flight),
             // Where what it can no longer drain is handed up, with the parent's id - who the
             // ring for a handed-up settlement names.
-            parent: Some((Arc::clone(&tree.completions), tree.me.clone())),
+            parent: Some(Up {
+                queue: Arc::clone(&tree.completions),
+                who: tree.me.clone(),
+                stopped: Arc::clone(&tree.stop),
+                up: tree
+                    .parent
+                    .as_ref()
+                    .map(|up| (Arc::clone(&up.queue), up.who.clone())),
+            }),
             me: self.me.clone(),
             bell: self.bell.clone(),
             stop: Arc::clone(&self.stop),
@@ -545,9 +576,10 @@ impl JobWatchers {
     /// turn ends and nothing is blocked on its slot, so it goes to the level ABOVE - the parent
     /// that started the child - queued and rung the way a stopped session's queue hands up.
     pub fn settle_up(&self, c: JobCompletion) {
-        let Some((above, who)) = &self.parent else {
+        let Some(up) = &self.parent else {
             return;
         };
+        let (above, who) = up.route();
         above.push(c);
         if let Some(bell) = &self.bell {
             bell.ring_wake(who);
@@ -566,9 +598,10 @@ impl JobWatchers {
     /// settles here: its parent's watcher stopped at the first answer, so nothing else would carry
     /// it. `false`, and nothing queued, for a session with no level above it.
     pub fn queue_up(&self, c: JobCompletion) -> bool {
-        let Some((above, who)) = &self.parent else {
+        let Some(up) = &self.parent else {
             return false;
         };
+        let (above, who) = up.route();
         above.push(c);
         if let Some(bell) = &self.bell {
             bell.ring_wake(who);
@@ -907,12 +940,13 @@ impl JobWatchers {
         self.say_held();
         // A session at the top of a tree has nowhere to hand anything up to, and a
         // session that drained everything it had leaves nothing to carry.
-        let Some((above, who)) = &self.parent else {
+        let Some(up) = &self.parent else {
             return;
         };
         if pending.is_empty() {
             return;
         }
+        let (above, who) = up.route();
         {
             let mut g = above.queue.lock().expect("job completions");
             g.extend(pending);
@@ -950,7 +984,10 @@ impl JobWatchers {
         // see `SettlementQueue`.
         let queue = Arc::new(SettlementQueue {
             own: Arc::clone(&self.completions),
-            parent: self.parent.clone(),
+            parent: self
+                .parent
+                .as_ref()
+                .map(|up| (Arc::clone(&up.queue), up.who.clone())),
             stopped: Arc::clone(&self.stop),
             owner: self.me.clone(),
             bell: self.bell.clone(),

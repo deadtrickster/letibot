@@ -703,6 +703,81 @@ fn a_later_turn_is_queued_on_the_level_above_and_rings_it() {
     );
 }
 
+/// **A settlement handed up from below a session that has itself stopped goes to the level above
+/// that.** A stopped set has handed its own queue up, so a settlement pushed into it afterwards sits
+/// where nothing will ever drain it - which is the one thing a hand-up exists to prevent.
+#[test]
+fn a_settlement_handed_up_past_a_stopped_level_reaches_the_one_above_it() {
+    use letibot_sessionlog::registry::{Registry, SessionWiring, Work};
+
+    let r = Registry::new();
+    let root = r
+        .create("s-root", "", SessionWiring::default())
+        .expect("the root registers");
+    let child = r
+        .create_under(
+            "s-child",
+            "",
+            SessionWiring::default(),
+            Some("s-root".into()),
+        )
+        .expect("the child registers");
+    let grandchild = r
+        .create_under(
+            "s-grandchild",
+            "",
+            SessionWiring::default(),
+            Some("s-child".into()),
+        )
+        .expect("the grandchild registers");
+    // Each create rings an Open; drain all three so the next ring is this one.
+    for _ in 0..3 {
+        assert!(matches!(r.next_work(), Some(Work::Open(_))));
+    }
+
+    let root_watch = JobWatchers::watching_tasks(&root, Some(Arc::clone(r.bell())));
+    let child_watch =
+        JobWatchers::watching_tasks(&child, Some(Arc::clone(r.bell()))).shares_tree(&root_watch);
+    let grandchild_watch = JobWatchers::watching_tasks(&grandchild, Some(Arc::clone(r.bell())))
+        .shares_tree(&child_watch);
+
+    // The middle session closes, which hands its queue up to the root and leaves nothing to drain
+    // what arrives after it.
+    child_watch.stop();
+
+    assert!(
+        grandchild_watch.queue_up(JobCompletion {
+            arrived: std::time::SystemTime::UNIX_EPOCH,
+            later: true,
+            kind: BackgroundKind::Subagent,
+            owner: "s-child".into(),
+            job: "s-grandchild".into(),
+            command: String::new(),
+            slug: None,
+            state: "done".into(),
+            produced: 0,
+            elapsed_ms: 0,
+            detail: "the second half".into(),
+            memory: None,
+        }),
+        "a grandchild has a level above it"
+    );
+    assert!(
+        child_watch.take_completions().is_empty(),
+        "the stopped session's queue is the one nothing drains"
+    );
+    let up = root_watch.take_completions();
+    assert_eq!(
+        up.len(),
+        1,
+        "the settlement belongs to the level that is still running: {up:?}"
+    );
+    assert!(
+        matches!(r.next_work(), Some(Work::Woken(id)) if id == "s-root"),
+        "and the session it reached is the one woken"
+    );
+}
+
 /// A job a subagent started is the SUBAGENT's to be told, and the parent never sees it.
 /// Measured twice from the parent's own conversation: a `sleep 25
 #[test]

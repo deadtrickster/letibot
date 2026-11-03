@@ -3,7 +3,6 @@
 //! themselves do not have, and the ledger is the prompt.
 
 use super::*;
-use letibot_tokencore::Vocab;
 
 /// A scratch directory that removes itself.
 struct Scratch(std::path::PathBuf);
