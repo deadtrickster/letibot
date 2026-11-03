@@ -5820,7 +5820,7 @@ passed), and a first turn, which must not pass by vacancy.
 
 ---
 
-## T17 — harnessd — **BUILT 2026-09-09. The loop runs; M1's exit criterion is NOT met as written.**
+## T17 — harnessd — **BUILT 2026-09-09. M1's exit criterion is NOT met as written; the per-clause status below says what is measured and what cannot be.**
 
 `crates/harnessd`. Scripted 30-turn session against `qwen-3.8-flash-next`: 53
 submissions, 25 tool calls, 161 persisted rows, 22,201 final prompt tokens, 85 s.
@@ -5868,6 +5868,50 @@ from its own metrics.
 — OPEN: the criterion is unrewritten — `docs/implementation-plan.md:360` still reads `f_keep`
 p10 >= 0.99 — and no re-measurement under D11's metric exists in the tree (the metric landed in
 cca619f8; the 30-turn run was never repeated).
+
+### Per-clause status against `main`, taken 2026-11-03
+
+M1's exit is two claims: **C1-C10 pass where opencode failed**, and **`f_keep` p10 >= 0.99 over a
+scripted session**. The second names `f_keep` bare in the milestone table and §18.2 defines it as
+`lcp / cached_entry`, which D11 settled; the table now says so, so the criterion no longer reads as
+the `cached / prompt` ratio T22 proved unreachable.
+
+**Every check now reads its evidence through a function that a test holds. Three clauses are still
+not answered: C4 has no number in the settled form, C7's server half cannot be produced here, and
+the comparison against opencode has no left side at all.**
+
+| clause | on `main` today | what is missing |
+|---|---|---|
+| C1 exact prefix extension | read off the token vectors (`m1::c1`, three tests): a divergence names the token, and a run whose every turn failed is `NOT RUN` instead of a pass over zero submissions. The 2026-09-09 run: PASS | a re-run, below |
+| C2 renderer fidelity | not produced by the instrument, deliberately. Answered offline by `crates/dialect-glm/tests/invariants.rs` (12 tests) and `crates/dialect-qwen` (36 across render, parse, lib and json); `tests/fidelity/run_gate.py` is the full gate and needs an oracle process | one command that runs the gate as part of the exit |
+| C3 generation-inclusive prefix | `m1::c3`: `FAIL` only on `Violated`; a shortfall is `PASS*` and the exact `previous generation + 3` signature is counted. Live: never violated, 3/52 shortfalls | a re-run |
+| **C4 `f_keep` p10 >= 0.99** | `m1::c4` reads `C4_KEEP` and prints the bar it judges by, in D11's form, with `f_sim` printed apart under its own name | **the number: the 30-turn run was never repeated after the metric landed (cca619f8), so no p10 in the settled form exists in the tree. The 0.8771 in the table above is `f_sim`** |
+| C5 reasoning replay | `m1::c5`. Fixed on the way: the flag meant "any reasoning ever in the session", so from the first thought on every submission counted; it is now the turn being continued | a re-run |
+| C6 `content: ""` never null | `m1::c6`. The 2026-09-09 run produced no tool-call-only turn, so its live verdict is `NOT RUN` | a session whose model answers with a call and no text |
+| C7 truncated tool args | the client half is proven offline: `letibot_turn::length`'s tests, `one_truncated_argument_fails_the_whole_batch_not_just_itself`, and `FinishReason::Length` parsed off the wire | **the server half: a real `length`, which needs the `n_predict` cap §5.7 removed or a 262,144-token context** |
+| C8 `finish_reason` | `m1::c8`, `PARTIAL` by design because no `length` was ever seen, and `NOT RUN` on a run with no submission, where it used to say `PARTIAL` over zero | the same `length` C7 needs |
+| C9 mid-session system change | `m1::c9`, on the same collapse bar as C5. Live: PASS, prefix byte-identical | a re-run |
+| C10 disjoint cache accounting | `m1::c10`; a run that asked nothing is `NOT RUN`, not agreement. Live: PASS on all 53 | a re-run |
+| **"where opencode failed"** | nothing in the tree records opencode's per-check pass or fail, which is M0's exit | **M0's baseline: the comparison has no left side** |
+
+**The run now says whether the criterion is met.** `letibot-m1` ends with one `M1 EXIT` line and
+exits 1 unless it says `MET`: a check that never ran has not passed, where the old exit status was
+"nothing said FAIL", which a run that measured nothing passed. C2 and C7 are named on that line as
+measured elsewhere rather than counted as failures.
+
+**What is still missing, in the order it would close.**
+
+1. **The re-measurement.** Every number in this entry is from 2026-09-09, before D11's metric
+   landed, so the exit's own p10 has never been taken in the settled form. That is one 30-turn run
+   against a local server, and nothing in the instrument blocks it.
+2. **M0's opencode baseline.** "where opencode failed" needs a recorded per-check pass or fail for
+   opencode; no run of C1-C10 against it is in the tree.
+3. **C7's server half**, and with it C8's `length`. Both need a `length` finish the plan forbids
+   producing, so they stay `NOT RUN` until a 262k context exists on a production box.
+4. **C2 as part of the exit.** The gate is answered by other tests; the exit does not run them.
+
+— OPEN: the four above. Nothing in `crates/harnessd/src/m1.rs` is unproven now: every check reads
+the evidence through a function with a test that fails when the evidence violates it.
 
 ---
 
