@@ -116,7 +116,8 @@ pub struct ActivityFacts {
     /// A settlement is queued for this session and nobody has drained it - see
     /// [`JobWatchers::pending`].
     pub pending: bool,
-    /// How many results are held for the model's next break - see [`JobWatchers::held_count`].
+    /// How many results are held for a turn that is coming - see [`JobWatchers::held_count`], which
+    /// is the count whatever the last turn's ending was.
     pub held: usize,
     /// A settlement has been taken for a turn that has not begun - see
     /// [`JobWatchers::settlement_in_flight`]. The queue is empty here and the turn is still owed.
@@ -301,6 +302,10 @@ pub struct JobWatchers {
     /// on a publish (see [`WatchedNow`]). Written inside that lock by [`JobWatchers::hold`] and
     /// by both takes.
     held_now: Arc<AtomicUsize>,
+    /// Whether the last turn to end RINGS for what it left held. Only a turn that finished on its
+    /// own does, so only then is a held result a turn this session will take by itself - an atomic
+    /// beside `held_now` for the same reason, since a publish is what reads it.
+    rings_held: Arc<AtomicBool>,
     /// The held counts last published to the hub - `(jobs, subagents, failed)` - so
     /// [`SessionEvent::HeldResults`] goes out when the set changes, not on every touch (a
     /// re-sort that puts the same results back changes nothing a head draws).
@@ -360,6 +365,7 @@ impl JobWatchers {
             settled: Arc::new(Mutex::new(Settled::default())),
             held: Arc::new(Mutex::new(Vec::new())),
             held_now: Arc::new(AtomicUsize::new(0)),
+            rings_held: Arc::new(AtomicBool::new(false)),
             held_said: Arc::new(Mutex::new((0, 0, 0))),
             wanted: Arc::clone(&wanted),
             watched: WatchedNow::new(wanted),
@@ -430,6 +436,7 @@ impl JobWatchers {
             settled: Arc::new(Mutex::new(Settled::default())),
             held: Arc::new(Mutex::new(Vec::new())),
             held_now: Arc::new(AtomicUsize::new(0)),
+            rings_held: Arc::new(AtomicBool::new(false)),
             held_said: Arc::new(Mutex::new((0, 0, 0))),
             wanted: Arc::clone(&wanted),
             watched: WatchedNow::new(wanted),
@@ -459,6 +466,7 @@ impl JobWatchers {
             settled: Arc::clone(&self.settled),
             held: Arc::clone(&self.held),
             held_now: Arc::clone(&self.held_now),
+            rings_held: Arc::new(AtomicBool::new(false)),
             held_said: Arc::clone(&self.held_said),
             wanted: Arc::clone(&self.wanted),
             // Its own snapshot, over its own `mine`: what this set watches is this set's.
@@ -494,6 +502,7 @@ impl JobWatchers {
             // Its own: what this session holds and what it asked for are this session's.
             held: Arc::clone(&self.held),
             held_now: Arc::clone(&self.held_now),
+            rings_held: Arc::new(AtomicBool::new(false)),
             held_said: Arc::clone(&self.held_said),
             wanted: Arc::clone(&self.wanted),
             // Its own, for `held`'s reason: a child that inherited its parent's would report
@@ -651,6 +660,10 @@ impl JobWatchers {
             r.turns_ended += 1;
             r.ended_at = Some(SystemTime::now());
         }
+        // Recorded before the ring, because it is what the ring MEANS: the ending is decided once
+        // per turn, and the activity reads it as *a turn is coming for what this one held*.
+        self.rings_held
+            .store(how == TurnEnd::Done, Ordering::SeqCst);
         let Some(bell) = &self.bell else { return };
         match how {
             TurnEnd::Interrupted | TurnEnd::Failed => bell.drop_wakes(&self.me),
@@ -820,7 +833,13 @@ impl JobWatchers {
     pub fn activity_facts(&self) -> ActivityFacts {
         ActivityFacts {
             pending: self.pending(),
-            held: self.held_count(),
+            // A held result is a turn owed only when a wake is coming for it, and only a turn that
+            // finished on its own rings one: a readout promising a turn after a failed one parks a
+            // caller's `wait` on a session nothing is coming for.
+            held: match self.rings_held.load(Ordering::SeqCst) {
+                true => self.held_now.load(Ordering::SeqCst),
+                false => 0,
+            },
             in_flight: self.settlement_in_flight(),
             at_work: self.watched.now(),
         }

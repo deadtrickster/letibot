@@ -337,4 +337,64 @@ mod tests {
             "the child it names is"
         );
     }
+
+    /// A result a turn FAILED holding is not a turn this session will take by itself: the wake that
+    /// would have said it is never rung, so a readout promising one parks an orchestrator's `wait`
+    /// on a session nothing is coming for.
+    #[test]
+    fn a_failed_turn_leaves_no_turn_owed_for_what_it_held() {
+        use crate::jobwatch::{BackgroundKind, JobCompletion, TurnEnd};
+        let hub = Hub::new("s-held");
+        let watch =
+            JobWatchers::watching_tasks(&hub, Some(letibot_sessionlog::registry::Bell::new()));
+        hub.set_activity_source(source(
+            Some(Arc::clone(&watch)),
+            None,
+            Arc::new(AtomicUsize::new(0)),
+            Arc::new(AtomicBool::new(false)),
+        ));
+        watch.hold(vec![JobCompletion {
+            memory: None,
+            kind: BackgroundKind::Job,
+            owner: "s-held".into(),
+            job: "j61".into(),
+            command: "cargo build".into(),
+            slug: None,
+            state: "exited 0".into(),
+            produced: 0,
+            elapsed_ms: 1_000,
+            detail: String::new(),
+            arrived: SystemTime::now(),
+        }]);
+        // A turn that finished on its own rang for the result it held, and takes that turn.
+        watch.turn_ended(TurnEnd::Done);
+        hub.refresh_activity();
+        assert_eq!(
+            hub.activity(),
+            Activity::of(vec![Waiting::Delivery]),
+            "the wake that says it is the turn owed"
+        );
+        // A turn that failed rang nothing, so nothing is coming for the same held result.
+        watch.turn_ended(TurnEnd::Failed);
+        hub.refresh_activity();
+        assert!(
+            hub.activity().is_quiet(),
+            "a failed turn promises no turn of its own: {}",
+            hub.activity().line()
+        );
+        // And a stop is the same: the operator asked for quiet.
+        watch.turn_ended(TurnEnd::Done);
+        watch.turn_ended(TurnEnd::Interrupted);
+        hub.refresh_activity();
+        assert!(
+            hub.activity().is_quiet(),
+            "a stopped turn promises nothing either: {}",
+            hub.activity().line()
+        );
+        assert_eq!(
+            watch.held_count(),
+            1,
+            "the result is still owed a delivery, which is why silence is the only honest reading"
+        );
+    }
 }
