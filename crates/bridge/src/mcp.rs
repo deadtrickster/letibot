@@ -8,7 +8,9 @@
 //! stderr, because one stray `print!` lands in the middle of a JSON line.
 
 use std::io::{BufRead, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, mpsc};
+use std::time::Duration;
 
 use serde_json::{Value, json};
 
@@ -32,9 +34,15 @@ pub fn serve<R: BufRead, W: Write + Send>(
 ) -> std::io::Result<()> {
     let out = Mutex::new(output);
     let (push_tx, push_rx) = mpsc::channel::<Value>();
+    let done = AtomicBool::new(false);
     std::thread::scope(|scope| {
         let writer = scope.spawn(|| {
-            for message in push_rx {
+            // The stream's senders live as long as the bridge, so the channel never closes:
+            // `done` is what ends this thread when the client's input does.
+            while !done.load(Ordering::SeqCst) {
+                let Ok(message) = push_rx.recv_timeout(Duration::from_millis(100)) else {
+                    continue;
+                };
                 let mut w = out.lock().unwrap_or_else(|e| e.into_inner());
                 if write_message(&mut *w, &message).is_err() {
                     break;
@@ -42,7 +50,7 @@ pub fn serve<R: BufRead, W: Write + Send>(
             }
         });
         let result = read_loop(&mut input, &out, bridge, &push_tx);
-        drop(push_tx);
+        done.store(true, Ordering::SeqCst);
         let _ = writer.join();
         result
     })
