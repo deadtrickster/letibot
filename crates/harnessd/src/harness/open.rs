@@ -1024,6 +1024,448 @@ impl Harness {
         })
     }
 
+    /// **The conversation this session opens on**: one it already has, resumed as it stands - or
+    /// forked onto the prompt this build composes when the stored rendering or vocabulary moved, or
+    /// repaired onto the prefix its rows really chain from when it will not rebuild - else a fresh one,
+    /// created under the prefix composed above.
+    ///
+    /// Answers the transcript id, the session, how many rows are already stored, what the resume
+    /// rebuilt, the prefix the session is seated with and its store id, and the sentence a head must be
+    /// told at attach when the session speaks a prompt this daemon would not compose now.
+    #[allow(clippy::type_complexity)]
+    fn open_the_conversation(
+        store: &Option<Store>,
+        stored: &Option<letibot_tokencore::store::StoredSession>,
+        engine: &mut TurnEngine,
+        parts: &Parts,
+        cfg: &Config,
+        prefix: &StablePrefix,
+        dialect_sha: &str,
+        notes: &mut Vec<String>,
+    ) -> Result<
+        (
+            String,
+            Session,
+            usize,
+            Option<ResumeReport>,
+            StablePrefix,
+            String,
+            Option<String>,
+        ),
+        HarnessError,
+    > {
+        // A session already in the store is RESUMED, not opened a second time. Deciding it here rather than on a flag
+        // is what makes the two entry points agree, since a restart and a head asking a running daemon are the same act
+        // and used to be two.
+        let resumed = match (&store, &stored) {
+            (Some(s), Some(st)) if st.items > 0 => {
+                let transcript_id = st.transcript_id.clone().ok_or_else(|| {
+                    HarnessError::Store(format!(
+                        "session {} has {} row(s) but no transcript row to hang them on; \
+                     this store was written by something else",
+                        st.id, st.items
+                    ))
+                })?;
+                Some((s, transcript_id))
+            }
+            _ => None,
+        };
+
+        Ok(match resumed {
+            Some((s, transcript_id)) => {
+                let loaded = s
+                    .load_transcript(&transcript_id)
+                    .map_err(|e| HarnessError::Store(e.to_string()))?;
+
+                // The refusal that has to stay: the tokens were produced by one renderer against one vocabulary, and
+                // appending with another dialect would put two templates' bytes in one prompt with nothing downstream
+                // able to see it, since the chain still verifies.
+                let stored_meta = s
+                    .stable_prefix_meta(&loaded.stable_prefix_id)
+                    .map_err(|e| HarnessError::Store(e.to_string()))?;
+                let stored_sha = stored_meta
+                    .as_ref()
+                    .map(|m| m.dialect_sha.clone())
+                    .unwrap_or_default();
+                // And the vocabulary that cut the stored ids: a resume replays them as numbers, so ids from another
+                // vocabulary are valid numbers that mean other text. Same remedy as a dialect change, from the same
+                // record; two GGUFs are compared nowhere here.
+                let stored_vocab = stored_meta
+                    .as_ref()
+                    .map(|m| m.vocab_source.clone())
+                    .unwrap_or_default();
+                let vocab_moved = vocab_differs(&stored_vocab, parts.vocab.source());
+                // A rendering that cannot be reused is not a conversation that cannot be continued:
+                // `item_json` is dialect-neutral, so the items are the record and the tokens are a
+                // cache. It forks rather than rewriting, and the cost is one cold prefill, stated.
+                if stored_sha != dialect_sha || vocab_moved {
+                    let store = s;
+                    let items: Vec<letibot_transcript::TranscriptItem> =
+                        loaded.items.iter().map(|(i, _, _)| i.clone()).collect();
+
+                    let probe = engine
+                        .open(&format!("{transcript_id}#reprefill-probe"), &prefix)
+                        .map_err(|e| {
+                            HarnessError::Setup(format!("rendering the new prompt: {e}"))
+                        })?;
+                    let rec = StablePrefixRecord {
+                        dialect_sha: dialect_sha.to_string(),
+                        system: prefix.system.clone(),
+                        tools_json: prefix.tools_json.clone(),
+                        tokens: probe.ledger.prefix_tokens().to_vec(),
+                        h_init: probe.ledger.h_init(),
+                        vocab_source: parts.vocab.source().to_string(),
+                    };
+                    drop(probe);
+                    let new_prefix_id = store
+                        .put_stable_prefix(&rec)
+                        .map_err(|e| HarnessError::Store(e.to_string()))?;
+
+                    // `#tN`, N counted the way `fork_to_summary` counts it, so the
+                    // two forks cannot collide on an id.
+                    let n: i64 = store
+                        .connection()
+                        .query_row(
+                            "SELECT COUNT(*) FROM transcript WHERE session_id = ?1",
+                            [cfg.session_id.as_str()],
+                            |r| r.get(0),
+                        )
+                        .map_err(|e| HarnessError::Store(e.to_string()))?;
+                    let new_id = format!("{}#t{}", cfg.session_id, n);
+
+                    let mut rebuilt = engine
+                        .open(&new_id, &prefix)
+                        .map_err(|e| HarnessError::Setup(format!("opening the fork: {e}")))?;
+                    // Each item rendered against the history as it stood before it,
+                    // which is `render_incremental`'s contract and what keeps the
+                    // ledger rows aligned with the items.
+                    rebuilt
+                        .append_items(&engine, &items, &mut letibot_turn::events::NullSink)
+                        .map_err(|e| {
+                            HarnessError::Setup(format!(
+                                "re-rendering this conversation under {}: {e}",
+                                parts.wiring.spec().name
+                            ))
+                        })?;
+
+                    // **Unsealed until every row is in (R91.2)**: a daemon that dies while
+                    // the rows go in reopens on the stored transcript, whole, not on part of
+                    // this one. Sealed after the rows, and the fingerprint follows the seal.
+                    store
+                        .put_fork_unsealed(
+                            &new_id,
+                            &cfg.session_id,
+                            &new_prefix_id,
+                            &transcript_id,
+                            items.len() as u32,
+                        )
+                        .map_err(|e| HarnessError::Store(e.to_string()))?;
+
+                    // Written before the head attaches, so a daemon that dies now leaves a fork
+                    // that resumes. A chunk per `BEGIN IMMEDIATE` transaction, because one
+                    // autocommit per row held every daemon's write lock for minutes.
+                    let rows = rebuilt.ledger.rows();
+                    let mut run = Vec::with_capacity(rows.len());
+                    for (i, row) in rows.iter().enumerate() {
+                        let tokens = rebuilt.ledger.item_tokens(i).ok_or_else(|| {
+                            HarnessError::Store(format!("no tokens for re-rendered row {i}"))
+                        })?;
+                        run.push((&rebuilt.items[i], row, tokens));
+                    }
+                    store
+                        .append_items(&new_id, 0, run)
+                        .map_err(|e| HarnessError::Store(format!("re-rendered rows: {e}")))?;
+                    store
+                        .seal_transcript(&new_id)
+                        .map_err(|e| HarnessError::Store(e.to_string()))?;
+                    // The session now speaks the prefix this daemon composes, and the column says
+                    // so: left alone, it would report itself stale on its very next resume, having
+                    // just been re-rendered onto exactly the prompt the comparison would compose.
+                    store
+                        .set_prefix_fingerprint(
+                            &cfg.session_id,
+                            &prefix_fingerprint(cfg.seat, &prefix),
+                        )
+                        .map_err(|e| HarnessError::Store(e.to_string()))?;
+
+                    let before: usize = loaded.items.iter().map(|(_, _, t)| t.len()).sum();
+                    let recorded_under = if vocab_moved {
+                        format!(
+                            "the vocabulary `{}` and this daemon tokenizes with `{}`",
+                            stored_vocab,
+                            parts.vocab.source()
+                        )
+                    } else {
+                        format!(
+                            "dialect template {} and this daemon renders {}",
+                            &stored_sha[..16.min(stored_sha.len())],
+                            &dialect_sha[..16]
+                        )
+                    };
+                    notes.push(format!(
+                        "this conversation was recorded under {recorded_under}. Its {} item(s) \
+                     were RE-RENDERED for this one — \
+                     the stored tokens are a cache of the other rendering, the items \
+                     themselves are the record, and nothing was detokenized to do it. \
+                     {} token(s) became {}, which is one cold prefill, once, on the next \
+                     turn. The old transcript {} keeps its tokens and its chain; this is \
+                     a fork, and nothing stored was rewritten.",
+                        items.len(),
+                        before,
+                        rebuilt.ledger.len(),
+                        transcript_id,
+                    ));
+
+                    let rows = rebuilt.ledger.rows().len();
+                    let report = ResumeReport {
+                        transcript_id: new_id.clone(),
+                        rows,
+                        tokens: rebuilt.ledger.len(),
+                        head: rebuilt.ledger_head(),
+                        workspace: cfg.workspace.display().to_string(),
+                        notes: std::mem::take(notes),
+                    };
+                    // Every row was written above, so none is pending.
+                    (
+                        new_id,
+                        rebuilt,
+                        rows,
+                        Some(report),
+                        prefix.clone(),
+                        new_prefix_id,
+                        // Re-rendered onto the prefix this daemon composes, so the session
+                        // speaks it: nothing to say to a head that attaches.
+                        None,
+                    )
+                } else {
+                    // A transcript whose rows do not rebuild is repaired, not refused for ever:
+                    // `prefix_repair` forks onto the prefix the rows were really written under and
+                    // leaves the old transcript untouched. Anything else keeps its refusal.
+                    let mut transcript_id = transcript_id;
+                    // The prefix the conversation is seated with - the row's own, or the one a
+                    // repair found the rows chaining from.
+                    let mut seated_prefix_id = loaded.stable_prefix_id.clone();
+                    let mut repaired = false;
+                    let session = match Session::restore(&loaded) {
+                        Ok(session) => session,
+                        Err(e) => match prefix_repair::rows_on_another_prefix(
+                            s,
+                            &cfg.session_id,
+                            &loaded,
+                            &e,
+                        )
+                        .map_err(|e| HarnessError::Store(e.to_string()))?
+                        {
+                            Some(fixed) => {
+                                transcript_id = fixed.transcript_id;
+                                seated_prefix_id = fixed.prefix_id;
+                                repaired = true;
+                                notes.push(fixed.note);
+                                fixed.session
+                            }
+                            None => {
+                                return Err(HarnessError::Store(format!(
+                                    "session {}: {e}",
+                                    cfg.session_id
+                                )));
+                            }
+                        },
+                    };
+                    // What a head attaching to this session should be told, or `None` when the
+                    // session speaks the prompt this daemon would compose now.
+                    let mut stale: Option<String> = None;
+
+                    // The prefix the session's own tokens came from - the store's
+                    // record, not the daemon's current render. A compaction fork keeps
+                    // it, exactly as the resume itself does.
+                    let own = s
+                        .stable_prefix_record(&seated_prefix_id)
+                        .map_err(|e| HarnessError::Store(e.to_string()))?;
+                    let own_prefix = StablePrefix {
+                        system: own.system,
+                        tools_json: own.tools_json,
+                    };
+                    let own_fingerprint = prefix_fingerprint(cfg.seat, &own_prefix);
+                    // The fingerprint follows the transcript: a repair forked onto another prompt,
+                    // so a column left behind would report this session stale against a prompt
+                    // nobody is speaking.
+                    if repaired {
+                        s.set_prefix_fingerprint(&cfg.session_id, &own_fingerprint)
+                            .map_err(|e| HarnessError::Store(e.to_string()))?;
+                    }
+
+                    // Message 0 is frozen, held up here against what this daemon would seat now: a build that changed
+                    // the instructions, the schemas or the seat composes a prompt the session will never speak, and says
+                    // nothing. The comparison is `prefix_fingerprint`'s, with the stored row as the fallback.
+                    let seated = match repaired {
+                        true => own_fingerprint.clone(),
+                        false => stored
+                            .as_ref()
+                            .and_then(|r| r.prefix_fingerprint.clone())
+                            .unwrap_or_else(|| own_fingerprint.clone()),
+                    };
+                    if seated != prefix_fingerprint(cfg.seat, &prefix) {
+                        let (was, is) = (
+                            tool_schemas(&own_prefix.tools_json),
+                            tool_schemas(&prefix.tools_json),
+                        );
+                        let mut added: Vec<String> = Vec::new();
+                        let mut gone: Vec<String> = Vec::new();
+                        // A schema that GREW is named as one, and it is not the same finding as a tool that arrived:
+                        // it is in both lists, so the added/gone pair is silent about it, and a grown schema is exactly
+                        // the case that started this.
+                        let mut grew: Vec<String> = Vec::new();
+                        for (name, schema) in &is {
+                            match was.get(name) {
+                                None => added.push(name.clone()),
+                                Some(old) if old != schema => grew.push(name.clone()),
+                                Some(_) => {}
+                            }
+                        }
+                        for name in was.keys() {
+                            if !is.contains_key(name) {
+                                gone.push(name.clone());
+                            }
+                        }
+                        let instructions =
+                            instructions_of(&own_prefix.system) != instructions_of(&prefix.system);
+                        let mut moved: Vec<&str> = Vec::new();
+                        if instructions {
+                            moved.push("the system instructions");
+                        }
+                        if !added.is_empty() || !gone.is_empty() || !grew.is_empty() {
+                            moved.push("the tool schemas");
+                        }
+                        let say = stale_prefix_sentence(
+                            &cfg.session_id,
+                            &seated_at(stored.as_ref().map(|r| r.created_ms).unwrap_or(0)),
+                            &moved,
+                            &added,
+                            &gone,
+                            &grew,
+                        );
+                        // On the session's own log, and said AT ATTACH rather than here: a warning published before a
+                        // head attaches is filed `Placed::Before` and not drawn. So it goes into the registry, which also
+                        // tells a head already watching.
+                        stale = Some(say);
+                    }
+
+                    let rows = session.ledger.rows().len();
+                    let report = ResumeReport {
+                        transcript_id: transcript_id.clone(),
+                        rows,
+                        tokens: session.ledger.len(),
+                        head: session.ledger_head(),
+                        workspace: cfg.workspace.display().to_string(),
+                        notes: std::mem::take(notes),
+                    };
+                    (
+                        transcript_id,
+                        session,
+                        rows,
+                        Some(report),
+                        own_prefix,
+                        seated_prefix_id,
+                        stale,
+                    )
+                }
+            }
+            None => {
+                let transcript_id = format!("{}#t0", cfg.session_id);
+                let session = engine
+                    .open(&transcript_id, &prefix)
+                    .map_err(|e| HarnessError::Setup(format!("opening the session: {e}")))?;
+                let mut prefix_id = String::new();
+                if let Some(s) = &store {
+                    let rec = StablePrefixRecord {
+                        dialect_sha: dialect_sha.to_string(),
+                        system: prefix.system.clone(),
+                        tools_json: prefix.tools_json.clone(),
+                        tokens: session.ledger.prefix_tokens().to_vec(),
+                        h_init: session.ledger.h_init(),
+                        vocab_source: parts.vocab.source().to_string(),
+                    };
+                    prefix_id = s
+                        .put_stable_prefix(&rec)
+                        .map_err(|e| HarnessError::Store(e.to_string()))?;
+                    // `INSERT OR IGNORE`-shaped by hand: a session row may already be here with no rows behind it, so
+                    // re-opening it is a resume of an empty conversation rather than a collision.
+                    if stored.is_none() {
+                        s.put_session(&SessionRecord {
+                            id: cfg.session_id.clone(),
+                            title: Some(cfg.title.clone()).filter(|t| !t.is_empty()),
+                            // Who answers, not what the vocabulary binds: `cfg.model` is the local alias whose tokenizer renders
+                            // the prompt, while the turns may go to a provider. This row is what the picker draws. `Sessions::wiring`
+                            // is the same fact from one expression.
+                            model_id: cfg.prompt_model_name(),
+                            dialect_sha: dialect_sha.to_string(),
+                            workspace_root: cfg.workspace.display().to_string(),
+                            owner: cfg.owner.clone(),
+                            // Record it, so a later resume seats what this
+                            // conversation was built with rather than whatever the
+                            // daemon is running as then.
+                            role: Some(cfg.seat.as_str().to_string()),
+                            approvers: vec![],
+                            parent_session_id: cfg.parent_session_id.clone(),
+                        })
+                        .map_err(|e| HarnessError::Store(e.to_string()))?;
+                    }
+                    if !transcript_exists(s, &transcript_id) {
+                        s.put_transcript(&transcript_id, &cfg.session_id, &prefix_id)
+                            .map_err(|e| HarnessError::Store(e.to_string()))?;
+                        // The fingerprint of what this session was seated with, written where its transcript row is: a
+                        // fork re-seats a session long after its creation and rewrites this, which is why it is not a field
+                        // on the record above.
+                        s.set_prefix_fingerprint(
+                            &cfg.session_id,
+                            &prefix_fingerprint(cfg.seat, &prefix),
+                        )
+                        .map_err(|e| HarnessError::Store(e.to_string()))?;
+                    } else if s
+                        .item_count(&transcript_id)
+                        .map_err(|e| HarnessError::Store(e.to_string()))?
+                        == 0
+                        && s.transcript_prefix_id(&transcript_id)
+                            .map_err(|e| HarnessError::Store(e.to_string()))?
+                            .as_deref()
+                            != Some(prefix_id.as_str())
+                    {
+                        // An empty transcript on ANOTHER prompt is re-seated onto the one this daemon composes: with no rows
+                        // there is no chain to rebuild and no cache to keep, so the old prefix would cost a new conversation a
+                        // message 0 that cannot call the tools seated since. A transcript that HOLDS rows is untouched.
+                        s.set_transcript_prefix(&transcript_id, &prefix_id)
+                            .map_err(|e| HarnessError::Store(e.to_string()))?;
+                        // And the fingerprint follows, for the reason its column exists: a session still describing the
+                        // old prompt would report itself stale on the next resume, having just been re-seated.
+                        s.set_prefix_fingerprint(
+                            &cfg.session_id,
+                            &prefix_fingerprint(cfg.seat, &prefix),
+                        )
+                        .map_err(|e| HarnessError::Store(e.to_string()))?;
+                        notes.push(format!(
+                            "this session's transcript `{transcript_id}` was seated earlier with a \
+                         prompt this daemon does not compose (a different build wrote its \
+                         prefix row) and had no rows in it, so it has been re-seated onto the \
+                         prompt this daemon composes. Nothing was lost: an empty transcript \
+                         has no tokens whose chain depends on message 0. The work is done now \
+                         and not at the first turn, which is where it used to fail — see \
+                         `Store::set_transcript_prefix`."
+                        ));
+                    }
+                }
+                (
+                    transcript_id,
+                    session,
+                    0,
+                    None,
+                    prefix.clone(),
+                    prefix_id,
+                    None,
+                )
+            }
+        })
+    }
+
     pub fn open_with_registry(
         parts: &Parts,
         mut cfg: Config,
@@ -2222,409 +2664,17 @@ impl Harness {
         };
         let dialect_sha = hex32(&parts.wiring.spec().template_sha);
 
-        // A session already in the store is RESUMED, not opened a second time. Deciding it here rather than on a flag
-        // is what makes the two entry points agree, since a restart and a head asking a running daemon are the same act
-        // and used to be two.
-        let resumed = match (&store, &stored) {
-            (Some(s), Some(st)) if st.items > 0 => {
-                let transcript_id = st.transcript_id.clone().ok_or_else(|| {
-                    HarnessError::Store(format!(
-                        "session {} has {} row(s) but no transcript row to hang them on; \
-                         this store was written by something else",
-                        st.id, st.items
-                    ))
-                })?;
-                Some((s, transcript_id))
-            }
-            _ => None,
-        };
-
-        let (transcript_id, session, persisted, resume, prefix, prefix_id, stale) = match resumed {
-            Some((s, transcript_id)) => {
-                let loaded = s
-                    .load_transcript(&transcript_id)
-                    .map_err(|e| HarnessError::Store(e.to_string()))?;
-
-                // The refusal that has to stay: the tokens were produced by one renderer against one vocabulary, and
-                // appending with another dialect would put two templates' bytes in one prompt with nothing downstream
-                // able to see it, since the chain still verifies.
-                let stored_meta = s
-                    .stable_prefix_meta(&loaded.stable_prefix_id)
-                    .map_err(|e| HarnessError::Store(e.to_string()))?;
-                let stored_sha = stored_meta
-                    .as_ref()
-                    .map(|m| m.dialect_sha.clone())
-                    .unwrap_or_default();
-                // And the vocabulary that cut the stored ids: a resume replays them as numbers, so ids from another
-                // vocabulary are valid numbers that mean other text. Same remedy as a dialect change, from the same
-                // record; two GGUFs are compared nowhere here.
-                let stored_vocab = stored_meta
-                    .as_ref()
-                    .map(|m| m.vocab_source.clone())
-                    .unwrap_or_default();
-                let vocab_moved = vocab_differs(&stored_vocab, parts.vocab.source());
-                // A rendering that cannot be reused is not a conversation that cannot be continued:
-                // `item_json` is dialect-neutral, so the items are the record and the tokens are a
-                // cache. It forks rather than rewriting, and the cost is one cold prefill, stated.
-                if stored_sha != dialect_sha || vocab_moved {
-                    let store = s;
-                    let items: Vec<letibot_transcript::TranscriptItem> =
-                        loaded.items.iter().map(|(i, _, _)| i.clone()).collect();
-
-                    let probe = engine
-                        .open(&format!("{transcript_id}#reprefill-probe"), &prefix)
-                        .map_err(|e| {
-                            HarnessError::Setup(format!("rendering the new prompt: {e}"))
-                        })?;
-                    let rec = StablePrefixRecord {
-                        dialect_sha: dialect_sha.clone(),
-                        system: prefix.system.clone(),
-                        tools_json: prefix.tools_json.clone(),
-                        tokens: probe.ledger.prefix_tokens().to_vec(),
-                        h_init: probe.ledger.h_init(),
-                        vocab_source: parts.vocab.source().to_string(),
-                    };
-                    drop(probe);
-                    let new_prefix_id = store
-                        .put_stable_prefix(&rec)
-                        .map_err(|e| HarnessError::Store(e.to_string()))?;
-
-                    // `#tN`, N counted the way `fork_to_summary` counts it, so the
-                    // two forks cannot collide on an id.
-                    let n: i64 = store
-                        .connection()
-                        .query_row(
-                            "SELECT COUNT(*) FROM transcript WHERE session_id = ?1",
-                            [cfg.session_id.as_str()],
-                            |r| r.get(0),
-                        )
-                        .map_err(|e| HarnessError::Store(e.to_string()))?;
-                    let new_id = format!("{}#t{}", cfg.session_id, n);
-
-                    let mut rebuilt = engine
-                        .open(&new_id, &prefix)
-                        .map_err(|e| HarnessError::Setup(format!("opening the fork: {e}")))?;
-                    // Each item rendered against the history as it stood before it,
-                    // which is `render_incremental`'s contract and what keeps the
-                    // ledger rows aligned with the items.
-                    rebuilt
-                        .append_items(&engine, &items, &mut letibot_turn::events::NullSink)
-                        .map_err(|e| {
-                            HarnessError::Setup(format!(
-                                "re-rendering this conversation under {}: {e}",
-                                parts.wiring.spec().name
-                            ))
-                        })?;
-
-                    // **Unsealed until every row is in (R91.2)**: a daemon that dies while
-                    // the rows go in reopens on the stored transcript, whole, not on part of
-                    // this one. Sealed after the rows, and the fingerprint follows the seal.
-                    store
-                        .put_fork_unsealed(
-                            &new_id,
-                            &cfg.session_id,
-                            &new_prefix_id,
-                            &transcript_id,
-                            items.len() as u32,
-                        )
-                        .map_err(|e| HarnessError::Store(e.to_string()))?;
-
-                    // Written before the head attaches, so a daemon that dies now leaves a fork
-                    // that resumes. A chunk per `BEGIN IMMEDIATE` transaction, because one
-                    // autocommit per row held every daemon's write lock for minutes.
-                    let rows = rebuilt.ledger.rows();
-                    let mut run = Vec::with_capacity(rows.len());
-                    for (i, row) in rows.iter().enumerate() {
-                        let tokens = rebuilt.ledger.item_tokens(i).ok_or_else(|| {
-                            HarnessError::Store(format!("no tokens for re-rendered row {i}"))
-                        })?;
-                        run.push((&rebuilt.items[i], row, tokens));
-                    }
-                    store
-                        .append_items(&new_id, 0, run)
-                        .map_err(|e| HarnessError::Store(format!("re-rendered rows: {e}")))?;
-                    store
-                        .seal_transcript(&new_id)
-                        .map_err(|e| HarnessError::Store(e.to_string()))?;
-                    // The session now speaks the prefix this daemon composes, and the column says
-                    // so: left alone, it would report itself stale on its very next resume, having
-                    // just been re-rendered onto exactly the prompt the comparison would compose.
-                    store
-                        .set_prefix_fingerprint(
-                            &cfg.session_id,
-                            &prefix_fingerprint(cfg.seat, &prefix),
-                        )
-                        .map_err(|e| HarnessError::Store(e.to_string()))?;
-
-                    let before: usize = loaded.items.iter().map(|(_, _, t)| t.len()).sum();
-                    let recorded_under = if vocab_moved {
-                        format!(
-                            "the vocabulary `{}` and this daemon tokenizes with `{}`",
-                            stored_vocab,
-                            parts.vocab.source()
-                        )
-                    } else {
-                        format!(
-                            "dialect template {} and this daemon renders {}",
-                            &stored_sha[..16.min(stored_sha.len())],
-                            &dialect_sha[..16]
-                        )
-                    };
-                    notes.push(format!(
-                        "this conversation was recorded under {recorded_under}. Its {} item(s) \
-                         were RE-RENDERED for this one — \
-                         the stored tokens are a cache of the other rendering, the items \
-                         themselves are the record, and nothing was detokenized to do it. \
-                         {} token(s) became {}, which is one cold prefill, once, on the next \
-                         turn. The old transcript {} keeps its tokens and its chain; this is \
-                         a fork, and nothing stored was rewritten.",
-                        items.len(),
-                        before,
-                        rebuilt.ledger.len(),
-                        transcript_id,
-                    ));
-
-                    let rows = rebuilt.ledger.rows().len();
-                    let report = ResumeReport {
-                        transcript_id: new_id.clone(),
-                        rows,
-                        tokens: rebuilt.ledger.len(),
-                        head: rebuilt.ledger_head(),
-                        workspace: cfg.workspace.display().to_string(),
-                        notes: std::mem::take(&mut notes),
-                    };
-                    // Every row was written above, so none is pending.
-                    (
-                        new_id,
-                        rebuilt,
-                        rows,
-                        Some(report),
-                        prefix.clone(),
-                        new_prefix_id,
-                        // Re-rendered onto the prefix this daemon composes, so the session
-                        // speaks it: nothing to say to a head that attaches.
-                        None,
-                    )
-                } else {
-                    // A transcript whose rows do not rebuild is repaired, not refused for ever:
-                    // `prefix_repair` forks onto the prefix the rows were really written under and
-                    // leaves the old transcript untouched. Anything else keeps its refusal.
-                    let mut transcript_id = transcript_id;
-                    // The prefix the conversation is seated with - the row's own, or the one a
-                    // repair found the rows chaining from.
-                    let mut seated_prefix_id = loaded.stable_prefix_id.clone();
-                    let mut repaired = false;
-                    let session = match Session::restore(&loaded) {
-                        Ok(session) => session,
-                        Err(e) => match prefix_repair::rows_on_another_prefix(
-                            s,
-                            &cfg.session_id,
-                            &loaded,
-                            &e,
-                        )
-                        .map_err(|e| HarnessError::Store(e.to_string()))?
-                        {
-                            Some(fixed) => {
-                                transcript_id = fixed.transcript_id;
-                                seated_prefix_id = fixed.prefix_id;
-                                repaired = true;
-                                notes.push(fixed.note);
-                                fixed.session
-                            }
-                            None => {
-                                return Err(HarnessError::Store(format!(
-                                    "session {}: {e}",
-                                    cfg.session_id
-                                )));
-                            }
-                        },
-                    };
-                    // What a head attaching to this session should be told, or `None` when the
-                    // session speaks the prompt this daemon would compose now.
-                    let mut stale: Option<String> = None;
-
-                    // The prefix the session's own tokens came from - the store's
-                    // record, not the daemon's current render. A compaction fork keeps
-                    // it, exactly as the resume itself does.
-                    let own = s
-                        .stable_prefix_record(&seated_prefix_id)
-                        .map_err(|e| HarnessError::Store(e.to_string()))?;
-                    let own_prefix = StablePrefix {
-                        system: own.system,
-                        tools_json: own.tools_json,
-                    };
-                    let own_fingerprint = prefix_fingerprint(cfg.seat, &own_prefix);
-                    // The fingerprint follows the transcript: a repair forked onto another prompt,
-                    // so a column left behind would report this session stale against a prompt
-                    // nobody is speaking.
-                    if repaired {
-                        s.set_prefix_fingerprint(&cfg.session_id, &own_fingerprint)
-                            .map_err(|e| HarnessError::Store(e.to_string()))?;
-                    }
-
-                    // Message 0 is frozen, held up here against what this daemon would seat now: a build that changed
-                    // the instructions, the schemas or the seat composes a prompt the session will never speak, and says
-                    // nothing. The comparison is `prefix_fingerprint`'s, with the stored row as the fallback.
-                    let seated = match repaired {
-                        true => own_fingerprint.clone(),
-                        false => stored
-                            .as_ref()
-                            .and_then(|r| r.prefix_fingerprint.clone())
-                            .unwrap_or_else(|| own_fingerprint.clone()),
-                    };
-                    if seated != prefix_fingerprint(cfg.seat, &prefix) {
-                        let (was, is) = (
-                            tool_schemas(&own_prefix.tools_json),
-                            tool_schemas(&prefix.tools_json),
-                        );
-                        let mut added: Vec<String> = Vec::new();
-                        let mut gone: Vec<String> = Vec::new();
-                        // A schema that GREW is named as one, and it is not the same finding as a tool that arrived:
-                        // it is in both lists, so the added/gone pair is silent about it, and a grown schema is exactly
-                        // the case that started this.
-                        let mut grew: Vec<String> = Vec::new();
-                        for (name, schema) in &is {
-                            match was.get(name) {
-                                None => added.push(name.clone()),
-                                Some(old) if old != schema => grew.push(name.clone()),
-                                Some(_) => {}
-                            }
-                        }
-                        for name in was.keys() {
-                            if !is.contains_key(name) {
-                                gone.push(name.clone());
-                            }
-                        }
-                        let instructions =
-                            instructions_of(&own_prefix.system) != instructions_of(&prefix.system);
-                        let mut moved: Vec<&str> = Vec::new();
-                        if instructions {
-                            moved.push("the system instructions");
-                        }
-                        if !added.is_empty() || !gone.is_empty() || !grew.is_empty() {
-                            moved.push("the tool schemas");
-                        }
-                        let say = stale_prefix_sentence(
-                            &cfg.session_id,
-                            &seated_at(stored.as_ref().map(|r| r.created_ms).unwrap_or(0)),
-                            &moved,
-                            &added,
-                            &gone,
-                            &grew,
-                        );
-                        // On the session's own log, and said AT ATTACH rather than here: a warning published before a
-                        // head attaches is filed `Placed::Before` and not drawn. So it goes into the registry, which also
-                        // tells a head already watching.
-                        stale = Some(say);
-                    }
-
-                    let rows = session.ledger.rows().len();
-                    let report = ResumeReport {
-                        transcript_id: transcript_id.clone(),
-                        rows,
-                        tokens: session.ledger.len(),
-                        head: session.ledger_head(),
-                        workspace: cfg.workspace.display().to_string(),
-                        notes: std::mem::take(&mut notes),
-                    };
-                    (
-                        transcript_id,
-                        session,
-                        rows,
-                        Some(report),
-                        own_prefix,
-                        seated_prefix_id,
-                        stale,
-                    )
-                }
-            }
-            None => {
-                let transcript_id = format!("{}#t0", cfg.session_id);
-                let session = engine
-                    .open(&transcript_id, &prefix)
-                    .map_err(|e| HarnessError::Setup(format!("opening the session: {e}")))?;
-                let mut prefix_id = String::new();
-                if let Some(s) = &store {
-                    let rec = StablePrefixRecord {
-                        dialect_sha: dialect_sha.clone(),
-                        system: prefix.system.clone(),
-                        tools_json: prefix.tools_json.clone(),
-                        tokens: session.ledger.prefix_tokens().to_vec(),
-                        h_init: session.ledger.h_init(),
-                        vocab_source: parts.vocab.source().to_string(),
-                    };
-                    prefix_id = s
-                        .put_stable_prefix(&rec)
-                        .map_err(|e| HarnessError::Store(e.to_string()))?;
-                    // `INSERT OR IGNORE`-shaped by hand: a session row may already be here with no rows behind it, so
-                    // re-opening it is a resume of an empty conversation rather than a collision.
-                    if stored.is_none() {
-                        s.put_session(&SessionRecord {
-                            id: cfg.session_id.clone(),
-                            title: Some(cfg.title.clone()).filter(|t| !t.is_empty()),
-                            // Who answers, not what the vocabulary binds: `cfg.model` is the local alias whose tokenizer renders
-                            // the prompt, while the turns may go to a provider. This row is what the picker draws. `Sessions::wiring`
-                            // is the same fact from one expression.
-                            model_id: cfg.prompt_model_name(),
-                            dialect_sha,
-                            workspace_root: cfg.workspace.display().to_string(),
-                            owner: cfg.owner.clone(),
-                            // Record it, so a later resume seats what this
-                            // conversation was built with rather than whatever the
-                            // daemon is running as then.
-                            role: Some(cfg.seat.as_str().to_string()),
-                            approvers: vec![],
-                            parent_session_id: cfg.parent_session_id.clone(),
-                        })
-                        .map_err(|e| HarnessError::Store(e.to_string()))?;
-                    }
-                    if !transcript_exists(s, &transcript_id) {
-                        s.put_transcript(&transcript_id, &cfg.session_id, &prefix_id)
-                            .map_err(|e| HarnessError::Store(e.to_string()))?;
-                        // The fingerprint of what this session was seated with, written where its transcript row is: a
-                        // fork re-seats a session long after its creation and rewrites this, which is why it is not a field
-                        // on the record above.
-                        s.set_prefix_fingerprint(
-                            &cfg.session_id,
-                            &prefix_fingerprint(cfg.seat, &prefix),
-                        )
-                        .map_err(|e| HarnessError::Store(e.to_string()))?;
-                    } else if s
-                        .item_count(&transcript_id)
-                        .map_err(|e| HarnessError::Store(e.to_string()))?
-                        == 0
-                        && s.transcript_prefix_id(&transcript_id)
-                            .map_err(|e| HarnessError::Store(e.to_string()))?
-                            .as_deref()
-                            != Some(prefix_id.as_str())
-                    {
-                        // An empty transcript on ANOTHER prompt is re-seated onto the one this daemon composes: with no rows
-                        // there is no chain to rebuild and no cache to keep, so the old prefix would cost a new conversation a
-                        // message 0 that cannot call the tools seated since. A transcript that HOLDS rows is untouched.
-                        s.set_transcript_prefix(&transcript_id, &prefix_id)
-                            .map_err(|e| HarnessError::Store(e.to_string()))?;
-                        // And the fingerprint follows, for the reason its column exists: a session still describing the
-                        // old prompt would report itself stale on the next resume, having just been re-seated.
-                        s.set_prefix_fingerprint(
-                            &cfg.session_id,
-                            &prefix_fingerprint(cfg.seat, &prefix),
-                        )
-                        .map_err(|e| HarnessError::Store(e.to_string()))?;
-                        notes.push(format!(
-                            "this session's transcript `{transcript_id}` was seated earlier with a \
-                             prompt this daemon does not compose (a different build wrote its \
-                             prefix row) and had no rows in it, so it has been re-seated onto the \
-                             prompt this daemon composes. Nothing was lost: an empty transcript \
-                             has no tokens whose chain depends on message 0. The work is done now \
-                             and not at the first turn, which is where it used to fail — see \
-                             `Store::set_transcript_prefix`."
-                        ));
-                    }
-                }
-                (transcript_id, session, 0, None, prefix, prefix_id, None)
-            }
-        };
-
+        let (transcript_id, session, persisted, resume, prefix, prefix_id, stale) =
+            Self::open_the_conversation(
+                &store,
+                &stored,
+                &mut engine,
+                parts,
+                &cfg,
+                &prefix,
+                &dialect_sha,
+                &mut notes,
+            )?;
         // The sentence is left in the registry at the END of `open`, after the stored
         // conversation has been republished - see the comment there.
 
