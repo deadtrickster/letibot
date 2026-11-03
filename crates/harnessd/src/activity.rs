@@ -170,6 +170,7 @@ mod tests {
             elapsed_ms: 4_900,
             detail: String::new(),
             arrived: SystemTime::now(),
+            later: false,
         };
         // The settlement a watcher queues, and the queue is the whole of what a reader sees.
         watch.queue_for_test(done);
@@ -304,6 +305,7 @@ mod tests {
             elapsed_ms: 0,
             detail: String::new(),
             arrived: std::time::SystemTime::now(),
+            later: false,
         };
         assert_eq!(
             crate::delivery::decide(&crate::delivery::facts_of(&completion, &board, None)),

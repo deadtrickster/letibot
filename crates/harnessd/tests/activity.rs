@@ -35,6 +35,7 @@ fn child_settlement(owner: &str, child: &str) -> JobCompletion {
         elapsed_ms: 0,
         detail: "the answer".into(),
         arrived: SystemTime::now(),
+        later: false,
     }
 }
 

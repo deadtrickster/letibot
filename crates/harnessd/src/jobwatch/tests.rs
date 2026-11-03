@@ -58,6 +58,7 @@ fn a_settlement_is_written_into_the_store_and_a_subagent_is_not() {
     let rec = JobRecorder::new(path.clone(), "s-jobs".into(), Weak::new());
     let done = |kind, job: &str, state: &str| JobCompletion {
         arrived: std::time::SystemTime::UNIX_EPOCH,
+        later: false,
         kind,
         owner: "s-jobs".into(),
         job: job.into(),
@@ -623,6 +624,85 @@ fn a_grandchilds_settlement_reaches_its_parent_and_rings_its_parent() {
     );
 }
 
+/// **A child's later turn is queued on its PARENT and rung there** - `queue_up`, which is the one
+/// door a child has for a settlement its parent's watcher has already stopped waiting on.
+#[test]
+fn a_later_turn_is_queued_on_the_level_above_and_rings_it() {
+    use letibot_sessionlog::registry::{Registry, SessionWiring, Work};
+
+    let r = Registry::new();
+    let root = r
+        .create("s-root", "", SessionWiring::default())
+        .expect("the root registers");
+    let child = r
+        .create_under(
+            "s-child",
+            "",
+            SessionWiring::default(),
+            Some("s-root".into()),
+        )
+        .expect("the child registers");
+    // Each create rings an Open; drain both so the next ring is this one.
+    assert!(matches!(r.next_work(), Some(Work::Open(_))));
+    assert!(matches!(r.next_work(), Some(Work::Open(_))));
+
+    let root_watch = JobWatchers::watching_tasks(&root, Some(Arc::clone(r.bell())));
+    let child_watch =
+        JobWatchers::watching_tasks(&child, Some(Arc::clone(r.bell()))).shares_tree(&root_watch);
+    assert!(
+        child_watch.queue_up(JobCompletion {
+            arrived: std::time::SystemTime::UNIX_EPOCH,
+            later: true,
+            kind: BackgroundKind::Subagent,
+            owner: "s-root".into(),
+            job: "s-child".into(),
+            command: String::new(),
+            slug: None,
+            state: "done".into(),
+            produced: 0,
+            elapsed_ms: 0,
+            detail: "the second half".into(),
+            memory: None,
+        }),
+        "a child has a level above it, and that is where a later turn settles"
+    );
+
+    let up = root_watch.take_completions();
+    assert_eq!(up.len(), 1, "one settlement, on the parent's queue: {up:?}");
+    assert_eq!(up[0].owner, "s-root", "and it is the parent's own news");
+    assert!(
+        up[0].later,
+        "said to be a later turn, not the child's answer"
+    );
+    assert!(
+        child_watch.take_completions().is_empty(),
+        "the child's own queue is not where a parent hears this"
+    );
+    assert!(
+        matches!(r.next_work(), Some(Work::Woken(id)) if id == "s-root"),
+        "and the PARENT is rung: a settlement nobody is woken for sits until something else asks"
+    );
+
+    // A root has no level above it, so there is nowhere to put one and the caller is told so.
+    assert!(
+        !root_watch.queue_up(JobCompletion {
+            arrived: std::time::SystemTime::UNIX_EPOCH,
+            later: true,
+            kind: BackgroundKind::Subagent,
+            owner: "s-nobody".into(),
+            job: "s-x".into(),
+            command: String::new(),
+            slug: None,
+            state: "done".into(),
+            produced: 0,
+            elapsed_ms: 0,
+            detail: String::new(),
+            memory: None,
+        }),
+        "a root is the top of its tree and nothing is handed up from it"
+    );
+}
+
 /// A job a subagent started is the SUBAGENT's to be told, and the parent never sees it.
 /// Measured twice from the parent's own conversation: a `sleep 25
 #[test]
@@ -1000,6 +1080,7 @@ fn a_jobs_process_record_reads_running_then_done() {
     // answer; a signal or a kill is `stopped`, which is a different thing to have happened.
     let done = JobCompletion {
         arrived: std::time::SystemTime::UNIX_EPOCH,
+        later: false,
         kind: BackgroundKind::Job,
         owner: "s-jobs".into(),
         job: "j42".into(),

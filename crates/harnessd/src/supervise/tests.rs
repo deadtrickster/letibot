@@ -704,6 +704,7 @@ fn a_real_job_reads_running_and_then_done_in_the_record() {
         elapsed_ms: view.ran_for.map(|d| d.as_millis() as u64).unwrap_or(0),
         detail: String::new(),
         arrived: std::time::SystemTime::now(),
+        later: false,
     });
     let got = store.process("s-e2e", &id.0).unwrap().expect("a row");
     assert_eq!(

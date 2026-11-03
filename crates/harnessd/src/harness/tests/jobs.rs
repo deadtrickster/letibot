@@ -526,6 +526,7 @@ mod job_tail {
 fn a_settlement_carries_the_jobs_name_and_an_unnamed_one_is_unchanged() {
     let settled = |job: &str, slug: Option<&str>| JobCompletion {
         arrived: std::time::SystemTime::UNIX_EPOCH,
+        later: false,
         kind: BackgroundKind::Job,
         owner: "s-me".into(),
         job: job.into(),
@@ -574,6 +575,7 @@ fn a_settlement_carries_what_a_job_of_jobs_says_for_itself() {
                  every cell exited 0";
     let one = JobCompletion {
         arrived: std::time::SystemTime::UNIX_EPOCH,
+        later: false,
         kind: BackgroundKind::Job,
         owner: "s-me".into(),
         job: "j90".into(),
@@ -614,6 +616,7 @@ fn the_tuis_job_notice_fixtures_are_what_completion_notice_writes() {
                memory: Option<&str>,
                owner: &str| JobCompletion {
         arrived: std::time::SystemTime::UNIX_EPOCH,
+        later: false,
         kind: BackgroundKind::Job,
         owner: owner.into(),
         job: id.into(),
@@ -694,6 +697,7 @@ fn a_reaped_jobs_completion_says_the_command_was_not_recorded() {
     let text = completion_notice(
         &[JobCompletion {
             arrived: std::time::SystemTime::UNIX_EPOCH,
+            later: false,
             kind: BackgroundKind::Job,
             owner: "s-me".into(),
             job: "j9".into(),
@@ -723,6 +727,7 @@ fn a_reaped_jobs_completion_says_the_command_was_not_recorded() {
 fn a_childs_completion_names_the_child_and_points_at_task_result() {
     let one = JobCompletion {
         arrived: std::time::SystemTime::UNIX_EPOCH,
+        later: false,
         kind: BackgroundKind::Subagent,
         owner: "s-me".into(),
         job: "s-1-sub-1".into(),
@@ -826,6 +831,7 @@ fn a_childs_completion_names_the_child_and_points_at_task_result() {
 fn a_settlement_is_two_nouns_out_of_one_channel() {
     let job = |id: &str| JobCompletion {
         arrived: std::time::SystemTime::UNIX_EPOCH,
+        later: false,
         kind: BackgroundKind::Job,
         owner: "s-me".into(),
         job: id.into(),
@@ -839,6 +845,7 @@ fn a_settlement_is_two_nouns_out_of_one_channel() {
     };
     let child = |id: &str| JobCompletion {
         arrived: std::time::SystemTime::UNIX_EPOCH,
+        later: false,
         kind: BackgroundKind::Subagent,
         owner: "s-me".into(),
         job: id.into(),
@@ -884,6 +891,67 @@ fn a_settlement_is_two_nouns_out_of_one_channel() {
     );
 }
 
+/// **A later turn of a child the model already has news of is its own sentence** - the same child,
+/// settling a second time. A group headed *has finished* over it would be false: it finished once.
+#[test]
+fn a_later_turn_is_its_own_sentence_and_not_a_second_finish() {
+    let one = JobCompletion {
+        arrived: std::time::SystemTime::UNIX_EPOCH,
+        later: true,
+        kind: BackgroundKind::Subagent,
+        owner: "s-me".into(),
+        job: "s-1-sub-1".into(),
+        command: String::new(),
+        slug: Some("fix-login".into()),
+        state: "done".into(),
+        produced: 0,
+        elapsed_ms: 0,
+        detail: "the second half".into(),
+        memory: None,
+    };
+    let said = completion_notices(vec![one.clone()], "s-me", &[]);
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(
+        said[0].starts_with("[task] a subagent you started has answered again on a later turn:"),
+        "{:?}",
+        said[0]
+    );
+    assert!(
+        said[0].contains("  - `fix-login · s-1-sub-1` answered again: the second half\n"),
+        "the line names the child and carries the new answer: {:?}",
+        said[0]
+    );
+    assert!(
+        !said[0].contains("has finished"),
+        "the child finished once, at its first answer: {:?}",
+        said[0]
+    );
+    assert!(
+        said[0].ends_with("Full answer: `task_result` task=\"s-1-sub-1\"."),
+        "{:?}",
+        said[0]
+    );
+
+    // Two of them are one sentence and the plural, like every other group here.
+    let pair = completion_notices(
+        vec![
+            one.clone(),
+            JobCompletion {
+                job: "s-1-sub-2".into(),
+                ..one
+            },
+        ],
+        "s-me",
+        &[],
+    );
+    assert_eq!(pair.len(), 1, "{pair:?}");
+    assert!(
+        pair[0].contains("2 subagents you started have answered again on later turns:"),
+        "{:?}",
+        pair[0]
+    );
+}
+
 /// A settlement handed up says WHOSE it was, and points at no door: `stop` hands a stopped session's undrained
 /// settlements to the level above, and a notice saying you backgrounded about a job the reader cannot open is false
 /// twice, and one promising `job_output` sends a model to a door that does not open.
@@ -891,6 +959,7 @@ fn a_settlement_is_two_nouns_out_of_one_channel() {
 fn a_handed_up_settlement_names_its_owner_and_sends_nobody_to_a_shut_door() {
     let job = JobCompletion {
         arrived: std::time::SystemTime::UNIX_EPOCH,
+        later: false,
         kind: BackgroundKind::Job,
         owner: "s-child".into(),
         job: "j17".into(),
@@ -963,6 +1032,7 @@ fn a_handed_up_settlement_names_its_owner_and_sends_nobody_to_a_shut_door() {
     // list (`Parts::tree_slots`), so unlike a dead job's output the answer is still there.
     let child = JobCompletion {
         arrived: std::time::SystemTime::UNIX_EPOCH,
+        later: false,
         kind: BackgroundKind::Subagent,
         owner: "s-child".into(),
         job: "s-child-sub-1".into(),

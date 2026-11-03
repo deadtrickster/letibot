@@ -133,6 +133,10 @@ pub(crate) struct TaskSlot {
     /// The child's name: what a handle may be given as, and what every sentence about the child labels it
     /// by. `None` for a slot made without a spec, whose name is in its record.
     slug: Option<String>,
+    /// The answers of the child's turns AFTER the one this slot settled, oldest first: the parent's
+    /// watcher stopped at the first answer, so each of these is a settlement of its own. `task_result`
+    /// reads the newest, since the first answer is no longer the child's last word.
+    again: std::sync::Mutex<Vec<String>>,
     /// **The tree this child's branch lives in**, when it has one. `finish_child_thread` reaps it
     /// once the child has failed: nothing else removes a refused, failed or killed child's tree, and
     /// a tree left behind is a copy of a branch that already holds the work.
@@ -162,6 +166,7 @@ impl TaskSlot {
         TaskSlot {
             record: None,
             slug: None,
+            again: std::sync::Mutex::new(Vec::new()),
             deliverable: std::sync::Mutex::new(None),
             state: std::sync::Mutex::new(letibot_tools::builtins::task::TaskStatus::Running {
                 note: None,
@@ -315,6 +320,29 @@ impl TaskSlot {
             }
             other => other,
         }
+    }
+
+    /// **Has the turn this slot answers for ended?** Until it has, a turn the child runs belongs to
+    /// the hold (or to its first turn) and is not news of its own - see [`TaskSlot::again`].
+    pub(crate) fn has_settled(&self) -> bool {
+        !matches!(
+            *self.state.lock().expect("task slot"),
+            letibot_tools::builtins::task::TaskStatus::Running { .. }
+        )
+    }
+
+    /// A turn of the child AFTER the settled one answered `answer`: kept for `task_result`, which
+    /// would otherwise hand a parent the first answer for ever under the name of its last word.
+    pub(crate) fn spoke_again(&self, answer: &str) {
+        self.again
+            .lock()
+            .expect("task slot")
+            .push(answer.to_string());
+    }
+
+    /// The newest answer of the child's later turns, `None` for a child that has run none.
+    pub(crate) fn newest_again(&self) -> Option<String> {
+        self.again.lock().expect("task slot").last().cloned()
     }
 }
 
@@ -1044,7 +1072,8 @@ pub(crate) fn serve_child_with(
 
 /// A turn of a child after its first: `run_turn`, with the child's record moved to `running` for its
 /// length and put back when it ends, or left running when it ended because the daemon is stopping, which
-/// is what the next daemon resumes.
+/// is what the next daemon resumes. Its answer settles the parent's slot again too - see
+/// [`ChildTurns::slot`].
 fn later_turn(
     sub: &mut Harness,
     turns: &mut ChildTurns,
@@ -1066,6 +1095,9 @@ fn later_turn(
     if let (Some(r), Some(prior)) = (&record, &prior) {
         r.later_turn_ended(prior);
     }
+    // Whether the slot had already settled when this turn began. A turn before that is part of the
+    // answer the slot is waiting for, not news of its own.
+    let settled_before = turns.slot.as_ref().is_some_and(|s| s.has_settled());
     if let Some(slot) = &turns.slot
         && somebody_spoke
         && let Some(ended) = &out
@@ -1090,6 +1122,15 @@ fn later_turn(
             ),
         };
         slot.settle(status);
+        // **This turn's answer is the child's last word**, kept where `collect` reads it: the
+        // settlement above replaces the slot's state, and an empty reply says nothing new.
+        let again = match (&out, settled_before) {
+            (Some(Ok(reply)), true) if !reply.text.trim().is_empty() => {
+                slot.spoke_again(reply.text.trim());
+                true
+            }
+            _ => false,
+        };
         if let (Some(watch), Some(owner)) =
             (sub.job_watchers(), sub.config().parent_session_id.clone())
         {
@@ -1105,6 +1146,7 @@ fn later_turn(
                 elapsed_ms: 0,
                 detail,
                 arrived: std::time::SystemTime::now(),
+                later: again,
             });
         }
     }
@@ -2423,7 +2465,9 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
                 child: Some(child),
             },
             TaskStatus::Done { answer, .. } => TaskStatus::Done {
-                answer,
+                // **The last word, not the first.** A child that answered again after the slot
+                // settled said something newer, and every notice of it promises `task_result`.
+                answer: slot.newest_again().unwrap_or(answer),
                 child: Some(child),
             },
             other => other,

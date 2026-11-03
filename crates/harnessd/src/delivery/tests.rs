@@ -22,6 +22,7 @@ fn done(job: &str, kind: BackgroundKind, state: &str) -> JobCompletion {
         elapsed_ms: 0,
         detail: String::new(),
         arrived: SystemTime::UNIX_EPOCH,
+        later: false,
     }
 }
 

@@ -176,6 +176,7 @@ fn a_settlement_a_refused_door_never_said_is_still_owed() {
         elapsed_ms: 1500,
         detail: String::new(),
         arrived: std::time::SystemTime::now(),
+        later: false,
     });
 
     // The row the door writes has nowhere to go, and not for a busy store's reason, so the door

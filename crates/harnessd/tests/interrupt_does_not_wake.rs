@@ -377,6 +377,7 @@ fn a_settlement(owner: &str) -> JobCompletion {
         elapsed_ms: 8_000,
         detail: String::new(),
         arrived: SystemTime::now(),
+        later: false,
     }
 }
 

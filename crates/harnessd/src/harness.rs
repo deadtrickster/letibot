@@ -1150,13 +1150,39 @@ fn completion_notices(done: Vec<JobCompletion>, me: &str, rows: &[TodoItem]) -> 
             s.push_str(&waiting_on_these(&jobs, rows));
             out.push(s);
         }
+        // **A later turn of a child already reported is its own sentence**: it is not the child
+        // finishing, so a heading saying so over it would be false. No plan line under it, since no
+        // row waits on the same child twice.
+        let (again, tasks): (Vec<JobCompletion>, Vec<JobCompletion>) =
+            tasks.into_iter().partition(|c| c.later);
         if !tasks.is_empty() {
             let mut s = subagent_notice(&tasks, mine);
             s.push_str(&waiting_on_these(&tasks, rows));
             out.push(s);
         }
+        if !again.is_empty() {
+            out.push(later_turn_notice(&again));
+        }
     }
     out
+}
+
+/// One line per later turn of a child the model has already been told about, named the way every
+/// sentence names a child (`slug · handle`), with the first line of the new answer.
+fn later_turn_notice(done: &[JobCompletion]) -> String {
+    let mut s = String::from("[task] ");
+    match done.len() {
+        1 => s.push_str("a subagent you started has answered again on a later turn:\n"),
+        n => s.push_str(&format!(
+            "{n} subagents you started have answered again on later turns:\n"
+        )),
+    }
+    for c in done {
+        let label = letibot_tools::builtins::task::subagent_label(c.slug.as_deref(), &c.job);
+        s.push_str(&format!("  - `{label}` answered again: {}\n", c.detail));
+    }
+    s.push_str(&format!("{TASK_CLOSING}{}.", handles_as("task", done)));
+    s
 }
 
 /// The plan rows that wait on these completions, as one line under the notice, or nothing when no row

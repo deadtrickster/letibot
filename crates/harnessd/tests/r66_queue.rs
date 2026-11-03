@@ -414,6 +414,7 @@ fn completion(job: &str, slug: Option<&str>) -> JobCompletion {
         elapsed_ms: 4,
         detail: String::new(),
         arrived: SystemTime::now(),
+        later: false,
     }
 }
 

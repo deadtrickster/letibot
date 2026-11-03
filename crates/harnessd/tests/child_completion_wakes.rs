@@ -1,4 +1,4 @@
-//! A child's answer wakes its parent, with nobody asking.
+//! A child's answer wakes its parent, with nobody asking - and so does each later turn of it.
 
 use std::net::TcpListener;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -7,6 +7,8 @@ use std::time::{Duration, Instant, SystemTime};
 
 use letibot_harnessd::config::{Config, Seat};
 use letibot_harnessd::{Dialect, Harness, Parts};
+use letibot_sessionlog::ServerFrame;
+use letibot_sessionlog::hub::{CommandKind, DAEMON_SUBMITTER};
 use letibot_sessionlog::registry::{Registry, SessionWiring, Work, WorkOrIdle};
 use letibot_tokencore::store::{SessionRecord, Store};
 use letibot_transcript::{Speaker, ToolOutcome, TranscriptItem, UserPart};
@@ -46,6 +48,18 @@ const CHILD_AGAIN: &str = "second time round: the total is forty-four";
 
 /// What a parent tells a child that has already answered, to make it turn again.
 const MORE: &str = "one more thing before you go";
+
+/// What the parent says to the child AFTER it has answered, on the door a session between turns
+/// hears a message through, so the answer below can only belong to that turn.
+const LATER: &str = "marker: now the other half of it";
+
+/// The child's answer to that later turn, distinct from [`CHILD_SAYS`] so a notice proves WHICH
+/// turn it carries.
+const CHILD_SAYS_AGAIN: &str = "the other half is done too.\nthe branch holds both halves";
+
+/// A later turn that answers NOTHING - the model says it is still working and stops. The parent is
+/// not woken for it.
+const LATER_SILENT: &str = "marker: keep going quietly";
 
 /// How long the driver waits for something a correct build produces in milliseconds -
 /// generous on purpose, because the assertion is what happened, not how fast.
@@ -278,8 +292,9 @@ impl Drop for Parent {
 // The stub
 // ---------------------------------------------------------------------------
 
-/// A model that answers its first request with a `task` call and every later one with the
-/// child's answer.
+/// A model that answers its first request with a `task` call, and answers the child according to
+/// which turn of it the request holds - the answer to the task, the answer to the parent's later
+/// message, or nothing at all.
 struct Stub {
     endpoint: Endpoint,
     requests: Arc<AtomicUsize>,
@@ -310,6 +325,9 @@ impl Stub {
         let call = Arc::new(a_task_call_turn(vocab, SUBTASK, 30));
         let answer = Arc::new(a_plain_answer_turn(vocab, "thinking", CHILD_SAYS, 30));
         let again = Arc::new(a_plain_answer_turn(vocab, "thinking", CHILD_AGAIN, 30));
+        let later = Arc::new(a_plain_answer_turn(vocab, "thinking", CHILD_SAYS_AGAIN, 30));
+        // An answer with no answer in it: the turn ran and produced nothing to tell a parent.
+        let silent = Arc::new(a_plain_answer_turn(vocab, "thinking", "", 30));
         let requests = Arc::new(AtomicUsize::new(0));
         // How many of this endpoint's requests were the CHILD's, so a second child turn gets
         // words of its own without the parent's turns moving the count.
@@ -331,6 +349,8 @@ impl Stub {
                 let call = Arc::clone(&call);
                 let answer = Arc::clone(&answer);
                 let again = Arc::clone(&again);
+                let later = Arc::clone(&later);
+                let silent = Arc::clone(&silent);
                 let vocab = Arc::clone(&vocab);
                 let seen = Arc::clone(&mine);
                 let child_seen = Arc::clone(&child_turns);
@@ -363,8 +383,14 @@ impl Stub {
                     } else {
                         0
                     };
+                    // Which turn of the child's this is, told by the words of the turn that asked
+                    // for it: the parent's message is in the prompt of the turn that answers it.
                     let frames: &[Frame] = if n == 0 {
                         &call
+                    } else if asked.contains(LATER_SILENT) {
+                        &silent
+                    } else if asked.contains(LATER) {
+                        &later
                     } else if child_n >= 1 {
                         &again
                     } else {
@@ -589,9 +615,9 @@ fn a_childs_answer_wakes_its_parent_with_nobody_asking() {
     );
 }
 
-/// **A child's LATER turn reaches its parent**: the slot settled once, so a second answer produced no
-/// settlement, no ring and no notice - the parent heard the child once and never again, however often
-/// it asked it something.
+/// **A child's LATER turn reaches its parent**, and reads as one: the slot settled once, so a
+/// second answer used to produce no settlement, no ring and no notice; now it settles again and is
+/// not told as the child finishing, which it is not.
 #[test]
 fn a_childs_second_answer_reaches_its_parent() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -645,22 +671,24 @@ fn a_childs_second_answer_reaches_its_parent() {
         .expect("a second settlement is a turn too");
     assert!(!woke.text.is_empty(), "the wake carries its notice");
 
-    let notices: Vec<String> = user_rows(parent.harness().items())
-        .into_iter()
-        .filter(|(speaker, text)| {
-            *speaker == Speaker::Agent && text.contains("a subagent you started has finished")
-        })
-        .map(|(_, text)| text)
-        .collect();
+    let heard = notices(parent.harness().items());
     assert_eq!(
-        notices.len(),
+        heard.len(),
         2,
-        "a parent hears once per answer, so there are two notices: {notices:#?}"
+        "a parent hears once per answer, so there are two notices: {heard:#?}"
+    );
+    let again = &heard[1];
+    assert!(
+        again.contains("answered again on a later turn"),
+        "it says the child answered again, not that it finished a second time: {again}"
     );
     assert!(
-        notices[1].contains(CHILD_AGAIN),
-        "the second notice carries the second answer's first line: {:#?}",
-        notices[1]
+        again.contains(CHILD_AGAIN),
+        "the second notice carries the second answer's first line: {again}"
+    );
+    assert!(
+        !again.contains("the count is forty-two."),
+        "and not the answer the first notice already carried: {again}"
     );
 }
 
@@ -781,6 +809,159 @@ fn a_settlement_for_a_session_between_opens_is_delivered_at_its_next_open() {
             .is_none(),
         "a settlement already delivered was delivered again"
     );
+}
+
+/// A parent spawns a child, the child answers, and then the child runs a turn of its own - the turn a
+/// settlement wakes it for. That answer reaches the parent as a SECOND settlement, said to be a later
+/// turn of the same child; and a later turn that answers nothing reaches nobody.
+#[test]
+fn a_childs_later_turn_reaches_its_parent_too() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let dir = TempDir::new("child-later-turn");
+    let store = dir.path().join("sessions.db");
+    let parent_id = "s-parent-later";
+    seed_session(&store, parent_id, dir.path());
+    let mut cfg = config(parent_id, Endpoint::new("127.0.0.1", 1), &store, dir.path());
+    let parts = parts_for(&cfg);
+    let stub = Stub::new(&parts.vocab);
+    cfg.endpoint = stub.endpoint.clone();
+    let registry = Registry::new();
+    let mut parent = Parent::open(&parts, &cfg, registry).owning();
+    parent
+        .harness_mut()
+        .submit(PROMPT)
+        .expect("the turn that starts the child");
+    let child = parent
+        .spawned()
+        .expect("the `task` call's result row names the child it started");
+
+    // The first answer, and the settlement it makes.
+    assert!(
+        parent.wait_for_a_ring(parent_id),
+        "the child's first answer never woke its parent"
+    );
+    parent
+        .harness_mut()
+        .wake()
+        .expect("the wake")
+        .expect("the first settlement is a turn");
+    let first = notices(parent.harness().items());
+    assert_eq!(first.len(), 1, "one settlement, one notice: {first:#?}");
+
+    // The later turn: the door a message reaches a session between turns by, which is the same
+    // door a settlement wakes it through.
+    let hub = parent.registry.get(&child).expect("the child's hub");
+    let sent = hub.submit(
+        DAEMON_SUBMITTER,
+        "later-turn-1",
+        0,
+        CommandKind::Message {
+            from: parent_id.into(),
+            text: LATER.into(),
+        },
+    );
+    assert!(
+        matches!(sent, ServerFrame::Accepted { .. }),
+        "the message to the child was refused: {sent:?}"
+    );
+    // The model has answered that turn, so anything that was going to reach the parent has.
+    let answered = stub.turns();
+    let began = Instant::now();
+    while stub.turns() == answered {
+        assert!(
+            began.elapsed() < PATIENCE,
+            "the child never ran the later turn"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let began = Instant::now();
+    let later = loop {
+        if parent.harness_mut().wake().expect("the wake").is_some() {
+            let said = notices(parent.harness().items());
+            if said.len() > 1 {
+                break said;
+            }
+        }
+        assert!(
+            began.elapsed() < PATIENCE,
+            "the child answered again and its parent was never told: {:?}",
+            notices(parent.harness().items())
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(later.len(), 2, "{later:#?}");
+    let again = &later[1];
+    assert!(
+        again.contains(&child),
+        "the later settlement names the child it is about ({child}): {again}"
+    );
+    assert!(
+        again.contains("a later turn"),
+        "it says it is a later turn of that child, not a second child: {again}"
+    );
+    assert!(
+        again.contains("the other half is done too."),
+        "it carries the later turn's answer: {again}"
+    );
+    assert!(
+        !again.contains("the count is forty-two."),
+        "and not the answer the first settlement already carried: {again}"
+    );
+    assert!(
+        first[0].contains("the count is forty-two."),
+        "the first settlement is unchanged: {}",
+        first[0]
+    );
+
+    // A later turn that answers NOTHING is not a settlement: the model said nothing, so there is
+    // nothing for the parent to be woken for.
+    let quiet = notices(parent.harness().items()).len();
+    let hub = parent.registry.get(&child).expect("the child's hub");
+    let sent = hub.submit(
+        DAEMON_SUBMITTER,
+        "later-turn-2",
+        0,
+        CommandKind::Message {
+            from: parent_id.into(),
+            text: LATER_SILENT.into(),
+        },
+    );
+    assert!(
+        matches!(sent, ServerFrame::Accepted { .. }),
+        "the second message to the child was refused: {sent:?}"
+    );
+    let answered = stub.turns();
+    let began = Instant::now();
+    while stub.turns() == answered {
+        assert!(
+            began.elapsed() < PATIENCE,
+            "the child never ran the silent later turn"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // Long enough for a settlement that should not exist to have been queued and delivered.
+    let served = Instant::now();
+    while served.elapsed() < Duration::from_secs(2) {
+        let _ = parent.harness_mut().wake().expect("the wake");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(
+        notices(parent.harness().items()).len(),
+        quiet,
+        "a later turn that produced nothing woke its parent: {:?}",
+        notices(parent.harness().items())
+    );
+}
+
+/// The `[task]` notices in a session's log, in order - the rows only the daemon writes.
+fn notices(items: &[TranscriptItem]) -> Vec<String> {
+    user_rows(items)
+        .into_iter()
+        .filter(|(speaker, text)| *speaker == Speaker::Agent && text.starts_with("[task] "))
+        .map(|(_, text)| text)
+        .collect()
 }
 
 /// Wait for the child's row to say it settled, and hand the row back - the durable fact this

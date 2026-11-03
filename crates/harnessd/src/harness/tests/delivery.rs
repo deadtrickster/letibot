@@ -58,6 +58,7 @@ fn settled(job: &str, state: &str, arrived: SystemTime) -> JobCompletion {
         elapsed_ms: 1500,
         detail: String::new(),
         arrived,
+        later: false,
     }
 }
 

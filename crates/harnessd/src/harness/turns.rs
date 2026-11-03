@@ -549,6 +549,7 @@ impl Harness {
                 elapsed_ms: 0,
                 detail: crate::jobwatch::first_line(run.outcome.as_deref().unwrap_or_default()),
                 arrived: std::time::SystemTime::now(),
+                later: false,
             });
             queued += 1;
         }
@@ -579,6 +580,7 @@ impl Harness {
                 elapsed_ms: job.elapsed_ms,
                 detail: String::new(),
                 arrived: std::time::SystemTime::now(),
+                later: false,
             });
             queued += 1;
         }

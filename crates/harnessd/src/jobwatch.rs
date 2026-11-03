@@ -85,6 +85,9 @@ pub struct JobCompletion {
     /// . Wall-clock rather than an `Instant` because it is written down and read by
     /// somebody who was not running this process.
     pub arrived: SystemTime,
+    /// **A turn of a child the parent has already been told about**, and not its first answer: the
+    /// same child, settling again. Never set for a job, which ends once.
+    pub later: bool,
 }
 
 /// What one set is waiting on - handle → (which kind, the name the caller gave it).
@@ -557,6 +560,20 @@ impl JobWatchers {
     #[doc(hidden)]
     pub fn queue_for_test(&self, c: JobCompletion) {
         self.queue(c);
+    }
+
+    /// **Queue a settlement on the session ABOVE this one, and ring its bell.** A child's later turn
+    /// settles here: its parent's watcher stopped at the first answer, so nothing else would carry
+    /// it. `false`, and nothing queued, for a session with no level above it.
+    pub fn queue_up(&self, c: JobCompletion) -> bool {
+        let Some((above, who)) = &self.parent else {
+            return false;
+        };
+        above.push(c);
+        if let Some(bell) = &self.bell {
+            bell.ring_wake(who);
+        }
+        true
     }
 
     /// Hold this session's settlement queue while `during` runs - the position a publisher must
@@ -1406,6 +1423,7 @@ fn watch_one(
                     elapsed_ms,
                     detail,
                     arrived: SystemTime::now(),
+                    later: false,
                 });
                 settled.lock().expect("job watchers").insert(&job);
                 // And what the session is waiting on has moved: the job is still in `watching` but its
@@ -1523,6 +1541,7 @@ fn settled_here(
         detail,
         memory: None,
         arrived: SystemTime::now(),
+        later: false,
     });
     settled.lock().expect("job watchers").insert(job);
 }

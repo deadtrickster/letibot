@@ -853,6 +853,7 @@ fn a_completion_notice_names_the_job_and_says_do_not_wait() {
     let text = completion_notice(
         &[JobCompletion {
             arrived: std::time::SystemTime::UNIX_EPOCH,
+            later: false,
             kind: BackgroundKind::Job,
             owner: "s-me".into(),
             job: "j7".into(),
