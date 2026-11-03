@@ -5,7 +5,9 @@
 
 use std::sync::Mutex;
 
-use crate::source::{Comment, Pull, Review, Scope, Source};
+use crate::seat::Session;
+use crate::source::{Comment, Pull, Review, Scope, Source, Standing};
+use crate::worker::Sessions;
 
 /// One commit of a pull request and the diff it carries.
 #[derive(Debug, Clone)]
@@ -110,6 +112,85 @@ impl FakeSource {
             .unwrap_or_else(|e| e.into_inner())
             .diffs
             .clone()
+    }
+}
+
+/// The sessions a review runs in, faked: it records the brief each one was asked and answers what
+/// a test queued for it. Nothing here starts a process, so a seat's whole review path is offline.
+#[derive(Default)]
+pub struct FakeSessions {
+    inner: Mutex<FakeSessionsInner>,
+}
+
+#[derive(Default)]
+struct FakeSessionsInner {
+    /// `pull key`, the standing it was opened at.
+    opened: Vec<(String, Standing)>,
+    /// `session id`, the brief it was asked.
+    briefs: Vec<(String, String)>,
+    /// What the next session says, oldest first; the last one is repeated once the queue is empty.
+    answers: Vec<String>,
+}
+
+impl FakeSessions {
+    pub fn new() -> FakeSessions {
+        FakeSessions::default()
+    }
+
+    /// A fake whose every session answers `said`.
+    pub fn answering(said: impl Into<String>) -> FakeSessions {
+        let fake = FakeSessions::default();
+        fake.say(said);
+        fake
+    }
+
+    /// Queue one answer. The last one queued is repeated for every later question.
+    pub fn say(&self, said: impl Into<String>) {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .answers
+            .push(said.into());
+    }
+
+    /// Every session opened, in order: the pull request's key and the standing it was opened at.
+    pub fn opened(&self) -> Vec<(String, Standing)> {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .opened
+            .clone()
+    }
+
+    /// Every brief asked, in order: the session and what it was told.
+    pub fn briefs(&self) -> Vec<(String, String)> {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .briefs
+            .clone()
+    }
+}
+
+impl Sessions for FakeSessions {
+    fn open(&mut self, pull: &Pull, standing: Standing) -> Result<Session, String> {
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        inner.opened.push((pull.key(), standing));
+        Ok(Session {
+            id: format!("s-{}-{}", pull.repo.replace('/', "-"), pull.number),
+            worktree: std::path::PathBuf::from(format!("/worktrees/{}", pull.number)),
+        })
+    }
+
+    fn ask(&mut self, session: &Session, brief: &str) -> Result<String, String> {
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        inner
+            .briefs
+            .push((session.id.clone(), brief.to_string()));
+        if inner.answers.len() > 1 {
+            return Ok(inner.answers.remove(0));
+        }
+        Ok(inner.answers.first().cloned().unwrap_or_default())
     }
 }
 
