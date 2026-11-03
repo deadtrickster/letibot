@@ -64,6 +64,11 @@ const OPERATOR_ADD_NAG_AFTER: Duration = Duration::from_secs(10);
 /// not zero, because the turn has returned and its last append may not be published yet.
 pub const SWEEP_AFTER: Duration = Duration::from_secs(2);
 
+/// How long the orderly stop waits for one session's thread to settle its placement. A session
+/// mid-turn answers when the interrupt lands; one that never answers is said rather than waited
+/// on, because the process is already on its way out.
+const SETTLE_PATIENCE: Duration = Duration::from_secs(30);
+
 /// How long a `Sessions` being dropped waits for the threads that served its sessions.
 /// MEASURED 2026-10-26, or this would not exist: a court still freeing the vocabulary when
 /// the process runs its ELF finalizers is a SIGSEGV with no `panicked at` anywhere.
@@ -616,6 +621,23 @@ impl Court {
         sent.ok()?;
         self.hub.wake_its_own_reader();
         rx.recv().ok()
+    }
+
+    /// [`Court::ask`] with a deadline, for the daemon's last acts: a session that never answers is
+    /// the caller's line to say, not a reason to hold the exit open.
+    fn ask_within<R: Send + 'static>(
+        &self,
+        within: std::time::Duration,
+        f: impl FnOnce(&mut Sessions<'static>) -> R + Send + 'static,
+    ) -> Option<R> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let sent = self.jobs.send(Box::new(move |s: &mut Sessions<'static>| {
+            let _ = tx.send(f(s));
+            Follow::Serve
+        }));
+        sent.ok()?;
+        self.hub.wake_its_own_reader();
+        rx.recv_timeout(within).ok()
     }
 
     /// Ask without waiting - for the daemon's own pass, which must not stand still while a
@@ -2321,28 +2343,50 @@ impl<'a> Sessions<'a> {
         self.plugins.values().filter_map(|h| h.next_at()).min()
     }
 
-    /// Close every held session's backend, and say what each one delivered - the one-shot's
-    /// last act. A session's placement hands its work back only when its backend closes
+    /// Close every held session's backend, and say what each one delivered - the daemon's last
+    /// act. A session's placement hands its work back only when its backend closes, and the
+    /// sessions the daemon serves on their own threads keep theirs there ([`Court`]), so both
+    /// halves are asked: this is the only door `--stop` and the idle exit have.
     pub fn close_backends(&self) -> Vec<String> {
         // The daemon is going, so everything it supervises goes too - the same rule a session's
         // own close keeps, applied to every session this daemon holds. `--stop` reaches here; a
         // crash does not, which is why the supervisor's restart path is what cleans up after one.
-        for id in self.open.keys() {
+        for id in self.open.keys().chain(self.courts.keys()) {
             crate::supervise::teardown_session(id, "the daemon stopping");
         }
         // Every block of ports this daemon's sessions held goes back (RH9) - before the
         // backends close, because a session's placement is what a remote teardown's ssh runs over.
         if let Some(path) = &self.base.store {
-            for id in self.open.keys() {
+            for id in self.open.keys().chain(self.courts.keys()) {
                 for line in crate::leases::release_session(path, id, "the daemon stopping") {
                     eprintln!("  {id} · lease: {line}");
                 }
             }
         }
-        self.open
+        let mut said: Vec<String> = self
+            .open
             .values()
             .filter_map(|h| h.close_backend())
-            .collect()
+            .collect();
+        for (id, court) in &self.courts {
+            let seen = id.clone();
+            // The sentence comes before the thread leaves: its harness is dropped the moment this
+            // session's own `finish` job is served, and then there is nothing left to settle.
+            match court.ask_within(SETTLE_PATIENCE, move |s: &mut Sessions<'static>| {
+                s.open.get(&seen).and_then(|h| h.close_backend())
+            }) {
+                Some(Some(line)) => said.push(line),
+                // A session with no placement says nothing; one that never answered is said,
+                // because a settlement nobody waited for is otherwise a silence.
+                Some(None) => {}
+                None => said.push(format!(
+                    "{id} · its placement was NOT brought home: the session did not answer within \
+                     {} s, so its work is still on the machine it ran on",
+                    SETTLE_PATIENCE.as_secs()
+                )),
+            }
+        }
+        said
     }
 
     /// Stop every session's subagents and wait for their threads to leave - the daemon's exit
@@ -2923,8 +2967,9 @@ impl<'a> Sessions<'a> {
 
     /// Close one session this worker holds: its harness, every per-session table, and its
     /// registry entry. Nothing closed a session before this, so `open` kept every harness the
-    /// daemon ever built and nine maps kept an entry each.
-    pub fn close(&mut self, session_id: &str) -> bool {
+    /// daemon ever built and nine maps kept an entry each. The answer is `None` for a session this
+    /// worker does not hold, and otherwise where the work went - see [`Sessions::close_backends`].
+    pub fn close(&mut self, session_id: &str) -> Option<String> {
         // What this session started goes with it (RH7's supervisor): every process it owns, on
         // every host, ended and recorded. A TURN ending does not come near this: a job started to
         // outlive its turn is what `background: true` means.
@@ -2949,9 +2994,9 @@ impl<'a> Sessions<'a> {
                 .courts
                 .get(session_id)
                 .and_then(|court| court.ask(move |s: &mut Sessions<'static>| s.close(&id)));
-            // The court's own close took the registry entry with it, which is what the caller's
-            // `bool` means; a thread that is already gone answers nothing, and the entry goes the
-            // same way here so a hub is never left open behind a session nobody serves.
+            // The court's own close took the registry entry with it, which is what an answer
+            // means; a thread that is already gone answers nothing, and the entry goes the same way
+            // here so a hub is never left open behind a session nobody serves.
             self.registry.remove(session_id);
             // And its thread leaves before this returns.
             if let Some(Court { jobs, thread, .. }) = self.courts.remove(session_id) {
@@ -2960,13 +3005,23 @@ impl<'a> Sessions<'a> {
                     let _ = wait_for_threads(&[thread], COURT_TEARDOWN);
                 }
             }
-            return closed.unwrap_or(false);
+            // A court that answered is the close; one whose thread had already gone still closed
+            // the session here, and says so rather than claiming where the work went.
+            return match closed {
+                Some(said) => Some(said.unwrap_or_default()),
+                None => Some(
+                    "its own thread had already gone, so where its work went was not said".into(),
+                ),
+            };
         }
         let held = self.open.remove(session_id);
-        if let Some(h) = &held {
-            h.stop_children();
-            h.close_backend();
-        }
+        let said = match &held {
+            Some(h) => {
+                h.stop_children();
+                h.close_backend()
+            }
+            None => None,
+        };
         self.slots.remove(session_id);
         self.seated.remove(session_id);
         self.fabric_seen.remove(session_id);
@@ -2978,7 +3033,7 @@ impl<'a> Sessions<'a> {
         // instances and the panes it drew, held for every session ever opened.
         self.plugins.remove(session_id);
         self.registry.remove(session_id);
-        held.is_some()
+        held.as_ref().map(|_| said.unwrap_or_default())
     }
 
     /// Arm the park clock for the subagents this worker holds, a window from now - called at

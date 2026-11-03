@@ -1952,6 +1952,13 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     if let Some(seat) = &seat {
         seat.stop();
     }
+    // A placed session's commits come home only while its backend is still reachable, and a session
+    // served on its own thread keeps that backend there - so this settles BEFORE the drain below,
+    // which is what ends those threads. Every line is the branch and its commit, or why not.
+    eprintln!("  stopping: bringing every placed session's branch home");
+    for landed in sessions.close_backends() {
+        eprintln!("  {landed}");
+    }
     // Every subagent thread this daemon started is waited for before the process ends.
     // `daemon.shutdown()` above closed every hub, which is what a child parked between turns
     // leaves on, and `drain_subagents` tells the running ones to stop first - a hub close does

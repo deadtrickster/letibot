@@ -203,7 +203,7 @@ fn a_closed_session_gives_its_descriptors_back() {
     );
 
     for id in &ids {
-        sessions.close(id);
+        let _ = sessions.close(id);
     }
     let closed_descs = descriptors_on(&path);
     let closed_connections = Store::live();

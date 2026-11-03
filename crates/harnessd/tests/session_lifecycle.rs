@@ -258,7 +258,7 @@ fn drive_worker(
             // is about turns, and a close is the daemon's own teardown - served here so the fixture
             // drains the bell the way the daemon does.
             WorkOrIdle::Work(Work::Close(id)) => {
-                sessions.close(&id);
+                let _ = sessions.close(&id);
             }
         }
     }

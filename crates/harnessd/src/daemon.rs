@@ -355,13 +355,20 @@ impl Daemon {
                     // The session a head closed is let go of here: the registry entry went on the connection's
                     // thread, and what is left is the harness, its backend and its children, which only
                     // `Sessions::close` knows how to drop.
-                    Work::Close(session_id) => {
-                        let held = sessions.close(&session_id);
-                        eprintln!(
-                            "  {session_id} · closed{}; the store keeps its rows",
-                            if held { "" } else { " (it was not open here)" }
-                        );
-                    }
+                    Work::Close(session_id) => match sessions.close(&session_id) {
+                        Some(said) if said.is_empty() => {
+                            eprintln!("  {session_id} · closed; the store keeps its rows")
+                        }
+                        // A placement's branch and its commit, or why neither came: the operator
+                        // has no other way to learn where the work landed.
+                        Some(said) => {
+                            eprintln!("  {session_id} · closed; the store keeps its rows. {said}")
+                        }
+                        None => eprintln!(
+                            "  {session_id} · closed (it was not open here); the store keeps its \
+                             rows"
+                        ),
+                    },
                     Work::Woken(session_id) => {
                         // A monitor fired while nothing was running, served on the worker like everything else and
                         // AFTER every queued command: a head that pressed enter is waiting, and a monitor is not.
