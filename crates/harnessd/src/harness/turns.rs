@@ -1572,6 +1572,12 @@ impl Harness {
         // already holds is a wait, and spawning a child to redo it is what that line saves.
         let mut waits = crate::waits_offer::Offers::new().with_tier(self.cfg.tier());
         waits.recall(&self.cfg.daemon_logs(), &self.cfg.session_id);
+        // And the work the repository has already done, by the same delivery: a commit subject or a
+        // settled entry that says the brief is finished is a package nobody should write twice.
+        let mut done = crate::done_offer::Offers::new().with_tier(self.cfg.tier());
+        done.recall(&self.cfg.daemon_logs(), &self.cfg.session_id);
+        // Read once per turn, not per round: the log is a fork, and a turn cannot change history.
+        let done_records = crate::done_offer::records(&self.cfg.workspace);
         // The bodies this session was STARTED with are not news to it. The ones its own rounds load
         // are read per round, below, because they are in the transcript only once that round ran.
         skill_offers.skip_names(self.cfg.skills.iter());
@@ -1617,10 +1623,12 @@ impl Harness {
                 let brief = crate::waits_offer::draft(&self.session.items);
                 let rows = self.open_rows();
                 waits.compose(&rows, &brief);
+                done.compose(&done_records, &brief);
             }
             let mut tail = offers.tail();
             tail.extend(skill_offers.tail());
             tail.extend(waits.tail());
+            tail.extend(done.tail());
             // Take the round again when the endpoint is what failed: an inner loop, so a retry does not spend a
             // `max_tool_rounds`, since it produced nothing. And `/models` is ANSWERED here but not APPLIED, because a
             // re-issued round carries the rest of the old turn, which a thinking-mode provider refuses.
@@ -1972,6 +1980,7 @@ impl Harness {
             offers.settle(&self.cfg.daemon_logs(), &self.cfg.session_id, &calls);
             skill_offers.settle(&self.cfg.daemon_logs(), &self.cfg.session_id, &calls);
             waits.settle(&self.cfg.daemon_logs(), &self.cfg.session_id, &calls);
+            done.settle(&self.cfg.daemon_logs(), &self.cfg.session_id, &calls);
             // What the agent says it is doing, recorded before its calls are adjudicated: the sentence in front of its
             // tool calls is what the guard is missing when the operator's instruction names a goal rather than a file.
             // Never an authorisation and never citable.
