@@ -111,17 +111,15 @@ pub(crate) fn reconcile_rows(
 ) -> Vec<String> {
     let ids = sink.take_ids();
     if ids.len() != items.len() {
-        hub.publish(letibot_sessionlog::SessionEvent::Warning {
-            code: "record_item_pairing".into(),
-            detail: format!(
+        hub.warn(
+            "record_item_pairing",
+            format!(
                 "{} TranscriptAppended events for {} items; the head will show \
                  empty rows. This is a daemon bug, not a transport one.",
                 ids.len(),
                 items.len()
             ),
-
-            compaction: None,
-        });
+        );
     }
     for (id, item) in ids.iter().zip(items) {
         hub.record_item(id, item.clone());
@@ -303,11 +301,8 @@ impl Harness {
         let gone = !self.cfg.workspace.is_dir();
         if gone && !self.workspace_gone_said {
             self.workspace_gone_said = true;
-            self.hub.publish(SessionEvent::Warning {
-                code: WORKSPACE_GONE.into(),
-                detail: workspace_gone(&self.cfg.workspace),
-                compaction: None,
-            });
+            self.hub
+                .warn(WORKSPACE_GONE, workspace_gone(&self.cfg.workspace));
         }
         // Two kinds of thing arrive between turns and share one turn: a monitor that fired and a job that
         // ended. Both must reach the model unprompted, and neither may jump a person waiting, since commands
@@ -979,11 +974,8 @@ impl Harness {
         for line in &said {
             eprintln!("  {sid} · restart: {line}");
         }
-        self.hub.publish(SessionEvent::Warning {
-            code: outcome.code().into(),
-            detail: crate::restart::warning_detail(&text, &said),
-            compaction: None,
-        });
+        self.hub
+            .warn(outcome.code(), crate::restart::warning_detail(&text, &said));
         self.restart_notices.push(text.clone());
         Some(text)
     }
@@ -1324,12 +1316,10 @@ impl Harness {
             {
                 // Not fatal and not silent: an unnamed session is usable, and a
                 // store that refused a title is a fact about the store.
-                self.hub.publish(letibot_sessionlog::SessionEvent::Warning {
-                    code: "title_not_stored".into(),
-                    detail: format!("this session could not be named in the store: {e}"),
-
-                    compaction: None,
-                });
+                self.hub.warn(
+                    "title_not_stored",
+                    format!("this session could not be named in the store: {e}"),
+                );
                 return;
             }
         }
@@ -1412,14 +1402,13 @@ impl Harness {
             }
         }
         if left > 0 {
-            self.hub.publish(SessionEvent::Warning {
-                code: "steering_carried".into(),
-                detail: format!(
+            self.hub.warn(
+                "steering_carried",
+                format!(
                     "{left} message(s) that reached this turn while it ran were not read by \
                      the model before it ended; they go in at the start of the next turn."
                 ),
-                compaction: None,
-            });
+            );
         }
         out
     }
@@ -1439,15 +1428,14 @@ impl Harness {
             .append_items(&self.engine, std::slice::from_ref(&item), &mut sink)?;
         self.reconcile(&mut sink, std::slice::from_ref(&item));
         self.persist()?;
-        self.hub.publish(SessionEvent::Warning {
-            code: "message_carried".into(),
-            detail: format!(
+        self.hub.warn(
+            "message_carried",
+            format!(
                 "a message from another session reached this turn while it ran and the turn \
                  ended before the model read it; it is in the transcript now, so the next turn \
                  reads it there: {said}"
             ),
-            compaction: None,
-        });
+        );
         Ok(())
     }
 

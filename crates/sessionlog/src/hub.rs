@@ -762,6 +762,28 @@ impl Hub {
         self.lock().log.dropped()
     }
 
+    /// **The one door for a warning**: `(code, detail)` and nothing else, so every site says the same
+    /// shape and a head's card, the store's line and the daemon's log cannot be told two ways.
+    /// `warn_with` is the same door for the few that carry a compaction report.
+    pub fn warn(&self, code: impl Into<String>, detail: impl Into<String>) -> Envelope {
+        self.warn_with(code, detail, None)
+    }
+
+    /// [`Hub::warn`] for a warning that carries what a compaction did: one construction of the
+    /// variant in this crate, so the three fields cannot be filled in two orders by two callers.
+    pub fn warn_with(
+        &self,
+        code: impl Into<String>,
+        detail: impl Into<String>,
+        compaction: Option<Box<crate::event::CompactionReport>>,
+    ) -> Envelope {
+        self.publish(SessionEvent::Warning {
+            code: code.into(),
+            detail: detail.into(),
+            compaction,
+        })
+    }
+
     /// Append an event and fan it out. Never blocks on a head.
     pub fn publish(&self, event: SessionEvent) -> Envelope {
         // What the session is waiting on is re-derived after anything that could have moved it,
@@ -1980,6 +2002,28 @@ mod tests {
             },
             0,
         )
+    }
+
+    /// **One door for a warning**: `(code, detail)` is the whole of it, so a site cannot fill the
+    /// variant's fields a second way and two doors cannot word one fact differently.
+    #[test]
+    fn a_warning_goes_through_the_one_door() {
+        let hub = Hub::new("s-warn");
+        hub.warn("some_code", "a sentence the operator reads");
+        let kept = hub.retained();
+        let last = kept.last().expect("the warning is on the log");
+        match &last.event {
+            SessionEvent::Warning {
+                code,
+                detail,
+                compaction,
+            } => {
+                assert_eq!(code, "some_code");
+                assert_eq!(detail, "a sentence the operator reads");
+                assert!(compaction.is_none(), "a plain warning carries no report");
+            }
+            other => panic!("the sink published {other:?}"),
+        }
     }
 
     /// The footprint is the harness's to answer and the hub's to carry. Three shapes are told

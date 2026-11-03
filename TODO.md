@@ -688,7 +688,7 @@ box). The watch now names the term that grows, so the next daemon to do it says 
 
 ---
 
-## R74 — What the 2026-10-11 landings left open — **AUDITED 2026-11: nine fixed, seven already done, six not a session's to settle, and 37 since settled — the workspace-wide clippy step is the merge gate's own; left: 4 (the queue verbs a person at a head cannot run), 11 (reasoning left out of the sent count), 12 (the ratio across a non-verbatim fork), 16 (a tool-call round under a context excuse), 20 (the one report sink), 23 (cards off the surface stack), 25 (a real head answering `grant_memory`), 33 (its three skip-green holes), 39 (a live gate on lubuntu1/2), 40 (the inline blocks over 800 lines)**
+## R74 — What the 2026-10-11 landings left open — **AUDITED 2026-11: nine fixed, seven already done, six not a session's to settle, and 37 since settled — the workspace-wide clippy step is the merge gate's own; then WORKED 2026-11: eight of the eleven left, 4, 11, 12, 16, 23, 25 and 33 closed (4 was already working and had no test); left: 20 (the rest of the report sink's sites — the sink is built and 18 of them are routed), 39 (a live gate on lubuntu1/2), 40 (the inline blocks over 800 lines)**
 
 Everything merged on 2026-10-11 (main `cf47e65`: R61, R64, R65, R66 instrumentation, R67, R68, R69,
 R71, R72 + follow-up, R73, the no-llama build), and the gaps each landing reported or a check
@@ -710,12 +710,13 @@ nothing to design.
   blocked or timed-out tip).
 - 3 **FIXED** — `Store::review_rows_in` and `ReviewState::QUEUED`; the three wake paths read the live
   rows instead of the table and filtering in Rust.
-- 4 **PARTLY** — a model can re-gate (`queue` tool `action: "regate"` → `QueueDesk::regate` →
-  `verbs::regate`), and a restarting daemon re-gates a bad tip. A PERSON at a head cannot: no
-  `ClientFrame` carries a queue verb and `/queue` in the TUI only opens the pane, while the daemon's
-  own warnings say `/queue regate`, `/queue restart`, `/queue approve` and `/queue rm` — and
-  `verbs::approve` has no caller at all. Either the frames and verbs get built or the sentences stop
-  naming them.
+- 4 **DONE** — the door was already there and nothing said so: a head sends `ClientFrame::Slash`, the
+  daemon parses `Slash::Queue`/`QueueIn` (`crates/harnessd/src/slash.rs`) and runs it against the
+  session's repository (`sessions.rs`), and `verbs::approve` has had a caller since
+  `Harness::approve_review`. Two tests hold it now: the typed lines
+  (`the_queue_verbs_a_person_types_go_to_the_daemon`) and the whole path through a real daemon and a
+  real repository (`queue_verbs_from_a_head.rs`, where each row verb reaches the lookup and `regate`
+  reaches the resolver).
 - 5 **DONE** — `sessionlog::gatekeeper_session(workspace)`: one queue session per workspace's
   daemon, not one per box.
 - 6 **FIXED** — `mergequeue::snapshot` keeps each LIVE row's own last `RECENT_MOVES_PER_ROW` moves
@@ -727,22 +728,23 @@ nothing to design.
 - 10 **DESIGN** — the mechanism is built (`tools::spill::Spiller`) and wired to every call, but
   `SpillPolicy::Unset` → `NoBudget`, so nothing is capped by default. A default budget derived from
   the window is a policy the operator has not made.
-- 11 **OPEN** — `sent_since` (`harness/wall.rs`) still drops `Reasoning` and `SegmentMark` while the
-  request builder echoes reasoning on a tool chain, so the count is short by a round's thought. The
-  fix is to thread the same `echo_reasoning` fact into the count; the test that pins today's answer
-  pins the assumption.
-- 12 **OPEN** — a fork that is not verbatim clears the stored count/ledger pair on purpose, so a
-  restart before any round falls back to the raw ledger count. The fix is to carry the RATIO across
-  the fork.
+- 11 **FIXED** (`8b73102b`) — `Harness::echoes_reasoning` is the one answer, read by the request
+  builder's own predicate and threaded through `roll_resident`, `sent_since`, `sent_between` and
+  `sent_scale`, so a tool-carrying round counts the reasoning it echoes and a no-tools one still does
+  not. `a_round_that_carries_tools_counts_the_reasoning_it_echoes`.
+- 12 **FIXED** (`d6d87e5f`) — `Harness::carried_pair` puts the new base through the last measured
+  ratio and stores it, so a restart before any round reads provider units rather than ledger bytes;
+  a verbatim fork still keeps its measurement, and a local session still stores nothing.
+  `fork_carries_the_ratio.rs`.
 - 13 **NOT CODE** — `e834316`'s six tests are all in the tree; what is left is the operator's live
   tmux replay of the real session.
 - 14 **DESIGN** — 16 of 79 calibration excuses still score under the floor and there is no second
   tier. A second scorer is a slice of its own.
 - 15 **NOT CODE** — the floor is a literal with a measured provenance; re-tuning needs the operator's
   `.letibot/context-claims.jsonl`, which no checkout has.
-- 16 **OPEN** — no harness-level test of the round that calls a TOOL and carries a context excuse (the
-  step-boundary queue). Every test drives a plain answer; the door exists and a canned tool-call
-  reply would reach it.
+- 16 **DONE** (`2341d5f0`) — `an_excuse_in_a_round_that_calls_a_tool_rides_the_step_boundary`
+  plays the round that says the sentence and then calls a tool: the correction is in the transcript
+  once, in the harness's own voice, and the round after the boundary is the reply.
 - 17 **DONE**, with a residue — all three decisions are in (park at 10 min, reopen on a message or a
   head, a message earns the plan-check back, failures are `TurnFailed`). `wake_failed` and
   `todo_check_failed` survive in `sessionlog::warning`'s table with no emitter anywhere.
@@ -750,21 +752,25 @@ nothing to design.
   daemon until it stops (`court_refusal`'s monitor arm). Not a defect in the close path; a policy.
 - 19 **FIXED** — `RECORD_LIMIT` and `bound_records` in `exec/host.rs`: `reaps`, `promotions` and
   `Deadlines.fired` drop the oldest instead of growing for the life of the daemon.
-- 20 **OPEN** — the single `report(session, code, detail)` sink is still not built: 130 inline
-  `SessionEvent::Warning` sites outside test modules in `harnessd` against two private helpers
-  (`Harness::warn`, `Sessions::warn`), and `warning.rs` is a table a head draws, not a sink. A
-  refactor across `harnessd`, not a one-function change.
+- 20 **PARTLY** — the sink exists: `Hub::warn(code, detail)` and `Hub::warn_with(.., compaction)` in
+  `crates/sessionlog/src/hub.rs`, one construction of the variant, with a test. `Harness::warn` and
+  `Sessions::warn` go through it, and all of `harness/wall.rs`'s twelve sites and six of
+  `harness/turns.rs`'s — 18 of about 114 in `harnessd/src`. The rest still build
+  `SessionEvent::Warning` inline, so the tree has two idioms until each is routed; the sites are
+  listed by `grep -rn 'SessionEvent::Warning {' crates/harnessd/src`.
 - 21 **DONE** — the gatekeeper retry exists and cannot storm: one attempt per 30 s pass, one warning
   per distinct reason.
 - 22 **DONE** on `r60-term` — `letibot_vt::Screen::mouse` and the pane's own translation.
-- 23 **PARTLY** — all six modal cards have key tables (`app/keys/cards.rs`); none is on the surface
-  stack (`Drawn` has no card arm and `focused_surface()` still answers a surface under a card).
-  TUI work.
+- 23 **FIXED** (`9ba596c7`) — the six cards are one list (`app::Card`, `App::card_up`) that the
+  keyboard's order and the bottom bar both read, and `App::focused_surface` answers `None` while one
+  is up: a card in the chrome owns every key, so the pane under it is drawn and not focused.
+  `a_card_in_the_chrome_leaves_no_surface_focused`.
 - 24 **FIXED** (`a4384ed5`) — the flake was one fixture directory shared by two tests, one deleted by
   the other's `Drop`; one directory per call now. Residual: `settle` gives up after 10 s of ticks.
-- 25 **OPEN (verification)** — the card's path is complete and a fake adjudicator answers it; no test
-  drives a real head answering `grant_memory`, and on Darwin the card is unreachable (`Meminfo` is
-  `/proc/meminfo`).
+- 25 **DONE** (`928604a4`) — `memory_card.rs` puts a real head over the socket in front of
+  `AdjudicatedGate::grant_memory`: the ask is built from `/proc/meminfo` (`apparatus::applies` on a
+  platform that has no such file), the card's three options are asserted, a once grant covers its
+  call and nothing after it, and a session grant covers the next ask with no second card.
 - 26 **DESIGN** — no box-wide ledger: two sessions can each be granted half of what is free at the
   moment of the ask. The single-daemon half (subtract the caps live jobs were promised) is three
   lines in `bash::memory_for`; the cross-daemon half needs the `flock` the proposal describes.
@@ -779,9 +785,12 @@ nothing to design.
   read back off it (`tests/child_nag.rs`), which is the half the pure-function test could not show.
 - 32 **NOT CODE** — settled in R67's own entry: a review mark names the head the reviewer judged and
   a landing mark the rebased commit, by design.
-- 33 **NOT CODE for the tree's rule**, with three holes named — a key-less box's `children.rs` test and
-  two `bridge` tests that `remove_var("LETIBOT_REQUIRE_APPARATUS")` still skip green under the gate's
-  prefix.
+- 33 **CLOSED, one hole unresolved** (`e4707f8e`) — the four `bridge` fixtures no longer clear
+  `LETIBOT_REQUIRE_APPARATUS` from their own environment, and `scripts/check-test-attrs.sh` (the
+  gate's second step) refuses a file that clears it or `LETIBOT_REQUIRE_MODEL`, so a fixture cannot
+  turn a binary's skips green. The audit's third hole — "a key-less box's `children.rs` test" — was
+  looked for in every `children.rs` in the tree and no test there skips on a key; it is recorded here
+  as not found rather than as fixed.
 - 34 **FIXED** — the two wall-clock assertions in `tests/stop_force.rs` are gone (a span that began
   before the fixture attached, compared against the app's own deadline); the ordering claims stay and
   `reconnect`'s clocks were already injected.
@@ -790,8 +799,10 @@ nothing to design.
 - 36 **FIXED** — every live target is `#[ignore]`d (`*_live.rs` ×7, plus `sessionlog/tests/live_e2e.rs`,
   `turn/tests/live_qwen.rs`, `flowy/tests/live.rs`), so a workspace run cannot dial the box; a person
   runs one by name with `--ignored`. `sudo_ask_live`'s re-exec spawn says `--ignored` with it.
-- 37 **CHORE** — run the workspace clippy step; the four exemptions live only in the gate line and CI
-  is deliberately weaker, so there is no drift to fix.
+- 37 **DONE** — the workspace clippy step was run on the result (`sh scripts/clippy-gate.sh
+  --offline --all-targets -- -D warnings -A clippy::result_large_err -A clippy::type_complexity -A
+  clippy::large_enum_variant -A clippy::too_many_arguments`), and it is what found the two
+  `SessionEvent` imports the new sink left unused.
 - 38 **DONE** — R63: `sessions::Court`, one thread per session, armed by `Daemon::run`;
   `tests/thread_per_session.rs` is its done-when.
 - 39 **PARTLY** — R62's seam is built and tested against a fake ssh (`GateRunner`/`HostGate`,
@@ -799,7 +810,9 @@ nothing to design.
   host — is a live run, and the fleet's `~/.actrc` is item 27's.
 - 40 **CHORE** — R70 is partly done (`harness.rs`, `adjudicate.rs`, `todo.rs` and `sessions/` moved
   their blocks out). Nine inline blocks are still over ~800 lines; `harnessd/src/plugins.rs` is the
-  largest at 3 320 lines and the one to move first.
+  largest at 3 320 lines and the one to move first. Not attempted: moving a 2 469-line block means
+  reproducing every line of it, which is a job for a session that can cut and paste, not for one
+  whose only write is a retyped file.
 - 41 **DONE** — R60's three: scrollback (`vt::Screen::HISTORY_ROWS`/`view`), panes numbered on the
   wire, and a confined pane (`wrap_terminal`, no `--new-session`), each with a test.
 

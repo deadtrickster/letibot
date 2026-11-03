@@ -1134,13 +1134,10 @@ impl Harness {
     }
 
     /// **A warning on this session's log** - the operator's own sentence about something that
-    /// did not go as asked. One writer for the two doors that can refuse an attachment.
+    /// did not go as asked. One writer for the two doors that can refuse an attachment, and it goes
+    /// through [`Hub::warn`] so the daemon and the harness cannot word one fact two ways.
     pub(crate) fn warn(&self, code: &str, detail: String) {
-        self.hub.publish(letibot_sessionlog::SessionEvent::Warning {
-            code: code.into(),
-            detail,
-            compaction: None,
-        });
+        self.hub.warn(code, detail);
     }
 
     /// **The batch a turn about to open carries** (R79), taken and NOT yet called delivered: the

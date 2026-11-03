@@ -3493,14 +3493,11 @@ impl<'a> Sessions<'a> {
     // worker's hands on the state it owns.
 
     /// A failure on the session's own log - the hub every attached head draws - for the arms
-    /// whose only other witness is the daemon's stderr.
+    /// whose only other witness is the daemon's stderr. It goes through [`Hub::warn`], the one door
+    /// every other warning site uses, so the daemon's half and the harness's cannot drift.
     fn warn(&self, session_id: &str, code: &str, detail: String) {
         if let Some(hub) = self.registry.get(session_id) {
-            hub.publish(SessionEvent::Warning {
-                code: code.to_string(),
-                detail,
-                compaction: None,
-            });
+            hub.warn(code, detail);
         }
     }
 

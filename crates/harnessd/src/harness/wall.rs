@@ -445,16 +445,15 @@ impl Harness {
         // An announcement, not a row: the head keeps it as the state behind the progress line,
         // so one compaction draws one durable line, its report. An older head knows no such code
         // and draws the routine row it always drew.
-        self.hub.publish(SessionEvent::Warning {
-            code: "compacting".into(),
-            detail: format!(
+        self.hub.warn(
+            "compacting",
+            format!(
                 "{r} of {w} {unit} resident{basis}, leaving less than the {h} the next \
                  turn needs — compacting now, as one more message so the prefix the \
                  server already holds is reused. This is the wall, not a judgement about \
                  the conversation.{because}{pressing}"
             ),
-            compaction: None,
-        });
+        );
         let (started, compacted) = (Instant::now(), self.compact_with(fold));
         let ok = compacted.is_ok();
         match compacted {
@@ -478,10 +477,10 @@ impl Harness {
                     estimated,
                 };
                 let sentence = crate::sessions::compaction_said(&report, scales.clone());
-                self.hub.publish(SessionEvent::Warning {
-                    code: "compacted".into(),
-                    detail: sentence.clone(),
-                    compaction: Some(Box::new(crate::sessions::compaction_wire(
+                self.hub.warn_with(
+                    "compacted",
+                    sentence.clone(),
+                    Some(Box::new(crate::sessions::compaction_wire(
                         &report,
                         "compacted",
                         scales,
@@ -489,7 +488,7 @@ impl Harness {
                         w,
                         h,
                     ))),
-                });
+                );
                 // Whether it helped is not decided here: it used to be, on the base's estimate, for good. A
                 // metered base is judged by the first round that measures it, and a local one inside `compact_with`,
                 // where the count is exact. Either way the controller said it, once.
@@ -516,23 +515,18 @@ impl Harness {
                 // decides the turn's fate, so a compaction that did not run leaves no room, and this line is why the
                 // operator can see it was tried rather than infer it never was.
                 eprintln!("  {}: compaction FAILED: {e}", self.cfg.session_id);
-                self.hub.publish(SessionEvent::Warning {
-                    code: "auto_compact_failed".into(),
-                    detail: format!(
+                self.hub.warn(
+                    "auto_compact_failed",
+                    format!(
                         "the automatic compaction did not run: {e}. This session is over \
                          its context budget and nothing made room, so the next turn will \
                          hit the context wall. `/compact` retries it."
                     ),
-                    compaction: None,
-                });
+                );
                 // And if this is the first request after a model switch, say how to go back: the compaction runs
                 // through this harness and not the turn tail, and it is the door the measured failure took.
                 if let Some(said) = self.switch_back_notice(&e) {
-                    self.hub.publish(SessionEvent::Warning {
-                        code: "model_switch_refused".into(),
-                        detail: said,
-                        compaction: None,
-                    });
+                    self.hub.warn("model_switch_refused", said);
                 }
             }
         }
@@ -619,11 +613,7 @@ impl Harness {
             }
         };
         eprintln!("  {}: {detail}", self.cfg.session_id);
-        self.hub.publish(SessionEvent::Warning {
-            code: code.into(),
-            detail,
-            compaction: None,
-        });
+        self.hub.warn(code, detail);
         self.publish_settings();
     }
 
@@ -672,14 +662,13 @@ impl Harness {
                 "  {}: could not write the wall controller's state to the store: {e}",
                 self.cfg.session_id
             );
-            self.hub.publish(SessionEvent::Warning {
-                code: "auto_compact_no_progress".into(),
-                detail: format!(
+            self.hub.warn(
+                "auto_compact_no_progress",
+                format!(
                     "the wall controller's state could not be written down: {e}. It holds \
                      until this daemon stops."
                 ),
-                compaction: None,
-            });
+            );
         }
     }
 
@@ -852,18 +841,16 @@ impl Harness {
         // than pretend either way. The first metered turn measures the scale, so
         // this is a window of one turn per daemon and not a standing hole.
         if carried.is_none() {
-            self.hub.publish(letibot_sessionlog::SessionEvent::Warning {
-                code: "reseat_unchecked".into(),
-                detail: format!(
+            self.hub.warn(
+                "reseat_unchecked",
+                format!(
                     "this session has not taken a metered turn yet, so how the provider \
                      counts it is unmeasured and the carry could not be checked against \
                      the window. Going ahead: {resident} token(s) by this box's ledger, \
                      which over-counts what a provider is sent. If the next turn does not \
                      fit, `/compact` is the way back."
                 ),
-
-                compaction: None,
-            });
+            );
         }
 
         let before = tool_names(&self.prefix.tools_json);
@@ -925,17 +912,16 @@ impl Harness {
         if fit == VerbatimFit::Tight
             && let (Some(window), Some(carried)) = (self.cfg.context_window, carried)
         {
-            self.hub.publish(letibot_sessionlog::SessionEvent::Warning {
-                code: "reseat_tight".into(),
-                detail: format!(
+            self.hub.warn(
+                "reseat_tight",
+                format!(
                     "re-seated verbatim at {carried} of a {window}-token window, less than the \
                      {} a turn needs to the side — as it was before the reseat. That room is \
                      made by compaction, as it would have been without the reseat; \
                      `/compact` makes it now.",
                     self.cfg.headroom()
                 ),
-                compaction: None,
-            });
+            );
         }
         Ok(out)
     }
@@ -1171,14 +1157,13 @@ impl Harness {
                         None => split,
                     });
                 if let Some(split) = folded {
-                    self.hub.publish(SessionEvent::Warning {
-                        code: "compacting".into(),
-                        detail: format!(
+                    self.hub.warn(
+                        "compacting",
+                        format!(
                             "at the wall: summarising the first {split} item(s) and continuing \
                              on the summary plus the rest, verbatim"
                         ),
-                        compaction: None,
-                    });
+                    );
                     let (harvest, tail, tail_split) =
                         self.compact_by_folding(&items, split, &mut sink)?;
                     // What the record stands on: the bodies are in the store under these ids, and the
@@ -1351,15 +1336,13 @@ impl Harness {
                         });
                     match split {
                         Some(split) => {
-                            self.hub.publish(SessionEvent::Warning {
-                                code: "compacting".into(),
-                                detail: format!(
+                            self.hub.warn(
+                                "compacting",
+                                format!(
                                     "over budget: summarising the first {split} item(s) and \
                                      continuing on the summary plus the rest, verbatim"
                                 ),
-
-                                compaction: None,
-                            });
+                            );
                             self.compact_by_folding(&items, split, &mut sink)?
                         }
                         // No workable fold: fall through to the two-half plan,
@@ -1387,9 +1370,9 @@ impl Harness {
                         OverrunPlan::Cut { cut, tail_from, .. } => (cut, tail_from),
                         _ => (0, 0),
                     };
-                    self.hub.publish(SessionEvent::Warning {
-                        code: "compacting".into(),
-                        detail: format!(
+                    self.hub.warn(
+                        "compacting",
+                        format!(
                             "over budget with no room for a summary in place: summarising \
                              off to one side, in two halves that overlap. First the recent \
                              {} item(s), which the server has not seen and must read cold; \
@@ -1398,9 +1381,7 @@ impl Harness {
                              move until it lands.",
                             items.len() - tail_from
                         ),
-
-                        compaction: None,
-                    });
+                    );
                     let answerer = Self::answerer(&self.provider, &self.prefix);
                     let runtime = self.runtime.clone();
                     let h = summarise_overrun(
@@ -1738,15 +1719,14 @@ impl Harness {
         // so returning an error sent every caller down its refusal path - `reingest` returned before the prefix moved,
         // and the operator was told nothing changed. The rows stay in memory and the next store write takes them up.
         if let Err(e) = persisted {
-            self.hub.publish(SessionEvent::Warning {
-                code: "fork_unstored".into(),
-                detail: format!(
+            self.hub.warn(
+                "fork_unstored",
+                format!(
                     "the conversation moved to {new_id} in this daemon, but its rows are not all \
                      stored yet ({e}). They are written with the next store write; until then a \
                      restart resumes {old_id}, as it was before the fork."
                 ),
-                compaction: None,
-            });
+            );
         }
         // The stored context size is about the OLD conversation: the last prompt the provider measured, which this
         // fork replaced. A verbatim fork replaced nothing, so its count is kept and its ledger anchor moved. Any
