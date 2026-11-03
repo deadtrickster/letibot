@@ -333,6 +333,8 @@ struct Held {
     /// The unit `harness` was printed in: the reading is worth `harness` give or take half of this.
     harness_grain: u64,
     log: u64,
+    /// The unit `log` was printed in, as [`harness_grain`](Self::harness_grain) is for `harness`.
+    log_grain: u64,
     view: usize,
     heap: u64,
     /// The sessions the sums above cover.
@@ -344,10 +346,12 @@ impl Held {
     /// reading before the daemon's first tick.
     fn of(watch: &str) -> Self {
         let (harness, harness_grain) = after(watch, "harness ").and_then(printed).unwrap_or((0, 0));
+        let (log, log_grain) = after(watch, "logs ").and_then(printed).unwrap_or((0, 0));
         Held {
             harness,
             harness_grain,
-            log: after(watch, "logs ").map(bytes).unwrap_or(0),
+            log,
+            log_grain,
             view: after(watch, "view ")
                 .and_then(|n| n.split_whitespace().next()?.parse().ok())
                 .unwrap_or(0),
@@ -620,10 +624,18 @@ fn forty_turns_with_a_failed_compaction_each_keep_the_daemon_bounded() {
         view_grew <= 3 * spanned,
         "the view took {view_grew} row(s) from {spanned} turns, which is more than the rows they made"
     );
+    // The log is a ring, and forty turns of this size cannot reach its bound - so what is asserted is
+    // its growth against the bytes the run published, which a log that kept a copy of the
+    // conversation per turn would exceed by the turn count.
+    let published = rows_added * sessions;
+    let log_grew = last.held.log.saturating_sub(first.held.log);
+    let log_allowed = published + (first.held.log_grain + last.held.log_grain) / 2;
     assert!(
-        last.held.log < 16 << 20,
-        "the hub's log is past its own bound: {}",
-        kb(last.held.log)
+        log_grew <= log_allowed,
+        "the hub's log grew {} over {spanned} turns that published {}, which is a log keeping more \
+         than the events it was given",
+        kb(log_grew),
+        kb(published)
     );
 }
 
