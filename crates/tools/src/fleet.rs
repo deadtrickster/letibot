@@ -589,11 +589,21 @@ impl Fleet {
         // A leg that has already died is not going to become ready, and saying so now is what
         // turns a thirty-second wait into a sentence. A service whose start failed is the case.
         if let Some((state, _)) = self.settled(run) {
+            // Unless it answered on the way out: a role that prints its line and exits, or leaves
+            // a listener behind, is ready-then-ended, and its dependents may start.
+            if self.condition(run, check)? {
+                return Ok(true);
+            }
             return Err(format!(
                 "the role ended before it was ready ({}) — it will not become ready",
                 state.word()
             ));
         }
+        self.condition(run, check)
+    }
+
+    /// The condition itself, asked of what the role has done so far.
+    fn condition(&self, run: &Running, check: &Ready) -> Result<bool, String> {
         match check {
             Ready::Lease => Err(
                 "its readiness check is a port from the session's lease and no block was \

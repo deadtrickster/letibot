@@ -245,6 +245,72 @@ fn after_orders_the_starts_and_a_roles_facts_resolve() {
     );
 }
 
+/// A role that prints its ready line and exits has still answered: the line is its own account,
+/// so it is ready-then-ended and a role `after` it may start.
+#[test]
+fn a_role_that_prints_its_line_and_exits_is_ready() {
+    let rig = Rig::new("exits-ready", &["fake1"]);
+    let answer = tool(&rig).answer(
+        &json!({
+            "roles": {
+                "once": {
+                    "host": "fake1",
+                    "command": "echo 'listening on 9998'",
+                    "ready": {"log": "listening on \\d+"}
+                },
+                "dependent": {
+                    "host": "fake1",
+                    "command": "echo dependent-ran",
+                    "after": ["once"]
+                }
+            },
+            "deadline_s": 60
+        }),
+        here(&rig),
+        "scenario-exits-ready",
+    );
+    let text = answer.payload.clone();
+    assert_eq!(answer.outcome, ToolOutcome::Ok, "{text}");
+    assert!(
+        text.contains("once on fake1 · exited 0") && text.contains("ready after "),
+        "the log line made it ready before it ended:\n{text}"
+    );
+    assert!(
+        text.contains("dependent on fake1 · exited 0") && text.contains("dependent-ran"),
+        "the role after it started, which the readiness check allowed:\n{text}"
+    );
+}
+
+/// A role that exits without printing its line never became ready, and the row says so.
+#[test]
+fn a_role_that_exits_without_its_line_ended_before_it_was_ready() {
+    let rig = Rig::new("exits-quiet", &["fake1"]);
+    let answer = tool(&rig).answer(
+        &json!({
+            "roles": {
+                "quiet": {
+                    "host": "fake1",
+                    "command": "echo nothing to see",
+                    "ready": {"log": "listening on \\d+"},
+                    "ready_deadline_s": 1
+                }
+            },
+            "deadline_s": 60
+        }),
+        here(&rig),
+        "scenario-exits-quiet",
+    );
+    let text = answer.payload.clone();
+    assert!(
+        matches!(answer.outcome, ToolOutcome::Failed { .. }),
+        "a role that ended before it was ready fails the scenario:\n{text}"
+    );
+    assert!(
+        text.contains("ended before it was ready (exited 0)"),
+        "the row says how it ended and that it never answered:\n{text}"
+    );
+}
+
 /// Every role and the run are supervised records, a `process` row with its host, so a session
 /// close or a daemon restart has the same list. Measured here because it is the contract between
 /// the tool and the daemon's supervisor.
@@ -325,7 +391,7 @@ fn a_log_line_and_a_checking_command_both_answer_as_readiness() {
             "roles": {
                 "logger": {
                     "host": "fake1",
-                    "command": "echo starting; sleep 0.2; echo 'listening on 9999'; sleep 60",
+                    "command": "echo starting; sleep 0.2; echo 'listening on 9999'",
                     "ready": {"log": "listening on \\d+"}
                 },
                 "checked": {
@@ -344,7 +410,7 @@ fn a_log_line_and_a_checking_command_both_answer_as_readiness() {
     let text = answer.payload.clone();
     assert_eq!(answer.outcome, ToolOutcome::Ok, "{text}");
     assert!(
-        text.contains("logger on fake1 · stopped · ") && text.contains("ready after "),
+        text.contains("logger on fake1 · exited 0") && text.contains("ready after "),
         "the log line made it ready:\n{text}"
     );
     assert!(
