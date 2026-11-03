@@ -1336,16 +1336,28 @@ impl Tool for TaskStartTool {
             .map(|r| r.trim().trim_end_matches('/').to_string())
             .filter(|r| !r.is_empty() && r != ".");
 
-        // A VM child works on a COPY of the tree, so the commits it is told to make land there
-        // and the host branch stays at its base, with nothing to enqueue. `main_tree` promises
-        // no branch, so it is not this case.
+        // A VM child works on a COPY of the tree, so a worktree arranged here is not the tree its
+        // commits land in. `main_tree` promises no branch, so it is not this case.
         if placement.is_vm() && !main_tree {
+            // A guest on a declared host comes home as a remote branch, so the reason is that
+            // branch and not "nothing to enqueue" - that sentence is this box's VM alone.
+            let why = match &placement {
+                Placement::RemoteVm(host) => format!(
+                    "the child works inside a firecode VM on {host}, and what it commits comes \
+                     back here as the branch `remote/{host}/<its short id>` when the VM stops - \
+                     not into a worktree arranged here, so `agent/<slug>` would stay at its base"
+                ),
+                _ => "a VM works on a copy of this tree, so the child's commits stay in the copy \
+                      and the branch `agent/<slug>` never leaves its base, with nothing to \
+                      enqueue for review"
+                    .to_string(),
+            };
             return Invocation::failed(
                 "task_start cannot arrange a worktree for a child in a VM",
-                "a VM works on a copy of this tree, so the child's commits stay in the copy and \
-                 the branch `agent/<slug>` never leaves its base, with nothing to enqueue for \
-                 review. Use `task` with the same `where`, whose completion says where the copy's \
-                 work comes back. Nothing was arranged and nothing was spawned.",
+                format!(
+                    "{why}. Use `task` with the same `where`, whose completion says where the \
+                     work comes back. Nothing was arranged and nothing was spawned."
+                ),
             );
         }
 

@@ -1254,6 +1254,31 @@ fn a_task_start_in_a_vm_is_refused_before_anything_is_arranged() {
             "{}",
             r.payload
         );
+        // The reason is the placement's own. A guest on a declared host brings its commits home
+        // as a remote branch, so a refusal that says there is nothing to enqueue is false there.
+        if args.contains("host:lab2x1:vm") {
+            assert!(
+                r.payload.contains("remote/lab2x1/"),
+                "a guest on a host brings its commits back as `remote/<host>/<id>`: {}",
+                r.payload
+            );
+            assert!(
+                !r.payload.contains("nothing to enqueue"),
+                "that branch can be enqueued, so the refusal must not say it cannot: {}",
+                r.payload
+            );
+        } else {
+            assert!(
+                r.payload.contains("nothing to enqueue"),
+                "this box's VM leaves a copy and no branch to enqueue: {}",
+                r.payload
+            );
+            assert!(
+                !r.payload.contains("remote/"),
+                "and no branch comes home from it: {}",
+                r.payload
+            );
+        }
         assert_eq!(
             arranged.load(std::sync::atomic::Ordering::SeqCst),
             0,
