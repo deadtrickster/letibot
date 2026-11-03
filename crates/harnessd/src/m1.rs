@@ -310,6 +310,30 @@ fn percentile(sorted: &[f64], p: f64) -> f64 {
     sorted[idx]
 }
 
+/// C1: every submission's token vector must begin with the previous one's, and a divergence
+/// names the token it happened on. No pair to compare is not a pass: a run whose every turn
+/// failed submitted nothing, and reporting that as exact extension is the vacuous pass this
+/// whole instrument exists to refuse.
+fn c1(vectors: &[Vec<TokenId>]) -> String {
+    for w in vectors.windows(2) {
+        if !w[1].starts_with(&w[0]) {
+            let at = w[0]
+                .iter()
+                .zip(&w[1])
+                .position(|(a, b)| a != b)
+                .unwrap_or(w[1].len());
+            return format!("C1  FAIL  diverged at token {at} of {}", w[0].len());
+        }
+    }
+    if vectors.len() < 2 {
+        return "C1  NOT RUN  no submission was ever compared with the one before it".to_string();
+    }
+    format!(
+        "C1  PASS  exact prefix extension over {} submissions of the token array",
+        vectors.len().saturating_sub(1)
+    )
+}
+
 fn judge(
     rows: &[Row],
     vectors: &[Vec<TokenId>],
@@ -320,25 +344,7 @@ fn judge(
     let mut out = Vec::new();
 
     // ---- C1: exact prefix extension of the token array -------------------
-    let mut c1 = None;
-    for w in vectors.windows(2) {
-        if !w[1].starts_with(&w[0]) {
-            let at = w[0]
-                .iter()
-                .zip(&w[1])
-                .position(|(a, b)| a != b)
-                .unwrap_or(w[1].len());
-            c1 = Some(format!("diverged at token {at} of {}", w[0].len()));
-            break;
-        }
-    }
-    out.push(match c1 {
-        None => format!(
-            "C1  PASS  exact prefix extension over {} submissions of the token array",
-            vectors.len() - 1
-        ),
-        Some(w) => format!("C1  FAIL  {w}"),
-    });
+    out.push(c1(vectors));
 
     // ---- C2: the fidelity gate, which needs no model ---------------------
     out.push(
@@ -828,5 +834,28 @@ mod tests {
             lines[0]
         );
         assert!(lines[0].contains("p10 NaN"), "{}", lines[0]);
+    }
+
+    /// C1's reading, both ways: a prompt that does not extend the last one fails and says where,
+    /// and one that does is a pass over the number of pairs actually compared.
+    #[test]
+    fn c1_fails_on_a_divergence_and_names_the_token() {
+        let line = c1(&[vec![1, 2, 3, 4], vec![1, 2, 3, 4, 5], vec![1, 2, 9, 4, 5]]);
+        assert!(line.contains("C1  FAIL"), "{line}");
+        assert!(line.contains("diverged at token 2 of 5"), "{line}");
+        let pass = c1(&[vec![1, 2], vec![1, 2, 3], vec![1, 2, 3, 4]]);
+        assert!(pass.contains("C1  PASS"), "{pass}");
+        assert!(pass.contains("over 2 submissions"), "{pass}");
+    }
+
+    /// The run that failed every turn: the only vector is the prefix the session opened with, so
+    /// no pair was ever compared and there is nothing to be exact about.
+    #[test]
+    fn a_run_that_submitted_nothing_does_not_pass_c1_by_vacancy() {
+        let line = c1(&[vec![1, 2, 3]]);
+        assert!(
+            line.contains("C1  NOT RUN"),
+            "zero pairs compared was reported as a pass: {line}"
+        );
     }
 }
