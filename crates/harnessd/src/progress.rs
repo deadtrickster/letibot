@@ -212,27 +212,15 @@ impl ProgressDetector {
             return None;
         }
         self.nudged = true;
-        let mut msg = format!(
-            "The harness is watching what your tool calls return, not how many you \
-             make, and {}.",
-            self.window_summary()
-        );
-        match self.repeats_clause() {
-            Some(r) => msg.push_str(&format!(" Some of them were {r}.")),
-            None => msg.push_str(
-                " No call was repeated, so the questions were new and nothing could \
-                 answer them.",
-            ),
-        }
-        // One instruction, and the reason it is one: a model reading a wall of policy mid-turn
-        // answers the wall. What happens next is a fact, so it is stated as one.
-        msg.push_str(
-            "\n\nAnswer now if you have what you need; if not, ask a *different* question, \
-             because the same one returns the same bytes. One more round with nothing new \
-             ends the turn and shows the operator this, so say what you are still looking \
-             for.",
-        );
-        Some(msg)
+        // R93.D4: two sentences - what the harness saw and what to do about it. The tally, the
+        // repeat clause and the holding policy were ninety words read mid-turn, and a model
+        // answers a wall of prose rather than the turn.
+        Some(format!(
+            "Your last {n} round{} returned nothing new. Answer if you can; otherwise try a \
+             different query and say what you're looking for. One more empty round ends the turn.",
+            if self.run == 1 { "" } else { "s" },
+            n = self.run,
+        ))
     }
 
     /// What the stalled window contained, with its denominator. `docs/tool-design-brief.md`
@@ -538,10 +526,9 @@ mod tests {
         d.observe(&call("read", r#"{"path":"a"}"#), &ok(), "same");
         d.end_round();
         let n = d.nudge().expect("the round before the stop");
-        assert!(
-            n.contains("read path=a"),
-            "the nudge names the call too: {n}"
-        );
+        // R93.D4: two sentences. The call's name and the repeat tally went with the rest of the
+        // policy, which is what a model mid-turn has no use for.
+        assert!(!n.contains("read path=a"), "{n}");
         assert!(!d.exhausted(), "the nudge is a correction, not the stop");
         d.observe(&call("read", r#"{"path":"a"}"#), &ok(), "same");
         d.end_round();
@@ -564,20 +551,19 @@ mod tests {
         d.observe(&call("read", r#"{"path":"a"}"#), &ok(), "same");
         d.end_round();
         let n = d.nudge().expect("the round before the stop");
+        assert_eq!(
+            n,
+            "Your last 2 rounds returned nothing new. Answer if you can; otherwise try a \
+             different query and say what you're looking for. One more empty round ends the turn."
+        );
         let lower = n.to_lowercase();
-        for fact in ["answer now", "*different* question", "ends the turn"] {
+        for fact in ["answer if you can", "different query", "ends the turn"] {
             assert!(lower.contains(fact), "the nudge must say `{fact}`: {n}");
         }
         let words = n.split_whitespace().count();
-        assert!(words <= 100, "the nudge is {words} words long: {n}");
-        let advice = n.split("\n\n").nth(1).unwrap_or_default();
-        let advice_words = advice.split_whitespace().count();
+        assert!(words <= 40, "the nudge is {words} words long: {n}");
         assert!(
-            advice_words <= 50,
-            "what to do is {advice_words} words, and this is read mid-turn: {advice}"
-        );
-        assert!(
-            !n.contains("widen the search"),
+            !n.contains("widen the search") && !n.contains("not how many you make"),
             "the policy aside is not the model's to act on: {n}"
         );
     }

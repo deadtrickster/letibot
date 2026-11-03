@@ -471,16 +471,25 @@ fn monitor(text: &str) -> Option<Card> {
     ))
 }
 
-/// `The harness is watching what your tool calls return, … the last 4 rounds ran 4 calls and 0
-/// of 4 returned a result this turn had not already seen …`.
+/// `Your last 4 rounds returned nothing new. …` - the progress nudge. The sentence before
+/// `R93.D4` opened `The harness is watching what your tool calls return` and is still in every
+/// stored transcript.
 fn progress(text: &str) -> Option<Card> {
-    let rest = text.strip_prefix("The harness is watching what your tool calls return")?;
-    let (_, after) = rest.split_once("the last ")?;
-    let rounds = after.split(' ').next()?;
-    let calls = number_before(after, " calls and")?;
-    let (_, nothing) = after.split_once(" calls and ")?;
-    let fresh = nothing.split(' ').next()?;
-    let said = format!("last {rounds} rounds: {calls} calls, {fresh} returned anything new");
+    let said = match text.strip_prefix("Your last ") {
+        Some(rest) => {
+            let rounds = rest.split(' ').next()?;
+            format!("last {rounds} rounds: nothing new")
+        }
+        None => {
+            let rest = text.strip_prefix("The harness is watching what your tool calls return")?;
+            let (_, after) = rest.split_once("the last ")?;
+            let rounds = after.split(' ').next()?;
+            let calls = number_before(after, " calls and")?;
+            let (_, nothing) = after.split_once(" calls and ")?;
+            let fresh = nothing.split(' ').next()?;
+            format!("last {rounds} rounds: {calls} calls, {fresh} returned anything new")
+        }
+    };
     Some(card(
         "progress",
         Role::Attention,
