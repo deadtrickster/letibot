@@ -119,13 +119,11 @@ impl Harness {
     pub(crate) fn orientation(&self, next: Option<&str>) -> String {
         let me = self.cfg.session_id.clone();
         let mut out = format!(
-            "[cleared] The operator cleared this conversation at their request. Nothing said \
-             before this point is carried — not even a summary — so do not assume any decision, \
-             finding or instruction from it. This is the same session (`{me}`): its board, jobs, \
-             subagents, workspace and settings carried on, and they are listed below as they \
-             stand now. The old conversation is still in the store and the `transcript` tool \
-             reaches it, because its `history` is on by default and the search walks back through \
-             the transcripts this session came from.\n"
+            "[cleared] The operator cleared the conversation; assume nothing from before - not \
+             even a summary, so no decision, finding or instruction from it stands. Your board, \
+             jobs and subagents are listed below as they stand now. The old conversation is still \
+             in the store and the `transcript` tool reaches it, because its `history` is on by \
+             default and the search walks back through the transcripts this session came from.\n"
         );
         if let Some(next) = next.map(str::trim).filter(|t| !t.is_empty()) {
             out.push_str(&format!("\nThe operator said, with the clear: «{next}»\n"));
@@ -162,8 +160,7 @@ impl Harness {
             out.push_str("\nJobs: none backgrounded or running.\n");
         } else {
             out.push_str(&format!(
-                "\nJobs ({}) — a running one's completion still reaches you on its own:\n{}\n",
-                jobs.len(),
+                "\nJobs — a running one's completion still reaches you on its own:\n{}\n",
                 jobs.join("\n")
             ));
         }
@@ -202,9 +199,8 @@ impl Harness {
             out.push_str("\nSubagents: none live.\n");
         } else {
             out.push_str(&format!(
-                "\nSubagents ({}) — still yours; their answers reach you on their own, \
+                "\nSubagents — still yours; their answers reach you on their own, \
                  `task_result` reads one and `task_message` speaks to one:\n{}\n",
-                children.len(),
                 children.join("\n")
             ));
         }

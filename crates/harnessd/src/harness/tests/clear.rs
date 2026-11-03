@@ -19,7 +19,7 @@ fn a_harness(id: &str) -> Option<Harness> {
 
 /// The old conversation is named by what the model can DO about it, not by its id: `transcript`
 /// takes predicates and no transcript id, so an id in this sentence is an instruction that cannot
-/// be obeyed.
+/// be obeyed. `R93.E10` took the session's own id and the job counts out for the same reason.
 #[test]
 fn the_orientation_reaches_the_old_conversation_without_naming_its_id() {
     let Some(h) = a_harness("s-clear-orientation") else {
@@ -30,12 +30,12 @@ fn the_orientation_reaches_the_old_conversation_without_naming_its_id() {
         !said.contains("#t"),
         "the orientation hands the model a transcript id: {said}"
     );
-    // The absence above is not vacuous: the same paragraph does name the session, which is the
-    // thing that carried on.
-    assert!(said.contains("s-clear-orientation"), "{said}");
     assert!(
-        said.contains("Nothing said before this point is carried")
-            && said.contains("not even a summary"),
+        !said.contains("s-clear-orientation"),
+        "and not the session's own id either: {said}"
+    );
+    assert!(
+        said.contains("assume nothing") && said.contains("not even a summary"),
         "a clear must still say the old conversation was neither carried nor summarised: {said}"
     );
     assert!(
@@ -45,5 +45,9 @@ fn the_orientation_reaches_the_old_conversation_without_naming_its_id() {
     assert!(
         said.contains("history"),
         "the default that makes `transcript` reach it: {said}"
+    );
+    assert!(
+        !said.contains("Jobs (") && !said.contains("Subagents ("),
+        "a count of what is listed is a second statement to keep true: {said}"
     );
 }
