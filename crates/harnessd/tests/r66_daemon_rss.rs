@@ -6,6 +6,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -253,11 +254,7 @@ fn prompt(turn: usize, bytes: usize) -> String {
 /// Read frames until the turn this prompt started has ENDED - a finished or a failed turn - and
 /// answer whether it reached the model. A turn that is refused for room publishes a failure and never
 /// reaches a model, and a wait on the model alone would report the refusal as a hang.
-fn wait_turn(
-    reader: &mut letibot_sessionlog::wire::FrameReader<std::os::unix::net::UnixStream>,
-    what: &str,
-    scratch: &Scratch,
-) -> bool {
+fn wait_turn(frames: &Receiver<ServerFrame>, what: &str, scratch: &Scratch) -> bool {
     let end = Instant::now() + Duration::from_secs(180);
     let mut ran = false;
     loop {
@@ -266,7 +263,7 @@ fn wait_turn(
             "timed out waiting for {what}; the daemon's last words:\n{}",
             log_tail(scratch)
         );
-        match reader.read::<ServerFrame>() {
+        match frames.recv_timeout(Duration::from_millis(100)) {
             Ok(ServerFrame::Event(env)) => match &env.event {
                 SessionEvent::TurnFinished { .. } => return true,
                 SessionEvent::TurnFailed { .. } => return ran,
@@ -274,21 +271,51 @@ fn wait_turn(
                 _ => {}
             },
             Ok(_) => {}
-            Err(e) => panic!("the head's socket while waiting for {what}: {e}"),
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => {
+                panic!("the head's socket while waiting for {what}")
+            }
         }
     }
 }
 
-/// Wait for `want` to become true, or fail naming what was waited on.
-fn wait_for(what: &str, deadline: Duration, scratch: &Scratch, mut want: impl FnMut() -> bool) {
-    let end = Instant::now() + deadline;
-    while !want() {
+/// Wait for the compaction until the model has been asked `want` summaries, taking this head's frames
+/// off the channel as they come. A head that stops reading BLOCKS the daemon's writer - one thread
+/// both reads this socket and writes it - so a wait that polls anything else stops the very command
+/// it is waiting on from being read at all.
+fn wait_compaction(
+    frames: &Receiver<ServerFrame>,
+    asked: &Mutex<Asked>,
+    want: usize,
+    scratch: &Scratch,
+) {
+    let end = Instant::now() + Duration::from_secs(180);
+    while asked.lock().unwrap().summaries < want {
         assert!(
             Instant::now() < end,
-            "timed out waiting for {what}; the daemon's last words:\n{}",
+            "timed out waiting for the compaction; the daemon's last words:\n{}",
             log_tail(scratch)
         );
-        std::thread::sleep(Duration::from_millis(20));
+        match frames.recv_timeout(Duration::from_millis(50)) {
+            Ok(_) => {}
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => {
+                panic!("the head's socket while waiting for the compaction")
+            }
+        }
+    }
+}
+
+/// This head's frames, on a thread of their own: the daemon writes them on the same connection it
+/// reads this head's commands from, so somebody has to be reading whatever the test is waiting for.
+fn pump_frames(
+    mut reader: letibot_sessionlog::wire::FrameReader<std::os::unix::net::UnixStream>,
+    frames: std::sync::mpsc::Sender<ServerFrame>,
+) {
+    while let Ok(frame) = reader.read::<ServerFrame>() {
+        if frames.send(frame).is_err() {
+            return;
+        }
     }
 }
 
@@ -424,7 +451,7 @@ fn drive(tag: &str, turns: usize, prompt_bytes: usize, window: Option<u64>, cap:
     let scratch = Scratch::new(tag);
     let daemon = Daemon::start(&scratch, &url, window, cap);
     let pid = daemon.0.id();
-    let (mut head, _hello, mut reader) = HeadClient::attach(
+    let (mut head, _hello, reader) = HeadClient::attach(
         scratch.home.join("d.sock"),
         "s-r66",
         0,
@@ -436,17 +463,17 @@ fn drive(tag: &str, turns: usize, prompt_bytes: usize, window: Option<u64>, cap:
         },
     )
     .expect("attach");
+    let (train, frames) = std::sync::mpsc::channel();
+    std::thread::spawn(move || pump_frames(reader, train));
 
     let mut rows: Vec<Row> = Vec::new();
     for turn in 0..turns {
         head.prompt(0, &prompt(turn, prompt_bytes))
             .expect("the prompt reaches the daemon");
-        let ran = wait_turn(&mut reader, "the turn", &scratch);
+        let ran = wait_turn(&frames, "the turn", &scratch);
         let want = asked.lock().unwrap().summaries + 1;
         head.compact(0).expect("the compaction reaches the daemon");
-        wait_for("the compaction", Duration::from_secs(180), &scratch, || {
-            asked.lock().unwrap().summaries >= want
-        });
+        wait_compaction(&frames, &asked, want, &scratch);
         // The failure path publishes its warning after the refusal, and that row is part of the turn.
         std::thread::sleep(Duration::from_millis(200));
         let watch = last_memwatch(&scratch).unwrap_or_default();
