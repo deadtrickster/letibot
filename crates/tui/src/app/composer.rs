@@ -101,6 +101,10 @@ impl App {
         if self.focused_surface() == Some(Surface::Picker) {
             return self.pick(text.trim());
         }
+        // In the rooms view a line is a message to the selected channel.
+        if self.focused_surface() == Some(Surface::Rooms) {
+            return self.rooms_say(&text);
+        }
         // The mode picker takes the line the same way — a row number or a name
         // prefix — for the same reason: while the list is on the screen a bare
         // `2` means the second mode and cannot sensibly mean anything else.

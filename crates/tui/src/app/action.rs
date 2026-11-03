@@ -146,6 +146,11 @@ pub enum Action {
     /// the name, its one line and where it was found. A body travels on [`Action::LoadSkill`],
     /// because a listing of bodies is not a listing.
     ListSkills,
+    /// One chat request as the operator, a room `Request` as JSON. The answer comes back as
+    /// `ServerFrame::RoomChat` and is routed to the `/rooms` view.
+    RoomChat {
+        op: serde_json::Value,
+    },
     /// **Hand this session one skill's body** — the pane's Enter, and `/skills NAME rest`. The
     /// daemon loads it, writes the operator's message and runs the turn; `then` is what followed
     /// the name on the line.

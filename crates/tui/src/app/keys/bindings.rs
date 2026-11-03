@@ -126,6 +126,8 @@ pub(crate) enum Act {
     /// [`App::remove_selected`], asked twice: the first press names what would go, the second does
     /// it. See `app::removal` for the three senses of *remove* and which one this is.
     Remove,
+    /// The rooms view's `r`: the selected channel's roster, on or off.
+    Roster,
     /// **The session list's `ctrl-z`: put the last removed row back** - [`App::restore_removed`],
     /// the undo a removal has to have if it is to be the sense worth building.
     Undo,
@@ -374,6 +376,19 @@ const JOB_OUT: &[Binding] = &[
     PAGE,
     WHEEL,
 ];
+// The channel list takes the arrows and everything typed is the message: no Enter binding, so the
+// composer's Enter posts. Page keys and the wheel scroll the chat.
+const ROOMS: &[Binding] = &[
+    b(UPDOWN, Always, Act::Cursor, Text("switches channel")),
+    b(
+        &[On::Char('r')],
+        Empty,
+        Act::Roster,
+        Text("shows who is in the channel"),
+    ),
+    PAGE,
+    WHEEL,
+];
 const LISTING: &[Binding] = &[b(UPDOWN, Always, Act::Scroll, Text("scroll")), PAGE, WHEEL];
 // A plugin's pane: the host's keys, and the plugin's own behind them. The panel keys and the
 // action letters are the VIEW's, which a static table cannot name, so one last binding hands
@@ -420,6 +435,7 @@ impl Surface {
             Surface::PluginPane => PLUGIN,
             Surface::PluginDetail => PLUGIN_DETAIL,
             Surface::Listing => LISTING,
+            Surface::Rooms => ROOMS,
         }
     }
 
@@ -457,6 +473,7 @@ impl Surface {
             Surface::PluginPane => "pane",
             Surface::PluginDetail => "row read whole",
             Surface::Listing => "listing",
+            Surface::Rooms => "rooms",
         }
     }
 
@@ -465,6 +482,7 @@ impl Surface {
         match self {
             Surface::Picker => Some("type a number or a name to switch · /new [title]"),
             Surface::Todos => Some("/todo rm N removes one of yours"),
+            Surface::Rooms => Some("type to post · >N text replies · /dm NAME text"),
             _ => None,
         }
     }
@@ -504,6 +522,7 @@ impl Surface {
             Surface::Monitors => Some("/monitors"),
             Surface::PluginPane => Some("/pane NAME"),
             Surface::SubOut => Some("/peek ID"),
+            Surface::Rooms => Some("/rooms"),
             _ => None,
         }
     }
@@ -551,6 +570,10 @@ impl Surface {
                  ones that ended and how"
             }
             Surface::Listing => "a slash command's listing",
+            Surface::Rooms => {
+                "the chat rooms: the host room, one room per project and your DMs on the left, \
+                 the selected channel on the right; what you type posts as operator"
+            }
             Surface::PluginPane => {
                 "a plugin's pane: the dashboard a `pane` hook answered — its panels, what \
                  tripped, and what every label means; a panel's key opens its view, enter reads \

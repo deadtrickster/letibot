@@ -94,6 +94,7 @@ impl App {
                 ControlFlow::Break(None)
             }
             Act::Cursor => self.cursor_act(s, up),
+            Act::Roster => self.rooms_toggle_roster(),
             Act::Open => self.open_act(s),
             Act::Alt => self.todos_alt(),
             // `w` opens what the selected row waits on - the keyboard's half of the click on its
@@ -257,6 +258,7 @@ impl App {
                 self.plugin_sel = step(self.plugin_sel.min(n - 1), n, up);
                 self.scroll_into_view(self.plugin_row_of());
             }
+            Surface::Rooms => self.rooms_step(up),
             _ => return ControlFlow::Continue(()),
         }
         self.redraw = true;

@@ -964,6 +964,8 @@ pub struct App {
     /// daemon is gone or the deadline passes. While it is set and unresolved [`App::should_quit`]
     /// is false - the head does not exit until it can say the daemon has gone.
     pub(crate) stopping: Option<Stopping>,
+    /// The `/rooms` view: channels, messages read, what was shown.
+    pub(crate) rooms: rooms::RoomsView,
     /// A bulk announcement the daemon has not filled yet, recorded only when a snapshot is
     /// ingested and never by a live `TranscriptAppended`: a live row is body-less for the window of
     /// every ordinary message, so a trigger built on that would fire on a healthy session.
@@ -1394,6 +1396,7 @@ impl App {
             head_run_seq: 0,
             echo_open: false,
             stopping: None,
+            rooms: rooms::RoomsView::default(),
         }
     }
 
@@ -1416,6 +1419,8 @@ impl App {
         self.refresh_queues_on_the_clock();
         // An open window over a running job follows what it writes. See `poll_job_out`.
         self.poll_job_out();
+        // The chat view polls for news only while it is on the stack.
+        self.rooms_poll();
     }
 
     /// Whether the head wants the terminal repainted from scratch (Ctrl-L, or a fold that changed
@@ -1520,6 +1525,7 @@ mod queue_pane;
 mod reach;
 mod removal;
 pub(crate) mod reseat;
+pub(crate) mod rooms;
 pub(crate) mod runclick;
 mod scroll;
 mod session;

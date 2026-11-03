@@ -644,6 +644,11 @@ impl App {
             // `/skills` is the box's skills, and `/skills NAME rest` hands one over: the body is the daemon's to
             // inject, since it loads the skill, writes the person's message and runs the turn.
             "skills" => self.toggle_surface(Surface::Skills),
+            "rooms" => self.toggle_surface(Surface::Rooms),
+            _ if verb_arg(cmd, "dm").is_some() => {
+                let rest = verb_arg(cmd, "dm").unwrap_or("").to_string();
+                self.rooms_dm(&rest)
+            }
             _ if verb_arg(cmd, "skills").is_some() => {
                 let rest = verb_arg(cmd, "skills").unwrap_or("").trim();
                 let (name, then) = match rest.split_once(char::is_whitespace) {
@@ -1279,6 +1284,15 @@ pub(crate) const SLASH_COMMANDS: &[(&str, &str)] = &[
         "the skills this box has, one row each: enter (or `/skills NAME`) hands that skill's body \
          to the session as your message, and `/skills NAME rest of line` sends the rest on as your \
          prompt in the same turn",
+    ),
+    (
+        "rooms",
+        "open or close the chat rooms: the host room, one room per project and your DMs; what you \
+         type posts as operator",
+    ),
+    (
+        "dm",
+        "NAME TEXT - a direct message as operator, in the rooms view",
     ),
     (
         "standing",

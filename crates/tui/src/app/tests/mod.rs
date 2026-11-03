@@ -1357,6 +1357,7 @@ mod reseatcard;
 mod restartcard;
 mod retryrow;
 mod reviewcard;
+mod rooms;
 mod screen;
 mod scroll;
 mod session;

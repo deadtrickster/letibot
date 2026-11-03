@@ -50,6 +50,8 @@ pub(crate) enum Surface {
     PluginDetail,
     /// A slash command's listing (`/notes`, a diagnostic, a long warning).
     Listing,
+    /// The chat rooms - `/rooms`: channels on the left, the selected channel on the right.
+    Rooms,
 }
 
 impl Surface {
@@ -71,11 +73,11 @@ impl Surface {
     /// owns Enter except the two where a TYPED LINE is the answer - the session picker and the
     /// todos list - and `submit` routes the words to those, so a stray line cannot be sent instead.
     pub(crate) fn owns_enter(self) -> bool {
-        !matches!(self, Surface::Picker | Surface::Todos)
+        !matches!(self, Surface::Picker | Surface::Todos | Surface::Rooms)
     }
 
     /// Every surface, for the tests and the generated help that walk them.
-    pub(crate) const ALL: [Surface; 18] = [
+    pub(crate) const ALL: [Surface; 19] = [
         Surface::Help,
         Surface::Stats,
         Surface::Picker,
@@ -94,6 +96,7 @@ impl Surface {
         Surface::PluginPane,
         Surface::PluginDetail,
         Surface::Listing,
+        Surface::Rooms,
     ];
 }
 
@@ -301,6 +304,8 @@ impl App {
             }
             // The skills, read on the open: a skill written a minute ago is a row.
             Surface::Skills => Some(Action::ListSkills),
+            // The first poll goes out now and the view polls on while it is on the stack.
+            Surface::Rooms => self.open_rooms(),
             Surface::Subagents => {
                 self.fold_subagents();
                 None
