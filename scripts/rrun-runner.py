@@ -28,6 +28,25 @@ def load():
         return None
 
 
+def freshen_sources():
+    """Give every tracked file in the checkout one fresh mtime.
+
+    A run that waited for the lock holds a checkout cloned before the build it queued behind, and
+    cargo calls a source that is not NEWER than its artifact fresh, so it links the other branch.
+    """
+    tree = os.path.join(run_dir, "tree")
+    try:
+        listed = subprocess.run(["git", "ls-files", "-z"], cwd=tree, capture_output=True, check=True)
+    except (OSError, subprocess.CalledProcessError):
+        return
+    for name in listed.stdout.split(b"\0"):
+        if name:
+            try:
+                os.utime(os.path.join(tree, os.fsdecode(name)))
+            except OSError:
+                pass
+
+
 def save():
     status["updated"] = int(time.time())
     status["load"] = load()
@@ -77,6 +96,8 @@ except BlockingIOError:
 status["state"] = "running"
 status["steps"] = [{"cmd": c, "state": "waiting"} for c in steps]
 save()
+# Under the lock and before any step, so this run's sources are newer than the artifacts it shares.
+freshen_sources()
 failed = False
 for i, cmd in enumerate(steps):
     st = status["steps"][i]

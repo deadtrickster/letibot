@@ -140,7 +140,7 @@ refuse() { # refuse NAME OUTPUT PATTERN -- the output must not match
 # `scripts/letibot`/`leticode` use it deliberately. The 3.2 hazard beside it is *expanding*
 # an empty array under `set -u` — `EXTRA_ARGS[@]: unbound variable`, which killed the first
 # macOS start — and no grep can see that, so the `--help` run at the end is what covers it.
-BASH32="scripts/letibot scripts/leticode scripts/etalon-snapshot scripts/headwatch.sh scripts/rrun tests/launcher.sh"
+BASH32="scripts/letibot scripts/leticode scripts/etalon-snapshot scripts/headwatch.sh scripts/rrun tests/launcher.sh tests/rrun.sh"
 POSIX_SH="scripts/check-dist-names.sh scripts/check-fmt.sh scripts/check-host-runtime.sh scripts/check-provider-models.sh scripts/check-tag.sh scripts/check-test-attrs.sh scripts/clippy-gate.sh scripts/install-gate-build.sh scripts/make-dist.sh scripts/refresh-models-snapshot.sh install.sh"
 # The bash-4 spellings as one extended regex: associative arrays (`declare`/`local`/`typeset`
 # `-A`), namerefs (`-n`), `declare -g`, `mapfile`/`readarray`, `coproc`, `wait -n`, `[[ -v ]]`,
