@@ -2952,7 +2952,7 @@ key being set; cost reported as `TurnCost.micros_usd`.
 
 # 2. NEEDS A NOD — small question first, then unblocked
 
-## N5 — the agent should know the view is hermetic, and propose the grant it needs
+## N5 — the agent should know the view is hermetic, and propose the grant it needs; left: the model is told what its view holds only when a path fails, and which asks must be refused rather than prompted is undecided — `grant_view` raises an ordinary card for `~/.ssh`, with no never-write precheck
 
 Operator, 2026-09-11: *"i guess the agent should know it is hermetic and prompt me with
 his idea of shared data which i can allow."*
@@ -3082,7 +3082,7 @@ and nobody is surprised.
 
 ---
 
-## N3 — a refusal claims "the operator has been told" without knowing it
+## N3 — a refusal claims "the operator has been told" without knowing it; left: the larger half — a pending or expired decision is still unrecoverable, so "what decision" has no answer after the window, and it waits on N1 (open); the delivery claim itself is fixed, 9676492b and 37e6cf8b
 
 From the same refusal, verbatim:
 
