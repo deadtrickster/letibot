@@ -909,10 +909,9 @@ impl Boundary {
         s
     }
 
-    /// The same view told to the MODEL, before anything fails: what a command can reach, that
-    /// `~` is the view's own home and not this machine's, and what a path outside it is. The
-    /// absence note is the second half of this; a model with only that half reads a hermetic
-    /// view as a broken box.
+    /// The view told to the MODEL, before anything fails: what a command can reach, that `~` is
+    /// the view's own home, and what a path outside it is. A model with only the failure note
+    /// reads a hermetic view as a broken box.
     pub fn model_brief(&self) -> String {
         let v = &self.view;
         // Top-level roots only: `/etc/ssl` and `/etc/ld.so.cache` are one answer to "what is
