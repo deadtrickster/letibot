@@ -946,6 +946,35 @@ mod tests {
         assert!(notes.iter().any(|n| n.contains("temperatuer")), "{notes:?}");
     }
 
+    /// A scratch directory that removes itself however the test ends. The file it holds is what
+    /// says a provider is authenticated, so a copy left by a panic answers the next run.
+    struct Scratch(std::path::PathBuf);
+
+    impl Scratch {
+        fn new(tag: &str) -> Scratch {
+            let d = std::env::temp_dir().join(format!(
+                "letibot-slash-{tag}-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&d).expect("scratch");
+            Scratch(d)
+        }
+
+        fn file(&self) -> std::path::PathBuf {
+            self.0.join("providers.toml")
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     fn tmp_file(tag: &str, body: &str) -> std::path::PathBuf {
         let d = std::env::temp_dir().join(format!("letibot-slash-{}-{tag}", std::process::id()));
         std::fs::create_dir_all(&d).expect("scratch");
@@ -1252,9 +1281,8 @@ mod tests {
 
     #[test]
     fn a_model_choice_stores_the_key_or_says_what_is_missing() {
-        let d = std::env::temp_dir().join(format!("letibot-slash-{}", std::process::id()));
-        std::fs::create_dir_all(&d).unwrap();
-        let f = d.join("providers.toml");
+        let scratch = Scratch::new("model_choice_key");
+        let f = scratch.file();
         // No key anywhere for grok (the env is not set in this test): refused, with the command.
         // (If the developer's shell exports XAI_API_KEY this arm is skipped.)
         if std::env::var("XAI_API_KEY").is_err() && std::env::var("GROK_API_KEY").is_err() {
