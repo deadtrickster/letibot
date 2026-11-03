@@ -151,7 +151,7 @@ pub fn run(args: &[String]) -> ExitCode {
     }
     println!("  polling every {}s", POLL_MS / 1_000);
 
-    let source = letibot_github::gh::Gh::new();
+    let source = letibot_github::gh::Gh::new(config.token.clone());
     let mut reviewer = Unwired;
     let mut seat = Seat::new(vec![scope], config);
     loop {

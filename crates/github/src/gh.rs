@@ -1,9 +1,10 @@
 //! The real source: `gh api`, as a subprocess.
 //!
 //! Nothing here runs `gh` in a test. [`Gh`] builds the command line and hands it to a [`Run`], so a
-//! test asserts the command and the body it would send, and the operator's token stays in `gh`'s
-//! own config where this crate never reads it.
+//! test asserts the command and the body it would send. The token file `[github] token_path` names
+//! is handed to `gh` as `GH_TOKEN`, so the identity is that file's and not `gh`'s own store.
 
+use std::path::Path;
 use std::process::{Command, Stdio};
 
 use serde_json::{Value, json};
@@ -31,13 +32,29 @@ pub trait Run: Send + Sync {
 /// The operator's `gh`, as `LETIBOT_GH` names it or as `PATH` finds it.
 pub struct Process {
     gh: String,
+    /// The token file whose contents become `GH_TOKEN`: without it `gh` posts as whatever account
+    /// its own store is logged in to, which is the account the file exists to keep out.
+    token: Option<std::path::PathBuf>,
+}
+
+/// The `gh` this box runs: `LETIBOT_GH` is the override every fixture needs.
+fn program() -> String {
+    std::env::var("LETIBOT_GH").unwrap_or_else(|_| "gh".into())
+}
+
+impl Process {
+    /// A `gh` at `program`, reading the token out of `token` when there is one.
+    pub fn at(program: impl Into<String>, token: Option<&Path>) -> Process {
+        Process {
+            gh: program.into(),
+            token: token.map(Path::to_path_buf),
+        }
+    }
 }
 
 impl Default for Process {
     fn default() -> Process {
-        Process {
-            gh: std::env::var("LETIBOT_GH").unwrap_or_else(|_| "gh".into()),
-        }
+        Process::at(program(), None)
     }
 }
 
@@ -45,6 +62,15 @@ impl Run for Process {
     fn run(&self, argv: &[String], stdin: Option<&str>) -> Result<String, String> {
         let mut c = Command::new(&self.gh);
         c.args(argv);
+        if let Some(path) = &self.token {
+            let token = std::fs::read_to_string(path).map_err(|e| {
+                format!(
+                    "the token file {} cannot be read ({e}), so nothing is posted",
+                    path.display()
+                )
+            })?;
+            c.env("GH_TOKEN", token.trim());
+        }
         if stdin.is_some() {
             c.stdin(Stdio::piped());
         } else {
@@ -82,14 +108,16 @@ pub struct Gh {
 
 impl Default for Gh {
     fn default() -> Gh {
-        Gh::new()
+        Gh::new(None)
     }
 }
 
 impl Gh {
-    pub fn new() -> Gh {
+    /// The real `gh`, posting as the identity `token_path` names when a path is given.
+    pub fn new(token_path: Option<String>) -> Gh {
+        let token = token_path.map(std::path::PathBuf::from);
         Gh {
-            run: Box::new(Process::default()),
+            run: Box::new(Process::at(program(), token.as_deref())),
         }
     }
 
@@ -524,5 +552,27 @@ mod tests {
         let gh = Gh::with(Box::new(rec.clone()));
         let why = gh.list_open(&Scope::Repo("a/b".into())).unwrap_err();
         assert_eq!(why, "nothing left to answer");
+    }
+
+    /// **The token file decides the identity.** Without `GH_TOKEN` a post goes out under whatever
+    /// account `gh` is logged in as, which is the one the operator's key file exists to keep out.
+    #[test]
+    fn the_token_file_is_handed_to_gh_as_gh_token() {
+        let dir = std::env::temp_dir().join(format!("letibot-gh-token-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let token = dir.join("github.token");
+        std::fs::write(&token, "ghp_x\n").unwrap();
+
+        // `/bin/sh` stands in for `gh`: all a test can watch is what the child was handed.
+        let seen = Process::at("/bin/sh", Some(&token))
+            .run(&["-c".into(), "printenv GH_TOKEN".into()], None);
+        assert_eq!(seen.unwrap().trim(), "ghp_x");
+
+        // A file that has gone is refused by name, and nothing is posted.
+        let gone = dir.join("gone.token");
+        let why = Process::at("/bin/sh", Some(&gone))
+            .run(&["-c".into(), "true".into()], None)
+            .unwrap_err();
+        assert!(why.contains("gone.token"), "{why}");
     }
 }

@@ -16,7 +16,8 @@ use crate::source::{Comment, Pull, Review, Scope, Source, Standing};
 pub struct Config {
     /// Send reviews and replies to GitHub. Off until the operator's identity exists.
     pub post: bool,
-    /// The token file `gh` reads. Without it nothing can be posted, whatever `post` says.
+    /// The token file `[github] token_path` names. Without it nothing can be posted, whatever
+    /// `post` says; `gh`'s own store is never the identity.
     pub token: Option<String>,
     /// Reviews one repository may get in an hour. 0 is no cap.
     pub reviews_per_hour: u32,
