@@ -662,6 +662,7 @@ impl Harness {
             || cfg.placement == letibot_tools::builtins::task::Placement::Firecode;
         // A VM placement is the boundary, so the mode inside is allow-all, and the downgrade still
         // composes on top because it is the caller's explicit ask.
+        let in_vm = cfg.placement.is_vm() || cfg.vm_attach.is_some();
         cfg.mode = mode_in_vm(cfg.mode, &cfg.placement, cfg.vm_attach.is_some());
         // Where these tools run when it is another machine: not a boundary, so not an allow-all,
         // and the name is resolved here so a session reopened after the file changed fails with a
