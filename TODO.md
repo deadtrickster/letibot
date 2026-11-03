@@ -241,7 +241,7 @@ same command.
 
 ---
 
-## R98 — macOS has no boundary for a command, so tests there must ask (D16, amended) — **half 1 BUILT 2026-10-27 (the policy), half 2 BUILT on branch `mac-seatbelt` and still to be proved on a Mac**
+## R98 — macOS has no boundary for a command, so tests there must ask (D16, amended) — **half 1 BUILT 2026-10-27 (the policy, `runs_project_code_unconfined`), and half 2's code is in the tree (`crates/tools/src/exec/seatbelt.rs`, `crates/tools/tests/seatbelt.rs`); left: the one run on a Mac — `cargo test -p letibot-tools --test seatbelt`, then a session at `writes-allowed` — which no Linux box can stand in for**
 
 D16 admits a command without a card only inside a measured boundary, and its amendment says
 that on a raw host a command that executes code the agent wrote (a test runner) must keep
