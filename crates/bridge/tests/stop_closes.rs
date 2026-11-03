@@ -82,7 +82,10 @@ fn a_stop_closes_the_session_here_so_its_placement_can_settle() {
         );
         match registry.next_work_until(Some(Instant::now() + Duration::from_millis(100))) {
             WorkOrIdle::Work(Work::Close(id)) => {
-                assert_eq!(id, SESSION, "the close names the session the bridge stopped");
+                assert_eq!(
+                    id, SESSION,
+                    "the close names the session the bridge stopped"
+                );
                 break;
             }
             // The attach's own rings first, and an idle tick is nothing.

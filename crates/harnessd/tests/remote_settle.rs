@@ -85,11 +85,7 @@ impl Rig {
             std::env::set_var("LETIBOT_SSH", &ssh);
             std::env::set_var("HOME", &home);
         }
-        Rig {
-            dir,
-            home,
-            repo,
-        }
+        Rig { dir, home, repo }
     }
 
     /// Where the checkout lands on the fake remote.
