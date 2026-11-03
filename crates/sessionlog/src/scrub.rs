@@ -64,6 +64,10 @@ pub fn is_interactive(event: &SessionEvent) -> bool {
         // waiting on is true NOW, and the hub says the current one to every head that attaches or
         // resyncs (`Inner::activity_now`), exactly as it does the held counts.
         SessionEvent::ActivityChanged { .. } => true,
+        // **Ephemeral, and the republish is the whole point of the event**: a series of retries is
+        // one row whose value moves, and a replay would draw every value it had. The hub says the
+        // current one to every head that attaches or resyncs (`Inner::retry_now`).
+        SessionEvent::ModelRetry { .. } => true,
         // **Ephemeral, and it is the same reason one turn on**: a pane's view is the answer to a
         // look, and a look from four minutes ago describes four minutes ago. A head asks again
         // when the operator opens the pane.
@@ -237,6 +241,9 @@ impl StoredProjection {
             // The activity is true NOW, and the hub says the current one to every head that
             // attaches or resyncs (`Inner::activity_now`). Dropped for `HeldResults`' reason.
             SessionEvent::ActivityChanged { .. } => None,
+            // A retry series is true NOW and said again after every snapshot: a replayed one would
+            // draw the row at a count it has already passed, in a series that may be over.
+            SessionEvent::ModelRetry { .. } => None,
             // An unsettled request survives the scrub. It is still owed an answer
             // and the reattaching head is who owes it.
             _ => {
@@ -396,6 +403,9 @@ mod tests {
                     // session that may since have gone quiet, and the hub says the current one
                     // after every snapshot, gap and resync (`Inner::activity_now`).
                     | SessionEvent::ActivityChanged { .. }
+                    // A retry series, for `ActivityChanged`'s reason and one more: its value is a
+                    // count and a clock, so a replay draws a row the series has already passed.
+                    | SessionEvent::ModelRetry { .. }
                     // Ephemeral for the same reason `JobOutput` is: a window is what the job had
                     // written, and a held count is what was held at that moment. Neither is
                     // durable and neither is drawn from a replay.

@@ -17,6 +17,7 @@
 //! TranscriptContent{item_id, item}          — not §4.5's; see the variant
 //! HeadAttached / HeadDetached{head_id, kind, identity}
 //! Warning{code, detail}
+//! ModelRetry{host, attempts, said, log, ended}   — one row's whole value; see the variant
 //! Explain{turn_id, plan}
 //! ```
 //!
@@ -1462,6 +1463,31 @@ pub enum SessionEvent {
         /// of which entries mean *this session moves on its own* and which one means *a person must*.
         activity: crate::activity::Activity,
     },
+    /// **One model call being retried, as ONE row.** The daemon publishes this per failed attempt
+    /// and the value is the row's whole content, so a head that has the row rewrites it rather
+    /// than adding one: a flaky provider fills a transcript with a stack of rows otherwise.
+    ///
+    /// Ephemeral, and re-said to every head after its snapshot (`Inner::retry_now`), because a
+    /// head that attaches in the middle of a series is exactly the one that would otherwise draw
+    /// nothing and conclude the endpoint is fine.
+    ModelRetry {
+        /// The endpoint the call went to, as the daemon spells a host - what is being retried.
+        host: String,
+        /// How many attempts have failed so far.
+        attempts: u32,
+        /// The row's one line while the series runs: `retrying the model: 3 attempts, last 429
+        /// rate limited, 41s`. The daemon's words, and its clock: the span is as of the attempt
+        /// that closed the count, since only a publish can move a row.
+        said: String,
+        /// Every failed attempt, oldest first, as the popup lists them: `<clock> · <reason>`.
+        log: Vec<String>,
+        /// **The line the row settles to**, `None` while the series is still going: `the model
+        /// answered after 4 attempts, 52s` or `gave up after 6 attempts: <reason>`. It is the
+        /// same row's last value, and the durable warning beside it is the record for a head that
+        /// attaches after the series is over.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ended: Option<String>,
+    },
 }
 
 /// The default for a `TurnFinished` that does not say: absent means an ending, because a daemon
@@ -1543,6 +1569,7 @@ impl SessionEvent {
             SessionEvent::PluginPane { .. } => "PluginPane",
             SessionEvent::PluginPaneGone { .. } => "PluginPaneGone",
             SessionEvent::ActivityChanged { .. } => "ActivityChanged",
+            SessionEvent::ModelRetry { .. } => "ModelRetry",
         }
     }
 }

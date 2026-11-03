@@ -797,6 +797,10 @@ impl SessionView {
             // The one live value this view does keep, and the exception is the point: what a session
             // is waiting on is a fact only the daemon computes.
             SessionEvent::ActivityChanged { activity } => self.activity = activity.clone(),
+            // Not folded: a retry series is a row a head draws from the event itself, and the
+            // snapshot is what is true at a seq - a stored count would reach a late head as a
+            // count it has already passed.
+            SessionEvent::ModelRetry { .. } => {}
             // Nothing to fold, and the snapshot must not carry one: a pane's view is what its last
             // look answered, and a stored one would be a stale drawing.
             SessionEvent::PluginPane { .. } => {}

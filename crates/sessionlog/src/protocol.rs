@@ -16,7 +16,7 @@ use crate::view::Snapshot;
 /// Bumped when a frame's meaning changes in a way the other side cannot parse: a new variant is a
 /// deserialisation fault in the middle of a turn. Both sides compare it at ATTACH and refuse a
 /// mismatch by name.
-pub const PROTOCOL_VERSION: u32 = 58;
+pub const PROTOCOL_VERSION: u32 = 59;
 
 /// The names an operator may run through the head-run door: read-only and bounded, which admits
 /// `web_fetch` and not a tool that writes.
@@ -1255,6 +1255,7 @@ mod tests {
                 | crate::SessionEvent::TranscriptForked { .. }
                 | crate::SessionEvent::TurnFailed { .. }
                 | crate::SessionEvent::ProviderTrouble { .. }
+                | crate::SessionEvent::ModelRetry { .. }
                 | crate::SessionEvent::TurnFinished { .. }
                 | crate::SessionEvent::TurnInterrupted { .. }
                 | crate::SessionEvent::TurnStarted { .. }
@@ -1300,8 +1301,12 @@ mod tests {
         let _ = event;
         let _ = server;
         assert_eq!(
-            PROTOCOL_VERSION, 58,
-            "the match above was last reconciled with the frame list at 58. 58 added \
+            PROTOCOL_VERSION, 59,
+            "the match above was last reconciled with the frame list at 59. 59 added \
+             `SessionEvent::ModelRetry`, the one row a series of retries is worth: a version-58 \
+             head cannot decode it, and an event side has no version negotiation at parse time, so \
+             the number moves - that head reports the frame as unreadable and skips it, which is \
+             the settled-and-still-a-row behaviour it had. 58 added \
              `SessionEvent::ProviderTrouble`, the four ways a model's provider fails that an \
              automation reacts to differently: a version-57 head cannot decode it, and an event \
              side has no version negotiation at parse time, so the number moves. 57 gave \

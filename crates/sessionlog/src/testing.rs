@@ -375,6 +375,18 @@ pub fn one_of_each() -> Vec<SessionEvent> {
                 crate::activity::Waiting::Ask("adj-s1-0001".into()),
             ]),
         },
+        // **A model call being retried**, as one row's whole value (`PROTOCOL_VERSION` 59): the
+        // line, the attempts behind the popup, and the line it settles to.
+        SessionEvent::ModelRetry {
+            host: "api.deepseek.com".into(),
+            attempts: 2,
+            said: "retrying the model: 2 attempts, last 429 rate limited, 41s".into(),
+            log: vec![
+                "10:31:22 · 429 rate limited".into(),
+                "10:31:41 · timeout".into(),
+            ],
+            ended: Some("the model answered after 3 attempts, 52s".into()),
+        },
     ]
 }
 

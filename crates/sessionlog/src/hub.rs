@@ -404,6 +404,11 @@ struct Inner {
     /// The last `Filling` this hub published, republished when a head attaches: the fill is the
     /// longest wait of the three, and a head that arrives late must still show it.
     filling_now: Option<SessionEvent>,
+    /// **The retry series a model call is in**, republished to a head that attaches or takes a
+    /// resync. It is the one row the series draws, so a head that arrives mid-series and is not
+    /// told draws nothing at all and reads an endpoint that is failing as fine. `None` once the
+    /// series has its ending, which the same event carries.
+    retry_now: Option<SessionEvent>,
     closed: bool,
     /// Rung when this hub takes a command, so a reader can wait on its own session without a
     /// timer. See [`crate::registry`].
@@ -532,6 +537,7 @@ impl Hub {
                 held_now: None,
                 activity_now: None,
                 filling_now: None,
+                retry_now: None,
                 closed: false,
                 bell: None,
                 answers: None,
@@ -1007,6 +1013,11 @@ impl Hub {
             if let Some(filling) = g.filling_now.clone() {
                 g.append_and_fan(filling);
             }
+            // And the retry series, when one is running: a head that attaches in that window would
+            // otherwise draw a transcript with nothing wrong in it while the model is not answering.
+            if let Some(retrying) = g.retry_now.clone() {
+                g.append_and_fan(retrying);
+            }
 
             Attached {
                 head_id,
@@ -1048,6 +1059,10 @@ impl Hub {
                 // And the operation in flight, for the attach arm's third reason.
                 if let Some(filling) = g.filling_now.clone() {
                     g.append_and_fan(filling);
+                }
+                // And the running retry series, for the attach arm's fourth.
+                if let Some(retrying) = g.retry_now.clone() {
+                    g.append_and_fan(retrying);
                 }
                 return Delivery::Resync {
                     reason,
@@ -1856,6 +1871,11 @@ impl Inner {
         if let SessionEvent::Filling { done, total, .. } = &event {
             self.filling_now = (*done < *total).then(|| event.clone());
         }
+        // **And the retry series, which is `Filling`'s rule with the ending as the zero**: the same
+        // event carries the row's last value, so a series that has one is no longer in flight.
+        if let SessionEvent::ModelRetry { ended, .. } = &event {
+            self.retry_now = ended.is_none().then(|| event.clone());
+        }
         self.tap.observe(self.log.session_id(), &event);
         let env = self.log.append(event);
         self.view.apply(&env);
@@ -2078,6 +2098,75 @@ mod tests {
             Vec::new(),
             "a completed fill has nothing left to say"
         );
+    }
+
+    /// **A head that attaches inside a retry series is told the series**; one that attaches after it
+    /// is not. The event is the row's whole value, so a replay would draw it at a count the series
+    /// has already passed - the `HeldResults` rule, and a live row depends on it.
+    #[test]
+    fn a_head_that_attaches_mid_series_is_told_the_series_and_a_late_one_is_not() {
+        let series = |attempts: u32, ended: Option<&str>| SessionEvent::ModelRetry {
+            host: "api.deepseek.com".into(),
+            attempts,
+            said: format!("retrying the model: {attempts} attempts, last 429 rate limited, 41s"),
+            log: vec!["10:31:22 · 429 rate limited".into()],
+            ended: ended.map(str::to_string),
+        };
+        let rows = |b: &crate::cursor::Batch| -> Vec<u32> {
+            b.events()
+                .iter()
+                .filter_map(|e| match &e.event {
+                    SessionEvent::ModelRetry { attempts, .. } => Some(*attempts),
+                    _ => None,
+                })
+                .collect()
+        };
+        let mark = |hub: &Hub| {
+            hub.publish(SessionEvent::Warning {
+                code: "interrupt_idle".into(),
+                detail: String::new(),
+                compaction: None,
+            });
+        };
+        let hub = Hub::new("s-retrying");
+        hub.publish(series(2, None));
+
+        let late = attach(&hub, 64);
+        mark(&hub);
+        let Delivery::Events(b) = hub.next_batch(&late.head_id, 64) else {
+            panic!("expected events");
+        };
+        assert_eq!(
+            rows(&b),
+            vec![2],
+            "the head was handed a snapshot and not the series it attached inside"
+        );
+
+        // The series ends, and a head attaching afterwards is not told a call is being retried.
+        hub.detach(&late.head_id);
+        hub.publish(series(4, Some("the model answered after 5 attempts, 52s")));
+        let after = attach(&hub, 64);
+        mark(&hub);
+        let Delivery::Events(b) = hub.next_batch(&after.head_id, 64) else {
+            panic!("expected events");
+        };
+        assert_eq!(
+            rows(&b),
+            Vec::<u32>::new(),
+            "a finished series was re-said as live"
+        );
+
+        // And a head that RESYNCS into a running series is told it, the queue being thrown away.
+        hub.publish(series(6, None));
+        hub.request_resync(&after.head_id, "test");
+        let Delivery::Resync { .. } = hub.next_batch(&after.head_id, 64) else {
+            panic!("expected a resync");
+        };
+        mark(&hub);
+        let Delivery::Events(b) = hub.next_batch(&after.head_id, 64) else {
+            panic!("expected events");
+        };
+        assert_eq!(rows(&b), vec![6], "the resynced head was not told");
     }
 
     #[test]
