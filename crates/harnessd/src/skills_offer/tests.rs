@@ -182,6 +182,22 @@ fn the_plan_on_the_board_is_part_of_the_subject() {
     );
 }
 
+/// **The plan survives a tool result that fills the subject.** The rows on the board are the work in
+/// hand, and a cut that kept only the newest end of the walk dropped them in exactly the rounds a
+/// tool result was longest - which are the rounds a skill is wanted in.
+#[test]
+fn the_plan_survives_a_tool_result_that_fills_the_subject() {
+    let mut items = prompt("keep going");
+    items.push(result(&"x".repeat(SUBJECT_CHARS * 2)));
+    let text = subject(&items, &[row("build the beamer slides for the offsite")]);
+    assert!(
+        text.contains("beamer slides"),
+        "the plan is what the round is about, and the result cut it: {} bytes",
+        text.len()
+    );
+    assert!(text.len() <= SUBJECT_CHARS, "{} bytes", text.len());
+}
+
 /// The tail is settled against the round's calls and logged either way: an offer taken is a `skill`
 /// load of that name, and the ratio is the only thing that tunes the floor.
 #[test]

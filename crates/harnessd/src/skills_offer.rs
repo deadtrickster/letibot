@@ -177,12 +177,20 @@ impl Offers {
     }
 }
 
-/// The subject a skill is scored against: the person's latest prompt, the plan, and the model's
+/// The subject a skill is scored against: the plan, the person's latest prompt, and the model's
 /// latest text and reasoning - walked backwards from the newest end so [`SUBJECT_CHARS`] keeps what
 /// is happening now. A note's offer stops at the prompt; a skill may be made relevant by the model's
 /// own reasoning, so the walk takes that too.
 pub fn subject(items: &[TranscriptItem], plan: &[TodoItem]) -> String {
+    // The plan first, and out of the walk's budget: a row the model wrote is the work in hand, and a
+    // long tool result at the newest end used to take the whole subject and cut it away.
     let mut out = String::new();
+    for row in plan.iter().filter(|r| !matches!(r.by, TodoBy::Queue)) {
+        out.push_str(&row.content);
+        out.push('\n');
+    }
+    let room = SUBJECT_CHARS.saturating_sub(out.len());
+    let mut walked = String::new();
     let mut thought = false;
     let mut said = false;
     for item in items.iter().rev() {
@@ -206,35 +214,29 @@ pub fn subject(items: &[TranscriptItem], plan: &[TodoItem]) -> String {
                 // an offer should fire on when nothing else has been said yet.
                 for p in parts {
                     if let UserPart::Text { text } = p {
-                        out.push_str(text);
-                        out.push('\n');
+                        walked.push_str(text);
+                        walked.push('\n');
                     }
                 }
                 break;
             }
             _ => continue,
         };
-        out.push_str(text);
-        out.push('\n');
-        if out.len() >= SUBJECT_CHARS {
+        walked.push_str(text);
+        walked.push('\n');
+        if walked.len() >= room {
             break;
         }
     }
-    // The plan, as the board holds it: a row the model wrote is the subject it is working on even
-    // when the prompt that started it said something else. The queue's half is left out - those rows
-    // are the repository's queue, which nobody's skill is about.
-    for row in plan.iter().filter(|r| !matches!(r.by, TodoBy::Queue)) {
-        out.push_str(&row.content);
-        out.push('\n');
-    }
     // The cut lands on a character boundary, never through one - `truncate` panics otherwise and
     // this string is the operator's words plus tool results.
-    let cut = SUBJECT_CHARS.min(out.len());
+    let cut = room.min(walked.len());
     let cut = (0..=cut)
         .rev()
-        .find(|&i| out.is_char_boundary(i))
+        .find(|&i| walked.is_char_boundary(i))
         .unwrap_or(0);
-    out.truncate(cut);
+    walked.truncate(cut);
+    out.push_str(&walked);
     out
 }
 
