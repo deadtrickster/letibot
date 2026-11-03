@@ -4964,5 +4964,125 @@ with `f_sim` printed beside it under its own name. Three tests: the T22 turn (9,
 10,093-token prompt, `f_keep` 1.000 PASSES where `f_sim` is 0.892), its converse (half the entry
 back on a prompt that grew by one token, `f_keep` 0.500 FAILS where `f_sim` 0.998 would have
 passed), and a first turn, which must not pass by vacancy.
+<!-- range G -->
+
+## The `reasoning_content` refusal is a TRAILING SYSTEM MESSAGE plus `tools` — **DONE 2026-11-03: a trailing system turn travels as the user role, 44f4742b; test a_trailing_system_item_is_sent_as_a_user_message**
+
+Two days of compaction refusals on `deepseek-flash`, all of this form:
+
+    http 400: The `reasoning_content` in the thinking mode must be passed back to the API.
+
+**It has nothing to do with reasoning.** Measured against the live endpoint, three messages:
+
+    [user, assistant("hello"), system("Summarise.")]   WITHOUT tools  ->  200
+    [user, assistant("hello"), system("Summarise.")]   WITH tools     ->  400
+    [user, assistant("hello"), user("Summarise.")]     WITH tools     ->  200
+
+Confirmed at scale: 40 exchanges with mixed `reasoning_content`, identical except the final
+role — `user` 200, `system` 400. **The trigger is a trailing `system` message while `tools`
+is present**, and the error text names the wrong field.
+
+**Why every earlier theory failed.** Size was measured away correctly (976,097 -> 200;
+1,248,039 -> an honest length complaint). Structure was measured away by nine permutations —
+counts 1/5/20/100/309 of tool-calling assistants without `reasoning_content`, interleaved,
+blocked, and empty-string — **all of which ended with a user message**, which is why they all
+returned 200. The position nobody probed was the last one.
+
+**It is ours, at `compaction.rs:446`:** the summary instruction is appended as
+`TranscriptItem::System { origin: SystemOrigin::Update }`, deliberately — `:416` says *"rather
+than a user message: it is appended after the cached history instead of rewriting anything"* —
+and `messages::convert` renders that as a trailing `{"role":"system"}`. The summary turn carries
+tools again since `6d73ba6`. That is the whole mechanism, and it explains why ONLY compaction
+fails, why ordinary turns never do, and why it survived the tools revert.
+
+**The fix belongs in `messages::convert`, not in the transcript item.** `SystemOrigin::Update`
+is correct as a record and the local path reuses the prefix because of it; changing the stored
+item would make the transcript lie to work around one provider's parser. `convert` is already
+the layer that translates the record into a provider's dialect and already takes a per-request
+property (`echo_reasoning`). **Do not special-case DeepSeek by name** — this tree has twice been
+bitten by provider rules taken from documentation; gate on the transport if a gate is wanted.
+
+**still open?** `grep -n "SystemOrigin::Update" crates/turn/src/compaction.rs` and check whether
+`messages::convert` translates a trailing `System` item for the messages transport.
+
+**done when** building messages for a transcript that ends in a `System` item, with tools
+present, produces a last message whose role is not `system` — asserted in a test, because the
+three-message repro costs nothing and would have caught this the day `SystemOrigin::Update`
+was introduced.
+
+---
+
+## R57 — a child's completion is not a firing, so the wake never happens — **DONE 2026-11-03: a child's settle rings its parent's wake, fd4aaad, e5732909; test a_childs_answer_wakes_its_parent_with_nobody_asking**
+
+The operator restarted the session that spawns `task` children so that this could be tested rather
+than assumed, and the measurement is:
+
+  · the child ran and answered — two facts off a fixture, no decisions in it;
+  · **the head's agent counter flashed 1 → 0**, so the child's `opening`/`running`/`done` events DID
+    reach a head and were folded. That half works;
+  · **no notice row appeared** — not in the head, not in the model's own conversation;
+  · `job_list` in the session that spawned it: **0 monitors, 0 fired, 0 jobs**. Nothing was armed, so
+    nothing could fire;
+  · the model learned the child had finished **only by polling** (`task_result`) — the sentence in the
+    daemon's own banner: *"a fired monitor reaches the model only when something calls job_list. That
+    is a poll, not a wake."*
+
+The mechanism is not missing. `completion_notice` (`harness.rs:664`) publishes *"[job] a job you
+backgrounded has ended"*, those notices arrive unprompted, and one arrived in leticl's transcript
+today. Its signature is `fn completion_notice(done: &[JobCompletion])` — **jobs only, no children.**
+D26 says the wake exists (*"T24's wake turns a firing into a user item and runs a turn"*), so the gap
+is narrower than *no wake*: **a child's finish is not a firing.**
+
+**done when** a `task` child's completion reaches the model unprompted — the same
+`User { speaker: Agent }` row a job's ending produces, in a session that armed no monitor of its own.
+
+**What letibot found reading the tree, and it changes what to do about the measurement.** The chain is
+**closed on HEAD and was open in the build that was measured**:
+
+  · **The daemon under test was a binary from the day before, and that is the whole explanation.**
+    Measured on this box 2026-10-03: `target/release/harnessd` is dated **2026-10-02 20:17:36**
+    (34724024 bytes), and `fd4aaad` (*"a subagent settles the same way a backgrounded job does"*) was
+    committed **2026-10-03 21:16:24** — twenty-five hours later. The daemon serving leticl's workspace
+    (pid 3840826) had been restarted minutes before the check and was running **that same file**, so a
+    fresh PROCESS was running a stale BINARY: **a session restart does not rebuild a daemon.** The dated
+    build cannot have contained the child path at all, and `0 monitors, 0 fired, 0 jobs` is exactly what
+    it should do. leticl's reading of `completion_notice` as *"jobs only, no children"* is a reading of
+    that build rather than of the tree.
+    *(The pin is NOT the reason, and it was checked the wrong way first: leticl runs LOCALLY, so
+    `LETIBOT_REF` describes its release packaging and says nothing about the daemon on this box.)*
+  · On HEAD there is **one queue and one bell**, not two mechanisms: `JobWatchers::with_tasks` gives
+    the watcher the session's `TaskRunner`, `watch_task` (`jobwatch.rs:432`) queues through
+    `settled_here` — *"the push and the bell"* — and `Harness::wake` (`harness.rs:4442`) takes both
+    kinds off `take_completions()` and partitions them **for wording only** (`job_output` for a job,
+    `task_result` for a child), submitting one `User { speaker: Speaker::Agent }` item — the same row
+    the ruling asked for. And the monitor waiter is **not** needed for this: the watcher rings the
+    bell itself, so a session with no monitors is woken by a child.
+  · **So the first thing to do is not to build anything: it is to re-measure on a daemon that has been
+    REBUILT** (`cargo build --release`, then restart that daemon — the rebuild is the half that was
+    missed), because the measurement above cannot distinguish *the code is wrong* from *the code was
+    not in the binary* — and it is the second.
+
+**The gap that remains, and it is mine — measured precisely, since the first version of this paragraph
+overclaimed it.** The chain decomposes, and all but one piece is asserted:
+
+| piece | asserted by |
+|---|---|
+| the completion is queued, with `kind: Subagent` | `a_subagent_settles_through_the_jobs_own_channel` (`jobwatch.rs:967`) |
+| **the bell RINGS** for a child (`Work::Woken`) | the same test, `jobwatch.rs:1016` |
+| a completion is taken once, not left for the next wake | the same test |
+| a job's sentence | `a_completion_notice_names_the_job_and_says_do_not_wait` (`harness.rs:7764`) |
+| **a child's sentence** | **`8533d84`** — landed, and it did not exist before |
+| the partition: which noun for which kind, and none for nothing | **`a_settlement_is_two_nouns_out_of_one_channel`** — the partition is now `completion_notices`, a pure function, and it is asserted on a job, a child, both, two children, and an empty queue |
+| **`wake()`'s remaining body**: taking the queue and submitting one `Speaker::Agent` item | **nothing, on either kind** |
+
+**Narrowed again 2026-10-03 (the paragraph this replaces said the whole body was unasserted).** `wake()`
+had the partition inline, where only a live `Harness` could reach it — and this crate has **no fixture
+that builds a `Harness` at all** (every harnessd test is a pure-function unit test or a registry-level
+integration test), which is *why* the decision had none. So the decision was lifted out into
+[`completion_notices`] (`harness.rs`), which is pure and now tested; `wake()` keeps only the part that
+is not a decision — take the queue, call the function, submit what it returns. What remains unexecuted
+is therefore those few lines, and the reading in the bullet above is still the evidence for them:
+reading rather than measurement, stated here rather than left to look stronger than it is. A `Harness`
+fixture is the thing to build if even that is to be asserted.
 
 ---
