@@ -171,22 +171,23 @@ fn peer_pid(stream: &UnixStream) -> Option<i32> {
 }
 
 /// The parent of a process, or `None` when `/proc` will not say - gone, a zombie, or another
-/// user's process. macOS has no `/proc`, so the same fact comes from `PROC_PIDTBSDINFO`.
+/// user's process. macOS has no `/proc`: `PROC_PIDT_SHORTBSDINFO` answers for a root-owned
+/// ancestor such as `login`, where `PROC_PIDTBSDINFO` refuses and every head would read as inside.
 #[cfg(target_os = "macos")]
 fn parent_of(pid: i32) -> Option<i32> {
-    let mut bi: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
-    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    let mut bi: libc::proc_bsdshortinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdshortinfo>() as libc::c_int;
     let got = unsafe {
         libc::proc_pidinfo(
             pid,
-            libc::PROC_PIDTBSDINFO,
+            libc::PROC_PIDT_SHORTBSDINFO,
             0,
             &mut bi as *mut _ as *mut libc::c_void,
             size,
         )
     };
     if got == size {
-        Some(bi.pbi_ppid as i32)
+        Some(bi.pbsi_ppid as i32)
     } else {
         None
     }
