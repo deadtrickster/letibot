@@ -11,8 +11,23 @@ use letibot_harnessd::config::{Config, ProviderConfig, Seat};
 use letibot_harnessd::harness::Harness;
 use letibot_sessionlog::registry::{Registry, SessionWiring};
 
-/// What the model was actually sent, one JSON body per request, for one turn on `seat`.
-fn run(root: &std::path::Path, seat: Seat) -> Vec<serde_json::Value> {
+#[test]
+fn every_round_says_what_is_free_and_no_schema_carries_it() {
+    let dir = TempDir::new("memory-line");
+    let root = dir.path();
+    // Nothing of the operator's may reach this session: a key in their `providers.toml` would decide
+    // where a request goes, and no request may leave loopback.
+    std::fs::create_dir_all(root.join("config/letibot")).expect("config dir");
+    // SAFETY: this binary has ONE test, and these are set before the daemon, any thread that reads
+    // config, or the harness exists.
+    unsafe {
+        std::env::set_var("XDG_CONFIG_HOME", root.join("config"));
+        std::env::set_var("XDG_DATA_HOME", root.join("data"));
+        std::env::remove_var("DEEPSEEK_API_KEY");
+        std::env::remove_var("GLM_API_KEY");
+        std::env::remove_var("LETIBOT_MODE");
+    }
+
     let target = root.join("plan.md");
     std::fs::write(&target, "# the plan\n").expect("the file the call reads");
     let fake = Fake::serve(vec![
@@ -24,20 +39,20 @@ fn run(root: &std::path::Path, seat: Seat) -> Vec<serde_json::Value> {
     std::fs::write(
         root.join("config/letibot/providers.toml"),
         format!(
-            "# Written by crates/harnessd/tests/memory_line.rs, a fake on loopback.\n\
+            "# Written by crates/harnessd/tests/memory_line.rs — a fake on loopback.\n\
              [deepseek]\nkey = \"sk-not-used\"\nurl = \"{}\"\n",
             fake.url
         ),
     )
     .expect("providers.toml");
 
-    let workspace = root.join(format!("ws-{}", seat.as_str()));
+    let workspace = root.join("ws");
     std::fs::create_dir_all(&workspace).expect("workspace");
     let mut cfg = Config::for_this_box(&workspace);
     cfg.dialect = letibot_harnessd::Dialect::Qwen;
-    cfg.seat = seat;
+    cfg.seat = Seat::Leticode;
     cfg.http_retries = 0;
-    cfg.session_id = format!("s-memory-line-{}", seat.as_str());
+    cfg.session_id = "s-memory-line".into();
     // The byte vocabulary and a provider, so this runs on a machine with no model file at all.
     cfg.vocab_gguf = None;
     cfg.provider = Some(ProviderConfig {
@@ -79,33 +94,13 @@ fn run(root: &std::path::Path, seat: Seat) -> Vec<serde_json::Value> {
     })
     .expect("a spoken turn always runs")
     .expect("the turn runs");
-    drop(h);
 
-    fake.sent()
+    let sent = fake.sent();
+    assert_eq!(sent.len(), 2, "a tool round and then the answer");
+    let bodies: Vec<serde_json::Value> = sent
         .iter()
         .map(|b| serde_json::from_str(b).expect("a json request"))
-        .collect()
-}
-
-#[test]
-fn every_round_says_what_is_free_and_no_schema_carries_it() {
-    let dir = TempDir::new("memory-line");
-    let root = dir.path();
-    // Nothing of the operator's may reach this session: a key in their `providers.toml` would decide
-    // where a request goes, and no request may leave loopback.
-    std::fs::create_dir_all(root.join("config/letibot")).expect("config dir");
-    // SAFETY: this binary has ONE test, and these are set before the daemon, any thread that reads
-    // config, or the harness exists.
-    unsafe {
-        std::env::set_var("XDG_CONFIG_HOME", root.join("config"));
-        std::env::set_var("XDG_DATA_HOME", root.join("data"));
-        std::env::remove_var("DEEPSEEK_API_KEY");
-        std::env::remove_var("GLM_API_KEY");
-        std::env::remove_var("LETIBOT_MODE");
-    }
-
-    let bodies = run(root, Seat::Leticode);
-    assert_eq!(bodies.len(), 2, "a tool round and then the answer");
+        .collect();
     for (n, body) in bodies.iter().enumerate() {
         let text = body.to_string();
         assert!(
@@ -236,7 +231,7 @@ fn read_request(stream: &std::net::TcpStream) -> String {
     String::from_utf8_lossy(&body).into_owned()
 }
 
-/// One round as SSE - the three frames `letibot-provider` parses, in the shape
+/// One round as SSE - the three frames `letibot-provider` parses, in the shapes
 /// `crates/harnessd/tests/activity_turn.rs` serves, so the two fakes cannot drift on the wire bytes.
 fn write_sse(mut stream: std::net::TcpStream, round: &Round) -> std::io::Result<()> {
     use std::io::Write;
