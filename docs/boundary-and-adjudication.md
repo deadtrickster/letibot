@@ -905,34 +905,21 @@ Measured over every decision these boxes ever took (187,930 rows, 161,097 with a
 cards were answered at `writes-allowed` and **80 of them (30%)** a measured boundary would have settled
 with nobody asked - 69 of 251 on the mac, 11 of 18 on lab2x1.
 
-### R98 (1) - where there is no boundary, the test file *is* the program, behind a switch
+### R98 (1) - where there is no boundary, the test file *is* the program
 
 The same sentence read backwards. On a host with **no** measured boundary, a `bash` call whose stages
 run a test runner, a build that executes project code, or a script in the checkout is **not settled by a
 session grant, an approved shape or a `permission` rule**: it asks every time, and the card says why
 (*"asks every time: it runs code the agent wrote (`cargo test`), and this host has no boundary - a grant
-cannot stand in for the file that will exist by the next run (R98)"*).
+cannot stand in for the file that will exist by the next run"*).
 
-**It is OFF unless a file turns it on**, which is the operator's ruling on seeing it run: *"asking on
-every build/test on the Mac would just push them to allow-all (which they already run,
-unsandboxed)"*. A gate that asks about everything on an unconfined box does not buy safety - it buys
-the point that asks nothing, and `allow-all (this box, consented)` is a worse state than a granted
-`cargo test`, because it refuses nothing at all.
-
-```toml
-# ~/.config/letibot/leticode.toml - the box-wide file, or a project's own
-[permissions]
-ask_unconfined_code = true
-```
-
-Either level may turn it on and neither can turn it off: the merge is `or`
-(`leticode_config::PermissionKeys::overridden_by`), because the user file is the operator's own while a
-project file is one a session with `write` can edit, so a `false` in a repository must not loosen what
-the user asked for. A key this build does not know refuses the file by name. With it off - the default
-- an unconfined session behaves exactly as it did before R98 existed, and
-`the_default_leaves_an_unconfined_host_as_it_was` pins both halves. A narrowing in force is disclosed
-at startup, naming the file that set it, because an operator who forgot they set it would read the
-cards as a regression.
+**There is no setting for it, because it is not a preference.** The one fact the rule reads is the one
+the session's open measured - `AdjudicatedGate::with_boundary(Some(boundary), _)` or `None` - and
+`with_boundary(None, …)` is the whole of *no boundary*: the macOS host shell, an unconfined Linux
+session and a probe that did not answer all arrive as that `None`. Nothing in the gate asks the kernel
+which platform it is on, which is also what makes it provable on a Linux box: handing the gate `None`
+IS the Mac's case. `a_host_with_no_measured_boundary_asks_with_nothing_switched_on` does that, and then
+hands the same gate a measured boundary and shows the same command admitted by `gate:boundary` instead.
 
 What counts (`crates/tools/src/project_code.rs`): `cargo test|run|build|bench|check|clippy`
 `|nextest|miri|doc-test` (a build script is project code and runs on `check` too), `pytest`, `py.test`,
@@ -951,8 +938,8 @@ touch the tier, the boundary, or any command that is not this: `git status`, `ca
 rest keep their ladders, their grants and their shape cache - which the tests pin in the same breath,
 so a fix that narrowed every ladder would fail rather than pass quietly.
 
-What the switch would cost, measured on the same corpus (settles = rows a standing answer decided;
-would ask = the subset at a point whose exec disposition is `Ask`):
+What the rule costs, measured on the same corpus before it was turned on (settles = rows a standing
+answer decided; would ask = the subset at a point whose exec disposition is `Ask`):
 
 | runner | mac: settles | mac: would ask | all hosts: settles | all hosts: would ask |
 |---|---:|---:|---:|---:|
@@ -967,8 +954,10 @@ would ask = the subset at a point whose exec disposition is `Ask`):
 | `cargo run` | 0 | 0 | 6 | 3 |
 | **total** | **834** | **171** | **4,671** | **986** |
 
-Turning it on costs **171 cards** on the mac's record, and 137 of those are the session's own programs
-(`./scripts/…`, `target/debug/…`), the case the ruling is about, while `cargo test` costs 24. The bulk
-of the 834 stays free because it is at `allow-all`, where nothing was being asked anyway - the
-operator's objection in numbers: on a box already at `allow-all` the switch would be decorative, and on
-a box at `writes-allowed` it is 24 `cargo test` cards.
+171 cards on the mac's record, 137 of them the session's own programs (`./scripts/…`, `target/debug/…`),
+the case the ruling is about, and 24 `cargo test`. Most of the 834 stays free because it is at
+`allow-all`, where nothing was asked anyway - and `allow-all` is not an exception to this rule, it is
+outside it: the point admits exec by its own disposition, before any standing answer is consulted. So
+a box already at `allow-all` did not get noisier; a box at `writes-allowed` gained 24 `cargo test`
+cards on the mac's record. Half 2 is designed to take those away again - a Mac session inside a
+measured seatbelt boundary is admitted by D16 (§4k) - and that has not been measured on a Mac yet.
