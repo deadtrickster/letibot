@@ -268,8 +268,9 @@ fn a_summary_turn_that_calls_tools_surfaces_them() {
 }
 
 /// A summary turn that keeps saying nothing fails the compaction once the salvage budget is
-/// spent, and nothing is reduced: the instruction and the notices stay in the ledger, where the
-/// next attempt appends over them. The fourth failure is `SalvageExhausted` and propagates.
+/// spent, and nothing is reduced: the whole failed fold is rolled back, so the transcript is what it
+/// was before the attempt and the next one starts from the same place. The fourth failure is
+/// `SalvageExhausted` and propagates.
 #[test]
 fn a_summary_turn_that_never_says_anything_exhausts_the_salvage_and_fails_the_compaction() {
     let Some(_) = letibot_llama::apparatus::present_gguf() else {
@@ -302,6 +303,7 @@ fn a_summary_turn_that_never_says_anything_exhausts_the_salvage_and_fails_the_co
         .append_items(&engine, &[user("summarise")], &mut sink)
         .unwrap();
     let before_compaction = session.ledger.tokens().to_vec();
+    let items_before = session.items.len();
 
     let err = letibot_turn::run_compaction(
         &mut engine,
@@ -319,37 +321,80 @@ fn a_summary_turn_that_never_says_anything_exhausts_the_salvage_and_fails_the_co
         other => panic!("the spent budget must propagate as itself: {other:?}"),
     }
 
-    // The failed turns committed nothing - no assistant row, no reasoning row, no dangling
-    // half-summary. What the region gained is exactly the instruction and the three notices,
-    // which is the prefix-reuse promise kept: only the notices are re-prefilled.
-    assert!(session.items.iter().all(|i| !matches!(
-        i,
-        TranscriptItem::Assistant { .. } | TranscriptItem::Reasoning { .. }
-    )));
-    let notices = session
-        .items
-        .iter()
-        .filter(|i| match i {
-            TranscriptItem::User { parts, .. } => match &parts[..] {
-                [UserPart::Text { text }] => {
-                    // The length notice, not the unfinished-reasoning one (R93.D1's
-                    // words: the phrase only the former has).
-                    text.contains("was all reasoning and nothing was kept")
-                }
-                _ => false,
-            },
-            _ => false,
-        })
-        .count();
-    assert_eq!(notices, 3, "one notice per salvaged turn");
-    assert!(matches!(
-        session.items.last().unwrap(),
-        TranscriptItem::User { .. }
-    ));
-    assert!(
-        session.ledger.tokens().len() > before_compaction.len(),
-        "the instruction and the notices are in the region"
+    // The failed fold left nothing behind - no assistant row, no reasoning row, no dangling
+    // half-summary, no instruction, and none of the three salvage notices either: what it appended
+    // is undone, or a session that keeps failing carries one more copy of the instruction per
+    // attempt.
+    assert_eq!(session.items.len(), items_before, "{:#?}", session.items);
+    assert_eq!(session.ledger.rows().len(), items_before);
+    assert_eq!(
+        session.ledger.tokens(),
+        before_compaction.as_slice(),
+        "the region is where the failure found it"
     );
+    session
+        .ledger
+        .verify_chain()
+        .expect("the chain still holds");
+}
+
+/// **A fold that fails leaves the transcript as it was, however often it fails.** The instruction is
+/// appended before the turn runs and it used to stay: six failures left six copies of it in a real
+/// session's transcript, and the fold that finally ran summarised them. Counted, never measured.
+#[test]
+fn a_failed_fold_leaves_no_instruction_behind() {
+    let Some(_) = letibot_llama::apparatus::present_gguf() else {
+        return;
+    };
+    let _lock = serial();
+
+    const ATTEMPTS: usize = 60;
+    // Every attempt is refused, so each one is a single failing request: the loop is about what the
+    // transcript keeps, not about the salvage budget.
+    let canned = Canned::serve_replies(
+        vec![Reply::Status {
+            code: 500,
+            body: r#"{"error":{"message":"no"}}"#.into(),
+        }],
+        ATTEMPTS,
+    );
+    let mut engine = engine(canned.endpoint.clone());
+    let mut session = session(&engine, "compact-stacked");
+    let mut sink = RecordingSink::new();
+    session
+        .append_items(&engine, &[user("summarise")], &mut sink)
+        .unwrap();
+    let items = session.items.len();
+    let rows = session.ledger.rows().len();
+    let head = session.ledger.head();
+
+    for attempt in 0..ATTEMPTS {
+        let err = letibot_turn::run_compaction(
+            &mut engine,
+            &mut session,
+            &mut sink,
+            &letibot_turn::compaction::Answerer::Local,
+            &mut no_retries(),
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, TurnFailure::Http(_)),
+            "attempt {attempt} failed as {err:?}"
+        );
+        assert_eq!(
+            session.items.len(),
+            items,
+            "attempt {attempt} left {} item(s) behind, so the instruction stacks",
+            session.items.len() - items
+        );
+        assert_eq!(session.ledger.rows().len(), rows, "attempt {attempt}");
+        assert_eq!(session.ledger.head(), head, "attempt {attempt}");
+    }
+    session
+        .ledger
+        .verify_chain()
+        .expect("the chain still holds");
 }
 
 /// The frames of the live finding, replayed: the stream stops with a normal `eos` while the

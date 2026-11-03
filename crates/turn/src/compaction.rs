@@ -643,6 +643,10 @@ impl Answerer<'_> {
 /// Run the compaction turn: append the instruction as a system update and take the turn that
 /// answers it. One turn, not a special shape.
 ///
+/// **A fold that fails leaves the transcript where it found it.** The instruction is a debt only a
+/// summary pays, and nothing used to undo it: a session whose folds kept failing carried one more
+/// copy of it per attempt, into the very record the fold was meant to produce.
+///
 /// `ask` is what makes the record SIZED (R22): the budget it may fill, and the tail measured with
 /// it. `None` is the overrun path and the tests, which keep the instruction and the shape they had.
 #[allow(clippy::too_many_arguments)] // the ask is the caller's fact and does not belong to the engine
@@ -657,6 +661,47 @@ pub fn run_compaction(
     // The facts are read BEFORE the instruction lands: the instruction is not part of what the
     // conversation held, and a record measured against its own ask would always name the ask.
     let facts = ask.map(|_| Facts::of(&session.items));
+    let mark = session.items.len();
+    let out = compact_turn(engine, session, sink, answerer, ladder, ask, facts);
+    if out.is_err() {
+        undo_failed_fold(session, mark);
+    }
+    out
+}
+
+/// Undo what a fold appended that did not become a record: the instruction, and the notices a
+/// salvage wrote. The ledger is FORKED at the mark rather than truncated, because the region is
+/// append-only by design, and the items move with the rows they are paired with: a ledger longer
+/// than its item list writes every later row against the wrong item.
+fn undo_failed_fold(session: &mut Session, mark: usize) {
+    if session.items.len() <= mark {
+        return;
+    }
+    match session.ledger.fork(&session.transcript_id, mark) {
+        Ok(ledger) => {
+            session.items.truncate(mark);
+            session.ledger = ledger;
+        }
+        // The failed turn's rows stay, and it is said: worse than the record, and still better
+        // than a transcript whose two halves have stopped being the same list.
+        Err(e) => eprintln!(
+            "letibot: a failed fold was not rolled back ({e}); its {} item(s) stay in the \
+             transcript",
+            session.items.len() - mark
+        ),
+    }
+}
+
+#[allow(clippy::too_many_arguments)] // the ask and its facts are the caller's, as above
+fn compact_turn(
+    engine: &mut TurnEngine,
+    session: &mut Session,
+    sink: &mut dyn EventSink,
+    answerer: &Answerer<'_>,
+    ladder: &mut letibot_http::retry::Ladder,
+    ask: Option<&SummaryAsk<'_>>,
+    facts: Option<Facts>,
+) -> Result<CompactionOutcome, TurnFailure> {
     let instruction = TranscriptItem::System {
         text: match ask {
             Some(a) => summary_instruction(&a.budget),
