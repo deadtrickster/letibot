@@ -477,6 +477,9 @@ impl Drop for Seat {
 /// One connection, from ATTACH to detach - through however many sessions.
 pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), WireError> {
     let out = stream.try_clone()?;
+    // Read before the stream is handed to the reader, because the peer is a fact about the
+    // connection the kernel filled in at `connect` and nothing later can be asked about it.
+    let peer = crate::peer::Peer::of(&stream);
     let mut reader = FrameReader::new(stream);
     let writer = Arc::new(Mutex::new(FrameWriter::new(out)));
 
@@ -536,6 +539,30 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
     // never abort: nothing below cancels a turn.
     let result = loop {
         match reader.read::<ClientFrame>() {
+            // **Who connected decides what it may reach.** A command this daemon started carries
+            // `LETIBOT_SOCKET` for `sudo`'s password, and it is not the operator: every door below
+            // is the operator's own ungated act, so the askpass question is the only one such a
+            // connection gets. First arm, so it sees every frame before a door does.
+            Ok(frame) if peer.refuses(&frame).is_some() => {
+                let door = peer.refuses(&frame).expect("the guard said there is one");
+                let (client_request_id, expected_seq) = crate::peer::request_of(&frame);
+                let pid = match peer.pid {
+                    Some(p) => format!("pid {p}"),
+                    None => "a process the kernel would not name".to_string(),
+                };
+                let f = ServerFrame::Rejected {
+                    client_request_id,
+                    reason: format!(
+                        "{door} is the operator's own act, and this connection came from inside \
+                         a session's tool tree: {pid} on the other end of the socket was started \
+                         by this daemon, so nothing of it was done. The one door served to a \
+                         tool call is the password ask `sudo` needs."
+                    ),
+                    expected_seq,
+                    actual_seq: seat.hub.head_seq(),
+                };
+                writer.lock().unwrap().write(&f)?;
+            }
             Ok(ClientFrame::Ack(ack)) => seat.hub.ack(&seat.head_id, ack),
             Ok(ClientFrame::Resync) => seat
                 .hub
