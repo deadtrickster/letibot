@@ -110,15 +110,15 @@ impl PromptCache {
     }
 
     /// Ask for room for a prompt of `tokens` tokens under `key`, giving up the least recently
-    /// used entries to make it. Asking twice for a live key only marks it used.
+    /// used entries to make it. A live key is re-priced at the size it is asked for now.
     pub fn note(&mut self, key: &str, tokens: u64) -> Admission {
         self.clock += 1;
         let now = self.clock;
-        if let Some(e) = self.entries.get_mut(key) {
-            e.used_at = now;
-            return Admission::Admitted;
-        }
         let bytes = entry_bytes(tokens);
+        // A live key asks about the prompt it has NOW, which is not the one it was admitted as:
+        // the entry is taken out at its old price and put back at the new one, or refused.
+        let was = self.entries.remove(key).map(|e| e.bytes).unwrap_or(0);
+        self.used -= was;
         if bytes > self.limit {
             return Admission::Refused {
                 bytes,
@@ -268,6 +268,36 @@ mod tests {
         assert_eq!(cache.note("a", SMALL), Admission::Admitted);
         assert_eq!(cache.used(), after);
         assert_eq!(cache.len(), 1);
+    }
+
+    /// **A live key asked for again is charged what it costs NOW.** A conversation's prompt grows
+    /// every turn, so an entry kept at its first turn's price lets the cache hold more than its
+    /// budget while still answering `admitted`.
+    #[test]
+    fn a_live_key_is_charged_what_it_now_costs() {
+        let mut cache = PromptCache::new(2 * per_entry());
+        assert_eq!(cache.note("a", SMALL), Admission::Admitted);
+        assert_eq!(cache.note("b", SMALL), Admission::Admitted);
+        assert_eq!(cache.used(), cache.limit());
+
+        // `a` has grown to twice the prompt it was admitted as, and no longer fits beside `b`.
+        let grown = entry_bytes(SMALL * 2);
+        assert_eq!(
+            cache.note("a", SMALL * 2),
+            Admission::Evicted { n: 1 },
+            "the room for the growth comes from the entry that is not being asked for"
+        );
+        assert_eq!(cache.used(), grown, "and what is held is what it costs now");
+        assert!(cache.entries.contains_key("a"));
+        assert!(!cache.entries.contains_key("b"));
+
+        // Grown past the whole budget, it is refused rather than kept at a price it no longer has.
+        let refused = cache.note("a", SMALL * 1000);
+        assert!(
+            matches!(refused, Admission::Refused { .. }),
+            "an entry larger than the budget is refused: {refused:?}"
+        );
+        assert_eq!(cache.used(), 0, "the entry it replaced is not counted");
     }
 
     /// A budget smaller than one entry holds nothing, and says so rather than thrashing: an
