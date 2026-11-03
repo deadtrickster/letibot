@@ -120,9 +120,8 @@ fn arguments_are_complete(arguments: &str) -> bool {
 /// happened, why, and what to do, where the model will read it.
 pub fn batch_failed_notice(call_name: &str) -> String {
     format!(
-        "Tool call {call_name} was not executed: the response hit the output token \
-         limit, so its arguments may be truncated. Re-issue the tool call with \
-         complete arguments."
+        "Tool call {call_name} was cut off and not run. Send it again complete (split a large \
+         write into several edits)."
     )
 }
 
@@ -260,8 +259,13 @@ mod tests {
     #[test]
     fn the_notice_tells_the_model_what_to_do_and_names_the_call() {
         let n = batch_failed_notice("read_file");
-        assert!(n.contains("read_file"));
-        assert!(n.contains("Re-issue"));
-        assert!(n.contains("output token limit"));
+        // R93.D3: what happened, and the one thing to do about it - not the harness's accounting.
+        assert_eq!(
+            n,
+            "Tool call read_file was cut off and not run. Send it again complete (split a large \
+             write into several edits)."
+        );
+        assert!(!n.contains("token limit"), "{n}");
+        assert!(!n.contains("arguments may be truncated"), "{n}");
     }
 }

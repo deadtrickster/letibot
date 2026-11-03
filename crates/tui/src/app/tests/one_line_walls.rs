@@ -135,6 +135,21 @@ fn a_length_cap_salvage_is_one_row_at_eighty_columns() {
     ));
 }
 
+/// **The length cap's closing as it reads now** (R93.D3): cut off, not run, and what to do.
+#[test]
+fn the_length_caps_new_closing_is_one_row_at_eighty_columns() {
+    let text = "Tool call write was cut off and not run. Send it again complete (split a large \
+                write into several edits).\nTool call write was cut off and not run. Send it \
+                again complete (split a large write into several edits).";
+    let (rows, glass, popup) = drawn(text);
+    assert_eq!(rows, 1, "{glass}");
+    assert!(
+        glass.contains("length cap · 2 calls not executed (write"),
+        "{glass}"
+    );
+    assert_eq!(popup, text);
+}
+
 /// A parent's brief to its child is prose, and it is not a review: only review-shaped ones were
 /// folded, so every other one was drawn as it arrived.
 #[test]

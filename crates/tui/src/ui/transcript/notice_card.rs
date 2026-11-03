@@ -174,15 +174,15 @@ pub(crate) fn whole_parts(lead: &str, role: Role, text: &str) -> Card {
     card(lead, role, vec![said.clone()], short(&said, PART))
 }
 
-/// `Tool call X was not executed: …`, once a call - the length cap's salvage.
+/// `Tool call X was cut off and not run. …`, once a call - the length cap's salvage. The words
+/// before `R93.D3` opened with `was not executed` and are still in every stored transcript.
 fn length_cap(text: &str) -> Option<Card> {
+    const AFTER: &[&str] = &[" was cut off and not run", " was not executed"];
     let mut by: Vec<(String, usize)> = Vec::new();
     let mut n = 0;
     for l in text.lines().filter(|l| !l.trim().is_empty()) {
-        let tool = l
-            .strip_prefix("Tool call ")?
-            .split_once(" was not executed")?
-            .0;
+        let rest = l.strip_prefix("Tool call ")?;
+        let tool = AFTER.iter().find_map(|a| rest.split_once(a))?.0;
         n += 1;
         match by.iter_mut().find(|(t, _)| t == tool) {
             Some((_, c)) => *c += 1,
