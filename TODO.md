@@ -199,7 +199,7 @@ A session idle with `jobs_open` non-empty and `waiting_on` empty makes `letibot-
 
 ---
 
-## R94 — What the parser still cannot read, and the parts of it a parser can fix — **OPEN, filed 2026-10-27**
+## R94 — What the parser still cannot read, and the parts of it a parser can fix — **filed 2026-10-27; left: items 1–4 and the three-host re-measure are in the tree, but the three grammar-limit shapes reproduced in §4i.7 are still not filed upstream with tree-sitter-bash**
 
 After G3 and G4 (on main since 2026-10-27), 10,065 of 161,099 recorded `bash` decisions (6.2%)
 still have a construct the resolver cannot read, so no shape and no session grant can settle them
@@ -239,7 +239,7 @@ updated with the new numbers on all three hosts, and nothing that was readable b
 
 ---
 
-## R95 — A variable an earlier command assigned is unread in the next one — **OPEN, filed 2026-10-27; decided 2026-10-27 (D14): track the session's environment**
+## R95 — A variable an earlier command assigned is unread in the next one — **filed 2026-10-27; left: the environment the gate reads is only the spawn seed, because no production code opens a `ShellSession` — `SessionEnv::observe` and `shell_path` are reached by tests alone, so an `export` in one `bash` call still does not reach the next (the corpus counterfactual: 108 + 12 commands)**
 
 About 500 recorded commands (`$p`, `$d`, `$pr`, `$CARGO_TARGET_DIR`, …) use a variable the
 session set in an EARLIER `bash` call, and G3 resolves only a variable assigned earlier in the
@@ -313,7 +313,7 @@ real measurements, no skip.
 
 ---
 
-## R99 — Every daemon shares ONE ssh master per host, and sshd's MaxSessions=10 refuses the eleventh — **OPEN, filed 2026-10-27, high: it truncates files and fails placements**
+## R99 — Every daemon shares ONE ssh master per host, and sshd's MaxSessions=10 refuses the eleventh — **filed 2026-10-27; left: the entry's live proof — six packages placed on lab2x1 at once — has never been run, because it needs a real sshd; items 1–4 and their forcing tests are in the tree**
 
 `remote::control_path` gives every daemon the same `ControlPath` for a host
 (`$XDG_RUNTIME_DIR/letibot/ssh-<host>.sock`), so all package daemons placed on lab2x1 — plus
