@@ -1529,5 +1529,74 @@ fn a_markdown_preview_is_centred_in_a_wide_pane() {
         .find(|l| l.contains("alpha beta"))
         .unwrap_or_else(|| panic!("the prose is drawn: {screen:#?}"));
     let lead = line.chars().take_while(|c| *c == ' ').count();
-    assert!(lead >= 40, "prose is centred, not at the left: {lead} {line:?}");
+    assert!(
+        lead >= 40,
+        "prose is centred, not at the left: {lead} {line:?}"
+    );
+}
+
+const PNG_1X1: &str = "89504e470d0a1a0a0000000d4948445200000001000000010806000000\
+1f15c4890000000d49444154789c63000100000500010d0a2db40000000049454e44ae426082";
+
+/// A workspace whose `doc.md` shows `pic.png`, previewed in a 200-column pane.
+fn previewed(proto: rano::term::Proto) -> (Workspace, App) {
+    let ws = workspace("pics");
+    let png: Vec<u8> = (0..PNG_1X1.len() / 2)
+        .map(|i| u8::from_str_radix(&PNG_1X1[2 * i..2 * i + 2], 16).unwrap())
+        .collect();
+    std::fs::write(ws.0.join("pic.png"), png).unwrap();
+    std::fs::write(ws.0.join("doc.md"), "# T\n\n![pic](pic.png)\n\nafter\n").unwrap();
+    let mut a = app();
+    a.set_proto(proto);
+    a.session_id = "s".into();
+    a.screen(200, 40);
+    a.key(Key::CtrlE);
+    route_text(&mut a, &ws.0.join("doc.md").display().to_string());
+    a.route(vec![key(KeyCode::Enter, Mods::NONE)]);
+    settle(&mut a);
+    a.route(vec![Event::Key(KeyEvent::new(
+        KeyCode::Char('p'),
+        Mods::ALT,
+    ))]);
+    settle(&mut a);
+    a.screen(200, 40);
+    (ws, a)
+}
+
+fn text_of(bytes: &[Vec<u8>]) -> String {
+    bytes
+        .iter()
+        .map(|b| String::from_utf8_lossy(b).into_owned())
+        .collect()
+}
+
+/// A preview's pictures reach the head's uploads, as virtual placements: no cursor motion, so
+/// the pane's offset in the screen changes nothing.
+#[test]
+fn a_preview_hands_its_pictures_to_the_terminal_writes() {
+    let (_ws, mut a) = previewed(rano::term::Proto::Kitty);
+    let sent = text_of(&a.take_image_uploads());
+    assert!(sent.contains("a=t,f=100"), "uploaded: {sent:?}");
+    assert!(sent.contains("a=p,U=1"), "placed virtually: {sent:?}");
+    assert!(!sent.contains("\x1b["), "no absolute position: {sent:?}");
+    let screen = a.screen(200, 40).join("\n");
+    assert!(screen.contains('\u{10EEEE}'), "placeholders in the rows");
+}
+
+/// Closing the pane frees what it uploaded.
+#[test]
+fn closing_the_pane_deletes_its_pictures() {
+    let (_ws, mut a) = previewed(rano::term::Proto::Kitty);
+    let _ = a.take_image_uploads();
+    a.close_editor();
+    let sent = text_of(&a.take_image_uploads());
+    assert!(sent.contains("a=d,d=I"), "deleted: {sent:?}");
+}
+
+/// A terminal with no picture protocol is sent nothing.
+#[test]
+fn a_terminal_without_pictures_gets_no_graphics() {
+    let (_ws, mut a) = previewed(rano::term::Proto::None);
+    a.close_editor();
+    assert!(a.take_image_uploads().is_empty());
 }
