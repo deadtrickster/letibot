@@ -2195,7 +2195,15 @@ impl Ssh {
             // The wait is the connection's own bound and never more than the fetch has left: a
             // caller that asked for a second of patience did not ask for the transfer's five
             // minutes of slot queue. The RUN keeps what is left, because that is real work.
-            let _slot = rpc::enter_git(&self.host.name, budget.wait(self.bound))?;
+            let _slot = match rpc::enter_git(&self.host.name, budget.wait(self.bound)) {
+                Ok(slot) => slot,
+                Err(why) => {
+                    return Err(match &last {
+                        Some(out) => refused_then_no_slot(&out.stderr, &why),
+                        None => why,
+                    });
+                }
+            };
             // Bounded, because this fetch's transport is an ssh connection: a close that waits for
             // ever on a dead host is the same defect as a `read` that does.
             let out = run_bounded(Path::new("git"), argv, budget.left());
@@ -2384,6 +2392,17 @@ fn first_line(text: &str) -> String {
     } else {
         line.to_string()
     }
+}
+
+/// What a fetch says when it was refused and the retry then found no slot: the refusal is the only
+/// clue that points at the master's `MaxSessions`, and `busy`'s words alone would say nothing was
+/// sent about an attempt that did send.
+fn refused_then_no_slot(first_stderr: &[u8], busy: &str) -> String {
+    format!(
+        "git was refused by the connection on an earlier attempt (`{}`), and there was no slot on \
+         the retry: {busy}",
+        first_line(&String::from_utf8_lossy(first_stderr))
+    )
 }
 
 /// Run a program to completion, or kill it at the deadline. `None` is *the bound passed and it was
@@ -3548,8 +3567,8 @@ impl SshBackend {
                 self.branch,
                 url
             ),
-            // No slot on the git master for the whole bound: git never ran, so this is a queue that
-            // never cleared rather than a host that refused.
+            // No slot on the git master: either the queue never cleared, or an earlier attempt was
+            // refused and the refusal is part of what `why` says.
             Err(why) => format!(
                 "the session on {} ended and its branch did NOT come back: {why}. The work is still \
                  there, in {} on that machine (branch `{}`) — fetch it yourself: `git fetch {} \
@@ -5290,6 +5309,33 @@ user     = "root"
             fresh.wait(STEP_BOUND),
             STEP_BOUND,
             "a fresh fetch waits as long as the connection is given"
+        );
+    }
+
+    /// The refusal that caused a retry is the only clue pointing at the master's `MaxSessions`, so
+    /// the report for a retry that found no slot names it. Dropping it would leave `busy`'s words,
+    /// which say nothing was sent about a fetch whose first attempt did send and was refused.
+    #[test]
+    fn a_retry_that_finds_no_slot_still_says_what_was_refused() {
+        let said = refused_then_no_slot(
+            b"mux_client_request_session: session request failed\nmore words",
+            "fake (git) already has 8 ssh calls in flight from this process",
+        );
+        assert!(
+            said.contains("mux_client_request_session: session request failed"),
+            "the refusal is quoted: {said}"
+        );
+        assert!(
+            !said.contains("more words"),
+            "one line, not the whole stderr: {said}"
+        );
+        assert!(
+            said.contains("earlier attempt"),
+            "said of which attempt: {said}"
+        );
+        assert!(
+            said.contains("no slot on the retry") && said.contains("8 ssh calls in flight"),
+            "and what the retry got instead: {said}"
         );
     }
 
