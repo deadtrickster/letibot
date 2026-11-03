@@ -2273,6 +2273,15 @@ impl Harness {
                     // The outage is this notice's to tell: one row per outage, and this is it, since the session
                     // is moving and the count belongs in that sentence. Taken, so `settle_outage` finds nothing.
                     let outage = self.outage.take();
+                    // **And the row the reader has been watching settles here**, because this ending is
+                    // not the ladder's: the session moves, so the row says where it went. Without it the
+                    // row would still be saying `retrying` in a session that had stopped trying.
+                    if let Some(o) = outage.as_ref()
+                        && o.attempts >= 2
+                    {
+                        let line = format!("{}, and the session moves to {next}", o.gave_up());
+                        self.publish_series(o, Some(line));
+                    }
                     self.hub.publish(SessionEvent::Warning {
                         code: "model_endpoint_retry".into(),
                         detail: fallback_notice(&was, &next, &e, opens_a_turn, outage.as_ref()),
@@ -2282,9 +2291,8 @@ impl Harness {
                 }
                 break Err(TurnFailure::Http(e));
             };
-            // Nothing is published here, and that is the change: this used to raise a row per attempt, three in
-            // three seconds for one endpoint. The attempt is in the outage's count, and the row is written when
-            // the outage ends.
+            // Nothing is published here: the wait is not news. The attempt that just failed moved the row
+            // (`outage_failed`), and a row per attempt - three in three seconds for one endpoint - is the wall.
             match self.sleep_unless_closed(wait) {
                 Waited::Out => {}
                 Waited::Closed => break Err(TurnFailure::Http(e)),
@@ -2508,53 +2516,101 @@ impl Harness {
     /// This attempt failed, and the outage remembers it. The host is asked of the thing that was contacted: this
     /// read the LOCAL endpoint on a path that also serves cloud turns, so a resolver failure against a provider was
     /// reported as a problem with `127.0.0.1:8080`, which is what made the message expensive.
+    ///
+    /// **And it is published, as the series' ONE row**, from the second failure: a head that holds the
+    /// row rewrites it, which is what makes five attempts one line rather than five, and a failure the
+    /// ladder never retried is not a series.
     fn outage_failed(&mut self, e: &letibot_turn::HttpError) {
         let host = retry_host(self.provider.as_deref(), &self.cfg.endpoint);
         let now = letibot_sessionlog::event::now_ms();
+        let reason = letibot_http::retry::Policy::brief(e);
+        // One line per failed attempt for the popup, with the clock when there is one: an attempt that
+        // cannot say when it happened still says what happened.
+        let stamp = |reason: &str| match outage_clock(now) {
+            Some(at) => format!("{at} · {reason}"),
+            None => reason.to_string(),
+        };
         // A failure against a DIFFERENT host is a different outage: `/models` and a fallback both move this, and two
-        // endpoints' attempts are not one counter. The old record is dropped rather than told, since it is over and
-        // its row would name a host this session no longer fails against.
-        match &mut self.outage {
+        // endpoints' attempts are not one counter. The record it displaces has a row on the screen, so that row is
+        // settled here: left live it would say `retrying` for a host this session no longer fails against.
+        let displaced = match &mut self.outage {
             Some(o) if o.host == host => {
                 o.attempts += 1;
                 o.last_ms = now;
                 o.said = e.to_string();
+                o.reason = reason.clone();
+                o.log.push(stamp(&reason));
+                None
             }
-            slot => {
-                *slot = Some(Outage {
-                    host,
-                    attempts: 1,
-                    began_ms: now,
-                    last_ms: now,
-                    said: e.to_string(),
-                });
-            }
+            slot => slot.replace(Outage {
+                host: host.clone(),
+                attempts: 1,
+                began_ms: now,
+                last_ms: now,
+                said: e.to_string(),
+                reason: reason.clone(),
+                log: vec![stamp(&reason)],
+            }),
+        };
+        if let Some(old) = displaced
+            && old.attempts >= 2
+        {
+            let line = format!("{}, and the endpoint moved to {host}", old.gave_up());
+            self.publish_series(&old, Some(line));
         }
+        if let Some(o) = self.outage.as_ref()
+            && o.attempts >= 2
+        {
+            self.publish_series(o, None);
+        }
+    }
+
+    /// **The series' one row, published.** `ended` is `None` while the ladder is still trying and the
+    /// row's last value when it stops: the same event either way, so a head that holds the row rewrites
+    /// it and one that attached mid-series is told where it stands.
+    fn publish_series(&self, outage: &Outage, ended: Option<String>) {
+        self.hub.publish(SessionEvent::ModelRetry {
+            host: outage.host.clone(),
+            attempts: outage.attempts,
+            said: outage.retrying(),
+            log: outage.log.clone(),
+            ended,
+        });
     }
 
     /// The outage is over, and this is the one row it earns. `answered` is the round ending on anything but an HTTP
     /// failure, which includes a round that failed another way, since the endpoint spoke. The record is TAKEN, so
     /// this is the only place that writes the row and it writes it once.
+    ///
+    /// **The row's last value goes first, the record after it.** A head holding the row rewrites it to the
+    /// line; the warning below is the same fact in the daemon's words, which is what a head that attaches
+    /// after the series is left with and what `/notes` lists.
     fn settle_outage(&mut self, answered: bool) {
         let Some(outage) = self.outage.take() else {
             return;
         };
+        let now = letibot_sessionlog::event::now_ms();
         // **The endpoint came back, and that is said however few attempts it took** - a silent
         // recovery is how somebody spends an afternoon believing it is still down.
         if answered {
+            if outage.attempts >= 2 {
+                self.publish_series(&outage, Some(outage.settled_well(now)));
+            }
             self.hub.publish(SessionEvent::Warning {
                 code: "model_endpoint_answered".into(),
-                detail: outage.answered(letibot_sessionlog::event::now_ms()),
+                detail: outage.answered(now),
                 compaction: None,
             });
             return;
         }
         // **One failure the ladder never retried is not an outage**: with `http_retries = 0`
         // the turn's own `turn_failed` is the whole of the news, and a row saying `attempt 1`
-        // beside it would be the same fact twice.
+        // beside it would be the same fact twice. No row was published for it either, so there is
+        // nothing to settle.
         if outage.attempts < 2 {
             return;
         }
+        self.publish_series(&outage, Some(outage.gave_up()));
         self.hub.publish(SessionEvent::Warning {
             code: "model_endpoint_retry".into(),
             detail: outage.did_not_answer(),
@@ -3337,12 +3393,9 @@ fn model_refused(e: &letibot_turn::HttpError) -> bool {
 /// means the row's text has to be current. A note on the screen cannot be revised: the head files a
 /// warning under `(code, ts, detail)`, so a second publish carrying a bigger count is a SECOND row.
 ///
-/// So the count is written where it is already final. The record is opened by the first failed
-/// attempt and changed by every later one and published never, which is the whole of the fix, and it
-/// is told once when the round ends. An endpoint that answered says `answered again after N
-/// attempts`, because a silent recovery is how somebody spends an afternoon believing it is still
-/// down; a ladder that gave up says the count, when, and the provider's own words; and a `[fallback]`
-/// that moved the session is the row, because two rows about one outage is the wall again.
+/// So the count lives in ONE row whose value moves: the record is opened by the first failed attempt,
+/// changed by every later one, and published as [`SessionEvent::ModelRetry`] - the row's whole value,
+/// so a head rewrites the row rather than adding one and settles it once when the series ends.
 ///
 /// A failure the ladder never retried is not an outage and writes nothing: with no retries the
 /// turn's own `turn_failed` is the whole of the news. Told once structurally, because
@@ -3361,9 +3414,52 @@ pub(crate) struct Outage {
     last_ms: u64,
     /// The provider's own sentence for the LAST attempt: the text a bug report wants.
     said: String,
+    /// The last failure in the four words the row counts attempts in - `429 rate limited` - because
+    /// one row that moves has space for a phrase per attempt and not for a sentence.
+    reason: String,
+    /// Every failed attempt as `<clock> · <reason>`, oldest first: the popup's list, so the reader
+    /// who wants the shape of the outage has it on one click and not in six rows.
+    log: Vec<String>,
 }
 
 impl Outage {
+    /// **The row while the ladder is still trying**: the count, the last reason, and how long this
+    /// has been going on. The span is as of the attempt that closed the count, since only a publish
+    /// can move a row.
+    fn retrying(&self) -> String {
+        format!(
+            "retrying the model: {n} {word}, last {reason}, {span}",
+            n = self.attempts,
+            word = attempts_word(self.attempts),
+            reason = self.reason,
+            span = outage_span(self.last_ms.saturating_sub(self.began_ms)),
+        )
+    }
+
+    /// **The row's last value when the endpoint came back**: the count a reader was watching, and
+    /// how long it was out. The count is the FAILED attempts, the same number the live line was
+    /// showing, because a count that jumps by one as the row settles reads as a different series.
+    fn settled_well(&self, now_ms: u64) -> String {
+        format!(
+            "the model answered after {n} {word}, {span}",
+            n = self.attempts,
+            word = attempts_word(self.attempts),
+            span = outage_span(now_ms.saturating_sub(self.began_ms)),
+        )
+    }
+
+    /// **The row's last value when the ladder gave up**: the count and the failure it stopped on,
+    /// which is the one thing a person acts on. The provider's whole sentence, and when each
+    /// attempt failed, are in the durable warning this rides beside.
+    fn gave_up(&self) -> String {
+        format!(
+            "gave up after {n} {word}: {reason}",
+            n = self.attempts,
+            word = attempts_word(self.attempts),
+            reason = self.reason,
+        )
+    }
+
     /// The row for an outage that ended without an answer: the count, when the last attempt was, and the provider's
     /// own words, so the head's one-line card keeps the count and the time before the cut and the sentence behind
     /// the click.
@@ -3386,11 +3482,7 @@ impl Outage {
              The last thing it said{last}, was: {said}",
             host = self.host,
             n = self.attempts,
-            word = if self.attempts == 1 {
-                "attempt"
-            } else {
-                "attempts"
-            },
+            word = attempts_word(self.attempts),
             span = outage_span(now_ms.saturating_sub(self.began_ms)),
             last = self.last_at().replace(", last at", ", at"),
             said = self.said,
@@ -3426,6 +3518,13 @@ fn outage_span(ms: u64) -> String {
         60..=3599 => format!("{}m {:02}s", secs / 60, secs % 60),
         _ => format!("{}h {:02}m", secs / 3600, (secs % 3600) / 60),
     }
+}
+
+/// **`attempt` or `attempts`**, in one place: the live line, the two endings and the durable
+/// warning all count the same attempts, and a sentence that says `after 1 attempts` is what a
+/// second copy of this rule looks like.
+fn attempts_word(n: u32) -> &'static str {
+    if n == 1 { "attempt" } else { "attempts" }
 }
 
 /// The retry notice for a session that moves because the model is OUT: what refused, what it said, where the
@@ -4041,6 +4140,8 @@ mod endpoint_retry {
             began_ms: 0,
             last_ms: 0,
             said: "http 429: Weekly/Monthly Limit Exhausted".into(),
+            reason: "429 rate limited".into(),
+            log: Vec::new(),
         };
         let counted = fallback_notice("glm/glm-4.6", "grok/grok-4", &out(), true, Some(&outage));
         assert!(
@@ -4060,6 +4161,8 @@ mod endpoint_retry {
             began_ms: 0,
             last_ms: 0,
             said: "http 502: bad gateway".into(),
+            reason: "502 server error".into(),
+            log: Vec::new(),
         };
         let failed = outage.did_not_answer();
         assert!(
@@ -4088,9 +4191,58 @@ mod endpoint_retry {
             began_ms: 0,
             last_ms: 0,
             said: "http io: connection refused".into(),
+            reason: "the connection was refused".into(),
+            log: Vec::new(),
         };
         let said = once.answered(2_400);
         assert!(said.contains("after 1 attempt / 2s"), "{said}");
+    }
+
+    /// **The one row a retried call draws, in every value it has.** A reader watching an endpoint
+    /// go away sees the count and the reason move on the SAME row, and then the same row say how
+    /// it ended: three attempts and a give-up is `gave up after 3 attempts`, and one that answers
+    /// names the attempts that failed before it did.
+    #[test]
+    fn a_series_of_retries_is_one_row_that_moves_and_then_settles() {
+        let outage = Outage {
+            host: "api.deepseek.com".into(),
+            attempts: 3,
+            began_ms: 1_000,
+            last_ms: 42_000,
+            said: "http 502: bad gateway".into(),
+            reason: "502 server error".into(),
+            log: vec![
+                "10:31:22 · 502 server error".into(),
+                "10:31:41 · timeout".into(),
+                "10:32:03 · 502 server error".into(),
+            ],
+        };
+        assert_eq!(
+            outage.retrying(),
+            "retrying the model: 3 attempts, last 502 server error, 41s",
+            "the row while the ladder runs: the count, the last reason and how long"
+        );
+        assert_eq!(
+            outage.gave_up(),
+            "gave up after 3 attempts: 502 server error",
+            "and the row's last value when it stops trying"
+        );
+        assert_eq!(
+            outage.settled_well(52_000),
+            "the model answered after 3 attempts, 51s",
+            "a recovery names the attempts that failed before it, so the count the reader was \
+             watching is the count that settles"
+        );
+        // **One attempt is a word, not a count of one.**
+        let once = Outage {
+            attempts: 1,
+            ..outage
+        };
+        assert_eq!(
+            once.retrying(),
+            "retrying the model: 1 attempt, last 502 server error, 41s"
+        );
+        assert_eq!(once.gave_up(), "gave up after 1 attempt: 502 server error");
     }
 
     /// The duration in the words a sentence reads with - `14s`, `2m 14s`, `1h 02m`.

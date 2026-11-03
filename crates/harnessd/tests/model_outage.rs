@@ -15,9 +15,11 @@
 //!
 //! A real daemon, a real socket, a real head and a loopback stub standing in for the provider -
 //! nothing is mocked above the wire and nothing is injected into the retry policy, because the
-//! subject is *how many rows one outage is worth*: three failed attempts give one row saying
-//! `attempt 3`; a fourth that answers gives one `model_endpoint_answered` row and no retry row; a
-//! second outage starts its own count.
+//! subject is *how many rows one outage is worth*: three failed attempts give ONE row that moves -
+//! `attempts 2`, `attempts 3` - and then settles to `gave up after 3 attempts`, with the durable
+//! `model_endpoint_retry` warning beside it written once. A fourth attempt that answers settles the
+//! same row as `the model answered after 3 attempts` and writes one `model_endpoint_answered` row;
+//! a second outage starts its own count.
 //!
 //! One test and three sessions, because `XDG_CONFIG_HOME` is process-global. The waits are the
 //! ladder's own - 1 s, 2 s, 4 s - since a fixture that shortened them would measure a retry loop
@@ -167,6 +169,19 @@ struct Rec {
     answered: Vec<String>,
     /// Turns that ended FAILED.
     failed: usize,
+    /// **Every `ModelRetry` frame, in order** - the one row the series is, as the head was told it.
+    /// Three failed attempts are three frames of ONE row: two live and one settled.
+    series: Vec<Row>,
+}
+
+/// One `ModelRetry`, folded: the count, the line the row was showing, the attempts behind the
+/// popup and the line it settled to (`None` while the ladder is still trying).
+#[derive(Debug, Clone)]
+struct Row {
+    attempts: u32,
+    said: String,
+    log: Vec<String>,
+    ended: Option<String>,
 }
 
 fn classify(frame: ServerFrame) -> Option<Seen> {
@@ -180,6 +195,18 @@ fn classify(frame: ServerFrame) -> Option<Seen> {
                 }
             }
             letibot_sessionlog::event::SessionEvent::TurnFailed { .. } => Some(Seen::Failed),
+            letibot_sessionlog::event::SessionEvent::ModelRetry {
+                attempts,
+                said,
+                log,
+                ended,
+                ..
+            } => Some(Seen::Series(Row {
+                attempts: *attempts,
+                said: said.clone(),
+                log: log.clone(),
+                ended: ended.clone(),
+            })),
             _ => None,
         },
         _ => None,
@@ -190,6 +217,7 @@ enum Seen {
     Retry(String),
     Answered(String),
     Failed,
+    Series(Row),
 }
 
 fn fold(rec: &mut Rec, inb: Inbound) {
@@ -197,6 +225,7 @@ fn fold(rec: &mut Rec, inb: Inbound) {
         Some(Seen::Retry(detail)) => rec.retries.push(detail),
         Some(Seen::Answered(detail)) => rec.answered.push(detail),
         Some(Seen::Failed) => rec.failed += 1,
+        Some(Seen::Series(row)) => rec.series.push(row),
         None => {}
     }
 }
@@ -361,23 +390,58 @@ fn one_outage_is_one_row_with_a_counter() {
 
     // ── A. Three failed attempts, and the ladder gives up ────────────────────────────────
     //
-    // One row, and it carries the count.
+    // **One row, and it MOVES**: the live line at 2 attempts, again at 3, and then the same row
+    // settled to the give-up. The durable warning beside it is one row, with the count.
     endpoint.refuse(100);
     let before = endpoint.seen();
     let cfg = config(&scratch, "givesup", 2);
     let rec = drive(&parts, cfg, |client, rx, _hub, rec| {
         client.prompt(0, PROMPT).expect("the prompt is accepted");
-        watch(rx, rec, |rec| rec.failed > 0);
+        // Waits for the SETTLED row and not only for the failed turn: without it the last frame
+        // could still be in the socket, and the assertions below would read a missing ending.
+        watch(rx, rec, |rec| {
+            rec.failed > 0 && rec.series.last().is_some_and(|r| r.ended.is_some())
+        });
     });
     let attempts = endpoint.seen() - before;
     assert_eq!(
         attempts, 3,
         "the ladder did not take the round three times, so this scenario measured nothing"
     );
+    let moves: Vec<(u32, bool)> = rec
+        .series
+        .iter()
+        .map(|r| (r.attempts, r.ended.is_some()))
+        .collect();
+    assert_eq!(
+        moves,
+        vec![(2, false), (3, false), (3, true)],
+        "three failed attempts are ONE row that moves - 2, then 3 - and then settles: {:?}",
+        rec.series
+    );
+    let live = &rec.series[0];
+    assert!(
+        live.said
+            .starts_with("retrying the model: 2 attempts, last 503 server error, ")
+            && live.log.len() == 2,
+        "the live row names the count and the last four words, and the popup holds one line per \
+         failed attempt: {live:?}"
+    );
+    let settled = rec
+        .series
+        .last()
+        .unwrap()
+        .ended
+        .as_deref()
+        .unwrap_or_default();
+    assert_eq!(
+        settled, "gave up after 3 attempts: 503 server error",
+        "the row settles on the count the reader was watching and the failure it stopped on"
+    );
     assert_eq!(
         rec.retries.len(),
         1,
-        "three failed attempts are ONE row, not one per attempt: {:?}",
+        "three failed attempts are ONE durable row, not one per attempt: {:?}",
         rec.retries
     );
     let row = &rec.retries[0];
@@ -397,18 +461,37 @@ fn one_outage_is_one_row_with_a_counter() {
 
     // ── B. A fourth attempt that answers ──────────────────────────────────────────────── The
     // recovery is said once, with the count - a silent one leaves a person believing the
-    // endpoint is still down - and no retry row is written at all.
+    // endpoint is still down - and the row the reader watched settles to the recovery.
     endpoint.refuse(3);
     let before = endpoint.seen();
     let cfg = config(&scratch, "comesback", 3);
     let rec = drive(&parts, cfg, |client, rx, hub, rec| {
         client.prompt(0, PROMPT).expect("the prompt is accepted");
-        watch(rx, rec, |_| answers(hub) >= 1);
+        watch(rx, rec, |rec| {
+            answers(hub) >= 1
+                && rec.answered.len() >= 1
+                && rec.series.last().is_some_and(|r| r.ended.is_some())
+        });
     });
     assert_eq!(
         endpoint.seen() - before,
         4,
         "the stub answered on the fourth attempt, so three failed and one was taken again"
+    );
+    let settled = rec
+        .series
+        .last()
+        .and_then(|r| r.ended.clone())
+        .unwrap_or_default();
+    assert!(
+        settled.starts_with("the model answered after 3 attempts, "),
+        "the recovered row settles on the attempts that FAILED, which is the count the reader \
+         was watching: {:?}",
+        rec.series
+    );
+    assert!(
+        !settled.contains("4 "),
+        "a count that jumps by one as the row settles reads as a different series: {settled}"
     );
     assert!(
         rec.retries.is_empty(),
@@ -437,15 +520,15 @@ fn one_outage_is_one_row_with_a_counter() {
     endpoint.refuse(1);
     let cfg = config(&scratch, "second", 2);
     let ep = endpoint.clone();
-    let rec = drive(&parts, cfg, move |client, rx, hub, rec| {
+    let rec = drive(&parts, cfg, move |client, rx, _hub, rec| {
         client.prompt(0, PROMPT).expect("the prompt is accepted");
-        watch(rx, rec, |_| answers(hub) >= 1);
+        watch(rx, rec, |rec| rec.answered.len() >= 1);
         // The second outage, in the same session and against the same endpoint.
         ep.refuse(1);
         client
             .prompt(0, NEXT)
             .expect("the second prompt is accepted");
-        watch(rx, rec, |_| answers(hub) >= 2);
+        watch(rx, rec, |rec| rec.answered.len() >= 2);
     });
     assert_eq!(
         rec.answered.len(),
@@ -467,5 +550,11 @@ fn one_outage_is_one_row_with_a_counter() {
         rec.retries.is_empty(),
         "neither outage was one the ladder gave up on: {:?}",
         rec.retries
+    );
+    assert!(
+        rec.series.is_empty(),
+        "a failure the ladder never retried is not a series, and draws no row of its own - the \
+         turn's own ending is the whole of the news: {:?}",
+        rec.series
     );
 }
