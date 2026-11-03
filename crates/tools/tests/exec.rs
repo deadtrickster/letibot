@@ -455,9 +455,9 @@ fn a_session_whose_backend_cannot_exec_refuses_at_the_backend_naming_which() {
 
 #[test]
 fn a_coder_asking_for_bash_is_told_how_its_test_gets_run() {
-    // The coder seat writes and cannot start a process, so the miss for `bash` is the
-    // moment a model learns its test has no runner here. The refusal has to say how the
-    // test does get run, and must not name a cause it cannot see.
+    // The coder seat has no shell, so the miss for `bash` is the moment a model learns its test
+    // has no runner here. The refusal has to say how the test does get run, and must not name a
+    // cause it cannot see.
     let mut h = letibot_tools::testing::writable_harness();
     let r = h.call(
         "bash",
@@ -473,8 +473,14 @@ fn a_coder_asking_for_bash_is_told_how_its_test_gets_run() {
         "the miss must say nothing ran: {payload}"
     );
     assert!(
-        payload.contains("starts no process"),
-        "the miss must say this seat cannot run one: {payload}"
+        payload.contains("No shell command can be run"),
+        "the miss must say what it cannot do, which is run a shell command: {payload}"
+    );
+    // A seat with no `bash` still starts processes through its own tools - `task` is a child
+    // session, `plugin build` runs cargo - so the seat-wide claim was false and is gone.
+    assert!(
+        !payload.contains("starts no process"),
+        "the miss must not claim the seat starts no process: {payload}"
     );
     assert!(
         payload.contains("on your board with `todo`"),
@@ -495,7 +501,11 @@ fn a_coder_asking_for_bash_is_told_how_its_test_gets_run() {
     let unknown = h.call("not_a_tool", "{}");
     let other = unknown.payload.clone();
     assert!(other.contains("this session has these tools"), "{other}");
-    for phrase in ["does not seat it", "starts no process", "nothing was run"] {
+    for phrase in [
+        "does not seat it",
+        "No shell command can be run",
+        "nothing was run",
+    ] {
         assert!(
             !other.contains(phrase),
             "`not_a_tool` must get no exec guidance, but it says {phrase:?}: {other}"

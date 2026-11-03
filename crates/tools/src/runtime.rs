@@ -1402,9 +1402,10 @@ struct Rewritten {
 /// here, and the way out is the operator. No cause is claimed, because an unknown name,
 /// `--bash` off and plan mode all arrive at this arm alike.
 const NO_SHELL_HERE: &str = "`bash` is a tool this build has, and this session does not seat it; \
-nothing was run. This seat starts no process, so a test written here cannot be run from here. \
-Put the command on your board with `todo` - `cargo test --offline <the test>` - and the operator \
-runs it and answers with what it said.";
+nothing was run. No shell command can be run from here, though a tool that starts its own \
+processes still does, so a test written here cannot be run from here. Put the command on your \
+board with `todo` - `cargo test --offline <the test>` - and the operator runs it and answers with \
+what it said.";
 
 impl ToolRuntime {
     pub fn new(registry: Registry, backend: Box<dyn ExecBackend>) -> Self {
