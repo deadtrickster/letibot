@@ -160,7 +160,10 @@ fn rows(hub: &Hub) -> Vec<TranscriptItem> {
     hub.retained()
         .iter()
         .filter_map(|e| match &e.event {
-            SessionEvent::TranscriptContent { item, .. } => Some((**item).clone()),
+            SessionEvent::TranscriptContent { item, .. }
+            | SessionEvent::TranscriptAppended {
+                item: Some(item), ..
+            } => Some((**item).clone()),
             _ => None,
         })
         .collect()

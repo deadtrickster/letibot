@@ -147,7 +147,7 @@ fn a_nag_turn_arms_the_sweep_that_closes_a_call_it_stranded() {
     let nagged = hub.retained().iter().any(|e| {
         matches!(
             &e.event,
-            letibot_sessionlog::SessionEvent::TranscriptContent { item, .. }
+            letibot_sessionlog::SessionEvent::TranscriptContent { item, .. } | letibot_sessionlog::SessionEvent::TranscriptAppended { item: Some(item), .. }
                 if matches!(
                     &**item,
                     letibot_transcript::TranscriptItem::User {

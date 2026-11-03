@@ -61,7 +61,10 @@ fn user_rows(hub: &Hub) -> Vec<(Row, String)> {
     hub.retained()
         .iter()
         .filter_map(|e| match &e.event {
-            SessionEvent::TranscriptContent { item, .. } => match &**item {
+            SessionEvent::TranscriptContent { item, .. }
+            | SessionEvent::TranscriptAppended {
+                item: Some(item), ..
+            } => match &**item {
                 TranscriptItem::User { speaker, parts } => Some((
                     *speaker,
                     parts
@@ -85,7 +88,10 @@ fn answers(hub: &Hub) -> Vec<String> {
     hub.retained()
         .iter()
         .filter_map(|e| match &e.event {
-            SessionEvent::TranscriptContent { item, .. } => match &**item {
+            SessionEvent::TranscriptContent { item, .. }
+            | SessionEvent::TranscriptAppended {
+                item: Some(item), ..
+            } => match &**item {
                 TranscriptItem::Assistant { text, .. } => Some(text.clone()),
                 _ => None,
             },

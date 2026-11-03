@@ -237,8 +237,11 @@ fn collect(
             break;
         };
         if let ServerFrame::Event(env) = f
-            && let letibot_sessionlog::event::SessionEvent::TranscriptContent { item, .. } =
-                &env.event
+            && let letibot_sessionlog::event::SessionEvent::TranscriptContent { item, .. }
+            | letibot_sessionlog::event::SessionEvent::TranscriptAppended {
+                item: Some(item),
+                ..
+            } = &env.event
             && let Some(t) = text_of(item)
         {
             carried.push(t);

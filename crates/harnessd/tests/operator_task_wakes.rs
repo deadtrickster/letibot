@@ -177,7 +177,10 @@ fn answers(hub: &letibot_sessionlog::hub::Hub) -> Vec<String> {
     hub.retained()
         .iter()
         .filter_map(|e| match &e.event {
-            letibot_sessionlog::SessionEvent::TranscriptContent { item, .. } => match &**item {
+            letibot_sessionlog::SessionEvent::TranscriptContent { item, .. }
+            | letibot_sessionlog::SessionEvent::TranscriptAppended {
+                item: Some(item), ..
+            } => match &**item {
                 TranscriptItem::Assistant { text, .. } => Some(text.clone()),
                 _ => None,
             },

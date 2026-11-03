@@ -153,7 +153,10 @@ fn prompts(hub: &Hub) -> Vec<String> {
     hub.retained()
         .iter()
         .filter_map(|e| match &e.event {
-            SessionEvent::TranscriptContent { item, .. } => match &**item {
+            SessionEvent::TranscriptContent { item, .. }
+            | SessionEvent::TranscriptAppended {
+                item: Some(item), ..
+            } => match &**item {
                 letibot_transcript::TranscriptItem::User { .. } => {
                     Some(serde_json::to_string(&**item).unwrap_or_default())
                 }

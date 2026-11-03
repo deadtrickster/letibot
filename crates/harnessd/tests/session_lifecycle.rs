@@ -176,7 +176,10 @@ fn operator_rows(hub: &Hub) -> Vec<String> {
     hub.retained()
         .iter()
         .filter_map(|e| match &e.event {
-            SessionEvent::TranscriptContent { item, .. } => match &**item {
+            SessionEvent::TranscriptContent { item, .. }
+            | SessionEvent::TranscriptAppended {
+                item: Some(item), ..
+            } => match &**item {
                 TranscriptItem::User { speaker, parts } if *speaker == Speaker::Operator => Some(
                     parts
                         .iter()
@@ -599,7 +602,7 @@ fn a_message_to_a_parked_child_reopens_it_from_the_store() {
     assert!(
         reopened.retained().iter().any(|e| matches!(
             &e.event,
-            SessionEvent::TranscriptContent { item, .. }
+            SessionEvent::TranscriptContent { item, .. } | SessionEvent::TranscriptAppended { item: Some(item), .. }
                 if matches!(&**item, TranscriptItem::User { speaker: Speaker::Agent, parts }
                     if parts.iter().any(|p| matches!(p, UserPart::Text { text } if text.contains("one more thing"))))
         )),

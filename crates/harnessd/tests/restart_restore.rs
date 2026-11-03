@@ -181,7 +181,10 @@ fn user_rows(hub: &Hub) -> Vec<String> {
     hub.retained()
         .iter()
         .filter_map(|e| match &e.event {
-            SessionEvent::TranscriptContent { item, .. } => match &**item {
+            SessionEvent::TranscriptContent { item, .. }
+            | SessionEvent::TranscriptAppended {
+                item: Some(item), ..
+            } => match &**item {
                 TranscriptItem::User { parts, .. } => Some(
                     parts
                         .iter()

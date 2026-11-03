@@ -455,7 +455,10 @@ fn drain_rows(
         };
         if let ServerFrame::Event(env) = inbound.frame() {
             match env.event {
-                SessionEvent::TranscriptAppended { item_id, .. } => {
+                SessionEvent::TranscriptAppended { item_id, item, .. } => {
+                    if item.is_some() {
+                        bodies.insert(item_id.clone());
+                    }
                     announced.insert(item_id);
                 }
                 SessionEvent::TranscriptContent { item_id, .. } => {

@@ -213,7 +213,10 @@ fn seed(path: &Path, parts: &Parts, session_id: &str) {
 /// SEATING and not the answer.
 fn the_firing(hub: &Hub) -> Option<(String, Duration)> {
     hub.retained().iter().find_map(|e| match &e.event {
-        SessionEvent::TranscriptContent { item, .. } => match &**item {
+        SessionEvent::TranscriptContent { item, .. }
+        | SessionEvent::TranscriptAppended {
+            item: Some(item), ..
+        } => match &**item {
             TranscriptItem::User { parts, .. } => {
                 let text: String = parts
                     .iter()

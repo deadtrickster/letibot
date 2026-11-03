@@ -551,7 +551,10 @@ fn the_operators_own_run_outlives_the_models_deadline() {
                     unreadable = Some(detail.clone());
                 }
                 // The row the run produced, had it ended - none may arrive claiming a kill.
-                SessionEvent::TranscriptContent { item, .. } => {
+                SessionEvent::TranscriptContent { item, .. }
+                | SessionEvent::TranscriptAppended {
+                    item: Some(item), ..
+                } => {
                     if let letibot_transcript::TranscriptItem::ToolResult { payload, .. } =
                         item.as_ref()
                     {

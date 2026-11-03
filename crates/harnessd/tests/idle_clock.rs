@@ -172,7 +172,7 @@ fn the_call_is_closed(hub: &Hub) -> bool {
     hub.retained().iter().any(|e| {
         matches!(
             &e.event,
-            SessionEvent::TranscriptContent { item, .. }
+            SessionEvent::TranscriptContent { item, .. } | SessionEvent::TranscriptAppended { item: Some(item), .. }
                 if matches!(
                     &**item,
                     TranscriptItem::ToolResult {

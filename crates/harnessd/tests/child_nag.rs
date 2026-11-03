@@ -64,7 +64,10 @@ fn checks_timed(hub: &Hub) -> Vec<(u64, String)> {
     hub.retained()
         .into_iter()
         .filter_map(|e| match &e.event {
-            SessionEvent::TranscriptContent { item, .. } => match &**item {
+            SessionEvent::TranscriptContent { item, .. }
+            | SessionEvent::TranscriptAppended {
+                item: Some(item), ..
+            } => match &**item {
                 TranscriptItem::User { speaker, parts } if *speaker == Speaker::Agent => {
                     let text = parts
                         .iter()

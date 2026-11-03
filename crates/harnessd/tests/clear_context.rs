@@ -158,7 +158,10 @@ fn user_text(item: &TranscriptItem) -> Option<(Speaker, String)> {
 /// settlement is owed when a child has FINISHED.
 fn answered(hub: &Hub, needle: &str) -> bool {
     hub.retained().iter().any(|e| match &e.event {
-        SessionEvent::TranscriptContent { item, .. } => {
+        SessionEvent::TranscriptContent { item, .. }
+        | SessionEvent::TranscriptAppended {
+            item: Some(item), ..
+        } => {
             matches!(&**item, TranscriptItem::Assistant { text, .. } if text.contains(needle))
         }
         _ => false,
