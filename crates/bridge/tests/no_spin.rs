@@ -461,14 +461,25 @@ fn a_daemon_with_nothing_to_do_does_not_burn_a_core() {
         .expect("a session with nothing running is stopped like any other");
     let idle = assert_idle("a stop of a session that never ran a turn");
 
-    // And the daemon as a whole, one last window, after everything above.
-    let settled = assert_idle("the daemon once every head is gone");
+    // And the daemon as a whole, one last window, after everything above. `assert_idle` returns
+    // what the window SPENT, so every value below is the same quantity - the seventh is not a
+    // settle's duration, and the count is the array's length rather than a number kept by hand.
+    let daemon_wide = assert_idle("the daemon once every head is gone");
 
-    // **The numbers, in one line, for whoever reads the gate's log**: six windows, and every one
-    // of them under a tenth of the budget. A spin reads a whole `WINDOW` here.
+    // **The numbers, in one line, for whoever reads the gate's log**: every window's spend, all of
+    // them under a budget that is a tenth of the window. A spin reads a whole `WINDOW` here.
+    let spends = [
+        cold,
+        stopped,
+        one_of_two,
+        two_stopped,
+        twice,
+        idle,
+        daemon_wide,
+    ];
     println!(
-        "  six windows: {cold:?} {stopped:?} {one_of_two:?} {two_stopped:?} {twice:?} {idle:?} \
-         (settled {settled:?}) against a {WINDOW:?} budget of {:?}",
+        "  {} windows of {WINDOW:?}, the CPU each spent: {spends:?} (the budget is {:?} per window)",
+        spends.len(),
         idle_budget()
     );
 }
