@@ -4,12 +4,29 @@
 use super::*;
 
 /// How a wait ended: the time passed, the session is going away, or the operator asked for a stop.
-/// A store write waits through a stop (rows in memory would be lost) and a retry does not.
+/// A retry ends at a stop; a store write is the caller's to keep or leave, and `busy_after` says which.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Waited {
     Out,
     Closed,
     Interrupted,
+}
+
+/// What a wait on a busy store leaves the write: take it again, leave it for the next store write
+/// (a person stopped the turn, and the rows are in memory), or fail it - the session is going away.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum BusyWait {
+    Again,
+    Leave,
+    Gone,
+}
+
+pub(crate) fn busy_after(w: Waited) -> BusyWait {
+    match w {
+        Waited::Out => BusyWait::Again,
+        Waited::Interrupted => BusyWait::Leave,
+        Waited::Closed => BusyWait::Gone,
+    }
 }
 
 /// A `LogSink` that also hands back the item ids it saw, so a row's body can be paired with the
@@ -3210,6 +3227,34 @@ impl Harness {
         self.persist_reporting(&mut |_, _| {})
     }
 
+    /// A wait on the store, said on this session and on every other one this daemon holds: the
+    /// worker runs one turn at a time, so the others' commands queue behind this write and their
+    /// heads would show `queued` with no reason at all (R91.10).
+    fn say_the_store_is_busy(&self, detail: String) {
+        self.hub.publish(SessionEvent::Warning {
+            code: "store_busy_wait".into(),
+            detail: detail.clone(),
+            compaction: None,
+        });
+        for id in self.session_registry.held_ids() {
+            if id == self.cfg.session_id {
+                continue;
+            }
+            let Some(hub) = self.session_registry.get(&id) else {
+                continue;
+            };
+            hub.publish(SessionEvent::Warning {
+                code: "store_busy_queue".into(),
+                detail: format!(
+                    "this daemon serves one turn at a time, and `{}` is waiting on the session \
+                     store — your next command waits behind that write. {detail}",
+                    self.cfg.session_id
+                ),
+                compaction: None,
+            });
+        }
+    }
+
     /// One store write, with the patience `persist_reporting` has: the store's own minute of busy retries, and past
     /// that a wait stated every two minutes until the store frees, the session closes, or `STORE_BUSY_PATIENCE` runs
     /// out. Anything that is not busy is returned at once. `f` must be safe to run again, since a busy write wrote nothing.
@@ -3239,24 +3284,27 @@ impl Harness {
                     }
                     if said_at.is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(120)) {
                         said_at = Some(std::time::Instant::now());
-                        self.hub.publish(SessionEvent::Warning {
-                            code: "store_busy_wait".into(),
-                            detail: format!(
-                                "the session store is busy (`{e}`) — another daemon holds its \
-                                 write lock. The {what} write is kept in memory and made when it \
-                                 frees; this session is waiting, not failing ({}s so far).",
-                                waited.as_secs()
-                            ),
-                            compaction: None,
-                        });
+                        self.say_the_store_is_busy(format!(
+                            "the session store is busy (`{e}`) — another daemon holds its write \
+                             lock. The {what} write is kept in memory and made when it frees; this \
+                             session is waiting, not failing ({}s so far).",
+                            waited.as_secs()
+                        ));
                     }
-                    if !matches!(
-                        self.sleep_unless_closed(std::time::Duration::from_secs(5)),
-                        Waited::Out | Waited::Interrupted
-                    ) {
-                        return Err(HarnessError::Store(format!(
-                            "{what}: {e} — the session closed while waiting for the store"
-                        )));
+                    match busy_after(self.sleep_unless_closed(std::time::Duration::from_secs(5))) {
+                        BusyWait::Again => {}
+                        // **A person's stop is not waited out** (R91.10): this write cannot be made
+                        // later by anybody else, so it fails - saying the stop, not the closure.
+                        BusyWait::Leave => {
+                            return Err(HarnessError::Store(format!(
+                                "{what}: {e} — this session was stopped while it waited for the store"
+                            )));
+                        }
+                        BusyWait::Gone => {
+                            return Err(HarnessError::Store(format!(
+                                "{what}: {e} — the session closed while waiting for the store"
+                            )));
+                        }
                     }
                 }
                 Err(e) => return Err(HarnessError::Store(format!("{what}: {e}"))),
@@ -3350,25 +3398,24 @@ impl Harness {
                     }
                     if said_at.is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(120)) {
                         said_at = Some(std::time::Instant::now());
-                        self.hub.publish(SessionEvent::Warning {
-                            code: "store_busy_wait".into(),
-                            detail: format!(
-                                "the session store is busy (`{e}`) — another daemon holds its \
-                                 write lock. Rows from {at} on are kept in memory and written \
-                                 when it frees; this session is waiting, not failing \
-                                 ({}s so far).",
-                                waited.as_secs()
-                            ),
-                            compaction: None,
-                        });
+                        self.say_the_store_is_busy(format!(
+                            "the session store is busy (`{e}`) — another daemon holds its write \
+                             lock. Rows from {at} on are kept in memory and written when it frees; \
+                             this session is waiting, not failing ({}s so far).",
+                            waited.as_secs()
+                        ));
                     }
-                    if !matches!(
-                        self.sleep_unless_closed(std::time::Duration::from_secs(5)),
-                        Waited::Out | Waited::Interrupted
-                    ) {
-                        return Err(HarnessError::Store(format!(
-                            "row {at}: {e} — the session closed while waiting for the store"
-                        )));
+                    match busy_after(self.sleep_unless_closed(std::time::Duration::from_secs(5))) {
+                        BusyWait::Again => {}
+                        // **A person's stop does not wait the store out** (R91.10): the rows are in
+                        // the ledger, `persisted` is where to resume, and the next store write takes
+                        // them - so the turn is not held here for another half hour.
+                        BusyWait::Leave => return Ok(()),
+                        BusyWait::Gone => {
+                            return Err(HarnessError::Store(format!(
+                                "row {at}: {e} — the session closed while waiting for the store"
+                            )));
+                        }
                     }
                 }
                 Err(e) => {

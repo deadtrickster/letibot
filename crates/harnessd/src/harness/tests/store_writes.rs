@@ -121,6 +121,142 @@ fn a_busy_store_write_is_waited_out_and_said() {
     assert_eq!(n, 1, "a failure that is not busy is not waited for");
 }
 
+/// **A person's stop ends the wait on a busy store** (R91.10): the operator pressed esc-esc on a
+/// turn that was waiting for another daemon's write lock, and the wait ran to its patience before
+/// the stop was read. The session is closing, so the write is not abandoned; a STOP is not.
+#[test]
+fn a_stop_ends_the_wait_on_a_busy_store() {
+    let dir = Scratch::new("r91-10-stop");
+    let Some((h, _path)) = harness_on_a_store(&dir, "r91-10-stop") else {
+        return;
+    };
+    // The interrupt an esc-esc puts on the session's own queue, through the hub the head submits to.
+    let head = h.hub.attach("tui", "dead", Default::default(), 0);
+    h.hub.submit(
+        &head.head_id,
+        "stop-1",
+        0,
+        letibot_sessionlog::hub::CommandKind::Interrupt {
+            reason: "esc".into(),
+        },
+    );
+    let began = std::time::Instant::now();
+    let mut n = 0;
+    let r: Result<usize, _> = h.store_patiently("todos", |_| {
+        n += 1;
+        if n > 1 {
+            return Ok(n);
+        }
+        Err(letibot_tokencore::store::StoreError::Sql(
+            letibot_tokencore::rusqlite::Error::SqliteFailure(
+                letibot_tokencore::rusqlite::ffi::Error::new(
+                    letibot_tokencore::rusqlite::ffi::SQLITE_BUSY,
+                ),
+                Some("database is locked".into()),
+            ),
+        ))
+    });
+    let took = began.elapsed();
+    let why = r.expect_err("a stopped write is not made").to_string();
+    assert!(
+        why.contains("stopped"),
+        "the refusal says the stop, not that the session closed: {why}"
+    );
+    assert!(
+        took < std::time::Duration::from_secs(4),
+        "the wait ran {took:?}: the stop was not read until the patience ran out"
+    );
+    assert_eq!(n, 1, "one attempt: the stop ends the wait, it does not retry it");
+}
+
+/// **The whole daemon is stalled by one session's wait, so every other session's head is told why**
+/// (R91.10): the worker runs one turn at a time, and a session left to read `queued` with no
+/// reason is the operator's report.
+#[test]
+fn a_wait_on_the_store_is_said_on_every_other_session_too() {
+    let dir = Scratch::new("r91-10-others");
+    let Some(gguf) = crate::vocab_gguf() else {
+        return;
+    };
+    let path = dir.0.join("sessions.db");
+    let mut cfg = Config::for_this_box(&dir.0);
+    cfg.dialect = crate::Dialect::Qwen;
+    cfg.store = Some(path.clone());
+    cfg.session_id = "s-waiting".into();
+    cfg.vocab_gguf = Some(gguf);
+    let parts = Parts::load(&cfg).expect("the vocabulary loads");
+    let registry = letibot_sessionlog::registry::Registry::new();
+    let me = registry.new_hub("s-waiting".to_string());
+    let other = registry.new_hub("s-elsewhere".to_string());
+    for (hub, id) in [(&me, "s-waiting"), (&other, "s-elsewhere")] {
+        registry
+            .adopt(
+                hub.clone(),
+                id.to_string(),
+                letibot_sessionlog::registry::SessionWiring::default(),
+                None,
+            )
+            .expect("the session registers");
+    }
+    let h = Harness::open_with_registry(
+        &parts,
+        cfg,
+        me,
+        None,
+        None,
+        Arc::clone(&registry),
+    )
+    .expect("the session opens");
+    let busy = || {
+        letibot_tokencore::store::StoreError::Sql(
+            letibot_tokencore::rusqlite::Error::SqliteFailure(
+                letibot_tokencore::rusqlite::ffi::Error::new(
+                    letibot_tokencore::rusqlite::ffi::SQLITE_BUSY,
+                ),
+                Some("database is locked".into()),
+            ),
+        )
+    };
+    let mut n = 0;
+    h.store_patiently("todos", |_| {
+        n += 1;
+        if n < 2 { Err(busy()) } else { Ok(n) }
+    })
+    .expect("a busy store is waited out");
+    let codes = |hub: &Arc<Hub>| -> Vec<String> {
+        hub.retained()
+            .iter()
+            .filter_map(|e| match &e.event {
+                SessionEvent::Warning { code, detail, .. } => Some((code.clone(), detail.clone())),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .filter(|(c, _)| c.starts_with("store_busy"))
+            .map(|(c, d)| format!("{c}: {d}"))
+            .collect()
+    };
+    let mine = codes(&h.hub);
+    assert!(
+        mine.iter().any(|c| c.starts_with("store_busy_wait")),
+        "the waiting session says so: {mine:?}"
+    );
+    let theirs = codes(&other);
+    assert_eq!(
+        theirs.len(),
+        1,
+        "the other session was told once, and it is not left reading `queued`: {theirs:?}"
+    );
+    assert!(
+        theirs[0].starts_with("store_busy_queue")
+            && theirs[0].contains("s-waiting")
+            && theirs[0].contains("one turn at a time"),
+        "the other session's sentence names the one that is waiting: {}",
+        theirs[0]
+    );
+    registry.close();
+}
+
 /// A `/mode` taken by a running turn is written down: the running turn's door applied the point and wrote nothing,
 /// trusting the worker's door, which never saw the command. Read back the way a restart reads it, from a fresh store.
 #[test]
