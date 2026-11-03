@@ -151,7 +151,7 @@ pub enum Action {
     RoomChat {
         op: serde_json::Value,
     },
-    /// **Hand this session one skill's body** — the pane's Enter, and `/skills NAME rest`. The
+    /// **Hand this session one skill's body** — the pane's `s`, and `/skills NAME rest`. The
     /// daemon loads it, writes the operator's message and runs the turn; `then` is what followed
     /// the name on the line.
     LoadSkill {

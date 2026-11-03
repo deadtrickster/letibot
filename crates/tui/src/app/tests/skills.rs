@@ -12,16 +12,19 @@ fn rows() -> Vec<SkillRow> {
             name: "release".into(),
             source: "this project".into(),
             description: "cut a release".into(),
+            path: None,
         },
         SkillRow {
             name: "review-a-branch".into(),
             source: "the operator's".into(),
             description: "judge a branch".into(),
+            path: None,
         },
         SkillRow {
             name: "plugin-pane".into(),
             source: "this build".into(),
             description: "write a pane plugin".into(),
+            path: None,
         },
     ]
 }
@@ -78,21 +81,73 @@ fn slash_skills_names_one_and_carries_the_rest_of_the_line() {
     );
 }
 
-/// **Enter on a pane row is the same door as the verb** - the row under the cursor, by name.
+/// **Enter opens the skill's file in the editor** - the row under the cursor - and sends nothing
+/// to the session.
 #[test]
-fn enter_on_a_skill_row_hands_that_skill_over() {
+fn enter_on_a_skill_row_opens_its_file_in_the_editor() {
+    let d = std::env::temp_dir().join(format!("letibot-skills-open-{}", std::process::id()));
+    std::fs::create_dir_all(&d).unwrap();
+    let file = d.join("SKILL.md");
+    std::fs::write(&file, "---\nname: review-a-branch\n---\njudge it\n").unwrap();
+    let mut rs = rows();
+    rs[1].path = Some(file.display().to_string());
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.open_surface(Surface::Skills);
+    a.apply(frame(rs));
+    a.screen(120, 24);
+    a.key(Key::Down);
+    assert_eq!(a.key(Key::Enter), None, "nothing goes to the session");
+    assert!(a.editor_focused(), "enter hands the keyboard to the editor");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// A skill with no file (built in) opens nothing and says so.
+#[test]
+fn enter_on_a_skill_without_a_file_says_so() {
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.open_surface(Surface::Skills);
+    a.apply(frame(rows()));
+    a.screen(120, 24);
+    assert_eq!(a.key(Key::Enter), None);
+    assert!(!a.editor_focused());
+    assert!(
+        a.notice
+            .as_deref()
+            .is_some_and(|n| n.contains("not a file"))
+    );
+}
+
+/// **`s` hands the row under the cursor over**, by name - the deliberate act.
+#[test]
+fn s_on_a_skill_row_hands_that_skill_over() {
     let mut a = app();
     a.session_id = "s1".into();
     a.open_surface(Surface::Skills);
     a.apply(frame(rows()));
     a.screen(120, 40);
     a.key(Key::Down);
-    let act = a.key(Key::Enter);
+    let act = a.key(Key::Char('s'));
     assert_eq!(
         act,
         Some(Action::LoadSkill {
             name: "review-a-branch".into(),
             then: String::new(),
         })
+    );
+}
+
+/// The pane's bar and the `/skills` help both say Enter opens and `s` hands over.
+#[test]
+fn the_pane_and_help_say_enter_opens_and_s_hands_over() {
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.open_surface(Surface::Skills);
+    a.apply(frame(rows()));
+    let drawn = a.screen(120, 24).join("\n");
+    assert!(
+        drawn.contains("enter opens its file, s hands it"),
+        "{drawn}"
     );
 }

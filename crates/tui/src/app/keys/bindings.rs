@@ -99,6 +99,8 @@ pub(crate) enum Act {
     /// Open a conversation's subagents in the picker (→), or close them (←).
     Expand,
     Collapse,
+    /// The skills pane's `s`: hand the skill under the cursor to the session.
+    Hand,
     /// The queue's other view.
     View,
     /// One of the person's queue verbs on the entry under the cursor.
@@ -322,15 +324,20 @@ const STANDING: &[Binding] = &[
     PAGE,
     WHEEL,
 ];
-/// **The skills: a list whose Enter HANDS the row over** - `Act::Open` is the same key path the
-/// standing pane's Enter takes, and the pane's own arm is what decides what opening means here
-/// (the body goes to the session, not into the editor).
+/// **The skills: Enter opens the row's file in the editor** like the standing notes. Handing a
+/// body to the session is its own key, because it starts a turn.
 const SKILLS: &[Binding] = &[
     LIST,
     b(
         &[On::Enter],
         Always,
         Act::Open,
+        Text("opens the skill's file in the editor"),
+    ),
+    b(
+        &[On::Char('s')],
+        Empty,
+        Act::Hand,
         Text("hands the skill to the session"),
     ),
     PAGE,
@@ -555,7 +562,7 @@ impl Surface {
             }
             Surface::Skills => {
                 "the skills this box has — the name, where it was found and its one line. Enter \
-                 hands that skill's body to the session, as your message"
+                 opens the skill's file in the editor, `s` hands its body to the session"
             }
             Surface::Subagents => {
                 "the subagent tree; enter goes into that subagent's session, and esc inside a \

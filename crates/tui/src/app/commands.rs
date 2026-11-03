@@ -1277,13 +1277,13 @@ pub(crate) const SLASH_COMMANDS: &[(&str, &str)] = &[
         "queue",
         "open or close the merge-queue pane: what is landing on main, and why it is not",
     ),
-    // **`/skills` hands a skill's body to the session** as the operator's message - the body is
-    // the daemon's to inject, so the head sends the name and the rest of the line.
+    // `/skills NAME` hands the body over; the daemon injects it, so the head sends the name and
+    // the rest of the line.
     (
         "skills",
-        "the skills this box has, one row each: enter (or `/skills NAME`) hands that skill's body \
-         to the session as your message, and `/skills NAME rest of line` sends the rest on as your \
-         prompt in the same turn",
+        "the skills this box has, one row each: enter opens the skill's file in the editor, `s` \
+         (or `/skills NAME`) hands its body to the session, and `/skills NAME rest of line` \
+         sends the rest on as your prompt in the same turn",
     ),
     (
         "rooms",

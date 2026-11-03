@@ -1250,6 +1250,7 @@ impl Harness {
                         name: r.name,
                         source: r.source.label(),
                         description: r.description,
+                        path: r.path.map(|p| p.display().to_string()),
                     })
                     .collect()
             }),

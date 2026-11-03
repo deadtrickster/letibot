@@ -105,6 +105,7 @@ impl App {
                 None => ControlFlow::Continue(()),
             },
             Act::Peek => self.subagents_peek(),
+            Act::Hand => self.skill_hand(),
             // `o` goes into the reviewer's session: the row under the cursor, or the one opened
             // whole.
             Act::Reviewer => ControlFlow::Break(self.go_to_reviewer()),
@@ -312,18 +313,7 @@ impl App {
                 self.open_note();
                 ControlFlow::Break(None)
             }
-            // Enter hands the skill over: the daemon loads the body and writes the operator's
-            // message, so the head never holds one. The pane stays open under it.
-            Surface::Skills => {
-                let Some(name) = self.selected_skill() else {
-                    return ControlFlow::Continue(());
-                };
-                self.say(&format!("`{name}` handed to the session"));
-                ControlFlow::Break(Some(Action::LoadSkill {
-                    name,
-                    then: String::new(),
-                }))
-            }
+            Surface::Skills => self.skill_open(),
             Surface::Subagents => self.subagents_enter(),
             Surface::Jobs => self.jobs_enter(),
             Surface::Monitors => {

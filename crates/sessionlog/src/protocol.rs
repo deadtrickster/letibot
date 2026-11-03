@@ -414,6 +414,9 @@ pub struct SkillRow {
     /// `installed from ...`, `this build`, `the fabric`.
     pub source: String,
     pub description: String,
+    /// Its `SKILL.md` on the daemon's box, when it is a file: what Enter opens in the editor.
+    #[serde(default)]
+    pub path: Option<String>,
 }
 
 /// Which of the two forms the section carries a note in: verbatim when it fits what is left of

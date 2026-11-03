@@ -1,12 +1,14 @@
-//! The skills this box has: the name, where it was found and its one line, and Enter to hand that
-//! skill's body to the session. The label is what lets a reader weigh a skill, and the prompt's
-//! index carries the same one, so the pane draws the daemon's rows unaltered.
+//! The skills this box has: the name, where it was found and its one line. Enter opens the
+//! skill's file in the editor, `s` hands its body to the session. The label is what lets a reader
+//! weigh a skill, and the prompt's index carries the same one, so the pane draws the daemon's rows
+//! unaltered.
 
 use crate::app::*;
 use rano::agent::pane::{self, PaneLines};
 use rano::agent::text::clean_line;
 use rano::render::{Line, Span};
 use rano::style::Role;
+use std::ops::ControlFlow;
 
 impl App {
     /// The skills pane's rows, and the record of where each stop landed — which is what the
@@ -22,7 +24,7 @@ impl App {
         let mut stops = Vec::new();
         let n = self.skills.len();
         out.push(pane::title(format!(
-            "skills — {n} this box can hand you; enter gives one to the session"
+            "skills — {n} this box can hand you; enter opens its file, s hands it to the session"
         )));
         out.blank();
         if self.skills.is_empty() {
@@ -61,10 +63,41 @@ impl App {
         self.skills_stop_rows.get(at).copied().unwrap_or(0)
     }
 
-    /// **The skill row the cursor is on, by name** — what Enter hands over.
-    pub(crate) fn selected_skill(&self) -> Option<String> {
+    /// The skill row the cursor is on.
+    fn selected_skill_row(&self) -> Option<&letibot_sessionlog::protocol::SkillRow> {
         self.skills
             .get(self.skills_sel.min(self.skills.len().saturating_sub(1)))
-            .map(|s| s.name.clone())
+    }
+
+    /// Enter: the skill's `SKILL.md` in the editor pane. A skill with no file (built in, on a
+    /// shelf) says so and the keyboard stays with the pane.
+    pub(crate) fn skill_open(&mut self) -> ControlFlow<Option<Action>> {
+        let Some(row) = self.selected_skill_row() else {
+            return ControlFlow::Continue(());
+        };
+        match row.path.clone() {
+            Some(path) => {
+                self.open_in_editor(&FileRef::file(&path));
+                self.redraw = true;
+            }
+            None => {
+                let msg = format!("`{}` is not a file on this box", row.name);
+                self.say(&msg);
+            }
+        }
+        ControlFlow::Break(None)
+    }
+
+    /// `s`: hand the skill to the session. The daemon loads the body and writes the message, so
+    /// the head never holds one.
+    pub(crate) fn skill_hand(&mut self) -> ControlFlow<Option<Action>> {
+        let Some(name) = self.selected_skill_row().map(|s| s.name.clone()) else {
+            return ControlFlow::Continue(());
+        };
+        self.say(&format!("`{name}` handed to the session"));
+        ControlFlow::Break(Some(Action::LoadSkill {
+            name,
+            then: String::new(),
+        }))
     }
 }

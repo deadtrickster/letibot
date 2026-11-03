@@ -89,6 +89,8 @@ pub struct Skill {
     /// The frontmatter's `keywords`, split on commas and spaces: the words a subject reaches a
     /// skill's subject by when the prose around them differs.
     pub keywords: Vec<String>,
+    /// The `SKILL.md` it was read from; `None` for a skill compiled in or held on a shelf.
+    pub path: Option<PathBuf>,
 }
 
 impl Skill {
@@ -106,6 +108,7 @@ impl Skill {
             allowed_tools: None,
             when_to_use: None,
             keywords: Vec::new(),
+            path: None,
         }
     }
 
@@ -199,6 +202,8 @@ pub struct IndexRow {
     pub id: Option<String>,
     pub description: String,
     pub source: SkillSource,
+    /// The skill's `SKILL.md`, when it is a file on this box.
+    pub path: Option<PathBuf>,
 }
 
 impl IndexRow {
@@ -478,6 +483,7 @@ impl SkillRegistry {
                 id: None,
                 description: s.description.clone(),
                 source: s.source.clone(),
+                path: s.path.clone(),
             })
             .collect();
         let mut said = None;
@@ -489,6 +495,7 @@ impl SkillRegistry {
                     id: Some(e.id),
                     description: format!("({})", e.visibility),
                     source: SkillSource::Fabric,
+                    path: None,
                 })),
                 Err(e) => {
                     said = Some(format!(
@@ -647,10 +654,13 @@ impl SkillRegistry {
 /// when the file is absent or the frontmatter cannot be read: a malformed skill is skipped, not
 /// loaded half-way.
 fn load_one(dir: &std::path::Path, source: &SkillSource) -> Option<Skill> {
-    let skill = from_text(
-        &std::fs::read_to_string(dir.join("SKILL.md")).ok()?,
-        source.clone(),
-    )?;
+    let skill = Skill {
+        path: Some(dir.join("SKILL.md")),
+        ..from_text(
+            &std::fs::read_to_string(dir.join("SKILL.md")).ok()?,
+            source.clone(),
+        )?
+    };
     Some(match source {
         // The folder says whose it is, or the label says only *installed*: `~/.claude/skills`
         // is where `npx skills add` and friends put other people's skills, so an unnamed one is
@@ -752,6 +762,7 @@ fn from_text(text: &str, source: SkillSource) -> Option<Skill> {
         allowed_tools: allowed,
         when_to_use: when,
         keywords,
+        path: None,
     })
 }
 
