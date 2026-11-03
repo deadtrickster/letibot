@@ -5279,3 +5279,46 @@ fn a_note_at_the_row_the_window_drops_is_filed_beside_it() {
         }
     }
 }
+
+/// **A refused page is not a seq disagreement.** The daemon answers an unknown session with a
+/// `fetchrows:` refusal, and the head had no case for it: the ask stayed in flight, so that
+/// direction was dead until a snapshot, and the reader was told their view was behind the session.
+#[test]
+fn a_refused_page_spends_its_ask_and_says_the_daemons_reason() {
+    let mut a = at_the_top_of_a_window(300, 20);
+    let (from, _count) = asked_for(&a).expect("the fixture never asked for a page");
+    assert!(a.fetch_asked.is_some(), "the fixture has no ask in flight");
+    a.fetch_below = Some(500);
+    a.apply(ServerFrame::Rejected {
+        client_request_id: format!("fetchrows:s/{from}"),
+        reason: "unknown session \"s\"".into(),
+        expected_seq: 0,
+        actual_seq: 7,
+    });
+    assert!(
+        a.fetch_asked.is_none(),
+        "the refused ask was left in flight, so that direction is dead"
+    );
+    assert!(
+        a.fetch_below.is_none(),
+        "the other direction was left in flight"
+    );
+    assert_eq!(a.behind, 0, "a page was read as a seq disagreement");
+    let said = a.notice.clone().unwrap_or_default();
+    assert!(
+        said.contains("unknown session"),
+        "the daemon's own reason was not said: {said:?}"
+    );
+    assert!(
+        !said.contains("the session is at"),
+        "the refusal was reported as a seq mismatch: {said:?}"
+    );
+    // And the direction still works: the reader's next frame asks again.
+    a.queued.clear();
+    a.scroll = 100_000;
+    let _ = a.screen(100, 20);
+    assert!(
+        asked_for(&a).is_some(),
+        "a refused page closed the direction for good"
+    );
+}

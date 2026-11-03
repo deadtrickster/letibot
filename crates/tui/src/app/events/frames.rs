@@ -413,6 +413,15 @@ impl App {
                 expected_seq,
                 actual_seq,
             } => {
+                // **A refused page is not a seq disagreement.** The ask is spent and both directions
+                // go, or the one that was refused is dead until a snapshot; nothing in a `FetchRows`
+                // is a seq, so the daemon's own sentence is the whole notice.
+                if client_request_id.starts_with("fetchrows:") {
+                    self.fetch_asked = None;
+                    self.fetch_below = None;
+                    self.say(&format!("rejected: {reason}"));
+                    return Disposition::Control;
+                }
                 // **A refused answer puts its card back** (R90.29): it was closed when the
                 // answer left.
                 self.answer_refused(&client_request_id, &reason);
