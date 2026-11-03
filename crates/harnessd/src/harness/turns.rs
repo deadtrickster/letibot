@@ -1881,8 +1881,8 @@ impl Harness {
     ) -> Result<(), HarnessError> {
         let mut sink = CapturingSink::new(self.hub.clone());
         self.session
-            .append_items(&self.engine, &results, &mut sink)?;
-        self.reconcile(&mut sink, &results);
+            .append_items(&self.engine, results, &mut sink)?;
+        self.reconcile(&mut sink, results);
         // And the calls this round's gate admitted without asking anybody, said after the results and never
         // between them: a notice between a call and its result closes the pairing window.
         self.flush_gate_admissions()?;
@@ -2150,7 +2150,7 @@ impl Harness {
     fn take_the_round(
         &mut self,
         sink: &mut CapturingSink,
-        tail: &Vec<TranscriptItem>,
+        tail: &[TranscriptItem],
         key_asks: &mut usize,
     ) -> Result<(Result<TurnOk, TurnFailure>, letibot_http::retry::Ladder), HarnessError> {
         let mut tried_fallbacks: Vec<String> = Vec::new();

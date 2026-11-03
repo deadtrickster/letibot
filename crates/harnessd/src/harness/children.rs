@@ -3308,7 +3308,7 @@ impl HarnessTaskRunner {
         Self::seat_the_child(
             &self.base,
             &mut sub_cfg,
-            &spec,
+            spec,
             &vm_copy,
             &placement,
             &sub_endpoint,

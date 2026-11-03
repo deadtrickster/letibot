@@ -708,7 +708,7 @@ impl Harness {
         } else if cfg.seat.needs_exec_backend() && may_exec {
             let built = HostBackend::confined_granting(
                 &cfg.workspace,
-                confined_grants(&cfg, cfg.landing_root.as_deref()),
+                confined_grants(cfg, cfg.landing_root.as_deref()),
             );
             match built {
                 Ok(b) => b,
@@ -773,7 +773,7 @@ impl Harness {
         // The home the backend expands `~` against is the session's, read once from
         // the surroundings the gate will also carry - so a `~` and the gate's own
         // `region_of` agree about where the operator lives.
-        let surroundings = surroundings_for(&cfg);
+        let surroundings = surroundings_for(cfg);
         let backend = backend.with_home(
             surroundings
                 .home
@@ -1104,7 +1104,7 @@ impl Harness {
                         loaded.items.iter().map(|(i, _, _)| i.clone()).collect();
 
                     let probe = engine
-                        .open(&format!("{transcript_id}#reprefill-probe"), &prefix)
+                        .open(&format!("{transcript_id}#reprefill-probe"), prefix)
                         .map_err(|e| {
                             HarnessError::Setup(format!("rendering the new prompt: {e}"))
                         })?;
@@ -1134,13 +1134,13 @@ impl Harness {
                     let new_id = format!("{}#t{}", cfg.session_id, n);
 
                     let mut rebuilt = engine
-                        .open(&new_id, &prefix)
+                        .open(&new_id, prefix)
                         .map_err(|e| HarnessError::Setup(format!("opening the fork: {e}")))?;
                     // Each item rendered against the history as it stood before it,
                     // which is `render_incremental`'s contract and what keeps the
                     // ledger rows aligned with the items.
                     rebuilt
-                        .append_items(&engine, &items, &mut letibot_turn::events::NullSink)
+                        .append_items(engine, &items, &mut letibot_turn::events::NullSink)
                         .map_err(|e| {
                             HarnessError::Setup(format!(
                                 "re-rendering this conversation under {}: {e}",
@@ -1184,7 +1184,7 @@ impl Harness {
                     store
                         .set_prefix_fingerprint(
                             &cfg.session_id,
-                            &prefix_fingerprint(cfg.seat, &prefix),
+                            &prefix_fingerprint(cfg.seat, prefix),
                         )
                         .map_err(|e| HarnessError::Store(e.to_string()))?;
 
@@ -1304,7 +1304,7 @@ impl Harness {
                             .and_then(|r| r.prefix_fingerprint.clone())
                             .unwrap_or_else(|| own_fingerprint.clone()),
                     };
-                    if seated != prefix_fingerprint(cfg.seat, &prefix) {
+                    if seated != prefix_fingerprint(cfg.seat, prefix) {
                         let (was, is) = (
                             tool_schemas(&own_prefix.tools_json),
                             tool_schemas(&prefix.tools_json),
@@ -1373,7 +1373,7 @@ impl Harness {
             None => {
                 let transcript_id = format!("{}#t0", cfg.session_id);
                 let session = engine
-                    .open(&transcript_id, &prefix)
+                    .open(&transcript_id, prefix)
                     .map_err(|e| HarnessError::Setup(format!("opening the session: {e}")))?;
                 let mut prefix_id = String::new();
                 if let Some(s) = &store {
@@ -1418,7 +1418,7 @@ impl Harness {
                         // on the record above.
                         s.set_prefix_fingerprint(
                             &cfg.session_id,
-                            &prefix_fingerprint(cfg.seat, &prefix),
+                            &prefix_fingerprint(cfg.seat, prefix),
                         )
                         .map_err(|e| HarnessError::Store(e.to_string()))?;
                     } else if s
@@ -1439,7 +1439,7 @@ impl Harness {
                         // old prompt would report itself stale on the next resume, having just been re-seated.
                         s.set_prefix_fingerprint(
                             &cfg.session_id,
-                            &prefix_fingerprint(cfg.seat, &prefix),
+                            &prefix_fingerprint(cfg.seat, prefix),
                         )
                         .map_err(|e| HarnessError::Store(e.to_string()))?;
                         notes.push(format!(

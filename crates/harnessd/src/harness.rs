@@ -156,10 +156,6 @@ fn workspace_gone(workspace: &std::path::Path) -> String {
     )
 }
 
-/// A monitor firing, as the sentence the model is given, or `None` when nothing in `fired` is news.
-/// It reports WHY it fired, one line per watch. The model's own `retire` and an owner ending are
-/// recorded but not announced: the first is its act one call ago, the second is the scope going away.
-
 /// One session: the engine, the transcript, the tools, the log and the store.
 pub struct Harness {
     cfg: Config,
