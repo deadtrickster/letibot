@@ -559,6 +559,8 @@ fn lib_rs(name: &str, purpose: &str, hook: &str, kind: &str) -> String {
              \x20`read`, inside the session's workspace.",
         ),
     };
+    // The template sentences wrap, and every wrapped line has to stay inside the `//!` block.
+    let why = why.replace('\n', "\n//! ");
     let module = match kind {
         "condition" => "condition",
         "notice" => "notice",
