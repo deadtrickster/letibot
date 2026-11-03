@@ -2505,12 +2505,6 @@ gap explicit **rather than widening it unilaterally**, which was the right call:
 changes the head protocol. The question for the operator is one line — *does the event
 carry the content, or a handle the head resolves?* — and after that it is code.
 
-## N2 — `Dialect` split, rendering-as-data (T2), and structural eviction (T15) — ✓ T2's split fixed in 8ca0d4b3, test a_spec_can_be_built_entirely_at_runtime — PARTLY LANDED: T15's unit eviction runs before the summary turn; the map and `recall` are still design (`docs/compaction.md` §7).
-
-Both arguments are finished and written down. Neither needs an answer so much as a
-decision to spend the time; each is large enough that starting one is a scheduling
-choice, not a task pickup.
-
 ---
 
 # 3. BLOCKED ON THE OPERATOR — do not start
@@ -5458,91 +5452,6 @@ segments and compaction · W14 EXPLAIN · W15 server track · W16 experiments.
 `crates/tools`, W11 to `tools/src/adjudicate`, W13 to `turn/src/compaction`, so only W1/W2 and
 the docs' own status still wait; `pytest` is genuinely absent (`python3 -m pytest` → `No module
 named pytest`).
-
----
-
----
-
-## T2 — Revise the `Dialect` contract — **SETTLED 2026-11-03, see `TODO-settled.md`**
-
-> The scope this section was handed turned out to be four defects that no longer existed:
-> `parse` takes a decoder, `StopToken` carries its role, the token table is `Cow`, and
-> `ControlRole` has the arg and image entries. Three pins were missing and were added -
-> qwen's stop tokens, the image triplet's roles, and the owned table `Cow` promises - and
-> none of them touched rendering. The settled entry names a test for every row below.
-
-Under the template-driven design, four of the eight defects stop existing or move.
-Re-scored by the T1 experiment:
-
-| # | defect | fate under T1 |
-|---|---|---|
-| 1 | `render_incremental` cannot be pure | **gone** — Jinja has no incremental mode, so there is no boundary state to carry |
-| 3 | no home for the generation prompt | **gone** — it is a template argument |
-| 5 | resolution must key on literal not role | **gone** — rendering no longer asks for roles |
-| 4 | `ControlRole` closed and too small | **moves** to `parse`'s problem |
-| 7 | `ControlTokens` forces `&'static str` | **now mandatory** — a runtime-loaded template makes `&'static` impossible |
-| 2 | `parse(&[u32])` unimplementable | survives, `parse` side |
-| 6 | `stop_tokens()` bare literals | survives, `parse` side |
-| 8 | `ControlRole` has no `Ord` | survives, trivial |
-
-So `Dialect` splits: **rendering becomes data** (template source, control-token set,
-quirks) and **parsing stays code**. The three survivors are all on the parsing side,
-which T1 does not touch.
-
-**One thing gets harder and needs deciding.** The `server-bug-compatible` profile
-cannot be produced by a template-driven renderer without deliberately reintroducing
-minja's bug, and minijinja has no knob for it. My call: **drop it.** Its purpose was
-to prove we understood the template well enough to reproduce minja exactly, which
-earned the `faithful` profile the right to declare divergences. Running the real
-template through a correct engine is stronger evidence than reproducing a wrong one,
-and the INTEROP phase against `/apply-template` still reports how the server differs.
-
-— fixed in 8ca0d4b3 in code, untested: the profile is refused by name
-(`crates/dialect-glm/src/cli.rs:90`) and `faithful` is the only one left; the CLI refusal has no
-test.
-
-1. **`render_incremental(prev_end, new_items)` cannot be a pure function.** GLM needs
-   boundary state — turn open, `<think>` open, previous item a tool result — none of
-   it derivable from a `usize`. Worked around with `GlmDialect::for_conversation`;
-   `new()` panics rather than guessing. The signature must carry history or a state
-   token.
-   — ✓ fixed in 8ca0d4b3, test `render_incremental_agrees_with_render`; the seam now takes
-   the history (`crates/turn/src/renderer.rs:24`) and `for_conversation` is gone.
-2. **`parse(&[u32])` is unimplementable as specified** — no vocab, yet it must return
-   `Content(String)`. Currently takes a caller-supplied `TokenDecoder`.
-   — ✓ fixed in 8ca0d4b3, test `parse_round_trips_reasoning_and_two_tool_calls`
-   (`crates/dialect/src/lib.rs:201`).
-3. **No home for the generation prompt.** Folding `<|assistant|><think>` into
-   `render` breaks the stated invariant for any conversation whose next item is a
-   user message. Currently an inherent `generation_prompt()`.
-   — ✓ fixed in 8ca0d4b3, test `generation_prompt_is_the_head_of_the_next_assistant_turn`.
-4. **`ControlRole` is closed and too small** — no `<arg_key>`, `<arg_value>`,
-   `<sop>`, or the image triplet, all single vocab entries, so all must be `Control`.
-   They currently sit under `TurnEnd` as a "no role" bucket.
-   — ✓ fixed in 8ca0d4b3, test `argument_key_order_is_preserved_through_the_round_trip`;
-   the roles are `ArgKeyOpen`/`ArgKeyClose`/`ArgValueOpen`/`ArgValueClose`, `SequenceStart`
-   and the image triplet (`crates/dialect/src/lib.rs:69-99`).
-5. **Resolution must key on literal, not role.** One role with many literals is the
-   case that bites, and `ControlTokens::get(role)` silently returns whichever comes
-   first. `GLM_TOKENS` is ordered so the canonical entry wins — a convention, not a
-   guarantee.
-   — ✓ fixed in 8ca0d4b3, test `lookup_is_by_literal_and_a_role_may_own_several`
-   (`ControlTokens::by_literal`, `crates/dialect/src/lib.rs:136`).
-6. **`stop_tokens()` returns bare `&'static str`** with no role, so a failure cannot
-   be reported honestly. Correctness argument: a stop token that is silently a
-   *sequence* never fires, and the turn runs to `n_ctx`.
-   — ✓ fixed in 8ca0d4b3, test
-   `a_stop_token_that_is_really_a_sequence_fails_at_startup_and_names_the_boundary`.
-7. **`ControlTokens` as `&'static [ControlToken]`** forces `&'static str` through
-   every error type. Fine while dialects are compile-time constants; impossible for
-   a dialect loaded from a config file or a downloaded template. `Cow<'static, str>`
-   costs nothing today.
-   — ✓ fixed in 8ca0d4b3, test `a_spec_can_be_built_entirely_at_runtime`
-   (`ControlTokens(pub Cow<'static, [ControlToken]>)`, `crates/dialect/src/lib.rs:105`).
-8. **`ControlRole` has no `Ord`**, so deterministic error listings must preserve
-   declaration order rather than sort. Trivial; a derive would do.
-   — ✓ fixed in 8ca0d4b3, test `roles_sort_so_a_listing_can_be_deterministic`
-   (`ControlRole` derives `PartialOrd, Ord`, `crates/dialect/src/lib.rs:68`).
 
 ---
 
