@@ -408,14 +408,23 @@ impl OpenAiProvider {
         // without paying for a second pass over a body that may be megabytes.
         let payload = body.to_string();
         let started = Instant::now();
-        let resp = self
-            .agent
-            .post(&self.url)
-            .header("Authorization", &format!("Bearer {}", self.creds.key))
-            .header("Content-Type", "application/json")
-            .header("Accept", "text/event-stream")
-            .send(payload.as_bytes())
-            .map_err(|e| BackendError::Unreachable(e.to_string()))?;
+        // A signal is not the provider failing: the answer bound makes this wait a timed read,
+        // and a timed read ends with `EINTR` when the daemon's own Ctrl-C arrives. Nothing of the
+        // answer has been read, so ask again rather than report a signal as an unreachable model.
+        let resp = loop {
+            match self
+                .agent
+                .post(&self.url)
+                .header("Authorization", &format!("Bearer {}", self.creds.key))
+                .header("Content-Type", "application/json")
+                .header("Accept", "text/event-stream")
+                .send(payload.as_bytes())
+            {
+                Ok(resp) => break resp,
+                Err(ureq::Error::Io(e)) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(BackendError::Unreachable(e.to_string())),
+            }
+        };
         let status = resp.status().as_u16();
         // The provider's own `Retry-After`, read before the body consumes the response: seconds, and
         // the only form of *when may I come back* a caller may sleep on.
