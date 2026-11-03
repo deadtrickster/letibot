@@ -722,6 +722,7 @@ mod tests {
                 instance: "d-1".into(),
                 resumes: 0,
                 outcome: None,
+                later_answer: None,
                 delivered: false,
                 started_ms: 1,
                 updated_ms: 1,

@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS subagent_run (
     instance    TEXT NOT NULL,
     resumes     INTEGER NOT NULL DEFAULT 0,
     outcome     TEXT,
+    later_answer TEXT,
     delivered   INTEGER NOT NULL DEFAULT 0,
     started_ms  INTEGER NOT NULL,
     updated_ms  INTEGER NOT NULL
@@ -145,7 +146,12 @@ pub struct SubagentRun {
     pub spec_json: String,
     pub instance: String,
     pub resumes: u32,
+    /// What the child's FIRST turn said, kept where every reader that wants `task_result`'s
+    /// original answer has always found it.
     pub outcome: Option<String>,
+    /// **The newest answer of a turn the child ran after that one** - a settlement of its own,
+    /// which a parent's watcher hands over separately. `None` for a child that answered once.
+    pub later_answer: Option<String>,
     pub delivered: bool,
     pub started_ms: u64,
     pub updated_ms: u64,
@@ -158,11 +164,11 @@ impl Store {
         self.exec(
             "INSERT INTO subagent_run
                (child_id, parent_id, state, prompt, spec_json, instance, resumes, outcome,
-                delivered, started_ms, updated_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                later_answer, delivered, started_ms, updated_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
              ON CONFLICT(child_id) DO UPDATE SET
                parent_id = ?2, state = ?3, prompt = ?4, spec_json = ?5, instance = ?6,
-               resumes = ?7, outcome = ?8, delivered = ?9, updated_ms = ?11",
+               resumes = ?7, outcome = ?8, later_answer = ?9, delivered = ?10, updated_ms = ?12",
             params![
                 run.child_id,
                 run.parent_id,
@@ -172,6 +178,7 @@ impl Store {
                 run.instance,
                 run.resumes as i64,
                 run.outcome,
+                run.later_answer,
                 run.delivered as i64,
                 run.started_ms as i64,
                 now_ms(),
@@ -193,6 +200,19 @@ impl Store {
             "UPDATE subagent_run SET state = ?2, outcome = ?3, delivered = 0, updated_ms = ?4
               WHERE child_id = ?1",
             params![child_id, state, outcome, now_ms()],
+        )?;
+        Ok(())
+    }
+
+    /// **A turn the child ran after its first answered `answer`**: the row keeps it beside
+    /// `outcome`, which stays the first answer, and `delivered` goes back to false because nobody
+    /// has been handed this one yet. The newest later turn replaces the one before it; a handle
+    /// with no row is a child this store never recorded, and nothing is written.
+    pub fn settle_subagent_run_again(&self, child_id: &str, answer: &str) -> Result<()> {
+        self.exec(
+            "UPDATE subagent_run SET later_answer = ?2, delivered = 0, updated_ms = ?3
+              WHERE child_id = ?1",
+            params![child_id, answer, now_ms()],
         )?;
         Ok(())
     }
@@ -549,7 +569,8 @@ impl Store {
 }
 
 const SELECT_RUN: &str = "SELECT child_id, parent_id, state, prompt, spec_json, instance, \
-                          resumes, outcome, delivered, started_ms, updated_ms FROM subagent_run";
+                          resumes, outcome, later_answer, delivered, started_ms, updated_ms \
+                          FROM subagent_run";
 
 fn run_of(r: &rusqlite::Row<'_>) -> rusqlite::Result<SubagentRun> {
     Ok(SubagentRun {
@@ -561,9 +582,10 @@ fn run_of(r: &rusqlite::Row<'_>) -> rusqlite::Result<SubagentRun> {
         instance: r.get(5)?,
         resumes: r.get::<_, i64>(6)? as u32,
         outcome: r.get(7)?,
-        delivered: r.get::<_, i64>(8)? != 0,
-        started_ms: r.get::<_, i64>(9)? as u64,
-        updated_ms: r.get::<_, i64>(10)? as u64,
+        later_answer: r.get(8)?,
+        delivered: r.get::<_, i64>(9)? != 0,
+        started_ms: r.get::<_, i64>(10)? as u64,
+        updated_ms: r.get::<_, i64>(11)? as u64,
     })
 }
 
@@ -581,6 +603,7 @@ mod tests {
             instance: "i-1".into(),
             resumes: 0,
             outcome: None,
+            later_answer: None,
             delivered: false,
             started_ms: 1,
             updated_ms: 1,
@@ -813,6 +836,46 @@ mod tests {
         assert_eq!(store.reopen_subagent_run("nobody").unwrap(), None);
     }
 
+    /// **A later turn's answer is kept BESIDE the first one.** `outcome` is what the child's first
+    /// turn said and a reader that wants it must still find it there, so the later answers go in a
+    /// column of their own and the newest one wins.
+    #[test]
+    fn a_later_answer_is_kept_beside_the_first_one() {
+        let store = Store::open_in_memory().unwrap();
+        store.put_subagent_run(&run("s-1-sub-1", "s-1")).unwrap();
+        store
+            .settle_subagent_run("s-1-sub-1", "done", Some("first answer"))
+            .unwrap();
+        store.deliver_subagent_run("s-1-sub-1").unwrap();
+
+        store
+            .settle_subagent_run_again("s-1-sub-1", "second answer")
+            .unwrap();
+        let got = store.subagent_run("s-1-sub-1").unwrap().unwrap();
+        assert_eq!(got.outcome.as_deref(), Some("first answer"));
+        assert_eq!(got.later_answer.as_deref(), Some("second answer"));
+        assert!(
+            !got.delivered,
+            "a settlement written now is one nobody has been handed yet"
+        );
+        assert_eq!(got.state, "done", "the row's state is not this write's");
+
+        // The newest later turn replaces the one before it, and a handle with no row is untouched.
+        store
+            .settle_subagent_run_again("s-1-sub-1", "third answer")
+            .unwrap();
+        assert_eq!(
+            store
+                .subagent_run("s-1-sub-1")
+                .unwrap()
+                .unwrap()
+                .later_answer
+                .as_deref(),
+            Some("third answer")
+        );
+        store.settle_subagent_run_again("nobody", "x").unwrap();
+    }
+
     #[test]
     fn monitors_contexts_and_lives_round_trip() {
         let store = Store::open_in_memory().unwrap();
@@ -884,6 +947,10 @@ mod tests {
             (
                 "interrupt_subagent_run",
                 Box::new(|s| s.interrupt_subagent_run("s-1-sub-2")),
+            ),
+            (
+                "settle_subagent_run_again",
+                Box::new(|s| s.settle_subagent_run_again("s-1-sub-1", "again")),
             ),
             (
                 "deliver_subagent_run",

@@ -13,6 +13,7 @@ fn run(child: &str, parent: &str, state: &str, instance: &str) -> SubagentRun {
         instance: instance.into(),
         resumes: 0,
         outcome: None,
+        later_answer: None,
         delivered: false,
         started_ms: NOW - 60 * MIN,
         updated_ms: NOW - 60 * MIN,

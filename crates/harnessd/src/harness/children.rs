@@ -1614,6 +1614,7 @@ impl HarnessTaskRunner {
             instance: self.registry.instance().to_string(),
             resumes: 0,
             outcome: None,
+            later_answer: None,
             delivered: false,
             started_ms: now,
             updated_ms: now,

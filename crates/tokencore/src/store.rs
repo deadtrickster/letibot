@@ -191,7 +191,7 @@ pub struct ShapelessAdmit {
 /// The schema version: what the FILE holds. [`floor`] says what a reader must know, and the
 /// two are separate on purpose: a migration that only adds leaves the floor alone, and one
 /// that rewrites what an older reader reads declares itself in [`READER_ARMS`].
-pub const SCHEMA_VERSION: i64 = 35;
+pub const SCHEMA_VERSION: i64 = 36;
 
 /// What this row's columns mean. Stamped on every corpus row, because a column can keep its
 /// name and its type while changing what it records, and a trainer that pools two meanings
@@ -1926,6 +1926,22 @@ impl Store {
             // v35: a block of a shared host's ports, held by one session. One new table; a store from
             // before it has no lease.
             self.conn().execute_batch(leases::LEASES_SQL)?;
+        }
+        if from < 36 {
+            // v36: the answer of a turn the child ran AFTER the one that settled it - a settlement
+            // of its own, kept beside `outcome`, which stays the first answer.
+            let has: bool = self
+                .conn()
+                .prepare(
+                    "SELECT 1 FROM pragma_table_info('subagent_run') \
+                     WHERE name = 'later_answer'",
+                )
+                .and_then(|mut st| st.exists([]))
+                .unwrap_or(false);
+            if !has {
+                self.conn()
+                    .execute_batch("ALTER TABLE subagent_run ADD COLUMN later_answer TEXT")?;
+            }
         }
         Ok(())
     }
