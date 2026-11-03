@@ -233,6 +233,22 @@ impl Bridge {
         let mut out = json!({
             "session": session,
             "state": s.word(),
+            // **What answers this session's turns**, as `/models` spells it: read off the last round the
+            // daemon sent. Empty is *not known* - a session that has never run a turn under this head -
+            // and not `local`, which is a model and not a guess.
+            "model": if s.model.is_empty() {
+                Value::Null
+            } else {
+                json!(s.model)
+            },
+            // **The last time the provider itself was in trouble**, in the daemon's own words: the kind,
+            // the reset time it gave, and where the daemon moved the session if it did. `null` is a
+            // session whose provider has not failed since this head attached.
+            "last_trouble": s
+                .last_trouble
+                .as_ref()
+                .map(|t| t.to_json())
+                .unwrap_or(Value::Null),
             // **Where this session's tools run** - `host`, or `host:NAME`, or null when the
             // daemon recorded nothing this build can read. A caller reading a diff or a test
             // result needs it: the same words mean one thing here and another on a machine.
@@ -384,6 +400,30 @@ impl Bridge {
             // head), or `nobody` (no person had to be asked).
             "answer": settled.answer,
             "said": settled.said,
+        }))
+    }
+
+    /// **Move the session's model, at the next turn boundary** - `leticode_model`. The daemon's
+    /// `/models` verb, which is per SESSION and writes the session's own row, so a restart restores it;
+    /// a mid-turn switch takes at the turn's end, which is the daemon's existing rule and not this
+    /// verb's to change.
+    pub fn set_model(&self, session: &str, model: &str) -> Result<Value, String> {
+        let model = model.trim();
+        if model.is_empty() {
+            return Err(
+                "`model` is empty: name what should answer, e.g. `deepseek/deepseek-chat`, or \
+                 `local` for this box's own server"
+                    .into(),
+            );
+        }
+        let h = self.head(session)?;
+        let said = h.set_model(model)?;
+        Ok(json!({
+            "session": session,
+            "model": model,
+            // The daemon's own sentence, which says when it takes: `turns go to … from the next one
+            // on`, or `… when this turn ends`.
+            "said": said,
         }))
     }
 
@@ -607,7 +647,11 @@ pub fn list() -> Value {
         tool("leticode_status",
              "What the session is doing: `running`, `idle`, `asking` or `failed`, the last \
               assistant message, the todos, the last turn's tokens and cost, and which asks \
-              are pending. `placement` says where the session's tools run — `host` for this \
+              are pending. `model` is what answers this session's turns, as `/models` spells it, \
+               and `last_trouble` is the last time the provider itself was stuck — a rate \
+               limit (with the reset instant it gave), an exhausted account, a timeout or a \
+               stall — so a caller can wait it out or move the session instead of guessing. \
+               `placement` says where the session's tools run — `host` for this \
               box, `host:NAME` for another machine, null when the daemon recorded nothing. \
               When that message is the brief's closing report, it also comes \
               back parsed: `report.built`, `report.tested`, `report.could_not`, \
@@ -717,6 +761,22 @@ pub fn list() -> Value {
                  },
                  "required": ["session", "mode"]
              })),
+         tool("leticode_model",
+             "Move a RUNNING session to another model without restarting anything. The switch is the \
+              daemon's own `/models` verb: it is per session, it is written to the session's row so a \
+              restart restores it, and a switch that arrives mid-turn takes effect when the turn ends \
+              - never inside one, because the rest of a half-finished turn belongs to the model that \
+              started it. Works on a session this bridge started and on one it joined, including a \
+              session of a daemon another session started. The answer's `said` is the daemon's own \
+              sentence, which says when the switch takes.",
+             json!({
+                 "type": "object",
+                 "properties": {
+                     "session": { "type": "string", "description": "The session id." },
+                     "model": { "type": "string", "description": "What should answer from now on: a provider name (`deepseek`, `glm`, `grok`), `provider/model`, or `local` for this box's own server. A name this box cannot serve is refused by name and nothing changes." }
+                 },
+                 "required": ["session", "model"]
+             })),
         tool("leticode_stop",
              "Interrupt a running turn, close the session here and detach this bridge from it. \
               Closing it is what settles a PLACEMENT: what a host session committed comes home \
@@ -754,6 +814,7 @@ pub fn names() -> Vec<&'static str> {
         "leticode_events",
         "leticode_transcript",
         "leticode_mode",
+        "leticode_model",
         "leticode_asks",
         "leticode_answer",
         "leticode_diff",
@@ -847,6 +908,11 @@ pub fn call(bridge: &Bridge, name: &str, args: &Value) -> Result<Value, String> 
             let mode = arg_str(args, "mode")?;
             bridge.set_mode(&session, &mode)
         }
+        "leticode_model" => {
+            let session = arg_str(args, "session")?;
+            let model = arg_str(args, "model")?;
+            bridge.set_model(&session, &model)
+        }
         "leticode_asks" => bridge.asks(&arg_str(args, "session")?),
         "leticode_answer" => {
             let session = arg_str(args, "session")?;
@@ -873,7 +939,8 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(2 * 60 * 60);
 
 /// **The wake-up.** Attach, wait for the first thing that needs a person, and say which it was -
 /// the exit code is the notification. **The head this verb attaches is a WATCHER** (B6), so a
-/// session never waits on a card nobody could answer. Codes: `0` ended, `10` ask, `20` failed.
+/// session never waits on a card nobody could answer. Codes: `0` ended, `10` ask, `20` failed,
+/// `30` the deadline passed, `40` the provider is in trouble (rate limit, quota, timeout, stall).
 pub fn wait(worktree: &str, session: &str, deadline: Instant) -> (i32, String) {
     let d = match daemon::resolve(Path::new(worktree)) {
         Ok(d) => d,
@@ -887,6 +954,9 @@ pub fn wait(worktree: &str, session: &str, deadline: Instant) -> (i32, String) {
         Attention::TurnEnded { message } => (0, message),
         Attention::Ask(ask) => (10, ask.to_json().to_string()),
         Attention::Failed { why } => (20, why),
+        // The typed event itself, so a caller's next move - sleep until `reset_ms`, or switch the
+        // session's model - needs no second call to ask what happened.
+        Attention::Trouble(t) => (40, t.to_json().to_string()),
         Attention::Timeout => (30, String::new()),
     }
 }
@@ -895,14 +965,14 @@ pub fn wait(worktree: &str, session: &str, deadline: Instant) -> (i32, String) {
 mod tests {
     use super::*;
 
-    /// **Twelve tools, each with a schema and a required list** - the count and the names the
+    /// **Thirteen tools, each with a schema and a required list** - the count and the names the
     /// design's table fixes. A tool added to `tools/list` and forgotten in `call` (or the other
     /// way round) is the defect this pairs against.
     #[test]
-    fn the_twelve_tools_are_listed_with_schemas() {
+    fn the_thirteen_tools_are_listed_with_schemas() {
         let listed = list();
         let tools = listed["tools"].as_array().expect("tools");
-        assert_eq!(tools.len(), 12, "{listed}");
+        assert_eq!(tools.len(), 13, "{listed}");
         let mut named: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
         named.sort_unstable();
         let mut want = names();

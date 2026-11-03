@@ -207,6 +207,9 @@ pub struct Entry {
     pub text: String,
     /// How long a job ran, when the ending carried a duration.
     pub ms: Option<u64>,
+    /// When a provider said its limit lifts, Unix millis - the one field of a `provider` entry a
+    /// caller can act on without parsing the sentence beside it.
+    pub reset_ms: Option<u64>,
 }
 
 impl Entry {
@@ -219,6 +222,7 @@ impl Entry {
             code: String::new(),
             text: String::new(),
             ms: None,
+            reset_ms: None,
         }
     }
 
@@ -242,6 +246,11 @@ impl Entry {
         self
     }
 
+    fn lifting_at(mut self, at: u64) -> Entry {
+        self.reset_ms = Some(at);
+        self
+    }
+
     /// The entry as a tool answer: the fields that are set, and none that are not, because
     /// a ring of five hundred entries with four empty keys each is a payload nobody reads.
     pub fn to_json(&self) -> Value {
@@ -260,6 +269,9 @@ impl Entry {
         }
         if let Some(ms) = self.ms {
             out["ms"] = json!(ms);
+        }
+        if let Some(at) = self.reset_ms {
+            out["reset_ms"] = json!(at);
         }
         out
     }
@@ -497,6 +509,60 @@ pub struct State {
     /// How many such answers have landed, so a caller can tell the one it is waiting for from
     /// the one it was already holding when it asked.
     pub slashes: u64,
+    /// **What answers this session's turns**, as `/models` spells it: the model the last round was
+    /// sent to. Empty until a turn has run under this head, which is *not known*, not *local*.
+    pub model: String,
+    /// **The last time the provider itself was in trouble**, as the daemon's typed event said it.
+    pub last_trouble: Option<Trouble>,
+    /// How many such events have landed since this head attached - `wait`'s baseline, so a wait is
+    /// answered by the trouble it saw rather than by one that was already true.
+    pub troubles: u64,
+}
+
+/// The word a provider trouble is filed under - this file's closed vocabulary, so a head that asks
+/// *is the provider stuck* matches four words instead of the daemon's prose. A kind this build does
+/// not know reads as `trouble`, and the raw kind stays in the entry's `code`.
+fn trouble_word(kind: &str) -> &'static str {
+    match kind {
+        "rate_limit" => "rate_limit",
+        "quota" => "quota",
+        "timeout" => "timeout",
+        "stall" => "stall",
+        _ => "trouble",
+    }
+}
+
+/// **A provider's trouble, kept whole**: the free fields of the daemon's typed event, so
+/// `leticode_status` can answer *what happened and when does it lift* without re-reading a ring.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Trouble {
+    /// `rate_limit`, `quota`, `timeout`, `stall`, or a word this build does not know.
+    pub kind: String,
+    /// What answers the session, as `/models` spells it.
+    pub model: String,
+    /// The provider's own words, one line.
+    pub detail: String,
+    /// Unix millis the provider said its limit lifts, when it said.
+    pub reset_ms: Option<u64>,
+    /// How many of this kind in a row, this one counted.
+    pub count: u32,
+    /// Where the daemon's own fallback policy moved the session, when it did.
+    pub switched_to: Option<String>,
+}
+
+impl Trouble {
+    /// The shape `leticode_status` answers with: every field, and `null` where the daemon said nothing,
+    /// so a caller can tell `absent` from a field it forgot to read.
+    pub fn to_json(&self) -> Value {
+        json!({
+            "kind": self.kind,
+            "model": self.model,
+            "detail": self.detail,
+            "reset_ms": self.reset_ms,
+            "count": self.count,
+            "switched_to": self.switched_to,
+        })
+    }
 }
 
 /// **One child of this session, as one place or the other reports it** - the `Subagent`
@@ -687,6 +753,14 @@ impl State {
             .as_ref()
             .map(|t| t.turn_id.clone())
             .unwrap_or_default();
+        // **What answers this session, as the daemon last sent a round there.** A head that attaches
+        // between turns has no `TurnStarted` to read it from, and `leticode_status.model` would be
+        // empty on exactly the session an orchestrator picks up cold.
+        if let Some(t) = &snap.turn
+            && !t.model.is_empty()
+        {
+            self.model = t.model.clone();
+        }
         // The live turn's text is the newest assistant words there are; a session with no
         // turn in flight falls back to its last committed answer row.
         self.streaming = snap
@@ -792,10 +866,15 @@ impl State {
 
     fn event(&mut self, env: Envelope) {
         match env.event {
-            SessionEvent::TurnStarted { turn_id, .. } => {
+            SessionEvent::TurnStarted { turn_id, model, .. } => {
                 self.turn = Turn::Running;
                 self.turned = true;
                 self.turn_id = turn_id;
+                // The model this round was actually sent to, which is the only evidence a head has
+                // about where the session's turns go: `leticode_status` answers it.
+                if !model.is_empty() {
+                    self.model = model;
+                }
                 self.streaming.clear();
                 self.events.push(Entry::of("turn", "started"));
             }
@@ -969,6 +1048,47 @@ impl State {
                         .coded(code)
                         .saying(one_line(&detail, LINE)),
                 );
+            }
+            // **The provider itself, typed.** A warning is a sentence and stays one; this is the
+            // same fact in the shape an automation branches on, and the last one is what
+            // `leticode_status` answers with.
+            SessionEvent::ProviderTrouble {
+                kind,
+                model,
+                detail,
+                reset_ms,
+                count,
+                switched_to,
+            } => {
+                if !model.is_empty() {
+                    self.model = model.clone();
+                }
+                let mut entry = Entry::of("provider", trouble_word(&kind))
+                    .named(model.clone())
+                    .saying(one_line(&detail, LINE))
+                    .coded(kind.clone());
+                if let Some(at) = reset_ms {
+                    entry = entry.lifting_at(at);
+                }
+                self.events.push(entry);
+                // Where the daemon's own policy moved the session, said as one more line: a caller
+                // that reacts to a quota by switching would otherwise be blind to it having happened.
+                if let Some(to) = &switched_to {
+                    self.events.push(
+                        Entry::of("model", "switched")
+                            .named(to.clone())
+                            .coded(kind.clone()),
+                    );
+                }
+                self.last_trouble = Some(Trouble {
+                    kind,
+                    model,
+                    detail,
+                    reset_ms,
+                    count,
+                    switched_to,
+                });
+                self.troubles += 1;
             }
             SessionEvent::DecisionRequested {
                 req_id,
@@ -1150,6 +1270,11 @@ pub enum Attention {
     Ask(Box<Ask>),
     /// The turn ended in a failure.
     Failed { why: String },
+    /// **The provider itself is stuck**: a rate limit, a quota, a timeout or a stall, as the daemon
+    /// typed it. Boxed for [`Attention::Ask`]'s reason - every wake-up that is not one pays for it.
+    /// A caller that only wants *something happened* reads the failure code; one that must wait out a
+    /// limit reads `reset_ms`.
+    Trouble(Box<Trouble>),
     /// The caller's deadline passed with nothing to report.
     Timeout,
 }
@@ -1332,6 +1457,10 @@ impl Head {
             // whole `said`; a status copy carries none of it, on the same argument as `peek`.
             slash: None,
             slashes: g.slashes,
+            // Carried, unlike the peek: `leticode_status` answers both, and neither is a payload.
+            model: g.model.clone(),
+            last_trouble: g.last_trouble.clone(),
+            troubles: g.troubles,
         }
     }
 
@@ -1650,6 +1779,10 @@ impl Head {
             Turn::Failed(why) => Some(why.clone()),
             _ => None,
         };
+        // **Only a trouble this wait saw.** A provider that was rate limited ten minutes ago is not
+        // news to a wait that started a minute ago, and answering with it would wake an orchestrator
+        // for a session that has since answered.
+        let troubles = g.troubles;
         // **Whether this wait saw the session working.** Turn and calls only: `delivery` says
         // a turn is OWED, which is not one having run. A job or a child counts too, because
         // its settlement wakes the model and this wait will see the turn it starts.
@@ -1682,6 +1815,14 @@ impl Head {
                 && baseline.as_deref() != Some(why.as_str())
             {
                 return Attention::Failed { why: why.clone() };
+            }
+            // **The provider is stuck, and this wait has not said so yet.** Asked after the failure
+            // because a turn that died of the trouble says why in one sentence a caller can act on;
+            // asked before quiet, because a session told the provider is rate limited is not *done*.
+            if g.troubles > troubles
+                && let Some(t) = &g.last_trouble
+            {
+                return Attention::Trouble(Box::new(t.clone()));
             }
             let now = Instant::now();
             if g.activity.is_quiet() {
