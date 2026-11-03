@@ -1373,6 +1373,7 @@ impl Registry {
         // Nobody to tell, and the publish is what would make the row history.
         if hub.attached_heads() == 0 {
             return;
+        }
         hub.publish(crate::SessionEvent::Warning {
             code: crate::protocol::MODEL_SET.into(),
             detail: moved,
