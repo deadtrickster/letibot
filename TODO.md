@@ -1630,52 +1630,6 @@ it on the compaction path.
 sentence and the banner now print the provider's count and its unit, with the ledger pair in parentheses, and
 `tokens_are_converted()` is what chooses that aside (`crates/harnessd/src/harness/turns.rs:1363`).
 
-## A wake that has not run yet does not survive its transcript being replaced — **NEW 2026-10-04, split out of the stall entry; left: the loss itself — a settlement whose turn has not run is still not re-armed at a fork, since `deliver_settlements_left_undelivered` is reached from `Harness::open` alone**
-
-`j19` and `j56` are the two measured cases: both settled while `s-1791017230755743833#t2` was current,
-neither notice is in `#t2`, and neither is in `#t3` either. The daemon's wake submits the notice as a
-user item and runs a turn; if the turn has not run when the transcript forks, the queued item goes with
-the transcript it was addressed to — and nothing re-arms it against the new one.
-
-**What READING establishes, so the experiment starts where it should** (all cited, no live head needed):
-
-  · **`Harness::wake` is the only road a settlement takes to the model, and it DRAINS before it
-    submits** — `jobwatch::JobWatchers::take_completions` (`:303`) is a `g.drain(..).collect()` from
-    the shared pen, and `harness.rs:4553` is the `submit_item` that turns it into a row. Nothing
-    re-arms the pen, so *drained and not delivered* is a loss with no second chance;
-  · **the pen is per TREE and shared** (`Parts::tree_watch`, R58) — which is exactly why a child's
-    notice keeps arriving while a job's does not: they are two settlements in ONE pen, and the
-    asymmetry the stall entry spent four hours on cannot come from two queues, because there is one;
-  · **a compaction does not rebuild the harness at this level**: `Sessions::compact_if_at_the_wall`
-    (`sessions.rs:1296`) reads `self.open.get(session_id)` and returns — so a pen held by a live
-    `Harness` survives a compaction.
-
-**Which leaves the fork as the suspect and not the compaction**: if the session's harness is
-RE-OPENED across a fork under a fresh `Parts`, the pen goes with the old one and an undrained
-completion is gone — and that is a question about `Harness::open`'s callers, not about the wake.
-**The experiment decides between them**: start a job on an idle session and fork that session before
-the notice's turn runs, then look in the NEW transcript. Absent means the pen is per-open and has to
-be re-armed at the fork; present means the loss is inside the wake itself and the drain above is
-where to look.
-
-**The shape to build:** the queue is the session's and the transcript is the conversation's, so a fork
-has to either flush the queue first or carry it across, and the daemon already knows the moment (it is
-the same `auto_compact`/`compacted` pair the head marks its echoes with — see
-`a_compaction_resolves_the_echoes_it_supersedes`). **The falsifiable form:** start a job on an idle
-session, fork it (a `/compact`) before the notice's turn runs, and look for the notice in the NEW
-transcript. Present means this entry is wrong too, and the answer is somewhere in the wake's own
-eligibility rule — which is where the previous four readings were looking.
-
-**still open?** the query above, grouped by `transcript_id` — a reading that does not do that cannot
-see a fork, and this entry is the fifth measurement to prove it.
-
-**done when** a settlement whose turn has not run yet is either delivered after the fork or reported as
-lost, in both cases with the transcript it belongs to named.
-
-— OPEN: a fork is not an open, so the suspect named above is falsified and the loss is unchanged. A compaction runs on the held harness (`crates/harnessd/src/sessions.rs:3226` → `harness.compact()`), so the pen survives it; the only door that re-queues a settlement nobody was told about is `deliver_settlements_left_undelivered`, called from `Harness::open` alone (`crates/harnessd/src/harness/turns.rs:461`), and a settlement taken for a turn that opened is marked read and skipped there (`:415`). `TODO-settled.md:3459` names the same residue as still a defect.
-
----
-
 ## R13 — cloud GLM, DeepSeek and Grok as turn backends — **SETTLED 2026-09-14 (claude-lab2x1); left: nothing in the tree has run against a real provider — every provider test is a fake server (`crates/provider/tests/fake_provider.rs`), and the entry's `Done when` asks for live tests behind the key — and the providers' prompt caches are still only relied on, `PrefixGuarantee::Asserted` (`crates/backend/src/lib.rs:224`) being the whole claim**
 
 Done: `crates/provider`, `MessagesBackend` in `letibot-backend`,

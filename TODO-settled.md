@@ -6814,3 +6814,76 @@ What is left is an ordering fact rather than a gap: the startup banner is printe
 turn arms a wake (`crates/harnessd/src/cli.rs:1708`), so the line a reader sees at start is `Unarmed`
 whatever it will become, and the live view asked for mid-session (`crates/harnessd/src/facts.rs`,
 the model's own `harness_view`) carries the state as it happened.
+## A wake that has not run yet does not survive its transcript being replaced — **CLOSED on branch `wake-fork-rearm`, filed 2026-10-04, split out of the stall entry; a fork is a second door into the open's own recovery, so a settlement nobody was told is re-armed into the transcript the fork opened**
+
+`j19` and `j56` are the two measured cases: both settled while `s-1791017230755743833#t2` was current,
+neither notice is in `#t2`, and neither is in `#t3` either. The daemon's wake submits the notice as a
+user item and runs a turn; if the turn has not run when the transcript forks, the queued item goes with
+the transcript it was addressed to — and nothing re-arms it against the new one.
+
+**What READING establishes, so the experiment starts where it should** (all cited, no live head needed):
+
+  · **`Harness::wake` is the only road a settlement takes to the model, and it DRAINS before it
+    submits** — `jobwatch::JobWatchers::take_completions` (`:303`) is a `g.drain(..).collect()` from
+    the shared pen, and `harness.rs:4553` is the `submit_item` that turns it into a row. Nothing
+    re-arms the pen, so *drained and not delivered* is a loss with no second chance;
+  · **the pen is per TREE and shared** (`Parts::tree_watch`, R58) — which is exactly why a child's
+    notice keeps arriving while a job's does not: they are two settlements in ONE pen, and the
+    asymmetry the stall entry spent four hours on cannot come from two queues, because there is one;
+  · **a compaction does not rebuild the harness at this level**: `Sessions::compact_if_at_the_wall`
+    (`sessions.rs:1296`) reads `self.open.get(session_id)` and returns — so a pen held by a live
+    `Harness` survives a compaction.
+
+**Which leaves the fork as the suspect and not the compaction**: if the session's harness is
+RE-OPENED across a fork under a fresh `Parts`, the pen goes with the old one and an undrained
+completion is gone — and that is a question about `Harness::open`'s callers, not about the wake.
+**The experiment decides between them**: start a job on an idle session and fork that session before
+the notice's turn runs, then look in the NEW transcript. Absent means the pen is per-open and has to
+be re-armed at the fork; present means the loss is inside the wake itself and the drain above is
+where to look.
+
+**The shape to build:** the queue is the session's and the transcript is the conversation's, so a fork
+has to either flush the queue first or carry it across, and the daemon already knows the moment (it is
+the same `auto_compact`/`compacted` pair the head marks its echoes with — see
+`a_compaction_resolves_the_echoes_it_supersedes`). **The falsifiable form:** start a job on an idle
+session, fork it (a `/compact`) before the notice's turn runs, and look for the notice in the NEW
+transcript. Present means this entry is wrong too, and the answer is somewhere in the wake's own
+eligibility rule — which is where the previous four readings were looking.
+
+**still open?** the query above, grouped by `transcript_id` — a reading that does not do that cannot
+see a fork, and this entry is the fifth measurement to prove it.
+
+**done when** a settlement whose turn has not run yet is either delivered after the fork or reported as
+lost, in both cases with the transcript it belongs to named.
+
+— OPEN: a fork is not an open, so the suspect named above is falsified and the loss is unchanged. A compaction runs on the held harness (`crates/harnessd/src/sessions.rs:3226` → `harness.compact()`), so the pen survives it; the only door that re-queues a settlement nobody was told about is `deliver_settlements_left_undelivered`, called from `Harness::open` alone (`crates/harnessd/src/harness/turns.rs:461`), and a settlement taken for a turn that opened is marked read and skipped there (`:415`). `TODO-settled.md:3459` names the same residue as still a defect.
+
+**Landed on this branch: the fork is now the second door into that recovery, and it is the door the
+`done when` asked for.** `Harness::fork_onto` — the one body under `/compact`, a wall compaction, a
+`/reseat`, a `/clear` and a `reingest` — re-arms after the swap, so what the store has as
+`delivered = 0` is queued into the transcript the fork just opened and said there by the next wake
+(`crates/harnessd/src/harness/wall.rs`, `crates/harnessd/src/harness/turns.rs`).
+
+- **Exactly once, and the pen is the guard.** `JobWatchers::queue_unless_owed` refuses a handle the
+  queue already holds, the held batch holds, or the last turn was told, so the fork cannot double a
+  settlement the queue still owes; the open's own door goes through the same guard, which makes it
+  idempotent too. Three tests in `crates/harnessd/tests/fork_rearms_settlements.rs`: a settlement the
+  store still owes is said once into the new transcript
+  (`a_settlement_the_store_still_owes_is_said_after_the_fork`), one the queue owes is not said twice
+  (`a_settlement_the_queue_owes_is_not_said_twice_across_a_fork`), and two forks in a row still owe
+  one notice (`a_second_fork_does_not_re_arm_what_the_first_did`). All three were red before the
+  change: the first counted 0 notices, the other two count 2 with the guard removed.
+- **The fork rings**, because nothing else rings for a row that has already settled: a fork that
+  re-armed something calls `Bell::ring_wake`, so the turn that says the settlement comes after this
+  one rather than at the next unrelated wake. The first test asserts the ring itself
+  (`Work::Woken`), not just the notice.
+- **The transcript is named**, as the `done when` asks: the re-arm line on the session's log says
+  `s-… · N settlement(s) nobody was told about are said in s-…#t3`, and the row lands in that
+  transcript, so `transcript_item` grouped by `transcript_id` — the query this entry spent five
+  readings learning to ask — finds it where the model read it.
+
+**The boundary, deliberately**: a settlement already marked delivered is not re-armed. That is not
+this entry's subject — a settlement whose turn has NOT run is the one the store still has as nobody's
+news — and re-saying history is what a `/clear` explicitly refuses ("nothing said before this point
+is carried") and what a compaction already carries, in its summary and its verbatim tail.
+
