@@ -9,3 +9,7 @@ The 3 s window opened 500 ms after `World::start()`, and a daemon's opening is a
 The settle's line has to be a tenth of the window's. `settle_budget` (`crates/bridge/tests/support/cpu.rs`) is `SPAN / 100`, 10 ms of CPU in a second, so the most a stretched opening can leak into a 3 s window is 30 ms. Two weaker lines were measured failing: 10% of a core over 250 ms slices let a 4 ms lull end the settle and left 144 ms in the window, and 2% over two quiet slices let a bursty tail through and left 68 ms.
 
 `crates/bridge/tests/idle_clock.rs` tests the instrument: the two readings agree, a child burning a core beside this process does not move the reading, the settle waits out a burn, and the ceiling fires on a process that never goes quiet.
+
+## The count came from the print, not from the test
+
+The summary line at the end of `no_spin` printed six spends and then `(settled …)` - the SEVENTH window's spend, `assert_idle`'s return, under a name that reads as a settle's duration - and the `WINDOW` doc inherited "six windows are 18 s" from that line while the test opened seven. A count kept beside a list drifts; the line now prints one array and `spends.len()`, so the number is the list's own length.
