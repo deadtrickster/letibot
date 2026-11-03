@@ -437,7 +437,10 @@ fn review_row(r: &Review, feed: &Feed, show_repo: bool, picked: bool) -> Out {
     if !r.owner.is_empty() && !r.owner_is_serving {
         facts.push(Cell::role(format!("served by {}", r.owner), Role::Faint));
     }
-    facts.push(Cell::role(format!("for {}", age(r.in_state_ms)), Role::Faint));
+    facts.push(Cell::role(
+        format!("for {}", age(r.in_state_ms)),
+        Role::Faint,
+    ));
     if show_repo {
         facts.push(Cell::role(format!("in {}", r.repository), Role::Faint));
     }
@@ -478,7 +481,10 @@ fn merge_row(m: &Merge, feed: &Feed, show_repo: bool, picked: bool) -> Out {
     if !m.owner.is_empty() && !m.owner_is_serving {
         facts.push(Cell::role(format!("served by {}", m.owner), Role::Faint));
     }
-    facts.push(Cell::role(format!("for {}", age(m.in_state_ms)), Role::Faint));
+    facts.push(Cell::role(
+        format!("for {}", age(m.in_state_ms)),
+        Role::Faint,
+    ));
     if show_repo {
         facts.push(Cell::role(format!("in {}", m.repository), Role::Faint));
     }
@@ -508,7 +514,11 @@ fn merge_row(m: &Merge, feed: &Feed, show_repo: bool, picked: bool) -> Out {
                     .chars()
                     .take(10)
                     .collect();
-                format!("the gate is running on {} for {}", short, minutes(m.in_state_ms))
+                format!(
+                    "the gate is running on {} for {}",
+                    short,
+                    minutes(m.in_state_ms)
+                )
             }
             None => reason_of(m.fixes.as_deref(), None, &[], &m.evidence),
         },
@@ -551,7 +561,8 @@ fn move_line(m: &Move) -> String {
             .unwrap_or("(new)".into()),
         state_words(&m.to, ""),
         age(m.ago_ms),
-        m.by.trim_start_matches("reviewer:").trim_end_matches(":operator"),
+        m.by.trim_start_matches("reviewer:")
+            .trim_end_matches(":operator"),
         one_line(&m.why)
     )
 }
@@ -1066,11 +1077,7 @@ fn gate_detail(g: &RunningGate, waiting: bool, feed: &Feed) -> Vec<String> {
     } else if g.still_ms < 1_000 {
         format!("the tail moved just now{}", written(g.bytes))
     } else {
-        format!(
-            "the tail moved {} ago{}",
-            age(g.still_ms),
-            written(g.bytes)
-        )
+        format!("the tail moved {} ago{}", age(g.still_ms), written(g.bytes))
     };
     l.push(field("moving", &moving));
     if g.tail.is_empty() {

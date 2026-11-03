@@ -192,10 +192,7 @@ fn live_rows_fill_the_frame_and_history_is_one_folded_line() {
         .iter()
         .map(|p| p["title"].as_str().unwrap_or_default())
         .collect();
-    assert!(
-        titles.contains(&"2 in review · 1 to land"),
-        "{titles:?}"
-    );
+    assert!(titles.contains(&"2 in review · 1 to land"), "{titles:?}");
 }
 
 /// **The strip follows the view**: `tab` puts the merge queue first, so the header and the rows
@@ -211,10 +208,7 @@ fn the_strip_names_the_drawn_view_first() {
         .iter()
         .map(|p| p["title"].as_str().unwrap_or_default())
         .collect();
-    assert!(
-        titles.contains(&"1 to land · 2 in review"),
-        "{titles:?}"
-    );
+    assert!(titles.contains(&"1 to land · 2 in review"), "{titles:?}");
 }
 
 /// **The empty sentence belongs to the view** - the two queues arrive differently, and one
@@ -276,10 +270,7 @@ fn a_row_says_the_verb_that_would_move_it_and_why_when_none_would() {
     let facts = facts_of(live);
     assert_eq!(
         facts,
-        vec![
-            "for 4m",
-            "you can approve, veto or withdraw it"
-        ],
+        vec!["for 4m", "you can approve, veto or withdraw it"],
         "the actions that WOULD move it, and `restart` left out because it would not"
     );
 
@@ -463,7 +454,10 @@ fn a_healthy_lease_names_its_owner_and_its_heartbeat() {
         lease["value"], "its last heartbeat",
         "the holder is on the label, so the value is the one fact left"
     );
-    assert_eq!(lease["tail"], "4s ago", "and how long since it last said so");
+    assert_eq!(
+        lease["tail"], "4s ago",
+        "and how long since it last said so"
+    );
     // **And no stale line** - the legend names the word, so the chrome is what is asked.
     assert!(
         chrome_line(&view, "nobody is serving letibot").is_none(),
@@ -695,7 +689,8 @@ fn a_gating_target_says_its_gate_is_running() {
     let mut feed = a_queue();
     feed["targets"] = json!([a_target("gating")]);
     let view = view_of(&feed, &[]);
-    let line = chrome_line(&view, "main in letibot is being gated").expect("the gating target's line");
+    let line =
+        chrome_line(&view, "main in letibot is being gated").expect("the gating target's line");
     assert_eq!(line["value"], "the gate is running on fedcba9876 for 4m");
     assert_eq!(line["role"], "pending");
 }
@@ -732,8 +727,7 @@ fn a_gating_landing_between_steps_says_the_gate_is_on_it() {
     assert!(
         under
             .iter()
-            .any(|u| u.as_str().unwrap_or_default()
-                == "the gate is running on fedcba9876 for 2m"),
+            .any(|u| u.as_str().unwrap_or_default() == "the gate is running on fedcba9876 for 2m"),
         "{under:?}"
     );
 }
@@ -791,8 +785,14 @@ fn the_picked_row_carries_its_last_three_moves() {
     let under = under_of(&feed, "r-live-1");
     let moves: Vec<&String> = under.iter().filter(|u| u.contains("→")).collect();
     assert_eq!(moves.len(), 3, "the last three, not all five: {under:?}");
-    assert!(moves[0].contains("waiting for a reviewer → a reviewer is reading it"), "{under:?}");
-    assert!(moves[2].contains("stopped: a person has to act → a reviewer is reading it"), "{under:?}");
+    assert!(
+        moves[0].contains("waiting for a reviewer → a reviewer is reading it"),
+        "{under:?}"
+    );
+    assert!(
+        moves[2].contains("stopped: a person has to act → a reviewer is reading it"),
+        "{under:?}"
+    );
     assert!(moves[2].contains("2m ago"), "{under:?}");
     assert!(moves.iter().all(|m| !m.contains("r-live-2")), "{under:?}");
 }
