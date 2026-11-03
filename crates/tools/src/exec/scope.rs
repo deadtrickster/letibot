@@ -365,17 +365,11 @@ impl MemoryUse {
     }
 
     /// Whether this run came within a tenth of its cap: the one case besides a kill in which a
-    /// result says anything about memory. A run that nearly died is worth saying, because the
-    /// next one may not.
+    /// result says more than the peak. A run that nearly died is worth saying, because the next
+    /// one may not.
     pub fn near_its_cap(&self) -> bool {
         self.cap
             .is_some_and(|cap| cap > 0 && self.peak.saturating_mul(10) >= cap.saturating_mul(9))
-    }
-
-    /// Whether a model-facing result says anything about this run's memory at all: killed at its
-    /// cap, or within a tenth of it. Everything else is silent.
-    pub fn worth_saying(&self) -> bool {
-        self.killed_at_cap() || self.near_its_cap()
     }
 
     /// The clause a tool result carries: `peak 37 MiB of a 64 MiB cap`.
@@ -1490,27 +1484,19 @@ pub const EXIT_NOT_SCOPED: i32 = 125;
 mod tests {
     use super::*;
 
-    /// Memory is said only near the cap or at a kill.
+    /// Memory is said on every settled run, and a kill or a run near its cap is said as such.
     #[test]
-    fn memory_is_worth_saying_only_near_the_cap_or_at_a_kill() {
+    fn memory_is_said_at_a_kill_and_near_the_cap_and_otherwise_as_a_peak() {
         let at = |peak: u64, oom_kills: u64| MemoryUse {
             cap: Some(100 << 20),
             peak,
             oom_kills,
         };
-        assert!(!at(50 << 20, 0).worth_saying(), "half the cap is silent");
-        assert!(!at(89 << 20, 0).worth_saying(), "89% is silent");
-        assert!(
-            at(90 << 20, 0).worth_saying(),
-            "within a tenth of it is said"
-        );
-        assert!(at(10 << 20, 1).worth_saying(), "a kill is always said");
-        let uncapped = MemoryUse {
-            cap: None,
-            peak: 1 << 30,
-            oom_kills: 0,
-        };
-        assert!(!uncapped.worth_saying(), "no cap, nothing to be near");
+        assert!(!at(50 << 20, 0).killed_at_cap());
+        assert!(!at(89 << 20, 0).near_its_cap(), "89% is not near the cap");
+        assert!(at(90 << 20, 0).near_its_cap(), "within a tenth of it is");
+        assert!(at(10 << 20, 1).killed_at_cap(), "a kill is always said");
+        assert_eq!(at(50 << 20, 0).clause(), "peak 50 MiB of a 100 MiB cap");
     }
 
     /// `memory.events` as the kernel writes it, read for `oom_kill` and nothing else - not

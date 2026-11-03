@@ -74,8 +74,9 @@ fn default_sentence(p: &MemoryPolicy) -> String {
     )
 }
 
-/// The note a model call's result carries about memory, only when there is one to carry: said when
-/// the run was killed at its cap or came within a tenth of it, or when a cap could not be set.
+/// The note a model call's result carries about memory. Every settled run reports its peak - the
+/// model chose the cap and a number it never sees is one it can only guess at next time - and a
+/// kill, a run near its cap or a cap that could not be set says what the number means.
 fn memory_note(job: &crate::exec::jobs::Job) -> Option<String> {
     use crate::exec::MemoryCap;
     let used = job.memory_used();
@@ -94,6 +95,7 @@ fn memory_note(job: &crate::exec::jobs::Job) -> Option<String> {
              it needs more.",
             u.clause()
         )),
+        (_, Some(u)) => Some(format!("memory: {}.", u.clause())),
         _ => None,
     }
 }
@@ -1380,6 +1382,53 @@ mod tests {
         assert!(
             arg.contains("runs under 4 GiB — `[memory] default` in this project's leticode.toml"),
             "{arg}"
+        );
+    }
+
+    /// A job as the note sees it: a cap, and what the kernel counted for it once it settled.
+    fn settled(cap: crate::exec::MemoryCap, used: Option<(u64, u64)>) -> crate::exec::jobs::Job {
+        use crate::exec::jobs::{Job, JobId, Lifetime, Stdin};
+        use crate::exec::scope::{MemoryUse, ScopeId, ScopeKind};
+        let scope = |name: &str| ScopeId {
+            kind: ScopeKind::Turn,
+            name: name.into(),
+            path: std::path::PathBuf::from("/nonexistent"),
+        };
+        let job = Job::new(
+            JobId::next(),
+            "cargo build".into(),
+            None,
+            Lifetime {
+                scope: scope("turn"),
+                owner: scope("session"),
+                background: None,
+            },
+            "/w".into(),
+            0,
+            4096,
+            Stdin::none(),
+        )
+        .with_memory_cap(cap);
+        if let Some((peak, oom_kills)) = used {
+            job.record_memory(MemoryUse {
+                cap: Some(64 << 20),
+                peak,
+                oom_kills,
+            });
+        }
+        job
+    }
+
+    /// The peak reaches the model on a call that ended nowhere near its cap: it chose the cap, and
+    /// the next ask is a number only if the last one came back.
+    #[test]
+    fn a_finished_call_reports_its_peak() {
+        use crate::exec::MemoryCap;
+        let job = settled(MemoryCap::Capped(64 << 20), Some((12 << 20, 0)));
+        assert_eq!(
+            memory_note(&job).as_deref(),
+            Some("memory: peak 12 MiB of a 64 MiB cap."),
+            "an ordinary call says what it cost"
         );
     }
 
