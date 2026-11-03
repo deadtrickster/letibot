@@ -194,8 +194,18 @@ pub fn project_roots(workspace: &Path) -> Vec<PathBuf> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexRow {
     pub name: String,
+    /// The shelf's own id, when this row came from one. `skill list` prints it first, so it is what
+    /// an operator copies into `[skills] pin`, and [`SkillShelf::load`] takes it.
+    pub id: Option<String>,
     pub description: String,
     pub source: SkillSource,
+}
+
+impl IndexRow {
+    /// Whether this row is the one `pin` names: by its name, or by the id the listing leads with.
+    pub fn answers_to(&self, pin: &str) -> bool {
+        self.name == pin || self.id.as_deref() == Some(pin)
+    }
 }
 
 /// One entry on a shelf: enough to list, not the body.
@@ -271,7 +281,7 @@ impl SkillRegistry {
         let (rows, _) = self.index_rows();
         self.pins
             .iter()
-            .filter(|pin| !rows.iter().any(|r| &r.name == *pin))
+            .filter(|pin| !rows.iter().any(|r| r.answers_to(pin)))
             .map(String::as_str)
             .collect()
     }
@@ -465,6 +475,7 @@ impl SkillRegistry {
             .iter()
             .map(|s| IndexRow {
                 name: s.name.clone(),
+                id: None,
                 description: s.description.clone(),
                 source: s.source.clone(),
             })
@@ -475,6 +486,7 @@ impl SkillRegistry {
             Some(shelf) => match shelf.list() {
                 Ok(entries) => rows.extend(entries.into_iter().map(|e| IndexRow {
                     name: e.title,
+                    id: Some(e.id),
                     description: format!("({})", e.visibility),
                     source: SkillSource::Fabric,
                 })),
@@ -506,7 +518,7 @@ impl SkillRegistry {
         }
         let listed: Vec<&IndexRow> = rows
             .iter()
-            .filter(|r| self.pins.contains(&r.name))
+            .filter(|r| self.pins.iter().any(|pin| r.answers_to(pin)))
             .collect();
         let mut out = format!(
             "### skills — {} pinned of {}; `skill` loads a body, `skill list` every one, `skill \
@@ -1307,6 +1319,36 @@ mod tests {
         );
         let e = r.load_any("nope").unwrap_err();
         assert!(e.contains("nothing on the shelf is called `nope`"), "{e}");
+    }
+
+    /// **A pin is spelled the way `skill list` prints it.** A shelf row is listed by its id, and the
+    /// check compared the pin with the title: the operator's own spelling was reported as naming
+    /// nothing on this box and was not listed.
+    #[test]
+    fn a_pin_spelled_the_way_skill_list_prints_it_is_known() {
+        let r = registry().with_pins(["sk-42"]);
+        r.set_shelf(Arc::new(FakeShelf(Ok(vec![ShelfEntry {
+            id: "sk-42".into(),
+            title: "Beamer Slides".into(),
+            visibility: "public".into(),
+        }]))));
+        assert!(
+            r.list().contains("- sk-42  [public]  Beamer Slides"),
+            "the listing prints the id first: {}",
+            r.list()
+        );
+        assert!(
+            r.unknown_pins().is_empty(),
+            "the pin names the skill `skill list` shows: {:?}",
+            r.unknown_pins()
+        );
+        let index = r
+            .index(&letibot_tokencore::Vocab::bytes([], []))
+            .expect("an index");
+        assert!(
+            index.contains("Beamer Slides"),
+            "and the pinned row is listed in the prompt: {index}"
+        );
     }
 
     #[test]
