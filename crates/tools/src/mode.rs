@@ -312,9 +312,8 @@ impl Mode {
         summary: "writes go through without asking, and so does a command inside a \
                   confinement letibot has measured — one that crosses nothing and stays in \
                   the checkout. What still asks is what crosses: the network, a path \
-                  outside the project, the always-ask list — and, where no boundary was \
-                  measured, any command that runs the project's own code, every time, if \
-                  `[permissions] ask_unconfined_code` is on (off by default).",
+                  outside the project, the always-ask list — and, where nothing measured a \
+                  boundary, every command that runs the project's own code, every time.",
     };
 
     /// The model adjudicates within `MayApprove`. Selectable and it refuses, which is the

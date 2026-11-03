@@ -52,10 +52,13 @@ fn the_text_the_model_reads_names_no_internal_document_or_review_item() {
         }
     }
     // And the actionable half survives, or this would pass on texts that had stopped saying it.
+    let summary = crate::mode::Mode::WRITES_ALLOWED.summary;
     assert!(
-        crate::mode::Mode::WRITES_ALLOWED
-            .summary
-            .contains("ask_unconfined_code"),
-        "the mode's summary must still name the setting it turns on"
+        summary.contains("runs the project's own code"),
+        "the mode's summary must still say what a host with no boundary asks about"
+    );
+    assert!(
+        !summary.contains("ask_unconfined_code"),
+        "and it must not name a setting a file turns on: there is none — {summary}"
     );
 }
