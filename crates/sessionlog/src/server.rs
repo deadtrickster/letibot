@@ -23,6 +23,18 @@ use crate::protocol::{
 use crate::registry::{Registry, SessionWiring};
 use crate::wire::{FrameReader, FrameWriter, WireError};
 
+/// Answer a `Settings` request: `rows` is called UNDER the lock that writes the frame. The rows have
+/// two writers - the pump draining a `set_settings` push and this answer - so a read taken outside
+/// the lock can be written after a newer row set and leave the head on the old rows until the next
+/// change, with nothing said.
+fn answer_settings<W: std::io::Write, F: FnOnce() -> Vec<crate::protocol::SettingRow>>(
+    writer: &Mutex<FrameWriter<W>>,
+    rows: F,
+) -> Result<(), WireError> {
+    let mut w = writer.lock().unwrap();
+    w.write(&ServerFrame::Settings { rows: rows() })
+}
+
 /// The default socket path. Falls back to `/tmp` when `XDG_RUNTIME_DIR` is unset, which
 /// is the case in a bare test environment.
 pub fn default_socket_path() -> PathBuf {
@@ -241,6 +253,29 @@ fn no_password_sentence(heads: usize) -> String {
         format!(
             "a head was attached and nothing was answered before the deadline ({heads} attached)"
         )
+    }
+}
+
+#[cfg(test)]
+mod settings_answer_tests {
+    use super::*;
+
+    /// **The rows are read under the lock that writes them.** Two writers reach one socket - the
+    /// pump draining a `set_settings` push, and this answer - so a read taken outside the lock can
+    /// be written AFTER a newer row set: the head applies the old rows last and draws them until
+    /// the next change. The seam is the closure, so the order is assertable without a race.
+    #[test]
+    fn a_settings_answer_reads_its_rows_under_the_lock_that_writes_them() {
+        let writer = Mutex::new(FrameWriter::new(Vec::<u8>::new()));
+        let read = || {
+            assert!(
+                writer.try_lock().is_err(),
+                "the rows were read with the writer unlocked, so a pushed frame could land \
+                 between the read and the write and the head would keep the old rows"
+            );
+            Vec::new()
+        };
+        answer_settings(&writer, read).expect("the answer is written");
     }
 }
 
@@ -1255,10 +1290,8 @@ pub fn serve_conn_rooted(
                 writer.lock().unwrap().write(&f)?;
             }
             Ok(ClientFrame::Settings) => {
-                let f = ServerFrame::Settings {
-                    rows: registry.settings(&seat.hub.session_id()),
-                };
-                writer.lock().unwrap().write(&f)?;
+                let hub = &seat.hub;
+                answer_settings(&writer, || registry.settings(&hub.session_id()))?;
             }
             Ok(ClientFrame::Peek { session_id, shape }) => {
                 // A read, not a move: the seat, its acks and its live events are untouched, and the
