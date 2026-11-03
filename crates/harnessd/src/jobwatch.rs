@@ -602,7 +602,7 @@ impl JobWatchers {
         let (above, who) = up.route();
         above.push(c);
         if let Some(bell) = &self.bell {
-            bell.ring_wake(who);
+            bell.ring_settlement_wake(who);
         }
         true
     }
@@ -723,7 +723,7 @@ impl JobWatchers {
         let Some(bell) = &self.bell else { return };
         match how {
             TurnEnd::Interrupted | TurnEnd::Failed => bell.drop_wakes(&self.me),
-            TurnEnd::Done if self.held_count() > 0 => bell.ring_wake(&self.me),
+            TurnEnd::Done if self.held_count() > 0 => bell.ring_settlement_wake(&self.me),
             TurnEnd::Done => {}
         }
     }
@@ -962,7 +962,7 @@ impl JobWatchers {
         // the owner before the hand-over was possible; without this ring a settlement arriving
         // just after would sit in the parent's queue until the parent woke for something else.
         if let Some(bell) = &self.bell {
-            bell.ring_wake(who);
+            bell.ring_settlement_wake(who);
         }
     }
 
@@ -1124,7 +1124,7 @@ impl SettlementQueue {
     /// a ring is a promise that somebody can be woken by it.
     fn ring(&self, session: &str) {
         if let Some(bell) = &self.bell {
-            bell.ring_wake(session);
+            bell.ring_settlement_wake(session);
         }
     }
 }

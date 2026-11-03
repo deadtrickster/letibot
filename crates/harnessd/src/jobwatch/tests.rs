@@ -1421,3 +1421,30 @@ fn a_job_of_jobs_settles_through_the_jobs_channel_and_carries_its_table() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// **A monitor's firing survives the drop a stopped turn makes.** The drop takes back the wake a
+/// SETTLEMENT rang, because the settlement is still queued; a firing has no queue behind it, so a
+/// wake rung for one taken back leaves the court asleep on a firing nobody reads.
+#[test]
+fn a_stopped_turn_keeps_the_wake_a_monitor_rang() {
+    use letibot_sessionlog::registry::{Registry, SessionWiring, Work, WorkOrIdle};
+
+    let r = Registry::new();
+    let hub = r
+        .create("s-monitored", "", SessionWiring::default())
+        .expect("the session is in the registry");
+    assert!(matches!(r.next_work(), Some(Work::Open(_))));
+    let watch = JobWatchers::watching_tasks(&hub, Some(Arc::clone(r.bell())));
+
+    // The monitor's waiter rings; then the operator stops the turn the session was in.
+    r.bell().ring_wake("s-monitored");
+    watch.turn_ended(TurnEnd::Interrupted);
+
+    assert!(
+        matches!(
+            r.next_work_until(Some(Instant::now() + Duration::from_millis(200))),
+            WorkOrIdle::Work(Work::Woken(id)) if id == "s-monitored"
+        ),
+        "the firing was never read and nothing will ring for it again"
+    );
+}

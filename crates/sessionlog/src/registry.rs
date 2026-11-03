@@ -38,8 +38,9 @@ struct BellInner {
     opens: VecDeque<String>,
     /// Sessions something inside the daemon woke, with no command behind it. A third queue for
     /// `opens`' reason: `pending` is arrival order across heads, and a wake has no head and no
-    /// `client_request_id` to be fair to.
-    wakes: VecDeque<String>,
+    /// `client_request_id` to be fair to. Each entry carries what rung it, because one kind can be
+    /// taken back and the others cannot.
+    wakes: VecDeque<(String, Wake)>,
     /// Sessions something asked to be closed. A fourth queue because the session is already out of
     /// the registry by then, and the worker must still hear it.
     closes: VecDeque<String>,
@@ -52,6 +53,17 @@ struct BellInner {
 /// How many wakes a due clock waits behind before the worker is answered `Idle`. Not zero: a
 /// clock that jumped every wake would run a session nobody asked to run.
 pub const WAKES_AHEAD_OF_A_DUE_CLOCK: usize = 8;
+
+/// What a wake was rung for, as far as the drop goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Wake {
+    /// A background job or a subagent settled. The settlement is still in its queue, so a turn
+    /// stopped or failed can take this wake back: the next turn takes the settlement.
+    Settlement,
+    /// Anything else - a monitor's firing, a queue notice, a room question, a session put back to
+    /// work. Nothing queues a second copy of those, so one taken back is a fact nobody hears.
+    Other,
+}
 
 /// What a wake was about.
 enum Ring {
@@ -76,23 +88,41 @@ impl Bell {
     }
 
     /// Say that something inside the daemon woke this session, with no command behind it: a ring
-    /// with no command is swallowed by the worker's own door.
+    /// with no command is swallowed by the worker's own door. Rung as [`Wake::Other`], because that
+    /// is what every caller but a settlement's ring is: a fact nothing queues twice.
     pub fn ring_wake(&self, session_id: &str) {
+        self.ring_wake_for(session_id, Wake::Other);
+    }
+
+    /// A settlement rang: a job or a subagent ended, and its completion is in the session's queue.
+    /// The one wake a stopped or failed turn takes back - see [`Bell::drop_wakes`].
+    pub fn ring_settlement_wake(&self, session_id: &str) {
+        self.ring_wake_for(session_id, Wake::Settlement);
+    }
+
+    /// One entry per session, and the second ring of a different kind upgrades it: only a
+    /// settlement's can be taken back, so the entry keeps the answer the drop has to give.
+    fn ring_wake_for(&self, session_id: &str, why: Wake) {
         {
             let mut g = self.lock();
-            if g.wakes.iter().any(|w| w == session_id) {
+            if let Some(i) = g.wakes.iter().position(|(w, _)| w == session_id) {
+                if why == Wake::Other {
+                    g.wakes[i].1 = Wake::Other;
+                }
                 return;
             }
-            g.wakes.push_back(session_id.to_string());
+            g.wakes.push_back((session_id.to_string(), why));
         }
         self.cv.notify_all();
     }
 
-    /// Take back a wake this session has not been served: it was rung for something with no
-    /// command behind it, and a turn that was stopped or failed must not be followed by one the
-    /// settlement started. What it was rung for stays queued, for the next turn.
+    /// Take back a settlement's wake this session has not been served: a turn that was stopped or
+    /// failed must not be followed by one the settlement started. What it was rung for stays
+    /// queued, for the next turn. Any other wake stays too - nothing else holds a copy of it.
     pub fn drop_wakes(&self, session_id: &str) {
-        self.lock().wakes.retain(|w| w != session_id);
+        self.lock()
+            .wakes
+            .retain(|(w, why)| w != session_id || *why != Wake::Settlement);
     }
 
     /// Say that `session_id` exists and nothing has opened it yet.
@@ -165,7 +195,7 @@ impl Bell {
             }
             // Last, and deliberately: a wake has nobody waiting on it, and draining wakes first
             // would let a chatty monitor put itself in front of the operator.
-            if let Some(id) = g.wakes.pop_front() {
+            if let Some((id, _)) = g.wakes.pop_front() {
                 g.wakes_while_due = if due { g.wakes_while_due + 1 } else { 0 };
                 return RingWait::Ring(Ring::Woken(id));
             }
@@ -3012,6 +3042,29 @@ mod tests {
             "the source is called again, not replayed"
         );
         assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    /// **A wake is not one queue entry.** A stopped or failed turn takes back the wake a settlement
+    /// rang, because the settlement is still queued for the next turn; a monitor's firing has no
+    /// queue behind it, so a drop that takes that back is a firing the session never reads.
+    #[test]
+    fn a_monitors_wake_survives_the_drop_a_stopped_turn_makes() {
+        let r = reg();
+        // A session the registry holds: a wake naming one it does not hold is refused by the
+        // worker's own door, which is a different absence from the one this test is about.
+        r.create("s-1", "", SessionWiring::default()).unwrap();
+        assert!(matches!(r.next_work(), Some(Work::Open(_))));
+        let bell = Arc::clone(r.bell());
+        bell.ring_wake("s-1");
+        bell.ring_wake("s-1");
+        bell.drop_wakes("s-1");
+        assert!(
+            matches!(
+                r.next_work_until(Some(Instant::now() + std::time::Duration::from_millis(200))),
+                WorkOrIdle::Work(Work::Woken(id)) if id == "s-1"
+            ),
+            "nothing rung this session has to hear is left: the drop took a fact no queue holds"
+        );
     }
 }
 

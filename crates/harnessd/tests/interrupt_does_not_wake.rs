@@ -340,7 +340,8 @@ fn while_the_turn_streams(
         match ring {
             Some(bell) => {
                 watch.queue_for_test(landed);
-                bell.ring_wake(&owner);
+                // What a watcher's ring is: a SETTLEMENT's, which a stopped turn takes back.
+                bell.ring_settlement_wake(&owner);
             }
             None => watch.hold(vec![landed]),
         }
