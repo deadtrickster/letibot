@@ -459,12 +459,18 @@ pub fn decide(
         };
     }
     if spec.placement == Placement::Firecode && !vm_work_survives(&spec) {
+        // R93.E13: the row names the tree that was copied, so "beside the copy" has a path.
+        let copied = match spec.vm_source.as_deref() {
+            Some(p) => format!("the tree it copied, `{}`", p.display()),
+            None => "its workspace".to_string(),
+        };
         return Decision::Abandon {
-            why: "it ran in a firecode VM on a copy of the tree, and the copy did not survive the \
-                  restart — a resumed child would read a conversation about edits its new copy \
-                  does not have. Its work, if firecode delivered it at shutdown, is in a \
-                  directory beside the copy"
-                .into(),
+            why: format!(
+                "it ran in a firecode VM on a copy of {copied}, and the copy did not survive the \
+                 restart — a resumed child would read a conversation about edits its new copy \
+                 does not have. Its work, if firecode delivered it at shutdown, is in a \
+                 directory beside that copy."
+            ),
         };
     }
     Decision::Resume { spec }
@@ -779,27 +785,25 @@ fn ordinal(n: u32) -> String {
 }
 
 /// What the resumed child reads - the turn its restart continues with, in the harness's own
-/// voice (`Speaker::Agent`, never the operator's words).
-pub fn child_notice(at_ms: u64) -> String {
-    format!(
-        "[restart] the daemon restarted while you were working (at {}, build {}); your \
-         conversation, worktree and plan are as you left them — carry on from where you were.",
-        utc(at_ms),
-        build()
-    )
+/// voice (`Speaker::Agent`, never the operator's words). It says what survived and nothing about
+/// when or which build: neither is something the child can act on.
+pub fn child_notice(_at_ms: u64) -> String {
+    "[restart] You were interrupted and resumed; your conversation, worktree and plan are as you \
+     left them, and background jobs you started are gone. Carry on."
+        .to_string()
 }
 
-/// The one line the parent's model gets for a child that came back.
+/// The one bullet the parent's model gets for a child that came back: a bullet, because it sits
+/// under the notice's own `[restart]` tag, and a second tag there reads as a second notice.
 pub fn parent_resumed_line(name: &str) -> String {
-    format!("[restart] subagent {name} was running when the daemon restarted and has been resumed.")
+    format!("- subagent {name}: resumed.")
 }
 
-/// The line for a child that did not, with the reason.
+/// The bullet for a child that did not, with the reason and the one call that tries again.
 pub fn parent_not_resumed_line(name: &str, why: &str) -> String {
     format!(
-        "[restart] subagent {name} was running when the daemon restarted and could NOT be \
-         resumed: {why}. Its conversation is still in the store under that handle; start the work \
-         again with `task_start` if it is still wanted."
+        "- subagent {name}: not resumed ({why}); start the work again with `task_start` if it is \
+         still needed."
     )
 }
 
@@ -1683,13 +1687,18 @@ mod tests {
     fn the_notices_say_what_happened() {
         assert_eq!(utc(0), "1970-01-01 00:00:00 UTC");
         assert_eq!(utc(1_791_806_400_000), "2026-10-12 12:00:00 UTC");
+        // R93.E11: what happened and what survived, with no clock and no build sha.
         let n = child_notice(1_791_806_400_000);
-        assert!(n.starts_with("[restart] the daemon restarted while you were working (at 2026-10-12 12:00:00 UTC, build "));
-        assert!(n.ends_with("carry on from where you were."));
+        assert_eq!(
+            n,
+            "[restart] You were interrupted and resumed; your conversation, worktree and plan \
+             are as you left them, and background jobs you started are gone. Carry on."
+        );
+        assert!(!n.contains("2026-10-12") && !n.contains("build "), "{n}");
+        // R93.E13: a bullet in the parent's notice, and no second `[restart]` tag inside it.
         assert_eq!(
             parent_resumed_line("s-1-sub-1"),
-            "[restart] subagent s-1-sub-1 was running when the daemon restarted and has been \
-             resumed."
+            "- subagent s-1-sub-1: resumed."
         );
     }
 }
