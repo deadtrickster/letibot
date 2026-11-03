@@ -158,17 +158,7 @@ mod tests {
 
     /// `git`'s own answer, for the assertions that read a ref or a list rather than change one.
     fn git_out(dir: &Path, args: &[&str]) -> String {
-        let out = Command::new("git")
-            .arg("-C")
-            .arg(dir)
-            .args([
-                "-c",
-                "user.name=t",
-                "-c",
-                "user.email=t@t",
-                "-c",
-                "commit.gpgsign=false",
-            ])
+        let out = letibot_tools::testing::git(dir)
             .args(args)
             .output()
             .expect("git runs");
@@ -191,6 +181,7 @@ mod tests {
         let main = root.join("main");
         std::fs::create_dir_all(&main).unwrap();
         git(&main, &["init", "-q", "-b", "main"]);
+        letibot_tools::testing::repo_config(&main);
         std::fs::write(main.join("lib.rs"), "fn a() {}\n").unwrap();
         git(&main, &["add", "-A"]);
         git(&main, &["commit", "-q", "-m", "base"]);
@@ -292,13 +283,11 @@ mod tests {
             let out = Command::new("sh")
                 .arg("-c")
                 .arg(cmd)
-                .env("GIT_AUTHOR_NAME", "t")
-                .env("GIT_AUTHOR_EMAIL", "t@t")
-                .env("GIT_COMMITTER_NAME", "t")
-                .env("GIT_COMMITTER_EMAIL", "t@t")
-                .env("GIT_CONFIG_COUNT", "1")
-                .env("GIT_CONFIG_KEY_0", "commit.gpgsign")
-                .env("GIT_CONFIG_VALUE_0", "false")
+                // The two commands the nudge printed, run under the same policy a fixture's own
+                // `git` is run under: the box's global config decides nothing here.
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_SYSTEM", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
                 .output()
                 .expect("sh runs");
             assert!(

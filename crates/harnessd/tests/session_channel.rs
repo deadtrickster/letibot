@@ -110,8 +110,7 @@ fn a_repository(under: &Path, branch: &str) -> (PathBuf, String, String) {
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     };
     git(&["init", "-q", "-b", "main"]);
-    git(&["config", "user.email", "q@test"]);
-    git(&["config", "user.name", "queue test"]);
+    letibot_tools::testing::repo_config(&repo);
     std::fs::write(repo.join("a.txt"), "one\n").expect("a file");
     git(&["add", "."]);
     git(&["commit", "-q", "-m", "base"]);

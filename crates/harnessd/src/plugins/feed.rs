@@ -169,14 +169,8 @@ mod tests {
         let tree = root.join("proj").join("worktrees").join("agent-x");
         std::fs::create_dir_all(&tree).expect("the tree");
         let git = |args: &[&str]| {
-            std::process::Command::new("git")
-                .arg("-C")
-                .arg(&repo)
+            letibot_tools::testing::git(&repo)
                 .args(args)
-                .env("GIT_AUTHOR_NAME", "t")
-                .env("GIT_AUTHOR_EMAIL", "t@example.com")
-                .env("GIT_COMMITTER_NAME", "t")
-                .env("GIT_COMMITTER_EMAIL", "t@example.com")
                 .output()
                 .map(|o| o.status.success())
                 .unwrap_or(false)
@@ -187,6 +181,7 @@ mod tests {
             let _ = std::fs::remove_dir_all(&root);
             return;
         }
+        letibot_tools::testing::repo_config(&repo);
         let made = git(&[
             "worktree",
             "add",

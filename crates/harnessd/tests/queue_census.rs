@@ -45,12 +45,12 @@ fn seeded(tag: &str) -> (std::path::PathBuf, std::path::PathBuf, String, String)
     ));
     let repo = dir.join("project");
     std::fs::create_dir_all(&repo).unwrap();
-    let ok = std::process::Command::new("git")
+    let ok = letibot_tools::testing::git(&repo)
         .args(["init", "--quiet"])
-        .current_dir(&repo)
         .status()
         .expect("git runs");
     assert!(ok.success(), "a repository to key the queue by");
+    letibot_tools::testing::repo_config(&repo);
     let key = std::fs::canonicalize(&repo).unwrap().display().to_string();
     (dir, repo, key, "s-project".to_string())
 }

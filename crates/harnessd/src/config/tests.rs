@@ -70,12 +70,12 @@ fn a_vm_placement_on_a_folder_of_repositories_copies_the_one_repository() {
 /// accident and this one on purpose.
 fn a_repository(at: &Path) {
     std::fs::create_dir_all(at).expect("mkdir");
-    let ok = std::process::Command::new("git")
-        .current_dir(at)
+    let ok = letibot_tools::testing::git(at)
         .args(["init", "-q", "-b", "main"])
         .status()
         .expect("git");
     assert!(ok.success(), "git init in {}", at.display());
+    letibot_tools::testing::repo_config(at);
 }
 
 /// Every declared local model reaches the picker's row. `/models dense78` worked and bare

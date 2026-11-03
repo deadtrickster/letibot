@@ -1181,12 +1181,12 @@ fn a_refresh_of_something_that_is_not_a_repository_draws_nothing_and_is_remember
     // as "N repos" and starts no reading at all, and the operator's own folder is exactly that.
     let repo = dir.with_extension("repo");
     std::fs::create_dir_all(&repo).expect("scratch repo");
-    let init = std::process::Command::new("git")
+    let init = letibot_tools::testing::git(&repo)
         .args(["init", "-q"])
-        .arg(&repo)
         .status()
         .expect("git init");
     assert!(init.success(), "git init");
+    letibot_tools::testing::repo_config(&repo);
     a.clock(1_600);
     a.wiring.workspace = repo.display().to_string();
     a.refresh_git();

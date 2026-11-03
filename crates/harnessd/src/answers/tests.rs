@@ -989,9 +989,7 @@ fn not_in_any_repository(d: &std::path::Path) {
         "gitdir: /nonexistent/letibot-test-barrier\n",
     )
     .unwrap();
-    let found = std::process::Command::new("git")
-        .arg("-C")
-        .arg(d)
+    let found = letibot_tools::testing::git(d)
         .args(["rev-parse", "--show-toplevel"])
         .output()
         .expect("git");
@@ -1017,12 +1015,9 @@ fn with_default() -> Question {
 fn a_default_taken_in_a_repository_is_logged_with_its_commit() {
     let d = dir("repo");
     git_in(&d.0, &["init", "-q"]);
-    git_in(&d.0, &["config", "user.email", "t@t"]);
-    git_in(&d.0, &["config", "user.name", "t"]);
+    letibot_tools::testing::repo_config(&d.0);
     git_in(&d.0, &["commit", "-q", "--allow-empty", "-m", "first"]);
-    let out = std::process::Command::new("git")
-        .arg("-C")
-        .arg(&d.0)
+    let out = letibot_tools::testing::git(&d.0)
         .args(["rev-parse", "--short", "HEAD"])
         .output()
         .unwrap();
@@ -1043,9 +1038,7 @@ fn a_default_taken_in_a_repository_is_logged_with_its_commit() {
     assert!(said.contains("AUTO-DECISIONS.md"), "{said}");
     assert!(said.contains(&commit), "{said}");
     // Never committed: the repository's `.gitignore` names it, so git sees only that line.
-    let status = std::process::Command::new("git")
-        .arg("-C")
-        .arg(&d.0)
+    let status = letibot_tools::testing::git(&d.0)
         .args(["status", "--porcelain"])
         .output()
         .unwrap();
@@ -1084,6 +1077,7 @@ fn a_question_with_a_default_expires_and_its_default_is_noted() {
     // the temp dir happens to sit in - see `not_in_any_repository`.
     let d = dir("e2e");
     git_in(&d.0, &["init", "-q"]);
+    letibot_tools::testing::repo_config(&d.0);
     let hub = Hub::new("s");
     let answers = Arc::new(Answers::new());
     hub.set_answer_sink(answers.clone());

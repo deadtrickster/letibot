@@ -103,6 +103,7 @@ impl Scratch {
                 .success();
             assert!(ok, "git {args:?}");
         }
+        letibot_tools::testing::repo_config(&repo);
         Scratch { root }
     }
     fn repo(&self) -> PathBuf {
@@ -115,9 +116,8 @@ impl Scratch {
 
 impl Drop for Scratch {
     fn drop(&mut self) {
-        let _ = std::process::Command::new("git")
+        let _ = letibot_tools::testing::git(&self.repo())
             .args(["worktree", "prune"])
-            .current_dir(self.repo())
             .status();
         let _ = std::fs::remove_dir_all(&self.root);
     }

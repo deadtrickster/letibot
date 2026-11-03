@@ -74,6 +74,7 @@ impl Scratch {
         let repo = root.join("repo");
         std::fs::create_dir_all(&repo).unwrap();
         git(&repo, &["init", "-q", "-b", "main"]);
+        letibot_tools::testing::repo_config(&repo);
         // The worktrees live under the repository (`worktree_path`); the main tree ignores them
         // the way a project using `task_start` does.
         std::fs::write(repo.join(".gitignore"), ".claude/\ntarget/\n").unwrap();
@@ -92,9 +93,8 @@ impl Scratch {
 
 impl Drop for Scratch {
     fn drop(&mut self) {
-        let _ = std::process::Command::new("git")
+        let _ = letibot_tools::testing::git(&self.repo())
             .args(["worktree", "prune"])
-            .current_dir(self.repo())
             .status();
         let _ = std::fs::remove_dir_all(&self.root);
     }

@@ -147,6 +147,7 @@ impl Fixture {
         std::fs::create_dir_all(self.src.join("crates/harnessd")).unwrap();
         std::fs::write(self.src.join("Cargo.toml"), "[workspace]\n").unwrap();
         git(&self.src, &["init", "-q"]);
+        letibot_tools::testing::repo_config(&self.src);
         git(&self.src, &["add", "-A"]);
         git(&self.src, &["commit", "-q", "-m", "a tree to build"]);
     }
@@ -157,6 +158,7 @@ impl Fixture {
         std::fs::create_dir_all(&self.checkout).unwrap();
         std::fs::write(self.checkout.join("Cargo.toml"), "[workspace]\n").unwrap();
         git(&self.checkout, &["init", "-q"]);
+        letibot_tools::testing::repo_config(&self.checkout);
         git(&self.checkout, &["add", "-A"]);
         git(
             &self.checkout,
@@ -381,9 +383,7 @@ fn git(dir: &Path, args: &[&str]) {
 }
 
 fn git_out(dir: &Path, args: &[&str]) -> String {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(dir)
+    let out = letibot_tools::testing::git(dir)
         .args(args)
         .output()
         .expect("git ran");

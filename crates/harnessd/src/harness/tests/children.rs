@@ -30,6 +30,7 @@ fn a_worktree_is_arranged_with_its_branch_and_the_main_tree_untouched() {
         assert!(out.status.success(), "git {args:?}: {out:?}");
     };
     git(&["init", "-q", "-b", "main"]);
+    letibot_tools::testing::repo_config(&root);
     std::fs::write(root.join("a.txt"), "one\ntwo\n").expect("write");
     git(&["add", "-A"]);
     git(&["commit", "-qm", "first"]);

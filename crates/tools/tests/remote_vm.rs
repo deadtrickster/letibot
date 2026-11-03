@@ -98,8 +98,7 @@ impl Rig {
         let repo = dir.join("the-repo");
         std::fs::create_dir_all(&repo).expect("repo");
         git(&repo, &["init", "-q", "-b", "main"]);
-        git(&repo, &["config", "user.email", "test@example.com"]);
-        git(&repo, &["config", "user.name", "a test"]);
+        letibot_tools::testing::repo_config(&repo);
         std::fs::write(repo.join("README"), b"the first commit\n").expect("a file");
         git(&repo, &["add", "README"]);
         git(&repo, &["commit", "-q", "-m", "the first commit"]);

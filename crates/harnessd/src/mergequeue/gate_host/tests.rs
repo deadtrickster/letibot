@@ -635,10 +635,10 @@ fn the_deadline_sentence_names_the_bound_the_last_poll_was_given() {
 fn the_host_directory_is_named_like_the_landing_directory() {
     let repo = std::env::temp_dir().join(format!("letibot-gate-host-name-{}", std::process::id()));
     std::fs::create_dir_all(&repo).expect("a repo");
-    let _ = std::process::Command::new("git")
+    let _ = letibot_tools::testing::git(&repo)
         .args(["init", "-q", "-b", "main"])
-        .arg(&repo)
         .status();
+    letibot_tools::testing::repo_config(&repo);
     let name = dir_name(&repo);
     // `<the directory's own name>-<12 hex>`, exactly as `git::landing_dir_in` builds it.
     let hex = name.rsplit_once('-').map(|(_, h)| h).unwrap_or_default();

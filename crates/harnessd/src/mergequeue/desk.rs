@@ -1069,8 +1069,7 @@ mod tests {
         let p = under.join(name);
         std::fs::create_dir_all(&p).unwrap();
         sh(&p, &["init", "-q", "-b", "main"]);
-        sh(&p, &["config", "user.email", "q@test"]);
-        sh(&p, &["config", "user.name", "queue test"]);
+        letibot_tools::testing::repo_config(&p);
         if let Some(owner) = owner {
             sh(
                 &p,

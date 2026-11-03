@@ -3,7 +3,6 @@
 //! worker claims, judges and lands it. Not a live test: the vocabulary is the only apparatus, the store a temp file.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Arc;
 
 use letibot_sessionlog::registry::{Registry as SessionRegistry, SessionWiring};
@@ -129,8 +128,7 @@ fn repo_with_children(under: &Path, children: &[(&str, &str)]) -> (PathBuf, Stri
     let root = under.join("repo");
     std::fs::create_dir_all(&root).expect("the repo's directory");
     git(&root, &["init", "-q", "-b", "main"]);
-    git(&root, &["config", "user.email", "queue-e2e@test"]);
-    git(&root, &["config", "user.name", "queue-e2e"]);
+    letibot_tools::testing::repo_config(&root);
     std::fs::write(root.join("a.txt"), "one\ntwo\nthree\n").expect("write");
     std::fs::write(
         root.join("AGENTS.md"),
@@ -217,9 +215,7 @@ fn git_ok(dir: &Path, args: &[&str]) -> bool {
 
 /// The SHA of `rev` in `dir`.
 fn sha(dir: &Path, rev: &str) -> String {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(dir)
+    let out = letibot_tools::testing::git(dir)
         .args(["rev-parse", rev])
         .output()
         .expect("git");

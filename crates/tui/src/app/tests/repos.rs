@@ -119,9 +119,7 @@ fn the_repositories_are_listed_with_the_same_named_one_first() {
     let f = folder("list");
     let ws = f.0.join("stroppy-io");
     std::fs::create_dir_all(ws.join("stroppy-io/src")).unwrap();
-    std::process::Command::new("git")
-        .arg("-C")
-        .arg(ws.join("stroppy-io"))
+    letibot_tools::testing::git(&ws.join("stroppy-io"))
         .args(["init", "-q"])
         .output()
         .unwrap();
