@@ -800,44 +800,6 @@ own right**, addressed as R93.<id>; the list below groups them by what to fix fi
 
 ---
 
-## R63 — One thread per root session — **DONE (landed on main as `f68c90b0`); this branch adds the direct proof**
-
-The operator: *"each session gets a thread, what not to like?"*, *"obviously i should see
-everything going in my thread"*. Then one worker served every root session's turns
-(`daemon.rs`, `Daemon::run`), so a turn or a long tool call in one session queued the prompt of
-another - measured 89 s on 2026-10-11 behind another session's `sleep 30`.
-
-1. One thread per root session, on the pattern subagents already run on (`serve_child_under`,
-   `Hub::take_own_work_until`, `Hub::wake_its_own_reader`). — ✓ fixed in f68c90b0, test
-   a_held_turn_in_one_session_does_not_delay_another
-2. Everything that happens on a session's thread is published to its hub. A wake-started turn is
-   drawn as running, with its reason. No failure lands only in the daemon log. — fixed in
-   f68c90b0 in code, untested: the thread's turns and failures reach the hub (R67 item 15), but
-   no test pins a wake-started turn's activity row
-3. The merge queue's work is off the session worker by R61. — ✓ fixed in 955a7fc2, test
-   the_service_serves_the_queues_and_stops
-
-**Done when:** two sessions on one daemon each answer a one-word prompt in under a second while
-the other is inside a 30 s tool call.
-
-**Built:** `sessions::Court` is one root session's thread: the hub is marked `Owner::OwnThread`,
-the harness moves onto the thread, and it loops on `hub.take_own_work_until(next_idle_at())` for
-commands, for wakes and for its own clocks; `Daemon::run` calls `serve_each_on_its_own_thread` and
-is a supervisor rather than a worker. A turn's outcome is said to the hub and to the daemon's log
-through the same `ReplySink`, a wake-started turn publishes `turn` as the reason it is running, and
-a failed turn publishes its notice, so nothing lands only in the log. The queue was already off the
-session worker (R61).
-
-**Evidence:** `crates/harnessd/tests/thread_per_session.rs` - a held turn in one session while the
-other answers, both hubs `OwnThread`, a session's own commands still in order, and a stop that ends
-inside its bound. **Added here, the claim itself:** the kernel's task list, where two root sessions
-on one daemon are two threads named `session-<id>` (measured: `["session-s-held-",
-"session-s-quick"]`; inverting the assertion fails the test naming both, so it has teeth). The
-comments in `activity_two_sessions`, `sudo_ask`, `stop_ends_runs`, `sessionlog`'s registry diagram
-and the hub's bell that described the one-worker era now say what was measured and when.
-
----
-
 ## R65 — The model chooses each tool call's memory cap, knowing what is free and what a cap costs — **LANDED on main 2026-10-11 (073c1ea, 51dd340) except the items under "Still open"**
 
 The operator: *"the question is how many for 2. I think model should try to decide, so it should
