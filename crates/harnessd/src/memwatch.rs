@@ -149,6 +149,7 @@ fn watch(registry: Arc<Registry>, every: Duration, leaf: Option<PathBuf>) {
     let mut tick = 0u64;
     let mut before: Option<BTreeMap<String, i64>> = None;
     let mut creeping = 0u32;
+    let mut creep_alarm = Creep::default();
     loop {
         std::thread::sleep(every);
         tick += 1;
@@ -176,7 +177,7 @@ fn watch(registry: Arc<Registry>, every: Duration, leaf: Option<PathBuf>) {
                 };
             // Three lines running with nothing in the census to account for the resident growth:
             // the shape that took a daemon to 113 GB and left no line in its log about it.
-            if creeping >= 3 && unaccounted(was, &now) {
+            if creep_alarm.says(creeping, unaccounted(was, &now)) {
                 eprintln!(
                     "memwatch: MEMORY CREEP — resident has grown on {creeping} lines running and \
                      nothing the census holds has grown with it; the heap's own count is {} and \
@@ -351,6 +352,36 @@ pub fn creep(before: &BTreeMap<String, i64>, now: &BTreeMap<String, i64>) -> Str
         })
         .collect::<Vec<_>>()
         .join(" · ")
+}
+
+/// When a creep is news, kept by the watchdog: the first reading of an episode, and then each
+/// time the run of growing readings has doubled. A notice per tick is a distinct note on every
+/// head, and the head's list is short - the older diagnostics it holds go out with them.
+#[derive(Default)]
+pub struct Creep {
+    /// The reading this episode was last said at; zero until it is said.
+    said_at: u32,
+}
+
+impl Creep {
+    /// Whether `creeping` consecutive growing readings, with the census unable to account for
+    /// them, are worth another notice. A reading that does not grow ends the episode.
+    pub fn says(&mut self, creeping: u32, unaccounted: bool) -> bool {
+        if creeping == 0 {
+            self.said_at = 0;
+            return false;
+        }
+        if creeping < 3 || !unaccounted {
+            return false;
+        }
+        // Doubling, the rung `memory_high` climbs on: the second notice says the leak outlived the
+        // first by as much again, which is a new fact, where "one more reading" is not.
+        if self.said_at > 0 && creeping < self.said_at.saturating_mul(2) {
+            return false;
+        }
+        self.said_at = creeping;
+        true
+    }
 }
 
 /// Whether the resident growth is bigger than everything the census holds put together: the fact that
@@ -577,6 +608,29 @@ fn full_census(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A leak that runs for twenty readings is a handful of notices, not twenty: every tick would
+    /// be a new note on every head (`note_key` is code, time and the detail's hash), and the older
+    /// diagnostics - this one's reason among them - are what the head's list drops to hold them.
+    #[test]
+    fn a_creep_is_said_when_it_starts_and_again_only_when_it_doubles() {
+        let mut c = Creep::default();
+        let said: Vec<u32> = (1..=20).filter(|n| c.says(*n, true)).collect();
+        assert_eq!(
+            said,
+            vec![3, 6, 12],
+            "a notice on every reading churns every head's list"
+        );
+
+        // A reading that did not grow ends the episode, so the next one is news from its start.
+        assert!(!c.says(0, true));
+        let again: Vec<u32> = (1..=3).filter(|n| c.says(*n, true)).collect();
+        assert_eq!(again, vec![3], "a new episode is said at once");
+
+        // And a creep the census accounts for is not a leak of anything unnamed: nothing is said.
+        let mut quiet = Creep::default();
+        assert!((1..=10).all(|n| !quiet.says(n, false)));
+    }
 
     #[test]
     fn thread_names_group_by_what_they_are_not_by_which_one() {
