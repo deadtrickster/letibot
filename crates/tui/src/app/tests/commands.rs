@@ -610,6 +610,30 @@ fn a_command_that_merely_starts_like_a_verb_is_not_that_verb() {
     assert_eq!(verb_arg("cellsomething", "cells"), None);
 }
 
+/// **The queue's person-verbs are typed, and they go over as typed.** A bare `/queue` opens the pane;
+/// every verb the daemon's own warnings name is a line the head does not know and does not need to -
+/// the daemon parses it, scopes it to this session's repository and answers on the log.
+#[test]
+fn the_queue_verbs_a_person_types_go_to_the_daemon() {
+    let mut a = app();
+    a.session_id = "s1".into();
+    for line in [
+        "queue regate",
+        "queue regate main",
+        "queue restart s-1234",
+        "queue approve s-1234",
+        "queue rm s-1234",
+        "queue veto s-1234 the tests do not build",
+    ] {
+        match a.command(line) {
+            Some(Action::Slash { line: sent }) => assert_eq!(sent, line),
+            other => panic!("`/{line}` did not reach the daemon: {other:?}"),
+        }
+    }
+    // The bare word is still the pane, and not a line for the daemon.
+    assert!(!matches!(a.command("queue"), Some(Action::Slash { .. })));
+}
+
 /// And the whole-word rule holds: `/models` is no longer swallowed by the
 /// `mode` arm, which took it as `/mode` with the argument `ls`. Bare it opens
 /// the picker; with a name it goes to the daemon.
