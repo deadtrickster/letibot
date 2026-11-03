@@ -1342,6 +1342,17 @@ pub(crate) fn a_child_turn_ended(
     });
 }
 
+/// **A failed child's ending, in the only order that leaves nothing running in a removed tree**: its
+/// worktree goes first, then its survivors are handed to the parent. A handed-over process keeps the
+/// directory it stands in, so the reverse order leaves it writing into a path nothing owns.
+pub(crate) fn a_failed_childs_ending(
+    reap: impl FnOnce() -> Result<(), String>,
+    settle: impl FnOnce() -> Option<String>,
+) -> Option<String> {
+    let _ = reap();
+    settle()
+}
+
 /// The session's children, and the whole of the supervision edge between them. A parent owns its
 /// children's lifecycle, an exit goes parent-ward and never to the root, termination walks the subtree
 /// downward one level per session, and depth is a bound refused by name rather than a prohibition.
@@ -3759,13 +3770,24 @@ impl HarnessTaskRunner {
                 // grandchildren held VM slots for a day. Stopped before the backend is closed, as a stop does.
                 a_child_that_ends_stops_its_own(Some(&sub.subagents), &sub.hub);
                 // What this child was holding ends here, said in the failure itself: there is no
-                // answer to carry the line.
+                // answer to carry the line. The tree goes FIRST: a survivor handed to the parent
+                // keeps the directory it stands in, and the reap that follows this call removes
+                // that tree.
                 let mut why = e.to_string();
                 let heir = self.heir();
-                // Only a host child's leftovers can outlive it; a VM's die with the VM.
-                if placement == Placement::Host
-                    && let Some(said) = sub.settle_estate(heir.as_deref())
-                {
+                let said = a_failed_childs_ending(
+                    || deliverable::reap_failed(the_deliverable.as_ref()),
+                    || {
+                        // Only a host child's leftovers can outlive it; a VM's die with the VM.
+                        (placement == Placement::Host)
+                            .then(|| sub.settle_estate(heir.as_deref()))
+                            .flatten()
+                    },
+                );
+                // And the slot stops holding a tree that is already gone, so the thread's own
+                // exit does not look for it a second time.
+                slot.set_deliverable(None);
+                if let Some(said) = said {
                     why.push_str(&format!("\n\n[estate] {said}"));
                 }
                 // The backend is closed on this exit too - the other two close it below - so a

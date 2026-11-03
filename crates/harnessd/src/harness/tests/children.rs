@@ -1558,3 +1558,28 @@ fn a_slot_keeps_the_newest_later_answer_and_not_every_one() {
     assert_eq!(slot.newest_again().as_deref(), Some("three"));
     assert_eq!(slot.answers_kept(), 1);
 }
+
+/// **A failed child's tree is removed before its survivors are handed to the parent.** A handed-over
+/// process keeps the directory it stands in, so the reverse order leaves it writing into a path
+/// nothing owns - and the reap is the caller's, which is why the order is a function and not a habit.
+#[test]
+fn a_failed_childs_tree_goes_before_its_survivors_are_handed_over() {
+    let order = std::sync::Arc::new(std::sync::Mutex::new(Vec::<&'static str>::new()));
+    let said = super::a_failed_childs_ending(
+        || {
+            order.lock().unwrap().push("the tree is removed");
+            Ok(())
+        },
+        || {
+            order.lock().unwrap().push("the survivors are handed over");
+            None
+        },
+    );
+    let order = order.lock().unwrap().clone();
+    assert_eq!(
+        order,
+        vec!["the tree is removed", "the survivors are handed over"],
+        "the survivors were handed into a tree that was about to go"
+    );
+    assert!(said.is_none(), "a child with nothing left says nothing");
+}
