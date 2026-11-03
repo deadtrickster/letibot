@@ -10,8 +10,8 @@
 //! ```
 //!
 //! Three values for one key, because they are three answers to one question: who turns
-//! text into a vector. A key that does nothing is refused by name rather than ignored —
-//! that is the config defect this tree has already paid for once.
+//! text into a vector. A key that does nothing is refused by name rather than ignored,
+//! because that is the config defect this tree has already paid for once.
 
 use std::path::PathBuf;
 
