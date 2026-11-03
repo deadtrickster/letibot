@@ -1349,16 +1349,24 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 client_request_id,
                 expected_seq: _,
                 who,
+                reason,
             }) => {
                 let session = seat.hub.session_id();
+                // The caller's own reason, because there are two callers and they mean different
+                // things: a migration carries the rows elsewhere, a bridge's stop settles a
+                // placement. A head reading the log is owed the one that is true.
+                let why = match reason.trim().trim_end_matches('.') {
+                    "" => String::new(),
+                    words => format!(" because {words}"),
+                };
                 seat.hub.publish(crate::event::SessionEvent::Warning {
                     code: "session_closed".into(),
                     detail: format!(
-                        "`{who}` closed this session so it could be carried to another \
-                         machine (`letibot --migrate`). Nothing here is deleted: the rows stay \
-                         in the store and the session's row says where its live copy is now. \
-                         A head left attached is detached — a conversation that has moved on \
-                         is not one to keep typing into."
+                        "`{who}` closed this session{why}. Nothing here is deleted: the rows stay \
+                         in the store, so `letibot --session <id>` reopens it, and what a \
+                         placement committed comes home as its branch. A head left attached is \
+                         detached — a conversation that has moved on is not one to keep typing \
+                         into."
                     ),
                     compaction: None,
                 });

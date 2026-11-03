@@ -387,13 +387,21 @@ impl Bridge {
         }))
     }
 
-    /// Interrupt and leave. The session stays on disk, so any head can reopen it.
+    /// Interrupt, then close the session here and leave: a placement settles as it closes, so the
+    /// branch a host session worked on comes home now. The rows stay on disk, so any head can
+    /// reopen it.
     pub fn stop(&self, session: &str) -> Result<Value, String> {
         let h = self.head(session)?;
         h.stop()?;
         let mut g = self.heads.lock().unwrap_or_else(|e| e.into_inner());
         g.remove(session);
-        Ok(json!({ "stopped": true, "session": session }))
+        let mut answer = json!({ "stopped": true, "session": session, "closed": true });
+        // The daemon's own line carries the commit, and the head cannot read it - so it names the
+        // branch the caller must look at, on the one rule the placement itself uses.
+        if let Some(host) = h.placement.as_ref().and_then(Placement::host) {
+            answer["branch"] = json!(letibot_tools::remote::back_branch_for(host, session));
+        }
+        Ok(answer)
     }
 
     /// What this bridge is holding, and what each of them is doing.
@@ -710,8 +718,11 @@ pub fn list() -> Value {
                  "required": ["session", "mode"]
              })),
         tool("leticode_stop",
-             "Interrupt a running turn and detach this bridge from the session. The session \
-              stays on disk, so `letibot --session <id>` or another head can reopen it.",
+             "Interrupt a running turn, close the session here and detach this bridge from it. \
+              Closing it is what settles a PLACEMENT: what a host session committed comes home \
+              as the branch `remote/<host>/<short id>` (`branch` in the answer) as the session \
+              closes, and the daemon's log names the commit it landed at. The rows stay on \
+              disk, so `letibot --session <id>` or another head can reopen it.",
              json!({
                  "type": "object",
                  "properties": {

@@ -1428,12 +1428,22 @@ impl Head {
             .map_err(|e| e.to_string())
     }
 
-    /// Interrupt whatever is running and leave; the session stays on disk for any head.
+    /// Interrupt whatever is running, then CLOSE the session here and leave. The rows stay on
+    /// disk for any head, and the close is what settles a placement: a detach alone left the
+    /// daemon holding the harness, so a host session's branch came home only when the whole daemon
+    /// stopped.
     pub fn stop(&self) -> Result<(), String> {
         self.may_write()?;
         let mut c = self.said_client()?;
+        let who = c.identity().to_string();
         c.interrupt(0, "the bridge was asked to stop this session")
             .map_err(|e| e.to_string())?;
+        c.close_session(
+            0,
+            &who,
+            "the bridge was asked to stop it, so its placement could come home",
+        )
+        .map_err(|e| e.to_string())?;
         c.detach().map_err(|e| e.to_string())
     }
 

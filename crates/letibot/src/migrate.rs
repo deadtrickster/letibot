@@ -1578,7 +1578,11 @@ fn close_session(
     say: &mut Say<'_>,
 ) -> Result<(), String> {
     client
-        .close_session(0, "migrate")
+        .close_session(
+            0,
+            "migrate",
+            "it is being carried to another machine (`letibot --migrate`)",
+        )
         .map_err(|e| format!("asking the daemon to close {session}: {e}"))?;
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {

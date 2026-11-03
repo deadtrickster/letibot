@@ -62,7 +62,9 @@ fn closing_one_session_leaves_the_others_and_rings_the_worker_to_let_go() {
         other => panic!("expected a Hello, got {other:?}"),
     }
 
-    let id = head.close_session(0, "operator").expect("send the close");
+    let id = head
+        .close_session(0, "operator", "the operator is closing it")
+        .expect("send the close");
     let answer = until(
         &mut reader,
         |f| matches!(f, ServerFrame::Accepted { client_request_id, .. } if *client_request_id == id),

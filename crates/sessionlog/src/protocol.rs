@@ -16,7 +16,7 @@ use crate::view::Snapshot;
 /// Bumped when a frame's meaning changes in a way the other side cannot parse: a new variant is a
 /// deserialisation fault in the middle of a turn. Both sides compare it at ATTACH and refuse a
 /// mismatch by name.
-pub const PROTOCOL_VERSION: u32 = 56;
+pub const PROTOCOL_VERSION: u32 = 57;
 
 /// The names an operator may run through the head-run door: read-only and bounded, which admits
 /// `web_fetch` and not a tool that writes.
@@ -520,12 +520,18 @@ pub enum ClientFrame {
         who: String,
     },
     /// Close THIS session here and let go of it: what a migration sends before carrying the rows to
-    /// another store. Not [`ClientFrame::Stop`], which ends the daemon.
+    /// another store, and what a bridge's stop sends so a placement settles now instead of at the
+    /// daemon's end. Not [`ClientFrame::Stop`], which ends the daemon.
     CloseSession {
         client_request_id: String,
         expected_seq: u64,
         /// Who asked, for the announcement on the session's log - the head's identity.
         who: String,
+        /// Why, in the announcer's own words: the two callers mean different things by it, and a
+        /// head reading the log is owed the one that is true. Defaulted, so a 56 head and a daemon
+        /// built before it still parse each other's frames.
+        #[serde(default)]
+        reason: String,
     },
     /// Idempotent, issuable by any attached head, announced with the issuer.
     Interrupt {
@@ -1293,8 +1299,13 @@ mod tests {
         let _ = event;
         let _ = server;
         assert_eq!(
-            PROTOCOL_VERSION, 56,
-            "the match above was last reconciled with the frame list at 56. 56 added \
+            PROTOCOL_VERSION, 57,
+            "the match above was last reconciled with the frame list at 57. 57 gave \
+             `ClientFrame::CloseSession` a `reason`, because a close has two callers that mean \
+             different things by it: a migration carries the rows to another store, and a \
+             bridge's stop ends the session's placement so its branch comes home. The field is \
+             defaulted, so a version-56 head and a 57 daemon still parse each other's frames; \
+             what the bump records is that the SENTENCE a head reads is now the caller's. 56 added \
              `ClientFrame::FetchRows` and `ServerFrame::RowsFetched`: the head holds a window of \
              the conversation and a reader scrolls above it, so it asks for whole rows by ordinal \
              and the daemon answers them from its view or its store. Two new variants, so a \
@@ -1675,6 +1686,7 @@ mod tests {
                 client_request_id: "r1c".into(),
                 expected_seq: 12,
                 who: "dead".into(),
+                reason: "it is being carried to another machine".into(),
             },
             ClientFrame::Interrupt {
                 client_request_id: "r2".into(),

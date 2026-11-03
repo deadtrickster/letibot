@@ -2996,7 +2996,7 @@ impl SshBackend {
 
         let short = short_branch_id(&spec.name);
         let branch = format!("remote/{short}");
-        let back_branch = format!("remote/{host}/{short}");
+        let back_branch = back_branch_for(&host, &spec.name);
 
         // The root, resolved ONCE on the remote: `root = "~/letibot-remote"` is a fact about the
         // remote's home, not this machine's, so it is expanded there and every path below is absolute,
@@ -3651,6 +3651,13 @@ fn ssh_program_default() -> PathBuf {
     std::env::var_os("LETIBOT_SSH")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("ssh"))
+}
+
+/// The local branch a placement's work comes home on: `remote/<host>/<short id>`. The one spelling of
+/// the rule, because a caller that must NAME that branch without holding the backend - the bridge's
+/// stop answer - is telling the operator where to look.
+pub fn back_branch_for(host: &str, session: &str) -> String {
+    format!("remote/{host}/{}", short_branch_id(session))
 }
 
 /// The last eight usable characters of a session id, as a branch and directory name. Alphanumerics

@@ -237,13 +237,20 @@ impl HeadClient {
     }
 
     /// Close this session here and let go of it: what a migration sends before it carries the rows
-    /// to another store.
-    pub fn close_session(&mut self, expected_seq: u64, who: &str) -> Result<String, ClientError> {
+    /// to another store, and what a bridge's stop sends so a placement settles now. `reason` is the
+    /// sentence the session's log carries, so the two callers cannot be read as each other.
+    pub fn close_session(
+        &mut self,
+        expected_seq: u64,
+        who: &str,
+        reason: &str,
+    ) -> Result<String, ClientError> {
         let client_request_id = self.next_id();
         self.writer.write(&ClientFrame::CloseSession {
             client_request_id: client_request_id.clone(),
             expected_seq,
             who: who.to_string(),
+            reason: reason.to_string(),
         })?;
         Ok(client_request_id)
     }
