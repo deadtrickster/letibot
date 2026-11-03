@@ -709,7 +709,10 @@ fn a_refusal_with_no_store_says_nothing_keeps_it_rather_than_naming_a_verb() {
     let t = refusal_text(&n, Reach::Nobody);
     assert!(!t.contains("/gate recent"), "{t}");
     assert!(t.contains("without a session store"), "{t}");
-    assert!(t.contains("`adj-1`"), "the row's own id is still named: {t}");
+    assert!(
+        t.contains("`adj-1`"),
+        "the row's own id is still named: {t}"
+    );
 }
 
 #[test]
