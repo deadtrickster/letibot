@@ -4722,7 +4722,7 @@ named pytest`).
 
 ---
 
-## T15 — Replace §10's compaction design with structural eviction — **PARTLY LANDED: structural eviction of units runs before every summary turn, and the record is sized by the room and gated on what it kept; left: the addressable map in the new base, the `recall` tool, a standalone `prune`, and §10 of the plan, which still reads leveled compaction**
+## T15 — Replace §10's compaction design with structural eviction — **PARTLY LANDED: structural eviction of units runs before every summary turn, the addressable map is in the new base, `recall` opens any id it names, and §10 of the plan now reads structural eviction; left: a standalone `prune`**
 
 `docs/compaction.md`. Compaction today bundles *reducing what is resident* (necessary)
 with *destroying what is recoverable* (an accident). Falsifier B removed the usual
@@ -4739,12 +4739,17 @@ rather than rewritten in place.
 Depends on nothing. Feeds `docs/memory.md`. Gives `SegmentMark` its missing producer.
 
 — PARTLY LANDED: the record is sized by the room and gated on what it kept, and the tail keeps the
-old turns most relevant to the plan (embedding relevance). Structural eviction of units now runs
-before every summary turn (`crates/turn/src/evict.rs`, test `crates/turn/tests/evict_summary.rs`):
+old turns most relevant to the plan (embedding relevance). Structural eviction of units runs before
+every summary turn (`crates/turn/src/evict.rs`, test `crates/turn/tests/evict_summary.rs`):
 superseded reads, settled subagents and finished calls go as stubs, and failures, the exchange in
-hand and anything a plan row names stay. OPEN: the addressable map in the new base, the `recall`
-tool, a standalone `prune`, and §10 of the plan (`docs/implementation-plan.md:215-223`) still reads
-*leveled compaction*.
+hand and anything a plan row names stay. Each unit is kept before it goes, under the id the map
+prints, in the session's spill store; the new base carries one line per unit under the record
+(`evict::map_text`, written by `Harness::fork_onto`), and `recall id=<id>` returns that body
+exactly, bounded to an eighth of the window (`crates/tools/src/recall.rs`, seats on every role that
+can be compacted). An id the map never named is refused by name, listing the ids it does have.
+Tested end to end in `crates/harnessd/src/harness/tests/recall.rs`. §10 of the plan
+(`docs/implementation-plan.md:215-224`) now reads *structural eviction*. OPEN: a standalone `prune`
+(`docs/compaction.md` §6, its own `/prune` verb, no model behind it).
 
 ---
 

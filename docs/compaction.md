@@ -256,37 +256,58 @@ Sized as its own verb (`/prune`) so it can run with no model behind it, and not 
 
 ## 7. What landed, and what is open
 
-Landed (`crates/turn/src/evict.rs`, called from `summarise_one`):
+Landed (`crates/turn/src/evict.rs` for the units, `crates/tools/src/recall.rs` for what reads them,
+`crates/harnessd/src/harness/wall.rs` for the fork):
 
 - **Covered before this:** the record is sized by the room the window has and gated on what it kept
   (§6); the verbatim tail keeps the old exchanges most relevant to the plan by embedding score
   (`compaction_relevance`). Neither evicts anything: both decide what the summary is, not what it is shown.
 - **Eviction before summary.** Every summary turn (`summarise_first_half`, both halves of
-  `summarise_overrun`) is handed `evict::reduce(slice, plan_rows)`, not the raw span. A body goes
+  `summarise_overrun`) is handed `evict::reduce(slice, plan_rows, store)`, not the raw span. A body goes
   as a stub in three classes, in this order: a read or command run again later in the span
   (superseded), a `task_result` whose subagent has answered (the stub names the child's session),
   and any other finished call's output over `BODY_FLOOR`. The call, its arguments and its outcome stay.
 - **Never evicted:** a failed call's body, the exchange the session is inside, and any call whose
   subject (path or command) a pending or in-progress plan row names.
+- **A body is kept before its unit goes.** `evict::BodyStore` is asked first and answers the id the
+  map will print; a store that refuses leaves the unit whole, because an eviction nobody can undo is
+  the hole a record exists to prevent. The harness's store is the session's spill store
+  (`crates/tools/src/spill.rs`), so a compaction's bodies and a call's own overflow are one place,
+  and `--spill-dir` is what makes them outlive the daemon.
+- **The map, in the new base.** `evict::map_text` renders one line per unit - id, tool, what it
+  named, its size, why it went - under the record in the first item of the fork
+  (`Harness::fork_onto`). `Harness::note_evicted` fills the `Recall` handle the tool reads from the
+  same units, so the ids a model is shown and the ids it can open cannot drift apart.
+- **`recall`.** `recall id=<id> [offset]` returns the body exactly, from the store: bounded to an
+  eighth of the session's window and floored at 2,000 bytes, with the offset to continue when a body
+  is larger than one read. An id the map never named is refused by name and the refusal lists the
+  ids it does have; an id it named whose body the store has lost says exactly that, because a spill
+  store with no directory keeps bodies only for the life of the daemon. Seated on every role that
+  can be compacted.
 - **Not an edit.** The reduced span is only the summary turn's prompt. The session, ledger and
-  transcript are untouched, so no hash chain is broken. `Harvest` reports `evicted` and `gone`.
-- Tested in `crates/turn/tests/evict_summary.rs` on a long fake conversation: evicted units go,
-  plan-named and failed bodies stay, and an empty plan evicts strictly more.
+  transcript are untouched, so no hash chain is broken. `Harvest` reports `evicted`, `gone` and the
+  units themselves.
+- Tested at each seam: `crates/turn/src/evict/tests.rs` (the census, the map, a store that refuses),
+  `crates/turn/tests/evict_summary.rs` on a long fake conversation (evicted units go, plan-named and
+  failed bodies stay, every id the harvest hands over resolves in the store),
+  `crates/tools/src/builtins/recall.rs` (exact body, unknown id, a lost body, the bound following the
+  window) and `crates/harnessd/src/harness/tests/recall.rs` (the base carries the map, and `recall`
+  opens the body it names).
 
 Still open:
 
-- **The map and `recall`.** Evicted spans are not replaced by an addressable map in the new base:
-  the record still carries prose, and nothing zooms back in. The stub names where the body was, but
-  no `recall` tool reads it.
 - **Cache cost.** The reduced prompt is no longer a byte prefix of the live stream, so the
   summary turn on a local server reads cold. It is a smaller prompt, not a warm one.
 - **Standalone `prune`** (§6) is not built.
 
 Also open, honestly:
 
-- **Node labelling quality.** A bad label makes a node unfindable - with fewer words to guess
-  from than the transcript had.
-- **The map grows.** Slower than the transcript, not zero.
+- **Node labelling quality.** A map line names the tool and what the call named - the file and its
+  window, the command, the child - and no more, so a unit whose subject is ambiguous is hard to pick
+  out of a page of them. A bad label makes a node unfindable, with fewer words to guess from than
+  the transcript had.
+- **The map grows.** Slower than the transcript, not zero: it is one line per evicted body, and it
+  stays in the base for as long as the base does.
 - **What produces nodes for prose spans.** Tool calls are structural; reasoning and assistant
   text are not, and something has to label them cheaply enough to run every turn.
 - **Nothing here is scheduled.** §4 is the argument for replacing the summarisation design, not
