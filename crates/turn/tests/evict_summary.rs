@@ -197,7 +197,7 @@ fn shown(items: &[TranscriptItem], id: &str) -> String {
             _ => None,
         })
         .unwrap_or("<no such call>");
-    let head: String = payload.chars().take(48).collect();
+    let head: String = payload.chars().take(240).collect();
     format!("{head:?} ({} byte(s))", payload.len())
 }
 
