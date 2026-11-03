@@ -182,7 +182,7 @@ impl Embedder {
     /// Build the embedder the mode asks for, or `None` when the mode is `off` - which is the
     /// whole of "lexical only".
     pub fn open(settings: &Settings, data_dir: &Path) -> Result<Option<Arc<Embedder>>, TierError> {
-        Embedder::open_pinned(settings, data_dir, &Pin::shipped(), Policy::standard())
+        Embedder::open_pinned(settings, data_dir, &Pin::of(settings), Policy::standard())
     }
 
     /// [`Embedder::open`] under a stated pin and retry rule. The pin is a parameter because a

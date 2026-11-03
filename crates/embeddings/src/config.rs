@@ -8,6 +8,9 @@
 //! download = false                  # ... and never fetch the built-in model
 //! mode = "http://host:8080"         # an OpenAI-compatible /v1/embeddings
 //! model = "text-embedding-3-small"  # ... and the name it knows
+//! builtin_repo = "owner/name"       # ... and fetch the built-in model from somewhere else
+//! builtin_revision = "<40 hex>"     # ... at another commit of it, with
+//! builtin_sha256 = { "config.json" = "<64 hex>", ... }   # ... a hash per file, all three
 //! ```
 //!
 //! Three values for one key, because they are three answers to one question: who turns
@@ -17,7 +20,11 @@
 //! `download` is the fourth key and the only one that is not about the answer: it says whether
 //! a box with `mode = "internal"` and no `model` may fetch the built-in one, and `false` is a
 //! box that must not reach the network.
+//!
+//! The three `builtin_` keys are the pin, and the one rule is that a commit is never written
+//! without its hashes: a new revision with the old ones can never verify.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::Deserialize;
@@ -51,6 +58,19 @@ impl Mode {
     }
 }
 
+/// The built-in model's pin as a section may change it: the repository the files come from,
+/// the commit they are pinned at, and a hash for each. Empty is the table this build ships, and
+/// the parser refuses a pin written in half, so a pin built from this is shipped or whole.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PinOverride {
+    /// The repository's `owner/name`, when the section named one to fetch from instead.
+    pub repo: Option<String>,
+    /// The commit, when the section pinned another one.
+    pub revision: Option<String>,
+    /// A sha-256 per file, keyed by the file's own name; empty is the shipped hashes.
+    pub sha256: BTreeMap<String, String>,
+}
+
 /// The whole `[embeddings]` section, and the answer to "is there a second tier".
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Settings {
@@ -58,6 +78,8 @@ pub struct Settings {
     /// Whether a box may fetch the built-in model. `false` is for a box that must not reach
     /// the network: the model is then whatever is already on disk, and nothing is fetched.
     pub download: bool,
+    /// The built-in model's pin, as far as the section changed it.
+    pub builtin: PinOverride,
 }
 
 impl Default for Settings {
@@ -65,6 +87,7 @@ impl Default for Settings {
         Settings {
             mode: Mode::Off,
             download: true,
+            builtin: PinOverride::default(),
         }
     }
 }
@@ -89,6 +112,11 @@ pub enum ConfigError {
     ModelUnderOff,
     /// `model` under a URL mode whose name would be empty.
     NamelessRemoteModel,
+    /// A pin key whose value is not the shape the key takes. `key` is the key or the table
+    /// entry, so the sentence names what to fix.
+    PinShape { key: String, why: String },
+    /// A pin written in half, which could never verify.
+    HalfPin(String),
 }
 
 impl std::fmt::Display for ConfigError {
@@ -97,8 +125,8 @@ impl std::fmt::Display for ConfigError {
             ConfigError::Toml(e) => write!(f, "[embeddings]: {e}"),
             ConfigError::UnknownKey(k) => write!(
                 f,
-                "[embeddings] {k} is not a key this build knows; it reads `mode`, `model` and \
-                 `download`"
+                "[embeddings] {k} is not a key this build knows; it reads `mode`, `model`, \
+                 `download`, `builtin_repo`, `builtin_revision` and `builtin_sha256`"
             ),
             ConfigError::UnknownMode(m) => write!(
                 f,
@@ -120,6 +148,8 @@ impl std::fmt::Display for ConfigError {
                 "[embeddings] model names the model an endpoint answers to, and it is empty; \
                  an endpoint that wants none must still be named"
             ),
+            ConfigError::PinShape { key, why } => write!(f, "[embeddings] {key}: {why}"),
+            ConfigError::HalfPin(why) => write!(f, "[embeddings] {why}"),
         }
     }
 }
@@ -134,6 +164,11 @@ struct Raw {
     mode: Option<String>,
     model: Option<String>,
     download: Option<bool>,
+    /// The pin keys, carried as `Value` so a value of the wrong shape is refused by the name the
+    /// operator wrote rather than by serde's message about the table.
+    builtin_repo: Option<toml::Value>,
+    builtin_revision: Option<toml::Value>,
+    builtin_sha256: Option<toml::Value>,
 }
 
 impl Settings {
@@ -190,6 +225,11 @@ impl Settings {
         Ok(Settings {
             mode,
             download: raw.download.unwrap_or(true),
+            builtin: pin_of(
+                raw.builtin_repo.as_ref(),
+                raw.builtin_revision.as_ref(),
+                raw.builtin_sha256.as_ref(),
+            )?,
         })
     }
 
@@ -204,17 +244,180 @@ impl Settings {
     }
 }
 
+/// The three pin keys, each read in the shape it was written. A revision without the three
+/// hashes is refused here and not at the fetch: the old hashes can never verify under a new
+/// commit, so the fetch would refuse the very bytes the section asked to trust.
+fn pin_of(
+    repo: Option<&toml::Value>,
+    revision: Option<&toml::Value>,
+    hashes: Option<&toml::Value>,
+) -> Result<PinOverride, ConfigError> {
+    let repo = match repo {
+        None => None,
+        Some(value) => {
+            let text = text_of("builtin_repo", value)?;
+            if !is_repo(&text) {
+                return Err(ConfigError::PinShape {
+                    key: "builtin_repo".to_string(),
+                    why: format!(
+                        "{text:?} is not a repository id; write `builtin_repo = \"owner/name\"`"
+                    ),
+                });
+            }
+            Some(text)
+        }
+    };
+    let revision = match revision {
+        None => None,
+        Some(value) => {
+            let text = text_of("builtin_revision", value)?;
+            if !filled(&text, 40) {
+                return Err(ConfigError::PinShape {
+                    key: "builtin_revision".to_string(),
+                    why: format!(
+                        "{text:?} is not a commit; a revision is 40 hexadecimal digits, and not \
+                         the all-zero filler"
+                    ),
+                });
+            }
+            Some(text)
+        }
+    };
+    let mut sha256 = BTreeMap::new();
+    if let Some(value) = hashes {
+        let table = value.as_table().ok_or_else(|| ConfigError::PinShape {
+            key: "builtin_sha256".to_string(),
+            why: format!(
+                "is {}, not a table of `\"<file>\" = \"<sha-256>\"`: {}",
+                kind(value),
+                files()
+            ),
+        })?;
+        for (file, value) in table {
+            if !crate::model::FILES.contains(&file.as_str()) {
+                return Err(ConfigError::PinShape {
+                    key: format!("builtin_sha256.{file}"),
+                    why: format!("is not a file of the checkpoint; it has {}", files()),
+                });
+            }
+            let text = text_of(&format!("builtin_sha256.{file}"), value)?;
+            if !filled(&text, 64) {
+                return Err(ConfigError::PinShape {
+                    key: format!("builtin_sha256.{file}"),
+                    why: format!(
+                        "{text:?} is not a sha-256; a hash is 64 hexadecimal digits, and not the \
+                         all-zero filler"
+                    ),
+                });
+            }
+            sha256.insert(file.clone(), text);
+        }
+        if let Some(missing) = crate::model::FILES
+            .iter()
+            .find(|f| !sha256.contains_key(**f))
+        {
+            return Err(ConfigError::PinShape {
+                key: "builtin_sha256".to_string(),
+                why: format!(
+                    "does not name {missing}, and a pin is a sha-256 for every file the \
+                     checkpoint has: {}",
+                    files()
+                ),
+            });
+        }
+    }
+    if revision.is_some() && sha256.is_empty() {
+        return Err(ConfigError::HalfPin(format!(
+            "builtin_revision is written without builtin_sha256, and a new commit with the \
+             shipped hashes can never verify; write a sha-256 for each of {}",
+            files()
+        )));
+    }
+    if revision.is_none() && !sha256.is_empty() {
+        return Err(ConfigError::HalfPin(
+            "builtin_sha256 is written without builtin_revision, and the shipped commit's files \
+             hash to the shipped hashes; write the commit these belong to"
+                .to_string(),
+        ));
+    }
+    Ok(PinOverride {
+        repo,
+        revision,
+        sha256,
+    })
+}
+
+/// The checkpoint's files in one list, for a refusal that has to say what a pin covers.
+fn files() -> String {
+    crate::model::FILES.join(", ")
+}
+
+/// A key whose whole value is a string, refused by name when it is anything else.
+fn text_of(key: &str, value: &toml::Value) -> Result<String, ConfigError> {
+    match value {
+        toml::Value::String(text) => Ok(text.clone()),
+        other => Err(ConfigError::PinShape {
+            key: key.to_string(),
+            why: format!("is {}, not a string", kind(other)),
+        }),
+    }
+}
+
+/// `owner/name`: one slash, neither half empty, and nothing else - the shape a repository id has.
+fn is_repo(text: &str) -> bool {
+    match text.split_once('/') {
+        Some((owner, name)) => {
+            !owner.is_empty()
+                && !name.is_empty()
+                && !name.contains('/')
+                && !text.contains(char::is_whitespace)
+        }
+        None => false,
+    }
+}
+
+/// A commit or a sha-256: `len` hexadecimal digits, and not the all-zero filler a table holds
+/// before its values are known.
+fn filled(text: &str, len: usize) -> bool {
+    text.len() == len
+        && text.bytes().all(|b| b.is_ascii_hexdigit())
+        && text.bytes().any(|b| b != b'0')
+}
+
+/// What a TOML value is, in the words a refusal names it by.
+fn kind(value: &toml::Value) -> &'static str {
+    match value {
+        toml::Value::String(_) => "a string",
+        toml::Value::Integer(_) => "a whole number",
+        toml::Value::Float(_) => "a number",
+        toml::Value::Boolean(_) => "a boolean",
+        toml::Value::Datetime(_) => "a date",
+        toml::Value::Array(_) => "a list",
+        toml::Value::Table(_) => "a table",
+    }
+}
+
 /// `serde`'s own message names the offending key; this turns it into the variant that
 /// carries the name, so the refusal reads as a sentence about the file.
 fn unknown_key(e: &toml::de::Error, table: &toml::Table) -> ConfigError {
     let text = e.to_string();
     for key in table.keys() {
-        if key != "mode" && key != "model" && key != "download" {
+        if !KNOWN.contains(&key.as_str()) {
             return ConfigError::UnknownKey(key.clone());
         }
     }
     ConfigError::Toml(text)
 }
+
+/// Every key this build reads under `[embeddings]`.
+const KNOWN: [&str; 6] = [
+    "mode",
+    "model",
+    "download",
+    "builtin_repo",
+    "builtin_revision",
+    "builtin_sha256",
+];
 
 #[cfg(test)]
 mod tests {
@@ -340,5 +543,155 @@ mod tests {
             Settings::from_toml("embeddings = 3\n"),
             Err(ConfigError::Toml(_))
         ));
+    }
+
+    const REV: &str = "1110a243fdf4706b3f48f1d95db1a4f5529b4d41";
+    const CONFIG: &str = "953f9c0d463486b10a6871cc2fd59f223b2c70184f49815e7efbcab5d8908b41";
+    const TOKENIZER: &str = "be50c3628f2bf5bb5e3a7f17b1f74611b2561a3a27eeab05e5aa30f411572037";
+    const WEIGHTS: &str = "53aa51172d142c89d9012cce15ae4d6cc0ca6895895114379cacb4fab128d9db";
+
+    /// The three pin keys in one section, which is how a box that reviews another commit or
+    /// mirrors the checkpoint writes them.
+    fn pinned(revision: &str, hashes: &str) -> String {
+        format!(
+            "[embeddings]\nmode = \"internal\"\nbuiltin_revision = \"{revision}\"\n\
+             builtin_sha256 = {{ {hashes} }}\n"
+        )
+    }
+
+    fn all_three() -> String {
+        format!(
+            "\"config.json\" = \"{CONFIG}\", \"tokenizer.json\" = \"{TOKENIZER}\", \
+             \"model.safetensors\" = \"{WEIGHTS}\""
+        )
+    }
+
+    /// **A section may pin its own.** The shipped table is what a section that says nothing
+    /// gets, and each key it does write is kept as it wrote it.
+    #[test]
+    fn a_section_can_pin_its_own_revision_and_hashes() {
+        let shipped = Settings::from_toml("[embeddings]\nmode = \"internal\"\n").unwrap();
+        assert_eq!(shipped.builtin, PinOverride::default());
+
+        let own = Settings::from_toml(&pinned(REV, &all_three())).unwrap();
+        assert_eq!(own.builtin.revision.as_deref(), Some(REV));
+        assert_eq!(own.builtin.sha256["config.json"], CONFIG);
+        assert_eq!(own.builtin.sha256["tokenizer.json"], TOKENIZER);
+        assert_eq!(own.builtin.sha256["model.safetensors"], WEIGHTS);
+        assert!(
+            own.builtin.repo.is_none(),
+            "the shipped repository unless named"
+        );
+
+        let mirrored = Settings::from_toml(
+            "[embeddings]\nmode = \"internal\"\nbuiltin_repo = \"me/all-MiniLM-L6-v2\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            mirrored.builtin.repo.as_deref(),
+            Some("me/all-MiniLM-L6-v2")
+        );
+        assert!(
+            mirrored.builtin.revision.is_none(),
+            "and the shipped commit"
+        );
+    }
+
+    /// **A revision with the old hashes can never verify.** A fetch would have to refuse the
+    /// bytes it was told to trust, so the half is refused where it is written, in both
+    /// directions.
+    #[test]
+    fn a_pin_written_half_is_refused() {
+        let err = Settings::from_toml(&format!(
+            "[embeddings]\nmode = \"internal\"\nbuiltin_revision = \"{REV}\"\n"
+        ))
+        .unwrap_err();
+        assert!(matches!(err, ConfigError::HalfPin(_)), "{err}");
+        assert!(err.to_string().contains("builtin_sha256"), "{err}");
+
+        let err = Settings::from_toml(&format!(
+            "[embeddings]\nmode = \"internal\"\nbuiltin_sha256 = {{ {} }}\n",
+            all_three()
+        ))
+        .unwrap_err();
+        assert!(matches!(err, ConfigError::HalfPin(_)), "{err}");
+        assert!(err.to_string().contains("builtin_revision"), "{err}");
+    }
+
+    /// Every pin key is checked where it is written, and the refusal names the key: a commit is
+    /// 40 hexadecimal digits, a sha-256 is 64, and a file is one the checkpoint has.
+    #[test]
+    fn a_pin_key_of_the_wrong_shape_is_refused_by_name() {
+        let cases: Vec<(&str, String)> = vec![
+            ("builtin_revision", pinned("abc", &all_three())),
+            (
+                "builtin_revision",
+                format!(
+                    "[embeddings]\nmode = \"internal\"\nbuiltin_revision = 2024\n\
+                     builtin_sha256 = {{ {} }}\n",
+                    all_three()
+                ),
+            ),
+            ("builtin_revision", pinned(&"0".repeat(40), &all_three())),
+            (
+                "builtin_sha256",
+                format!(
+                    "[embeddings]\nmode = \"internal\"\nbuiltin_revision = \"{REV}\"\n\
+                     builtin_sha256 = \"{CONFIG}\"\n"
+                ),
+            ),
+            (
+                "config.json",
+                pinned(
+                    REV,
+                    &format!(
+                        "\"config.json\" = 612, \"tokenizer.json\" = \"{TOKENIZER}\", \
+                         \"model.safetensors\" = \"{WEIGHTS}\""
+                    ),
+                ),
+            ),
+            (
+                "config.json",
+                pinned(
+                    REV,
+                    &format!(
+                        "\"config.json\" = \"abc\", \"tokenizer.json\" = \"{TOKENIZER}\", \
+                         \"model.safetensors\" = \"{WEIGHTS}\""
+                    ),
+                ),
+            ),
+            (
+                "model.safetensors",
+                pinned(
+                    REV,
+                    &format!(
+                        "\"config.json\" = \"{CONFIG}\", \"tokenizer.json\" = \"{TOKENIZER}\""
+                    ),
+                ),
+            ),
+            (
+                "encoder.json",
+                pinned(
+                    REV,
+                    &format!("{}, \"encoder.json\" = \"{CONFIG}\"", all_three()),
+                ),
+            ),
+            (
+                "builtin_repo",
+                "[embeddings]\nmode = \"internal\"\nbuiltin_repo = \"all-MiniLM-L6-v2\"\n"
+                    .to_string(),
+            ),
+            (
+                "builtin_repo",
+                "[embeddings]\nmode = \"internal\"\nbuiltin_repo = 7\n".to_string(),
+            ),
+        ];
+        for (named, text) in cases {
+            let err = Settings::from_toml(&text).unwrap_err();
+            assert!(
+                err.to_string().contains(named),
+                "{text}\n  named {named:?}, said {err}"
+            );
+        }
     }
 }

@@ -8,42 +8,51 @@ use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
+use crate::config::{PinOverride, Settings};
 use crate::model::BUILTIN_MODEL;
 
 /// The commit the three files are pinned at. A branch would move under a box that fetched
 /// before it moved, so this is a full hash, and every URL below is built under it.
 pub const REVISION: &str = "1110a243fdf4706b3f48f1d95db1a4f5529b4d41";
 
-/// The repository's `resolve` root, with `/<revision>/<file>` under it.
+/// The repository the three files come from, and its `resolve` root with `/<revision>/<file>`
+/// under it. A section may name another repository with `builtin_repo`.
+pub const REPO: &str = "sentence-transformers/all-MiniLM-L6-v2";
 pub const BASE: &str = "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve";
 
-/// One file of the checkpoint: what it is called, what it must hash to, and what it weighs -
-/// the last only so the one sentence before a fetch can say how much is coming.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The `resolve` root of a repository a section named instead of the shipped one.
+pub fn base_for(repo: &str) -> String {
+    format!("https://huggingface.co/{repo}/resolve")
+}
+
+/// One file of the checkpoint: what it is called, what it must hash to, and what it weighs.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Source {
     pub file: &'static str,
-    pub sha256: &'static str,
-    pub bytes: u64,
+    pub sha256: String,
+    /// What the file weighs, when the pin knows: the sentence before a fetch says how much is
+    /// coming only for bytes somebody here measured.
+    pub bytes: Option<u64>,
 }
 
 /// **The three files, and the trust in them.** `sha256` is what the bytes must hash to, and
 /// `bytes` is how much the one sentence before a fetch promises is coming.
-pub const SOURCES: [Source; 3] = [
-    Source {
-        file: "config.json",
-        sha256: "953f9c0d463486b10a6871cc2fd59f223b2c70184f49815e7efbcab5d8908b41",
-        bytes: 612,
-    },
-    Source {
-        file: "tokenizer.json",
-        sha256: "be50c3628f2bf5bb5e3a7f17b1f74611b2561a3a27eeab05e5aa30f411572037",
-        bytes: 466_247,
-    },
-    Source {
-        file: "model.safetensors",
-        sha256: "53aa51172d142c89d9012cce15ae4d6cc0ca6895895114379cacb4fab128d9db",
-        bytes: 90_868_376,
-    },
+const SHIPPED: [(&str, &str, u64); 3] = [
+    (
+        "config.json",
+        "953f9c0d463486b10a6871cc2fd59f223b2c70184f49815e7efbcab5d8908b41",
+        612,
+    ),
+    (
+        "tokenizer.json",
+        "be50c3628f2bf5bb5e3a7f17b1f74611b2561a3a27eeab05e5aa30f411572037",
+        466_247,
+    ),
+    (
+        "model.safetensors",
+        "53aa51172d142c89d9012cce15ae4d6cc0ca6895895114379cacb4fab128d9db",
+        90_868_376,
+    ),
 ];
 
 /// A pin a fetch runs against: the shipped table, or a test's own bytes, which is the only
@@ -56,12 +65,41 @@ pub struct Pin {
 }
 
 impl Pin {
-    /// The table this build ships.
+    /// The table this build ships - the shipped override, which is no override at all.
     pub fn shipped() -> Pin {
+        Pin::over(&PinOverride::default())
+    }
+
+    /// **The pin a `[embeddings]` section asks for**: the shipped table with the repository, the
+    /// commit and the hashes the section wrote over it. The parser refused a half, so this is
+    /// either the shipped pin or a whole other one.
+    pub fn of(settings: &Settings) -> Pin {
+        Pin::over(&settings.builtin)
+    }
+
+    fn over(wrote: &PinOverride) -> Pin {
+        let sources = SHIPPED
+            .iter()
+            .map(|(file, sha256, bytes)| Source {
+                file,
+                sha256: match wrote.sha256.get(*file) {
+                    Some(hash) => hash.clone(),
+                    None => (*sha256).to_string(),
+                },
+                // A hash somebody else chose comes with bytes nobody here measured.
+                bytes: wrote.sha256.is_empty().then_some(*bytes),
+            })
+            .collect();
         Pin {
-            base: BASE.to_string(),
-            revision: REVISION.to_string(),
-            sources: SOURCES.to_vec(),
+            base: match &wrote.repo {
+                Some(repo) => base_for(repo),
+                None => BASE.to_string(),
+            },
+            revision: wrote
+                .revision
+                .clone()
+                .unwrap_or_else(|| REVISION.to_string()),
+            sources,
         }
     }
 
@@ -100,7 +138,7 @@ impl Pin {
     /// the wrong length, one that is not hexadecimal, or the all-zero filler a table is written
     /// with before its values are known is a pin no fetch may run under.
     pub fn is_filled(&self) -> bool {
-        pinned(&self.revision, 40) && self.sources.iter().all(|s| pinned(s.sha256, 64))
+        pinned(&self.revision, 40) && self.sources.iter().all(|s| pinned(&s.sha256, 64))
     }
 
     /// Are all three files already here? Checked before anything is fetched, so a box that
@@ -214,17 +252,19 @@ pub fn ensure(
 /// The one sentence a box says before it fetches: what, from where, how much, where it is
 /// kept, and the fact that it happens once.
 fn sentence(pin: &Pin, dir: &Path) -> String {
-    let bytes: u64 = pin.sources().iter().map(|s| s.bytes).sum();
+    let weighed: Option<u64> = pin.sources().iter().map(|s| s.bytes).sum();
+    let files = match weighed {
+        Some(bytes) => format!("{} files, {}", pin.sources().len(), weigh(bytes)),
+        None => format!("{} files", pin.sources().len()),
+    };
     format!(
         "the built-in embedding model {} at commit {} is not in {}, so it is being fetched from \
-         {} ({} files, {}): this happens once, and every score this box makes is the words alone \
+         {} ({files}): this happens once, and every score this box makes is the words alone \
          until it lands",
         crate::model::BUILTIN_MODEL,
         &pin.revision()[..pin.revision().len().min(12)],
         dir.display(),
         pin.base,
-        pin.sources().len(),
-        weigh(bytes)
     )
 }
 
@@ -381,14 +421,14 @@ mod tests {
         );
         for source in pin.sources() {
             assert!(
-                is_hex(source.sha256, 64) && source.sha256.bytes().any(|b| b != b'0'),
+                is_hex(&source.sha256, 64) && source.sha256.bytes().any(|b| b != b'0'),
                 "{} is pinned at {:?}, and a pin is a full 64-hex sha-256",
                 source.file,
                 source.sha256
             );
             assert!(
-                source.bytes > 0,
-                "{} is weighed {} bytes, and the sentence before a fetch says how much is \
+                source.bytes.is_some_and(|b| b > 0),
+                "{} is weighed {:?} bytes, and the sentence before a fetch says how much is \
                  coming",
                 source.file,
                 source.bytes
@@ -414,6 +454,53 @@ mod tests {
                 .url("config.json")
                 .ends_with(&format!("/{REVISION}/config.json"))
         );
+    }
+
+    /// **A pin a section wrote is a pin of its own.** Every URL, the directory the files land in
+    /// and the hash each file must have follow the section, and the shipped table is what a
+    /// section that wrote none of it gets.
+    #[test]
+    fn a_pin_a_section_wrote_follows_the_section() {
+        let rev = "2222222222222222222222222222222222222222";
+        let hash = "abc123".to_string() + &"0".repeat(58);
+        let section = format!(
+            "[embeddings]\nmode = \"internal\"\nbuiltin_repo = \"me/all-MiniLM-L6-v2\"\n\
+             builtin_revision = \"{rev}\"\nbuiltin_sha256 = {{ \"config.json\" = \"{hash}\", \
+             \"tokenizer.json\" = \"{hash}\", \"model.safetensors\" = \"{hash}\" }}\n"
+        );
+        let pin = Pin::of(&Settings::from_toml(&section).expect("the section"));
+        assert_eq!(pin.revision(), rev);
+        assert_eq!(
+            pin.url("config.json"),
+            format!("https://huggingface.co/me/all-MiniLM-L6-v2/resolve/{rev}/config.json")
+        );
+        assert_eq!(
+            pin.dir(Path::new("/data")),
+            Path::new("/data")
+                .join("models")
+                .join(BUILTIN_MODEL)
+                .join(rev)
+        );
+        for source in pin.sources() {
+            assert_eq!(
+                source.sha256, hash,
+                "{} takes the section's hash",
+                source.file
+            );
+            assert_eq!(
+                source.bytes, None,
+                "a section's revision comes with bytes nobody here measured"
+            );
+        }
+        assert!(pin.is_filled());
+
+        let shipped = Pin::of(&Settings::from_toml("[embeddings]\nmode = \"internal\"\n").unwrap());
+        assert_eq!(shipped.revision(), REVISION);
+        assert_eq!(
+            shipped.url("config.json"),
+            Pin::shipped().url("config.json")
+        );
+        assert_eq!(shipped.sources(), Pin::shipped().sources());
     }
 
     /// **The first use fetches the three files and the second start does not.** The bytes

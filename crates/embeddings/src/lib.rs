@@ -42,7 +42,7 @@ mod fake;
 
 pub use builtin::{DownloadError, Pin, Source};
 pub use cache::{Cache, CacheError, Hit, db_path};
-pub use config::{ConfigError, Mode, Settings};
+pub use config::{ConfigError, Mode, PinOverride, Settings};
 pub use cosine::{Index, cosine};
 pub use model::{BUILTIN_MODEL, Model, ModelError, builtin_dir};
 pub use remote::{Remote, RemoteError};

@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 
 use sha2::{Digest, Sha256};
 
-use crate::builtin::{Pin, REVISION, SOURCES, Source};
+use crate::builtin::{Pin, REVISION, Source};
 
 /// A scratch directory that removes itself, so a fixture never outlives its test.
 pub struct Dir(PathBuf);
@@ -52,11 +52,11 @@ impl Checkpoint {
     pub fn new() -> Checkpoint {
         let dir = Dir::new("bytes");
         crate::testing::tiny_bert(dir.path()).expect("write the fixture");
-        let files = SOURCES
+        let files = crate::model::FILES
             .iter()
-            .map(|s| {
-                let bytes = std::fs::read(dir.path().join(s.file)).expect("read the fixture");
-                (s.file, bytes)
+            .map(|file| {
+                let bytes = std::fs::read(dir.path().join(file)).expect("read the fixture");
+                (*file, bytes)
             })
             .collect();
         Checkpoint { files }
@@ -68,14 +68,14 @@ impl Checkpoint {
         Pin::new(
             base,
             REVISION,
-            SOURCES
+            crate::model::FILES
                 .iter()
-                .map(|s| {
-                    let bytes = self.files[s.file].clone();
+                .map(|file| {
+                    let bytes = &self.files[file];
                     Source {
-                        file: s.file,
-                        sha256: owned_hash(&bytes),
-                        bytes: bytes.len() as u64,
+                        file,
+                        sha256: owned_hash(bytes),
+                        bytes: Some(bytes.len() as u64),
                     }
                 })
                 .collect(),
@@ -92,11 +92,10 @@ impl Checkpoint {
     }
 }
 
-/// A hash a test computed, leaked: a `Source` names its hash with a `&'static str` because the
-/// shipped table is a constant, and a test's is a few bytes for the life of the binary.
-pub fn owned_hash(bytes: &[u8]) -> &'static str {
-    let text = format!("{:x}", Sha256::digest(bytes));
-    Box::leak(text.into_boxed_str())
+/// A hash a test computed, as the `String` a `Source` names: the shipped table's are constants
+/// and a test's are the bytes it just wrote.
+pub fn owned_hash(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
 }
 
 /// A loopback HTTP server that answers each request with the bytes a test names, and counts
