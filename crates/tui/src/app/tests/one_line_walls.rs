@@ -562,6 +562,51 @@ fn a_panes_ending_names_one_row_and_keeps_what_the_program_said() {
     assert!(rows[4].contains("error: test failed"), "{:?}", rows[4]);
 }
 
+/// **A settled decision leads with its verdict.** The card led with the summary, so at eighty
+/// columns the verdict began past the cut and an allow and a refuse drew identically in monochrome;
+/// and a summary carrying a newline put the verdict on a line the card never read.
+#[test]
+fn a_settled_decision_leads_with_its_verdict() {
+    use letibot_sessionlog::event::{Decider, DecisionOutcome};
+    let decided = |summary: &str| {
+        Note::Decided(Box::new(SettledDecision {
+            req_id: "r1".into(),
+            kind: String::new(),
+            call_id: None,
+            summary: summary.into(),
+            outcome: DecisionOutcome::Selected {
+                option_id: "deny".into(),
+            },
+            by: Decider {
+                kind: "human".into(),
+                identity: "dead".into(),
+            },
+            basis: "dead chose `deny` at the head; the registry token was not in place".into(),
+            advice: None,
+            late: false,
+        }))
+    };
+    for summary in [
+        "run `cargo publish --dry-run` on the branch",
+        // A multi-line command is put in the summary verbatim, so the verdict lands on the last
+        // line of it - the one the card never read.
+        "run this and wait:\nbash -lc 'git push --force'\nthen say what happened",
+    ] {
+        let n = decided(summary);
+        let rows = note_lines(&cfg80(), &n);
+        assert!(
+            rows[0].contains("REFUSED (deny)"),
+            "the verdict is not on the row at eighty columns: {:?}",
+            rows[0]
+        );
+        let (popup, _) = click_note(n);
+        assert!(
+            holds(&popup, "REFUSED (deny)"),
+            "the popup lost the verdict: {popup}"
+        );
+    }
+}
+
 /// A decision that settled with no call to hang it on is a note of its own, and it was the one
 /// head-made note with no card: three wrapped rows of a permission's outcome.
 #[test]
@@ -598,8 +643,8 @@ fn a_settled_decision_is_one_row_at_eighty_columns() {
         holds(&popup, "the registry token was not in place"),
         "{popup}"
     );
-    // A refusal has to look refused: the word is in the popup, and the line is drawn in the
-    // failure register even where the word itself is cut. See `settled_role`.
+    // A refusal has to look refused: the word leads the row and is in the popup, and the line is
+    // drawn in the failure register. See `settled`.
     assert!(holds(&popup, "REFUSED (deny)"), "{popup}");
     let (card, _, _) = note_card(&n).expect("a card");
     assert_eq!(card.role, Role::Failure);

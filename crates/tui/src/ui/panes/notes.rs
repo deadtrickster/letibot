@@ -147,19 +147,27 @@ pub(crate) fn note_card(
         }
         // **A settled decision is a notice too** - three wrapped rows of a permission's outcome
         // with nothing to open. Its words are rano's, read back from the renderer rather than
-        // written a second time here, so the row and the listing cannot disagree.
+        // written a second time here, so the row and the listing cannot disagree. Every line of
+        // them, because a summary that carries a newline puts the verdict on the last one.
         Note::Decided(d) => {
             let said = note_view(n)
                 .unfolded(UNBOUNDED)
                 .into_iter()
-                .next()
                 .map(|l| l.plain())
-                .filter(|s| !s.trim().is_empty())?;
+                .collect::<Vec<_>>()
+                .join(" ");
+            if said.trim().is_empty() {
+                return None;
+            }
+            // **The row leads with the verdict.** rano writes it last, at the end of a sentence
+            // that begins with the summary, and a card cuts from its right end - so at eighty
+            // columns an allow and a refuse drew alike.
+            let (word, role) = settled(&d.outcome);
             let card = Card::new(
-                format!("{said} · {CLICK}"),
+                format!("{word} · {said} · {CLICK}"),
                 0,
-                "?",
-                settled_role(&d.outcome),
+                &word,
+                role,
                 format!("decided · {}", short(&d.summary, 60)),
             );
             Some((card, said, 0))
@@ -171,15 +179,22 @@ pub(crate) fn note_card(
 /// A width no note wraps at, so [`rano::agent::notes::Note::unfolded`] answers its one sentence.
 const UNBOUNDED: usize = 1_000_000;
 
-/// The register a settled decision is drawn in - rano's own arm for it, restated here for the
-/// same reason [`class_mark`] restates a warning's: a card is given a role, a note's line is not.
-fn settled_role(outcome: &letibot_sessionlog::event::DecisionOutcome) -> rano::style::Role {
+/// The word and the register a settled decision is drawn in, named together because the row leads
+/// with the one and is painted in the other.
+fn settled(outcome: &letibot_sessionlog::event::DecisionOutcome) -> (String, rano::style::Role) {
     use letibot_sessionlog::event::DecisionOutcome as O;
     use rano::style::Role;
     match outcome {
-        O::Selected { option_id } if option_id.starts_with("allow") => Role::Success,
-        O::Selected { .. } | O::TimedOut => Role::Failure,
-        O::Cancelled => Role::Pending,
+        O::Selected { option_id } if option_id.starts_with("allow") => {
+            (format!("allowed ({option_id})"), Role::Success)
+        }
+        O::Selected { option_id } => (format!("REFUSED ({option_id})"), Role::Failure),
+        O::Cancelled => ("cancelled".to_string(), Role::Pending),
+        // A deadline is not an answer, and must not read like one.
+        O::TimedOut => (
+            "NOT ANSWERED — the deadline decided it".to_string(),
+            Role::Failure,
+        ),
     }
 }
 
