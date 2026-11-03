@@ -249,12 +249,15 @@ const MEASURED_ELSEWHERE: [(&str, &str); 2] = [
     ),
 ];
 
+/// The checks M1's exit criterion needs, which are the ones this instrument can produce. Written
+/// as a list so a verdict that is missing is a failure rather than a smaller denominator.
+const REQUIRED: [&str; 8] = ["C1", "C3", "C4", "C5", "C6", "C8", "C9", "C10"];
+
 /// Whether M1's exit criterion is met, and the line that says so. The criterion is that C1-C10
 /// pass, so a check that never ran has not passed: `NOT RUN`, `PARTIAL` and a check that is
 /// missing are all not-passes here, which is the one place the whole run is allowed to be strict.
 fn exit_verdict(verdicts: &[String]) -> (bool, String) {
-    let mut seen: Vec<&str> = Vec::new();
-    let mut not_pass: Vec<String> = Vec::new();
+    let mut states: Vec<(&str, &str)> = Vec::new();
     for v in verdicts {
         let mut words = v.split_whitespace();
         let Some(check) = words.next() else { continue };
@@ -264,14 +267,22 @@ fn exit_verdict(verdicts: &[String]) -> (bool, String) {
         if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
             continue;
         }
-        if MEASURED_ELSEWHERE.iter().any(|(c, _)| *c == check) {
+        if MEASURED_ELSEWHERE.iter().any(|(c, _)| *c == check)
+            || states.iter().any(|(c, _)| *c == check)
+        {
             continue;
         }
-        seen.push(check);
-        let state = words.next().unwrap_or("");
-        if !state.starts_with("PASS") {
-            let state = if state == "NOT" { "NOT RUN" } else { state };
-            not_pass.push(format!("{check} {state}"));
+        states.push((check, words.next().unwrap_or("")));
+    }
+    let mut not_pass: Vec<String> = Vec::new();
+    for check in REQUIRED {
+        match states.iter().find(|(c, _)| *c == check) {
+            None => not_pass.push(format!("{check} MISSING")),
+            Some((_, state)) if !state.starts_with("PASS") => {
+                let state = if *state == "NOT" { "NOT RUN" } else { state };
+                not_pass.push(format!("{check} {state}"));
+            }
+            Some(_) => {}
         }
     }
     let elsewhere: Vec<String> = MEASURED_ELSEWHERE
@@ -279,19 +290,13 @@ fn exit_verdict(verdicts: &[String]) -> (bool, String) {
         .map(|(c, why)| format!("{c} ({why})"))
         .collect();
     let elsewhere = elsewhere.join(", ");
-    if seen.is_empty() {
-        return (
-            false,
-            format!("M1 EXIT  NOT MET  the run produced no C1-C10 verdict at all. {elsewhere}."),
-        );
-    }
     if not_pass.is_empty() {
         return (
             true,
             format!(
                 "M1 EXIT  MET  all {} checks this run can produce passed. Not measured here: \
                  {elsewhere}.",
-                seen.len()
+                REQUIRED.len()
             ),
         );
     }
@@ -301,7 +306,7 @@ fn exit_verdict(verdicts: &[String]) -> (bool, String) {
             "M1 EXIT  NOT MET  {} of {} checks are not a pass: {}. Not measured here either: \
              {elsewhere}.",
             not_pass.len(),
-            seen.len(),
+            REQUIRED.len(),
             not_pass.join(", ")
         ),
     )
@@ -1061,6 +1066,19 @@ mod tests {
             "a check that never ran left the run exiting 0: {line}"
         );
         assert!(line.contains("C6 NOT RUN"), "{line}");
+    }
+
+    /// A check the run never printed at all is not a pass either: the criterion needs every one of
+    /// them, and a verdict list with a hole in it would otherwise be counted as whole.
+    #[test]
+    fn a_check_the_run_never_printed_is_not_a_pass() {
+        let all: Vec<String> = ["C1", "C3", "C4", "C5", "C6", "C8", "C10"]
+            .iter()
+            .map(|c| format!("{c}  PASS  held"))
+            .collect();
+        let (met, line) = exit_verdict(&all);
+        assert!(!met, "C9 was missing and the run was called met: {line}");
+        assert!(line.contains("C9 MISSING"), "{line}");
     }
 
     /// The two checks this instrument cannot produce are named on the line and not counted as
