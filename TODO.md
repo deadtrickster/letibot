@@ -801,8 +801,8 @@ nothing to design.
   runs one by name with `--ignored`. `sudo_ask_live`'s re-exec spawn says `--ignored` with it.
 - 37 **DONE** — the workspace clippy step was run on the result (`sh scripts/clippy-gate.sh
   --offline --all-targets -- -D warnings -A clippy::result_large_err -A clippy::type_complexity -A
-  clippy::large_enum_variant -A clippy::too_many_arguments`), and it is what found the two
-  `SessionEvent` imports the new sink left unused.
+  clippy::large_enum_variant -A clippy::too_many_arguments`), which is the step the audit said had
+  never been run on a landed tree.
 - 38 **DONE** — R63: `sessions::Court`, one thread per session, armed by `Daemon::run`;
   `tests/thread_per_session.rs` is its done-when.
 - 39 **PARTLY** — R62's seam is built and tested against a fake ssh (`GateRunner`/`HostGate`,
