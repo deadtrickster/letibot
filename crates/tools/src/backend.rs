@@ -406,8 +406,20 @@ impl HostBackend {
         root: impl AsRef<Path>,
         grants: Vec<crate::exec::confine::Grant>,
     ) -> Result<Self, BackendError> {
-        let base = Self::writable(root)?;
-        let mut view = crate::exec::confine::ViewSpec::project_only(base.root.clone());
+        Self::confined_over(root.as_ref(), root.as_ref(), grants)
+    }
+
+    /// Commands confined to `project`'s view while the file tools keep their reach from
+    /// `files_root`. For a seat whose file tools are the whole host by design and whose
+    /// commands still get the boundary.
+    pub fn confined_over(
+        files_root: impl AsRef<Path>,
+        project: impl AsRef<Path>,
+        grants: Vec<crate::exec::confine::Grant>,
+    ) -> Result<Self, BackendError> {
+        let base = Self::writable(files_root)?;
+        let project = Self::writable(project)?.root;
+        let mut view = crate::exec::confine::ViewSpec::project_only(project.clone());
         for g in grants {
             view = view.granting(g);
         }
