@@ -689,35 +689,18 @@ pub fn normalise(source: &str) -> Normalised {
         return out;
     };
 
-    if root.has_error {
+    // `root.has_error` with nothing left to name means every error it left is one the text
+    // vouches for, which is the read-write redirect: the command reads.
+    if let Some(bad) = first_error(&root, source, None) {
         out.partial = true;
-        // Name the first bad region rather than the whole command: "somewhere in
-        // these 4 KiB" is not a position.
-        let (span, text) = first_error(&root, source)
-            .map(|n| (Span::of(n), clip(src(n, source), 120)))
-            .unwrap_or_else(|| {
-                (
-                    Span {
-                        start: 0,
-                        end: source.len(),
-                        line: 1,
-                        column: 0,
-                    },
-                    clip(source, 120),
-                )
-            });
         out.unresolved.push(Unresolved {
             construct: Construct::ParseError,
             decides: Decides::Structure,
-            span,
-            text,
+            span: Span::of(bad),
+            text: clip(src(bad, source), 120),
             known_prefix: None,
             stage: None,
-            why: "the bash grammar could not read this. tree-sitter RECOVERS rather \
-                  than failing, so the tree it produced here is a guess and every \
-                  claim drawn from it would be one too — measured: `<<<` recovers as \
-                  a read of a file whose name is the here-string's text"
-                .into(),
+            why: unreadable_why(bad, source),
         });
     }
 
@@ -726,16 +709,62 @@ pub fn normalise(source: &str) -> Normalised {
     out
 }
 
-fn first_error<'a>(node: &'a Node, _src: &str) -> Option<&'a Node> {
+/// What the grammar left behind, or `None` when every error in it is a shape whose recovery the
+/// text around it verifies. The first region it could not read is what the refusal names: "somewhere
+/// in these 4 KiB" is not a position.
+fn first_error<'a>(node: &'a Node, source: &str, parent: Option<&'a Node>) -> Option<&'a Node> {
     // tree-sitter's `is_error()` is a node KIND here - rano's `Node` is plain data and
     // names it rather than carrying a flag for it.
     if node.kind == "ERROR" || node.is_missing {
-        return Some(node);
+        return (!recovered_read_write(node, source, parent)).then_some(node);
     }
     if !node.has_error {
         return None;
     }
-    node.children.iter().find_map(|c| first_error(c, _src))
+    node.children
+        .iter()
+        .find_map(|c| first_error(c, source, Some(node)))
+}
+
+/// `3<>file`: the `<` this grammar has a token for, then the `>` recovered as an ERROR inside the
+/// same `file_redirect`. Excused only when that redirect is whole - one destination, no second word
+/// the recovery swallowed - because a credited recovery that lost a command is worse than a refusal.
+fn recovered_read_write(node: &Node, source: &str, parent: Option<&Node>) -> bool {
+    let whole = parent.is_some_and(|p| {
+        p.kind == "file_redirect"
+            && p.children
+                .iter()
+                .filter(|c| c.field.as_deref() == Some("destination"))
+                .count()
+                == 1
+    });
+    whole
+        && node.kind == "ERROR"
+        && src(node, source) == ">"
+        && source.get(..node.start).is_some_and(|s| s.ends_with('<'))
+}
+
+/// `<>file` with no descriptor: the `<` is the error and `>file` is a second redirect beside it, so
+/// the one redirect the shell opens is not in the tree and the command is refused.
+fn read_write_without_descriptor(node: &Node, source: &str) -> bool {
+    src(node, source) == "<" && source.get(node.end..).is_some_and(|s| s.starts_with('>'))
+}
+
+/// The sentence a refusal carries for the region the grammar could not read. Three of its shapes are
+/// the grammar's own limits rather than text nobody wrote, and each has a writing that reads, so the
+/// refusal names the shape and that writing instead of calling the whole tree a guess.
+fn unreadable_why(node: &Node, source: &str) -> String {
+    if read_write_without_descriptor(node, source) {
+        return "the shell reads `<>` as ONE read-write redirect and this grammar has no \
+                operator for it: with no descriptor the recovery is two redirects (`<` and \
+                `>file`) where the shell opens one. Write the descriptor you mean in front of \
+                the operator - `3<>file` is one redirect on fd 3 and it reads"
+            .into();
+    }
+    "the bash grammar could not read this. tree-sitter RECOVERS rather than failing, so the \
+     tree it produced here is a guess and every claim drawn from it would be one too — \
+     measured: `<<<` recovers as a read of a file whose name is the here-string's text"
+        .into()
 }
 
 fn src<'a>(node: &Node, source: &'a str) -> &'a str {
@@ -1233,7 +1262,16 @@ fn redirect_op(node: &Node) -> Option<RedirectOp> {
 }
 
 fn file_redirect(node: &Node, source: &str, out: &mut Normalised) -> Option<Redirect> {
-    let op = redirect_op(node)?;
+    let mut op = redirect_op(node)?;
+    // `3<>file`: this grammar has no read-write token, so the `>` arrives as an ERROR beside the
+    // `<` and the operator is read from the text the two characters spell.
+    if op == RedirectOp::Read
+        && kids(node)
+            .into_iter()
+            .any(|c| recovered_read_write(c, source, Some(node)))
+    {
+        op = RedirectOp::ReadWrite;
+    }
     let fd = child_field(node, "descriptor").and_then(|n| src(n, source).parse::<u32>().ok());
     let dest = child_field(node, "destination");
     let target = match dest {
@@ -2675,6 +2713,62 @@ mod tests {
         assert!(!x.is_resolved());
         assert_eq!(x.unresolved[0].construct, Construct::ParseError);
         assert_eq!(x.unresolved[0].decides, Decides::Structure);
+        assert!(
+            !x.unresolved[0].why.contains("here-document operator"),
+            "a here-string is not the here-document shape: {}",
+            x.unresolved[0].why
+        );
+    }
+
+    /// `<>` is one operator this grammar has no token for: the `>` is recovered as an ERROR between
+    /// the descriptor and the destination, both of which land where bash puts them, so the one
+    /// redirect is read instead of the whole command refused.
+    #[test]
+    fn a_read_write_redirect_is_read_rather_than_refused() {
+        let x = n("exec 3<>/dev/tcp/127.0.0.1/5432");
+        assert!(x.is_resolved(), "{:?}", x.unresolved);
+        assert_eq!(x.binaries(), vec!["exec"]);
+        let r = &x.stages[0].redirects;
+        assert_eq!(r.len(), 1, "{r:?}");
+        assert_eq!(r[0].op, RedirectOp::ReadWrite);
+        assert_eq!(r[0].fd, Some(3));
+        assert_eq!(
+            r[0].target,
+            RedirectTarget::File(Word::Literal("/dev/tcp/127.0.0.1/5432".into()))
+        );
+
+        // The one command in this tree that writes the operator: `fleet`'s port probe.
+        let probe = n(
+            "if (exec 3<>/dev/tcp/127.0.0.1/5432) 2>/dev/null; then exec 3>&-; \
+                       echo yes; else echo no; fi",
+        );
+        assert!(probe.is_resolved(), "{:?}", probe.unresolved);
+        assert_eq!(probe.binaries(), vec!["exec", "exec", "echo", "echo"]);
+    }
+
+    /// Without a descriptor the recovered tree holds TWO redirects (`<` and `>file`) where the shell
+    /// opens one, so the redirect is not read - and the refusal names the operator and says where a
+    /// descriptor makes it read.
+    #[test]
+    fn a_read_write_redirect_with_no_descriptor_names_the_writing_that_reads() {
+        for cmd in ["cmd <>file", "cmd 0<>file"] {
+            let x = n(cmd);
+            assert!(x.partial, "{cmd}");
+            assert_eq!(x.unresolved[0].construct, Construct::ParseError);
+            let why = &x.unresolved[0].why;
+            assert!(why.contains("<>"), "{cmd}: {why}");
+            assert!(why.contains("3<>file"), "{cmd}: {why}");
+        }
+
+        let written = n("cmd 3<>file");
+        assert!(written.is_resolved(), "{:?}", written.unresolved);
+        assert_eq!(written.stages[0].redirects[0].op, RedirectOp::ReadWrite);
+        assert_eq!(written.stages[0].redirects[0].fd, Some(3));
+
+        // And a recovery that swallowed a word behind the destination is not credited: `exec 3<>file
+        // cat`'s tree has `cat` as a second destination, so the `exec` of a command is refused.
+        let swallowed = n("exec 3<>file cat");
+        assert!(swallowed.partial, "{:?}", swallowed.unresolved);
     }
 
     #[test]
