@@ -5029,7 +5029,7 @@ the evidence through a function with a test that fails when the evidence violate
 
 ---
 
-## T19 — Rewrite or not, on the KV representation — **the angle UNVERIFIED-16 should be read from**
+## T19 — Rewrite or not, on the KV representation — **rows 1 and 2 are SETTLED NEGATIVE, measured (`experiments/kv-stitching/RESULTS.md`); left: row 3, which should not be built as written yet — it is the one checkpoint at `TokenLedger::prefix_len()` rather than §3.4.1's placement, and the §6 measurement that says whether it pays needs the :8080 server restarted, which is the operator's**
 
 The operator's framing, and it is the right one: llama.cpp's data structures are not
 the question. The question is **what would require a rewrite, and whether that rewrite
@@ -5548,7 +5548,7 @@ test.
 
 ---
 
-## T15 — Replace §10's compaction design with structural eviction — **design written, not scheduled**
+## T15 — Replace §10's compaction design with structural eviction — **PARTLY LANDED: structural eviction of units runs before every summary turn, and the record is sized by the room and gated on what it kept; left: the addressable map in the new base, the `recall` tool, a standalone `prune`, and §10 of the plan, which still reads leveled compaction**
 
 `docs/compaction.md`. Compaction today bundles *reducing what is resident* (necessary)
 with *destroying what is recoverable* (an accident). Falsifier B removed the usual
