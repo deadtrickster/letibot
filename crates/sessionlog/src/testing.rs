@@ -649,6 +649,10 @@ fn sweep_dead_links(prefix: &str) {
     }
 }
 
+/// A tree root no real process descends from, for `serve_registry_rooted`: a test that serves
+/// in-process and runs a head as its own child must not have that child judged a tool call.
+pub const FOREIGN_TREE: i32 = i32::MAX;
+
 #[cfg(test)]
 mod socket_path_tests {
     use super::socket_path;
@@ -704,7 +708,3 @@ mod short_alias_tests {
         let _ = std::fs::remove_dir_all(&long);
     }
 }
-
-/// A tree root no real process descends from, for `serve_registry_rooted`: a test that serves
-/// in-process and runs a head as its own child must not have that child judged a tool call.
-pub const FOREIGN_TREE: i32 = i32::MAX;
