@@ -16,7 +16,7 @@ use crate::view::Snapshot;
 /// Bumped when a frame's meaning changes in a way the other side cannot parse: a new variant is a
 /// deserialisation fault in the middle of a turn. Both sides compare it at ATTACH and refuse a
 /// mismatch by name.
-pub const PROTOCOL_VERSION: u32 = 60;
+pub const PROTOCOL_VERSION: u32 = 61;
 
 /// The names an operator may run through the head-run door: read-only and bounded, which admits
 /// `web_fetch` and not a tool that writes.
@@ -711,6 +711,14 @@ pub enum ClientFrame {
     /// The review queue and the merge queue, whole. Answered with [`ServerFrame::Queues`], and the
     /// bootstrap read, so a head never draws a queue it has not been told about.
     ListMergeQueue,
+    /// A chat request as the operator, through the daemon's operator seat on the host coordinator.
+    /// `op` is a room `Request` (rooms, say, dm, read, roster, inbox, ack) as JSON; the answer is
+    /// [`ServerFrame::RoomChat`]. The daemon refuses it on a connection that came out of a tool
+    /// call (`peer::door`), so a model cannot speak as the operator.
+    RoomChat {
+        client_request_id: String,
+        op: serde_json::Value,
+    },
     /// Make a new session in this daemon. It does not switch to it: the head sends
     /// [`ClientFrame::Switch`] once it has seen the id, because a head that wants a session ready
     /// for later should not have to leave the one it is in.
@@ -1016,6 +1024,12 @@ pub enum ServerFrame {
     Queues {
         snapshot: crate::event::QueueSnapshot,
     },
+    /// The answer to [`ClientFrame::RoomChat`]: the room `Response` as JSON, or `{"error": "..."}`
+    /// when the coordinator is unreachable or the request is not a chat request.
+    RoomChat {
+        client_request_id: String,
+        reply: serde_json::Value,
+    },
     Peeked {
         session_id: String,
         dropped: u64,
@@ -1190,6 +1204,7 @@ mod tests {
                 | ClientFrame::Interrupt { .. }
                 | ClientFrame::ListJobs
                 | ClientFrame::ListMergeQueue
+                | ClientFrame::RoomChat { .. }
                 | ClientFrame::ListNotes
                 | ClientFrame::ListSkills
                 | ClientFrame::LoadSkill { .. }
@@ -1296,6 +1311,7 @@ mod tests {
                 | ServerFrame::StandingNotes { .. }
                 | ServerFrame::Skills { .. }
                 | ServerFrame::Queues { .. }
+                | ServerFrame::RoomChat { .. }
                 | ServerFrame::Peeked { .. }
                 | ServerFrame::ModeConfirm { .. }
                 | ServerFrame::ModeSettled { .. }
@@ -1317,8 +1333,10 @@ mod tests {
         let _ = event;
         let _ = server;
         assert_eq!(
-            PROTOCOL_VERSION, 60,
-            "the match above was last reconciled with the frame list at 60. 60 put the row's body \
+            PROTOCOL_VERSION, 61,
+            "the match above was last reconciled with the frame list at 61. 61 added \
+             `ClientFrame::RoomChat` and `ServerFrame::RoomChat`, the operator's chat through the \
+             daemon: a version-60 daemon cannot decode the request, so the number moves. 60 put the row's body \
              on `SessionEvent::TranscriptAppended` (`item`, `body_bytes`) and gave `Caps` \
              `row_bodies`. Every new field is defaulted, so a version-59 head and a 60 daemon still \
              parse each other's frames, and the daemon keeps sending `TranscriptContent` to a head \

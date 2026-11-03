@@ -110,6 +110,9 @@ fn frame_kind(f: &ServerFrame) -> String {
             snapshot.reviews.len(),
             snapshot.merges.len()
         ),
+        ServerFrame::RoomChat {
+            client_request_id, ..
+        } => format!("RoomChat({client_request_id})"),
         ServerFrame::Peeked {
             session_id, events, ..
         } => format!("Peeked({}, {} events)", session_id, events.len()),

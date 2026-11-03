@@ -337,6 +337,17 @@ impl HeadClient {
         Ok(())
     }
 
+    /// Send one chat request as the operator. The answer arrives as `ServerFrame::RoomChat`
+    /// carrying the same id.
+    pub fn room_chat(&mut self, op: serde_json::Value) -> Result<String, ClientError> {
+        let client_request_id = self.next_id();
+        self.writer.write(&ClientFrame::RoomChat {
+            client_request_id: client_request_id.clone(),
+            op,
+        })?;
+        Ok(client_request_id)
+    }
+
     /// Ask the daemon to run a plugin pane's look now, because a head just opened it: the answer
     /// arrives as a `PluginPane` event rather than a reply.
     pub fn pane_open(&mut self, pane: &str, w: u32, h: u32) -> Result<(), ClientError> {

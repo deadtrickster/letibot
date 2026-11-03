@@ -87,6 +87,7 @@ pub fn door(frame: &ClientFrame) -> Option<&'static str> {
         ClientFrame::LoadSkill { .. } => "/skills, handing a skill to the session",
         ClientFrame::ListJobs => "the jobs pane",
         ClientFrame::ListMergeQueue => "the merge queue",
+        ClientFrame::RoomChat { .. } => "chat in the rooms as the operator",
         ClientFrame::NewSession { .. } => "/new",
         ClientFrame::ResumeSession { .. } => "resuming a session",
         ClientFrame::RenameSession { .. } => "/rename",
@@ -315,5 +316,23 @@ mod tests {
         // The program name holds a space and a bracket, which a field count from the left misses.
         let stat = "4242 (a program (x)) S 31337 4242 4242 0 -1";
         assert_eq!(stat_ppid(stat), Some(31337));
+    }
+
+    #[test]
+    fn a_tool_call_cannot_speak_as_the_operator_in_the_rooms() {
+        let frame = ClientFrame::RoomChat {
+            client_request_id: "c1".into(),
+            op: serde_json::json!({"type": "rooms"}),
+        };
+        let tool = Peer {
+            pid: Some(7),
+            inside: true,
+        };
+        let head = Peer {
+            pid: Some(8),
+            inside: false,
+        };
+        assert!(tool.refuses(&frame).is_some(), "a tool call is refused");
+        assert!(head.refuses(&frame).is_none(), "a head is served");
     }
 }

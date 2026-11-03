@@ -633,6 +633,12 @@ pub type SkillsSource = Arc<dyn Fn() -> Vec<crate::protocol::SkillRow> + Send + 
 
 /// A live read of one background job's output, answered off the worker: going through the
 /// command queue meant waiting behind whatever the session was doing.
+/// The operator's chat seat, as a head's request reaches it. See [`Registry::set_room_chat`].
+pub type RoomChatHandler = Arc<dyn Fn(serde_json::Value) -> serde_json::Value + Send + Sync>;
+
+/// See [`Registry::set_broadcast_observer`].
+pub type BroadcastObserver = Arc<dyn Fn(&crate::event::SessionEvent) + Send + Sync>;
+
 pub type JobOutputSource = Arc<dyn Fn(&str, u64) -> Option<crate::SessionEvent> + Send + Sync>;
 
 pub struct Registry {
@@ -658,6 +664,8 @@ pub struct Registry {
     /// One per session that has a process host, installed by its harness at open beside
     /// [`Registry::notes`] and removed with the session. See [`JobOutputSource`].
     job_output: Mutex<std::collections::HashMap<String, JobOutputSource>>,
+    room_chat: Mutex<Option<RoomChatHandler>>,
+    broadcast_observer: Mutex<Option<BroadcastObserver>>,
     /// The close runs ONCE and every other caller waits for it to finish: the `Stop` frame,
     /// `catch_signals` and a head's own exit all arrive here.
     close_once: std::sync::Once,
@@ -803,6 +811,8 @@ impl Registry {
             notes: Mutex::new(std::collections::HashMap::new()),
             skills: Mutex::new(std::collections::HashMap::new()),
             job_output: Mutex::new(std::collections::HashMap::new()),
+            room_chat: Mutex::new(None),
+            broadcast_observer: Mutex::new(None),
             close_once: std::sync::Once::new(),
             source: Mutex::new(None),
             rows: Mutex::new(None),
@@ -1001,6 +1011,33 @@ impl Registry {
     /// `FetchRow` for a trimmed ordinal answers `None`.
     pub fn set_row_source(&self, rows: Arc<dyn RowSource>) {
         *self.rows.lock().unwrap_or_else(|e| e.into_inner()) = Some(rows);
+    }
+
+    /// Called once for every daemon-level broadcast, before it reaches the sessions' logs.
+    pub fn set_broadcast_observer(&self, observer: BroadcastObserver) {
+        *self
+            .broadcast_observer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(observer);
+    }
+
+    /// The operator's chat seat: answers a head's `RoomChat` request. `None` on a daemon with no
+    /// host coordinator, in which case the reply says so.
+    pub fn set_room_chat(&self, handler: RoomChatHandler) {
+        *self.room_chat.lock().unwrap_or_else(|e| e.into_inner()) = Some(handler);
+    }
+
+    /// Run one operator chat request through the seat, or say there is none.
+    pub fn room_chat(&self, op: serde_json::Value) -> serde_json::Value {
+        let handler = self
+            .room_chat
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        match handler {
+            Some(h) => h(op),
+            None => serde_json::json!({"error": "this daemon has no room chat seat"}),
+        }
     }
 
     /// Where the oracle's exchange can be read. See [`DiagnosticSource`].
@@ -1634,6 +1671,14 @@ impl Registry {
             let g = self.lock();
             g.entries.iter().map(|(_, e)| e.hub.clone()).collect()
         };
+        let observer = self
+            .broadcast_observer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        if let Some(observe) = observer {
+            observe(&event);
+        }
         let mut reached = 0;
         for hub in hubs {
             hub.publish(event.clone());

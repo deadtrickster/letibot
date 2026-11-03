@@ -66,6 +66,8 @@ impl App {
             frame @ (ServerFrame::ModeConfirm { .. } | ServerFrame::ModeSettled { .. }) => {
                 self.on_mode_card(frame)
             }
+            // The operator's chat reply. The `/rooms` view reads it; nothing else asks yet.
+            ServerFrame::RoomChat { .. } => Disposition::Control,
             frame @ ServerFrame::Event { .. } => self.on_event_frame(frame),
             frame @ (ServerFrame::TermAttached { .. }
             | ServerFrame::TermStatus { .. }

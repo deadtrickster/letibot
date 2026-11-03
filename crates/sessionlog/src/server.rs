@@ -828,6 +828,16 @@ pub fn serve_conn_rooted(
                 };
                 writer.lock().unwrap().write(&f)?;
             }
+            Ok(ClientFrame::RoomChat {
+                client_request_id,
+                op,
+            }) => {
+                let f = ServerFrame::RoomChat {
+                    client_request_id,
+                    reply: registry.room_chat(op),
+                };
+                writer.lock().unwrap().write(&f)?;
+            }
             Ok(ClientFrame::NewSession {
                 client_request_id,
                 title,
