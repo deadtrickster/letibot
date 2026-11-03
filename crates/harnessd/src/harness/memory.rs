@@ -1,8 +1,7 @@
 //! What the model is told about memory where it chooses a call's cap.
 //!
-//! `bash`'s `memory` argument describes the policy and is rendered once, at open, because a tool
-//! schema is part of the session's stable prefix. What is free moves every second, so it rides the
-//! round's tail instead: composed for that round, committed nowhere, gone from the next one.
+//! `bash`'s `memory` argument describes the policy and is rendered once, at open, because a schema
+//! is the session's stable prefix. What is free moves every second, so it rides the round's tail.
 
 use letibot_tools::exec::memory::{Holds, Meminfo, MemoryPolicy};
 use letibot_transcript::{Speaker, TranscriptItem, UserPart};
@@ -65,7 +64,7 @@ mod tests {
             "{line}"
         );
         assert!(line.contains("12 GiB of 31 GiB is free"), "{line}");
-        assert!(line.contains("swap 8 GiB free"), "{line}");
+        assert!(line.contains("is free (swap 8 GiB)"), "{line}");
         assert!(line.contains("an ask up to 6 GiB is granted"), "{line}");
         assert!(line.contains("hold 300 MiB of 2 GiB promised"), "{line}");
         assert!(line.contains("gone from the next one"), "{line}");
