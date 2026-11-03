@@ -2113,6 +2113,18 @@ mod tests {
         assert_eq!(names, vec!["probe".to_string()]);
     }
 
+    /// A worker holds the runtime and asks its gate from its own thread, so the gate has to
+    /// cross a thread boundary and `Box<dyn Gate>` is only `Send` when the trait says so.
+    #[test]
+    fn a_runtime_and_its_gate_cross_a_thread_boundary() {
+        fn movable<T: Send + ?Sized>() {}
+        fn shareable<T: Sync + ?Sized>() {}
+        movable::<Box<dyn Gate>>();
+        shareable::<Box<dyn Gate>>();
+        movable::<ToolRuntime>();
+        shareable::<ToolRuntime>();
+    }
+
     /// A tool that runs a command line, for the changed-file check: the real `scripts_of`
     /// reads any call whose arguments carry a `command`, so the check is exercised through the
     /// same path a `bash` call takes without needing a process host.
