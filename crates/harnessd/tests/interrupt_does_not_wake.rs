@@ -423,6 +423,11 @@ impl Fake {
     }
 }
 
+/// How long the fake keeps saying words before it gives up: a hang guard, never the premise. A box
+/// that stalls this thread past the window would end the turn on the stream rather than on the
+/// operator's stop, so it is long enough that no stall can reach it.
+const STREAM_FOR: Duration = Duration::from_secs(300);
+
 /// Say another word every [`TICK`] until the client hangs up: the turn ends because it was
 /// stopped, not because the stream ran out.
 fn stream_until_hung_up(mut conn: TcpStream) -> std::io::Result<()> {
@@ -431,7 +436,7 @@ fn stream_until_hung_up(mut conn: TcpStream) -> std::io::Result<()> {
         "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n"
     )?;
     conn.flush()?;
-    let deadline = Instant::now() + PATIENCE;
+    let deadline = Instant::now() + STREAM_FOR;
     while Instant::now() < deadline {
         let frame = format!(
             "data: {}\n\n",
