@@ -505,6 +505,36 @@ fn c8(rows: &[Row]) -> String {
     )
 }
 
+/// C9: a system change appended at the tail leaves the stable prefix byte-identical, and the
+/// submission after it still reuses what the one before left. A change that rewrote the head is
+/// the failure; a change with no turn after it is only half measured.
+fn c9(update_at: Option<usize>, prefix_intact: bool, prefix_len: usize, after: &[f64]) -> String {
+    let Some(at) = update_at else {
+        return "C9  NOT RUN  the script contained no system change".to_string();
+    };
+    if !prefix_intact {
+        return "C9  FAIL  the stable prefix changed; the system update rewrote the head of \
+                the prompt rather than appending"
+            .to_string();
+    }
+    if after.is_empty() {
+        return format!(
+            "C9  PARTIAL  the update appended at item {at} and the stable prefix is \
+             byte-identical, but no turn followed it, so the cache half is unmeasured"
+        );
+    }
+    let worst = after.iter().copied().fold(f64::INFINITY, f64::min);
+    format!(
+        "C9  {}  the update appended at item {at}, the stable prefix ({prefix_len} tokens) is \
+         byte-identical, and the worst f_keep after it is {worst:.4}",
+        if worst >= COLLAPSE_KEEP {
+            "PASS"
+        } else {
+            "FAIL"
+        },
+    )
+}
+
 fn judge(
     rows: &[Row],
     vectors: &[Vec<TokenId>],
@@ -577,36 +607,21 @@ fn judge(
                     letibot_transcript::UserPart::Text { text }
                         if text.starts_with("<system-update seq="))))
     });
-    let after_update: Vec<&Row> = match update_at {
+    let after_update: Vec<f64> = match update_at {
         None => vec![],
         Some(_) => rows
             .iter()
             .skip_while(|r| r.kind != "system-update")
             .skip(1)
+            .filter_map(|r| r.m.f_keep())
             .collect(),
     };
-    let worst_after = after_update
-        .iter()
-        .filter_map(|r| r.m.f_keep())
-        .fold(f64::INFINITY, f64::min);
-    out.push(match (update_at, prefix_intact) {
-        (None, _) => "C9  NOT RUN  the script contained no system change".to_string(),
-        (Some(_), false) => {
-            "C9  FAIL  the stable prefix changed; the system update rewrote the head of \
-             the prompt rather than appending"
-                .to_string()
-        }
-        (Some(at), true) if after_update.is_empty() => format!(
-            "C9  PARTIAL  the update appended at item {at} and the stable prefix is \
-             byte-identical, but no turn followed it, so the cache half is unmeasured"
-        ),
-        (Some(at), true) => format!(
-            "C9  {}  the update appended at item {at}, the stable prefix ({} tokens) is \
-             byte-identical, and the worst f_keep after it is {worst_after:.4}",
-            if worst_after >= 0.90 { "PASS" } else { "FAIL" },
-            prefix_at_open.len()
-        ),
-    });
+    out.push(c9(
+        update_at,
+        prefix_intact,
+        prefix_at_open.len(),
+        &after_update,
+    ));
 
     // ---- C10: the two sides agree on what the prompt was -------------------
     let mut c10_bad: Vec<String> = Vec::new();
@@ -933,6 +948,25 @@ mod tests {
 
         let unread = c5(&[row(0, 1_000, 990, 1_000)]);
         assert!(unread.contains("C5  NOT RUN"), "{unread}");
+    }
+
+    /// C9's four verdicts: no change to make is not a pass, a rewritten head is the failure, a
+    /// change nothing followed is half measured, and a change the next submission reused is the
+    /// pass the script is written to reach.
+    #[test]
+    fn c9_tells_an_appended_change_from_a_rewritten_head() {
+        assert!(c9(None, true, 900, &[1.0]).contains("C9  NOT RUN"));
+        let rewritten = c9(Some(12), false, 900, &[1.0]);
+        assert!(rewritten.contains("C9  FAIL"), "{rewritten}");
+        let alone = c9(Some(12), true, 900, &[]);
+        assert!(alone.contains("C9  PARTIAL"), "{alone}");
+        assert!(alone.contains("item 12"), "{alone}");
+        let kept = c9(Some(12), true, 900, &[1.0, 0.995, 0.999]);
+        assert!(kept.contains("C9  PASS"), "{kept}");
+        assert!(kept.contains("(900 tokens)"), "{kept}");
+        assert!(kept.contains("0.9950"), "{kept}");
+        let dropped = c9(Some(12), true, 900, &[1.0, 0.5]);
+        assert!(dropped.contains("C9  FAIL"), "{dropped}");
     }
 
     /// C8's three verdicts. A submission whose reason never reached the metrics is the failure,
