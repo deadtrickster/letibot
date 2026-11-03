@@ -85,7 +85,12 @@ fn handle(bridge: &Bridge, request: &Value) -> Option<Value> {
         "notifications/initialized" | "notifications/cancelled" => return None,
         "ping" => Some(json!({})),
         "tools/list" => Some(crate::tools::list()),
-        "tools/call" => Some(call_tool(bridge, &params)),
+        "tools/call" => match call_tool(bridge, &params) {
+            Ok(result) => Some(result),
+            // A caller's mistake is the protocol's to report, and the id is the only way the
+            // client learns which request it was.
+            Err((code, message)) => return id.map(|id| error(id, code, &message)),
+        },
         _ => {
             // -32601 is the JSON-RPC code for a method this peer does not serve, and it is
             // the one a client uses to decide the server predates a feature. A notification
@@ -99,30 +104,31 @@ fn handle(bridge: &Bridge, request: &Value) -> Option<Value> {
 }
 
 /// `tools/call`: run the verb and wrap what it said. Two kinds of failure, on purpose: **a
-/// caller's mistake** - an unknown tool, a missing argument - is a JSON-RPC error, while **a tool
-/// that ran and failed** is `isError: true`, because an error object would look like a broken server.
-fn call_tool(bridge: &Bridge, params: &Value) -> Value {
+/// caller's mistake** - an unknown tool, a missing name - is a JSON-RPC error (`-32602`, the code
+/// MCP names for it), while **a tool that ran and failed** is `isError: true`, because an error
+/// object would look like a broken server.
+fn call_tool(bridge: &Bridge, params: &Value) -> Result<Value, (i64, String)> {
     let Some(name) = params.get("name").and_then(Value::as_str) else {
-        return text("tools/call needs a `name`".into(), true);
+        return Err((-32602, "tools/call needs a `name`".into()));
     };
     if !crate::tools::names().contains(&name) {
-        return text(
+        return Err((
+            -32602,
             format!(
                 "unknown tool `{name}`; this build serves {}",
                 crate::tools::names().join(", ")
             ),
-            true,
-        );
+        ));
     }
     let args = params
         .get("arguments")
         .cloned()
         .filter(|v| v.is_object())
         .unwrap_or_else(|| json!({}));
-    match crate::tools::call(bridge, name, &args) {
+    Ok(match crate::tools::call(bridge, name, &args) {
         Ok(value) => text(value.to_string(), false),
         Err(why) => text(why, true),
-    }
+    })
 }
 
 /// An MCP tool result: one text block holding the JSON (or the sentence), and whether it is
@@ -285,18 +291,43 @@ mod tests {
         .to_string()
     }
 
-    /// A `tools/call` naming a tool this build does not have is `isError` with the list, not
-    /// a crashed request: the arguments were well-formed and the answer is that there is no
-    /// such verb.
+    /// **A `tools/call` naming a tool this build does not have is `-32602`**, with the list in the
+    /// message: the arguments were well-formed and the verb is not there, which is the caller's
+    /// mistake and not a tool that ran and failed. A client given `isError: true` reads *the tool
+    /// failed* and retries, which is the one direction that spends a round.
     #[test]
-    fn an_unknown_tool_is_an_error_result_with_the_list() {
+    fn an_unknown_tool_is_an_invalid_params_error_with_the_list() {
         let req = call_request(3, "leticode_nope", json!({}));
         let answers = run(&[&req]);
         let r = &answers[0];
-        assert_eq!(r["result"]["isError"], true, "{r}");
-        let text = r["result"]["content"][0]["text"].as_str().expect("text");
-        assert!(text.contains("leticode_start"), "{text}");
-        assert_eq!(r["result"]["content"][0]["type"], "text");
+        assert_eq!(r["error"]["code"], -32602, "{r}");
+        assert_eq!(r["id"], 3, "the id says which request failed");
+        assert!(r["result"].is_null(), "and there is no tool result: {r}");
+        let message = r["error"]["message"].as_str().expect("message");
+        assert!(message.contains("leticode_nope"), "{message}");
+        assert!(message.contains("leticode_start"), "{message}");
+    }
+
+    /// The other caller's mistake the module names: a `tools/call` with no `name` at all.
+    #[test]
+    fn a_tools_call_with_no_name_is_an_invalid_params_error() {
+        let req = json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/call",
+            "params": { "arguments": {} },
+        })
+        .to_string();
+        let answers = run(&[&req]);
+        assert_eq!(answers[0]["error"]["code"], -32602, "{:?}", answers[0]);
+        assert!(
+            answers[0]["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("name"),
+            "{:?}",
+            answers[0]
+        );
     }
 
     /// A tool that runs and refuses (here: a session this bridge does not hold) answers
