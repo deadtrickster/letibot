@@ -267,6 +267,9 @@ mod tests {
             let e = from_turn_event(TurnEvent::TurnFinished {
                 turn_id: "t1".into(),
                 finish_reason: letibot_turn::FinishReason::Eos,
+                // A round with nothing for the caller to run is the prompt's end, and this
+                // measures the usage a finished one carries.
+                proposed_calls: false,
                 metrics: Box::new(metrics(id_slot, n_busy_slots)),
             });
             match e {
