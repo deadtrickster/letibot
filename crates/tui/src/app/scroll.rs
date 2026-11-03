@@ -820,6 +820,7 @@ impl App {
         }
         // The rendered buffer describes rows this head no longer has, so it goes whole and the
         // window is drawn again from the end. One window's work, once per trim.
+        self.prune_to_the_rows();
         self.invalidate_history_from(0);
         if self.items.is_empty() {
             return;
@@ -845,6 +846,9 @@ impl App {
                 *place = Placed::Before;
             }
         }
+        // **A row that left takes its call facts with it**, the rule the front of the window
+        // follows: the maps the renderer reads are keyed by row, and nothing else bounds them.
+        self.prune_to_the_rows();
         self.invalidate_history_from(0);
         let stop = self.anchor.as_ref().map(|h| h.ordinal);
         self.hist_floor = self.items.len();

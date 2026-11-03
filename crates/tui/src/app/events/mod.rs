@@ -553,9 +553,9 @@ impl App {
         self.fork_pending = self.pending_prompts.clone();
     }
 
-    /// The two maps keyed by a row's id, pruned to the rows that are still here: a row that is gone or whose
-    /// body landed has nothing for either promise to stand for. Pruned and not cleared, so a replacement
-    /// carrying the same rows back drops no binding and forgets no announcement.
+    /// The tables keyed by a row's id, pruned to the rows that are still here: a row that is gone or whose
+    /// body landed has nothing for either promise to stand for, and a call's own facts go with its row.
+    /// Pruned and not cleared, so a replacement carrying the same rows back drops no binding.
     pub(crate) fn prune_to_the_rows(&mut self) {
         // The probe's answers are pruned, not cleared, the same rule the two id-keyed maps keep: a resync that
         // carries the same rows back must not make this head ask the store again, and an id that left takes its
@@ -588,6 +588,15 @@ impl App {
             .collect();
         self.bound_prompts
             .retain(|id, _| bodyless.contains(id.as_str()));
+        // **A call's facts are the row's, not the session's.** The window lets rows go and nothing
+        // else was pruned with them, so an excerpt per edit the conversation ever carried stayed for
+        // the life of the head: the bounded window grew anyway.
+        let held: std::collections::HashSet<&str> =
+            self.items.iter().map(|it| it.item_id.as_str()).collect();
+        self.call_ms.retain(|id, _| held.contains(id.as_str()));
+        self.call_edits.retain(|id, _| held.contains(id.as_str()));
+        self.call_decisions
+            .retain(|id, _| held.contains(id.as_str()));
     }
 
     /// The rows this head holds that are numbered in a transcript the session has left: the head's half of
@@ -655,7 +664,7 @@ impl App {
         // The rendered history is of rows that are not here: dropped whole rather than from a row,
         // because the row indices themselves are about to mean something else.
         self.invalidate_history();
-        // **And the two maps keyed by a row's id go with the rows that left.** The same rule
+        // **And the tables keyed by a row's id go with the rows that left.** The same rule
         // `load` applies to a replacement it can see the whole of.
         self.prune_to_the_rows();
     }

@@ -5103,3 +5103,102 @@ fn a_page_below_the_window_that_does_not_join_does_not_say_the_transcript_stops(
     )));
     assert_eq!(a.items.last().map(|r| r.item_id.as_str()), Some("s.new"));
 }
+
+/// A permission that settled, as a row's card carries it.
+fn settled(call: &str) -> SettledDecision {
+    SettledDecision {
+        req_id: format!("r.{call}"),
+        kind: "permission".into(),
+        call_id: Some(call.to_string()),
+        summary: "run it".into(),
+        outcome: letibot_sessionlog::event::DecisionOutcome::Selected {
+            option_id: "allow".into(),
+        },
+        by: letibot_sessionlog::event::Decider {
+            kind: "human".into(),
+            identity: "dead".into(),
+        },
+        basis: "chose `allow` at the head".into(),
+        advice: None,
+        late: false,
+    }
+}
+
+/// **A row that leaves the window takes its call facts with it.** The window bounds `items`, and the
+/// tables the renderer reads are keyed by a row's id and were pruned by nothing but a switch: an
+/// `edit` excerpt for every edit the conversation ever carried stayed for the life of the head.
+#[test]
+fn a_row_that_leaves_the_window_takes_its_call_facts_with_it() {
+    let mut a = app();
+    a.session_id = "s".into();
+    a.walk_limit = 1;
+    a.held_limit = 4 * 1024;
+    let body = "a line of conversation, and enough of them to make a row cost its bytes\n\n\
+                ```rust\nfn f() { let n = 1; }\n```\n";
+    for i in 0..60u64 {
+        let id = format!("s.{i}");
+        a.apply(ServerFrame::Event(env(
+            i * 2 + 1,
+            testing::appended(&id, "user"),
+        )));
+        a.apply(ServerFrame::Event(env(
+            i * 2 + 2,
+            testing::content(&id, &format!("row {i}\n{body}")),
+        )));
+        a.call_ms.insert(id.clone(), 1_000);
+        a.call_edits.insert(id.clone(), edit_excerpt());
+        a.call_decisions.insert(id.clone(), settled(&id));
+    }
+    let _ = a.screen(100, 40);
+    assert!(
+        a.items_base > 0,
+        "the trim let nothing go, so this asserts nothing about a window"
+    );
+    let held: std::collections::HashSet<&str> =
+        a.items.iter().map(|r| r.item_id.as_str()).collect();
+    assert!(
+        a.call_ms.keys().all(|k| held.contains(k.as_str())),
+        "a call's duration outlived its row: {} entries of {} rows",
+        a.call_ms.len(),
+        a.items.len()
+    );
+    assert!(
+        a.call_edits.keys().all(|k| held.contains(k.as_str())),
+        "an edit excerpt outlived its row: {} entries of {} rows",
+        a.call_edits.len(),
+        a.items.len()
+    );
+    assert!(
+        a.call_decisions.keys().all(|k| held.contains(k.as_str())),
+        "a decision outlived its row: {} entries of {} rows",
+        a.call_decisions.len(),
+        a.items.len()
+    );
+}
+
+/// **And a switch takes them too.** `call_decisions` was left out of the arm that clears its two
+/// siblings, so a decision about a call in one conversation drew on a row of the next.
+#[test]
+fn a_switch_takes_the_last_sessions_call_decisions_with_it() {
+    let mut a = app();
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", false)],
+        Hub::new("s").snapshot(),
+    ));
+    a.apply(ServerFrame::Event(env(
+        1,
+        testing::appended("s.1", "tool_result"),
+    )));
+    a.call_decisions.insert("s.1".into(), settled("s.1"));
+    a.apply(hello(
+        "t",
+        vec![brief("t", "two", false)],
+        Hub::new("t").snapshot(),
+    ));
+    assert!(
+        a.call_decisions.is_empty(),
+        "the other session's decisions are still here: {:?}",
+        a.call_decisions.keys().collect::<Vec<_>>()
+    );
+}
