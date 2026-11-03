@@ -391,7 +391,21 @@ fn seat() -> SeatFacts {
         f.tools.insert(t.into());
     }
     f.scratch = Some("/run/user/1000/letibot/scratch-4242".into());
+    f.view = Some(view_brief_for("/proj"));
     f
+}
+
+/// A confined session's view, as the boundary states it: the fixture asks a real `Boundary`
+/// rather than inventing a sentence no boundary would say.
+fn view_brief_for(project: &str) -> String {
+    let b = letibot_tools::exec::confine::Boundary::namespaces(
+        "bubblewrap 0.0.0 (fixture)",
+        letibot_tools::exec::confine::ViewSpec::project_only(project),
+        letibot_tools::exec::confine::Egress::Denied,
+        std::collections::BTreeMap::new(),
+        std::collections::BTreeMap::new(),
+    );
+    b.model_brief()
 }
 
 /// Every tool name this build seats anywhere, for the "names no tool it lacks" check.
@@ -806,6 +820,41 @@ fn the_default_prompt_carries_the_notes_convention_and_not_the_envelope() {
     // envelope's job and is asserted there.
     assert!(!paragraph.contains("one in force"));
     assert!(!paragraph.contains("[standing-notes"));
+}
+
+/// A confined session is told what its view holds BEFORE anything fails, and a session whose
+/// commands run on this machine's disk is told nothing at all - a section there would have to
+/// deny a view it has not got, and would change every unconfined prompt's bytes.
+#[test]
+fn a_confined_seat_is_told_what_its_view_holds_and_an_unconfined_one_is_not() {
+    let confined = seat();
+    let text = default_system(&confined);
+    assert!(text.contains("inside a filesystem view"), "{text}");
+    assert!(text.contains("`/proj`"), "the project is named: {text}");
+    assert!(
+        text.contains(letibot_tools::exec::confine::TMPFS_HOME),
+        "the home inside the view is named: {text}"
+    );
+    // In its own place: after the file-editing instruction, before the scratch directory - the
+    // reader learns what is reachable, then where to put working files.
+    let at = text.find("inside a filesystem view").expect("the section");
+    let scratch = text
+        .find("Your scratch directory")
+        .expect("the scratch section");
+    assert!(at < scratch, "the view comes before the scratch: {text}");
+
+    // Nothing confined about a seat whose commands run on this machine's disk.
+    let unconfined = SeatFacts {
+        view: None,
+        ..seat()
+    };
+    assert!(!default_system(&unconfined).contains("inside a filesystem view"));
+    assert!(default_section("view", &unconfined).is_none());
+    // And the brief is the boundary's own words, relayed.
+    assert_eq!(
+        default_section("view", &confined).as_deref(),
+        confined.view.as_deref()
+    );
 }
 
 /// A section replaced by `[model."NAME"]` changes only that section and keeps the order - the

@@ -620,6 +620,7 @@ pub const SECTION_NAMES: &[&str] = &[
     "tree",
     "find_and_read",
     "edit_files",
+    "view",
     "scratch",
     "notes",
     "working",
@@ -639,6 +640,10 @@ pub struct SeatFacts {
     pub subagent: bool,
     /// The workspace is a linked git worktree, whose branch the merge queue lands.
     pub worktree: bool,
+    /// The filesystem view a confined session's COMMANDS run inside, in the boundary's own
+    /// words ([`letibot_tools::exec::Boundary::model_brief`]). `None` where commands run on this
+    /// machine's disk: for those a section would have to deny a view the session has not got.
+    pub view: Option<String>,
 }
 
 impl SeatFacts {
@@ -757,6 +762,9 @@ pub fn default_section(name: &str, f: &SeatFacts) -> Option<String> {
                 }
             )
         }),
+        // The view is the boundary's own account of itself, relayed rather than reworded: a
+        // second telling here would be a copy that drifts from the one the failure note uses.
+        "view" => f.view.clone(),
         "scratch" => match &f.scratch {
             Some(path) if f.has("write") => Some(format!(
                 "Your scratch directory is `{path}`. Put working files there — a generated \

@@ -2161,6 +2161,9 @@ impl Harness {
             subagent: cfg.parent_session_id.is_some(),
             // A linked worktree's `.git` is a file naming the main repository's gitdir.
             worktree: cfg.workspace.join(".git").is_file(),
+            // What a command here can reach, measured rather than assumed: `None` for a backend
+            // with no view, so an unconfined session's prompt is the bytes it always was.
+            view: view_brief(backend_boundary.as_ref()),
         };
 
         use letibot_tools::schema::Access;
@@ -3824,6 +3827,12 @@ pub fn confined_grants(
         });
     }
     out
+}
+
+/// The view the prompt states, taken from the boundary the backend MEASURED and never from a
+/// canned sentence: a session that lost its confinement is told nothing about a view.
+pub(crate) fn view_brief(boundary: Option<&letibot_tools::exec::Boundary>) -> Option<String> {
+    boundary.map(|b| b.model_brief())
 }
 
 pub fn surroundings_for(cfg: &Config) -> letibot_tools::Surroundings {

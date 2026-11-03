@@ -60,6 +60,31 @@ fn the_depth_cap_refuses_the_spawn_one_past_it_by_name() {
     assert!(super::subagent_depth_refusal(0, 0).is_some());
 }
 
+/// The prompt's view is the boundary's own account of itself, so a backend that measured no
+/// view gives the prompt nothing: a sentence there would be a claim about a view the session
+/// has not got, and it would change the bytes of every unconfined session's prefix.
+#[test]
+fn the_prompts_view_comes_from_the_boundary_that_was_measured() {
+    assert_eq!(super::view_brief(None), None);
+    let dir = letibot_sessionlog::testing::scratch_root()
+        .join(format!("letibot-view-brief-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("a project to be confined to");
+    // A real boundary, or none on this host: a Mac has no namespace to enter, and the fixture
+    // then asserts nothing rather than asserting a sentence it wrote itself.
+    match letibot_tools::exec::Bwrap::project(&dir) {
+        Ok(b) => {
+            let boundary = letibot_tools::exec::Confinement::boundary(&b).cloned();
+            let brief = super::view_brief(boundary.as_ref()).expect("a view, so a brief");
+            assert!(
+                brief.contains(&dir.display().to_string()),
+                "the project the boundary measured is in it: {brief}"
+            );
+        }
+        Err(e) => eprintln!("the_prompts_view: no boundary on this host: {e}"),
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A port is not optional and the refusal says so, because the alternative is
 /// guessing 8080 - which is the port the three LOCAL units share, so the guess
 /// would land on this box while the operator was naming another one.
