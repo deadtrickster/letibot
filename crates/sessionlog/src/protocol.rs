@@ -16,7 +16,7 @@ use crate::view::Snapshot;
 /// Bumped when a frame's meaning changes in a way the other side cannot parse: a new variant is a
 /// deserialisation fault in the middle of a turn. Both sides compare it at ATTACH and refuse a
 /// mismatch by name.
-pub const PROTOCOL_VERSION: u32 = 57;
+pub const PROTOCOL_VERSION: u32 = 58;
 
 /// The names an operator may run through the head-run door: read-only and bounded, which admits
 /// `web_fetch` and not a tool that writes.
@@ -1254,6 +1254,7 @@ mod tests {
                 | crate::SessionEvent::PluginPaneGone { .. }
                 | crate::SessionEvent::TranscriptForked { .. }
                 | crate::SessionEvent::TurnFailed { .. }
+                | crate::SessionEvent::ProviderTrouble { .. }
                 | crate::SessionEvent::TurnFinished { .. }
                 | crate::SessionEvent::TurnInterrupted { .. }
                 | crate::SessionEvent::TurnStarted { .. }
@@ -1299,8 +1300,11 @@ mod tests {
         let _ = event;
         let _ = server;
         assert_eq!(
-            PROTOCOL_VERSION, 57,
-            "the match above was last reconciled with the frame list at 57. 57 gave \
+            PROTOCOL_VERSION, 58,
+            "the match above was last reconciled with the frame list at 58. 58 added \
+             `SessionEvent::ProviderTrouble`, the four ways a model's provider fails that an \
+             automation reacts to differently: a version-57 head cannot decode it, and an event \
+             side has no version negotiation at parse time, so the number moves. 57 gave \
              `ClientFrame::CloseSession` a `reason`, because a close has two callers that mean \
              different things by it: a migration carries the rows to another store, and a \
              bridge's stop ends the session's placement so its branch comes home. The field is \

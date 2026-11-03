@@ -13,6 +13,12 @@ use serde_json::{Value, json};
 use crate::keys::Credentials;
 use crate::presets::Preset;
 
+/// How long a provider may take to answer AT ALL - its response headers, not its body - before the
+/// read gives up, and the same budget for the whole stream. Ten minutes is above every legitimate
+/// answer this box has seen and short enough that a provider that never comes back is a failure
+/// rather than a hang.
+pub const DEFAULT_ANSWER_TIMEOUT: Duration = Duration::from_secs(600);
+
 /// One provider, one model, one key.
 pub struct OpenAiProvider {
     preset: &'static Preset,
@@ -40,15 +46,6 @@ pub type Notes = std::sync::Arc<dyn Fn(String) + Send + Sync>;
 impl OpenAiProvider {
     pub fn new(preset: &'static Preset, model: Option<&str>, creds: Credentials) -> Self {
         let url = creds.url.clone().unwrap_or_else(|| preset.url.to_string());
-        let config = ureq::Agent::config_builder()
-            // A 4xx/5xx is an answer to read, not an error to unwrap.
-            .http_status_as_error(false)
-            .timeout_connect(Some(Duration::from_secs(20)))
-            // No global timeout: a long answer streams for minutes and is
-            // progress. The per-read timeout is the liveness check.
-            .timeout_global(None)
-            .timeout_recv_body(Some(Duration::from_secs(600)))
-            .build();
         let catalogue = crate::catalogue::Catalogue::load();
         OpenAiProvider {
             preset,
@@ -61,11 +58,38 @@ impl OpenAiProvider {
             url,
             creds,
             catalogue,
-            agent: ureq::Agent::new_with_config(config),
+            agent: Self::agent(DEFAULT_ANSWER_TIMEOUT),
             thinking: false,
             sampling: json!({}),
             notes: None,
         }
+    }
+
+    /// The HTTP agent, with the one number that decides when a provider that has said nothing is a
+    /// failure rather than a hang.
+    fn agent(answer: Duration) -> ureq::Agent {
+        let config = ureq::Agent::config_builder()
+            // A 4xx/5xx is an answer to read, not an error to unwrap.
+            .http_status_as_error(false)
+            .timeout_connect(Some(Duration::from_secs(20)))
+            // **The response headers, on their own clock.** This is where a model API that never comes
+            // back is caught: `timeout_recv_body` starts only once the headers have arrived, so a
+            // provider that sends nothing at all would otherwise be waited on until the socket died.
+            .timeout_recv_response(Some(answer))
+            // No global timeout: a long answer streams for minutes and is
+            // progress. The per-read timeout is the liveness check.
+            .timeout_global(None)
+            .timeout_recv_body(Some(DEFAULT_ANSWER_TIMEOUT))
+            .build();
+        ureq::Agent::new_with_config(config)
+    }
+
+    /// **How long this provider may take to answer at all**, over the default of
+    /// [`DEFAULT_ANSWER_TIMEOUT`]. A caller that must react to a model API timeout sets its own
+    /// patience here rather than waiting ten minutes for a deadline nobody chose.
+    pub fn with_response_timeout(mut self, answer: Duration) -> Self {
+        self.agent = Self::agent(answer);
+        self
     }
 
     /// **The catalogue this provider reads**, instead of the box's, so a test's answer is about
@@ -263,6 +287,7 @@ impl MessagesBackend for OpenAiProvider {
         let Err(BackendError::Refused {
             status: 400,
             body: why,
+            ..
         }) = &first
         else {
             return first;
@@ -392,6 +417,13 @@ impl OpenAiProvider {
             .send(payload.as_bytes())
             .map_err(|e| BackendError::Unreachable(e.to_string()))?;
         let status = resp.status().as_u16();
+        // The provider's own `Retry-After`, read before the body consumes the response: seconds, and
+        // the only form of *when may I come back* a caller may sleep on.
+        let retry_after = resp
+            .headers()
+            .get("retry-after")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.trim().parse::<u64>().ok());
         if !(200..300).contains(&status) {
             let text = resp
                 .into_body()
@@ -428,6 +460,7 @@ impl OpenAiProvider {
             return Err(BackendError::Refused {
                 status,
                 body: message,
+                retry_after,
             });
         }
         let reader = BufReader::new(resp.into_body().into_reader());

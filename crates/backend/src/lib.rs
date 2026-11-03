@@ -154,7 +154,13 @@ pub enum BackendError {
     /// The provider could not be reached, or the connection died mid-answer.
     Unreachable(String),
     /// The provider answered and said no: a bad key, a bad model, a quota.
-    Refused { status: u16, body: String },
+    Refused {
+        status: u16,
+        body: String,
+        /// `Retry-After` in seconds, when the provider sent one: the only form of *when may I come
+        /// back* a caller may sleep on.
+        retry_after: Option<u64>,
+    },
     /// 2xx, but not the shape expected.
     Malformed(String),
     /// The caller asked to stop; nothing is recorded as a finished answer.
@@ -165,7 +171,7 @@ impl std::fmt::Display for BackendError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             BackendError::Unreachable(m) => write!(f, "provider unreachable: {m}"),
-            BackendError::Refused { status, body } => {
+            BackendError::Refused { status, body, .. } => {
                 write!(f, "provider refused ({status}): {body}")
             }
             BackendError::Malformed(m) => write!(f, "provider answered something unexpected: {m}"),

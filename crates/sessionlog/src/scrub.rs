@@ -128,6 +128,9 @@ pub fn is_interactive(event: &SessionEvent) -> bool {
         // Durable: a queue move is a fact about the queue that does not stop being true, and
         // the log is where a person reads WHY a row moved after the pane has moved on.
         | SessionEvent::QueueMoved { .. } => false,
+        // Durable: what the provider did at 14:02 stays true, and it is the record an automation
+        // replays to explain why a turn died after the daemon has moved on.
+        | SessionEvent::ProviderTrouble { .. } => false,
     }
 }
 

@@ -2569,7 +2569,12 @@ impl Harness {
         let mut key_wanted = None;
         let provider: Option<Box<dyn letibot_backend::MessagesBackend>> = match &cfg.provider {
             None => None,
-            Some(pc) => match build_provider(pc, &cfg.sampling, provider_notes(&hub)) {
+            Some(pc) => match build_provider(
+                pc,
+                &cfg.sampling,
+                provider_notes(&hub),
+                cfg.provider_timeout,
+            ) {
                 Ok(p) => Some(p),
                 Err(_) if key_is_missing(pc) => {
                     key_wanted = Some(pc.clone());
@@ -2707,6 +2712,9 @@ impl Harness {
             // And no turn owed: only a fallback ever arms one.
             fallback_continuation: None,
             continuation_of_fallback: false,
+            // No run of troubles until a round meets one.
+            trouble_kind: String::new(),
+            trouble_count: 0,
             // Filled by `Sessions::open_plugins` for a session the daemon serves; `None` reads
             // `plugin scaffold`/`build` only, and says so by name (see the field).
             plugin_slot: plugin_slot.clone(),
@@ -3186,17 +3194,22 @@ pub(crate) fn render_sampling(s: &serde_json::Map<String, serde_json::Value>) ->
 
 /// A provider backend from its config: the preset, the key (a missing one is a refusal naming the variable and the
 /// file), the model and the switches. `notes` is where a provider says something a person has to read, passed in
-/// rather than found, because the provider must stay below this crate's session log.
+/// rather than found, because the provider must stay below this crate's session log. `answer_within` is the
+/// session's patience with a provider that has said nothing yet; `None` is the provider's own.
 pub fn build_provider(
     pc: &crate::config::ProviderConfig,
     sampling: &serde_json::Value,
     notes: letibot_provider::openai::Notes,
+    answer_within: Option<std::time::Duration>,
 ) -> Result<Box<dyn letibot_backend::MessagesBackend>, String> {
     let preset = letibot_provider::Preset::parse(&pc.name)?;
     let creds = letibot_provider::keys::resolve(preset, pc.api_key.as_deref(), None)
         .map_err(|e| format!("provider {}: {e}", pc.name))?;
     let mut p =
         letibot_provider::OpenAiProvider::new(preset, pc.model.as_deref(), creds).with_notes(notes);
+    if let Some(answer) = answer_within {
+        p = p.with_response_timeout(answer);
+    }
     p.thinking = pc.thinking;
     p.sampling = provider_sampling(sampling);
     Ok(Box::new(p))

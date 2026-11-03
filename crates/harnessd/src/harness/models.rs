@@ -554,8 +554,13 @@ impl Harness {
             // window and vocabulary, re-seated, not a provider clear. `set_own_server` is this arm.
             None => self.set_own_server(true),
             Some(pc) => {
-                let p = build_provider(&pc, &self.cfg.sampling, provider_notes(&self.hub))
-                    .map_err(HarnessError::Setup)?;
+                let p = build_provider(
+                    &pc,
+                    &self.cfg.sampling,
+                    provider_notes(&self.hub),
+                    self.cfg.provider_timeout,
+                )
+                .map_err(HarnessError::Setup)?;
                 let mut line = format!(
                     "turns go to {}/{} from the next one on — METERED; the prefix check is \
                      skipped, the ledger stays the record",

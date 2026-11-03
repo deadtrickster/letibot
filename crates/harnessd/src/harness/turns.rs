@@ -1588,10 +1588,19 @@ impl Harness {
                 // The host is `Some` only on the metered route - a local prefill's
                 // silence is progress, not a hang; see `SilenceWatch`.
                 let cloud_host = silence_host(self.provider.as_deref());
+                // The stall's own streak, computed before the round because the watchdog thread is the
+                // one that knows whether a stall happened - and it cannot read this harness.
+                let stalls = if self.trouble_kind == "stall" {
+                    self.trouble_count
+                } else {
+                    0
+                };
                 let watch = SilenceWatch::start(
                     self.hub.clone(),
                     cloud_host,
                     std::time::Duration::from_secs(SILENT_ROUND_SECS),
+                    self.model_name(),
+                    stalls,
                 );
                 let attempted = match &self.provider {
                     None => self.engine.run_turn_steered_with_tail(
@@ -1615,11 +1624,17 @@ impl Harness {
                 };
                 // The round has produced something or failed, either way the silence
                 // is over and the watchdog has nothing left to say.
-                watch.finish();
+                if watch.finish() {
+                    self.trouble_kind = "stall".into();
+                    self.trouble_count = stalls + 1;
+                }
                 let Err(TurnFailure::Http(e)) = attempted else {
                     // **The new model answered**, which is the whole of what a switch had
-                    // to prove - there is nothing to go back to any more.
+                    // to prove - there is nothing to go back to any more. A round that came back
+                    // without a provider failure also ends any run of them.
                     self.switch_back = None;
+                    self.trouble_kind.clear();
+                    self.trouble_count = 0;
                     break attempted;
                 };
                 // A switch the operator made during this attempt is answered here and nothing else changes: it is
@@ -1632,6 +1647,7 @@ impl Harness {
                 if let letibot_turn::HttpError::Status {
                     code: code @ (401 | 403),
                     body,
+                    ..
                 } = &e
                     && self.provider.is_some()
                     && key_asks < 2
@@ -1659,7 +1675,11 @@ impl Harness {
                     // The ladder has nothing left to wait for, and the session may still have somewhere to go, but not
                     // this round: the MODEL refused and a fallback list exists, so the switch is recorded for the end of
                     // this turn and the round is not re-issued. A transport failure gets not even that.
-                    if let Some(next) = self.fall_back_from(&e, &mut tried_fallbacks) {
+                    let next = self.fall_back_from(&e, &mut tried_fallbacks);
+                    // **The provider's own trouble, as a type**, here and not per attempt: a ladder of five
+                    // attempts on one 429 is one fact, and an automation wakes once for it.
+                    self.publish_trouble(&e, next.clone());
+                    if let Some(next) = next {
                         let was = self.provider_line();
                         // Whether a turn was armed decides what may be promised: this turn is the continuation a
                         // fallback earns when one is already running, and then no second turn is opened, so the
@@ -2399,6 +2419,32 @@ impl Harness {
             code: "model_endpoint_retry".into(),
             detail: outage.did_not_answer(),
             compaction: None,
+        });
+    }
+
+    /// **The provider's trouble, as the type an automation branches on.** Called where the daemon knows
+    /// the round is over for good, not per attempt: a ladder of five calls against one 429 is one fact.
+    /// The count is the run of this kind, so a caller can tell the first timeout from the fourth.
+    fn publish_trouble(&mut self, e: &letibot_turn::HttpError, switched_to: Option<String>) {
+        let Some(trouble) = letibot_http::retry::Policy::trouble(e) else {
+            return;
+        };
+        let kind = trouble.name().to_string();
+        self.trouble_count = if self.trouble_kind == kind {
+            self.trouble_count + 1
+        } else {
+            1
+        };
+        self.trouble_kind = kind.clone();
+        self.hub.publish(SessionEvent::ProviderTrouble {
+            kind,
+            // The model the round was on, named before any switch is applied: the fact is about the
+            // provider that failed, and `switched_to` is the answer to where the session went instead.
+            model: self.model_name(),
+            detail: one_line(&e.to_string(), 240),
+            reset_ms: letibot_http::retry::Policy::reset_ms(e, letibot_sessionlog::event::now_ms()),
+            count: self.trouble_count,
+            switched_to,
         });
     }
 
@@ -3453,26 +3499,38 @@ fn silence_notice(
 struct SilenceWatch {
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     handle: Option<std::thread::JoinHandle<()>>,
+    /// Whether the round stalled past the threshold, which the watchdog is the only one to know. Read
+    /// by `finish`, so the harness can carry the run of stalls rather than guess at it.
+    stalled: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl SilenceWatch {
     /// Start watching, or return an inert one when there is nothing worth saying.
     ///
-    /// `host` is `Some` only for a metered route; see the type's own docs.
+    /// `host` is `Some` only for a metered route; see the type's own docs. `model` and `streak` are what
+    /// the typed event carries: what answered, and how many stalls came before this one.
     fn start(
         hub: std::sync::Arc<letibot_sessionlog::hub::Hub>,
         host: Option<String>,
         threshold: std::time::Duration,
+        model: String,
+        streak: u32,
     ) -> Self {
         use std::sync::atomic::Ordering;
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stalled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let Some(host) = host else {
             // Inert: the flag is already set, so `finish` is a no-op and no thread
             // exists to join.
             stop.store(true, Ordering::SeqCst);
-            return SilenceWatch { stop, handle: None };
+            return SilenceWatch {
+                stop,
+                handle: None,
+                stalled,
+            };
         };
         let flag = stop.clone();
+        let was = stalled.clone();
         let handle = std::thread::spawn(move || {
             // A short slice rather than one sleep of `threshold`, so the round can end
             // promptly without this thread outliving it - the flag is checked between
@@ -3485,10 +3543,21 @@ impl SilenceWatch {
                 }
                 let silent = started.elapsed();
                 if let Some(detail) = silence_notice(&host, silent, threshold) {
+                    was.store(true, Ordering::SeqCst);
                     hub.publish(letibot_sessionlog::SessionEvent::Warning {
                         code: "model_slow_first_byte".into(),
-                        detail,
+                        detail: detail.clone(),
                         compaction: None,
+                    });
+                    // The same fact as a type, which is what an automation can branch on: the prose
+                    // above is for the person watching the turn.
+                    hub.publish(letibot_sessionlog::SessionEvent::ProviderTrouble {
+                        kind: letibot_http::retry::Trouble::Stall.name().into(),
+                        model,
+                        detail,
+                        reset_ms: None,
+                        count: streak + 1,
+                        switched_to: None,
                     });
                     // **Once.** A round that is slow for a minute should not fill the
                     // session with the same sentence; the first one carried the news.
@@ -3500,18 +3569,20 @@ impl SilenceWatch {
         SilenceWatch {
             stop,
             handle: Some(handle),
+            stalled,
         }
     }
 
-    /// Stop watching and wait for the thread to notice. Cheap: it is asleep on a 100 ms
-    /// slice, so this costs at most that - and nothing at all for the local route, where
-    /// no thread was started.
-    fn finish(self) {
+    /// Stop watching and wait for the thread to notice, answering whether the round stalled. Cheap: it
+    /// is asleep on a 100 ms slice, so this costs at most that - and nothing at all for the local route,
+    /// where no thread was started.
+    fn finish(self) -> bool {
         use std::sync::atomic::Ordering;
         self.stop.store(true, Ordering::SeqCst);
         if let Some(h) = self.handle {
             let _ = h.join();
         }
+        self.stalled.load(Ordering::SeqCst)
     }
 }
 
@@ -3587,6 +3658,7 @@ mod endpoint_retry {
         HttpError::Status {
             code,
             body: String::new(),
+            retry_after: None,
         }
     }
 
@@ -3751,6 +3823,7 @@ mod endpoint_retry {
         let out = || HttpError::Status {
             code: 429,
             body: "Weekly/Monthly Limit Exhausted".into(),
+            retry_after: None,
         };
         let moved = fallback_notice(
             "glm-coding/glm-5.3 (metered)",
@@ -3880,6 +3953,7 @@ mod endpoint_retry {
                 body: "Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-10-12 \
                        15:01:48."
                     .into(),
+                retry_after: None,
             },
         );
         assert!(
@@ -3941,6 +4015,8 @@ mod endpoint_retry {
             hub.clone(),
             Some("api.deepseek.com".into()),
             std::time::Duration::from_millis(50),
+            "deepseek/deepseek-flash".into(),
+            0,
         );
         // Long enough for several 100 ms slices - so a version that published per
         // slice would be caught here rather than in production.
@@ -4010,6 +4086,8 @@ mod endpoint_retry {
             hub.clone(),
             silence_host(None),
             std::time::Duration::from_millis(50),
+            "deepseek/deepseek-flash".into(),
+            0,
         );
         std::thread::sleep(std::time::Duration::from_millis(300));
         let said = hub

@@ -512,6 +512,9 @@ impl App {
                 self.on_plugin_event(e)
             }
             e @ SessionEvent::Warning { .. } => self.on_warning(e, ts),
+            // The typed twin of a warning, drawn as one row for the same reason: a person reads a
+            // sentence, and automation reads the type.
+            e @ SessionEvent::ProviderTrouble { .. } => self.on_provider_trouble(e, ts),
         }
     }
 

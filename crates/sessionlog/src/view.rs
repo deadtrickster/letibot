@@ -718,6 +718,9 @@ impl SessionView {
             // about. The settlement is not carried either - the run's own rows are.
             | SessionEvent::PromptRequested { .. }
             | SessionEvent::PromptSettled { .. }
+            // The typed twin of a warning a person reads, and a snapshot that kept both would
+            // draw one failure twice: the turn's own end is the durable copy.
+            | SessionEvent::ProviderTrouble { .. }
             | SessionEvent::ScreenRequested { .. } => {}
             // The plan is a full document: it belongs in the log, where a head can ask for it by
             // seq, and carrying every one of them in every snapshot would make the snapshot grow

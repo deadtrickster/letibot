@@ -532,6 +532,10 @@ pub struct Config {
     /// nothing new when no call returned an `Ok` result this turn had not already seen
     /// ([`crate::progress`]); `0` turns the check off and leaves the round count as the only stop.
     pub stall_rounds: usize,
+    /// **How long a metered provider may take to answer AT ALL** - its response headers - before the
+    /// round fails as a timeout. `None` is the provider's own ten minutes, which is right for a box
+    /// that has no opinion; an operator who must react to a model API timeout sets its own patience.
+    pub provider_timeout: Option<std::time::Duration>,
 }
 
 /// Who decides a gated call. A gate that says "allowed" because nothing is wired is worse than no
@@ -1477,6 +1481,9 @@ impl Config {
             max_tool_rounds: 0,
             http_retries: crate::harness::MAX_HTTP_RETRIES,
             stall_rounds: 5,
+            // The provider's own ten minutes: a box that has an opinion sets it, and a fixture that
+            // must measure a timeout sets a short one.
+            provider_timeout: None,
         }
     }
 

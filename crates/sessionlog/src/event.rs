@@ -12,6 +12,7 @@
 //! TurnFinished{turn_id, finish_reason, usage, timings, ends_turn}
 //! TurnInterrupted{turn_id, reason, partial_kept: bool}
 //! TurnFailed{turn_id, error, partial_kept: bool}   — not §4.5's; see the variant
+//! ProviderTrouble{kind, model, detail, reset_ms, count, switched_to}
 //! TranscriptAppended{item_id, kind, ledger_head}
 //! TranscriptContent{item_id, item}          — not §4.5's; see the variant
 //! HeadAttached / HeadDetached{head_id, kind, identity}
@@ -1122,6 +1123,30 @@ pub enum SessionEvent {
         /// a partial cannot arrive looking like one that does not.
         partial_kept: bool,
     },
+    /// **The model's provider is in trouble, in the one word an automation branches on.** A
+    /// warning is prose a person reads; this is the same fact as a type, because a caller that
+    /// must sleep until a limit lifts, or move a session elsewhere, cannot match English.
+    /// Published where the daemon learns it, before the turn that met it ends.
+    ProviderTrouble {
+        /// `rate_limit`, `quota`, `timeout` or `stall`: *wait*, *the account cannot pay*, *the
+        /// request never answered*, *nothing came back for a while*.
+        kind: String,
+        /// What answers the session's turns, spelled as `/models` takes it (`deepseek/deepseek-chat`).
+        model: String,
+        /// The provider's own words, one line, for a person.
+        detail: String,
+        /// Unix millis at which the provider said its limit lifts. `None` when it did not say, which
+        /// is not the same as *now*: a caller told nothing must keep its own clock.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reset_ms: Option<u64>,
+        /// How many of this kind in a row, this one counted. 1 is the first.
+        #[serde(default)]
+        count: u32,
+        /// Where the daemon's own fallback policy moved the session, when it did. `None` when the
+        /// session stays where it is, so *still stuck* and *moved* are different answers.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        switched_to: Option<String>,
+    },
     TranscriptAppended {
         item_id: String,
         kind: String,
@@ -1491,6 +1516,7 @@ impl SessionEvent {
             SessionEvent::TurnFinished { .. } => "TurnFinished",
             SessionEvent::TurnInterrupted { .. } => "TurnInterrupted",
             SessionEvent::TurnFailed { .. } => "TurnFailed",
+            SessionEvent::ProviderTrouble { .. } => "ProviderTrouble",
             SessionEvent::TranscriptAppended { .. } => "TranscriptAppended",
             SessionEvent::TranscriptContent { .. } => "TranscriptContent",
             SessionEvent::Citations { .. } => "Citations",

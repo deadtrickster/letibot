@@ -22,6 +22,9 @@ pub enum HttpError {
     Status {
         code: u16,
         body: String,
+        /// `Retry-After`, in seconds, when the server sent one: the provider's own answer to *when
+        /// may I come back*, and the only form of it a machine can act on.
+        retry_after: Option<u64>,
     },
     Malformed(String),
 }
@@ -30,7 +33,7 @@ impl std::fmt::Display for HttpError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             HttpError::Io(e) => write!(f, "http io: {e}"),
-            HttpError::Status { code, body } => write!(f, "http {code}: {body}"),
+            HttpError::Status { code, body, .. } => write!(f, "http {code}: {body}"),
             HttpError::Malformed(m) => write!(f, "malformed http response: {m}"),
         }
     }
@@ -386,6 +389,10 @@ fn read_response(mut reader: BufReader<TcpStream>) -> Result<Body, HttpError> {
 
     let mut chunked = false;
     let mut length: Option<usize> = None;
+    // The provider's own answer to *when may I come back*: seconds, and the one form of it a caller
+    // may act on. The prose some providers put in the body names a wall clock in a zone nothing here
+    // knows, so it stays prose.
+    let mut retry_after: Option<u64> = None;
     loop {
         let mut line = String::new();
         if reader.read_line(&mut line)? == 0 {
@@ -401,6 +408,8 @@ fn read_response(mut reader: BufReader<TcpStream>) -> Result<Body, HttpError> {
         let (name, value) = (name.trim().to_ascii_lowercase(), value.trim());
         if name == "transfer-encoding" && value.eq_ignore_ascii_case("chunked") {
             chunked = true;
+        } else if name == "retry-after" {
+            retry_after = value.parse().ok();
         } else if name == "content-length" {
             length = value.parse().ok();
         }
@@ -424,6 +433,7 @@ fn read_response(mut reader: BufReader<TcpStream>) -> Result<Body, HttpError> {
         return Err(HttpError::Status {
             code,
             body: body.read_to_string()?,
+            retry_after,
         });
     }
     Ok(body)

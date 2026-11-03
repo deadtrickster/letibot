@@ -46,6 +46,35 @@ impl Class {
     }
 }
 
+/// **The four ways a model's provider is in trouble**, and the whole of the vocabulary an
+/// automation branches on: a caller waits out a rate limit, gives up on a quota, retries a
+/// timeout, and replaces a provider that keeps stalling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Trouble {
+    /// The provider said *not now* and, with luck, when: `429` (or a `408`) whose body is not about
+    /// money.
+    RateLimit,
+    /// The account behind the key cannot pay. No wait lifts it.
+    Quota,
+    /// The request never answered: the transport timed out.
+    Timeout,
+    /// The round produced nothing for long enough to be worth saying, and the daemon said it.
+    /// Raised by the caller's own clock rather than by a failure, which is why it has no `HttpError`.
+    Stall,
+}
+
+impl Trouble {
+    /// The word on the wire, and the one a caller matches on.
+    pub fn name(self) -> &'static str {
+        match self {
+            Trouble::RateLimit => "rate_limit",
+            Trouble::Quota => "quota",
+            Trouble::Timeout => "timeout",
+            Trouble::Stall => "stall",
+        }
+    }
+}
+
 /// The rule: how many times, how far apart, and which failures. Cheap to copy - the
 /// daemon builds one per turn from `Config::http_retries`, and a test builds
 /// [`Policy::none`].
@@ -80,7 +109,7 @@ impl Policy {
     pub fn class(&self, e: &HttpError) -> Class {
         match e {
             HttpError::Io(_) | HttpError::Malformed(_) => Class::Transport,
-            HttpError::Status { code, body } => {
+            HttpError::Status { code, body, .. } => {
                 if Self::states_a_refusal(body) {
                     // A 429 (or a 400) whose body says the account cannot pay. The status is not
                     // the instrument here: the same 429 means both *not yet* and *not ever until
@@ -110,6 +139,46 @@ impl Policy {
     /// behind it may be well. Read by the daemon's `[fallback]`, which MOVES a session.
     pub fn the_model_refused(e: &HttpError) -> bool {
         matches!(e, HttpError::Status { code, .. } if *code == 429 || *code >= 500)
+    }
+
+    /// **Which of the four troubles this failure is**, or `None` for one that is not about the
+    /// provider being unavailable: a bad request, a bad key, a server that is merely broken.
+    pub fn trouble(e: &HttpError) -> Option<Trouble> {
+        match e {
+            HttpError::Status { code, body, .. } => {
+                if Self::states_a_refusal(body) {
+                    // Money, whatever the status says: the provider's own words are the instrument,
+                    // and a 400 naming an unpaid balance is the same fact as a 429 that does.
+                    Some(Trouble::Quota)
+                } else if *code == 429 || *code == 408 {
+                    Some(Trouble::RateLimit)
+                } else {
+                    None
+                }
+            }
+            // A transport timeout is the model's own API not answering in time. `TimedOut` is the
+            // kind; the text is the fallback, because a provider wraps its own io error one layer up
+            // and the kind does not always survive the trip.
+            HttpError::Io(err) => {
+                let said = err.to_string().to_ascii_lowercase();
+                (err.kind() == std::io::ErrorKind::TimedOut
+                    || said.contains("timed out")
+                    || said.contains("timeout"))
+                .then_some(Trouble::Timeout)
+            }
+            HttpError::Malformed(_) => None,
+        }
+    }
+
+    /// **When the provider said its limit lifts**, Unix millis, from a clock the caller owns
+    /// (`now_ms`). Only `Retry-After` is read: it is seconds, and seconds need no timezone. A
+    /// provider that says it in prose has said it to a person, and `None` says nothing rather than
+    /// guessing an instant in a zone this box does not know.
+    pub fn reset_ms(e: &HttpError, now_ms: u64) -> Option<u64> {
+        let HttpError::Status { retry_after, .. } = e else {
+            return None;
+        };
+        retry_after.map(|secs| now_ms.saturating_add(secs.saturating_mul(1000)))
     }
 
     /// The status, when the provider refused what was SENT - `4xx` except the two
@@ -179,7 +248,7 @@ impl Policy {
             // A 2xx whose body did not arrive whole - the likeliest cause is a server going down
             // mid-answer, which is the same story as a reset.
             HttpError::Malformed(_) => "the answer did not arrive whole",
-            HttpError::Status { code, body } => {
+            HttpError::Status { code, body, .. } => {
                 if Self::states_a_refusal(body) {
                     "the account behind the key cannot pay for the call"
                 } else if TRY_AGAIN.contains(code) {
@@ -285,6 +354,7 @@ mod tests {
         HttpError::Status {
             code,
             body: String::new(),
+            retry_after: None,
         }
     }
 
@@ -292,6 +362,7 @@ mod tests {
         HttpError::Status {
             code,
             body: body.to_string(),
+            retry_after: None,
         }
     }
 
@@ -307,6 +378,72 @@ mod tests {
             std::io::ErrorKind::ConnectionRefused,
             "no",
         ))
+    }
+
+    /// **The four troubles, and the failures that are none of them.** A 500 is an outage the ladder
+    /// handles; a 400 is what was sent; only these four are worth waking an automation for.
+    #[test]
+    fn a_trouble_is_one_of_four_and_nothing_else() {
+        // A rate limit names no money, and the same 429 that names money is a quota.
+        assert_eq!(Policy::trouble(&status(429)), Some(Trouble::RateLimit));
+        assert_eq!(Policy::trouble(&status(408)), Some(Trouble::RateLimit));
+        assert_eq!(
+            Policy::trouble(&said(429, "{\"error\":{\"code\":\"insufficient_quota\"}}")),
+            Some(Trouble::Quota),
+            "a 429 whose body says the account cannot pay is not a wait"
+        );
+        assert_eq!(
+            Policy::trouble(&said(400, "Your credit balance is too low")),
+            Some(Trouble::Quota),
+            "the provider's own words decide it, not the status"
+        );
+        // A timeout is the model's API not answering, by kind or by the words a provider wraps it in.
+        assert_eq!(
+            Policy::trouble(&HttpError::Io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "read timed out"
+            ))),
+            Some(Trouble::Timeout)
+        );
+        assert_eq!(
+            Policy::trouble(&HttpError::Io(std::io::Error::other(
+                "provider unreachable: error sending request: timed out reading response body"
+            ))),
+            Some(Trouble::Timeout),
+            "a provider wraps its own io error, and the kind does not survive the trip"
+        );
+        // And everything else is not a trouble: the turn's own failure is enough for these.
+        assert_eq!(Policy::trouble(&status(500)), None);
+        assert_eq!(Policy::trouble(&status(400)), None);
+        assert_eq!(Policy::trouble(&dns()), None);
+        assert_eq!(Policy::trouble(&refused()), None);
+        assert_eq!(Policy::trouble(&HttpError::Malformed("x".into())), None);
+        // The words are the wire's, and they are the ones a caller branches on.
+        assert_eq!(Trouble::RateLimit.name(), "rate_limit");
+        assert_eq!(Trouble::Quota.name(), "quota");
+        assert_eq!(Trouble::Timeout.name(), "timeout");
+        assert_eq!(Trouble::Stall.name(), "stall");
+    }
+
+    /// **The reset time is the header's, or it is nothing.** A provider that says it in prose has
+    /// said it to a person; an instant invented out of a wall clock in an unknown zone is worse than
+    /// `None`, because a caller sleeps on it.
+    #[test]
+    fn the_reset_time_comes_from_retry_after_and_nowhere_else() {
+        let with = HttpError::Status {
+            code: 429,
+            body: "Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-10-12 15:01:48."
+                .into(),
+            retry_after: Some(90),
+        };
+        assert_eq!(Policy::reset_ms(&with, 1_000_000), Some(1_090_000));
+        let prose_only = said(429, "Your limit will reset at 2026-10-12 15:01:48.");
+        assert_eq!(
+            Policy::reset_ms(&prose_only, 1_000_000),
+            None,
+            "a wall clock in the body is the operator's copy, not a deadline"
+        );
+        assert_eq!(Policy::reset_ms(&dns(), 1_000_000), None);
     }
 
     /// **The three classes, over the statuses the brief names.**

@@ -4,6 +4,7 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use letibot_backend::{BackendError, Delta, Finish, MessagesBackend, StreamFlow, TurnRequest};
 use letibot_provider::keys::Credentials;
@@ -207,7 +208,7 @@ fn a_refusal_carries_the_providers_own_message() {
     };
     let err = p.complete(&req, &mut |_| StreamFlow::Continue).unwrap_err();
     match err {
-        BackendError::Refused { status, body } => {
+        BackendError::Refused { status, body, .. } => {
             assert_eq!(status, 401);
             // **No `code` in this body, so nothing is appended.** `type` is not a code: it says
             // what KIND of refusal this is, and the retry policy asks whether the account can
@@ -238,7 +239,7 @@ fn a_refusal_keeps_the_code_that_says_what_it_is() {
     };
     let err = p.complete(&req, &mut |_| StreamFlow::Continue).unwrap_err();
     match err {
-        BackendError::Refused { status, body } => {
+        BackendError::Refused { status, body, .. } => {
             assert_eq!(status, 429);
             assert!(
                 body.contains("insufficient_quota"),
@@ -618,4 +619,94 @@ fn stopping_mid_stream_is_an_abort_not_an_answer() {
         })
         .unwrap_err();
     assert!(matches!(err, BackendError::Aborted));
+}
+
+/// A loopback server that answers every request with the raw bytes it was given, and another that
+/// reads the request and then holds the connection without a byte: the two shapes a timeout and a
+/// `Retry-After` need.
+fn raw_server(answer: Option<String>) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!(
+        "http://{}/v1/chat/completions",
+        listener.local_addr().unwrap()
+    );
+    std::thread::spawn(move || {
+        for conn in listener.incoming() {
+            let Ok(mut conn) = conn else { continue };
+            let mut buf = [0u8; 8192];
+            let _ = conn.read(&mut buf);
+            match &answer {
+                Some(bytes) => {
+                    let _ = conn.write_all(bytes.as_bytes());
+                    let _ = conn.flush();
+                }
+                // Held open and silent for longer than any deadline a test sets.
+                None => std::thread::sleep(Duration::from_secs(60)),
+            }
+        }
+    });
+    url
+}
+
+fn bare_request(p: &OpenAiProvider) -> Result<(), BackendError> {
+    let items: Vec<TranscriptItem> = Vec::new();
+    let req = TurnRequest {
+        system: "",
+        tools_json: &[],
+        items: &items,
+        tail: &[],
+        max_output_tokens: None,
+    };
+    p.complete(&req, &mut |_| StreamFlow::Continue).map(|_| ())
+}
+
+/// **The provider's own answer to *when may I come back* reaches the caller**: a 429 carrying
+/// `Retry-After` is a rate limit an automation can sleep out, and one without it is a wait nobody
+/// can size.
+#[test]
+fn a_refusal_carries_the_retry_after_it_was_sent() {
+    let body = "{\"error\":{\"message\":\"rate limited\"}}";
+    let url = raw_server(Some(format!(
+        "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nRetry-After: 90\r\n\
+         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )));
+    let p = provider(&url);
+    match bare_request(&p) {
+        Err(BackendError::Refused {
+            status,
+            retry_after,
+            ..
+        }) => {
+            assert_eq!(status, 429);
+            assert_eq!(
+                retry_after,
+                Some(90),
+                "the header is the only form to act on"
+            );
+        }
+        other => panic!("expected the provider's own refusal, got {other:?}"),
+    }
+}
+
+/// **A provider that accepts the request and never answers ends at the deadline it was given**, not
+/// at the client's default of ten minutes: a caller that must react to a model API timeout cannot
+/// wait longer than its own patience.
+#[test]
+fn a_provider_that_never_answers_times_out_at_the_deadline_it_was_given() {
+    let url = raw_server(None);
+    let p = provider(&url).with_response_timeout(Duration::from_millis(300));
+    let started = Instant::now();
+    let e = bare_request(&p).expect_err("a silent provider answers nothing");
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "the round outlived the deadline it was given: {:?}",
+        started.elapsed()
+    );
+    let said = e.to_string().to_lowercase();
+    assert!(
+        said.contains("timed out") || said.contains("timeout"),
+        "and the failure says it was a timeout, because that is what an automation branches on: {e}"
+    );
+    assert!(matches!(e, BackendError::Unreachable(_)), "{e:?}");
 }

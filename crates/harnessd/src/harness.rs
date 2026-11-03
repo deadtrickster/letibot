@@ -1923,6 +1923,11 @@ pub struct Harness {
     /// [`Harness::fall_back_from`] moves the session to the next name without arming a second
     /// continuation. See `fallback_continuation` for why the bound exists.
     continuation_of_fallback: bool,
+    /// **The run of provider troubles this session is in**: the kind of the last one, and how many of
+    /// that kind in a row. Carried so the event says *the fourth timeout* rather than *a timeout*, and
+    /// so a fallback policy can count what the wire is told.
+    trouble_kind: String,
+    trouble_count: u32,
     /// The session's plugin host, once the daemon has one: the same live `Arc` the `plugin` tool asks
     /// through, handed over because the tool is seated at open and the host when the daemon opens the
     /// session. `None` in a session the daemon did not open, where scaffold and build still work.

@@ -522,7 +522,7 @@ fn map_http(e: HttpError) -> NodeError {
     match e {
         HttpError::Io(io) => NodeError::Unreachable(io.to_string()),
         HttpError::Malformed(m) => NodeError::Unreachable(m),
-        HttpError::Status { code, body } => {
+        HttpError::Status { code, body, .. } => {
             let message = serde_json::from_str::<Value>(&body)
                 .ok()
                 .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(String::from))

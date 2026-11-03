@@ -481,6 +481,7 @@ fn a_switch_that_fails_names_the_model_before_it_and_the_command_back() {
         super::HarnessError::Turn(super::TurnFailure::Http(letibot_turn::HttpError::Status {
             code,
             body: "messages.content.type is invalid".into(),
+            retry_after: None,
         }))
     };
     assert_eq!(super::provider_refusal(&status(400)), Some(400));

@@ -1204,12 +1204,20 @@ impl TurnEngine {
             // A refusal keeps its status: flattening every `BackendError` into `Malformed`
             // threw away the one bit the retry needs - whether taking the round again could
             // help.
-            Err(letibot_backend::BackendError::Refused { status, body }) => {
+            Err(letibot_backend::BackendError::Refused {
+                status,
+                body,
+                retry_after,
+            }) => {
                 // §5.7 fails the turn and commits nothing; the operator's words are
                 // input, not output, and `absorb` already took them out of the source,
                 // so they go back rather than being appended.
                 pending.give_back(steering);
-                return Err(TurnFailure::Http(HttpError::Status { code: status, body }));
+                return Err(TurnFailure::Http(HttpError::Status {
+                    code: status,
+                    body,
+                    retry_after,
+                }));
             }
             // An unreachable provider is not a malformed answer, and telling a reader it is
             // sends them to debug the wrong end. `HttpError::Io` is true of it - the transport
@@ -1219,8 +1227,19 @@ impl TurnEngine {
                 // input, not output, and `absorb` already took them out of the source,
                 // so they go back rather than being appended.
                 pending.give_back(steering);
-                return Err(TurnFailure::Http(HttpError::Io(std::io::Error::other(
-                    format!("provider unreachable: {m}"),
+                // **A timeout keeps its kind.** A provider wraps its own io error into a string, so
+                // `TimedOut` would otherwise be lost and a model API timeout would read as just
+                // another transport failure - the one thing an automation must be able to tell.
+                let said = format!("provider unreachable: {m}");
+                let timed_out = said.to_ascii_lowercase().contains("timed out")
+                    || said.to_ascii_lowercase().contains("timeout");
+                let kind = if timed_out {
+                    std::io::ErrorKind::TimedOut
+                } else {
+                    std::io::ErrorKind::Other
+                };
+                return Err(TurnFailure::Http(HttpError::Io(std::io::Error::new(
+                    kind, said,
                 ))));
             }
             Err(e) => {

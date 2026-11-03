@@ -264,4 +264,37 @@ impl App {
             _ => unreachable!("on_warning was handed an event it does not handle"),
         }
     }
+
+    /// **A provider in trouble, as one row**: the same sentence a warning is, with the model and the
+    /// reset time the type carries and the prose does not. The row's code is the kind, so a burst of
+    /// rate limits reads as one line rather than as a paragraph.
+    pub(crate) fn on_provider_trouble(&mut self, e: SessionEvent, ts: u64) -> Disposition {
+        let SessionEvent::ProviderTrouble {
+            kind,
+            model,
+            detail,
+            reset_ms,
+            count,
+            ..
+        } = e
+        else {
+            unreachable!("on_provider_trouble was handed an event it does not handle")
+        };
+        let mut said = format!("{model}: {detail}");
+        if let Some(at) = reset_ms {
+            let at = crate::ui::transcript::blocks::clock_time(at);
+            if !at.is_empty() {
+                said.push_str(&format!(", and the provider said its limit lifts at {at}"));
+            }
+        }
+        if count > 1 {
+            said.push_str(&format!(" — {count} in a row"));
+        }
+        self.note(Note::Warned(Warned {
+            code: format!("provider_{kind}"),
+            detail: said,
+            ts,
+        }));
+        Disposition::Rendered
+    }
 }
