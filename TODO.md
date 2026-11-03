@@ -4114,7 +4114,7 @@ only bound and it is up to an hour. A firing that should be *noted* rather than 
 on* has no spelling — and inventing one is a decision about what a monitor is for, not a
 fix.
 
-— ✓ answered on branch `t24-firings`: **a firing is noted, not acted on** — a `Notice` row with
+— ✓ answered on branch `remote/07767000`: **a firing is noted, not acted on** — a `Notice` row with
 its own kind rather than a `User` row, folded to one line a monitor with the count of the burst, and
 a monitor rings at most once a `FIRING_RATE` (30 s) window besides its TTL, so a burst cannot start
 more than one turn (`crates/tools/src/exec/monitor.rs`,

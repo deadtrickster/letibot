@@ -6547,7 +6547,7 @@ them: the three reverts were the only edits, and each was undone before its comm
 
 ---
 
-## T24 — The harness owns what a subagent leaves behind, and monitors need the same owner — **SETTLED 2026-11-03: scopes and monitors (25000d33, 104e3b73, 32fb7267, 4a188380, 56ada70d), then a firing as a bounded typed delivery (c931373e, fd9eb9b8, b51f59dc) and a wake that failed told apart from one nobody armed (b3ecd218)**
+## T24 — The harness owns what a subagent leaves behind, and monitors need the same owner — **SETTLED 2026-11-03: scopes and monitors (25000d33, 104e3b73, 32fb7267, 4a188380, 56ada70d), then a firing as a bounded typed delivery (c931373e, b51f59dc, fd9eb9b8, 4a969fea, 70794c6f, 47a8d241) and a wake that failed told apart from one nobody armed (b3ecd218)**
 
 Operator, 2026-09-09: *"you guys like to accumulate monitors and shells"* — and, on
 being shown the measurement, *"you are fine, others nt"*. That correction is the
@@ -6786,7 +6786,7 @@ session with a chatty monitor therefore spends generations on it, and nothing bo
 except the monitor's own TTL. A firing that should be noted and not acted on has no
 spelling yet.
 
-— ✓ fixed on branch `t24-firings` (c931373e, fd9eb9b8, b51f59dc): **a firing is a `Notice` row**
+— ✓ fixed on branch `remote/07767000` (c931373e, b51f59dc, fd9eb9b8): **a firing is a `Notice` row**
 with its own kind, so no `speaker` default can make it read as the operator's words, **folded to one
 line a monitor** carrying the count of what it stands for, and **delivered as one turn** however
 many firings arrived — `a_firing_is_a_notice_and_never_a_row_of_somebodys_words`,
