@@ -437,6 +437,30 @@ mod tests {
         assert!(pat.is_match("let x = λαμβδα;"));
     }
 
+    /// The process-wide cache is only safe because its key names everything that changes the
+    /// program and an entry is a pure function of that key: two patterns with one key would share
+    /// an answer, and a clear at the cap could change one.
+    #[test]
+    fn the_shared_cache_cannot_answer_for_a_pattern_it_did_not_compile() {
+        // The same source under both flags: keyed on the source alone, the second call would be
+        // handed the first's program and find nothing.
+        let sensitive = p("ERROR", false);
+        let insensitive = p("ERROR", true);
+        assert!(!sensitive.is_match("an error happened"));
+        assert!(insensitive.is_match("an error happened"));
+
+        // Filling the cache past its cap clears it whole; a key that was in it before answers the
+        // same afterwards, because the entry was never anything but its key's own program.
+        let before = p(r"ERR(or|no)", false);
+        let found = before.find("an error happened");
+        for i in 0..CACHE_CAP + 4 {
+            p(&format!("cap{i}"), false);
+        }
+        let after = p(r"ERR(or|no)", false);
+        assert_eq!(after.find("an error happened"), found);
+        assert!(before.is_match("an error happened") == after.is_match("an error happened"));
+    }
+
     /// Clause 3 of the brief, and the reason the old fallback had to go: a
     /// pattern that does not compile is an ERROR, with the engine's own message
     /// naming the position. It is not a literal search wearing a note.
