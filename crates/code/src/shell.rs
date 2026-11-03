@@ -750,6 +750,20 @@ fn read_write_without_descriptor(node: &Node, source: &str) -> bool {
     src(node, source) == "<" && source.get(node.end..).is_some_and(|s| s.starts_with('>'))
 }
 
+/// A here-document operator followed by another operator on its line: the grammar hangs the rest of
+/// the line off the redirect, so a pipeline's `|` arrives inside the heredoc's `2>&1`.
+fn heredoc_then_operator(node: &Node, source: &str) -> bool {
+    let operator = matches!(src(node, source), "|" | "|&" | "&&" | "||" | ";" | "&");
+    let line_start = source
+        .get(..node.start)
+        .and_then(|s| s.rfind('\n'))
+        .map_or(0, |i| i + 1);
+    operator
+        && source
+            .get(line_start..node.start)
+            .is_some_and(|s| s.contains("<<"))
+}
+
 /// The sentence a refusal carries for the region the grammar could not read. Three of its shapes are
 /// the grammar's own limits rather than text nobody wrote, and each has a writing that reads, so the
 /// refusal names the shape and that writing instead of calling the whole tree a guess.
@@ -759,6 +773,14 @@ fn unreadable_why(node: &Node, source: &str) -> String {
                 operator for it: with no descriptor the recovery is two redirects (`<` and \
                 `>file`) where the shell opens one. Write the descriptor you mean in front of \
                 the operator - `3<>file` is one redirect on fd 3 and it reads"
+            .into();
+    }
+    if heredoc_then_operator(node, source) {
+        return "this grammar loses the rest of a command's line when a here-document operator \
+                is followed by another redirect and then a pipe: `cat <<'EOF' 2>&1 | tail` \
+                came back with `| tail` inside the `2>&1`, so the pipeline is a guess. Write \
+                the redirect before the `<<` - `cat 2>&1 <<'EOF' | tail` is the same command \
+                - and it reads"
             .into();
     }
     "the bash grammar could not read this. tree-sitter RECOVERS rather than failing, so the \
@@ -2834,6 +2856,35 @@ mod tests {
                 x.stages
             );
         }
+    }
+
+    /// A here-document operator followed by another redirect and then a pipe is the grammar
+    /// misplacing the pipeline: `| tail` arrives inside the `2>&1` redirect and the text holds no
+    /// second stage. The rewrite keeps the redirect on the same command and reads.
+    #[test]
+    fn a_here_document_followed_by_a_redirect_and_a_pipe_names_the_writing_that_reads() {
+        for src in [
+            "cat <<'EOF' 2>&1 | tail -3\nx\nEOF",
+            "cat <<'EOF' 2>/dev/null | tail -3\nx\nEOF",
+        ] {
+            let x = n(src);
+            assert!(x.partial, "{src}");
+            let why = &x.unresolved[0].why;
+            assert!(why.contains("here-document operator"), "{src}: {why}");
+            assert!(why.contains("before the `<<`"), "{src}: {why}");
+        }
+
+        // What the refusal recommends: the same redirect, written before the operator.
+        let written = n("cat 2>&1 <<'EOF' | tail -3\nx\nEOF");
+        assert!(written.is_resolved(), "{:?}", written.unresolved);
+        assert_eq!(written.binaries(), vec!["cat", "tail"]);
+        assert!(written.stages[0].pipe_out && written.stages[1].pipe_in);
+        assert_eq!(
+            written.stages[0].redirects[0].op,
+            RedirectOp::Duplicate,
+            "{:?}",
+            written.stages[0].redirects
+        );
     }
 
     #[test]
