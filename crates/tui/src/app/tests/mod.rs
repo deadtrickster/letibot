@@ -1320,6 +1320,7 @@ mod markerorder;
 mod misc;
 mod monitors;
 mod notes;
+mod one_line_walls;
 mod oneliners;
 mod onevent;
 mod pane;
