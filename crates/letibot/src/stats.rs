@@ -12,7 +12,7 @@ use std::process::ExitCode;
 
 use letibot_metrics::stats;
 
-const USAGE: &str = "\
+const STATS_USAGE: &str = "\
 letibot stats [VERB] [--since 1d] [--session S] [--db PATH]
 
   (none) | today          the day at a glance: turns, tool errors, cost, p95 worker wait,
@@ -27,12 +27,26 @@ letibot stats [VERB] [--since 1d] [--session S] [--db PATH]
   sql 'SELECT …'          anything, with the per-kind views loaded (read-only)
 
   --since                 2d, 12h, 30m or all (default 1d)
+  --session S             only this session's rows (default: every session)
   --db                    the file (default $LETIBOT_METRICS_DB, else
                           ~/.local/share/letibot/metrics.db)
 
+  example:
+    letibot stats turns --since 2d --limit 5";
+
+const FB_USAGE: &str = "\
 letibot fb --session S [--turn T] [+|-] [NOTE…]
   marks the session's last finished turn (or T) good (+), bad (-) or with a note;
-  #words in the note are tags.";
+  #words in the note are tags.
+
+  --session S             the session whose turn is marked (required)
+  --turn T                one particular turn (default: the session's last finished one)
+  --db                    the file (default $LETIBOT_METRICS_DB, else
+                          ~/.local/share/letibot/metrics.db)
+
+  examples:
+    letibot fb --session s-1789919514688401228 + \"the retry fix worked\"
+    letibot fb --session s-1789919514688401228 - #slow took ages";
 
 struct Args {
     verb: Vec<String>,
@@ -79,11 +93,11 @@ fn parse(args: &[String]) -> Result<Args, String> {
     Ok(a)
 }
 
-fn say(r: Result<(), String>) -> ExitCode {
+fn say(r: Result<(), String>, help: &str) -> ExitCode {
     match r {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) if e.is_empty() => {
-            println!("{USAGE}");
+            println!("{help}");
             ExitCode::SUCCESS
         }
         Err(e) => {
@@ -95,15 +109,23 @@ fn say(r: Result<(), String>) -> ExitCode {
 
 /// `letibot stats …`
 pub fn run_stats(args: &[String]) -> ExitCode {
-    say(stats_text(args).map(|t| print!("{t}")))
+    say(stats_text(args).map(|t| print!("{t}")), STATS_USAGE)
 }
 
 /// The text `letibot stats` prints - apart from the printing, so a test can read it.
 pub fn stats_text(args: &[String]) -> Result<String, String> {
     let a = parse(args)?;
-    let c = stats::open(&a.db)?;
     let since = stats::floor(letibot_metrics::now_ms(), a.since);
     let verb: Vec<&str> = a.verb.iter().map(String::as_str).collect();
+    // The verb is a fact about the command line, so it is answered before the file is opened:
+    // on a box with no metrics file the old order blamed the file for a typo.
+    if !known_verb(&verb) {
+        return Err(format!(
+            "stats: unknown verb {:?}\n\n{STATS_USAGE}",
+            verb.join(" ")
+        ));
+    }
+    let c = stats::open(&a.db)?;
     let tables = match verb.as_slice() {
         [] | ["today"] => vec![stats::summary(&c, since)?],
         ["waits"] => vec![stats::waits(&c, since)?],
@@ -114,12 +136,7 @@ pub fn stats_text(args: &[String]) -> Result<String, String> {
         ["feedback"] => vec![stats::feedback(&c, since, a.session.as_deref(), a.bad)?],
         ["session", id] => vec![stats::session(&c, id)?],
         ["sql", q @ ..] if !q.is_empty() => vec![stats::query(&c, "", &q.join(" "), &[])?],
-        _ => {
-            return Err(format!(
-                "stats: unknown verb {:?}\n\n{USAGE}",
-                verb.join(" ")
-            ));
-        }
+        _ => return Err(format!("stats: unknown verb {:?}", verb.join(" "))),
     };
     Ok(tables
         .iter()
@@ -128,9 +145,30 @@ pub fn stats_text(args: &[String]) -> Result<String, String> {
         .join("\n"))
 }
 
+/// The verbs [`stats_text`] answers. One list, so *is this a verb* is asked once and the
+/// answer cannot drift from the match below it.
+fn known_verb(verb: &[&str]) -> bool {
+    const ONE_WORD: &[&str] = &[
+        "today",
+        "waits",
+        "deliveries",
+        "tools",
+        "models",
+        "turns",
+        "feedback",
+    ];
+    match verb {
+        [] => true,
+        [word] => ONE_WORD.contains(word),
+        ["session", _] => true,
+        ["sql", q @ ..] => !q.is_empty(),
+        _ => false,
+    }
+}
+
 /// `letibot fb …`
 pub fn run_fb(args: &[String]) -> ExitCode {
-    say(fb(args).map(|said| println!("{said}")))
+    say(fb(args).map(|said| println!("{said}")), FB_USAGE)
 }
 
 /// Write one mark; the sentence says where it landed.
@@ -139,7 +177,7 @@ pub fn fb(args: &[String]) -> Result<String, String> {
     let session = a
         .session
         .clone()
-        .ok_or_else(|| format!("fb: --session is required\n\n{USAGE}"))?;
+        .ok_or_else(|| format!("fb: --session is required\n\n{FB_USAGE}"))?;
     let mut words = a.verb.clone();
     let polarity = match words.first().map(String::as_str) {
         Some("+") => {
@@ -154,7 +192,7 @@ pub fn fb(args: &[String]) -> Result<String, String> {
     };
     let note = words.join(" ");
     if polarity == "note" && note.trim().is_empty() {
-        return Err(format!("fb: a note, or + / -\n\n{USAGE}"));
+        return Err(format!("fb: a note, or + / -\n\n{FB_USAGE}"));
     }
     if !a.db.exists() {
         return Err(format!(

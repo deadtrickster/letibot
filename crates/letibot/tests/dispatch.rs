@@ -106,6 +106,44 @@ fn the_help_lists_every_verb_and_keeps_its_descriptions_indented() {
     }
 }
 
+/// **A mistyped `stats` verb is a command-line mistake, and says so.** The verb used to be
+/// matched only after the metrics file was opened, so on a box that has never written one the
+/// answer to `stats turn` was "no metrics file" — a sentence about the box, not the typo.
+#[test]
+fn a_stats_verb_that_does_not_exist_is_named_before_the_file_is_opened() {
+    let absent = std::env::temp_dir()
+        .join(format!("letibot-cli-absent-{}", std::process::id()))
+        .join("metrics.db");
+    let path = absent.to_string_lossy().into_owned();
+    let (code, _, stderr) = run(&["stats", "turn", "--db", &path]);
+    assert_eq!(code, Some(2), "a typo is not a run: {stderr}");
+    assert!(
+        stderr.contains("unknown verb") && stderr.contains("turn"),
+        "the refusal names the verb it did not find: {stderr}"
+    );
+    assert!(
+        !stderr.contains("no metrics file"),
+        "the file is not the problem here: {stderr}"
+    );
+}
+
+/// Every verb answers for itself, and `stats` and `fb` show one example each - an example is
+/// what a person copies, and neither usage block had one.
+#[test]
+fn the_metrics_help_gives_an_example_for_each_verb() {
+    for (args, verb) in [
+        (vec!["stats", "--help"], "stats"),
+        (vec!["fb", "--help"], "fb"),
+    ] {
+        let (code, stdout, stderr) = run(&args);
+        assert_eq!(code, Some(0), "`{verb} --help` is not a failure: {stderr}");
+        assert!(
+            stdout.contains("example") && stdout.contains(&format!("letibot {verb}")),
+            "`{verb} --help` must show one runnable example:\n{stdout}"
+        );
+    }
+}
+
 /// **`letibot` answers for itself**, and a typo is refused by name rather than resolving
 /// to a role - the dispatcher's own name is not in the table, which is what stops
 /// `letibot` from becoming the daemon by substring.
