@@ -889,7 +889,7 @@ fn a_cancelled_row_stays_on_the_board_and_is_not_open_work() {
         "**the row is still on the board**: {screen}"
     );
     assert!(
-        screen.contains("push leticl to github  — you"),
+        screen.contains("push leticl to github (cancelled)  — you"),
         "and it still wears its author: {screen}"
     );
     assert_eq!(
