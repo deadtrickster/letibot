@@ -126,7 +126,10 @@ pub fn request_of(frame: &ClientFrame) -> (String, u64) {
         .and_then(|v| v.as_str())
         .unwrap_or_default()
         .to_string();
-    let seq = wire.get("expected_seq").and_then(|v| v.as_u64()).unwrap_or(0);
+    let seq = wire
+        .get("expected_seq")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
     (id, seq)
 }
 
@@ -245,9 +248,11 @@ fn in_daemon_tree(pid: i32, daemon: i32) -> bool {
         return false;
     };
     let root = format!("/letibot.{daemon}.");
-    contents
-        .lines()
-        .any(|line| line.split("::").nth(1).is_some_and(|path| path.contains(&root)))
+    contents.lines().any(|line| {
+        line.split("::")
+            .nth(1)
+            .is_some_and(|path| path.contains(&root))
+    })
 }
 
 #[cfg(test)]

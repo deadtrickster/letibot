@@ -66,7 +66,9 @@ fn refusal(reader: &mut FrameReader<std::os::unix::net::UnixStream>) -> String {
 
 /// Read frames until the answer to the password question, which is the one frame an askpass
 /// connection exists for.
-fn secret(reader: &mut FrameReader<std::os::unix::net::UnixStream>) -> (Option<String>, Option<String>) {
+fn secret(
+    reader: &mut FrameReader<std::os::unix::net::UnixStream>,
+) -> (Option<String>, Option<String>) {
     let deadline = Instant::now() + PATIENCE;
     loop {
         assert!(
@@ -213,10 +215,7 @@ fn a_connection_from_inside_the_tool_tree_is_refused_every_operator_door() {
         said.contains("ASKED Some(\"hunter2\")"),
         "the password door was not served to the tool tree:\n{said}"
     );
-    assert_eq!(
-        answered, 1,
-        "one card was raised for the tool tree's ask"
-    );
+    assert_eq!(answered, 1, "one card was raised for the tool tree's ask");
 }
 
 /// **The other half.** A process that is not inside the daemon keeps every door: the `!` line runs
