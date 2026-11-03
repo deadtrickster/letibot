@@ -417,6 +417,56 @@ fn spawn(
     Ok(pid)
 }
 
+/// The launcher that starts a coordinator: `$LETIBOT_ROOM_SUPERVISOR`, else `letibot` on `PATH`.
+fn room_launcher() -> Option<PathBuf> {
+    if let Some(p) = std::env::var_os("LETIBOT_ROOM_SUPERVISOR").filter(|v| !v.is_empty()) {
+        return Some(PathBuf::from(p)).filter(|p| p.is_file());
+    }
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|d| d.join("letibot"))
+        .find(|c| c.is_file())
+}
+
+/// Make sure the host coordinator is serving before a daemon opens its sessions: a session joins
+/// the rooms at open, from the socket that exists then. `letibot --room` is the launcher's own
+/// idempotent verb, and the bridge asks it rather than deriving the socket (the bridge is not a
+/// room client). A failure is a sentence, never fatal.
+pub fn ensure_room(launcher: &Path) -> Result<(), String> {
+    let ended = letibot_tools::rpc::run_bounded(
+        launcher,
+        &["--room".to_string()],
+        std::time::Duration::from_secs(60),
+    );
+    match ended {
+        letibot_tools::rpc::Ended::Answered(out) if out.status.success() => Ok(()),
+        letibot_tools::rpc::Ended::Answered(out) => Err(format!(
+            "`{} --room` answered {}",
+            launcher.display(),
+            out.status
+        )),
+        letibot_tools::rpc::Ended::TimedOut => Err(format!(
+            "`{} --room` did not finish within 60s",
+            launcher.display()
+        )),
+        letibot_tools::rpc::Ended::Unstartable(why) => Err(format!(
+            "`{} --room` could not run: {why}",
+            launcher.display()
+        )),
+    }
+}
+
+/// [`ensure_room`] for this host, said once on stderr when it cannot. The daemon still starts: a
+/// session with no room works, and its `room` tool refuses by name.
+fn ensure_host_room() {
+    let Some(launcher) = room_launcher() else {
+        return;
+    };
+    if let Err(why) = ensure_room(&launcher) {
+        eprintln!("  the host room did not start ({why}); sessions will not be in any room");
+    }
+}
+
 /// **This folder's daemon, started if nothing is listening, and never one whose placement is
 /// not the one asked for.** A daemon already up with another placement is refused, not reused
 /// and not stopped: stopping it would end sessions somebody else is running.
@@ -426,7 +476,13 @@ pub fn ensure(
     mode: &str,
     placement: &Placement,
 ) -> Result<Daemon, String> {
-    ensure_here(resolve(worktree)?, model, mode, placement)
+    let d = resolve(worktree)?;
+    // Not in `ensure_here`: that is the shape a test drives with a stub binary, and it must not
+    // start a real coordinator.
+    if !is_up(&d.socket) {
+        ensure_host_room();
+    }
+    ensure_here(d, model, mode, placement)
 }
 
 /// [`ensure`] for a daemon already resolved - the shape a test drives, with a socket it bound
@@ -577,6 +633,39 @@ mod tests {
     fn a_folder_that_is_not_there_is_refused() {
         let e = resolve(Path::new("/definitely/not/a/checkout")).expect_err("refused");
         assert!(e.contains("definitely/not/a/checkout"), "{e}");
+    }
+
+    /// A daemon the bridge opens needs the host coordinator, so the bridge asks the launcher
+    /// for it with `--room`, and a launcher that fails is a sentence.
+    #[test]
+    fn the_bridge_asks_the_launcher_for_a_coordinator() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = letibot_sessionlog::testing::scratch_root().join(format!(
+            "letibot-ensure-room-{}-{nanos}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let log = dir.join("asked");
+        let launcher = dir.join("letibot");
+        letibot_tools::testing::write_stub(
+            &launcher,
+            &format!("#!/bin/sh\necho \"$@\" >> {}\n", log.display()),
+        );
+        assert_eq!(ensure_room(&launcher), Ok(()));
+        // `write_stub` probes the script with no arguments, which logs an empty line first.
+        let asked = std::fs::read_to_string(&log)
+            .unwrap()
+            .lines()
+            .filter(|l| *l == "--room")
+            .count();
+        assert_eq!(asked, 1);
+
+        let failing = dir.join("letibot-bad");
+        letibot_tools::testing::write_stub(&failing, "#!/bin/sh\nexit 3\n");
+        assert!(ensure_room(&failing).is_err());
     }
 
     /// **A daemon the bridge started is waited for, and is still nobody's child to kill.** The
