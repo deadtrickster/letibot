@@ -2566,7 +2566,7 @@ impl Config {
                 )),
                 MonitorWake::Failed => out.push(Disclosure::off(
                     "monitor wake",
-                    "POLL ONLY",
+                    "POLL ONLY · WAKE FAILED",
                     "a fired monitor reaches the model only when something calls \
                      `job_list`. This is NOT the same as a session nobody armed: the \
                      daemon asked for the waiter and the thread could not be started, \

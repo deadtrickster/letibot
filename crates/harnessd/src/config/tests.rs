@@ -1691,6 +1691,13 @@ fn every_new_seam_is_disclosed_and_the_line_moves_with_it() {
             .map(|d| d.detail)
             .unwrap_or_default()
     };
+    let state = |w: &GateWiring, s: &str| -> String {
+        c.disclosures(w)
+            .into_iter()
+            .find(|d| d.subject == s)
+            .map(|d| d.state)
+            .unwrap_or_default()
+    };
 
     let ro = GateWiring::read_only();
     for expected in ["role", "backend", "adjudication", "intent check"] {
@@ -1774,6 +1781,14 @@ fn every_new_seam_is_disclosed_and_the_line_moves_with_it() {
     assert!(
         unarmed.contains("No daemon armed"),
         "and the unarmed line says nobody tried: {unarmed}"
+    );
+    // **And the LINE says it, not only the detail.** A banner read at a glance carries the state
+    // word; a reader who sees `POLL ONLY` twice cannot tell a knob from a failure without scrolling
+    // into prose that both states already had.
+    assert_ne!(
+        state(&failed, "monitor wake"),
+        state(&watching, "monitor wake"),
+        "a wake that failed must not read as a session nobody armed"
     );
 }
 
