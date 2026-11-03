@@ -269,6 +269,11 @@ impl SubagentRecord {
     /// first answer, which stays, so a daemon that was not running when the child spoke again still
     /// hands its parent the last word.
     pub fn answered_again(&self, answer: &str) {
+        // The daemon's own interruption is not the child's last word: `run_turn` hands back the text
+        // it had when the stop arrived, and recording that delivers a fragment after a restart.
+        if self.registry.is_stopping() {
+            return;
+        }
         self.ensure_written();
         if let Err(why) = self.store.with(|s| {
             s.settle_subagent_run_again(&self.child, answer)
@@ -902,6 +907,50 @@ mod tests {
         assert_eq!(written.state, "done");
         assert_eq!(written.outcome.as_deref(), Some("the sweep is in"));
         assert_eq!(written.parent_id, "s-1");
+        for s in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{s}", path.display()));
+        }
+    }
+
+    /// **A later turn the orderly stop interrupted is not the child's answer.** `run_turn` hands back
+    /// the text it had when the daemon stopped it, so recording that makes the next daemon deliver a
+    /// fragment as the child's last word - the reading `settled` already refuses for the first turn.
+    #[test]
+    fn a_later_answer_the_shutdown_interrupted_is_not_recorded() {
+        let path = std::env::temp_dir().join(format!(
+            "letibot-record-stopping-{}-{}.db",
+            std::process::id(),
+            letibot_sessionlog::registry::now_ms()
+        ));
+        for s in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{s}", path.display()));
+        }
+        let store = RunStore {
+            path: path.clone(),
+            cell: Default::default(),
+        };
+        let mut row = run("done");
+        row.outcome = Some("the answer it gave first".into());
+        store
+            .with(|s| s.put_subagent_run(&row).map_err(|e| e.to_string()))
+            .unwrap();
+        let registry = Registry::new();
+        registry.close();
+        let record = SubagentRecord {
+            store: store.clone(),
+            child: "s-1-sub-1".into(),
+            registry,
+            pending: None,
+        };
+        record.answered_again("half a sen");
+        let got = store
+            .with(|s| s.subagent_run("s-1-sub-1").map_err(|e| e.to_string()))
+            .unwrap()
+            .expect("the row");
+        assert_eq!(
+            got.later_answer, None,
+            "the daemon's own interruption was written as the child's newest answer"
+        );
         for s in ["", "-wal", "-shm"] {
             let _ = std::fs::remove_file(format!("{}{s}", path.display()));
         }
