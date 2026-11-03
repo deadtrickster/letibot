@@ -647,7 +647,7 @@ fn notice(outcome: &'static str, repeat: BreakerState) -> DenialNotice {
 fn the_refusal_prose_says_forbidden_and_forbids_the_variant() {
     // The model infers "the approach was wrong" from an unexplained failure and tries a
     // variant, so the prose has to close that inference off.
-    let t = refusal_text(&notice("denied", BreakerState::Closed), 1);
+    let t = refusal_text(&notice("denied", BreakerState::Closed), Reach::OnScreen);
     assert!(t.starts_with("REFUSED — not failed."), "{t}");
     assert!(t.contains("Do not retry a variant"), "{t}");
     assert!(t.contains("reaches the same decision"), "{t}");
@@ -658,7 +658,7 @@ fn the_refusal_prose_says_forbidden_and_forbids_the_variant() {
 fn a_refusal_that_reached_no_head_says_so_and_never_says_wait() {
     // With nothing attached the decision is in the record and on nobody's screen, so "wait
     // for the operator" would be waiting for nothing, and the model plans on that sentence.
-    let t = refusal_text(&notice("denied", BreakerState::Closed), 0);
+    let t = refusal_text(&notice("denied", BreakerState::Closed), Reach::Nobody);
     assert!(!t.contains("The operator has been told"), "{t}");
     assert!(t.contains("Nobody has been told"), "{t}");
     assert!(t.contains("no operator screen is attached"), "{t}");
@@ -671,8 +671,37 @@ fn a_refusal_that_reached_no_head_says_so_and_never_says_wait() {
 }
 
 #[test]
+fn a_refusal_nobody_was_shown_says_where_the_decision_is_recorded() {
+    // The operator asked "what decision" after the window closed, and this is the sentence
+    // that has to answer it: the row the decision was written as, and the verbs that reach it.
+    let t = refusal_text(&notice("not_run", BreakerState::Closed), Reach::Nobody);
+    assert!(t.contains("`adj-1`"), "the row's own id: {t}");
+    assert!(
+        t.contains("/gate recent") && t.contains("/gate grant adj-1"),
+        "where a person reads and rules on it: {t}"
+    );
+    // And it promises no head anything: no ask of this refusal is still open.
+    assert!(t.contains("Nothing is waiting for an answer"), "{t}");
+}
+
+#[test]
+fn a_refusal_whose_ask_is_still_open_says_an_answer_given_then_is_read() {
+    // The other half of the rule: no screen holds it now, but the card is open, so a head that
+    // attaches is handed it and "say what you were trying to achieve" is not waiting for nothing.
+    let t = refusal_text(&notice("denied", BreakerState::Closed), Reach::OpenAsk);
+    assert!(!t.contains("The operator has been told"), "{t}");
+    assert!(t.contains("no operator screen is attached"), "{t}");
+    assert!(!t.contains("Nothing is waiting for an answer"), "{t}");
+    assert!(
+        t.contains("a head that attaches is handed it"),
+        "what makes a later answer readable: {t}"
+    );
+    assert!(t.contains("/gate recent"), "{t}");
+}
+
+#[test]
 fn a_not_run_does_not_claim_a_decision_in_its_prose_either() {
-    let t = refusal_text(&notice("not_run", BreakerState::Closed), 0);
+    let t = refusal_text(&notice("not_run", BreakerState::Closed), Reach::Nobody);
     assert!(t.contains("nobody decided"), "{t}");
     assert!(t.contains("not permission either"), "{t}");
 }
@@ -681,10 +710,13 @@ fn a_not_run_does_not_claim_a_decision_in_its_prose_either() {
 fn a_repeat_says_which_attempt_it_is_and_an_open_breaker_says_to_stop() {
     let t = refusal_text(
         &notice("denied", BreakerState::Repeat { consecutive: 2 }),
-        1,
+        Reach::OnScreen,
     );
     assert!(t.contains("attempt 3"), "{t}");
-    let t = refusal_text(&notice("denied", BreakerState::Open { consecutive: 3 }), 1);
+    let t = refusal_text(
+        &notice("denied", BreakerState::Open { consecutive: 3 }),
+        Reach::OnScreen,
+    );
     assert!(t.contains("breaker is OPEN"), "{t}");
     assert!(t.contains("only the operator can lift it"), "{t}");
 }
@@ -693,7 +725,10 @@ fn a_repeat_says_which_attempt_it_is_and_an_open_breaker_says_to_stop() {
 fn a_sink_receives_the_notice_the_grant_path_and_what_it_reached() {
     let sink = RecordingDenialSink::with_heads(2);
     assert!(sink.is_empty());
-    assert_eq!(sink.denied(&notice("denied", BreakerState::Closed)), 2);
+    assert_eq!(
+        sink.denied(&notice("denied", BreakerState::Closed)),
+        Reach::OnScreen
+    );
     assert_eq!(sink.len(), 1);
     let n = sink.last().unwrap();
     assert!(n.grant.contains("grant adj-1"));
@@ -701,7 +736,7 @@ fn a_sink_receives_the_notice_the_grant_path_and_what_it_reached() {
     // A recorder that stands for nobody is the same fact as no sink at all.
     assert_eq!(
         RecordingDenialSink::default().denied(&notice("denied", BreakerState::Closed)),
-        0
+        Reach::Nobody
     );
 }
 
@@ -718,7 +753,7 @@ fn wired_gate(
 ) -> AdjudicatedGate {
     struct Shared(Arc<RecordingDenialSink>);
     impl DenialSink for Shared {
-        fn denied(&self, n: &DenialNotice) -> usize {
+        fn denied(&self, n: &DenialNotice) -> Reach {
             self.0.denied(n)
         }
     }

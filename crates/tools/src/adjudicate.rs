@@ -1695,11 +1695,14 @@ impl AdjudicatedGate {
         // What the sink says it reached is what the model is told: the sentence about the
         // operator knowing is a claim about a screen, and only the sink holds that fact. A
         // person who decided HAS seen it, and a console operator is no head at all.
-        let by_a_person = usize::from(decision.by.starts_with("human:"));
-        let reached = match &self.denials {
-            Some(sink) => sink.denied(&notice).max(by_a_person),
-            None => by_a_person,
+        let by_a_person = decision.by.starts_with("human:");
+        let mut reached = match &self.denials {
+            Some(sink) => sink.denied(&notice),
+            None => crate::authorise::Reach::Nobody,
         };
+        if by_a_person {
+            reached = crate::authorise::Reach::OnScreen;
+        }
         crate::authorise::refusal_text(&notice, reached)
     }
 

@@ -74,8 +74,8 @@ pub use attach::NotAttached;
 pub use authorise::{
     AuthorisationOracle, AuthorisationTrail, Breaker, BreakerState, Budgeted, CorpusRow,
     CorpusSink, DenialNotice, DenialSink, ModelAdjudicator, ModelBrief, OperatorOverride,
-    OracleAnswer, OracleScope, RecordingCorpusSink, RecordingDenialSink, ScriptedOracle, Speaker,
-    TaskDirection, TrailProvenance, UnsureKind, Utterance, Widening, refusal_text,
+    OracleAnswer, OracleScope, Reach, RecordingCorpusSink, RecordingDenialSink, ScriptedOracle,
+    Speaker, TaskDirection, TrailProvenance, UnsureKind, Utterance, Widening, refusal_text,
 };
 pub use backend::{BackendError, Command, DirEntry, ExecBackend, HostBackend, Output};
 pub use builtins::external::{ExternalBackends, ExternalDisclosure, ExternalWiring};

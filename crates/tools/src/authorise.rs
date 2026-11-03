@@ -1270,12 +1270,27 @@ impl DenialNotice {
     }
 }
 
+/// What the daemon knows about who will read a refusal, at the moment the verdict is made. A
+/// count of heads was not enough: the model plans on this sentence, so "the operator has been
+/// told" may only be said of a screen that holds the notice now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reach {
+    /// A head that may decide is attached, so the notice is on its screen as the model reads this.
+    OnScreen,
+    /// No screen holds it yet, and the ask is still open on the session: a head that attaches is
+    /// handed it, so an answer given then is read rather than lost.
+    OpenAsk,
+    /// No screen and no open ask. Nothing will show this refusal to anybody, and the only place
+    /// it survives is the record.
+    Nobody,
+}
+
 /// Where denial notices go. No blanket default on purpose: a no-op default is the invisible denial
 /// shipped as a convenience, and a gate with no sink says so in its startup disclosure.
 pub trait DenialSink: Send + Sync {
-    /// How many heads the notice reached. Zero means no screen holds it, and the refusal that
-    /// goes back to the model must not say a person has been told when nothing was shown.
-    fn denied(&self, notice: &DenialNotice) -> usize;
+    /// What a person will see of the notice: a screen holding it, an ask still open for the head
+    /// that attaches, or neither. The refusal that goes back to the model reads this and no more.
+    fn denied(&self, notice: &DenialNotice) -> Reach;
 }
 
 /// For tests and for a head that has not wired its own.
@@ -1310,21 +1325,26 @@ impl RecordingDenialSink {
 }
 
 impl DenialSink for RecordingDenialSink {
-    fn denied(&self, notice: &DenialNotice) -> usize {
+    fn denied(&self, notice: &DenialNotice) -> Reach {
         self.count.fetch_add(1, Ordering::Relaxed);
         if let Ok(mut g) = self.notices.lock() {
             g.push(notice.clone());
         }
-        self.heads.load(Ordering::Relaxed)
+        // A recorder is not a screen and keeps nothing, so it stands for the two ends only.
+        if self.heads.load(Ordering::Relaxed) > 0 {
+            Reach::OnScreen
+        } else {
+            Reach::Nobody
+        }
     }
 }
 
 /// The prose the model gets, and its job is to make "forbidden" impossible to read as
 /// "failed": `ToolOutcome` distinguishes them structurally, and this says a variant is
 /// not the recovery, because a refusal the model does not understand is one it retries.
-/// `reached` is how many heads the notice went to, and it decides one sentence: the model
-/// plans around "the operator knows", which may only be said when a head held the notice.
-pub fn refusal_text(notice: &DenialNotice, reached: usize) -> String {
+/// `reached` is what the daemon knows about who will read it, and it decides one sentence: the
+/// model plans around "the operator knows", which may only be said when a head held the notice.
+pub fn refusal_text(notice: &DenialNotice, reached: Reach) -> String {
     let repeat = match notice.repeat {
         BreakerState::Closed => String::new(),
         BreakerState::Repeat { consecutive } => format!(
@@ -1365,27 +1385,37 @@ pub fn refusal_text(notice: &DenialNotice, reached: usize) -> String {
     )
 }
 
-/// Who holds this decision, and what to do next. Two things the harness must not conflate: a
-/// notice queued for a head is delivered, and a notice that reached none is a decision nobody
-/// has seen, so telling the model to wait would be telling it to wait for nothing.
-fn telling(notice: &DenialNotice, reached: usize) -> String {
-    if reached > 0 {
-        format!(
+/// Who holds this decision, and what to do next. Three states, because "the operator knows"
+/// is a claim about a screen: one holds it, one is handed the open ask when it attaches, or
+/// neither, and then the model must not wait for anybody.
+fn telling(notice: &DenialNotice, reached: Reach) -> String {
+    let id = &notice.request_id;
+    match reached {
+        Reach::OnScreen => format!(
             "The operator has been told, with this: {}\n\
-             Do not retry a variant. Say what you were trying to achieve and wait, or ask \
-             for the grant by name.",
+             It is recorded as the row `{id}`, which `/gate recent` lists. Do not retry a \
+             variant. Say what you were trying to achieve and wait, or ask for the grant by name.",
             notice.grant
-        )
-    } else {
-        format!(
+        ),
+        Reach::OpenAsk => format!(
+            "Nobody is watching this session just now: no operator screen is attached, so this \
+             decision is on no screen. The ask is still open, and a head that attaches is handed \
+             it, so an answer given then is read. It is recorded as the row `{id}`, which \
+             `/gate recent` lists. What would allow it: {}\n\
+             Do not retry a variant. Say what you were trying to achieve and what would allow \
+             it.",
+            notice.grant
+        ),
+        Reach::Nobody => format!(
             "Nobody has been told: no operator screen is attached to this session, so this \
-             decision reached no head and the operator has not seen it. It is in the \
-             session's record. Nothing is waiting for an answer, and the same call asked \
-             again reaches the same verdict. What would allow it: {}\n\
+             decision reached no head and the operator has not seen it. It is recorded as the \
+             row `{id}`; `/gate recent` lists it and `/gate grant {id}` rules on it. Nothing is \
+             waiting for an answer, and the same call asked again reaches the same verdict. What \
+             would allow it: {}\n\
              Do not retry a variant. Say what you were trying to achieve and what would \
              allow it, so the answer is there when the operator next reads this session.",
             notice.grant
-        )
+        ),
     }
 }
 

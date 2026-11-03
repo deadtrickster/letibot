@@ -9,7 +9,7 @@ fn every_denial_reaches_the_operator_with_the_grant_path_attached() {
     let sink = std::sync::Arc::new(crate::authorise::RecordingDenialSink::with_heads(1));
     struct Shared(std::sync::Arc<crate::authorise::RecordingDenialSink>);
     impl crate::authorise::DenialSink for Shared {
-        fn denied(&self, n: &crate::authorise::DenialNotice) -> usize {
+        fn denied(&self, n: &crate::authorise::DenialNotice) -> crate::authorise::Reach {
             self.0.denied(n)
         }
     }
@@ -32,8 +32,12 @@ fn a_refusal_claims_the_operator_was_told_only_when_a_head_was_reached() {
     // notice reached, and that count is the only evidence the refusal is allowed to speak from.
     struct Heads(usize);
     impl crate::authorise::DenialSink for Heads {
-        fn denied(&self, _n: &crate::authorise::DenialNotice) -> usize {
-            self.0
+        fn denied(&self, _n: &crate::authorise::DenialNotice) -> crate::authorise::Reach {
+            if self.0 > 0 {
+                crate::authorise::Reach::OnScreen
+            } else {
+                crate::authorise::Reach::Nobody
+            }
         }
     }
     let args = json!({"command": "/bin/rm /w/x.rs"});
