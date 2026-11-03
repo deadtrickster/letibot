@@ -1467,10 +1467,9 @@ fn a_relic_beside_a_real_record_takes_the_down_time_from_the_real_one() {
     d.stop(None);
 }
 
-/// **A daemon that is still beating is not a gone one** (R91.9). The store is shared by every
-/// daemon on the box, so a child, a monitor and a job of an instance whose life row has no stop and
-/// a fresh heartbeat belong to a daemon that is working - and a restore here would resume the child
-/// twice in one worktree, run the monitor twice and mark the job lost.
+/// **A daemon that is still beating is not a gone one** (R91.9): another instance's child, monitor
+/// and job belong to a daemon that is working, and a restore here would resume the child twice in
+/// one worktree, run the monitor twice and mark the job lost.
 #[test]
 fn what_another_daemon_that_is_still_beating_owns_is_left_alone() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
