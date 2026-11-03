@@ -289,6 +289,13 @@ pub trait ScopeTree: Send + Sync {
     /// An invisible watcher is an unreapable one.
     fn list(&self) -> Vec<ScopeId>;
 
+    /// Where this tree keeps its scopes, when that is a directory a later process can name: the
+    /// fact that lets a daemon find what a dead one left behind. `None` for a tree with no place
+    /// of its own, which is a tree nothing can be swept in.
+    fn root(&self) -> Option<PathBuf> {
+        None
+    }
+
     /// Note a scope that already exists and that this tree did not open: a job adopted from a peer
     /// whose cgroup sits under its root. Nothing is reaped differently for knowing it, only listed.
     fn remember(&self, _scope: &ScopeId) {}
@@ -795,6 +802,10 @@ impl ScopeTree for Cgroup2 {
         )
     }
 
+    fn root(&self) -> Option<PathBuf> {
+        Some(self.root.clone())
+    }
+
     fn open(
         &self,
         kind: ScopeKind,
@@ -1243,6 +1254,10 @@ impl ScopeTree for ProcessGroups {
              a process that calls setsid/setpgid leaves its scope)",
             self.root.display()
         )
+    }
+
+    fn root(&self) -> Option<PathBuf> {
+        Some(self.root.clone())
     }
 
     fn open(
