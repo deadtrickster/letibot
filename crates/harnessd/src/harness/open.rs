@@ -875,6 +875,9 @@ impl Harness {
         let backend = backend
             .with_session_tmp(&session_tmp)
             .map_err(|e| HarnessError::Setup(format!("this session's /tmp: {e}")))?;
+        if backend.boundary().is_some() {
+            cfg.session_scratch = Some(session_tmp.clone());
+        }
         // One boxed backend from here on, whichever substrate: the host one built
         // above, or a firecode VM booted on a copy of the tree `Config::vm_copy_source` names.
         let (backend, backend_described, backend_writable, monitors): (
@@ -2150,7 +2153,11 @@ impl Harness {
         // are facts, and not off the role's intention before open.
         let seat_facts = crate::config::SeatFacts {
             tools: seated.iter().cloned().collect(),
-            scratch: backend.scratch_dir(),
+            scratch: cfg
+                .session_scratch
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .or_else(|| backend.scratch_dir()),
             subagent: cfg.parent_session_id.is_some(),
             // A linked worktree's `.git` is a file naming the main repository's gitdir.
             worktree: cfg.workspace.join(".git").is_file(),
@@ -4114,6 +4121,55 @@ mod mac_default_seat_tests {
             .grant_into_view(&extra.canonicalize().expect("path"), false, "test")
             .expect("the grant takes");
         assert!(p.backend.boundary().expect("a boundary").egress.allowed());
+    }
+
+    #[test]
+    fn the_model_is_told_the_in_view_scratch_and_not_the_daemons_root() {
+        if !probe_works() {
+            eprintln!("skipped: the seatbelt probe refuses on this Mac");
+            return;
+        }
+        let dir = checkout();
+        let mut cfg = Config::for_this_box(&dir);
+        cfg.seat = Seat::Leticode;
+        cfg.unconfined = true;
+        cfg.allow_bash = true;
+        cfg.session_id = "mac-scratch".into();
+        let hub = Hub::new(&cfg.session_id);
+        let registry = letibot_sessionlog::registry::Registry::new();
+        let p = Harness::place_the_tools(&mut cfg, &hub, &registry).expect("places");
+        let told = cfg.model_scratch();
+        assert_ne!(told, scratch_dir());
+        assert!(told.starts_with(scratch_dir()));
+        let run = p
+            .backend
+            .run(&letibot_tools::backend::Command {
+                argv: vec![
+                    "/bin/sh".into(),
+                    "-c".into(),
+                    format!("echo x > '{}/m.txt'", told.display()),
+                ],
+                cwd: String::new(),
+                env: Vec::new(),
+            })
+            .expect("runs");
+        assert_eq!(run.exit, 0, "the scratch the model is told is writable");
+        let root_write = p
+            .backend
+            .run(&letibot_tools::backend::Command {
+                argv: vec![
+                    "/bin/sh".into(),
+                    "-c".into(),
+                    format!("echo x > '{}/m.txt'", scratch_dir().display()),
+                ],
+                cwd: String::new(),
+                env: Vec::new(),
+            })
+            .expect("runs");
+        assert_ne!(
+            root_write.exit, 0,
+            "the daemon's scratch root stays outside"
+        );
     }
 
     #[test]

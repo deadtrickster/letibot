@@ -431,6 +431,10 @@ pub struct Config {
     /// (`mergequeue::git::landing_root`); `None` in every fixture built with
     /// [`Config::for_this_box`], so no test reaches the box's real `~/.local/share/letibot`.
     pub landing_root: Option<std::path::PathBuf>,
+    /// The directory inside a boundary that commands may write and the model is told is its
+    /// scratch. The daemon's scratch root is not bound into the view, because job output lives
+    /// there; set when the tools are placed, `None` for a seat with no boundary.
+    pub session_scratch: Option<std::path::PathBuf>,
     /// Where a review's own checkout is made - `<temp>/letibot-review-clones` on the daemon, a
     /// fixture's own directory when it drives reviews. One tree per ATTEMPT, so a re-seat can never
     /// touch the tree its previous reviewer is reading. `None` in every other fixture.
@@ -1432,6 +1436,7 @@ impl Config {
             seat: Seat::default(),
             grants_ro: Vec::new(),
             landing_root: None,
+            session_scratch: None,
             // `None` is the daemon's own `<temp>/letibot-review-clones`; a fixture that serves
             // reviews sets its own directory. See the field.
             review_clones: None,
@@ -1873,7 +1878,7 @@ impl Config {
         // that can write there; this row is the operator's copy, for the config pane.
         out.push(row(
             "scratch",
-            crate::harness::scratch_dir().display().to_string(),
+            self.model_scratch().display().to_string(),
             "",
             "",
         ));
@@ -2167,6 +2172,14 @@ impl Config {
         out
     }
 
+    /// The scratch the model is told to use: the in-view directory under a boundary, else the
+    /// daemon's own.
+    pub fn model_scratch(&self) -> std::path::PathBuf {
+        self.session_scratch
+            .clone()
+            .unwrap_or_else(crate::harness::scratch_dir)
+    }
+
     /// The things that are off, and why - a daemon that does not say *spill is unset* is one whose
     /// operator finds out when a 40 MB grep result lands in the prompt. It takes [`GateWiring`]
     /// rather than deciding, because a disclosure that guesses is what this list exists to prevent.
@@ -2361,7 +2374,7 @@ impl Config {
                  and DELETING inside it need no permission. This exact path: a \
                  different directory under /tmp is shared temp space, where a delete \
                  is an ask and the name may already be somebody else's.",
-                crate::harness::scratch_dir().display()
+                self.model_scratch().display()
             ),
             active: true,
         });
