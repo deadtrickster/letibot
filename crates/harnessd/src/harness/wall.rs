@@ -1692,6 +1692,13 @@ impl Harness {
             transcript_id: new_id.clone(),
             fingerprint,
         });
+        // **A settlement nobody was told is owed in THIS conversation, not the one just left**:
+        // re-armed here, after the swap, so the wake that says it writes into the new transcript.
+        if self.rearm_owed_settlements() > 0 {
+            // Nothing else rings for a row that has already settled, so the fork rings: the turn
+            // that says it comes after this one, whichever door opens it.
+            self.session_registry.bell().ring_wake(&self.cfg.session_id);
+        }
         self.reconcile(&mut sink, &body);
         // AND EVERY ROW JUST PUBLISHED REPLACED THE ONES EVERY READER HOLDS: `append_items` publishes under
         // `new_id`, so a reader folding what it is told draws both conversations. The event names the transcript it

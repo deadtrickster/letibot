@@ -614,6 +614,37 @@ impl JobWatchers {
         self.queue(c);
     }
 
+    /// Queue a settlement found by a reader rather than a watcher, unless this set already owes
+    /// it: the queue, the held batch and what the last turn was told are the three ways a handle
+    /// is spoken for. A door that re-arms from the store needs the guard, or a settlement the
+    /// queue still holds is said twice.
+    pub fn queue_unless_owed(&self, c: JobCompletion) -> bool {
+        let queued = self
+            .completions
+            .queue
+            .lock()
+            .expect("job completions")
+            .iter()
+            .any(|x| x.job == c.job);
+        let held = self
+            .held
+            .lock()
+            .expect("held results")
+            .iter()
+            .any(|x| x.job == c.job);
+        let told = self
+            .read
+            .lock()
+            .expect("read record")
+            .seen
+            .contains_key(&c.job);
+        if queued || held || told {
+            return false;
+        }
+        self.queue(c);
+        true
+    }
+
     /// Hold this session's settlement queue while `during` runs - the position a publisher must
     /// not be parked in, stood in on purpose.
     #[doc(hidden)]

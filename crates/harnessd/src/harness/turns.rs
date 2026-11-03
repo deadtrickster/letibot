@@ -554,9 +554,10 @@ impl Harness {
         out
     }
 
-    /// A settlement this daemon queued for a session that was not open is not lost: `JobWatchers` is built
+    /// A settlement this daemon queued and nobody was told about is not lost: `JobWatchers` is built
     /// per open, so its queue dies with that harness, but the ROW survives with `delivered = 0`, and this
-    /// reads it at the one moment it is true. Only rows this daemon wrote; returns how many it queued.
+    /// reads it at the moments that is true - an open, and a fork, which replaces the transcript it was
+    /// addressed to. The queue's own guard makes a second call say nothing twice. Only rows this daemon wrote.
     fn deliver_settlements_left_undelivered(&self, store: &Store, me: &str, sid: &str) -> usize {
         let Some(watch) = self.job_watch.clone() else {
             return 0;
@@ -576,7 +577,7 @@ impl Harness {
             // **The child's latest word, and whether it is a later turn's**: a later answer puts the row
             // back to undelivered, so the sentence that carries it here is the one `task_result` promises.
             let (answer, later) = crate::subagent_record::latest_answer(&run);
-            watch.queue(JobCompletion {
+            if watch.queue_unless_owed(JobCompletion {
                 memory: None,
                 kind: BackgroundKind::Subagent,
                 // The session that started it, which is this one - the sentence is *a subagent
@@ -591,8 +592,9 @@ impl Harness {
                 detail: crate::jobwatch::first_line(&answer),
                 arrived: std::time::SystemTime::now(),
                 later,
-            });
-            queued += 1;
+            }) {
+                queued += 1;
+            }
         }
         // And the jobs, whose rows the recorder writes for the same reason and with the same `delivered = 0`.
         // A child's handle has a `running` job row too, so it is skipped here the way `restore_after_restart` skips it.
@@ -609,7 +611,7 @@ impl Harness {
             if ctx.instance != me {
                 continue;
             }
-            watch.queue(JobCompletion {
+            if watch.queue_unless_owed(JobCompletion {
                 memory: None,
                 kind: BackgroundKind::Job,
                 owner: sid.to_string(),
@@ -622,16 +624,30 @@ impl Harness {
                 detail: String::new(),
                 arrived: std::time::SystemTime::now(),
                 later: false,
-            });
-            queued += 1;
+            }) {
+                queued += 1;
+            }
         }
         if queued > 0 {
             eprintln!(
-                "  {sid} · {queued} settlement(s) this daemon queued while the session was not \
-                 open are said at this open"
+                "  {sid} · {queued} settlement(s) nobody was told about are said in {}",
+                self.transcript_id
             );
         }
         queued
+    }
+
+    /// **A fork is the second moment a settlement nobody was told is true**: the rows the store has
+    /// as `delivered = 0` were addressed to the transcript this fork replaced, so they are re-armed
+    /// into the new one. The door an open uses, and the set's own queue is what makes a second fork
+    /// - or a settlement the queue still holds - say nothing twice. Returns how many it queued.
+    pub(crate) fn rearm_owed_settlements(&self) -> usize {
+        let Some(store) = self.store.as_ref() else {
+            return 0;
+        };
+        let me = self.session_registry.instance().to_string();
+        let sid = self.cfg.session_id.clone();
+        self.deliver_settlements_left_undelivered(store, &me, &sid)
     }
 
     /// What this session was running when its daemon stopped, restored or reminded: called once, when the
@@ -651,7 +667,7 @@ impl Harness {
         // Before anything about a restart, the settlements THIS daemon dropped: this is the door every open
         // passes through, and its own ring is what turns a queued settlement into a turn. The count is kept
         // because a settlement nobody was told about is one thing that makes an empty restart a TURN.
-        let settlements = self.deliver_settlements_left_undelivered(&store, &me, &sid);
+        let settlements = self.rearm_owed_settlements();
         // **A daemon whose heartbeat is still fresh is not a gone one** (R91.9): the store is shared
         // by every daemon on the box, so its records are its own until its pid or its clock says not.
         let running = |instance: &str| crate::restart::is_running(&store, instance, opened_ms);
