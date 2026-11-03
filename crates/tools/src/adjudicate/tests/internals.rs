@@ -59,6 +59,6 @@ fn the_text_the_model_reads_names_no_internal_document_or_review_item() {
     );
     assert!(
         !summary.contains("ask_unconfined_code"),
-        "and it must not name a setting a file turns on: there is none — {summary}"
+        "and it must not name a setting a file turns on: there is none. {summary}"
     );
 }
