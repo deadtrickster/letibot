@@ -61,7 +61,8 @@ session layers   s3  "fix: CodeRabbit firing quotes an empty body"     <- newest
                  s1  "digest: shorten ydb test logs"
 project layers   p1  .letibot/plugins/…  (committed, reviewed)
 user layers      u1  ~/.config/letibot/plugins/…
-built-in         sessions, queue, room, todo, irc, claude-transcript   (the GitHub family is step 3)
+built-in         sessions, queue, room, todo, irc, claude-transcript, github   (step 3's conditions are
+                 still left)
 ```
 
 - The unit of override is a hook, not a plugin: a layer exporting only `condition_coderabbit` overrides that
@@ -504,7 +505,7 @@ A pane never runs a program for its data; it declares which of the host's facts 
 exactly those:
 
 ```toml
-feeds = ["sessions"]        # sessions | queue | room | monitors | jobs | todos | git
+feeds = ["sessions"]        # sessions | queue | room | monitors | jobs | todos | git | github
 ```
 
 | feed | is |
@@ -516,6 +517,7 @@ feeds = ["sessions"]        # sessions | queue | room | monitors | jobs | todos 
 | `jobs` | the session's background jobs: handle, command, state, bytes, tail |
 | `todos` | the session's todo rows, with their waits and their questions |
 | `git` | the head's reading of the repository: branch, detached, ahead/behind, stash, the action in progress, changed-file counts |
+| `github` | the reviewer seat (`letibot attach github`): each scope's state, and its open pull requests with their review state, last action and age; the seat's identity and whether anything is posted or kept as a draft |
 
 `sessions`, `queue` and `room` are fed; the rest are named, and each is one more feed, not a format change.
 Two things a feed says so a plugin need not infer them, both in `queue`: `live` per row (the in-flight states
@@ -724,7 +726,7 @@ of FEEDS rather than one sessions-shaped input, with the acts declared beside th
 |---|---|
 | the table, the build script | `crates/builtins` (`build.rs`, `table()`, `Stack::register_builtin_bytes`) |
 | the guest's ABI half | `plugins/builtin/abi` |
-| the built-in layers | `plugins/builtin/*` (sessions, queue, room, todo, irc, claude-transcript) |
+| the built-in layers | `plugins/builtin/*` (sessions, queue, room, todo, irc, claude-transcript, github) |
 | the bytes path | `Loader::load_bytes` / `load_builtin`, `Layer::trusted` / `Layer::pin` |
 | the head's host | `crates/tui/src/app/sessions_pane.rs`: its own stack, the feed, the acts, the fold state, the way out |
 | the C3 additions | `crates/plugin-sdk/src/pane.rs`, `crates/sessionlog/src/pane.rs` (`Row`'s `facts`/`under`/`number`/`depth`/`open`/`enter`, `View::validate_for`) |
