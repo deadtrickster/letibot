@@ -9,7 +9,7 @@
 //! DecisionRequested{req_id, kind, call_id, summary, options, deadline, on_timeout}
 //! DecisionAnswered{req_id, outcome, by, basis, late: bool}
 //! ToolStarted / ToolProgress / ToolFinished{call_id, outcome, ...}
-//! TurnFinished{turn_id, finish_reason, usage, timings}
+//! TurnFinished{turn_id, finish_reason, usage, timings, ends_turn}
 //! TurnInterrupted{turn_id, reason, partial_kept: bool}
 //! TurnFailed{turn_id, error, partial_kept: bool}   — not §4.5's; see the variant
 //! TranscriptAppended{item_id, kind, ledger_head}
@@ -1099,9 +1099,9 @@ pub enum SessionEvent {
         finish_reason: FinishReason,
         usage: Usage,
         timings: Timings,
-        /// Whether this finish is the whole prompt's end or only one ROUND of it. One is published
-        /// per round, so a head that took each for an ending wrote *Responded* at every boundary;
-        /// absent means an ending, which is all a daemon older than this field ever published.
+        /// Whether this finish is the whole prompt's end or only one ROUND of it. Only the round
+        /// loop knows: a round that proposed no calls is still nudged or steered into another, so a
+        /// head reading the round's finish alone drew *Responded* and then *Responding* again.
         #[serde(default = "an_ending")]
         ends_turn: bool,
     },

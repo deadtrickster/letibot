@@ -13,27 +13,59 @@ pub(crate) enum Waited {
 }
 
 /// A `LogSink` that also hands back the item ids it saw, so a row's body can be paired with the
-/// id the event named. It forwards everything unchanged: a sink that filtered would make the head's
-/// view depend on which daemon published it.
+/// id the event named. A sink that filtered would make the head's view depend on which daemon
+/// published it, so the one event it can hold is the round loop's to ask for.
 pub(crate) struct CapturingSink {
     inner: LogSink,
+    hub: Arc<Hub>,
     ids: Vec<String>,
     /// The last `turn_id` this sink saw start, taken off the event on its way past: a failure has
     /// to publish a terminal event for its turn, and `HarnessError` does not carry an id.
     turn_id: Option<String>,
+    /// Whether a round's ending waits for [`Self::finish`] rather than going straight out. Only the
+    /// round loop may hold one: for every other door the ending is the only terminal frame its turn
+    /// has, and a held one a head never hears is a turn stuck on `Responding`.
+    hold_end: bool,
+    /// The round's ending, held: emitted before the round's calls have run and before a nudge is
+    /// earned, so whether the turn ends with it is not known until the loop says.
+    finish: Option<SessionEvent>,
 }
 
 impl CapturingSink {
+    /// Forwards everything, as `LogSink` does, and keeps the ids on the way past.
     pub(crate) fn new(hub: Arc<Hub>) -> Self {
         CapturingSink {
-            inner: LogSink::new(hub),
+            inner: LogSink::new(hub.clone()),
+            hub,
             ids: Vec::new(),
             turn_id: None,
+            hold_end: false,
+            finish: None,
         }
+    }
+
+    /// Holds the round's ending back for [`Self::finish`], which is the round loop's, since it is the
+    /// only place that knows whether another round follows.
+    pub(crate) fn holding_the_rounds_end(hub: Arc<Hub>) -> Self {
+        let mut sink = CapturingSink::new(hub);
+        sink.hold_end = true;
+        sink
     }
 
     fn take_ids(&mut self) -> Vec<String> {
         std::mem::take(&mut self.ids)
+    }
+
+    /// Publish the round's ending, saying whether another round follows. A round that emitted no
+    /// ending, or one already published, has nothing left to say.
+    pub(crate) fn finish(&mut self, more: bool) {
+        let Some(mut e) = self.finish.take() else {
+            return;
+        };
+        if let SessionEvent::TurnFinished { ends_turn, .. } = &mut e {
+            *ends_turn = !more;
+        }
+        self.hub.publish(e);
     }
 }
 
@@ -43,6 +75,10 @@ impl EventSink for CapturingSink {
             TurnEvent::TranscriptAppended { item_id, .. } => self.ids.push(item_id.clone()),
             TurnEvent::TurnStarted { turn_id, .. } => self.turn_id = Some(turn_id.clone()),
             _ => {}
+        }
+        if self.hold_end && matches!(&event, TurnEvent::TurnFinished { .. }) {
+            self.finish = Some(letibot_sessionlog::from_turn_event(event));
+            return;
         }
         self.inner.emit(event);
     }
@@ -1494,7 +1530,9 @@ impl Harness {
         let backstop = round_backstop(self.cfg.max_tool_rounds);
         for round in 0..backstop {
             self.stop_the_turn_at_the_wall(round)?;
-            let mut sink = CapturingSink::new(self.hub.clone());
+            // This sink holds the round's ending, because the round's end and the turn's end are two
+            // facts and this loop is the only place that decides the second (see `CapturingSink`).
+            let mut sink = CapturingSink::holding_the_rounds_end(self.hub.clone());
             // Compose this round's offer before anything is sent, scored against the person's prompt and the
             // turn's results and handed to the engine as a trailing item `session.items` never sees. Not on a
             // compaction turn, where an offer would be settled against calls the summary never made.
@@ -1868,42 +1906,56 @@ impl Harness {
                     }
                 };
 
+            // The round's ending, as the wire's `ends_turn`. A round that proposed calls has another
+            // round owed to it; a round that proposed none is decided by the checks below, which are
+            // this loop's own convergence and the only thing that knows whether the turn goes on.
             if calls.is_empty() {
                 // A model that stopped because the context is full when it is not: first, ahead of the intent check,
                 // since the excuse is usually why a promise was not kept. It goes through `append_notice`, because the
                 // turn is over and the loop continuing is what makes it a correction rather than a report.
+                let mut notices: Vec<String> = Vec::new();
+                let mut goes_on = false;
                 if let Some(steer) = &context_claim {
-                    self.append_notice(letibot_plugin::notice::NUDGE, steer)?;
-                    if !claim_in_reasoning {
-                        continue;
-                    }
+                    notices.push(steer.clone());
+                    goes_on = !claim_in_reasoning;
                 }
                 // The turn boundary, and the one the error signal is about: a turn that ends with no tool call is
                 // exactly the case of a model that says it will start something and forgets. The diff runs before the
                 // reply leaves, reading the assistant's text out of the rows just appended.
-                if nudges_left > 0
+                if !goes_on
+                    && nudges_left > 0
                     && let Some(steer) = self.close_the_turn(&ok.turn_id, &appended)
                 {
                     nudges_left -= 1;
-                    // Through `append_notice` rather than the steering queue: the turn is over, and a message queued for
-                    // the next step boundary of a turn that has ended would arrive after the reply the operator waits for.
-                    // The loop continuing is what makes it a correction.
-                    self.append_notice(letibot_plugin::notice::NUDGE, &steer)?;
-                    continue;
+                    notices.push(steer);
+                    goes_on = true;
                 }
                 // The branch is the deliverable, after the intent check, so a turn that promised work and did not
                 // start it hears about the promise first. Not on a round cut short: an interrupt is the turn being
                 // ENDED, and a nudge that continued it would be the harness overruling the stop.
-                if !ok.truncated
+                if !goes_on
+                    && !ok.truncated
                     && let Some(steer) = end_of_work.at_turn_end(self.deliverable.as_ref())
                 {
-                    self.append_notice(letibot_plugin::notice::NUDGE, &steer)?;
-                    continue;
+                    notices.push(steer);
+                    goes_on = true;
                 }
                 // A message queued while the head was running is a prompt, not a footnote: the engine appends what it
                 // finds at the step boundary, and a turn that made no tool call used to return with the message
                 // answered by nobody. The loop continues, and a round with nothing queued returns below.
-                if !ok.steering_applied.is_empty() {
+                if !goes_on && !ok.steering_applied.is_empty() {
+                    goes_on = true;
+                }
+                // Said from the decision rather than from the calls: a round nudged into another one is not
+                // the turn's end, and a head told it was drew `Responded` and then `Responding` again.
+                sink.finish(goes_on);
+                // Through `append_notice` rather than the steering queue: the turn is over, and a message queued for
+                // the next step boundary of a turn that has ended would arrive after the reply the operator waits for.
+                // The loop continuing is what makes it a correction.
+                for steer in &notices {
+                    self.append_notice(letibot_plugin::notice::NUDGE, steer)?;
+                }
+                if goes_on {
                     continue;
                 }
                 self.publish_jobs();
@@ -1915,6 +1967,9 @@ impl Harness {
                     truncated,
                 });
             }
+
+            // A round that proposed calls is not the turn's end: the next one answers them.
+            sink.finish(true);
 
             tool_calls += calls.len();
             let turn_id = ok.turn_id.clone();

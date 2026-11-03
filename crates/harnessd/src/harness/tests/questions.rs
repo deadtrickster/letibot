@@ -168,6 +168,78 @@ fn an_announced_row_is_filled_by_the_pairing_rule_and_body_less_without_it() {
     );
 }
 
+/// A round's ending goes straight out of a sink that was not asked to hold it. Only the round loop
+/// may hold one: every other door's turn has that frame for its only terminal event, so a held one a
+/// head never hears is a compaction whose turn stays `Responding` for ever.
+#[test]
+fn a_capturing_sink_forwards_a_rounds_ending_unless_the_loop_holds_it() {
+    fn ending() -> letibot_turn::TurnEvent {
+        letibot_turn::TurnEvent::TurnFinished {
+            turn_id: "t1".into(),
+            finish_reason: letibot_turn::FinishReason::Eos,
+            // No call of this round is left to run, so the engine's own reading is an ending.
+            proposed_calls: false,
+            metrics: Box::new(letibot_turn::TurnMetrics {
+                turn_id: "t1".into(),
+                model: "m".into(),
+                dialect_template_sha: "00".into(),
+                ledger_head_sent: "ab".into(),
+                prompt_tokens: 10,
+                cached_tokens: 0,
+                predicted_tokens: 1,
+                prompt_tokens_server: 10,
+                prompt_processed: 10,
+                finish_reason: letibot_turn::FinishReason::Eos,
+                prompt_ms: 1.0,
+                predicted_ms: 1.0,
+                draft_n: 0,
+                draft_n_accepted: 0,
+                id_slot: 0,
+                n_busy_slots: None,
+                prefix_check: letibot_turn::PrefixCheck::FirstTurn,
+                cost: letibot_backend::TurnCost {
+                    meter: letibot_backend::Meter::WallClock,
+                    prompt_tokens: 10,
+                    cached_tokens: 0,
+                    generated_tokens: 1,
+                    wall_ms: 2,
+                    micros_usd: None,
+                },
+                wall_ms: 2,
+                first_byte_ms: None,
+            }),
+        }
+    }
+    fn endings(hub: &Hub) -> Vec<bool> {
+        hub.retained()
+            .iter()
+            .filter_map(|e| match &e.event {
+                SessionEvent::TurnFinished { ends_turn, .. } => Some(*ends_turn),
+                _ => None,
+            })
+            .collect()
+    }
+
+    // The ordinary sink: published as it is emitted, and it is an ending.
+    let hub = Hub::new("s");
+    let mut plain = CapturingSink::new(hub.clone());
+    plain.emit(ending());
+    assert_eq!(
+        endings(&hub),
+        vec![true],
+        "forwarded, and it is the turn's end"
+    );
+
+    // The loop's sink: held until the loop says, and said from the decision.
+    let mut held = CapturingSink::holding_the_rounds_end(hub.clone());
+    held.emit(ending());
+    assert_eq!(endings(&hub), vec![true], "held: nothing published yet");
+    held.finish(true);
+    assert_eq!(endings(&hub), vec![true, false], "another round follows");
+    held.finish(false);
+    assert_eq!(endings(&hub), vec![true, false], "said once, not twice");
+}
+
 /// The question the operator pasted and their answer to it: the TUI draws the question row as ONE line and names it on
 /// the answer's row. This writes the two rows' texts as the session writes them and pins them byte for byte; re-bless
 /// with `LETIBOT_BLESS_ASKED_CARD=1` and teach `asked_card` the new shape.

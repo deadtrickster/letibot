@@ -110,6 +110,7 @@ pub fn from_turn_event(e: TurnEvent) -> SessionEvent {
             finish_reason: lift_finish(finish_reason),
             // The round's own fact, translated: calls it just made are unanswered, so the prompt
             // cannot be over. What follows them is the daemon's, and this says nothing about it.
+            // The round loop overrides it where it knows more: a round nudged into another.
             ends_turn: !proposed_calls,
             usage: Usage {
                 prompt_tokens: metrics.prompt_tokens,

@@ -108,6 +108,55 @@ fn warnings_of(hub: &Hub, code: &str) -> Vec<String> {
         .collect()
 }
 
+/// Every round's ending the log kept, oldest first, as its `ends_turn`.
+fn round_endings(hub: &Hub) -> Vec<bool> {
+    hub.retained()
+        .iter()
+        .filter_map(|e| match &e.event {
+            SessionEvent::TurnFinished { ends_turn, .. } => Some(*ends_turn),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A round's end is not a turn's end: the excuse is a round with no call, the harness nudges it
+/// into a second one, and the first round's ending must say the turn goes on. A head told otherwise
+/// drew `Responded` and then `Responding` again on every round boundary.
+#[test]
+fn the_round_a_nudge_continues_does_not_end_the_turn_on_the_wire() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let dir = TempDir::new("harnessd-round-end");
+    let mut cfg = config(&dir, "round-end");
+    cfg.context_window = Some(1_000_000);
+    let parts = Parts::load(&cfg).expect("the vocabulary must load");
+    let vocab = &parts.vocab;
+    let serv = canned::Canned::serve_replies(
+        vec![
+            a_plain_answer(vocab, EXCUSE, 30),
+            a_plain_answer(vocab, "Continuing with the scroll regions.", 30),
+        ],
+        2,
+    );
+    cfg.endpoint = serv.endpoint.clone();
+
+    let hub = Hub::new("round-end");
+    let mut h = Harness::open(&parts, cfg, hub.clone()).expect("the session opens");
+    let reply = h
+        .submit("port the rest of the emulator")
+        .expect("the turn runs");
+    assert_eq!(
+        reply.rounds, 2,
+        "the premise: the line ran a second round: {reply:?}"
+    );
+    assert_eq!(
+        round_endings(&hub),
+        vec![false, true],
+        "the nudged round is not the turn's end; the round that answered is"
+    );
+}
+
 /// The leticl turn at a fill far from the wall: told, with the numbers, and the work continues.
 #[test]
 fn an_excuse_at_low_fill_is_answered_with_the_measured_fill_and_the_turn_continues() {
