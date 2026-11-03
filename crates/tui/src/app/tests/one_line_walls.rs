@@ -562,6 +562,49 @@ fn a_panes_ending_names_one_row_and_keeps_what_the_program_said() {
     assert!(rows[4].contains("error: test failed"), "{:?}", rows[4]);
 }
 
+/// A decision that settled with no call to hang it on is a note of its own, and it was the one
+/// head-made note with no card: three wrapped rows of a permission's outcome.
+#[test]
+fn a_settled_decision_is_one_row_at_eighty_columns() {
+    use letibot_sessionlog::event::{Decider, DecisionOutcome};
+    let n = Note::Decided(Box::new(SettledDecision {
+        req_id: "r1".into(),
+        kind: String::new(),
+        call_id: None,
+        summary: "run `cargo publish --dry-run` on the branch".into(),
+        outcome: DecisionOutcome::Selected {
+            option_id: "deny".into(),
+        },
+        by: Decider {
+            kind: "human".into(),
+            identity: "dead".into(),
+        },
+        basis: "dead chose `deny` at the head; the registry token was not in place".into(),
+        advice: None,
+        late: false,
+    }));
+    let (rows, glass) = {
+        let mut a = with_note(n.clone());
+        let glass = a.screen(80, 30).join("\n");
+        (note_lines(&cfg80(), &n).len(), glass)
+    };
+    assert!(
+        (1..=2).contains(&rows),
+        "the note took {rows} rows:\n{glass}"
+    );
+    let (popup, _) = click_note(n.clone());
+    assert!(holds(&popup, "run `cargo publish --dry-run`"), "{popup}");
+    assert!(
+        holds(&popup, "the registry token was not in place"),
+        "{popup}"
+    );
+    // A refusal has to look refused: the word is in the popup, and the line is drawn in the
+    // failure register even where the word itself is cut. See `settled_role`.
+    assert!(holds(&popup, "REFUSED (deny)"), "{popup}");
+    let (card, _, _) = note_card(&n).expect("a card");
+    assert_eq!(card.role, Role::Failure);
+}
+
 /// A compaction's note: it said its code twice and `· /notes` was a seam nothing could click.
 #[test]
 fn a_compaction_note_is_one_clickable_row_at_eighty_columns() {

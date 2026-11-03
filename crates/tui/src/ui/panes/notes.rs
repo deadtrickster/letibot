@@ -115,13 +115,13 @@ pub(crate) fn class_mark(code: &str) -> (&'static str, rano::style::Role) {
 }
 
 /// A note's card: its one line, and the text its popup shows whole - `None` for a pane's ending,
-/// drawn whole on purpose, and for a settled permission, which rano draws as its outcome. Every
-/// warning is a card, so none of them is a `... +N lines` seam that cannot be clicked.
+/// drawn whole on purpose because the rows a program dies saying are the useful ones. Every other
+/// note is a card, so none of them is a `... +N lines` seam that cannot be clicked.
 pub(crate) fn note_card(
     n: &Note,
 ) -> Option<(crate::ui::transcript::line_cards::Card, String, u64)> {
-    use crate::ui::transcript::line_cards::warning_card;
-    use crate::ui::transcript::notice_card::{warning_notice, whole_parts};
+    use crate::ui::transcript::line_cards::{CLICK, Card, warning_card};
+    use crate::ui::transcript::notice_card::{short, warning_notice, whole_parts};
     use rano::style::Role;
     match n {
         Note::Warned(w) => {
@@ -145,7 +145,41 @@ pub(crate) fn note_card(
             let text = format!("{summary} — {by}: {said}");
             Some((whole_parts("·", Role::Faint, &text), text, 0))
         }
-        Note::Pane { .. } | Note::Decided(_) => None,
+        // **A settled decision is a notice too** - three wrapped rows of a permission's outcome
+        // with nothing to open. Its words are rano's, read back from the renderer rather than
+        // written a second time here, so the row and the listing cannot disagree.
+        Note::Decided(d) => {
+            let said = note_view(n)
+                .unfolded(UNBOUNDED)
+                .into_iter()
+                .next()
+                .map(|l| l.plain())
+                .filter(|s| !s.trim().is_empty())?;
+            let card = Card::new(
+                format!("{said} · {CLICK}"),
+                0,
+                "?",
+                settled_role(&d.outcome),
+                format!("decided · {}", short(&d.summary, 60)),
+            );
+            Some((card, said, 0))
+        }
+        Note::Pane { .. } => None,
+    }
+}
+
+/// A width no note wraps at, so [`rano::agent::notes::Note::unfolded`] answers its one sentence.
+const UNBOUNDED: usize = 1_000_000;
+
+/// The register a settled decision is drawn in - rano's own arm for it, restated here for the
+/// same reason [`class_mark`] restates a warning's: a card is given a role, a note's line is not.
+fn settled_role(outcome: &letibot_sessionlog::event::DecisionOutcome) -> rano::style::Role {
+    use letibot_sessionlog::event::DecisionOutcome as O;
+    use rano::style::Role;
+    match outcome {
+        O::Selected { option_id } if option_id.starts_with("allow") => Role::Success,
+        O::Selected { .. } | O::TimedOut => Role::Failure,
+        O::Cancelled => Role::Pending,
     }
 }
 
