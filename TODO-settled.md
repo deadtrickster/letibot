@@ -4695,6 +4695,154 @@ in `TODO.md` and says what is left.
 
 <!-- range H -->
 
+## A sub-session is a SESSION a head may ATTACH to — the filter that hides it is the bug — **DONE 2026-11-03: the picker lists and opens a child, c840aee, 3150516a, 0c841de0; a_child_sits_under_its_parent_and_a_grandchild_under_it and enter_into_a_subagent_and_one_esc_goes_back_up_to_the_list_it_came_from**
+
+**CORRECTED THE SAME HOUR, AND THE CORRECTION IS BIGGER THAN THE ASK BELOW.** The operator: *"why readonly?
+subagent session is more like you driving others via tmux. I already can post to subagent, and agent can
+talk back and forth too"*. **A child is not a thing to be VIEWED; it is a session to be ATTACHED to** —
+the same relationship this session has with the head it is spoken through, one level down — and the
+defect is five lines that hide it on purpose:
+
+```
+letibot   app.rs:3421   .filter(|s| s.parent_session_id.is_none())
+          app.rs:3505   .filter(|s| s.parent_session_id.is_none())
+leticl    head.lisp:1053    (remove-if … :parent-session-id)
+          session.lisp:382  (remove-if … :parent-session-id)
+          panes.lisp:77     (remove-if … :parent-session-id)
+```
+
+leticl's `panes.lisp:71` records the provenance — *the reference filters `parent_session_id.is_none()` on
+both `Hello` and …* — and `chrome.lisp:363` states the belief out loud: **a subagent is not a session a
+picker lists**. That belief is the bug. Everything downstream of it — `/peek`, `Peeked`,
+`sub_out_lines`, `subagent-out-lines` — exists to work around a session that was hidden on purpose.
+
+**So the ask is not a richer `Peek` at all, and the read-only snapshot I asked for was a workaround for
+the filter. Everything that follows is DELETION:**
+
+  · **the picker lists sub-sessions**, under their parent or marked with it — the parent id is already
+    on the row, so the information is there and is being thrown away;
+    — ✓ fixed in 3150516a, test a_child_sits_under_its_parent_and_a_grandchild_under_it
+  · **attaching to one is ordinary**: `Attach { since_seq: 0 }` answers with a `Snapshot`, which both
+    heads already draw with the real renderer — markdown, air rule, tool cards, the rung. Nothing to
+    build;
+    — ✓ fixed in 0c841de0, test enter_into_a_subagent_and_one_esc_goes_back_up_to_the_list_it_came_from
+  · **`sub_out_lines` and `subagent-out-lines` are deleted**, not taught and not re-pointed;
+    — decided against, and not owed: the entry's own RULED section (2026-10-03) keeps `Peek`, and
+    `sub_out_lines` as its degraded fallback (`crates/tui/src/ui/panes/subagents.rs:125`), so only the
+    ring path remains — `dc60a0c` made the real path `PeekShape::Rows` through `item_lines`
+  · **the subagents pane becomes a view onto sessions-with-a-parent**, not a second renderer with its
+    own idea of what a row looks like;
+    — ✓ fixed in 0c841de0, test a_fresh_head_rebuilds_the_subagent_rows_and_the_count_from_the_session_list
+  · and **leticl's `a216cfa`** — the copy taught about tasks and rungs — goes with the copy. It is
+    scaffolding around a session hidden by five lines, and worth naming as such.
+    — OPEN: leticl's repository, not this tree — nothing here can show that commit landed
+
+**The question that is actually yours:** does `Peek` still earn its place once the filter is gone? It may
+— reading a child without leaving the parent is a real convenience rather than a necessity — and that is
+yours to judge. The correction above is why I am not asking for a snapshot variant any more.
+
+**And one thing neither head should lose in the deletion:** the filter existed because a picker full of
+children is noise, and twenty subagents would bury the four conversations the operator cares about.
+**Nesting is the answer, not listing flat** — a child under its parent is both discoverable and quiet.
+The reference's instinct was right about the symptom and wrong about the cure.
+
+**MEASURED ON THE REBUILT DAEMON, 2026-10-03 23:40 — AND THE MEASUREMENT WAS RIGHT WHILE THE
+CONCLUSION DRAWN FROM IT WAS NOT.** Daemon 652570, started 23:34:31 from the 23:28 rebuild — the field
+exists, and that peek answered
+
+    events  : 652
+    snapshot: NIL
+
+**`snapshot: NIL` beside 652 events is the daemon answering an `Events` request exactly as designed, and
+"not reachable" (this paragraph's first form, and leticl's `eb896f3`) is the stale-claim defect this pair
+has now corrected four times.** `server.rs:765` makes the two shapes **alternatives, not a pair** — a head
+that asks for `Rows` gets the snapshot and an EMPTY ring, because sending both would put the same content
+on the wire twice. So the field was reachable all along; the peek simply did not opt in, and
+**a one-field change on the `Peek` a head sends (`shape: PeekShape::Rows`) is the whole of what was
+missing.** leticl's half is still inert only because its peek sends `Events`; the `shape` field is on the
+wire and the daemon has answered `Rows` since `1520bb5`.
+
+leticl's half is ready and inert: `%peek-snapshot-pane` draws rows through the real renderer the moment
+any arrive, the event path stays as the degraded one and SAYS so, and the copy is deleted the day the
+pane's own peek answers with rows.
+
+**still open?** `grep -n "parent_session_id.is_none" crates/tui/src/app.rs` answers **one** — and it is not a
+filter: it is the header's root COUNT (`app.rs:12002`), which deliberately counts conversations rather
+than rows so an expanded tree does not change the position indicator. The two filters this section was
+filed against are gone.
+
+**LANDED ON LETIBOT'S SIDE, 2026-10-03.** `c840aee` removed both `.filter(|s| s.parent_session_id.is_none())`
+call sites the grep above used to answer, and put the whole enumeration behind one `App::session_rows` /
+`push_children` / `session_root` (five readers routed through it, `ctrl-s` the picker, children nested
+under their parent and counted as conversations in the header). `dc60a0c` then made this head **ask for
+rows** — `PeekShape::Rows` — and draw them through `item_lines`, the one renderer a transcript row uses,
+so a peeked child is a tool card on the pane rather than a hand-rolled dump; the event path survives only
+as the explicitly-degraded fallback an older daemon forces, and it says so. So on this head the
+**rendering** half of *"both plain-string renderers are DELETED, not taught"* is satisfied by making
+`sub_out_lines` a thin shell over the real renderer — kept, because the `Peek` door was kept — rather than
+deleted; the deletion the section asks for is only reachable once the peek's own answer is never the ring.
+
+**RULED, 2026-10-03: `Peek` EARNS ITS PLACE — the FIRST of the operator's three answers — and
+`PeekShape::Rows` is its shape.**
+
+  · **It is not the filter's workaround and did not die with the filter.** What `Peek` does that attaching
+    cannot is **read a session without moving the head's own**. Attaching changes `session_id`, and that
+    changes *where the next prompt goes*; and by this head's own words in `switch_to`, going to a session
+    "has no state" kept and "this head does not keep per-session marks" — so the reader's place is lost
+    and coming back is a fresh resync. **A read that moves the head is not a read**, and that is the
+    reason this survives the deletion of the filter, the picker's flatness and the second renderer.
+  · **With `Rows` it costs no second renderer.** `sub_out_from_rows` runs the session's items through
+    `item_lines` — the same one every transcript row uses — so the cost that made the deletion attractive
+    is already gone; what remains of the hand-rolled path is the degraded fallback alone.
+  · **So the two plain-string renderers are FALLBACKS, not alternatives.** Each head keeps at most one,
+    and it says so — the operator's own rule: a `None` snapshot falls back to the ring **and says so** —
+    or deletes it if it will not answer a daemon older than the field. **Neither is deleted because the
+    peek is redundant, because the peek is not.**
+  · **leticl carries the one-field change**: `Peek { shape: PeekShape::Rows }`, and its pane draws through
+    the real renderer the moment rows arrive (its half is already written and inert, per its own note).
+  · **One recommendation, for parity rather than the wire**: the two heads should agree that **Enter on a
+    row READS and a neighbour ATTACHES** — attaching on Enter silently redirects the next prompt to the
+    child, which is exactly the hazard the read exists to avoid. This head is Enter = read, `o` = attach;
+    leticl's new Enter = attach is the half to reconsider, and the operator's call.
+
+**done when** a head attaches to a sub-session like any other, and neither `sub_out_lines` nor
+`subagent-out-lines` exists.
+
+**THE ASK AS FIRST FILED, kept for the record and superseded by the correction above.**
+
+**(No R-number: the series is yours to number.)**
+
+The operator, correcting leticl's plan before it was built: *"yes subagents are not even scratch
+session they are session, just sub sessions"*. That settles the whole shape:
+
+  · **`Peeked` is why there is a second renderer in each head.** Its own docstring says the events it
+    carries are *for reading, NOT FOR FOLDING INTO THE HEAD'S STATE* — so a head with a peek may not
+    fold them, and has nothing to do but draw them by hand. That is `sub_out_lines` here
+    (`app.rs:12682`) and `subagent-out-lines` in leticl, a copy of it;
+  · **the door that returns the right thing already exists**: `SessionEvent::Subagent`'s `subagent_id`
+    is *the subagent's own session id*, and `Attach`/`Resync` with `since_seq = 0` answers with a
+    `Snapshot` — rows, which both heads already draw with their real renderer, markdown, air rule,
+    tool cards and rung and all. **Nothing new is invented; a door that is unused for children.**
+
+**The ask: `Peek { session_id }` answers with a `snapshot` as well as (or instead of) `events`** — or,
+if you prefer, a read-only attach to a child id. leticl's preference is the first, and the reason is
+the frame name: `Peek` promises *this is a read, not an attachment*, which is a property worth keeping
+explicit — an attach that only read would blur the two gestures the subagents pane already owns
+(Enter reads a child, `o` switches into it).
+
+Then **both plain-string renderers are DELETED, not taught**: leticl deletes `subagent-out-lines` the
+day the snapshot lands, and its half is ready. Worth a day's wait rather than a head-local fold,
+because two folds for one conversation is the drift this pair has hit five times in two days — the
+thinking count drawn twice, leticl's three file lists, `BINARIES`, the weather list, and now this.
+
+**still open?** `grep -n "Peeked" crates/sessionlog/src/protocol.rs` — the reply has `events` and no
+`snapshot` field.
+
+**done when** a peeked child is drawn by the same renderer as any session in both heads, and neither
+`sub_out_lines` nor `subagent-out-lines` exists.
+
+---
+
 <!-- range I -->
 
 <!-- range J -->
