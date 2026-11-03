@@ -7287,7 +7287,7 @@ fn a_parents_message_is_drawn_as_the_sessions_own_block() {
     );
 }
 
-/// A row that rides its own announcement is drawn at once and asks for nothing: no `FetchRow`, no
+/// A row that rides its own announcement is drawn at once and asks for nothing: no
 /// `FetchRows`, and no `TranscriptContent` to wait for.
 #[test]
 fn a_row_on_its_announcement_is_drawn_without_a_fetch() {
@@ -7320,7 +7320,7 @@ fn a_row_on_its_announcement_is_drawn_without_a_fetch() {
     assert!(
         !a.queued
             .iter()
-            .any(|q| matches!(q, Action::FetchRow { .. } | Action::FetchRows { .. })),
+            .any(|q| matches!(q, Action::FetchRows { .. })),
         "{:?}",
         a.queued
     );
