@@ -111,6 +111,7 @@ struct Row {
     sessions: usize,
     rss_open_kb: u64,
     rss_peak_kb: u64,
+    threads_open: u64,
     cpu_ms: f64,
     events: u64,
     p50: u64,
@@ -126,7 +127,14 @@ impl Row {
     fn print(&self) {
         println!(
             "\n{:>6} {:>10} {:>10} {:>9} {:>8} {:>9} {:>8} {:>8} {:>8}",
-            "sess", "rss-open", "rss-peak", "cpu-ms", "events", "µs/event", "p50-µs", "p99-µs",
+            "sess",
+            "rss-open",
+            "rss-peak",
+            "cpu-ms",
+            "events",
+            "µs/event",
+            "p50-µs",
+            "p99-µs",
             "max-µs"
         );
         println!(
@@ -141,6 +149,7 @@ impl Row {
             self.p99,
             self.max
         );
+        println!("       threads at open: {}", self.threads_open);
         let wrote = self.store_after.saturating_sub(self.store_before);
         println!(
             "       store {:.0} KiB per session-turn ({} -> {} bytes, {} turn(s))",
@@ -170,7 +179,10 @@ fn fit(points: &[(usize, f64, f64)]) -> Option<(f64, f64)> {
     let n = points.len() as f64;
     let sx: f64 = points.iter().map(|(s, _, _)| *s as f64).sum();
     let sy: f64 = points.iter().map(|(_, c, _)| *c).sum();
-    let sxx: f64 = points.iter().map(|(s, _, _)| (*s as f64) * (*s as f64)).sum();
+    let sxx: f64 = points
+        .iter()
+        .map(|(s, _, _)| (*s as f64) * (*s as f64))
+        .sum();
     let sxy: f64 = points.iter().map(|(s, c, _)| (*s as f64) * *c).sum();
     let denom = n * sxx - sx * sx;
     if denom.abs() < f64::EPSILON {
@@ -284,8 +296,11 @@ fn run(n: usize, subs: usize) -> Result<Row, String> {
     }
     let ids: Vec<String> = (0..n).map(id_of).collect();
     wait_until("every session to be served by its own thread", || {
-        ids.iter()
-            .all(|id| registry.get(id).is_some_and(|h| h.owner() == Owner::OwnThread))
+        ids.iter().all(|id| {
+            registry
+                .get(id)
+                .is_some_and(|h| h.owner() == Owner::OwnThread)
+        })
     });
 
     // The subscribers: real heads, on the real socket, each driving its own reader.
@@ -308,6 +323,7 @@ fn run(n: usize, subs: usize) -> Result<Row, String> {
     }
 
     let rss_open_kb = rss_kb();
+    let threads_open = status_kb("Threads:");
     let store_before = store_bytes(&store_path);
     let cpu_before = cpu_ms();
 
@@ -326,7 +342,9 @@ fn run(n: usize, subs: usize) -> Result<Row, String> {
                     if !probing.load(Ordering::Relaxed) {
                         break;
                     }
-                    let Some(hub) = registry.get(id) else { continue };
+                    let Some(hub) = registry.get(id) else {
+                        continue;
+                    };
                     nonce += 1;
                     probe(&hub, &shared, nonce);
                     std::thread::sleep(Duration::from_millis(2));
@@ -382,6 +400,7 @@ fn run(n: usize, subs: usize) -> Result<Row, String> {
         sessions: n,
         rss_open_kb,
         rss_peak_kb,
+        threads_open,
         cpu_ms,
         events,
         p50: pct(0.50),
@@ -395,11 +414,7 @@ fn run(n: usize, subs: usize) -> Result<Row, String> {
 
 /// Publish one probe and remember when it left, so the subscriber's arrival is a latency.
 fn probe(hub: &Arc<Hub>, shared: &Arc<Shared>, nonce: u64) {
-    shared
-        .emitted
-        .lock()
-        .unwrap()
-        .insert(nonce, Instant::now());
+    shared.emitted.lock().unwrap().insert(nonce, Instant::now());
     hub.publish(SessionEvent::Warning {
         code: PROBE.into(),
         detail: nonce.to_string(),
