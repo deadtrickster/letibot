@@ -2278,7 +2278,8 @@ model-proposed grant is routed through them rather than around them.
 **Smallest version that closes the loop for tests:** the view learns one grant shape
 (`ReadOnly` on a path), the model is told the view is hermetic and what it holds, an exec
 failure names the absence, and the grant prompt carries its `why` and its consequence.
-That is N4's answer too — see there for why a shaped runner is wanted rather than `bash`.
+That is N4's answer too — see `TODO-settled.md`'s N4 for why a shaped runner was wanted rather than
+`bash`.
 
 ---
 
