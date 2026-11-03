@@ -28,11 +28,21 @@ pub trait NotesScope: Send + Sync {
 
 pub struct NotesTool {
     scope: Arc<dyn NotesScope>,
+    /// The box's second tier, when it has one: this corpus's vectors, filled at each write.
+    /// `None` is the lexical score exactly, and the floor is this tool's either way.
+    tier: Option<letibot_embeddings::Tier>,
 }
 
 impl NotesTool {
     pub fn new(scope: Arc<dyn NotesScope>) -> Self {
-        NotesTool { scope }
+        NotesTool { scope, tier: None }
+    }
+
+    /// Score the near-copy gate with the box's second tier, so a paraphrased duplicate - the
+    /// case the words miss - is refused too.
+    pub fn with_tier(mut self, tier: Option<letibot_embeddings::Tier>) -> Self {
+        self.tier = tier;
+        self
     }
 }
 
@@ -696,9 +706,12 @@ impl NotesTool {
         if corpus.is_empty() {
             return Ok(None);
         }
+        // Filled from THIS corpus, through the door that keys it as the score reads it. A fill
+        // that cannot answer leaves no vectors, so the words stand alone.
+        let _ = corpus.fill(self.tier.as_ref());
         let candidate = similarity::index_text(target, after);
         Ok(corpus
-            .nearest(&candidate, Some(target))
+            .nearest_with(&candidate, Some(target), self.tier.as_ref())
             .filter(|(_, score)| *score >= DUPLICATE_FLOOR)
             .map(|(path, score)| (path.to_path_buf(), score)))
     }
@@ -1216,9 +1229,9 @@ impl NotesTool {
                     other.display()
                 ),
                 format!(
-                    "Nothing was written. The score is the same lexical measure the read hint \
+                    "Nothing was written. The score is the same measure the read hint \
                      uses — IDF-weighted cosine over each note's abstract, title and \
-                     headings — and {:.2} is at or over the {DUPLICATE_FLOOR:.2} floor. The \
+                     headings{} — and {:.2} is at or over the {DUPLICATE_FLOOR:.2} floor. The \
                      corpus is curated on purpose: every note in it is one somebody decided was \
                      worth keeping, so a near-copy makes the index worse for every reader of \
                      it. What to do instead: grow the note that exists (`action` = \"append\", \
@@ -1226,6 +1239,10 @@ impl NotesTool {
                      this really is a different thing — say what distinguishes it in the \
                      abstract and the headings, because those are the fields the score reads. \
                      The nearest note is the one named above; `notes` action=\"read\" opens it.",
+                    match self.tier.is_some() {
+                        true => ", and the meaning of both through the box's embedder",
+                        false => "",
+                    },
                     score,
                     other
                         .file_stem()

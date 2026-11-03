@@ -167,6 +167,13 @@ const STORE_LOCK_AGAIN: &str = "<!-- abstract: a connection to the store holds f
                                     ## The handler\n\nIt holds the wait rather than failing the \
                                     call.\n";
 
+/// The same note in words it does not use: `database`, `query`, `stalls`, `gridlock`, `retry`,
+/// `loop`, `moment` and `pause` are in none of [`STORE_LOCK`]'s title, abstract or headings.
+const STORE_LOCK_PARA: &str = "<!-- abstract: a database query stalls for a moment on the \
+                               gridlock and a retry loop carries the pause -->\n\n\
+                               ## The gridlock\n\nNothing moves until it clears.\n\n\
+                               ## The pause\n\nIt is held rather than failed.\n";
+
 /// A near-duplicate note is refused by the write gate and a genuinely new one is not:
 /// both halves over the real tool, because a gate that only refuses is not a gate and
 /// the half easier to forget is the one that must not fire.
@@ -275,6 +282,73 @@ fn an_edit_that_would_make_a_note_a_near_copy_is_caught() {
     );
     let grown = std::fs::read_to_string(ws.join(".letibot/notes/store-write-lock.md")).unwrap();
     assert!(grown.contains("configurable"), "the append landed: {grown}");
+}
+
+/// **A paraphrase of a note, in words the note does not use.** The words alone score it zero
+/// against every note, so the gate cannot see it; the second tier's cosine, over words planted
+/// as synonyms, puts it over [`DUPLICATE_FLOOR`] - and with no tier the note lands, which is
+/// the gap the tier is for.
+#[test]
+fn a_paraphrase_with_no_shared_word_is_refused_by_the_second_tier() {
+    // The words alone, over a session with no tier: nothing to score, so the write lands.
+    let mut plain = writable_harness();
+    let (ws, _) = plain.notes_dirs();
+    plain.call(
+        "notes",
+        &format!(r#"{{"action":"add","name":"store-write-lock","text":{STORE_LOCK:?}}}"#),
+    );
+    let r = plain.call(
+        "notes",
+        &format!(r#"{{"action":"add","name":"mutex-stall","text":{STORE_LOCK_PARA:?}}}"#),
+    );
+    assert!(
+        r.is_grounded(),
+        "the words have nothing to go on: {}",
+        r.render()
+    );
+    assert!(ws.join(".letibot/notes/mutex-stall.md").exists());
+
+    // And the same writer with the box's second tier: the meaning is what the gate needed.
+    let data = std::env::temp_dir().join(format!("notes-tier-{}", std::process::id()));
+    let tier = letibot_embeddings::testing::planted(
+        &data,
+        &[
+            &["store", "database"],
+            &["connection", "query"],
+            &["waits", "stalls"],
+            &["write", "gridlock"],
+            &["lock", "mutex"],
+            &["busy", "retry"],
+            &["handler", "loop"],
+            &["seconds", "moment"],
+            &["wait", "pause"],
+        ],
+    );
+    let mut h = crate::testing::writable_harness_with_tier(tier);
+    let (ws, _) = h.notes_dirs();
+    h.call(
+        "notes",
+        &format!(r#"{{"action":"add","name":"store-write-lock","text":{STORE_LOCK:?}}}"#),
+    );
+    let r = h.call(
+        "notes",
+        &format!(r#"{{"action":"add","name":"mutex-stall","text":{STORE_LOCK_PARA:?}}}"#),
+    );
+    assert!(!r.is_grounded(), "the near-copy is refused: {}", r.render());
+    let said = r.render();
+    assert!(
+        said.contains("near-copy") && said.contains("store-write-lock.md"),
+        "the refusal names the note that was too close: {said}"
+    );
+    assert!(
+        said.contains("meaning"),
+        "and says the meaning was part of the score: {said}"
+    );
+    assert!(
+        !ws.join(".letibot/notes/mutex-stall.md").exists(),
+        "the refused note is not on disk"
+    );
+    let _ = std::fs::remove_dir_all(&data);
 }
 
 /// The floor's two sides as numbers, so a change to the arithmetic cannot move the gate

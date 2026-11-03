@@ -183,6 +183,21 @@ pub fn writable_harness_with_gate(gate: Option<Box<dyn crate::runtime::Gate>>) -
     build(Spiller::unset(), Arc::new(Unavailable), true, gate)
 }
 
+/// A writable session whose `notes` tool scores with the box's second tier: the duplicate
+/// gate is the one caller of `similarity` that lives in a tool registry, so it is the one
+/// fixture that has to hand a tier in.
+pub fn writable_harness_with_tier(tier: crate::similarity::Tier) -> Harness {
+    build_ext(
+        Spiller::unset(),
+        Arc::new(Unavailable),
+        true,
+        Some(allow_all()),
+        None,
+        false,
+        Some(tier),
+    )
+}
+
 /// A read-only session whose gate admits, for a tool whose own second-gate check is the thing
 /// under test: with [`harness`] the first gate refuses first and the tool is never reached, and
 /// with [`writable_harness`] the backend never refuses.
@@ -396,6 +411,7 @@ pub fn external_harness_with_gate(
         gate,
         Some(backends),
         false,
+        None,
     )
 }
 
@@ -410,6 +426,7 @@ pub fn writable_external_harness(backends: crate::ExternalBackends) -> Harness {
         Some(allow_all()),
         Some(backends),
         true,
+        None,
     )
 }
 
@@ -453,7 +470,7 @@ fn build(
     writable: bool,
     gate: Option<Box<dyn crate::runtime::Gate>>,
 ) -> Harness {
-    build_ext(spiller, retrieval, writable, gate, None, false)
+    build_ext(spiller, retrieval, writable, gate, None, false, None)
 }
 
 fn build_ext(
@@ -463,6 +480,7 @@ fn build_ext(
     gate: Option<Box<dyn crate::runtime::Gate>>,
     external: Option<crate::ExternalBackends>,
     unconfined: bool,
+    notes_tier: Option<crate::similarity::Tier>,
 ) -> Harness {
     let dir = TempDir::new();
     fixture_tree(dir.path());
@@ -552,9 +570,9 @@ fn build_ext(
     });
     let notes_dirs = (dir.path().to_path_buf(), notes_global.path().to_path_buf());
     registry
-        .register(Box::new(crate::builtins::notes::NotesTool::new(
-            notes_scope,
-        )))
+        .register(Box::new(
+            crate::builtins::notes::NotesTool::new(notes_scope).with_tier(notes_tier),
+        ))
         .expect("notes registers");
     // Registered, not seated: a role is what a session's prompt carries, and these three plus the
     // read-only seven are over the seat ceiling.

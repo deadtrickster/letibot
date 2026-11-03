@@ -21,7 +21,11 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use letibot_embeddings::{Filled, Tier, TierError};
+use letibot_embeddings::{Filled, TierError};
+
+/// The box's second tier as a caller of this module names it: the blend's inputs are one
+/// caller's `Corpus` and the `Tier` the box built, so the two arrive from here together.
+pub use letibot_embeddings::Tier;
 
 use crate::builtins::notes::abstract_of;
 
