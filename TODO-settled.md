@@ -5698,16 +5698,24 @@ and the hub's bell that described the one-worker era now say what was measured a
 
 ## N2 — `Dialect` split, rendering-as-data (T2), and structural eviction (T15) — **settled: T2 in `8ca0d4b3` (see the T2 section above), and T15's remainder is T15's own entry — nothing was left here to schedule**
 
-`Dialect` split, rendering-as-data (T2), and structural eviction (T15) were both arguments
-that needed a decision to spend the time, not a task pickup. The split landed as
-`8ca0d4b3` (`a_spec_can_be_built_entirely_at_runtime`), and structural eviction runs before
-every summary turn (`crates/turn/src/evict.rs`); what is left of eviction - the addressable
-map, `recall` and a standalone `prune` - is named in T15 and in `docs/compaction.md` §7, so
-this entry has nothing of its own to schedule.
+The entry as filed:
+
+Both arguments are finished and written down. Neither needs an answer so much as a
+decision to spend the time; each is large enough that starting one is a scheduling
+choice, not a task pickup.
+
+Where it stands: the split landed as `8ca0d4b3` (`a_spec_can_be_built_entirely_at_runtime`),
+and structural eviction runs before every summary turn (`crates/turn/src/evict.rs`). What is
+left of eviction - the addressable map, `recall` and a standalone `prune` - is named in T15
+and in `docs/compaction.md` §7, so this entry has nothing of its own to schedule.
 
 ---
 
 ## N4 — a coder can write a test and cannot run it — **settled: SUPERSEDED 2026-11-03 by R120 — the answer is one seat and a working automode, not a shaped verb for the coder role; nothing here is left to build**
+
+**The operator's answer, 2026-11-03 (R120):** the roles were overcomplication — one working
+seat that can read, write and run commands, with what it may do decided by the MODE, not the
+role. A verb shaped for one role is not the fix, so this entry asks for nothing of its own.
 
 **Observed 2026-09-11**: letibot wrote a regression test and then had no way to execute
 it. Not a bug — a consequence, and the role table shows it plainly:
@@ -5735,7 +5743,7 @@ registry holds the union, `ToolRuntime::active` gates admission, so a switch mov
 prompt byte) — but switching to `runner` still needs `bash` to be seated somewhere, so it
 is blocked on the same §5 hole.
 
-### The question, which is why this was a nod and not a task
+### The question, which is why this is a nod and not a task
 
 **Is a shaped test verb acceptable where a shell is not?**
 
@@ -5746,13 +5754,9 @@ exactly those fields.
 
 It narrows the hole rather than closing it: a failing assertion can still print whatever
 the test printed, so the result is bounded to *test-framework output* instead of *anything
-at all*. That is a real reduction and not zero, which is precisely why it wanted a decision
+at all*. That is a real reduction and not zero, which is precisely why it wants a decision
 rather than an implementation. Per-failure spill and truncation are available if the
 answer is "yes, but bounded".
-
-**The operator's answer, 2026-11-03 (R120):** the roles were overcomplication — one working
-seat that can read, write and run commands, with what it may do decided by the MODE, not the
-role. A verb shaped for one role is not the fix, so this entry asks for nothing of its own.
 
 ### Measured 2026-09-11, after this was filed — the blocker is not the choke point
 
