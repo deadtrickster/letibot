@@ -229,6 +229,35 @@ pub fn stop_of(store: &Store, instance: &str, seen_ms: u64) -> Stopped {
     }
 }
 
+/// How stale another daemon's heartbeat may be before its records are a gone daemon's: two beats,
+/// so one missed beat is not a death and a crashed daemon's rows are not held for long.
+pub const ALIVE_WITHIN: Duration = Duration::from_secs(2 * BEAT.as_secs());
+
+/// Whether the daemon that wrote `instance` is still running: no stop recorded, a heartbeat inside
+/// [`ALIVE_WITHIN`], and - when the instance names it - a pid that is a live process. A store is
+/// shared by every daemon on the box, so another instance's records are not a stop's (R91.9).
+pub fn is_running(store: &Store, instance: &str, now_ms: u64) -> bool {
+    let Some(life) = store.life(instance).ok().flatten() else {
+        return false;
+    };
+    if life.stopped_ms.is_some()
+        || now_ms.saturating_sub(life.beat_ms) >= ALIVE_WITHIN.as_millis() as u64
+    {
+        return false;
+    }
+    match pid_of(instance) {
+        // A pid that is gone, or is a zombie, means the record outlived the daemon whatever the
+        // clock says - so a crash is not read as a daemon that is still working.
+        Some(pid) => letibot_tools::exec::procs::read(pid).is_some_and(|p| p.state != 'Z'),
+        None => true,
+    }
+}
+
+/// The pid an instance was minted with (`d-<pid>-<nanos>-<n>`), when its name carries one.
+fn pid_of(instance: &str) -> Option<u32> {
+    instance.strip_prefix("d-")?.split('-').next()?.parse().ok()
+}
+
 /// What a restart did, which decides the notice's first line and the warning's code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
@@ -1234,6 +1263,44 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    /// **Another daemon is running while its life row says so** (R91.9): no stop, a heartbeat inside
+    /// two beats, and a pid that is a live process. A stop, a stale beat and a pid that is gone all
+    /// make it a gone daemon - the last one so a crash is not read as a daemon still working.
+    #[test]
+    fn a_daemon_is_running_only_while_it_stops_beating() {
+        let dir = Scratch::new("restart-running");
+        let store = Store::open(&dir.store()).unwrap();
+        let now = letibot_sessionlog::registry::now_ms();
+        // A live daemon: this test's own pid, a heartbeat a moment ago.
+        let live = format!("d-{}-1-0", std::process::id());
+        store.life_started(&live, now - 90_000).unwrap();
+        store.life_beat(&live, now - 1_000).unwrap();
+        assert!(
+            super::is_running(&store, &live, now),
+            "a beating daemon was read as gone, so its children are resumed twice"
+        );
+        // Its orderly stop: gone, whatever the beat says.
+        let stopped = format!("d-{}-2-0", std::process::id());
+        store.life_started(&stopped, now - 90_000).unwrap();
+        store.life_stopped(&stopped, now - 60_000).unwrap();
+        assert!(!super::is_running(&store, &stopped, now));
+        // A crash: no stop, and the beat is older than two beats.
+        store.life_started(&live, now - 600_000).unwrap();
+        store.life_beat(&live, now - 61_000).unwrap();
+        assert!(
+            !super::is_running(&store, &live, now),
+            "a daemon that stopped beating is gone"
+        );
+        // A beat that is fresh but a pid that is gone - killed hard, and the clock left behind.
+        // Pid 1 is not this process, and no instance of pid 0 exists: this is a pid nobody has.
+        let dead = "d-0-3-0";
+        store.life_started(dead, now - 90_000).unwrap();
+        store.life_beat(dead, now).unwrap();
+        assert!(!super::is_running(&store, dead, now));
+        // No life row at all: nothing says it is running.
+        assert!(!super::is_running(&store, "d-1-4-0-nothing", now));
     }
 
     /// The orderly stop is recorded although a newer build migrated the store meanwhile - the

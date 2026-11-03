@@ -637,6 +637,9 @@ impl Harness {
         // passes through, and its own ring is what turns a queued settlement into a turn. The count is kept
         // because a settlement nobody was told about is one thing that makes an empty restart a TURN.
         let settlements = self.deliver_settlements_left_undelivered(&store, &me, &sid);
+        // **A daemon whose heartbeat is still fresh is not a gone one** (R91.9): the store is shared
+        // by every daemon on the box, so its records are its own until its pid or its clock says not.
+        let running = |instance: &str| crate::restart::is_running(&store, instance, opened_ms);
 
         // **What a gone daemon left**, and which daemon that was. Read before anything is
         // touched, so the down time is decided once for the whole session.
@@ -646,6 +649,7 @@ impl Harness {
             .into_iter()
             .filter(|r| {
                 r.instance != me
+                    && !running(&r.instance)
                     // A tool's helper is never restored or re-delivered (`decide`); a running one
                     // is only closed, which needs no notice.
                     && !crate::subagent_record::is_helper(r)
@@ -660,13 +664,16 @@ impl Harness {
             .unwrap_or_default()
             .iter()
             .any(|r| {
-                r.instance != me && r.state == "running" && crate::subagent_record::is_helper(r)
+                r.instance != me
+                    && !running(&r.instance)
+                    && r.state == "running"
+                    && crate::subagent_record::is_helper(r)
             });
         let monitors: Vec<_> = store
             .monitors_of(&sid)
             .unwrap_or_default()
             .into_iter()
-            .filter(|m| m.live && m.instance != me)
+            .filter(|m| m.live && m.instance != me && !running(&m.instance))
             .collect();
         let mut jobs = Vec::new();
         // A job row with no context is a relic of a build before `job_context`, not a job running at this stop:
@@ -686,7 +693,10 @@ impl Harness {
                 continue;
             }
             let ctx = store.job_context(&sid, &job.handle).ok().flatten();
-            if ctx.as_ref().is_some_and(|c| c.instance == me) {
+            if ctx
+                .as_ref()
+                .is_some_and(|c| c.instance == me || running(&c.instance))
+            {
                 continue;
             }
             if ctx.is_none() && job.command.is_empty() {
@@ -708,7 +718,7 @@ impl Harness {
             let Some(ctx) = store.job_context(&sid, &job.handle).ok().flatten() else {
                 continue;
             };
-            if ctx.instance == me {
+            if ctx.instance == me || running(&ctx.instance) {
                 continue;
             }
             settled.push((job, ctx));
@@ -963,16 +973,25 @@ impl Harness {
                 Some((_, t)) => *t = (*t).max(at),
                 None => instances.push((instance.to_string(), at)),
             };
+        // **A daemon that is still beating dates nothing** (R91.9): its rows are not a stop's, and
+        // its heartbeat would otherwise be read as a daemon that came back a moment ago.
+        let now = letibot_sessionlog::event::now_ms();
+        let gone = |instance: &str| !crate::restart::is_running(store, instance, now);
         for m in store.monitors_of(&sid).unwrap_or_default() {
-            note(&m.instance, m.updated_ms);
+            if gone(&m.instance) {
+                note(&m.instance, m.updated_ms);
+            }
         }
         for r in store.subagent_runs_of(&sid).unwrap_or_default() {
-            note(&r.instance, r.updated_ms);
+            if gone(&r.instance) {
+                note(&r.instance, r.updated_ms);
+            }
         }
         // The newest job row is one query, and it is the row a session that ran nothing since
         // its last `bash` names its daemon by.
         if let Some(last) = store.jobs(&sid).unwrap_or_default().last()
             && let Some(ctx) = store.job_context(&sid, &last.handle).ok().flatten()
+            && gone(&ctx.instance)
         {
             note(&ctx.instance, ctx.started_ms);
         }

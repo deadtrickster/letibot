@@ -1197,6 +1197,16 @@ pub(crate) fn somebody_spoke(door: &crate::turn_tail::Door) -> bool {
     matches!(door, Door::Prompt | Door::Message | Door::Wake)
 }
 
+/// Whether the daemon that wrote a record is still up: another instance whose life row says so
+/// (R91.9). The store is shared, so its records are not a stop's, and a second copy of its child
+/// would be the double resume this exists to stop.
+fn writer_running(store: &crate::subagent_record::RunStore, instance: &str) -> bool {
+    let now = letibot_sessionlog::registry::now_ms();
+    store
+        .with(|s| Ok(crate::restart::is_running(s, instance, now)))
+        .unwrap_or(false)
+}
+
 /// What a turn after the child's first settles its slot with, `None` when the turn is not news.
 /// A turn before the slot settled is the hold's, part of the answer it ends with. A turn that
 /// answered nothing is not news either: the slot already holds the child's last word.
@@ -2089,7 +2099,14 @@ impl HarnessTaskRunner {
                     eprintln!("  {handle} · its record could not be updated ({why})");
                 }
             };
-            match decide(&run, &me, held, |p| std::path::Path::new(p).is_dir(), mode) {
+            match decide(
+                &run,
+                &me,
+                held,
+                writer_running(&store, &run.instance),
+                |p| std::path::Path::new(p).is_dir(),
+                mode,
+            ) {
                 Decision::Leave => {}
                 Decision::Deliver(status) => {
                     restamp(&run.state, run.resumes, run.outcome.clone());
@@ -2321,9 +2338,13 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
             .slot(handle)
             .is_some_and(|s| !s.has_exited() && !s.is_parked())
             || self.registry.get(handle).is_some();
-        let spec = crate::subagent_record::resumable(&run, self.registry.instance(), held, |p| {
-            std::path::Path::new(p).is_dir()
-        })?;
+        let spec = crate::subagent_record::resumable(
+            &run,
+            self.registry.instance(),
+            held,
+            writer_running(&store, &run.instance),
+            |p| std::path::Path::new(p).is_dir(),
+        )?;
         self.resume_run(&store, &run, spec)?;
         Ok(format!(
             "`{handle}` is resumed in its own session — the same conversation{}, role and model — \

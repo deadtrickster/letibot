@@ -239,6 +239,13 @@ fn old_daemon_stopped(store: &Store, ago: Duration) {
     store.life_stopped(OLD, at).unwrap();
 }
 
+/// A daemon that is still running: the same instance, no stop, and a heartbeat now.
+fn old_daemon_beating(store: &Store) {
+    let now = letibot_sessionlog::registry::now_ms();
+    store.life_started(OLD, now.saturating_sub(60_000)).unwrap();
+    store.life_beat(OLD, now).unwrap();
+}
+
 // --- the stub model -------------------------------------------------------------------------
 
 struct Stub {
@@ -1457,6 +1464,87 @@ fn a_relic_beside_a_real_record_takes_the_down_time_from_the_real_one() {
     let store = Store::open(&dir.store()).unwrap();
     assert_eq!(job_state(&store, "j900"), "lost at restart");
     assert_eq!(job_state(&store, "j9"), "lost at restart");
+    d.stop(None);
+}
+
+/// **A daemon that is still beating is not a gone one** (R91.9). The store is shared by every
+/// daemon on the box, so a child, a monitor and a job of an instance whose life row has no stop and
+/// a fresh heartbeat belong to a daemon that is working - and a restore here would resume the child
+/// twice in one worktree, run the monitor twice and mark the job lost.
+#[test]
+fn what_another_daemon_that_is_still_beating_owns_is_left_alone() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let Some(_) = room::room_for("a daemon and another daemon's records", 1024) else {
+        return;
+    };
+    let dir = Scratch::new("restart-live-other");
+    let parts = parts_for(&config(
+        &dir.repo(),
+        &dir.store(),
+        Endpoint::new("127.0.0.1", 1),
+    ));
+    let stub = Stub::new(plain(&parts.vocab, "noted"), 0);
+    let mut cfg = config(&dir.repo(), &dir.store(), stub.endpoint.clone());
+    // No `bash` tool: what this test reads is the store, and a session with one needs a
+    // whole-host backend, which a box with no cgroup v2 cannot open.
+    cfg.allow_bash = false;
+    // The session's own row first: a job's row is foreign-keyed to it.
+    seed_session(&parts, &cfg);
+    let store = Store::open(&dir.store()).unwrap();
+    // The other daemon is HERE, not gone: no stop, and a heartbeat a moment ago.
+    old_daemon_beating(&store);
+    let child = "s-restart-parent-sub-live";
+    store
+        .put_subagent_run(&run(
+            child,
+            PARENT,
+            "running",
+            &TaskSpec::default(),
+        ))
+        .unwrap();
+    store
+        .put_monitor(PARENT, "theirs", r#"{"name":"theirs","path":"x"}"#, OLD, 300_000)
+        .unwrap();
+    let mut job = a_job("j-live", "running", "sleep 600");
+    job.state = "running".into();
+    store.put_job(PARENT, &job).unwrap();
+    the_old_daemons(&store, "j-live");
+
+    let mut d = a_daemon(&parts, &cfg);
+    assert_eq!(
+        d.parent.restore_after_restart(),
+        None,
+        "another live daemon's records are its own, so there is nothing to say here"
+    );
+    let row = store.subagent_run(child).unwrap().unwrap();
+    assert_eq!(
+        (row.state.as_str(), row.instance.as_str()),
+        ("running", OLD),
+        "a live daemon's child was resumed or closed by a daemon that only read the store"
+    );
+    assert!(
+        d.registry.get(child).is_none(),
+        "a second copy of the child was spawned here"
+    );
+    let monitors = store.monitors_of(PARENT).unwrap();
+    assert!(
+        monitors.iter().any(|m| m.name == "theirs" && m.live),
+        "the live daemon's monitor was closed: {monitors:?}"
+    );
+    assert_eq!(
+        job_state(&store, "j-live"),
+        "running",
+        "the live daemon's job was marked lost at a restart that was not its own"
+    );
+    // And the explicit door says the same: `task_resume` is refused, naming why.
+    let refused = d.call("task_resume", serde_json::json!({"task": child}));
+    assert!(
+        refused.payload.contains("still up") && refused.payload.contains("Nothing was spawned"),
+        "{}",
+        refused.payload
+    );
     d.stop(None);
 }
 

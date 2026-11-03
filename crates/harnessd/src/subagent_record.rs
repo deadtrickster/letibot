@@ -374,11 +374,13 @@ pub enum Decision {
 }
 
 /// The rule. `instance` is this daemon's; `held` is whether this daemon already has the child
-/// (a slot or a live session under its id); `dir_exists` answers for a worktree path.
+/// (a slot or a live session under its id); `writer_running` is whether the daemon that wrote the
+/// record is still up; `dir_exists` answers for a worktree path.
 pub fn decide(
     run: &SubagentRun,
     instance: &str,
     held: bool,
+    writer_running: bool,
     dir_exists: impl Fn(&str) -> bool,
     mode: RestoreMode,
 ) -> Decision {
@@ -386,6 +388,11 @@ pub fn decide(
     // delivered through this process's own watchers. A parent reopened inside one daemon (a
     // parked session, a `/resume`) must not spawn a second copy of a child that is running.
     if run.instance == instance || held {
+        return Decision::Leave;
+    }
+    // **And the same for a daemon that is still beating** (R91.9): the store is shared by every
+    // daemon on the box, so another instance's running child is running there - not a stop's.
+    if writer_running {
         return Decision::Leave;
     }
     // A tool's helper is never the model's news. Settled, its answer was read by the tool that
@@ -700,11 +707,12 @@ pub fn how_far(
 
 /// Whether `task_resume` may bring this child back - the explicit, one-call door (the
 /// operator *"this is what you wre running and how to restart that"*). `Ok` is its spec.
-/// Refused by name
+/// Refused by name. `writer_running` is whether the daemon that wrote the record is still up.
 pub fn resumable(
     run: &SubagentRun,
     instance: &str,
     held: bool,
+    writer_running: bool,
     dir_exists: impl Fn(&str) -> bool,
 ) -> Result<TaskSpec, String> {
     let h = &run.child_id;
@@ -729,6 +737,14 @@ pub fn resumable(
         return Err(format!(
             "`{h}` is running in this daemon now; `task_result` shows where it has got to. \
              Nothing was spawned."
+        ));
+    }
+    // **Another daemon still beating is running it** (R91.9): a second copy in the same worktree
+    // is the double resume this refusal exists to stop.
+    if run.state == "running" && writer_running {
+        return Err(format!(
+            "`{h}` is running under a daemon that is still up on this box, so it is not brought \
+             back; `task_result` shows where it has got to. Nothing was spawned."
         ));
     }
     let spec = RecordedSpec::from_json(&run.spec_json).and_then(|r| r.spec())?;
@@ -839,6 +855,27 @@ pub fn utc(ms: u64) -> String {
 mod tests {
     use super::*;
     use letibot_tokencore::store::NoRecord;
+
+    /// Every record below was written by a daemon that is gone - what a restart reads. The rule about
+    /// a daemon that is still beating has its own test, which calls `super::decide` to say so.
+    fn decide(
+        run: &SubagentRun,
+        instance: &str,
+        held: bool,
+        dir_exists: impl Fn(&str) -> bool,
+        mode: RestoreMode,
+    ) -> Decision {
+        super::decide(run, instance, held, false, dir_exists, mode)
+    }
+
+    fn resumable(
+        run: &SubagentRun,
+        instance: &str,
+        held: bool,
+        dir_exists: impl Fn(&str) -> bool,
+    ) -> Result<TaskSpec, String> {
+        super::resumable(run, instance, held, false, dir_exists)
+    }
 
     fn run(state: &str) -> SubagentRun {
         SubagentRun {
@@ -1021,6 +1058,44 @@ mod tests {
         );
         assert_eq!(
             decide(&run("running"), NEW, true, |_| true, RestoreMode::Resume),
+            Decision::Leave
+        );
+    }
+
+    /// **Another daemon still beating is not a gone one** (R91.9): the store is shared by every
+    /// daemon on the box, so a running child of a live instance is left where it runs - resumed, it
+    /// would be a second copy in the same worktree - and `task_resume` is refused by name.
+    #[test]
+    fn a_record_whose_daemon_is_still_beating_is_left_alone() {
+        for mode in [RestoreMode::Resume, RestoreMode::Remind] {
+            assert_eq!(
+                super::decide(&run("running"), NEW, false, true, |_| true, mode),
+                Decision::Leave,
+                "{mode:?}"
+            );
+        }
+        // A tool's helper is the one a restart used to RETIRE - which would kill a live daemon's read.
+        let mut helper = run("running");
+        helper.prompt = "You are reading part 3 of 12 of a longer body of text on somebody else's \
+                         behalf. They asked:\n\n  why"
+            .into();
+        helper.spec_json = r#"{"role":"researcher","placement":"host"}"#.into();
+        assert!(is_helper(&helper));
+        assert_eq!(
+            super::decide(&helper, NEW, false, true, |_| true, RestoreMode::Resume),
+            Decision::Leave
+        );
+        let why = super::resumable(&run("running"), NEW, false, true, |_| true)
+            .expect_err("a live daemon's child is not brought back");
+        assert!(
+            why.contains("still up") && why.contains("Nothing was spawned"),
+            "{why}"
+        );
+        // A settled child of a live daemon is still not news here: that daemon delivers it.
+        let mut done = run("done");
+        done.outcome = Some("x".into());
+        assert_eq!(
+            super::decide(&done, NEW, false, true, |_| true, RestoreMode::Resume),
             Decision::Leave
         );
     }
