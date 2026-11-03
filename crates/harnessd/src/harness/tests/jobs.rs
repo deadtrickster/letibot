@@ -2,6 +2,38 @@
 
 use super::*;
 
+/// **The firing names no count**: it fired for one row or for five, and the head is the same - the
+/// number that had to agree with the rows behind it, and could not, is gone.
+#[test]
+fn a_firing_names_its_rows_and_no_count() {
+    let due = vec![
+        (
+            "ship the notes".to_string(),
+            "j12".to_string(),
+            JobFate::Ended {
+                state: "exited 0".into(),
+            },
+        ),
+        (
+            "cut the release".to_string(),
+            "j13".to_string(),
+            JobFate::Unknown,
+        ),
+    ];
+    let said = due_notice(&due);
+    assert!(
+        said.starts_with("[todo] Due (its condition is met):\n"),
+        "{said}"
+    );
+    assert!(
+        said.contains("  - ship the notes — `j12` exited 0\n"),
+        "one line per row, its own word first: {said}"
+    );
+    assert!(said.contains("  - cut the release — `j13`"), "{said}");
+    assert!(!said.contains("2 row"), "no count: {said}");
+    assert!(!said.contains("is due"), "no singular verb to disagree: {said}");
+}
+
 /// A condition is met by a job that is GONE, including one this daemon never knew: the restart case. Three fates and
 /// three sentences, since a handle that ended here can be read with `job_output` and one never heard of cannot, so the
 /// fate is carried rather than a boolean.

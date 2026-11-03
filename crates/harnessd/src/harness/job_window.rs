@@ -67,6 +67,16 @@ pub(crate) fn fate_line(handle: &str, fate: &JobFate) -> String {
     }
 }
 
+/// **The rows a condition just met, as the note the model is handed**: the head says what fired and
+/// never how many, because a count is a second statement that can disagree with the lines under it.
+pub(crate) fn due_notice(due: &[(String, String, JobFate)]) -> String {
+    let lines: Vec<String> = due
+        .iter()
+        .map(|(text, handle, fate)| format!("  - {text} — {}", fate_line(handle, fate)))
+        .collect();
+    format!("[todo] Due (its condition is met):\n{}", lines.join("\n"))
+}
+
 /// The decision `Harness::job_fate` makes, as a function of what its two looks returned: pulled out so
 /// the choice a conditioned row turns on is asserted without a backend, a registry, a gate and a store.
 /// The ORDER is the whole of the honesty, since only the host can say a job runs NOW.

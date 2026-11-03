@@ -407,12 +407,8 @@ impl Harness {
         let due = self.due_todo_rows();
         let fired: Vec<String> = due.iter().map(|(_, handle, _)| handle.clone()).collect();
         if !due.is_empty() {
-            let lines: Vec<String> = due
-                .iter()
-                .map(|(text, handle, fate)| format!("  - {text} — {}", fate_line(handle, fate)))
-                .collect();
-            // R93.C9: "{n} row you attached a condition to is due" was wrong for n > 1.
-            let due_line = format!("[todo] Due (its condition is met):\n{}", lines.join("\n"));
+            // R93.C9: the head said "{n} row you attached a condition to is due" for any n.
+            let due_line = due_notice(&due);
             notices.extend(self.noticed(
                 letibot_plugin::notice::TODO,
                 &due_line,
