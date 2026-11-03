@@ -401,7 +401,7 @@ pub fn decide(
     match run.state.as_str() {
         "running" => {}
         "done" | "failed" if !run.delivered => {
-            let status = if run.state == "done" {
+            let status = if run.state == "done" || run.later_answer.is_some() {
                 TaskStatus::Done {
                     answer: answer_said(run),
                     child: None,
@@ -508,7 +508,13 @@ pub fn recorded_status(run: &SubagentRun, instance: &str) -> TaskStatus {
             .unwrap_or_default()
     );
     match run.state.as_str() {
+        // A later turn is the child's last word, and it came after the failure: the row keeps the
+        // failure in `outcome` and the parent is handed what the child said since.
         "done" => TaskStatus::Done {
+            answer: answer_said(run),
+            child: None,
+        },
+        "failed" if run.later_answer.is_some() => TaskStatus::Done {
             answer: answer_said(run),
             child: None,
         },
@@ -1088,6 +1094,39 @@ mod tests {
             decide(&mine, NEW, false, |_| true, RestoreMode::Resume),
             Decision::Deliver(_)
         ));
+    }
+
+    /// **A child that failed and then answered again reads as its last word, at every door.** The row
+    /// keeps the failure in `outcome`, but the later turn is what the parent is handed as news - so a
+    /// reader that reported the old failure would contradict the notice it just received.
+    #[test]
+    fn a_failed_child_that_answered_again_reads_as_that_answer() {
+        let mut again = run("failed");
+        again.outcome = Some("it blew up on the second read".into());
+        again.later_answer = Some("the answer it gave after".into());
+        match recorded_status(&again, NEW) {
+            TaskStatus::Done { answer, .. } => {
+                assert!(answer.contains("the answer it gave after"), "{answer}");
+            }
+            other => panic!("a child that spoke again read as {other:?}"),
+        }
+        assert_eq!(
+            decide(&again, NEW, false, |_| true, RestoreMode::Resume),
+            Decision::Deliver(TaskStatus::Done {
+                answer: answer_said(&again),
+                child: None,
+            }),
+            "the delivery after a restart says what `task_result` says"
+        );
+        // A failure with no later turn is still a failure.
+        let mut once = run("failed");
+        once.outcome = Some("it blew up on the second read".into());
+        assert_eq!(
+            recorded_status(&once, NEW),
+            TaskStatus::Failed {
+                why: "it blew up on the second read".into()
+            }
+        );
     }
 
     /// Derived names are unique among a parent's children; carried names are kept - the
