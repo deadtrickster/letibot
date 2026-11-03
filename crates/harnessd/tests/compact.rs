@@ -703,6 +703,48 @@ fn a_fork_with_no_tail_claims_nothing_about_a_tail() {
     );
 }
 
+/// **A summary the model was cut off writing says so, and what to do about it** (R93.E2): one
+/// sentence, and no line of literal spaces where a broken continuation used to be.
+#[test]
+fn a_cut_off_summary_is_admitted_in_one_sentence() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let dir = TempDir::new("harnessd-compact-cut");
+    let path = dir.path().join("sessions.db");
+    let session_id = "compact-cut-test";
+    let cfg = config(&path, session_id);
+    let parts = load_parts(&cfg);
+    let mut h = opened(&cfg, &parts);
+
+    let cut = CompactionOutcome {
+        truncated: true,
+        ..outcome("half a summ")
+    };
+    let report = h
+        .fork_to_summary(&cut, None, None, ForkTail::NONE)
+        .expect("the fork lands");
+    let store = Store::open(&path).expect("reopening");
+    let words = store
+        .load_transcript(&report.transcript_id)
+        .expect("reading the fork")
+        .items;
+    let letibot_transcript::TranscriptItem::System { text, .. } = &words[0].0 else {
+        panic!("the base's first item is the note");
+    };
+    assert!(
+        text.contains(
+            "The summary is incomplete (cut off); treat anything missing as unknown and check \
+             with `transcript`."
+        ),
+        "the cut is admitted with the move that follows it: {text}"
+    );
+    assert!(
+        !text.contains("  "),
+        "no double space survives into the note the model reads: {text}"
+    );
+}
+
 /// The door's call is a DEPOSIT: it lands in the transcript and nothing replies to it. The
 /// three facts that make it a deposit rather than a request: the row is in `items`, so the
 /// next turn reads it and no turn was started to produce it; it carries `origin
