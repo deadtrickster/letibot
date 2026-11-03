@@ -258,10 +258,9 @@ pub struct Retained {
     pub read: usize,
 }
 
-/// The level above this session's watcher set: its queue, whose session it is, that set's own stop
-/// flag, and the level above that. A stopped set has handed its own queue up, so a settlement
-/// pushed into it afterwards lands where nothing drains it - hence the hop, and the flag that says
-/// when the hop is owed.
+/// The level above this session's watcher set: its queue, whose session it is, its own stop flag,
+/// and the level above that. A stopped set has handed its queue up, so what is pushed into it
+/// afterwards needs the hop `route` makes.
 #[derive(Clone)]
 struct Up {
     queue: Arc<Settlements>,
@@ -573,9 +572,8 @@ impl JobWatchers {
     }
 
     /// **A settlement found by the session that knows and not by a watcher**: a subagent's later
-    /// turn ends and nothing is blocked on its slot, so it goes to the level ABOVE - the parent
-    /// that started the child - queued and rung the way a stopped session's queue hands up. `false`,
-    /// and nothing queued, for a session with no level above it.
+    /// turn ends and nothing is blocked on its slot, so it goes to the level above - queued and
+    /// rung the way a stopped session's queue hands up. `false` for a session with no level above.
     pub fn settle_up(&self, c: JobCompletion) -> bool {
         let Some(up) = &self.parent else {
             return false;

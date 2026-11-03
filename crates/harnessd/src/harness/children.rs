@@ -1075,9 +1075,8 @@ pub(crate) fn serve_child_with(
 }
 
 /// A turn of a child after its first: `run_turn`, with the child's record moved to `running` for its
-/// length and put back when it ends, or left running when it ended because the daemon is stopping, which
-/// is what the next daemon resumes. Its answer settles the parent's slot again too - see
-/// [`ChildTurns::slot`].
+/// length and put back when it ends, or left running when it ended because the daemon is stopping.
+/// Its answer settles the parent's slot again too - see [`ChildTurns::slot`].
 fn later_turn(
     sub: &mut Harness,
     turns: &mut ChildTurns,
