@@ -1470,8 +1470,10 @@ fn parent_of(path: &str) -> &str {
 const READ_MARK: u8 = 0x1e;
 
 /// One guest command that prints N files, the shape [`parse_batched_reads`] reads back: per file,
-/// `0x1e`, the byte length, a newline, the base64 on one line. Portable on purpose, so a test's
-/// `/bin/sh` prints the bytes a Linux guest would; the length is trimmed, because BSD `wc` pads.
+/// `0x1e`, a header, a newline, and the base64 on one line - or `d` for a directory, `-` for a path
+/// that is not there and `!` for one that is there and cannot be read. Portable on purpose, so a
+/// test's `/bin/sh` prints the bytes a Linux guest would; the length is trimmed, because BSD `wc`
+/// pads.
 pub(crate) fn batched_read_command(paths: &[&str]) -> String {
     let list = paths
         .iter()
@@ -1481,8 +1483,9 @@ pub(crate) fn batched_read_command(paths: &[&str]) -> String {
     format!(
         "for f in {list}; do \
            if [ -d \"$f\" ]; then printf '\\036d\\n'; continue; fi; \
+           if [ ! -e \"$f\" ]; then printf '\\036-\\n'; continue; fi; \
            n=$(wc -c < \"$f\" 2>/dev/null | tr -d '[:space:]') || n=; \
-           case \"$n\" in ''|*[!0-9]*) printf '\\036-\\n'; continue ;; esac; \
+           case \"$n\" in ''|*[!0-9]*) printf '\\036!\\n'; continue ;; esac; \
            printf '\\036%s\\n' \"$n\"; \
            base64 < \"$f\" 2>/dev/null | tr -d '\\n'; \
            printf '\\n'; \
@@ -1519,6 +1522,11 @@ pub(crate) fn parse_batched_reads(
         out.push(match header {
             "d" => Err(BackendError::IsADirectory(path.to_string())),
             "-" => Err(BackendError::NotFound(path.to_string())),
+            // There and unreadable. `NotFound` reads as *it is not there*, which is how a corpus
+            // with one unreadable note was answered as a whole one.
+            "!" => Err(BackendError::Io(format!(
+                "{path}: it is there and could not be read"
+            ))),
             said => match said.parse::<usize>() {
                 Ok(len) => match decode_base64(body) {
                     // The length is the check that the slot is whole: a short body is a
@@ -2667,6 +2675,62 @@ mod tests {
             "a path that is not there answered with bytes: {:?}",
             got[3]
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A file that is there and cannot be read is not a file that is not there. The batch answered
+    /// both with `-`, which `notes` reads as *this note is not there*, so a corpus with one
+    /// unreadable note was reported as a whole one.
+    #[test]
+    fn a_file_that_is_there_and_cannot_be_read_is_not_a_missing_one() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tmp("batch-locked");
+        let src = root.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("open.md"), "read me\n").unwrap();
+
+        let cache = root.join("cache");
+        let calls = root.join("in-calls");
+        let arms = format!(
+            "{HAPPY}\nin) echo \"$@\" >> '{calls}'; sh -c \"$6\" ;;",
+            calls = calls.display()
+        );
+        let bin = stub_firecode(&root.join("fc"), &arms);
+        let b = FirecodeBackend::up(&spec_with(&src, &cache, &bin)).unwrap();
+
+        // The file is put in the GUEST's tree, which is the copy `up` made: a file the copy could
+        // not read would fail the copy rather than reach the page.
+        let locked = cache.join("child").join("locked.md");
+        std::fs::write(&locked, "cannot be read\n").unwrap();
+        let mut perms = std::fs::metadata(&locked).unwrap().permissions();
+        perms.set_mode(0o000);
+        std::fs::set_permissions(&locked, perms).unwrap();
+        // The fixture, proved before the subject is asked: a box that reads a 0000 file anyway
+        // (this test as root) cannot build the case, and says so rather than passing.
+        assert!(
+            std::fs::read(&locked).is_err(),
+            "this box reads a 0000 file, so the unreadable case cannot be built here"
+        );
+
+        let got = b
+            .read_many(&["open.md", "locked.md", "gone.md"])
+            .expect("a page");
+        assert_eq!(got[0].as_ref().unwrap(), b"read me\n");
+        assert!(
+            matches!(&got[1], Err(BackendError::Io(said)) if said.contains("locked.md")),
+            "a file that is there and unreadable answered as one that is not there: {:?}",
+            got[1]
+        );
+        assert!(
+            matches!(&got[2], Err(BackendError::NotFound(_))),
+            "a path that is not there is still a miss: {:?}",
+            got[2]
+        );
+
+        let mut perms = std::fs::metadata(&locked).unwrap().permissions();
+        perms.set_mode(0o600);
+        std::fs::set_permissions(&locked, perms).unwrap();
         let _ = std::fs::remove_dir_all(&root);
     }
 }
