@@ -264,8 +264,8 @@ fn an_unknown_session_id_names_the_real_ones_and_where_to_list_them() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **`attach`'s refusal is two lines and names the word that is missing** — the source, or the
-/// scope — and the help line is the scope's own example, not a parenthetical clause.
+/// **`attach`'s refusal is two lines and names the word that is missing**: the source, or the
+/// scope. The help line is the scope's own example, not a parenthetical clause at 150 columns.
 #[test]
 fn the_attach_refusal_names_the_missing_word_in_two_lines() {
     for (args, what) in [

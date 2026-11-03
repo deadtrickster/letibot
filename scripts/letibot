@@ -800,10 +800,9 @@ from what that server has loaded (letibot --status reports it); explicit
 EOF
 }
 
-# **`--help` AFTER A VERB IS THAT VERB'S** (see `verb_help`). The wall above answers *what can I
-# run*; a person who typed `--delete --help` asked a narrower question, and reading twenty commands
-# to find their own is not an answer to it. Only a first word that IS a verb is read this way: a
-# prompt is not a verb, and `letibot 'x' --help` still runs the prompt.
+# **`--help` AFTER A VERB IS THAT VERB'S** (see `verb_help`): the wall above answers *what can I
+# run*, and a person who typed `--delete --help` asked a narrower question. Only a first word that
+# IS a verb is read this way, so `letibot 'x' --help` still runs the prompt.
 case "${1:-}" in
   --help|-h|help) usage; exit 0 ;;
   --*|-c|-s|-n|attach)
@@ -2147,10 +2146,9 @@ case "${1:-}" in
     shift
     exec "$BIN/letibot" migrate "$@" --store "$STORE" ;;
   --reattach)
-    # What this script runs itself when a moved session's forward has dropped; here so an
-    # operator can ask for it by hand when a head refuses to connect. **The argument comes first**:
-    # a missing ID is a mistake about this line, where a missing binary is a fact about the install,
-    # and the one the person can act on is the one they just typed.
+    # What this script runs when a moved session's forward has dropped, here so an operator can ask
+    # for it by hand. **The argument comes first**: a missing ID is a mistake about this line, where
+    # a missing binary is a fact about the install, and only one of the two is theirs to fix.
     [ $# -ge 2 ] || need "ID" --reattach
     [ -x "$BIN/letibot" ] || die "no letibot at $BIN"
     shift

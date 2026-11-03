@@ -568,7 +568,7 @@ fn a_hidden_hop_moves_the_session_on_and_the_row_here_says_where() {
 }
 
 /// **A host that is not in the table is refused by name, and the names it does have are the next
-/// step.** One line, before any ssh is made and before anything moves — so a typo in `--to` cannot
+/// step.** One line, before any ssh is made and before anything moves, so a typo in `--to` cannot
 /// leave a half-moved session behind.
 #[test]
 fn a_host_that_is_not_declared_is_refused_by_name_and_lists_the_ones_that_are() {
