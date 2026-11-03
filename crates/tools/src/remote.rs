@@ -1087,6 +1087,10 @@ const END_SESSION_BOUND: Duration = Duration::from_secs(25);
 /// environment as it was at exec, whole and in NUL-separated fields, so ONE `grep -l` answers for the
 /// whole machine; `ps eww` prints it as text after the command, which is all a Mac has. The two run in
 /// SEQUENCE, so the `grep` whose own argv holds the mark has exited before `ps` looks for it.
+///
+/// Both match the mark as a WHOLE FIELD, never as a prefix. A placement's id ends in a decimal
+/// counter, so `-1` is a prefix of `-12`: a prefix match ends another placement's work on the same
+/// machine, and a call that was TERMed comes back as `exit 143` with nothing said.
 const SESSION_SWEEP: &str = r#"
 mark="LETIBOT_SESSION=$1"
 self=" "
@@ -1096,11 +1100,13 @@ while [ -n "$p" ] && [ "$p" != "0" ] && [ "$p" != "1" ]; do
   p=$(ps -p "$p" -o ppid= 2>/dev/null | tr -d ' ')
 done
 proc_pids() {
-  grep -lF -- "$mark" /proc/[0-9]*/environ 2>/dev/null | sed 's|^/proc/||; s|/environ$||'
+  grep -lF -- "$mark" /proc/[0-9]*/environ 2>/dev/null | while read -r f; do
+    tr '\0' '\n' < "$f" 2>/dev/null | grep -qxF -- "$mark" && echo "$f"
+  done | sed 's|^/proc/||; s|/environ$||'
 }
 ps_pids() {
   ps eww -A -o pid=,command= 2>/dev/null | while read -r pid rest; do
-    case "$rest" in *"$mark"*) echo "$pid" ;; esac
+    case " $rest " in *" $mark "*) echo "$pid" ;; esac
   done
 }
 mine() {

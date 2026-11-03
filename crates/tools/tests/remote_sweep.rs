@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use letibot_tools::backend::{Command, ExecBackend};
 use letibot_tools::exec::{Egress, ScopeKind, SpawnRequest};
-use letibot_tools::remote::{Host, Mise, Paths, SESSION_MARK, SshBackend, SshSpec};
+use letibot_tools::remote::{Host, Mise, Paths, SESSION_MARK, Ssh, SshBackend, SshSpec};
 
 /// A fake ssh: it ignores its flags and runs the last argument with `HOME` in a temporary
 /// directory, so `~` expands on the far side as it does over a real connection.
@@ -319,5 +319,70 @@ fn a_stopped_session_leaves_no_process_of_its_own_running_on_the_host() {
         alive(kept.pid()),
         "and nothing else: another session's process is still there — {}",
         kept.pid()
+    );
+}
+
+/// Whether that child has ENDED, asked by REAPING it: an unreaped child is a zombie and `kill -0`
+/// still answers for one, so [`alive`] alone cannot prove a process was left alone.
+fn ended(child: &mut std::process::Child) -> bool {
+    let began = Instant::now();
+    while began.elapsed() < Duration::from_secs(2) {
+        match child.try_wait() {
+            Ok(Some(_)) => return true,
+            _ => std::thread::sleep(Duration::from_millis(20)),
+        }
+    }
+    false
+}
+
+/// The sweep ends the processes carrying ITS mark and none whose mark merely STARTS with it. A
+/// placement's id is `{session}-{pid}-{n}` and `n` is a decimal counter, so `-1` is a prefix of
+/// `-12`: a sweep that matched a prefix ended another placement's work on the same machine, and the
+/// call it killed came back as `exit 143` having done nothing.
+#[test]
+fn a_sweep_ends_the_processes_with_its_own_mark_and_not_one_whose_mark_starts_with_it() {
+    let fake = Fake::new("prefix");
+    let (_repo, paths) = repo_and_paths(&fake.dir.join("rig"));
+    let tag = std::process::id();
+    let mine = format!("s-prefix-{tag}-1");
+    let theirs = format!("s-prefix-{tag}-12");
+    assert!(theirs.starts_with(&mine), "the fixture is about a prefix");
+
+    let mut own = Neighbour::start(&fake.dir, &mine);
+    let mut neighbour = Neighbour::start(&fake.dir, &theirs);
+    assert!(
+        alive(own.pid()) && alive(neighbour.pid()),
+        "both are running before the sweep"
+    );
+
+    let name = format!("sweep-prefix-{tag}");
+    std::fs::write(paths.default_key(&name), b"a dedicated key").expect("the key");
+    let ssh = Ssh::connect(
+        Host {
+            name,
+            hostname: "fake.invalid".into(),
+            user: Some("tester".into()),
+            root: "~/letibot-remote".into(),
+            mise: Some(Mise::Off),
+            ..Host::default()
+        },
+        Some(fake.program.clone()),
+        paths,
+    )
+    .expect("the connection opens")
+    .with_mark(&mine);
+
+    let said = ssh.end_session_processes().expect("the sweep ran");
+    assert!(
+        said.starts_with("1 process(es)"),
+        "the sweep found its own process and no other: {said}"
+    );
+    assert!(
+        ended(&mut own.0),
+        "the process carrying the sweep's own mark is ended: {said}"
+    );
+    assert!(
+        !ended(&mut neighbour.0),
+        "and the one whose mark only starts with it is untouched: {said}"
     );
 }
