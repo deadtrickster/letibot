@@ -1189,6 +1189,14 @@ pub(crate) fn serve_child_with(
     }
 }
 
+/// Whether this door is somebody's word and not the harness's own clock: a parent's prompt or
+/// message, and the wake a settlement or a firing rings. A plan-check or the census is the
+/// harness talking to itself, and a parent is not told about it.
+pub(crate) fn somebody_spoke(door: &crate::turn_tail::Door) -> bool {
+    use crate::turn_tail::Door;
+    matches!(door, Door::Prompt | Door::Message | Door::Wake)
+}
+
 /// What a turn after the child's first settles its slot with, `None` when the turn is not news.
 /// A turn before the slot settled is the hold's, part of the answer it ends with. A turn that
 /// answered nothing is not news either: the slot already holds the child's last word.
@@ -1221,15 +1229,7 @@ fn later_turn(
 ) -> Option<Result<Reply, HarnessError>> {
     let record = turns.record.clone();
     let prior = record.as_ref().and_then(|r| r.later_turn_began());
-    // **And the parent hears it**: its slot for this child settled at the task answer and nothing
-    // moved it again, so a second answer was invisible. Only the doors that are somebody's word:
-    // the plan-check and the census are the harness's own business, not the parent's.
-    let somebody_spoke = matches!(
-        door,
-        crate::turn_tail::Door::Prompt
-            | crate::turn_tail::Door::Message
-            | crate::turn_tail::Door::Wake
-    );
+    let somebody_spoke = somebody_spoke(&door);
     // Whether the slot had already settled when this turn began. A turn before that is part of the
     // answer the slot is waiting for, not news of its own.
     let settled_before = turns.slot.as_ref().is_some_and(|s| s.has_settled());

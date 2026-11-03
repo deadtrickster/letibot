@@ -1454,6 +1454,33 @@ fn reply(text: &str) -> Reply {
     }
 }
 
+/// **A `[meanwhile]` turn is somebody's word** (R91.15): the door a child's held result wakes it
+/// through is the door a prompt or a message comes in by, so its answer reaches its parent - while
+/// the plan-check and the census are the harness talking to itself, and are not news.
+#[test]
+fn a_childs_wake_turn_is_news_and_its_own_clock_is_not() {
+    use crate::harness::children::somebody_spoke;
+    use crate::turn_tail::Door;
+    for door in [Door::Prompt, Door::Message, Door::Wake] {
+        assert!(
+            somebody_spoke(&door),
+            "{door:?} is somebody's word, so the turn's answer reaches the parent"
+        );
+    }
+    for door in [
+        Door::Nag(None),
+        Door::Census,
+        Door::OperatorShell,
+        Door::Reseat,
+        Door::Fallback,
+    ] {
+        assert!(
+            !somebody_spoke(&door),
+            "{door:?} is the harness's own clock, and its turn is not a settlement"
+        );
+    }
+}
+
 /// A turn the child runs inside its hold ends before the slot has settled: it is part of the
 /// answer the hold ends with, and a failure of it must not settle the slot as failed (the tree
 /// the answer names would be reaped).
