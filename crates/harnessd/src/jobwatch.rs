@@ -955,6 +955,12 @@ impl JobWatchers {
             // And the activity's snapshot - a handle in `mine` the snapshot does not have is
             // a session waiting on a child and reading `quiet`.
             watched.rebuild();
+            // **And the value a head reads**, at the moment it is true: no event announces an
+            // armed watcher, so leaving this to the next publish is a session with a running
+            // child that answers `quiet`.
+            if let Some(h) = hub.upgrade() {
+                h.refresh_activity();
+            }
             let watched = Arc::clone(&watched);
             let queue = Arc::clone(&queue);
             let _ = std::thread::Builder::new()
@@ -975,6 +981,10 @@ impl JobWatchers {
             .expect("job watchers")
             .insert(job.clone(), (kind, slug));
         watched.rebuild();
+        // For the reason the subagent arm gives: arming is a change nothing announces.
+        if let Some(h) = hub.upgrade() {
+            h.refresh_activity();
+        }
         let _ = std::thread::Builder::new()
             .name(format!("job-watch-{}", &job[..job.len().min(20)]))
             .spawn(move || watch_one(host, hub, queue, watching, settled, watched, job));

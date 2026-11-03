@@ -276,6 +276,34 @@ fn the_activity_follows_a_session_through_a_turn_a_card_and_a_settlement() {
     );
 }
 
+/// **Arming a watcher is a change no event announces**, so the value a head reads has to move
+/// with the snapshot: a handle in `mine` the PUBLISHED activity does not have is a session with a
+/// running child that reads quiet, which is a `wait` answering the turn that started it. Nothing
+/// here asks the hub to re-derive: the daemon is what must say it.
+#[test]
+fn arming_a_watcher_publishes_the_child_the_session_now_waits_on() {
+    let hub = Hub::new("s-armed");
+    let runner: Arc<dyn TaskRunner> = Arc::new(NeverFinishes {
+        handle: "s-kid-armed".into(),
+    });
+    let watch = watchers(&hub).with_tasks(&runner);
+    hub.set_activity_source(activity::source(
+        Some(watch.clone()),
+        None,
+        Arc::new(AtomicUsize::new(0)),
+        Arc::new(AtomicBool::new(false)),
+    ));
+    assert!(hub.activity().is_quiet(), "nothing is watched yet");
+
+    watch.watch("s-kid-armed".into());
+    assert_eq!(
+        hub.activity(),
+        Activity::of(vec![Waiting::Child("s-kid-armed".into())]),
+        "the child is watched, so what the daemon says must be that child: got {}",
+        said(&hub.activity())
+    );
+}
+
 /// A running child is an entry, and the one the model PARKED is not, through the real
 /// watcher set, whose thread really is blocked on the runner. The plan does not decide
 /// this
