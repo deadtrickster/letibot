@@ -259,6 +259,39 @@ impl Policy {
             }
         }
     }
+
+    /// **A failure's four words**, for the one line a retried call draws: what a reader scanning
+    /// a row that counts attempts needs is WHICH failure, and [`Policy::what`]'s sentence is the
+    /// ending's, where there is room for it. The status is the instrument where there is one,
+    /// because `429` is what a person says and `the provider said to try again` is what a
+    /// sentence says.
+    pub fn brief(e: &HttpError) -> String {
+        match e {
+            HttpError::Status { code, body, .. } => {
+                if Self::states_a_refusal(body) {
+                    "the account cannot pay".to_string()
+                } else if *code == 429 || *code == 408 {
+                    format!("{code} rate limited")
+                } else {
+                    format!("{code} server error")
+                }
+            }
+            HttpError::Io(err) => {
+                let lower = err.to_string().to_ascii_lowercase();
+                if err.kind() == std::io::ErrorKind::TimedOut
+                    || lower.contains("timed out")
+                    || lower.contains("timeout")
+                {
+                    "timeout".to_string()
+                } else {
+                    Self::what(e).to_string()
+                }
+            }
+            // A 2xx whose body stopped: the server went away mid-answer, and a stream that ended
+            // without its ending is the one fact a person can act on.
+            HttpError::Malformed(_) => "dropped stream".to_string(),
+        }
+    }
 }
 
 /// One run of the ladder, and the sentence it ends with. The count and the waiting
@@ -575,6 +608,35 @@ mod tests {
             "{}",
             Policy::what(&status(503))
         );
+    }
+
+    /// **A failure's four words**, for a row that says what is being retried. The full sentence
+    /// (`Policy::what`) is the ending's, and a row counting attempts cannot carry it once per
+    /// attempt: what a reader needs there is which failure, in a phrase they can scan.
+    #[test]
+    fn a_brief_names_the_failure_in_the_words_a_retry_row_has_room_for() {
+        assert_eq!(Policy::brief(&status(429)), "429 rate limited");
+        assert_eq!(Policy::brief(&status(408)), "408 rate limited");
+        assert_eq!(Policy::brief(&status(503)), "503 server error");
+        assert_eq!(
+            Policy::brief(&said(429, "{\"error\":\"insufficient_quota\"}")),
+            "the account cannot pay"
+        );
+        assert_eq!(
+            Policy::brief(&HttpError::Io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "timed out"
+            ))),
+            "timeout"
+        );
+        assert_eq!(
+            Policy::brief(&HttpError::Malformed("the body stopped".into())),
+            "dropped stream"
+        );
+        // The transport failures that are neither a timeout nor a stream keep the ending's words,
+        // because those are already four words and already say which one it was.
+        assert_eq!(Policy::brief(&refused()), "the connection was refused");
+        assert_eq!(Policy::brief(&dns()), "name resolution failed");
     }
 
     /// **The ending sentence, in the two shapes the operator reads.**
