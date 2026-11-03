@@ -48,14 +48,27 @@ impl Engine {
     }
 
     fn embed(&self, text: &str) -> Result<Vec<f32>, TierError> {
-        let mut vectors = match self {
-            Engine::Internal(m) => m.embed(&[text]).map_err(TierError::Model)?,
-            Engine::Remote(r) => r.embed(&[text]).map_err(TierError::Remote)?,
-            Engine::Planted(p) => vec![p.vector(text)],
-        };
+        let mut vectors = self.embed_many(&[text])?;
         vectors.pop().ok_or_else(|| TierError::Empty(text.len()))
     }
+
+    /// One vector per text, in the order given. A remote engine asks once for the whole slice,
+    /// which is what its `input` array is for; the local engines loop inside their own crate.
+    fn embed_many(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, TierError> {
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
+        Ok(match self {
+            Engine::Internal(m) => m.embed(texts).map_err(TierError::Model)?,
+            Engine::Remote(r) => r.embed(texts).map_err(TierError::Remote)?,
+            Engine::Planted(p) => texts.iter().map(|t| p.vector(t)).collect(),
+        })
+    }
 }
+
+/// How many texts one request carries. The endpoint's `input` is an array, and a corpus of 300
+/// notes is ten round trips rather than three hundred.
+const BATCH: usize = 32;
 
 /// **A tier whose meaning is a table.** Each group is one dimension and each word in the
 /// group sets it, so two texts that share a group and no word score as one - which is what a
@@ -277,22 +290,59 @@ impl Embedder {
     }
 
     /// Every document's vector, keyed as the caller gave them, and how much of that the box
-    /// had already paid for. Only a text the cache has never seen costs an embedding.
+    /// had already paid for. Only a text the cache has never seen costs an embedding, and the
+    /// misses go out `BATCH` at a time: an endpoint's `input` is an array, and a 300-note corpus
+    /// is ten requests rather than three hundred.
     pub fn vectors(
         &self,
         documents: impl IntoIterator<Item = (String, String)>,
         now_ms: i64,
     ) -> Result<(Vec<(String, Vec<f32>)>, Filled), TierError> {
-        let mut done = Filled::default();
-        let mut rows: Vec<(String, Vec<f32>)> = Vec::new();
-        for (key, text) in documents {
-            let (vector, hit) = self.embed_or_get(&text, now_ms)?;
-            match hit {
-                Hit::Cached => done.cached += 1,
-                Hit::Embedded => done.embedded += 1,
+        let docs: Vec<(String, String)> = documents.into_iter().collect();
+        let lock = self.lock();
+        let name = lock.engine.name().to_string();
+        let mut vectors: Vec<Option<Vec<f32>>> = Vec::with_capacity(docs.len());
+        let mut misses: Vec<usize> = Vec::new();
+        for (i, (_, text)) in docs.iter().enumerate() {
+            match lock.cache.get(&name, text, now_ms) {
+                Ok(Some(v)) => vectors.push(Some(v)),
+                Ok(None) => {
+                    vectors.push(None);
+                    misses.push(i);
+                }
+                Err(e) => return Err(self.fail(EmbedOrCacheError::Cache(e))),
             }
-            rows.push((key, vector));
         }
+        for chunk in misses.chunks(BATCH) {
+            let texts: Vec<&str> = chunk.iter().map(|&i| docs[i].1.as_str()).collect();
+            let embedded = lock
+                .engine
+                .embed_many(&texts)
+                .map_err(|e| self.fail(EmbedOrCacheError::Embed(e.to_string())))?;
+            if embedded.len() != texts.len() {
+                return Err(self.fail(EmbedOrCacheError::Embed(format!(
+                    "{} texts went out and {} vectors came back",
+                    texts.len(),
+                    embedded.len()
+                ))));
+            }
+            for (&i, vector) in chunk.iter().zip(embedded) {
+                let vector = normalise(vector);
+                lock.cache
+                    .put(&name, &docs[i].1, &vector, now_ms)
+                    .map_err(|e| self.fail(EmbedOrCacheError::Cache(e)))?;
+                vectors[i] = Some(vector);
+            }
+        }
+        let done = Filled {
+            embedded: misses.len(),
+            cached: docs.len() - misses.len(),
+        };
+        let rows = docs
+            .into_iter()
+            .zip(vectors)
+            .map(|((key, _), v)| (key, v.expect("every text was either cached or embedded")))
+            .collect();
         Ok((rows, done))
     }
 
@@ -524,6 +574,92 @@ mod tests {
     /// with a test's 1000 is a row thirty days old the moment it is written.
     fn now() -> i64 {
         letibot_metrics::now_ms() as i64
+    }
+
+    /// A loopback endpoint that answers one vector per text it was asked for, and remembers how
+    /// many texts each request carried: the only way to see the size of `input` from outside.
+    fn batching_endpoint() -> (String, Arc<Mutex<Vec<usize>>>) {
+        use std::io::{BufRead, BufReader, Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let url = format!(
+            "http://127.0.0.1:{}",
+            listener.local_addr().expect("addr").port()
+        );
+        let seen: Arc<Mutex<Vec<usize>>> = Arc::new(Mutex::new(Vec::new()));
+        let log = seen.clone();
+        std::thread::spawn(move || {
+            for conn in listener.incoming() {
+                let Ok(mut conn) = conn else { continue };
+                let mut reader = BufReader::new(conn.try_clone().expect("clone"));
+                let mut length = 0usize;
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                        break;
+                    }
+                    let lower = line.to_ascii_lowercase();
+                    if let Some(n) = lower.strip_prefix("content-length:") {
+                        length = n.trim().parse().unwrap_or(0);
+                    }
+                    if line == "\r\n" {
+                        break;
+                    }
+                }
+                let mut body = vec![0u8; length];
+                let _ = reader.read_exact(&mut body);
+                let asked: serde_json::Value = serde_json::from_slice(&body).expect("json");
+                let n = asked["input"].as_array().map(|a| a.len()).unwrap_or(0);
+                log.lock().expect("log").push(n);
+                let data: Vec<serde_json::Value> = (0..n)
+                    .map(|i| serde_json::json!({ "index": i, "embedding": [1.0, 0.0] }))
+                    .collect();
+                let body = serde_json::json!({ "data": data }).to_string();
+                let answer = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = conn.write_all(answer.as_bytes());
+                let _ = conn.flush();
+            }
+        });
+        (url, seen)
+    }
+
+    /// **A fill asks the endpoint once per batch, not once per note.** `Remote::ask` carries an
+    /// `input` array and the tier sent it one element at a time, so a 300-note corpus was 300 round
+    /// trips with the box's one embedder held for all of them.
+    #[test]
+    fn a_remote_fill_asks_once_for_a_whole_batch() {
+        let (url, asked) = batching_endpoint();
+        let data = Dir::new("remote-batch");
+        let cache = Cache::open_in(data.path()).expect("cache");
+        let engine = Engine::Remote(Remote::open(&url, "bge-m3").expect("remote"));
+        let tier = Tier::with(engine, cache);
+
+        let three: Vec<(String, String)> = (0..3)
+            .map(|i| (format!("n{i}"), format!("text {i}")))
+            .collect();
+        let filled = tier.fill(three, now()).expect("filled");
+        assert_eq!((filled.embedded, filled.cached), (3, 0));
+        assert_eq!(
+            asked.lock().expect("log").clone(),
+            vec![3],
+            "three misses are one request"
+        );
+
+        // And the batch is bounded: forty more misses are 32 and 8, in that order.
+        let forty: Vec<(String, String)> = (0..40)
+            .map(|i| (format!("m{i}"), format!("other text {i}")))
+            .collect();
+        let filled = tier.fill(forty, now()).expect("filled");
+        assert_eq!(filled.embedded, 40);
+        assert_eq!(
+            asked.lock().expect("log").clone(),
+            vec![3, 32, 8],
+            "a batch is 32 texts and the rest follow"
+        );
     }
 
     /// Mode off is no tier at all, which is the whole of "lexical only".
