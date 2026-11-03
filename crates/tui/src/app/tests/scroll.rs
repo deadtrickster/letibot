@@ -3137,6 +3137,45 @@ fn fork_live(
     )));
 }
 
+/// **A fork re-bases the window on the transcript the session now speaks.** The head kept the rows
+/// before the first one that went, and `items_base` with them, so after a compaction the ordinal it
+/// asked a page for named a row of the transcript the fork replaced.
+#[test]
+fn a_fork_re_bases_the_window_on_the_transcript_it_left() {
+    let mut a = app();
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", false)],
+        Hub::new("s").snapshot(),
+    ));
+    // A head that attached to a window the daemon had trimmed 500 rows of, holding rows of the
+    // transcript behind the one the session was speaking.
+    a.items_base = 500;
+    let ancestor: Vec<String> = (0..5).map(|i| format!("s#t0.{i}")).collect();
+    carried_appends(&mut a, 1, &ancestor, |i| format!("row {i}"));
+    let speaking: Vec<String> = (0..15).map(|i| format!("s#t1.{i}")).collect();
+    carried_appends(&mut a, 100, &speaking, |i| format!("row {i}"));
+    a.walk_limit = 1;
+    let _ = a.screen(100, 20);
+
+    // The compaction: the conversation carried under the new transcript's ids, then the statement.
+    let carried: Vec<String> = (0..12).map(|i| format!("s#t2.{i}")).collect();
+    fork_live(&mut a, 1000, "s#t1", "s#t2", &carried, |i| {
+        format!("row {i}")
+    });
+    let _ = a.screen(100, 20);
+
+    assert_eq!(
+        a.items_base, 0,
+        "the window's base still names an ordinal of the transcript the fork replaced"
+    );
+    let held: Vec<&str> = a.items.iter().map(|r| r.item_id.as_str()).collect();
+    assert!(
+        held.iter().all(|id| id.starts_with("s#t2.")),
+        "a row the new base does not carry is still held: {held:?}"
+    );
+}
+
 /// A live fork leaves the reader on the row they were on: its id is gone and its ordinal names a different
 /// row, so the two things left are its own words, which is what a carry takes.
 #[test]

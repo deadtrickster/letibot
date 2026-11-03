@@ -661,11 +661,18 @@ impl SessionView {
                     row.citations = citations.clone();
                 }
             }
-            // A fork replaces the rows of the transcript it replaced, and the daemon says which one
-            // that is, so the view drops exactly those.
-            SessionEvent::TranscriptForked { parent_id, .. } => {
-                let gone = format!("{parent_id}.");
-                self.items.retain(|r| !r.item_id.starts_with(gone.as_str()));
+            // **A fork numbers the conversation from zero.** The rows of the transcript it replaced
+            // are not ordinals of the new base, and neither are the rows of the transcripts behind
+            // it, which the base already carries: what the view holds after a fork is a window of
+            // the new base, and where that window starts is `items_dropped`.
+            SessionEvent::TranscriptForked { transcript_id, .. } => {
+                let here = format!("{transcript_id}.");
+                self.items.retain(|r| r.item_id.starts_with(here.as_str()));
+                self.items_dropped = self
+                    .items
+                    .first()
+                    .and_then(|r| ordinal_in(&r.item_id, &here))
+                    .unwrap_or(0) as u64;
             }
             SessionEvent::HeadAttached {
                 head_id,
@@ -878,6 +885,12 @@ impl SessionView {
     pub fn open_decisions(&self) -> &[OpenDecision] {
         &self.open
     }
+}
+
+/// The ordinal an item id names: a row of transcript `prefix` is `<prefix><n>`, `n` being its
+/// position in that transcript - the store's `seq`, and what a page above a window is asked for by.
+pub fn ordinal_in(item_id: &str, prefix: &str) -> Option<usize> {
+    item_id.strip_prefix(prefix)?.parse().ok()
 }
 
 /// A row's body, as text: the one definition, for every reader. Two callers and they must agree,
@@ -1343,10 +1356,61 @@ mod tests {
         );
     }
 
-    /// A fork drops the replaced transcript's rows and NO OTHERS: this view holds rows of more than
-    /// one transcript, and the ones the fork did not replace still stand.
+    /// **After a fork the view's ordinals are the new base's.** A fork numbers the conversation from
+    /// zero, and the view kept the rows of the transcripts behind it together with the old
+    /// `items_dropped`, so a page asked for from the head's window was answered out of the middle of
+    /// the transcript the fork replaced.
     #[test]
-    fn a_fork_leaves_the_rows_of_the_transcripts_it_did_not_replace() {
+    fn a_fork_numbers_the_window_from_the_new_base() {
+        let mut log = SessionLog::new("s", LogBounds::default());
+        for i in 0..500u64 {
+            log.append(SessionEvent::TranscriptAppended {
+                item_id: format!("s.{i}"),
+                kind: "assistant".into(),
+                ledger_head: "ab".into(),
+            });
+        }
+        let bounds = ViewBounds {
+            items: 40,
+            ..ViewBounds::default()
+        };
+        let mut v = SessionView::new("s", bounds);
+        for e in log.retained() {
+            v.apply(e);
+        }
+        assert_eq!(v.items_dropped, 460, "the fixture did not trim its window");
+
+        // A compaction: the new base, carried row by row under the new transcript's ids.
+        log.append(forked("s#t1", "s"));
+        for i in 0..100u64 {
+            log.append(SessionEvent::TranscriptAppended {
+                item_id: format!("s#t1.{i}"),
+                kind: "assistant".into(),
+                ledger_head: "cd".into(),
+            });
+        }
+        for e in log.retained() {
+            v.apply(e);
+        }
+        assert_eq!(v.items.len(), 40, "the fixture's window is not 40 rows");
+        assert_eq!(
+            v.items_dropped, 60,
+            "ordinal 0 does not name the first row of the new base: items_dropped is {}",
+            v.items_dropped
+        );
+        assert_eq!(
+            v.row_at(60).map(|r| r.item_id),
+            Some("s#t1.60".to_string()),
+            "the page above the window is a row of the transcript the fork replaced"
+        );
+    }
+
+    /// **A fork leaves the rows of the transcript the session speaks, and no others.** The chain a
+    /// resume leaves behind holds rows of three transcripts, and an ancestor's row is neither part
+    /// of the new base nor an ordinal of it - drawing it would put a row the conversation no longer
+    /// has above one that it does, and a page asked for by ordinal would miss it.
+    #[test]
+    fn a_fork_leaves_only_the_rows_of_the_transcript_the_session_speaks() {
         let mut log = SessionLog::new("s", LogBounds::default());
         // The chain a resume leaves behind, oldest transcript first.
         for i in 0..5u64 {
@@ -1375,15 +1439,19 @@ mod tests {
 
         let snap = fold(&log).snapshot(100, 0);
         let ids: Vec<&str> = snap.items.iter().map(|r| r.item_id.as_str()).collect();
-        assert_eq!(ids.len(), 25, "5 ancestors plus 20 carried: {ids:?}");
+        assert_eq!(
+            ids.len(),
+            20,
+            "the 20 carried rows, and nothing behind them: {ids:?}"
+        );
         assert!(
-            !ids.iter().any(|id| id.starts_with("s#t2.")),
-            "a row of the transcript the fork replaced is still held: {ids:?}"
+            !ids.iter()
+                .any(|id| id.starts_with("s#t1.") || id.starts_with("s#t2.")),
+            "a row of a transcript the new base does not carry is still held: {ids:?}"
         );
         assert_eq!(
-            ids.iter().filter(|id| id.starts_with("s#t1.")).count(),
-            5,
-            "a fork took the rows of a transcript it did not replace: {ids:?}"
+            snap.items_dropped, 0,
+            "the new base is numbered from zero, so nothing of it is above this window"
         );
     }
 

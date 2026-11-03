@@ -582,32 +582,40 @@ impl App {
 
     /// The rows this head holds that are numbered in a transcript the session has left: the head's half of
     /// `TranscriptForked`, whose carried rows are all published under new ids, so not one held id is in the
-    /// carry. The smallest thing that makes the rule true: the rows that went, gone.
-    pub(crate) fn rows_replaced(&mut self, transcript_id: &str, parent_id: &str) {
-        let gone = format!("{parent_id}.");
+    /// carry. What is left is a window of the NEW base, and `items_base` is where that window starts.
+    pub(crate) fn rows_replaced(&mut self, transcript_id: &str, _parent_id: &str) {
+        let here = format!("{transcript_id}.");
         // The reader's place, taken before the rows go: the live door onto a replacement and the one `load`
         // cannot answer, since a fork's rows travel as appends. The row's own words and the line are taken here,
         // while the row is still there to be asked. See [`App::repair_anchor`].
-        let arriving = {
-            let here = format!("{transcript_id}.");
-            !self
-                .items
-                .iter()
-                .any(|r| r.item_id.starts_with(here.as_str()))
-        };
+        let arriving = !self
+            .items
+            .iter()
+            .any(|r| r.item_id.starts_with(here.as_str()));
         self.carry = Some(Carry {
             words: self.held_row_words(),
             line: self.held_line(),
             arriving,
         });
-        // **The rows before the first one that goes keep their places; every index from it on is
-        // about to mean a row of the new transcript.**
+        // **Everything the new base does not carry goes, ancestors included**: a fork numbers the
+        // conversation from zero, so a row of an older transcript is neither part of the base nor an
+        // ordinal of it, and a page asked for by ordinal would land among the wrong rows.
         let kept = self
             .items
             .iter()
-            .position(|r| r.item_id.starts_with(gone.as_str()))
+            .position(|r| r.item_id.starts_with(here.as_str()))
             .unwrap_or(self.items.len());
-        self.items.retain(|r| !r.item_id.starts_with(gone.as_str()));
+        self.items.retain(|r| r.item_id.starts_with(here.as_str()));
+        self.items_base = self
+            .items
+            .first()
+            .and_then(|r| letibot_sessionlog::view::ordinal_in(&r.item_id, &here))
+            .unwrap_or(0);
+        // A page in flight was asked for by an ordinal of the transcript that just went, and the rows
+        // the head was told do not exist above may be another transcript's entirely.
+        self.fetch_asked = None;
+        self.fetch_below = None;
+        self.no_more_above = false;
         // A fork's rows are not the ones this head counted below the window, and they arrive as
         // appends: the gap goes with the transcript it was a gap in.
         self.items_below = 0;
@@ -615,8 +623,12 @@ impl App {
         // seam into the rows that went joins the history, which is the rule `load` applies to a seam the new
         // transcript no longer has.
         for (place, _) in &mut self.notes {
-            if matches!(place, Placed::Seam(at) if *at > kept) {
-                *place = Placed::Before;
+            if let Placed::Seam(at) = place {
+                *place = if *at >= kept {
+                    Placed::Seam(*at - kept)
+                } else {
+                    Placed::Before
+                };
             }
         }
         // And the offset goes with the rows it was measured against: `scroll` is lines hidden below the
