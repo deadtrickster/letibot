@@ -1574,7 +1574,7 @@ pub(crate) use children::{
 };
 pub(crate) use deliveries::{
     Deliveries, OPERATOR_RETIRE, graced_endings, human_secs, monitor_entries_of, monitor_facts,
-    monitor_notice,
+    monitor_notice, notice_row,
 };
 pub use deliveries::{JOB_CLOSING, MONITORS_ENDED_SHOWN};
 #[cfg(test)]

@@ -29,6 +29,9 @@ pub struct SteeringMessage {
     /// child, or any peer's message. One reader needs it and it is not the engine: after the
     /// turn, a message handed back must be written even though the turn did not read it.
     pub from_session: Option<String>,
+    /// What sort of news this is when it is a DELIVERY rather than somebody's words - a monitor's
+    /// firing. `None` for everything a person or a peer said.
+    pub notice: Option<letibot_transcript::NoticeKind>,
 }
 
 impl SteeringMessage {
@@ -39,6 +42,20 @@ impl SteeringMessage {
             from_operator: false,
             extra: Vec::new(),
             from_session: None,
+            notice: None,
+        }
+    }
+
+    /// **A delivery, not words**: what the harness learned while the turn ran - a monitor firing.
+    /// Its row is a `Notice`, so no reader has to decide whose words it is.
+    pub fn notice(text: impl Into<String>) -> Self {
+        SteeringMessage {
+            text: text.into(),
+            urgent: false,
+            from_operator: false,
+            extra: Vec::new(),
+            from_session: None,
+            notice: Some(letibot_transcript::NoticeKind::Monitor),
         }
     }
 
@@ -52,6 +69,7 @@ impl SteeringMessage {
             from_operator: false,
             extra: Vec::new(),
             from_session: Some(from.into()),
+            notice: None,
         }
     }
 
@@ -63,6 +81,7 @@ impl SteeringMessage {
             from_operator: true,
             extra: Vec::new(),
             from_session: None,
+            notice: None,
         }
     }
 
@@ -75,6 +94,7 @@ impl SteeringMessage {
             from_operator: true,
             extra,
             from_session: None,
+            notice: None,
         }
     }
 
@@ -85,13 +105,21 @@ impl SteeringMessage {
             from_operator: false,
             extra: Vec::new(),
             from_session: None,
+            notice: None,
         }
     }
 
-    /// The transcript item this message becomes: a plain `User` item with exactly its own text.
-    /// No tool envelope, no wrapper, no bookkeeping - an inbound message must cost exactly its
-    /// own tokens, and that regresses the first time somebody adds "helpful" metadata here.
+    /// The transcript item this message becomes: a plain `User` item with exactly its own text, or
+    /// a `Notice` when it is a delivery. No tool envelope, no wrapper, no bookkeeping - an inbound
+    /// message must cost exactly its own tokens, and that regresses the first time somebody adds
+    /// "helpful" metadata here.
     pub fn to_item(&self) -> TranscriptItem {
+        if let Some(kind) = self.notice {
+            return TranscriptItem::Notice {
+                kind,
+                text: self.text.clone(),
+            };
+        }
         TranscriptItem::User {
             // `from_operator` is exactly this field's question: a steering line the model asked
             // for is the session's own words and one an operator typed is theirs, so a head

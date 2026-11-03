@@ -314,7 +314,8 @@ impl SteeringSource for HubSteering {
         if let Some(t) = &self.trail {
             t.say(Speaker::Agent, &text, Some(Instant::now()));
         }
-        Some(SteeringMessage::normal(text))
+        // The typed door: a firing is a delivery, so the row it becomes says so.
+        Some(SteeringMessage::notice(text))
     }
 
     /// The take-back the operator issued from a head: the hub drops the head's still-queued prompts and

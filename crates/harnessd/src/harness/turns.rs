@@ -356,6 +356,9 @@ impl Harness {
         ));
         let queue_n = notices.len();
         let cursor_before = self.monitor_cursor.load(Ordering::SeqCst);
+        // **A firing is a delivery and not one more sentence among the settlements**: it gets a row
+        // of its own, folded per monitor, so nothing has to remember whose words it is.
+        let mut firing_row: Option<String> = None;
         if let Some(monitors) = self.monitors.clone() {
             let since = self.monitor_cursor.load(Ordering::SeqCst);
             let settled = monitors.settled_count();
@@ -371,7 +374,7 @@ impl Harness {
                     }
                     if let Some(text) = monitor_notice(&fired) {
                         let facts = monitor_facts(&fired);
-                        notices.extend(self.noticed(letibot_plugin::notice::MONITOR, &text, facts));
+                        firing_row = self.noticed(letibot_plugin::notice::MONITOR, &text, facts);
                     }
                 }
             }
@@ -379,7 +382,7 @@ impl Harness {
         // The hop that did not exist (R7): `JobSettled` reaches every head, and this is what reaches the model,
         // taking it here so it cannot arrive twice. It is THIS session's queue that is drained, so a subagent's
         // job is not announced to its parent as one the parent backgrounded. R79: between turns nothing is held.
-        let monitor_n = notices.len() - queue_n;
+        let monitor_n = usize::from(firing_row.is_some());
         let deliveries = self.deliveries();
         // A gatekeeper's settlement is the review's, not this session's news: the verdict went onto
         // the queue's row above, so telling the model here would be a turn about work already
@@ -405,7 +408,7 @@ impl Harness {
         // And the rows whose condition just became met: a firing is the same kind of fact as a job
         // ending, and the line carries both halves, because an intent with no fate is a sentence the
         // model cannot act on and a fate with no intent is a settlement it already has.
-        let result_n = notices.len() - queue_n - monitor_n;
+        let result_n = notices.len() - queue_n;
         let due = self.due_todo_rows();
         let fired: Vec<String> = due.iter().map(|(_, handle, _)| handle.clone()).collect();
         if !due.is_empty() {
@@ -437,20 +440,19 @@ impl Harness {
             None => Vec::new(),
         };
         notices.extend(held);
+        let anything = !notices.is_empty() || firing_row.is_some();
         // **A wake with nothing to say runs no turn**, so nothing is owed for what the take
         // removed - and this has to be cleared BEFORE the publish below, or the value a reader
         // holds says delivery about a turn that is not coming.
-        if notices.is_empty()
-            && let Some(w) = &self.job_watch
-        {
+        if !anything && let Some(w) = &self.job_watch {
             w.turn_began();
         }
         // What this session is waiting on has moved: the monitor cursor and `between_turns_unread`
         // took things that publish no event of their own, and the move that matters most is the one
         // that empties the list.
         self.publish_activity();
-        self.meter_wake(causes, !notices.is_empty());
-        if notices.is_empty() {
+        self.meter_wake(causes, anything);
+        if !anything {
             return Ok(None);
         }
         if !self.cfg.workspace.is_dir() {
@@ -463,7 +465,22 @@ impl Harness {
                 notices.insert(0, line);
             }
         }
-        let text = notices.join("\n\n");
+        // **Two rows sometimes, and one turn**: the settlements in the session's own voice as it
+        // has always said them, and a firing as a delivery with a kind of its own - never a `User`
+        // row, whose `speaker` default is what would read as the operator's words.
+        let mut items: Vec<TranscriptItem> = Vec::new();
+        if !notices.is_empty() {
+            let text = notices.join("\n\n");
+            items.push(TranscriptItem::User {
+                // The same speaker the trail records, one line up: this is the session talking
+                // to itself, and a head must not draw it as the operator's words (R42).
+                speaker: letibot_transcript::Speaker::Agent,
+                parts: vec![UserPart::Text { text }],
+            });
+        }
+        if let Some(text) = firing_row {
+            items.push(notice_row(letibot_transcript::NoticeKind::Monitor, text));
+        }
         // The wall is checked BEFORE the send, as `nag_turn`'s pre-flight is. Not the load-bearing
         // fix: a refused wake is classified as the wall and recovered by the turn tail, so this only
         // spares a round trip the daemon's own ledger already knows will not fit.
@@ -471,17 +488,15 @@ impl Harness {
         // The harness talking to itself, not the operator. A firing - or a job's end  -
         // must never be able to authorise the action it reports on.
         self.trail.begin_turn();
-        self.trail.say(Speaker::Agent, &text, Some(Instant::now()));
+        for item in &items {
+            self.trail.say(
+                Speaker::Agent,
+                &letibot_sessionlog::view::body_of(item),
+                Some(Instant::now()),
+            );
+        }
         let mut opened = false;
-        let out = self.submit_items_then(
-            vec![TranscriptItem::User {
-                // The same speaker the trail records, one line up: this is the session talking
-                // to itself, and a head must not draw it as the operator's words (R42).
-                speaker: letibot_transcript::Speaker::Agent,
-                parts: vec![UserPart::Text { text }],
-            }],
-            |_| opened = true,
-        );
+        let out = self.submit_items_then(items, |_| opened = true);
         // Told only once the turn has opened: opened means the notice is in the transcript and in the store, so
         // the model reads it whatever its rounds come to. A turn that never opened put nothing in front of
         // anybody, so the results, the restart notices and the monitor cursor all go back and the next wake says it.

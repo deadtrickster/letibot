@@ -5,42 +5,99 @@
 //! session's own facts and the words those facts become.
 
 use super::*;
+use letibot_tools::exec::monitor::{Fired, Firing};
 
+/// One monitor's news in one delivery: what it last said, and how many of its firings the line
+/// stands for. A type rather than a `Vec<String>` so the fold is a thing a test can assert.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FiringLine {
+    pub name: String,
+    pub said: String,
+    /// Firings this line stands for BESIDES the one whose words it carries.
+    pub folded: usize,
+}
+
+impl FiringLine {
+    fn words(&self) -> String {
+        match self.folded {
+            0 => self.said.clone(),
+            1 => format!("{} (and one firing since)", self.said),
+            n => format!("{} (and {n} firings since)", self.said),
+        }
+    }
+}
+
+/// **A burst of firings, folded to one line a monitor**: the newest words, and how many the line
+/// stands for. The fold is per NAME and in first-seen order, so two monitors are two lines and one
+/// chatty monitor cannot push another's news out of the delivery.
+pub(crate) fn fold_firings(fired: &[Firing]) -> Vec<FiringLine> {
+    let mut out: Vec<FiringLine> = Vec::new();
+    for f in fired {
+        let Some(said) = said_by(f) else { continue };
+        match out.iter_mut().find(|l| l.name == f.name) {
+            Some(line) => {
+                line.said = said;
+                line.folded += 1;
+            }
+            None => out.push(FiringLine {
+                name: f.name.clone(),
+                said,
+                folded: 0,
+            }),
+        }
+    }
+    out
+}
+
+/// What one firing says, in the model's words, or `None` for the two endings that are the model's
+/// own act or nobody's business.
+fn said_by(f: &Firing) -> Option<String> {
+    match &f.fired {
+        Fired::Fired { why, .. } => Some(format!("[monitor] `{}` fired: {why}.", f.name)),
+        Fired::Expired { .. } => Some(format!("[monitor] `{}` expired without firing.", f.name)),
+        Fired::Cancelled { by, .. } if by != MODEL_RETIRE => {
+            Some(format!("[monitor] `{}` was retired: {by}.", f.name))
+        }
+        Fired::Cancelled { .. } | Fired::OwnerEnded { .. } => None,
+    }
+}
+
+/// The delivery the model is handed: one line a monitor, folded.
 pub(crate) fn monitor_notice(fired: &[letibot_tools::exec::monitor::Firing]) -> Option<String> {
-    use letibot_tools::exec::monitor::Fired;
-    let lines: Vec<String> = fired
-        .iter()
-        .filter_map(|f| match &f.fired {
-            Fired::Fired { why, .. } => Some(format!("[monitor] `{}` fired: {why}.", f.name)),
-            Fired::Expired { .. } => {
-                Some(format!("[monitor] `{}` expired without firing.", f.name))
-            }
-            Fired::Cancelled { by, .. } if by != MODEL_RETIRE => {
-                Some(format!("[monitor] `{}` was retired: {by}.", f.name))
-            }
-            Fired::Cancelled { .. } | Fired::OwnerEnded { .. } => None,
-        })
-        .collect();
+    let lines: Vec<String> = fold_firings(fired).iter().map(|l| l.words()).collect();
     (!lines.is_empty()).then(|| lines.join("\n"))
+}
+
+/// **The row a delivery becomes**: a `Notice`, so nothing has to remember to attribute it. A `User`
+/// row's `speaker` defaults to the operator, and a row written without one reads as their words.
+pub(crate) fn notice_row(
+    kind: letibot_transcript::NoticeKind,
+    text: impl Into<String>,
+) -> TranscriptItem {
+    TranscriptItem::Notice {
+        kind,
+        text: text.into(),
+    }
 }
 
 /// The firings `monitor_notice` was composed from, as the facts the `notice` hook is handed, so a
 /// layer can build a different sentence out of the same news rather than reword this one.
 pub(crate) fn monitor_facts(fired: &[letibot_tools::exec::monitor::Firing]) -> serde_json::Value {
-    use letibot_tools::exec::monitor::Fired;
-    let rows: Vec<serde_json::Value> = fired
-        .iter()
-        .map(|f| {
+    // Folded, because a layer handed twenty rows for one monitor would write twenty sentences where
+    // the composed line writes one - and the count is what tells it the burst happened.
+    let rows: Vec<serde_json::Value> = fold_firings(fired)
+        .into_iter()
+        .map(|l| {
+            let f = fired
+                .iter()
+                .rev()
+                .find(|f| f.name == l.name && said_by(f).is_some());
             serde_json::json!({
-                "name": f.name,
-                "watch": f.watch,
-                "ended": f.fired.word(),
-                "why": match &f.fired {
-                    Fired::Fired { why, .. } => Some(why.clone()),
-                    Fired::Expired { .. } => None,
-                    Fired::Cancelled { by, .. } => Some(by.clone()),
-                    Fired::OwnerEnded { .. } => None,
-                },
+                "name": l.name,
+                "watch": f.map(|f| f.watch.clone()),
+                "ended": f.map(|f| f.fired.word()),
+                "said": l.said,
+                "folded": l.folded,
             })
         })
         .collect();
