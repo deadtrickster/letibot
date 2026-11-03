@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2016 # a literal a remote command line carries, never a local expansion
+# shellcheck disable=SC2016,SC2088 # a literal a remote command line carries, and a tilde the flag must refuse
 # **rrun, from its argv to the build, with no host in between.** The launcher's flags become one
 # remote command line a stub ssh records, and the runner builds what it was handed; the case behind
 # both is a run that waited on the lock and must still build its own code rather than another's.
@@ -95,6 +95,52 @@ out="$(run_rrun one "$T/repo" -- true)"
 st=$?
 [ "$st" -eq 0 ] || fail "a run with no flags starts" "$out"
 expect "the default target is still the host's one dir" 'CARGO_TARGET_DIR=$HOME/remote-runs/target'
+
+: > "$T/ssh.log"
+out="$(run_rrun two "$T/repo" --target /srv/runs/two -- true)"
+expect "an absolute --target is the run's own dir" 'CARGO_TARGET_DIR=/srv/runs/two'
+refuse "  ...in place of the host's one" 'CARGO_TARGET_DIR=$HOME/remote-runs/target'
+
+: > "$T/ssh.log"
+out="$(run_rrun three "$T/repo" --target per-run/three -- true)"
+expect "a relative --target is under the host's HOME" 'CARGO_TARGET_DIR=$HOME/per-run/three'
+
+# The steps still travel as a file, whatever the target: the option must not eat the argv.
+: > "$T/ssh.log"
+want="$(json_steps 'sh -c echo "a b"')"
+out="$(run_rrun five "$T/repo" --target /srv/runs/five -- 'sh -c echo "a b"')"
+if [ "$(cat "$T/files/steps.json" 2> /dev/null)" = "$want" ]; then
+  note "the steps arrive as shipped, quotes and all"
+else
+  fail "the steps arrive as shipped, quotes and all" "$(cat "$T/files/steps.json" 2> /dev/null)"
+fi
+
+# A path that would break the remote command line is refused before anything is sent: the dir is
+# interpolated into an env -i list, where a space would end the assignment.
+: > "$T/ssh.log"
+out="$(run_rrun six "$T/repo" --target 'a b' -- true)"
+st=$?
+if [ "$st" -eq 2 ] && printf '%s' "$out" | grep -q "rrun: --target"; then
+  note "a --target with a space is refused, by name and with the reason"
+else
+  fail "a --target with a space is refused, by name and with the reason" "$out"
+fi
+if [ -s "$T/ssh.log" ]; then fail "  ...before any ssh" "$(cat "$T/ssh.log")"; else note "  ...before any ssh"; fi
+
+: > "$T/ssh.log"
+out="$(run_rrun seven "$T/repo" --target '~/seven' -- true)"
+st=$?
+if [ "$st" -eq 2 ]; then note "a tilde is refused rather than guessed at"; else fail "a tilde is refused rather than guessed at" "$out"; fi
+if [ -s "$T/ssh.log" ]; then fail "  ...before any ssh" "$(cat "$T/ssh.log")"; else note "  ...before any ssh"; fi
+
+: > "$T/ssh.log"
+out="$(run_rrun eight "$T/repo" --target)"
+st=$?
+if [ "$st" -eq 2 ] && printf '%s' "$out" | grep -q "rrun: --target"; then
+  note "--target with no value is refused, not read as an unbound variable"
+else
+  fail "--target with no value is refused, not read as an unbound variable" "$out"
+fi
 
 # ---------------------------------------------------------------------------------------
 # The runner: a checkout that waited for the lock is never older than the artifacts it shares.
