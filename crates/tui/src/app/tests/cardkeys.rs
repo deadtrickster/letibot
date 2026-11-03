@@ -990,3 +990,37 @@ fn a_question_settled_live_takes_its_draft_with_it() {
     ask(&mut b, 2, testing::answered("r1", "deny"));
     assert_eq!(b.input(), "half a line", "not the card's to take");
 }
+
+/// **Looking at another session is not the question closing.** A switch's snapshot replaces the open
+/// list with the other session's, which says nothing about this one's cards; the typed answer was
+/// cleared and a sentence said its card had closed while the question was still open.
+#[test]
+fn a_session_switch_keeps_the_answer_being_typed() {
+    let hub = Hub::new("s");
+    hub.publish(testing::turn_started("t1"));
+    let mut a = app();
+    a.apply(hello("s", vec![brief("s", "one", true)], hub.snapshot()));
+    // The question in the daemon's own view too, so a snapshot of this session still holds it.
+    let question = testing::asked("q1", "which branch?", &["main"], "");
+    a.apply(ServerFrame::Event(env(1, question.clone())));
+    hub.publish(question);
+    typed(&mut a, "release-1.4");
+    let other = Hub::new("s-other");
+    a.apply(hello(
+        "s-other",
+        vec![brief("s-other", "other", true)],
+        other.snapshot(),
+    ));
+    a.apply(hello("s", vec![brief("s", "one", true)], hub.snapshot()));
+    assert_eq!(a.open[0].req_id, "q1", "the question is still open on s");
+    assert_eq!(
+        a.held_line.as_deref(),
+        Some("release-1.4"),
+        "the answer went with the card that is still open, and comes back with it"
+    );
+    assert!(
+        !a.notice.as_deref().unwrap_or("").contains("no longer open"),
+        "the switch said the question had closed: {:?}",
+        a.notice
+    );
+}
