@@ -927,6 +927,50 @@ fn the_worktree_brief_says_the_branch_is_the_deliverable() {
     assert!(b.contains("names the commit(s)"), "{b}");
 }
 
+/// **A cargo config above the tree makes the gate's build a different build.** Cargo reads
+/// `.cargo/config.toml` from a tree's parents, so a worktree inside a checkout that carries a
+/// `[patch]` inherits it - and the queue's landing tree, made outside the repository, does not.
+/// The brief says so, because a child that passes a build here can still fail the gate.
+#[test]
+fn the_brief_names_a_cargo_patch_the_tree_inherits() {
+    let d = crate::backend::tempdir::TempDir::new();
+    let root = d.path();
+    std::fs::create_dir_all(root.join(".cargo")).unwrap();
+    std::fs::write(
+        root.join(".cargo/config.toml"),
+        "# local, not committed\n[patch.crates-io]\nrano = { path = \"/home/someone/Projects/rano/rano\" }\n",
+    )
+    .unwrap();
+    let wt = root.join(".claude/worktrees/agent-x");
+    std::fs::create_dir_all(&wt).unwrap();
+    let note = cargo_patch_note(&wt).expect("the patch above the tree");
+    assert!(note.contains(".cargo/config.toml"), "{note}");
+    assert!(note.contains("rano"), "{note}");
+    assert!(note.contains("landing tree"), "{note}");
+    let brief = worktree_brief(&wt.display().to_string(), "agent/x");
+    assert!(
+        brief.contains("not the build the merge queue"),
+        "the warning rides in the brief: {brief}"
+    );
+
+    // A tree with no such file above it says nothing about one, and a config with no `[patch]`
+    // in it is not a patch.
+    let other = crate::backend::tempdir::TempDir::new();
+    std::fs::create_dir_all(other.path().join("tree")).unwrap();
+    assert_eq!(cargo_patch_note(&other.path().join("tree")), None);
+    std::fs::create_dir_all(other.path().join(".cargo")).unwrap();
+    std::fs::write(
+        other.path().join(".cargo/config.toml"),
+        "[build]\nrustflags = [\"-Dwarnings\"]\n",
+    )
+    .unwrap();
+    assert_eq!(
+        cargo_patch_note(&other.path().join("tree")),
+        None,
+        "a config with no `[patch]` is not a patch"
+    );
+}
+
 /// A `task_start` whose path already exists is refused by name, and nothing is spawned: the refusal
 /// names the path and says so, rather than leaving it to a child that was never started.
 #[test]
@@ -1089,6 +1133,70 @@ fn the_placement_is_in_the_answer() {
     assert!(r.payload.contains("NOT pushed"), "{}", r.payload);
     // A child in the wrong place is corrected, not killed.
     assert!(r.payload.contains("task_message"), "{}", r.payload);
+}
+
+/// **The answer says the tree's build is not the gate's**, when a cargo config above it patches a
+/// crate: the parent reads this answer, and the disagreement is otherwise found by a red gate.
+#[test]
+fn the_answer_names_a_cargo_patch_the_childs_tree_inherits() {
+    use crate::runtime::{Registry, ToolRuntime};
+    use letibot_transcript::ToolCall;
+
+    let d = crate::backend::tempdir::TempDir::new();
+    let root = d.path();
+    std::fs::create_dir_all(root.join(".cargo")).unwrap();
+    std::fs::write(
+        root.join(".cargo/config.toml"),
+        "[patch.crates-io]\nrano = { path = \"/home/someone/Projects/rano/rano\" }\n",
+    )
+    .unwrap();
+    let placed = root.join(".claude/worktrees/agent-task-start");
+
+    struct PlacedAt(WorktreePlacement);
+    impl TaskRunner for PlacedAt {
+        fn start(&self, _p: &str, _s: &TaskSpec) -> Result<String, String> {
+            Ok("sub-1".into())
+        }
+        fn collect(&self, _h: &str, _t: std::time::Duration) -> TaskStatus {
+            TaskStatus::Unknown
+        }
+        fn start_worktree(
+            &self,
+            _p: &str,
+            _s: &TaskSpec,
+            _w: &WorktreeSpec,
+        ) -> Result<WorktreeHandle, String> {
+            // The runner makes the tree, as the real one does - the tool reads the path after.
+            std::fs::create_dir_all(&self.0.path).map_err(|e| e.to_string())?;
+            Ok(WorktreeHandle {
+                handle: "sub-1".into(),
+                placement: self.0.clone(),
+            })
+        }
+    }
+
+    let runner: Arc<dyn TaskRunner> = Arc::new(PlacedAt(WorktreePlacement {
+        path: placed.display().to_string(),
+        branch: "agent/task-start".into(),
+        base_sha: "deadbeef".into(),
+        main_tree: false,
+    }));
+    let mut reg = Registry::new();
+    reg.register(Box::new(TaskStartTool::new(runner))).unwrap();
+    let backend = crate::backend::HostBackend::new(root).unwrap();
+    let rt = ToolRuntime::new(reg, Box::new(backend));
+    let mut sink = crate::NullToolSink;
+    let r = rt.invoke(
+        "t1",
+        &ToolCall {
+            id: "c1".into(),
+            name: "task_start".into(),
+            arguments: r#"{"prompt": "do the work", "slug": "task-start"}"#.into(),
+        },
+        &mut sink,
+    );
+    assert!(r.payload.contains("not the build the merge queue"), "{}", r.payload);
+    assert!(r.payload.contains("rano"), "{}", r.payload);
 }
 
 /// **The main tree is the exception, and it is named as such in the answer.**

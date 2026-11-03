@@ -569,14 +569,84 @@ pub fn worktree_branch(slug: &str) -> String {
 
 /// The rule a worktree child is given with its task: the branch is the deliverable, so the work
 /// goes onto it and the finished child's tree is clean. The daemon checks the same fact when the
-/// turn ends, so this sentence is the rule and that check its enforcement.
+/// turn ends, so this sentence is the rule and that check its enforcement. A cargo config the tree
+/// inherits from above it rides along: see [`cargo_patch_note`].
 pub fn worktree_brief(path: &str, branch: &str) -> String {
-    format!(
+    let mut said = format!(
         "[the deliverable] You work in the worktree `{path}` on branch `{branch}`, and the \
          branch is the deliverable: commit your work to it as you go and before you finish. \
          A finished child's worktree is clean (`git status --porcelain` prints nothing), and \
          your final answer names the commit(s)."
-    )
+    );
+    if let Some(note) = cargo_patch_note(std::path::Path::new(path)) {
+        said.push_str("\n\n");
+        said.push_str(&note);
+    }
+    said
+}
+
+/// **A cargo config above the tree that patches a crate.** Cargo reads `.cargo/config.toml` from a
+/// command's directory upwards, so a tree inside a checkout inherits that checkout's `[patch]` - and
+/// the merge queue's landing tree is made outside the repository, so it does not: the gate builds
+/// what `Cargo.toml` says, and a build that passes here can fail there. `None` when nothing above
+/// the tree patches anything.
+pub fn cargo_patch_note(worktree: &std::path::Path) -> Option<String> {
+    let start = std::fs::canonicalize(worktree).unwrap_or_else(|_| worktree.to_path_buf());
+    for dir in start.ancestors().skip(1) {
+        for name in [".cargo/config.toml", ".cargo/config"] {
+            let path = dir.join(name);
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let patched = patched_crates(&text);
+            if patched.is_empty() {
+                continue;
+            }
+            return Some(format!(
+                "[the build here is not the build the merge queue runs] Cargo reads \
+                 `.cargo/config.toml` from a tree's parents, and `{}` replaces {} with a path of \
+                 its own. The queue's landing tree is made outside this repository and has no such \
+                 file, so the gate builds what `Cargo.toml` says. Before you call this done, check \
+                 the change against that build rather than this one.",
+                path.display(),
+                match patched.as_slice() {
+                    [one] => format!("`{one}`"),
+                    many => format!(
+                        "{} crates (`{}`)",
+                        many.len(),
+                        many.join("`, `")
+                    ),
+                }
+            ));
+        }
+    }
+    None
+}
+
+/// The crates a config's `[patch…]` sections replace. Comments are not sections, and a section runs
+/// to the next header, so `[build]` after a patch is not read as one.
+fn patched_crates(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut in_patch = false;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if line.starts_with('[') {
+            in_patch = line.starts_with("[patch");
+            continue;
+        }
+        if in_patch
+            && let Some((key, _)) = line.split_once('=')
+        {
+            let key = key.trim().trim_matches('"');
+            if !key.is_empty() && !out.iter().any(|seen| seen == key) {
+                out.push(key.to_string());
+            }
+        }
+    }
+    out
 }
 
 /// Where a spawned subagent has got to: the variant is the child's first turn's record, `child` is
@@ -1524,6 +1594,15 @@ impl Tool for TaskStartTool {
             true => String::new(),
             false => placement_seam(&spec.placement),
         };
+        // **The build here is not the gate's build**, when a cargo config above the tree says so:
+        // said in the answer as well as in the brief, because it is the parent who reads this.
+        let build_line = match handle.placement.main_tree {
+            true => String::new(),
+            false => match cargo_patch_note(std::path::Path::new(&handle.placement.path)) {
+                Some(note) => format!("  {note}\n"),
+                None => String::new(),
+            },
+        };
         // **`Backgrounded`, not `Ok`** - the same reason `task` gives: the outcome
         // names a fact about the world, *this is running and has not answered yet*.
         Invocation::backgrounded(
@@ -1537,7 +1616,7 @@ impl Tool for TaskStartTool {
             ),
             format!(
                 "started subagent `{}` as `{}` in {}.\n  subtask: {}\n  path: {}\n  \
-                 branch: {}\n  base: {}\n{seam_line}\nThe branch is the deliverable and \
+                 branch: {}\n  base: {}\n{seam_line}{build_line}\nThe branch is the deliverable and \
                  is NOT pushed; it is to be landed by a merge queue. It is working now, \
                  and this call did not wait for it. {} `task_result` with task=\"{}\" \
                  reports where it has got to. A child in the wrong PLACE is corrected \
