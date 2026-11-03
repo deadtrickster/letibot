@@ -504,8 +504,8 @@ impl Deadlines {
     /// Keep the record of what this watchdog did, bounded the way the host's other records are.
     fn record(&self, f: DeadlineFired) {
         let mut fired = self.fired.lock().unwrap_or_else(|e| e.into_inner());
-        bound_records(&mut fired, RECORD_LIMIT);
         fired.push(f);
+        bound_records(&mut fired, RECORD_LIMIT);
     }
 
     /// An empty set, with the watchdog already running.
@@ -1193,15 +1193,15 @@ impl HostProcesses {
 
     fn record(&self, r: Reaping) -> Reaping {
         let mut reaps = self.reaps.lock().expect("reaps");
-        bound_records(&mut reaps, RECORD_LIMIT);
         reaps.push(r.clone());
+        bound_records(&mut reaps, RECORD_LIMIT);
         r
     }
 
     fn record_promotion(&self, p: Promotion) -> Promotion {
         let mut promotions = self.promotions.lock().expect("promotions");
-        bound_records(&mut promotions, RECORD_LIMIT);
         promotions.push(p.clone());
+        bound_records(&mut promotions, RECORD_LIMIT);
         p
     }
 }
