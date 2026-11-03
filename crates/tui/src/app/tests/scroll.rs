@@ -4217,6 +4217,7 @@ fn the_head_holds_a_window_of_a_long_session_and_not_the_whole_of_it() {
 fn an_answered_page_lands_above_the_window() {
     let mut a = app();
     // A head that attached to a session the daemon had already trimmed: its first row is row 60.
+    a.session_id = "s".into();
     a.items_base = 60;
     for i in 0..20u64 {
         a.apply(ServerFrame::Event(env(
@@ -4716,6 +4717,7 @@ fn rows_below_a_parked_reader_are_let_go_and_fetched_back() {
         }),
     };
     let mut a = app();
+    a.session_id = "s".into();
     a.walk_limit = 1;
     // A window a test can reach: a few hundred bytes a row is over this in a dozen rows.
     a.held_limit = 64 * 1024;
@@ -4956,4 +4958,55 @@ fn an_empty_page_below_the_window_ends_the_asking() {
         testing::appended("s.new", "user"),
     )));
     assert_eq!(a.items.last().map(|r| r.item_id.as_str()), Some("s.new"));
+}
+
+/// **A page answers the session it was asked about, and no other.** A page of session A that
+/// arrives after a switch was placed by its ordinal alone, so one whose window joined B's base put
+/// A's rows in B's conversation, and one that did not told the reader B's transcript stops there.
+#[test]
+fn a_page_for_a_session_the_head_has_left_lands_nowhere() {
+    let mut a = app();
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", false)],
+        Hub::new("s").snapshot(),
+    ));
+    // Session A is long enough that the daemon trimmed it, and the reader asked for the page above.
+    a.items_base = 1000;
+    a.fetch_asked = Some(900);
+
+    // The reader switches to B, which is the same conversation length and so the same base.
+    a.apply(hello(
+        "t",
+        vec![brief("t", "two", false)],
+        Hub::new("t").snapshot(),
+    ));
+    a.items_base = 1000;
+    // B has its own ask in flight, which A's answer must not spend.
+    a.fetch_asked = Some(900);
+
+    a.apply(ServerFrame::RowsFetched {
+        session_id: "s".into(),
+        from: 900,
+        rows: page_of(900, 100),
+    });
+    assert_eq!(
+        a.items.len(),
+        0,
+        "a page of the session the head left landed in this one"
+    );
+    assert_eq!(
+        a.items_base, 1000,
+        "the other session's page moved this window's base"
+    );
+    assert_eq!(
+        a.fetch_asked,
+        Some(900),
+        "a page for another session spent this one's ask"
+    );
+    assert!(
+        a.notice.as_deref() == Some("switched to two"),
+        "the head reported the other session's page: {:?}",
+        a.notice
+    );
 }

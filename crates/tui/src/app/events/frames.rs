@@ -294,7 +294,17 @@ impl App {
             // The rows above the window, or the ones filling the gap to the tail: a page names the
             // ordinal it starts at, so the window stays one contiguous run of the session, and the
             // direction is decided by that ordinal rather than by a second field to keep in step.
-            ServerFrame::RowsFetched { from, rows, .. } => {
+            ServerFrame::RowsFetched {
+                session_id,
+                from,
+                rows,
+            } => {
+                // A page answers the ask of the session it names, and one for a session this head
+                // has left answers nothing here: placed by its ordinal alone it would land in
+                // another conversation. Dropped before a flag is cleared, so it spends no ask.
+                if session_id != self.session_id {
+                    return Disposition::Control;
+                }
                 // The ask is spent whatever came back. Which ask it was is the ordinal it names, the
                 // same rule `apply_rows` places by, and what a page that does not join means - the
                 // daemon's last word - is settled there too, so nothing is asked again here.
