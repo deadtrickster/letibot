@@ -830,3 +830,42 @@ fn a_want_is_forgotten_when_its_result_is_delivered_in_a_batch_or_already_was() 
         "a want for a delivered result was kept"
     );
 }
+
+/// **A batch put back is results the model was never told, and nothing rings for it again.** The
+/// ring the batch arrived with was spent by the turn that could not say it, and a turn that ends
+/// stopped or failed takes its own wake back - so putting the batch back has to ring, or the session
+/// reads `waiting on: delivery` and sits there until an unrelated prompt.
+#[test]
+fn a_batch_put_back_rings_the_session_that_owes_it() {
+    use letibot_sessionlog::registry::{Registry, SessionWiring, Work, WorkOrIdle};
+
+    let dir = Scratch::new("r79-put-back");
+    let registry = Registry::new();
+    let hub = registry
+        .create("s-r79", "", SessionWiring::default())
+        .expect("the session is in the registry");
+    // The create rang an Open; the next ring is the one this test is about.
+    assert!(matches!(registry.next_work(), Some(Work::Open(_))));
+    let w = JobWatchers::watching_tasks(&hub, Some(Arc::clone(registry.bell())));
+    let d = Deliveries::new(
+        Arc::clone(&w),
+        None,
+        DeliveryLog::under(&dir.0, "s-r79"),
+        Duration::from_secs(600),
+        "s-r79",
+    );
+
+    d.put_back(vec![settled("j1", "exited 0", SystemTime::now())]);
+    assert_eq!(w.held_count(), 1, "the result was not held again");
+    // And the door's turn ends as the refused one did: a stopped turn takes back a SETTLEMENT's
+    // wake, and this is not one - nothing queues a second copy of what is held.
+    w.turn_ended(TurnEnd::Interrupted);
+
+    assert!(
+        matches!(
+            registry.next_work_until(Some(std::time::Instant::now())),
+            WorkOrIdle::Work(Work::Woken(id)) if id == "s-r79"
+        ),
+        "nothing rings for the results this session still owes"
+    );
+}

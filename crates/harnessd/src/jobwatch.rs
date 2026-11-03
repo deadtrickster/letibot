@@ -773,6 +773,16 @@ impl JobWatchers {
         self.say_held();
     }
 
+    /// **A batch this session owes its model.** A door put results back that it could not say, so the
+    /// ring they arrived with is spent and the next break has to be caused by this one. Rung as a
+    /// fact and not as a settlement: nothing queues a second copy, and the turn it was put back
+    /// under must not take it back on its way out.
+    pub fn a_batch_is_owed(&self) {
+        if let Some(bell) = &self.bell {
+            bell.ring_wake(&self.me);
+        }
+    }
+
     /// Everything held, taken - the batch delivered, or the set handed up - and said on the
     /// hub, which then reads nothing held.
     pub fn take_held(&self) -> Vec<JobCompletion> {

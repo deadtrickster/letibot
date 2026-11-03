@@ -716,9 +716,13 @@ impl Deliveries {
     /// **These results were never told** - the turn that was to carry them did not open - so
     /// they are held again, for the next break to say.
     pub(crate) fn put_back(&self, untold: Vec<JobCompletion>) {
-        if !untold.is_empty() {
-            self.watch.hold(untold);
+        if untold.is_empty() {
+            return;
         }
+        self.watch.hold(untold);
+        // The ring these arrived with was spent by the turn that could not say them, so the wake
+        // that makes the next break happen has to be rung here or the session waits for ever.
+        self.watch.a_batch_is_owed();
     }
 
     pub(crate) fn log_firings(&self, fired: &[letibot_tools::exec::monitor::Firing]) {
