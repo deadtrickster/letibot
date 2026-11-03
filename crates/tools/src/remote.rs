@@ -860,6 +860,30 @@ const MASTER_BOUND: Duration = Duration::from_secs(3);
 /// because it is real work on a real repository: the number only has to be below "for ever".
 pub const GIT_BOUND: Duration = Duration::from_secs(300);
 
+/// One fetch's wall clock: a slot wait, a run and the retry all come out of one `GIT_BOUND`,
+/// because a close that asked for one transfer must not cost four.
+struct FetchBudget {
+    began: Instant,
+}
+
+impl FetchBudget {
+    fn new() -> Self {
+        FetchBudget {
+            began: Instant::now(),
+        }
+    }
+
+    /// What is left of the fetch's own bound, and never less than nothing.
+    fn left(&self) -> Duration {
+        GIT_BOUND.saturating_sub(self.began.elapsed())
+    }
+
+    /// What a wait may take: no longer than the caller's own bound, and never past the fetch's.
+    fn wait(&self, connection: Duration) -> Duration {
+        connection.min(self.left())
+    }
+}
+
 /// What a caller may do when a call does not answer at all. Retrying follows idempotency: a `read`
 /// whose answer never arrived changed nothing, so it is asked once more; a `bash` command that may
 /// still be running is never asked twice, because a second run is a second effect.
@@ -2160,12 +2184,18 @@ impl Ssh {
     /// multiplexes over the git socket, so it takes a slot on that gate by hand. A refused session
     /// never reached the remote, so a full master costs a round trip and not a session's branch.
     fn fetch_back(&self, argv: &[String]) -> Result<Option<std::process::Output>, String> {
+        let budget = FetchBudget::new();
         let mut last: Option<std::process::Output> = None;
         for attempt in 0..2 {
-            let _slot = rpc::enter_git(&self.host.name, GIT_BOUND)?;
+            // The wait and the run both come out of the one budget, so the second attempt gets what
+            // the first left rather than a fresh `GIT_BOUND`.
+            if budget.left().is_zero() {
+                break;
+            }
+            let _slot = rpc::enter_git(&self.host.name, budget.wait(GIT_BOUND))?;
             // Bounded, because this fetch's transport is an ssh connection: a close that waits for
             // ever on a dead host is the same defect as a `read` that does.
-            let out = run_bounded(Path::new("git"), argv, GIT_BOUND);
+            let out = run_bounded(Path::new("git"), argv, budget.left());
             let refused = out.as_ref().is_some_and(|o| {
                 !o.status.success() && mux_refusal(&String::from_utf8_lossy(&o.stderr)).is_some()
             });
@@ -5232,6 +5262,31 @@ user     = "root"
                 .unwrap_or(false),
             "the daemon is named in the file: {}",
             mine.display()
+        );
+    }
+
+    /// One close asks for ONE transfer, so a slot wait, a run and the retry come out of one
+    /// `GIT_BOUND`: the arithmetic that stops a refused fetch costing four of them.
+    #[test]
+    fn one_fetch_spends_one_budget_however_many_attempts() {
+        let spent = FetchBudget {
+            began: Instant::now() - (GIT_BOUND + Duration::from_secs(1)),
+        };
+        assert_eq!(
+            spent.left(),
+            Duration::ZERO,
+            "a spent fetch has nothing left"
+        );
+        assert_eq!(
+            spent.wait(STEP_BOUND),
+            Duration::ZERO,
+            "and no wait may outlive it"
+        );
+        let fresh = FetchBudget::new();
+        assert_eq!(
+            fresh.wait(STEP_BOUND),
+            STEP_BOUND,
+            "a fresh fetch waits as long as the connection is given"
         );
     }
 
