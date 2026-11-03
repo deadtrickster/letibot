@@ -1365,7 +1365,7 @@ key being set; cost reported as `TurnCost.micros_usd`.
 
 # 2. NEEDS A NOD — small question first, then unblocked
 
-## N5 — the agent should know the view is hermetic, and propose the grant it needs; left: the model is told what its view holds only when a path fails, and which asks must be refused rather than prompted is undecided — `grant_view` raises an ordinary card for `~/.ssh`, with no never-write precheck
+## N5 — the agent should know the view is hermetic, and propose the grant it needs; left: which asks must be refused rather than prompted is undecided — `grant_view` raises an ordinary card for `~/.ssh`, with no never-write precheck
 
 Operator, 2026-09-11: *"i guess the agent should know it is hermetic and prompt me with
 his idea of shared data which i can allow."*
@@ -1400,13 +1400,28 @@ a toolchain instead of a secret.
 
 1. **The model does not know it is hermetic.** The boundary description is a startup
    banner for the operator; nothing puts it in the model's context, so a failure inside
-   the view looks like a broken toolchain rather than an absent one.
+   the view looks like a broken toolchain rather than an absent one. — ✓ fixed in 91502115
+   and 1ca335d6: `Boundary::model_brief` is the view in the model's own words, and it
+   travels as `SeatFacts.view`, a `view` prompt section between `edit_files` and `scratch`.
+   A session whose commands run on the host's disk has no view and composes the bytes it
+   always did, which is why every unconfined prefix is unchanged. Tests
+   `the_model_is_told_what_its_view_holds_before_anything_fails`,
+   `a_confined_seat_is_told_what_its_view_holds_and_an_unconfined_one_is_not`,
+   `the_prompts_view_comes_from_the_boundary_that_was_measured`.
 2. **An absence does not say what would fix it.** `cargo: command not found` or a missing
    registry should come back as *absent because outside the view*, with the grant that
    would change it — the same shape as `edit`'s read-before-write refusal and R8's
-   near-miss, self-correcting in the same call.
+   near-miss, self-correcting in the same call. — ✓ fixed in 96569337 (the absence note,
+   the missing-program path the card is raised for) and 91502115: the note names BOTH
+   grants the card offers, since a write needs the read-write one and naming only the
+   read-only sent it to ask for a grant that cannot let it through. Test
+   `the_failure_note_names_both_grants_that_would_let_the_path_through`. The row is the
+   model's to read; the grant itself is raised by the runtime (`needs_in_view`), so the
+   model has no verb to ask with and needs none.
 3. **Grants are construction-time.** `ViewSpec` is built before the spawn; nothing adds
-   one for the rest of a session after an operator approves it.
+   one for the rest of a session after an operator approves it. — ✓ fixed in 96569337:
+   `ExecBackend::grant_into_view` re-probes the confinement, and `ToolRuntime::run` calls
+   it on an approval and says the view as it now stands on the row.
 
 ### The questions, which is why this is a nod
 
@@ -1427,6 +1442,9 @@ model-proposed grant is routed through them rather than around them.
 **Smallest version that closes the loop for tests:** the view learns one grant shape
 (`ReadOnly` on a path), the model is told the view is hermetic and what it holds, an exec
 failure names the absence, and the grant prompt carries its `why` and its consequence.
+All four are in `main` now (2026-11-03): the loop is closed for a read-only grant that the
+runtime raises, and what remains is the question above — the ssh path reaching `grant_view`
+as an ordinary card.
 That is N4's answer too — see `TODO-settled.md`'s N4 for why a shaped runner was wanted rather than
 `bash`.
 
