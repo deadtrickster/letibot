@@ -48,6 +48,35 @@ fn a_burst_of_firings_is_one_line_a_monitor_that_counts_the_rest() {
     );
 }
 
+/// **An ending keeps its own line**, because it says the one thing a firing's words cannot: nothing
+/// is watching any more. Folding the two would read *expired without firing (and 19 firings since)*,
+/// which is a contradiction the model would have to untangle for itself.
+#[test]
+fn a_burst_and_its_ending_are_two_lines_and_the_ending_is_not_folded_into_the_firings() {
+    use letibot_tools::exec::monitor::Fired;
+    let mut burst: Vec<_> = (0..3)
+        .map(|n| fired("chatty", &format!("the file changed ({n})")))
+        .collect();
+    burst.push(letibot_tools::exec::monitor::Firing {
+        fired: Fired::Expired {
+            after: std::time::Duration::from_secs(30),
+            last_seen: "no match".into(),
+        },
+        ..fired("chatty", "the file changed at the end")
+    });
+    let text = monitor_notice(&burst).expect("a firing is news");
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 2, "the burst, and then the ending: {text}");
+    assert!(
+        lines[0].contains("fired") && lines[0].contains("(and 2 firings since)"),
+        "the burst is one line with its count: {text}"
+    );
+    assert!(
+        lines[1].contains("expired without firing") && !lines[1].contains("firings since"),
+        "the ending stands alone and claims nothing about the burst: {text}"
+    );
+}
+
 /// **A firing is a delivery, not a message.** The row it becomes is a `Notice`: it carries a kind,
 /// and there is no `speaker` field for anybody to leave at its default and hand the operator words
 /// they never said.

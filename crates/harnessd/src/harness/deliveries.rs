@@ -15,6 +15,8 @@ pub(crate) struct FiringLine {
     pub said: String,
     /// Firings this line stands for BESIDES the one whose words it carries.
     pub folded: usize,
+    /// Whether this line is a monitor's ENDING rather than something it saw.
+    pub ending: bool,
 }
 
 impl FiringLine {
@@ -28,13 +30,17 @@ impl FiringLine {
 }
 
 /// **A burst of firings, folded to one line a monitor**: the newest words, and how many the line
-/// stands for. The fold is per NAME and in first-seen order, so two monitors are two lines and one
-/// chatty monitor cannot push another's news out of the delivery.
+/// stands for. The fold is per NAME and per KIND and in first-seen order: two monitors are two
+/// lines, one chatty monitor cannot push another's news out of the delivery, and an ending keeps
+/// its own line because it says something a firing's words cannot - *and nothing is watching now*.
 pub(crate) fn fold_firings(fired: &[Firing]) -> Vec<FiringLine> {
     let mut out: Vec<FiringLine> = Vec::new();
     for f in fired {
         let Some(said) = said_by(f) else { continue };
-        match out.iter_mut().find(|l| l.name == f.name) {
+        let same = out
+            .iter_mut()
+            .find(|l| l.name == f.name && l.ending == !f.fired.happened());
+        match same {
             Some(line) => {
                 line.said = said;
                 line.folded += 1;
@@ -43,6 +49,7 @@ pub(crate) fn fold_firings(fired: &[Firing]) -> Vec<FiringLine> {
                 name: f.name.clone(),
                 said,
                 folded: 0,
+                ending: !f.fired.happened(),
             }),
         }
     }
@@ -88,16 +95,16 @@ pub(crate) fn monitor_facts(fired: &[letibot_tools::exec::monitor::Firing]) -> s
     let rows: Vec<serde_json::Value> = fold_firings(fired)
         .into_iter()
         .map(|l| {
-            let f = fired
-                .iter()
-                .rev()
-                .find(|f| f.name == l.name && said_by(f).is_some());
+            let f = fired.iter().rev().find(|f| {
+                f.name == l.name && said_by(f).is_some() && f.fired.happened() != l.ending
+            });
             serde_json::json!({
                 "name": l.name,
                 "watch": f.map(|f| f.watch.clone()),
                 "ended": f.map(|f| f.fired.word()),
                 "said": l.said,
                 "folded": l.folded,
+                "ending": l.ending,
             })
         })
         .collect();
