@@ -223,6 +223,10 @@ pub const TABLE: &[(&str, Class)] = &[
     // **A stop took the session's children with it**: the downward edge of a supervision tree,
     // reporting an act somebody asked for. See `stop_children_first`.
     ("subagents_stopped", Class::Routine),
+    // **What a child's estate became**: the jobs and monitors it still held ended with it, and
+    // the ones in an `explicit` scope are the parent's now - or one could not be handed over and
+    // is running unwatched. That last clause is why this is not the quiet register.
+    ("subagent_left_over", Class::Failure),
     // **A child was woken for a settlement and the turn that would have read it failed**: the
     // settlement is still queued and the next wake finds it, but a notice it was owed did not
     // reach it.
@@ -548,6 +552,9 @@ pub const TABLE: &[(&str, Class)] = &[
     ("gate_timeout", Class::Failure),
     ("gap", Class::Failure),
     ("guard.empty", Class::Failure),
+    // The head's own note that a call was not run: nobody refused it and the tool's result row
+    // one above already says why, so the note keeps the quiet register. See `Note::NotRun`.
+    ("not_run", Class::Routine),
 ];
 
 /// **Which register a code is drawn in.** See [`TABLE`], and the module doc for why an
@@ -785,10 +792,10 @@ mod the_register_census {
         // **The census, kept where it cannot drift.** Each assert below is a register's count;
         // a code moved or added without a thought fails here rather than silently changing what
         // a reader is taught by the colour of the screen.
-        assert_eq!(TABLE.len(), 174, "the table's size");
-        assert_eq!(count(Class::Routine), 69);
+        assert_eq!(TABLE.len(), 176, "the table's size");
+        assert_eq!(count(Class::Routine), 70);
         assert_eq!(count(Class::Refused), 15, "the fifteen in READER_INPUT");
-        assert_eq!(count(Class::Failure), 90);
+        assert_eq!(count(Class::Failure), 91);
         // A code with an id is read by its family.
         assert_eq!(class("denied:req-7"), Class::Failure);
         assert_eq!(class("memory_high"), Class::Failure);
