@@ -653,7 +653,7 @@ fn answer(mut conn: TcpStream, chat: &AtomicU64) -> std::io::Result<()> {
         }
         // The arguments arrive in two pieces, as a real provider streams them, so the harness's own
         // accumulation of a call is on the measured path.
-        let head = "{\"path\":";
+        let head = "{\"path\":\"";
         let tail = format!("{READ_TARGET}\"}}");
         for (i, piece) in [(0, head), (1, tail.as_str())] {
             let call = if i == 0 {
