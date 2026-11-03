@@ -34,6 +34,9 @@ impl App {
             || empty
             || self.open.iter().any(|o| o.req_id == d.req_id)
             || self.away.iter().any(|a| a.decision.req_id == d.req_id)
+            // A card this head answered is not one that closed under the operator: the words
+            // were the answer, and what is in the composer now came back with the card's going.
+            || self.answering.iter().any(|a| a.decision.req_id == d.req_id)
         {
             return;
         }
@@ -143,6 +146,7 @@ impl App {
                 }
                 // …and one this head answered (R90.29), closed when the answer left: it settles
                 // here like an open one, read off the same card.
+                let mut answered_here = false;
                 if let Some(i) = self
                     .answering
                     .iter()
@@ -150,6 +154,7 @@ impl App {
                 {
                     let a = self.answering.remove(i);
                     self.open.push(a.decision);
+                    answered_here = true;
                 }
                 // Read off the open decision BEFORE it is removed: the answer event carries
                 // only the `req_id`, and the oracle's `advice` can never ride it - its `basis`
@@ -167,7 +172,16 @@ impl App {
                         )
                     })
                     .unwrap_or_default();
+                // The front card, before the settlement takes it: the composer's words are that
+                // card's answer, and only a question on screen owns them.
+                let was_asking = self.open.first().cloned();
                 self.open.retain(|d| d.req_id != req_id);
+                // A card this head answered has already used the composer's words, and what is
+                // there now came back with the card's going. Only a question that closed under
+                // the operator's fingers leaves a draft that the next Enter would send.
+                if !answered_here {
+                    self.drop_a_gone_questions_draft(was_asking, true);
+                }
                 let d = SettledDecision {
                     req_id,
                     kind: kind.clone(),

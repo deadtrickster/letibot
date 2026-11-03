@@ -953,3 +953,40 @@ fn a_notification_names_what_needs_the_person_including_a_stale_prompt() {
     c.prefix_stale("the prompt of this session was built by another build".into());
     assert_eq!(c.take_notification(), None, "a fact said twice is one ask");
 }
+
+/// **A question the daemon settles while the operator types** - a deadline lapsed, or another head
+/// answered it - takes the words typed under it, which were an answer and would otherwise be sent
+/// by the next Enter as a prompt. The same defect the snapshot door had, at the live door.
+#[test]
+fn a_question_settled_live_takes_its_draft_with_it() {
+    let mut a = app();
+    ask(
+        &mut a,
+        1,
+        testing::asked("q1", "how many workers?", &["4"], ""),
+    );
+    typed(&mut a, "16");
+    ask(&mut a, 2, testing::answered("q1", "4"));
+    assert!(a.open.is_empty(), "the question closed under the fingers");
+    assert_eq!(
+        a.input(),
+        "",
+        "the words were an answer to a question that is gone, not a prompt"
+    );
+    assert!(
+        a.notice
+            .as_deref()
+            .unwrap_or("")
+            .contains("was cleared (ctrl-z brings it back)"),
+        "{:?}",
+        a.notice
+    );
+    assert_eq!(a.key(Key::Enter), None, "and nothing is sent");
+
+    // A permission settling live has no field of its own, so a line typed under it stays.
+    let mut b = app();
+    ask(&mut b, 1, testing::requested("r1", "rm"));
+    typed(&mut b, "half a line");
+    ask(&mut b, 2, testing::answered("r1", "deny"));
+    assert_eq!(b.input(), "half a line", "not the card's to take");
+}
