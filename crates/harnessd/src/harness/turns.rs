@@ -3429,7 +3429,7 @@ impl Harness {
                         // **A person's stop does not wait the store out** (R91.10): the rows are in
                         // the ledger, `persisted` is where to resume, and the next store write takes
                         // them - so the turn is not held here for another half hour.
-                        BusyWait::Leave => return Ok(()),
+                        BusyWait::Leave => return Ok(carried),
                         BusyWait::Gone => {
                             return Err(HarnessError::Store(format!(
                                 "row {at}: {e} — the session closed while waiting for the store"
