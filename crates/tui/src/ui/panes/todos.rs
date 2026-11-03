@@ -69,7 +69,11 @@ impl App {
                     // The row's words, author, place and the header's count are still right.
                     TodoStatus::Cancelled => TodoMark::Postponed,
                 },
-                content: t.content.clone(),
+                content: match t.status {
+                    // rano's mark for it is the postponed one, so the word is what tells them apart.
+                    TodoStatus::Cancelled => format!("{} (cancelled)", t.content),
+                    _ => t.content.clone(),
+                },
                 mine,
                 // The board's number, and not the row's place in what is drawn - see `numbers`
                 // above: a done row that moved down into its group kept the number `/todo` takes.
