@@ -1636,162 +1636,7 @@ impl Harness {
             // Take the round again when the endpoint is what failed: an inner loop, so a retry does not spend a
             // `max_tool_rounds`, since it produced nothing. And `/models` is ANSWERED here but not APPLIED, because a
             // re-issued round carries the rest of the old turn, which a thinking-mode provider refuses.
-            let mut tried_fallbacks: Vec<String> = Vec::new();
-            // **One steering per round, outside the retry loop (R91.1).** A failed attempt
-            // hands what it took back to this value, and the retried attempt's greedy poll
-            // must find it there; one built per pass dropped it on the floor.
-            let mut steering = self.steering();
-            // The ladder this turn walks, and the only thing that decides whether a round is taken again. It is
-            // also what the turn's ending is said from, since the count and the waiting are nobody else's to
-            // report and a failure with no count is the report this was written for.
-            let mut ladder = letibot_http::retry::Ladder::new(letibot_http::retry::Policy::new(
-                self.cfg.http_retries,
-            ));
-            let outcome = loop {
-                // **The operator's own line, answered before the attempt rather than after
-                // it** - the window they type in. What comes back says when the switch
-                // takes; nothing about this attempt moves.
-                self.apply_queued_model();
-                // **Start watching BEFORE the round, so the wait itself is covered.**
-                // The host is `Some` only on the metered route - a local prefill's
-                // silence is progress, not a hang; see `SilenceWatch`.
-                let cloud_host = silence_host(self.provider.as_deref());
-                // The stall's own streak, computed before the round because the watchdog thread is the
-                // one that knows whether a stall happened - and it cannot read this harness.
-                let stalls = if self.trouble_kind == "stall" {
-                    self.trouble_count
-                } else {
-                    0
-                };
-                let watch = SilenceWatch::start(
-                    self.hub.clone(),
-                    cloud_host,
-                    std::time::Duration::from_secs(SILENT_ROUND_SECS),
-                    self.model_name(),
-                    stalls,
-                );
-                let attempted = match &self.provider {
-                    None => self.engine.run_turn_steered_with_tail(
-                        &mut self.session,
-                        &mut sink,
-                        &mut steering,
-                        &tail,
-                    ),
-                    // A cloud turn: the transcript as messages, the ledger as the
-                    // record. Same events, same verdicts, same TurnOk.
-                    Some(p) => self.engine.run_turn_messages_with_tail(
-                        &mut self.session,
-                        &mut sink,
-                        &mut steering,
-                        p.as_ref(),
-                        &self.prefix.system,
-                        &self.prefix.tools_json,
-                        &tail,
-                        None,
-                    ),
-                };
-                // The round has produced something or failed, either way the silence
-                // is over and the watchdog has nothing left to say.
-                if watch.finish() {
-                    self.trouble_kind = "stall".into();
-                    self.trouble_count = stalls + 1;
-                }
-                let Err(TurnFailure::Http(e)) = attempted else {
-                    // **The new model answered**, which is the whole of what a switch had
-                    // to prove - there is nothing to go back to any more. A round that came back
-                    // without a provider failure also ends any run of them.
-                    self.switch_back = None;
-                    self.trouble_kind.clear();
-                    self.trouble_count = 0;
-                    break attempted;
-                };
-                // A switch the operator made during this attempt is answered here and nothing else changes: it is
-                // not this round's to apply, so the ladder goes on against the model the turn started on. Answered
-                // before the key arm, since a 401 from the model they are leaving is no reason to ask for its key.
-                self.apply_queued_model();
-                // A refused key is asked for again, on the same card, and the round is taken again, since nothing
-                // was recorded. Only a key this session can replace: one from the environment or `--api-key` wins
-                // over the file, so a typed one would be saved and ignored.
-                if let letibot_turn::HttpError::Status {
-                    code: code @ (401 | 403),
-                    body,
-                    ..
-                } = &e
-                    && self.provider.is_some()
-                    && key_asks < 2
-                    && let Some(pc) = self.cfg.provider.clone()
-                    && key_is_replaceable(&pc)
-                {
-                    key_asks += 1;
-                    let why = format!("{} refused the key ({code}): {body}", pc.name);
-                    self.provider = None;
-                    self.key_wanted = Some(pc);
-                    if let Err(e) = self.obtain_key(Some(why)) {
-                        // **The turn ends here, so the outage does too.** Left in the field it
-                        // would be continued by the NEXT turn's first failure, carrying this
-                        // one's start time into a duration that never happened.
-                        self.settle_outage(false);
-                        return Err(e);
-                    }
-                    continue;
-                }
-                // This attempt failed, and the outage it belongs to remembers how many have: the record changes
-                // here and is published nowhere, because the row is written once when the outage ends. After the
-                // key arm, since a refused key is that card's news and not the endpoint's weather.
-                self.outage_failed(&e);
-                let Some(wait) = ladder.failed(&e) else {
-                    // The ladder has nothing left to wait for, and the session may still have somewhere to go, but not
-                    // this round: the MODEL refused and a fallback list exists, so the switch is recorded for the end of
-                    // this turn and the round is not re-issued. A transport failure gets not even that.
-                    let next = self.fall_back_from(&e, &mut tried_fallbacks);
-                    // **The provider's own trouble, as a type**, here and not per attempt: a ladder of five
-                    // attempts on one 429 is one fact, and an automation wakes once for it.
-                    self.publish_trouble(&e, next.clone());
-                    if let Some(next) = next {
-                        let was = self.provider_line();
-                        // Whether a turn was armed decides what may be promised: this turn is the continuation a
-                        // fallback earns when one is already running, and then no second turn is opened, so the
-                        // sentence must not say one is.
-                        let opens_a_turn = self.fallback_continuation.is_some();
-                        // The outage is this notice's to tell: one row per outage, and this is it, since the session
-                        // is moving and the count belongs in that sentence. Taken, so `settle_outage` finds nothing.
-                        let outage = self.outage.take();
-                        self.hub.publish(SessionEvent::Warning {
-                            code: "model_endpoint_retry".into(),
-                            detail: fallback_notice(&was, &next, &e, opens_a_turn, outage.as_ref()),
-
-                            compaction: None,
-                        });
-                    }
-                    break Err(TurnFailure::Http(e));
-                };
-                // Nothing is published here, and that is the change: this used to raise a row per attempt, three in
-                // three seconds for one endpoint. The attempt is in the outage's count, and the row is written when
-                // the outage ends.
-                match self.sleep_unless_closed(wait) {
-                    Waited::Out => {}
-                    Waited::Closed => break Err(TurnFailure::Http(e)),
-                    // **The stop is the news, not the endpoint**: the ladder stops where it is,
-                    // since taking the round again spends another wait on an answer the person
-                    // has already given up on.
-                    Waited::Interrupted => {
-                        let reason = self.hub.take_queued_interrupt().unwrap_or_default();
-                        // The whole stop, not only this wait's end: the steering door that takes an
-                        // interrupt stops the subtree and tells the turn's ending, and a stop taken
-                        // here is the same act arriving at a different door.
-                        stop_children_first(Some(&self.subagents), &self.hub);
-                        self.stopped.store(true, Ordering::SeqCst);
-                        // This turn's own id, before the early return: the failure it becomes is
-                        // published from this field, and a stale one is a failure no head can place.
-                        self.last_turn_id = sink.turn_id.clone().unwrap_or_default();
-                        self.settle_outage(false);
-                        return Err(HarnessError::Endpoint {
-                            said: stopped_in_the_wait(&reason, &ladder, &e),
-                            cause: e,
-                        });
-                    }
-                }
-            };
+            let (outcome, ladder) = self.take_the_round(&mut sink, &tail, &mut key_asks)?;
             // The outage this round was in, if any, is over, and it is said ONCE here where the count is final: a
             // round that ended on anything but an HTTP failure was answered, and a silent recovery is how somebody
             // spends an afternoon believing the endpoint is still down.
@@ -2240,6 +2085,175 @@ impl Harness {
         // Unreachable while unbounded - `usize::MAX` rounds is not a number this
         // process reaches - and honest if the bound is ever set back.
         Err(HarnessError::LoopBound { rounds: backstop })
+    }
+
+    /// **One round as the provider took it**, and the ladder that decides whether it is taken
+    /// again: an endpoint failure is retried here rather than in `rounds`, because a retry produced
+    /// nothing and so must not spend one of the turn's rounds. `key_asks` is the turn's budget for a
+    /// refused key and is handed back; everything else this needs is per round and built here.
+    fn take_the_round(
+        &mut self,
+        sink: &mut CapturingSink,
+        tail: &Vec<TranscriptItem>,
+        key_asks: &mut usize,
+    ) -> Result<(Result<TurnOk, TurnFailure>, letibot_http::retry::Ladder), HarnessError> {
+        let mut tried_fallbacks: Vec<String> = Vec::new();
+        // **One steering per round, outside the retry loop (R91.1).** A failed attempt
+        // hands what it took back to this value, and the retried attempt's greedy poll
+        // must find it there; one built per pass dropped it on the floor.
+        let mut steering = self.steering();
+        // The ladder this turn walks, and the only thing that decides whether a round is taken again. It is
+        // also what the turn's ending is said from, since the count and the waiting are nobody else's to
+        // report and a failure with no count is the report this was written for.
+        let mut ladder = letibot_http::retry::Ladder::new(letibot_http::retry::Policy::new(
+            self.cfg.http_retries,
+        ));
+        let outcome = loop {
+            // **The operator's own line, answered before the attempt rather than after
+            // it** - the window they type in. What comes back says when the switch
+            // takes; nothing about this attempt moves.
+            self.apply_queued_model();
+            // **Start watching BEFORE the round, so the wait itself is covered.**
+            // The host is `Some` only on the metered route - a local prefill's
+            // silence is progress, not a hang; see `SilenceWatch`.
+            let cloud_host = silence_host(self.provider.as_deref());
+            // The stall's own streak, computed before the round because the watchdog thread is the
+            // one that knows whether a stall happened - and it cannot read this harness.
+            let stalls = if self.trouble_kind == "stall" {
+                self.trouble_count
+            } else {
+                0
+            };
+            let watch = SilenceWatch::start(
+                self.hub.clone(),
+                cloud_host,
+                std::time::Duration::from_secs(SILENT_ROUND_SECS),
+                self.model_name(),
+                stalls,
+            );
+            let attempted = match &self.provider {
+                None => self.engine.run_turn_steered_with_tail(
+                    &mut self.session,
+                    sink,
+                    &mut steering,
+                    tail,
+                ),
+                // A cloud turn: the transcript as messages, the ledger as the
+                // record. Same events, same verdicts, same TurnOk.
+                Some(p) => self.engine.run_turn_messages_with_tail(
+                    &mut self.session,
+                    sink,
+                    &mut steering,
+                    p.as_ref(),
+                    &self.prefix.system,
+                    &self.prefix.tools_json,
+                    tail,
+                    None,
+                ),
+            };
+            // The round has produced something or failed, either way the silence
+            // is over and the watchdog has nothing left to say.
+            if watch.finish() {
+                self.trouble_kind = "stall".into();
+                self.trouble_count = stalls + 1;
+            }
+            let Err(TurnFailure::Http(e)) = attempted else {
+                // **The new model answered**, which is the whole of what a switch had
+                // to prove - there is nothing to go back to any more. A round that came back
+                // without a provider failure also ends any run of them.
+                self.switch_back = None;
+                self.trouble_kind.clear();
+                self.trouble_count = 0;
+                break attempted;
+            };
+            // A switch the operator made during this attempt is answered here and nothing else changes: it is
+            // not this round's to apply, so the ladder goes on against the model the turn started on. Answered
+            // before the key arm, since a 401 from the model they are leaving is no reason to ask for its key.
+            self.apply_queued_model();
+            // A refused key is asked for again, on the same card, and the round is taken again, since nothing
+            // was recorded. Only a key this session can replace: one from the environment or `--api-key` wins
+            // over the file, so a typed one would be saved and ignored.
+            if let letibot_turn::HttpError::Status {
+                code: code @ (401 | 403),
+                body,
+                ..
+            } = &e
+                && self.provider.is_some()
+                && *key_asks < 2
+                && let Some(pc) = self.cfg.provider.clone()
+                && key_is_replaceable(&pc)
+            {
+                *key_asks += 1;
+                let why = format!("{} refused the key ({code}): {body}", pc.name);
+                self.provider = None;
+                self.key_wanted = Some(pc);
+                if let Err(e) = self.obtain_key(Some(why)) {
+                    // **The turn ends here, so the outage does too.** Left in the field it
+                    // would be continued by the NEXT turn's first failure, carrying this
+                    // one's start time into a duration that never happened.
+                    self.settle_outage(false);
+                    return Err(e);
+                }
+                continue;
+            }
+            // This attempt failed, and the outage it belongs to remembers how many have: the record changes
+            // here and is published nowhere, because the row is written once when the outage ends. After the
+            // key arm, since a refused key is that card's news and not the endpoint's weather.
+            self.outage_failed(&e);
+            let Some(wait) = ladder.failed(&e) else {
+                // The ladder has nothing left to wait for, and the session may still have somewhere to go, but not
+                // this round: the MODEL refused and a fallback list exists, so the switch is recorded for the end of
+                // this turn and the round is not re-issued. A transport failure gets not even that.
+                let next = self.fall_back_from(&e, &mut tried_fallbacks);
+                // **The provider's own trouble, as a type**, here and not per attempt: a ladder of five
+                // attempts on one 429 is one fact, and an automation wakes once for it.
+                self.publish_trouble(&e, next.clone());
+                if let Some(next) = next {
+                    let was = self.provider_line();
+                    // Whether a turn was armed decides what may be promised: this turn is the continuation a
+                    // fallback earns when one is already running, and then no second turn is opened, so the
+                    // sentence must not say one is.
+                    let opens_a_turn = self.fallback_continuation.is_some();
+                    // The outage is this notice's to tell: one row per outage, and this is it, since the session
+                    // is moving and the count belongs in that sentence. Taken, so `settle_outage` finds nothing.
+                    let outage = self.outage.take();
+                    self.hub.publish(SessionEvent::Warning {
+                        code: "model_endpoint_retry".into(),
+                        detail: fallback_notice(&was, &next, &e, opens_a_turn, outage.as_ref()),
+
+                        compaction: None,
+                    });
+                }
+                break Err(TurnFailure::Http(e));
+            };
+            // Nothing is published here, and that is the change: this used to raise a row per attempt, three in
+            // three seconds for one endpoint. The attempt is in the outage's count, and the row is written when
+            // the outage ends.
+            match self.sleep_unless_closed(wait) {
+                Waited::Out => {}
+                Waited::Closed => break Err(TurnFailure::Http(e)),
+                // **The stop is the news, not the endpoint**: the ladder stops where it is,
+                // since taking the round again spends another wait on an answer the person
+                // has already given up on.
+                Waited::Interrupted => {
+                    let reason = self.hub.take_queued_interrupt().unwrap_or_default();
+                    // The whole stop, not only this wait's end: the steering door that takes an
+                    // interrupt stops the subtree and tells the turn's ending, and a stop taken
+                    // here is the same act arriving at a different door.
+                    stop_children_first(Some(&self.subagents), &self.hub);
+                    self.stopped.store(true, Ordering::SeqCst);
+                    // This turn's own id, before the early return: the failure it becomes is
+                    // published from this field, and a stale one is a failure no head can place.
+                    self.last_turn_id = sink.turn_id.clone().unwrap_or_default();
+                    self.settle_outage(false);
+                    return Err(HarnessError::Endpoint {
+                        said: stopped_in_the_wait(&reason, &ladder, &e),
+                        cause: e,
+                    });
+                }
+            }
+        };
+        Ok((outcome, ladder))
     }
 
     /// This session's steering source: the head's queue, the intent findings and a monitor that fires mid-turn.
