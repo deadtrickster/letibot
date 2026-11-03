@@ -355,6 +355,9 @@ fn dump_the_pane() {
     let mut out = String::new();
     for w in [80usize, 120] {
         let mut a = pane();
+        // **Twice**: the bar is built from the rows the last frame recorded, so the first frame -
+        // one no person ever reads - still offers every verb.
+        a.screen(w, 40);
         out.push_str(&format!("\n===== the queue pane, {w} cols =====\n"));
         out.push_str(&pane_rows(&mut a, w).join("\n"));
     }
