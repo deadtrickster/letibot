@@ -177,9 +177,11 @@ fn the_wait_verb_takes_a_handle_and_the_three_endings_are_three_outcomes() {
         &serde_json::json!({"command": "sleep 0.4; echo done", "background": true}).to_string(),
     );
     let id = job_id(&started.payload);
+    // The wait ends when the run does, so this bound is a hang detector and not a claim
+    // about the box.
     let ok = h.call(
         "job_wait",
-        &serde_json::json!({"job": id, "timeout_ms": 8000}).to_string(),
+        &serde_json::json!({"job": id, "timeout_ms": 30_000}).to_string(),
     );
     assert_eq!(ok.outcome, ToolOutcome::Ok, "{}", ok.render());
     assert!(ok.payload.contains("exited 0"), "{}", ok.payload);
