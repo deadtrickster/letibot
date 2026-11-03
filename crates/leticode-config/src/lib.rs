@@ -29,9 +29,18 @@
 //! gatekeeper_model = "qwen3-4b"           # the guard's own model
 //! judge_model = "glm-5.3-flash"           # the adjudicator
 //!
+//! fallback = ["deepseek", "glm-coding/glm-5.3"]  # where a session goes when its
+//!                                         # model is out, tried in this order
+//! fallback_after_timeouts = 3             # consecutive model timeouts that earn a move
+//!
 //! [roles]                                 # a named-role override: a future role
 //! reviewer = "deepseek/deepseek-reasoner" # needs no new key, only a line here
 //! ```
+//!
+//! **A fallback list is replaced by the higher level, never joined to it.** A project
+//! that names two models must not silently inherit a third from the user file, so a
+//! non-empty list here is the whole list. `fallback_after_timeouts = 0` is refused by
+//! name: a move on the first timeout is written `1`.
 //!
 //! **An absent key means the daemon's own default, stated as such** — not a
 //! guess, and not silently a built-in. The default for each key is the one the
@@ -175,8 +184,8 @@
 //! **Models are configuration; permissions are not.** A file at either level may set
 //! which model answers a role, and it may not seat a tool on a role or lift an
 //! access narrowing. The shape enforces it: the file deserialises into
-//! [`LeticodeConfigFile`], which is four model keys and a `[roles]` table of
-//! model names and samplers, with `deny_unknown_fields` on the top level. A line
+//! [`LeticodeConfigFile`], which is four model keys, a fallback list and a `[roles]` table
+//! of model names and samplers, with `deny_unknown_fields` on the top level. A line
 //! the version does not know — a typo'd `subagent_modle`, or an `allow_bash =
 //! true` that would widen a capability — is refused by name, not ignored,
 //! because a silently ignored key is the bug class being fixed and a silently
@@ -472,6 +481,13 @@ pub struct LeticodeConfig {
     /// **The `[github]` table** — whether the reviewer seat posts, and where its token is. See
     /// [`GithubKeys`].
     pub github: GithubKeys,
+    /// **Where this session goes when its model is out**: model names, tried in order.
+    /// A higher level's non-empty list replaces the whole list, because a list of models a
+    /// session may answer on is one decision and not a set to union.
+    pub fallback: Vec<String>,
+    /// How many consecutive model timeouts earn that move. `None` is the daemon's own
+    /// number, and `0` never reaches here: it is refused at the parser by name.
+    pub fallback_after_timeouts: Option<u32>,
 }
 
 /// **`[permissions]` in a `leticode.toml`** — the gate settings a file may carry, which is to
@@ -843,6 +859,16 @@ impl LeticodeConfig {
                 Some(v) => github_keys(v).map_err(|why| format!("{}: {why}", path.display()))?,
                 None => GithubKeys::default(),
             },
+            fallback: match &file.fallback {
+                Some(v) => fallback_list(v).map_err(|why| format!("{}: {why}", path.display()))?,
+                None => Vec::new(),
+            },
+            fallback_after_timeouts: match &file.fallback_after_timeouts {
+                Some(v) => {
+                    Some(fallback_timeouts(v).map_err(|why| format!("{}: {why}", path.display()))?)
+                }
+                None => None,
+            },
         };
 
         // One seat, two answers. The guard and the adjudicator are one oracle in this
@@ -936,6 +962,15 @@ impl LeticodeConfig {
             permissions: self.permissions.overridden_by(&other.permissions),
             skills: self.skills.overridden_by(&other.skills),
             github: self.github.overridden_by(&other.github),
+            // Replaced, not joined: a project that names two models must not inherit a third.
+            fallback: if other.fallback.is_empty() {
+                self.fallback.clone()
+            } else {
+                other.fallback.clone()
+            },
+            fallback_after_timeouts: other
+                .fallback_after_timeouts
+                .or(self.fallback_after_timeouts),
         }
     }
 
@@ -955,6 +990,11 @@ impl LeticodeConfig {
         }
         if let Some(m) = &self.judge_model {
             out.push(format!("judge {m}"));
+        }
+        // A fallback is a model this session may answer on, so it is disclosed here too.
+        // The budget is a number and not a model, so it stays out of this list.
+        for m in &self.fallback {
+            out.push(format!("fallback {m}"));
         }
         for (role, r) in &self.roles {
             let mut line = role.clone();
@@ -1053,7 +1093,7 @@ fn role_settings(role: &str, value: &toml::Value) -> Result<RoleSettings, String
 
 /// The file's shape, as parsed. `deny_unknown_fields` on the top level is the report for
 /// a key this version does not know, and the shape IS the capability boundary: four model
-/// keys and a role table, with no field for a seat, a tool list or a window.
+/// keys, a fallback list and a role table, with no field for a seat, a tool list or a window.
 #[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LeticodeConfigFile {
@@ -1090,6 +1130,67 @@ struct LeticodeConfigFile {
     /// for both levels; which level may start it is the merge's own rule, not this reader's.
     #[serde(default)]
     github: Option<toml::Value>,
+    /// **The fallback list and its budget**, see [`fallback_list`] and [`fallback_timeouts`].
+    /// Raw here so a value of the wrong shape is refused by name rather than by serde's
+    /// message, which names the table and not the key the operator wrote.
+    #[serde(default)]
+    fallback: Option<toml::Value>,
+    #[serde(default)]
+    fallback_after_timeouts: Option<toml::Value>,
+}
+
+/// The fallback list as the file wrote it: an array of model names, in the order they are
+/// tried. Each entry is refused by name, because a list that kept a blank or a number would
+/// hand a call a model nobody named.
+fn fallback_list(value: &toml::Value) -> Result<Vec<String>, String> {
+    let items = match value {
+        toml::Value::Array(items) => items,
+        other => {
+            return Err(format!(
+                "fallback is {}, not a list of model names; write \
+                 `fallback = [\"NAME\", \"NAME\"]`",
+                kind_of(other)
+            ));
+        }
+    };
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        let name = match item.as_str() {
+            Some(s) => non_empty(s).ok_or_else(|| {
+                "fallback holds an empty name, which is no model at all".to_string()
+            })?,
+            None => {
+                return Err(format!(
+                    "fallback holds {}, not a model name: every entry is a name, \
+                     as a string",
+                    kind_of(item)
+                ));
+            }
+        };
+        out.push(name);
+    }
+    Ok(out)
+}
+
+/// The timeout budget as the file wrote it: a whole number of at least one. Zero is refused
+/// by name because a file that wrote `0` wanted a move on the first timeout, which is `1`.
+fn fallback_timeouts(value: &toml::Value) -> Result<u32, String> {
+    let n = match value {
+        toml::Value::Integer(i) => *i,
+        other => {
+            return Err(format!(
+                "fallback_after_timeouts = {}, not a whole number of consecutive timeouts",
+                kind_of(other)
+            ));
+        }
+    };
+    match u32::try_from(n).ok().filter(|n| *n >= 1) {
+        Some(n) => Ok(n),
+        None => Err(format!(
+            "fallback_after_timeouts = {n}, and the budget is a whole number of timeouts, at \
+             least one; a move on the first timeout is `1`"
+        )),
+    }
 }
 
 /// A model name that is blank is no model at all: an empty string would
@@ -1917,5 +2018,123 @@ mod tests {
         let path = write_file(&dir, "[github]\npostt = true\n");
         let err = LeticodeConfig::load(&path).unwrap_err();
         assert!(err.contains("postt") && err.contains("[github]"), "{err}");
+    }
+
+    /// **A fallback list is replaced, not grown.** A project that names two models must not
+    /// silently inherit a third from the user file: the list is one decision, not a set.
+    #[test]
+    fn a_project_fallback_list_replaces_the_users_rather_than_growing_it() {
+        let dir = project_dir("fallback_merge");
+        let user_path = dir.join("user.toml");
+        std::fs::write(
+            &user_path,
+            "fallback = [\"local\", \"qwen-3.8-27b\"]\nfallback_after_timeouts = 5\n",
+        )
+        .unwrap();
+        let project_path = dir.join("project.toml");
+        std::fs::write(&project_path, "fallback = [\"deepseek\"]\n").unwrap();
+        let user = LeticodeConfig::load_as(&user_path, Level::User).unwrap();
+        let project = LeticodeConfig::load(&project_path).unwrap();
+        let merged = user.overridden_by(&project);
+        assert_eq!(
+            merged.fallback,
+            ["deepseek"],
+            "the project's list replaced the user's whole list: {:?}",
+            merged.fallback
+        );
+        assert_eq!(
+            merged.fallback_after_timeouts,
+            Some(5),
+            "a key only the user file set survives the merge"
+        );
+
+        // A project that says nothing about a fallback keeps the user's list, and one
+        // that names none is no fallback at all rather than the level above.
+        let silent = dir.join("silent.toml");
+        std::fs::write(&silent, "main_model = \"local\"\n").unwrap();
+        let merged = user.overridden_by(&LeticodeConfig::load(&silent).unwrap());
+        assert_eq!(merged.fallback, ["local", "qwen-3.8-27b"]);
+        assert!(LeticodeConfig::default().fallback.is_empty());
+        assert_eq!(LeticodeConfig::default().fallback_after_timeouts, None);
+    }
+
+    /// A budget of zero is refused by name: a move on the first timeout is `1`, and a file
+    /// that wrote `0` said something it did not mean.
+    #[test]
+    fn a_zero_timeout_budget_is_refused_by_name() {
+        let dir = project_dir("fallback_zero");
+        let path = write_file(&dir, "fallback_after_timeouts = 0\n");
+        let err = LeticodeConfig::load(&path).expect_err("zero is refused");
+        assert!(
+            err.contains("fallback_after_timeouts"),
+            "the key is named: {err}"
+        );
+        assert!(err.contains("`1`"), "and the number it meant: {err}");
+        assert!(
+            err.contains(&path.display().to_string()),
+            "and the file: {err}"
+        );
+    }
+
+    /// A fallback that is not a list of model names is refused by name with the file: a
+    /// string, a number in the list and an empty name are three different mistakes.
+    #[test]
+    fn a_fallback_that_is_not_a_list_of_model_names_is_refused_by_name() {
+        let dir = project_dir("fallback_bad");
+        for (text, wanted) in [
+            ("fallback = \"deepseek\"\n", "not a list"),
+            ("fallback = [\"deepseek\", 3]\n", "a whole number"),
+            ("fallback = [\"\"]\n", "an empty name"),
+        ] {
+            let path = write_file(&dir, text);
+            let err = LeticodeConfig::load(&path).expect_err("a bad list is Err");
+            assert!(err.contains("fallback"), "the key is named: {err}");
+            assert!(err.contains(wanted), "{wanted} must be said: {err}");
+            assert!(
+                err.contains(&path.display().to_string()),
+                "and the file: {err}"
+            );
+        }
+    }
+
+    /// A budget that is not a whole number of timeouts is refused by name, so a negative or
+    /// a word never reaches the move as some number nobody wrote.
+    #[test]
+    fn a_timeout_budget_that_is_not_a_whole_number_is_refused_by_name() {
+        let dir = project_dir("fallback_budget_bad");
+        for (text, wanted) in [
+            ("fallback_after_timeouts = -3\n", "-3"),
+            ("fallback_after_timeouts = \"three\"\n", "a string"),
+            ("fallback_after_timeouts = 3.5\n", "a number"),
+        ] {
+            let path = write_file(&dir, text);
+            let err = LeticodeConfig::load(&path).expect_err("a bad budget is Err");
+            assert!(
+                err.contains("fallback_after_timeouts"),
+                "the key is named: {err}"
+            );
+            assert!(err.contains(wanted), "{wanted} must be said: {err}");
+        }
+    }
+
+    /// The fallback names are models the file set, so the disclosure says them in its own
+    /// style: where the model that answers after a timeout came from must be answerable.
+    #[test]
+    fn the_fallback_models_are_disclosed_as_fallback_lines() {
+        let dir = project_dir("fallback_disclosure");
+        let path = write_file(
+            &dir,
+            "fallback = [\"deepseek\", \"glm-coding/glm-5.3\"]\nfallback_after_timeouts = 3\n",
+        );
+        let cfg = LeticodeConfig::load(&path).expect("a fallback list is Ok");
+        assert_eq!(cfg.fallback, ["deepseek", "glm-coding/glm-5.3"]);
+        assert_eq!(cfg.fallback_after_timeouts, Some(3));
+        let set = cfg.set_models();
+        assert_eq!(
+            set,
+            ["fallback deepseek", "fallback glm-coding/glm-5.3"],
+            "the list, in the order the file wrote it: {set:?}"
+        );
+        assert!(LeticodeConfig::default().set_models().is_empty());
     }
 }
