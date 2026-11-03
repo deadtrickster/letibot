@@ -908,14 +908,11 @@ impl Hub {
     }
 
     /// Attach content to an already-appended transcript row, for the rows an announcement could not
-    /// carry. A row that fit rode its own `TranscriptAppended` and is already whole in the log, so
-    /// there is nothing to send - unless a head built before that field is attached, because it
-    /// reads no body off an announcement and would draw the row empty. One such head is why this
-    /// still publishes: the log is one stream for every head, not a per-head choice.
+    /// carry. A row that rode its announcement is whole in the log and is not stored again: a head
+    /// that reads no body off an announcement is given `TranscriptContent` at send time instead
+    /// (see [`for_head`]).
     pub fn record_item(&self, item_id: &str, item: TranscriptItem) {
-        let whole = self.lock().view.row_has_body(item_id);
-        let older_head = self.lock().heads.iter().any(|h| !h.caps.row_bodies);
-        if whole && !older_head {
+        if self.lock().view.row_has_body(item_id) {
             return;
         }
         self.publish(SessionEvent::TranscriptContent {
@@ -990,6 +987,7 @@ impl Hub {
                         // Everything replayed is scrubbed: live and stored are different
                         // artifacts of the same stream, and a resume is a replay.
                         let (kept, report) = scrub_replay(g.log.retained(), &gap);
+                        let kept = kept.into_iter().flat_map(|e| for_head(&caps, e)).collect();
                         (None, Some(since_seq), kept, report)
                     }
                     // RESYNC. A normal outcome.
@@ -1101,7 +1099,12 @@ impl Hub {
             }
             if !g.heads[idx].queue.is_empty() {
                 let n = max.min(g.heads[idx].queue.len());
-                let events: Vec<Envelope> = g.heads[idx].queue.drain(..n).collect();
+                let caps = g.heads[idx].caps.clone();
+                let events: Vec<Envelope> = g.heads[idx]
+                    .queue
+                    .drain(..n)
+                    .flat_map(|e| for_head(&caps, e))
+                    .collect();
                 return Delivery::Events(Batch::new(events));
             }
             // A CLOSED HUB STILL OWES THE HEAD WHAT WAS QUEUED FOR IT, so this check sits AFTER
@@ -1919,6 +1922,46 @@ impl Inner {
             h.queue.push_back(env.clone());
         }
         env
+    }
+}
+
+/// What a head is sent for one logged event. A head that does not declare `row_bodies` reads no
+/// body off an announcement, so it gets the announcement bare and the body as `TranscriptContent`
+/// at the same seq; the log keeps the body once.
+fn for_head(caps: &Caps, env: Envelope) -> Vec<Envelope> {
+    if caps.row_bodies {
+        return vec![env];
+    }
+    let Envelope {
+        session_id,
+        seq,
+        ts,
+        event,
+    } = env;
+    let make = |event| Envelope {
+        session_id: session_id.clone(),
+        seq,
+        ts,
+        event,
+    };
+    match event {
+        SessionEvent::TranscriptAppended {
+            item_id,
+            kind,
+            ledger_head,
+            item: Some(item),
+            body_bytes,
+        } => vec![
+            make(SessionEvent::TranscriptAppended {
+                item_id: item_id.clone(),
+                kind,
+                ledger_head,
+                item: None,
+                body_bytes,
+            }),
+            make(SessionEvent::TranscriptContent { item_id, item }),
+        ],
+        event => vec![make(event)],
     }
 }
 
