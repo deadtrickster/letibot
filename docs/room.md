@@ -297,6 +297,56 @@ The local chat follows flowy's shape for talking (the verbs agents use: `say`, `
 | waiter kinds and presence (`tracked`, `forked`) | left out: `connected` is the socket |
 | todos, notes, memory, findings, reports, attachments | left out: the todo board and the merge queue stay as they are, and a room line carries a `ref` to a row |
 
+## Claude Code
+
+Claude Code is in the rooms as the external seat `claude-code`, through the MCP bridge (`letibot-mcp`,
+`crates/bridge/src/rooms.rs`). One connection per bridge process, opened on first use and again after
+the coordinator restarts. `Seat::External` and the handle are fixed in `hello`: no tool argument reaches
+`author`, `kind` or `seat`, so Claude Code cannot post as the operator or as a session.
+
+The bridge must not depend on `letibot-room` (`room_bell_turn` pins that a bridge head hears no bell),
+so `rooms.rs` speaks the coordinator's wire itself: JSON lines, protocol 6, the socket from
+`$LETIBOT_ROOM_SOCKET` or `room-<host key>.sock` in the data directory. The host key and the version are
+pinned by tests there. Start the coordinator with `letibot --room`. Starting a leticode package through
+the bridge does it already.
+
+Tools:
+
+| tool | input | answer |
+|---|---|---|
+| `rooms` | - | rooms with `members`, `last_seq`, `unread` |
+| `room_read` | `{room, since, last, thread}` | `rows` and `lines`. Moves no cursor |
+| `room_say` | `{room, text, to, thread, refs}` | the message. `room` defaults to `host` |
+| `room_dm` | `{to, text, thread}` | the message, in room `dm` |
+| `room_roster` | `{room}` | who is in the room |
+| `room_inbox` | `{attention, limit, ack}` | what was missed since the cursor, `to_me` by default. `ack: true` moves the cursor past the rows returned |
+
+**The stream.** The bridge declares `capabilities.experimental["claude/channel"]`. After
+`notifications/initialized` it starts a supervisor that keeps the seat connected. Each pushed message
+that passes `to_me` (names `claude-code`, a DM to it, the operator's unaddressed line) is sent once as
+`notifications/claude/channel` with `content` the message line (`#14 [host] s-a -> claude-code: text`)
+and `meta` `room`, `author`, `kind`, `to`, `seq`, `thread`. After a dropped connection the supervisor
+redials and replays the inbox, skipping what it already sent. Nothing is acked by the stream: ack with
+`room_inbox`.
+
+What Claude Code sees depends on how it was started. Started with the channel flag for this server
+(`--dangerously-load-development-channels server:<name>`, interactive sessions only, TODO.md R117), an
+idle session starts a turn on `<channel source="..." room="host" author="s-a" seq="14">#14 [host] s-a ->
+claude-code: text</channel>`. Without the flag Claude Code drops the notification. The messages are
+still in the inbox, so a session that polls `room_inbox`, or runs the wait below, loses nothing.
+
+**`letibot-mcp room-wait [--attention to_me|mentions|all] [--timeout 2h]`** blocks until a message for
+`claude-code` arrives, prints it (`#seq [room] author -> to: text`), moves the inbox cursor past it and
+exits 0. Messages already waiting past the cursor print at once. 20 is an unreachable coordinator
+(reason on stderr), 30 the timeout. It needs no channel flag, so it is the wake for any session:
+
+```text
+Monitor(command: while :; do letibot-mcp room-wait --attention to_me --timeout 1h; sleep 2; done, persistent: true)
+```
+
+The stream and the wait share one inbox cursor, so a message may arrive by both. Handling it twice is
+harmless, and `room_inbox` with `ack: true` settles it.
+
 ## The state machine
 
 ```
@@ -376,7 +426,7 @@ event, and two of them cannot be.
 |---|---|---|---|
 | a leticode session (`crates/harnessd`) | yes, one `SessionRoom` per top-level session | yes | the reader turns an `Event` or a chat message that names the session into a sentence (`room::wake`), queues it and rings `Bell::ring_wake`; `Harness::wake` runs a turn with it |
 | the head (`letibot-tui`) | no | no, the daemon wakes it | no socket. Its pane comes from the daemon's feed, its chat from `RoomChat` |
-| the bridge (`letibot-bridge`) | no | no | a room event reaches it only through a turn. It starts the coordinator for the daemons it starts |
+| the bridge (`letibot-bridge`) | its heads no, its `claude-code` seat yes (own wire, no `letibot-room` dependency) | its heads no. The seat pushes chat to Claude Code as a channel event | a bridge head hears a room event only through a turn. The seat is [Claude Code](#claude-code) |
 | a firecode VM agent | no | no | a subagent is refused at the door |
 
 A tag's agent and the arbiter work the queue and are never woken by chat.
@@ -461,8 +511,6 @@ project.
 ## Still owed
 
 - The head has no `/rooms` view yet. It can already list, read and post through `RoomChat`.
-- The MCP bridge has no external seat yet. The seat and its `claude-code` handle exist in the
-  coordinator.
 - A head gets chat by polling `read` or `inbox`. There is no push to a head.
 - The first start of the room costs a terminal line when the arbiter's provider has no key. A
   once-per-box note would fix it.

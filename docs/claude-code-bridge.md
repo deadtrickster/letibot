@@ -73,6 +73,15 @@ one head connection per session it started or attached to, so asks reach it.
 | `leticode_stop` | `{session}` - interrupts a running turn, closes the session here and detaches; a placement settles as it closes (`branch` names the branch the work comes home on), and the rows stay on disk |
 | `leticode_list` | - the sessions this bridge holds, with `placement`, watched or driven |
 
+| `rooms`, `room_read`, `room_say`, `room_dm`, `room_roster`, `room_inbox` | see `docs/room.md` § *Claude Code*: Claude Code as the external seat `claude-code` in the host's chat rooms |
+
+### Rooms: the stream and `room-wait`
+
+The bridge declares the `claude/channel` experimental capability and pushes each room message for
+`claude-code` as `notifications/claude/channel`. `letibot-mcp room-wait [--attention to_me] [--timeout
+2h]` is the same wake as a background command (exit 0 with the message, 20 coordinator unreachable, 30
+timeout). Both are in `docs/room.md` § *Claude Code*.
+
 ### `letibot-mcp wait`: the wake-up
 
 `letibot-mcp wait <worktree> <session> --until attention [--timeout 2h]` connects as a head and
