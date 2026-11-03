@@ -39,7 +39,7 @@ libc = "0.2"
 # **And the terminal** (`rano::term`): raw mode, the row-diffing painter, the input decoder,
 # the kitty graphics and OSC 8 protocols. rano reads the bytes into what was *pressed*; what a
 # key *means* stays here, in `app::key_of`.
-rano = { git = "https://github.com/deadtrickster/rano", rev = "f4c624e58e6b0e965eda10010518965e0170e6cf" }
+rano = { git = "https://github.com/deadtrickster/rano", rev = "09afab0765cdb3c523c4a3673ebbd9a12208afc0" }
 # **The layer stack, the plugin SDK and the layers this binary carries** — for ONE pane: the
 # session list, whose policy is a plugin now (`docs/plugins-plan.md` §7 step 10,
 # `src/app/sessions_pane.rs`). The stack carries no engine, the SDK is serde, and `builtins` is the

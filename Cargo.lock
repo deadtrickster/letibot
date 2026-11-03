@@ -2276,8 +2276,8 @@ dependencies = [
 
 [[package]]
 name = "rano"
-version = "0.9.1"
-source = "git+https://github.com/deadtrickster/rano?rev=f4c624e58e6b0e965eda10010518965e0170e6cf#f4c624e58e6b0e965eda10010518965e0170e6cf"
+version = "0.10.1"
+source = "git+https://github.com/deadtrickster/rano?rev=09afab0765cdb3c523c4a3673ebbd9a12208afc0#09afab0765cdb3c523c4a3673ebbd9a12208afc0"
 dependencies = [
  "cc",
  "flate2",
