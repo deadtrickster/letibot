@@ -116,13 +116,15 @@ pub fn map_text(units: &[Unit]) -> String {
     }
     let mut out = String::from(MAP_HEADER);
     for u in units {
+        // Subject first, then why, then size: a reader scanning for a file finds it at the same
+        // place on every line, and the two numbers it does not need first are last.
         out.push_str(&format!(
-            "\n- {} `{}` {} ({} bytes): {}",
+            "\n- {} `{}` {}: {}; {} bytes",
             u.id,
             u.tool,
             u.named,
-            u.bytes,
-            u.why.said()
+            u.why.said(),
+            u.bytes
         ));
     }
     out
