@@ -355,7 +355,9 @@ fn a_stuck_row_wakes_the_model_and_a_recovered_queue_runs_no_turn() {
     // The production windows, shortened - the age gate is the fixture's (four hours); the two
     // clocks are shortened only so a test can see them tick.
     sessions.set_nag_window(Duration::from_secs(60));
-    sessions.set_stuck_repeat(Duration::from_millis(200));
+    // A whole second rather than a fifth of one: three passes below have to fit inside the
+    // interval, and how long a loaded box takes over three 20 ms sleeps is not a bet a test may make.
+    sessions.set_stuck_repeat(Duration::from_secs(1));
 
     // One delivery, and it is a TURN - the model was asked, and what it was asked is the
     // sentence: the count, the age and the verbs. The sweep is spent first, so "this door
@@ -408,9 +410,17 @@ fn a_stuck_row_wakes_the_model_and_a_recovered_queue_runs_no_turn() {
         "and one row"
     );
 
-    // Past the interval, a second one - the cadence, and the second model call.
-    std::thread::sleep(Duration::from_millis(300));
-    assert_eq!(sessions.deliver_due_censuses(), 1, "the repeat came due");
+    // Past the interval, a second one - the cadence, and the second model call. Polled rather than
+    // slept: the cadence is the fact, and how long the box took to reach it is not.
+    let by = std::time::Instant::now() + Duration::from_secs(30);
+    let mut fired = 0;
+    while fired == 0 && std::time::Instant::now() < by {
+        fired = sessions.deliver_due_censuses();
+        if fired == 0 {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+    assert_eq!(fired, 1, "the repeat came due");
     assert_eq!(stub.turns(), 2, "a second call, an interval later");
     assert!(
         stub.prompt_of(1, &parts.vocab).contains("[queue stuck]"),
