@@ -3031,7 +3031,9 @@ fn a_daemon_above_a_repository_neither_takes_its_lease_nor_shows_its_red() {
             move || service.run(&stop)
         });
         let s = w.store();
-        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        // A CEILING, not a claim about the box: the gate this waits for runs a real shell and the
+        // whole library's tests run in parallel, so a red here at twenty seconds was the machine.
+        let deadline = std::time::Instant::now() + Duration::from_secs(120);
         while !until(&s) && std::time::Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(50));
         }
@@ -3069,7 +3071,11 @@ fn a_daemon_above_a_repository_neither_takes_its_lease_nor_shows_its_red() {
             .flatten()
             .is_some_and(|h| h.state == HealthState::Red)
     });
-    let h = w.store().target_health(&w.key(), "main").unwrap().unwrap();
+    let h = w
+        .store()
+        .target_health(&w.key(), "main")
+        .unwrap()
+        .expect("the repository's daemon gated its tip");
     assert_eq!(h.state, HealthState::Red, "{h:?}");
     let scoped = w.door.scoped.lock().unwrap().clone();
     assert!(
