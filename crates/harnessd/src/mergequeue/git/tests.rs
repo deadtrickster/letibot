@@ -901,7 +901,10 @@ fn the_worktree_sweep_takes_the_debris_and_keeps_the_living() {
     assert!(!listed.contains("agent-locked"), "{listed}");
     assert!(orphan.exists(), "a tree younger than the grace stays");
     assert!(
-        first.kept.iter().any(|(k, _)| k.ends_with("agent-a1b2c3d4")),
+        first
+            .kept
+            .iter()
+            .any(|(k, _)| k.ends_with("agent-a1b2c3d4")),
         "{first:?}"
     );
 

@@ -1092,7 +1092,9 @@ pub fn enqueue_finished(
         .enqueue_review(&new, handle, now)
         .map_err(|e| format!("the review row for `{handle}` could not be written: {e}"))?;
     let Some(row) = store.review_row(handle).map_err(|e| e.to_string())? else {
-        return Err(format!("the review row for `{handle}` was written and read back as nothing"));
+        return Err(format!(
+            "the review row for `{handle}` was written and read back as nothing"
+        ));
     };
     // A row already there is not rewritten by the insert, and a WITHDRAWN one records a branch
     // that had nothing on it: a later commit is a head no reviewer has judged, and the row is
@@ -1116,7 +1118,9 @@ pub fn enqueue_finished(
                     .set("attempts", 0u32),
                 now,
             )
-            .map_err(|e| format!("the review row for `{handle}` could not be put back in line: {e}"))?;
+            .map_err(|e| {
+                format!("the review row for `{handle}` could not be put back in line: {e}")
+            })?;
         let row = store.review_row(handle).map_err(|e| e.to_string())?;
         return Ok(Enqueued { row, news: true });
     }

@@ -611,11 +611,7 @@ pub fn cargo_patch_note(worktree: &std::path::Path) -> Option<String> {
                 path.display(),
                 match patched.as_slice() {
                     [one] => format!("`{one}`"),
-                    many => format!(
-                        "{} crates (`{}`)",
-                        many.len(),
-                        many.join("`, `")
-                    ),
+                    many => format!("{} crates (`{}`)", many.len(), many.join("`, `")),
                 }
             ));
         }
@@ -637,9 +633,7 @@ fn patched_crates(text: &str) -> Vec<String> {
             in_patch = line.starts_with("[patch");
             continue;
         }
-        if in_patch
-            && let Some((key, _)) = line.split_once('=')
-        {
+        if in_patch && let Some((key, _)) = line.split_once('=') {
             let key = key.trim().trim_matches('"');
             if !key.is_empty() && !out.iter().any(|seen| seen == key) {
                 out.push(key.to_string());

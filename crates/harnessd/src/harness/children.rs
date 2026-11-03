@@ -3149,10 +3149,7 @@ impl HarnessTaskRunner {
     /// The write, and a store that will not open is a refusal rather than a silent drop: the half of
     /// `finished` that does the work, on its own so the trait method and the enqueue's own notice can have
     /// different shapes of one answer. A `row` of `None` is no branch of its own to land, which is not a failure.
-    fn enqueue_entry(
-        &self,
-        handle: &str,
-    ) -> Result<crate::mergequeue::review::Enqueued, String> {
+    fn enqueue_entry(&self, handle: &str) -> Result<crate::mergequeue::review::Enqueued, String> {
         let Some(child) = self
             .placed
             .lock()

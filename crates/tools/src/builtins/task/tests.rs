@@ -1195,7 +1195,11 @@ fn the_answer_names_a_cargo_patch_the_childs_tree_inherits() {
         },
         &mut sink,
     );
-    assert!(r.payload.contains("not the build the merge queue"), "{}", r.payload);
+    assert!(
+        r.payload.contains("not the build the merge queue"),
+        "{}",
+        r.payload
+    );
     assert!(r.payload.contains("rano"), "{}", r.payload);
 }
 

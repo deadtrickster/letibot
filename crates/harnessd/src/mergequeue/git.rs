@@ -1253,7 +1253,9 @@ pub fn reap_worktrees(repo: &Path, now: std::time::SystemTime) -> Result<Reaped,
                 continue;
             }
             match worktree_gitdir(&dir) {
-                GitDir::OwnRepository => out.kept.push((name, "it is a repository of its own".into())),
+                GitDir::OwnRepository => out
+                    .kept
+                    .push((name, "it is a repository of its own".into())),
                 GitDir::OfAnotherCheckout(where_) => out.kept.push((
                     name,
                     format!("its `.git` names {where_}, which is there: it is that checkout's"),
@@ -1266,11 +1268,15 @@ pub fn reap_worktrees(repo: &Path, now: std::time::SystemTime) -> Result<Reaped,
                         .and_then(|m| now.duration_since(m).ok())
                         .is_some_and(|age| age < ORPHAN_GRACE);
                     if young {
-                        out.kept.push((name, format!("younger than {} s", ORPHAN_GRACE.as_secs())));
+                        out.kept
+                            .push((name, format!("younger than {} s", ORPHAN_GRACE.as_secs())));
                     } else {
                         std::fs::remove_dir_all(&dir)
                             .map_err(|e| format!("removing {}: {e}", dir.display()))?;
-                        out.orphans.push(format!("{} (its `.git` names {gone}, which is not there)", name));
+                        out.orphans.push(format!(
+                            "{} (its `.git` names {gone}, which is not there)",
+                            name
+                        ));
                     }
                 }
             }
