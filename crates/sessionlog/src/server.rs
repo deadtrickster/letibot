@@ -546,17 +546,25 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
             Ok(frame) if peer.refuses(&frame).is_some() => {
                 let door = peer.refuses(&frame).expect("the guard said there is one");
                 let (client_request_id, expected_seq) = crate::peer::request_of(&frame);
-                let pid = match peer.pid {
-                    Some(p) => format!("pid {p}"),
-                    None => "a process the kernel would not name".to_string(),
+                // Which fact it was rests on the pid: a named one is a process this daemon started,
+                // and an unnamed one is read as the same because a head cannot be ruled out.
+                let (who, what) = match peer.pid {
+                    Some(p) => (
+                        format!("pid {p}"),
+                        "is a process this daemon started, in its own tree or its cgroup",
+                    ),
+                    None => (
+                        "the process".to_string(),
+                        "could not be named by the kernel, which is read the same way",
+                    ),
                 };
                 let f = ServerFrame::Rejected {
                     client_request_id,
                     reason: format!(
                         "{door} is the operator's own act, and this connection came from inside \
-                         a session's tool tree: {pid} on the other end of the socket was started \
-                         by this daemon, so nothing of it was done. The one door served to a \
-                         tool call is the password ask `sudo` needs."
+                         a session's tool tree: {who} on the other end of the socket {what}, so \
+                         nothing of it was done. The one door served to a tool call is the \
+                         password ask `sudo` needs."
                     ),
                     expected_seq,
                     actual_seq: seat.hub.head_seq(),
