@@ -120,18 +120,23 @@ fn the_model_is_told_the_prompt_is_stale_once_and_not_on_every_check() {
     let mut h = Harness::open_with_registry(&parts, now, hub, None, None, registry.clone())
         .expect("the session reopens");
     let said = registry
-        .stale_prefix(id)
+        .stale_for_model(id)
         .expect("the fixture must be a session speaking a stale prompt, or this proves nothing");
 
     let first = h.nag_notice().expect("a stale prompt is something to say");
     assert!(
         first.contains(&said),
-        "the first check carries the sentence: {first}"
+        "the first check carries the model's own sentence: {first}"
     );
     assert!(
-        first.contains("whether to re-seat is their decision")
-            && first.contains("Do not ask them to re-seat"),
+        first.contains("[stale prompt]") && first.contains("the person's call"),
         "and says whose decision it is, instead of telling the model to keep asking: {first}"
+    );
+    // R93.E9: the model's copy names no session and cannot name `/reseat` - that is the head's
+    // sentence, and the model can act on neither the id nor the verb.
+    assert!(
+        !first.contains(id) && !first.contains("/reseat"),
+        "the operator's sentence is not the model's: {first}"
     );
     assert!(
         !first.contains("keep saying it"),
