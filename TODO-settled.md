@@ -4679,14 +4679,6 @@ landed it and the test that proves it. Every entry is verbatim as it was filed e
 line, which now says DONE and names the commits. Where an entry had something left in it, it stayed
 in `TODO.md` and says what is left.
 
-<!-- range A -->
-
-<!-- range B -->
-
-<!-- range C -->
-
-<!-- range D -->
-
 ## R62 — The gate runs locally and on the fleet, never on GitHub — **DONE 2026-11-03: no workflow runs the gate and it runs on a declared host instead, 2ec7738b, 2d20ae10, 5d3b2f05; no_workflow_runs_the_gate and the_tree_and_the_repository_arrive_and_the_steps_run_there**
 
 The operator: *"this is mostly local concern - i've been rate limited on github recently with
@@ -4738,14 +4730,6 @@ gate on lubuntu1/2, the row naming the runner. No host in this session's boundar
 fleet, so the evidence here is `gate_host.rs` and the row's own `(lab2x1 gate)` line.
 
 ---
-
-<!-- range E -->
-
-<!-- range F -->
-
-<!-- range G -->
-
-<!-- range H -->
 
 ## A sub-session is a SESSION a head may ATTACH to — the filter that hides it is the bug — **DONE 2026-11-03: the picker lists and opens a child, c840aee, 3150516a, 0c841de0; a_child_sits_under_its_parent_and_a_grandchild_under_it and enter_into_a_subagent_and_one_esc_goes_back_up_to_the_list_it_came_from**
 
@@ -4894,8 +4878,6 @@ thinking count drawn twice, leticl's three file lists, `BINARIES`, the weather l
 `sub_out_lines` nor `subagent-out-lines` exists.
 
 ---
-
-<!-- range I -->
 
 ## R22 — a 1.35M-token conversation compacted to a 2,250-token summary — **DONE 2026-11-02: the flat budget, the enumeration and the gate; per-topic budgets and the SOM stay the entry's own deferred order, a4af52b6; the_instruction_keeps_asking_every_section and the fidelity gate in crates/turn/src/fidelity.rs**
 
@@ -5099,11 +5081,6 @@ bar. One line, and it is the kind that stops being asked.
 
 ---
 
-<!-- range J -->
-
-<!-- range K -->
-<!-- range F -->
-
 ## R73 — A compaction is eight lines of notes and two numbers that read as 1.95M tokens — **DONE 2026-11-03: one updating line and one honest compaction row (leticl's half is its own repo's), a33655d7, 272a96a9; a_half_is_progress_from_its_first_event_to_its_last_and_never_a_warning and a_compaction_draws_one_row_with_its_unit_and_what_it_kept_and_dropped**
 
 The operator, pasting what leticl's head showed for ONE compaction: *"this is how much text i get
@@ -5198,7 +5175,8 @@ and that row carries the four facts a reader needs.
    the contract, and `compaction_of` is its other end. **And it has to know one new code:** a fold
    about to run is announced as `compacting`, so a head that takes it as state keeps one row per
    compaction; one that draws every warning keeps drawing it, which is what it did before.
-<!-- range C -->
+
+---
 
 ## R89 — Notices still drawn in full instead of one line + popup — **DONE 2026-11-03: every notice one line, its details a click or alt-n away, c7435d80, 0e6004c6; a test per wall in crates/tui/src/app/tests/one_line_walls.rs (a_length_cap_salvage_is_one_row_at_eighty_columns, a_warning_no_card_reads_is_one_clickable_row_at_eighty_columns, a_folded_settlement_opens_its_notice)**
 
@@ -5275,7 +5253,8 @@ unclickable `· /notes` line, everything else gets rano `Note::lines` (3 lines +
     - click paths `Target::Notice` vs `Target::NoteCard` vs none, and **no key opens any popup**;
     - popup titles differ (the fallback is `notice` in red);
     - one event, several rows: red target (2), restart (2), reseat (3), stale prompt (2).
-<!-- range K -->
+
+---
 
 ## T22 — `f_keep` names two different quantities, and C4 applies one's threshold to the other — **DONE 2026-11-03: C4's bar named `C4_KEEP` and held to `f_keep` alone, cca619f8, 576b558e; test `c4s_bar_is_about_the_entry_and_not_about_the_prompt`**
 
@@ -5366,7 +5345,8 @@ with `f_sim` printed beside it under its own name. Three tests: the T22 turn (9,
 10,093-token prompt, `f_keep` 1.000 PASSES where `f_sim` is 0.892), its converse (half the entry
 back on a prompt that grew by one token, `f_keep` 0.500 FAILS where `f_sim` 0.998 would have
 passed), and a first turn, which must not pass by vacancy.
-<!-- range G -->
+
+---
 
 ## The `reasoning_content` refusal is a TRAILING SYSTEM MESSAGE plus `tools` — **DONE 2026-11-03: a trailing system turn travels as the user role, 44f4742b; test a_trailing_system_item_is_sent_as_a_user_message**
 
@@ -5486,7 +5466,8 @@ is not a decision — take the queue, call the function, submit what it returns.
 is therefore those few lines, and the reading in the bullet above is still the evidence for them:
 reading rather than measurement, stated here rather than left to look stronger than it is. A `Harness`
 fixture is the thing to build if even that is to be asserted.
-<!-- range H -->
+
+---
 
 ## A 429 that names money was retried six times — and the interrupt did not reach the retry — **DONE 2026-11-03: a billing 429 fails once and a stop ends the retry wait, 1362185e, ad4a4c21, f3fcea73; crates/harnessd/tests/retry_policy.rs's what_is_retryable_and_what_the_operator_is_told and crates/harnessd/tests/stop_in_the_retry_wait.rs's a_stop_during_a_retry_wait_stops_the_children_first**
 
@@ -5553,7 +5534,8 @@ retries, 1/2/4/8/16 s, six calls, 31 s), and a sentence for each ending, so `FAI
 count. `refused_for_want_of_credit` and `http_retry_after` no longer exist. The interrupt half is still
 open, and it is now a question about `sleep_unless_closed` rather than about the ladder.
 — ✓ the interrupt half landed in f3fcea73: `sleep_unless_closed` watches `has_queued_interrupt`, so scenario F of `retry_policy.rs` gets the turn back in under 2 s.
-<!-- range A -->
+
+---
 
 ## R107 - `wait --until attention` returns at once while the session waits on its own background job - **DONE 2026-11-03: a running job holds a wait and a parked one does not, f1e7f9ec; bridge's a_wait_holds_on_a_running_job_and_not_on_the_one_the_model_parked and harnessd's a_running_job_counts_unless_the_model_parked_it**
 
