@@ -307,30 +307,45 @@ pub(crate) fn publish_failure(hub: &Arc<Hub>, turn_id: &str, e: &HarnessError) {
     });
 }
 
+/// What a batch of firings earns: whether the bell rings, and the monitors that rang (the ones the
+/// next window counts from) - an ending is in neither, since it leaves nothing to hold back.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct Ring {
+    pub rings: bool,
+    pub spoke: Vec<String>,
+}
+
 /// **Which monitors a batch of firings may ring the bell for**, given when each last did. One ring
 /// a monitor a window is the bound the TTL does not give: the condition can hold every tick, and a
-/// ring starts a turn. An ENDING is never held back - it is the last thing that monitor will say -
-/// and a monitor's window holds nobody else's.
+/// ring starts a turn. An ENDING is never held back - it is the last thing that monitor will say,
+/// and it clears the name so one declared again starts the window fresh - and a monitor's window
+/// holds nobody else's.
 pub(crate) fn may_ring(
     fired: &[letibot_tools::exec::monitor::Firing],
     spoke: &std::collections::HashMap<String, std::time::Instant>,
     now: std::time::Instant,
-) -> Vec<String> {
-    let mut due: Vec<String> = Vec::new();
+) -> Ring {
+    let mut out = Ring::default();
     for f in fired {
-        if due.contains(&f.name) {
+        if out.spoke.contains(&f.name) {
+            continue;
+        }
+        // An ending is said at once and is not a pace to hold the next one to.
+        if !f.fired.happened() {
+            out.rings = true;
             continue;
         }
         let inside = spoke
             .get(&f.name)
             .and_then(|at| now.checked_duration_since(*at))
             .is_some_and(|since| since < letibot_tools::exec::monitor::FIRING_RATE);
-        if f.fired.happened() && inside {
+        if inside {
             continue;
         }
-        due.push(f.name.clone());
+        out.rings = true;
+        out.spoke.push(f.name.clone());
     }
-    due
+    out
 }
 
 /// Start this session's monitor waiter - the thread that rings the bell when a monitor the
@@ -378,13 +393,19 @@ pub(crate) fn spawn_monitor_wake(
                 notified += fired.len();
                 // A firing inside its window is not DROPPED: the cursor above moved past it, and
                 // the harness has another one, so the next wake says it - counted, in one line.
-                let due = may_ring(&fired, &spoke, std::time::Instant::now());
-                if due.is_empty() {
+                let ring = may_ring(&fired, &spoke, std::time::Instant::now());
+                if !ring.rings {
                     continue;
                 }
                 let now = std::time::Instant::now();
-                for name in due {
+                for name in ring.spoke {
                     spoke.insert(name, now);
+                }
+                // Every name in this batch has now been heard, so none of them holds a fresh window.
+                for f in &fired {
+                    if !f.fired.happened() {
+                        spoke.remove(&f.name);
+                    }
                 }
                 bell.ring_wake(&id);
             }
@@ -435,32 +456,41 @@ mod firing_tests {
         let spoke = std::collections::HashMap::new();
         assert_eq!(
             may_ring(&burst, &spoke, t0),
-            vec!["chatty".to_string()],
+            Ring {
+                rings: true,
+                spoke: vec!["chatty".to_string()],
+            },
             "a monitor that has never spoken rings at once"
         );
         let mut spoke = std::collections::HashMap::new();
         spoke.insert("chatty".to_string(), t0);
-        assert!(
-            may_ring(&burst, &spoke, t0 + Duration::from_secs(1)).is_empty(),
+        assert_eq!(
+            may_ring(&burst, &spoke, t0 + Duration::from_secs(1)),
+            Ring::default(),
             "a second burst inside the window is one turn nobody asked for"
         );
-        assert_eq!(
-            may_ring(&burst, &spoke, t0 + FIRING_RATE),
-            vec!["chatty".to_string()],
+        assert!(
+            may_ring(&burst, &spoke, t0 + FIRING_RATE).rings,
             "the window passing is what earns the next ring"
         );
     }
 
-    /// Two facts the bound must not eat: a second monitor is not held by the first one's window,
-    /// and an ENDING - an expiry, a retire, an owner going - is said at once, because it is the
-    /// last thing that monitor will ever say.
+    /// Three facts the bound must not eat: a second monitor is not held by the first one's window,
+    /// an ENDING is said at once (it is the last thing that monitor will say), and an ending leaves
+    /// no window behind - a monitor declared again under the name rings on its first firing.
     #[test]
     fn a_second_monitor_is_not_held_by_the_first_and_an_ending_is_said_at_once() {
         let t0 = std::time::Instant::now();
         let mut spoke = std::collections::HashMap::new();
         spoke.insert("chatty".to_string(), t0);
         let other = vec![fired("build", Duration::ZERO)];
-        assert_eq!(may_ring(&other, &spoke, t0), vec!["build".to_string()]);
+        assert_eq!(
+            may_ring(&other, &spoke, t0),
+            Ring {
+                rings: true,
+                spoke: vec!["build".to_string()],
+            }
+        );
 
         let ending = vec![Firing {
             fired: Fired::Expired {
@@ -471,8 +501,11 @@ mod firing_tests {
         }];
         assert_eq!(
             may_ring(&ending, &spoke, t0 + Duration::from_secs(1)),
-            vec!["chatty".to_string()],
-            "the monitor's last word is not rate-bounded"
+            Ring {
+                rings: true,
+                spoke: Vec::new(),
+            },
+            "the monitor's last word is not rate-bounded, and holds nothing after it"
         );
     }
 }
