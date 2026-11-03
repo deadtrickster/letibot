@@ -5214,7 +5214,7 @@ fn a_note_at_the_row_the_window_drops_is_filed_beside_it() {
     let body = "a line of conversation, and enough of them to make a row cost its bytes\n\n\
                 ```rust\nfn f() { let n = 1; }\n```\n";
     let mut n = 0u64;
-    let mut arrive = |a: &mut App, n: &mut u64| {
+    let arrive = |a: &mut App, n: &mut u64| {
         let i = *n;
         a.apply(ServerFrame::Event(env(
             i * 2 + 1,
