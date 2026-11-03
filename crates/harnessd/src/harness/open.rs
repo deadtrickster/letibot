@@ -320,6 +320,16 @@ pub(crate) fn latest_box_stop(store: &Store) -> crate::restart::Stopped {
     }
 }
 
+/// What an open learns from the store before it builds anything: the connection, the corpus beside
+/// it, this session's own row and the claim on its transcript.
+struct Opening {
+    store: Option<Store>,
+    corpus_sink: Option<std::sync::Arc<dyn letibot_tools::CorpusSink>>,
+    corpus_counts: Option<letibot_tokencore::store::CorpusCounts>,
+    stored: Option<letibot_tokencore::store::StoredSession>,
+    writer: Option<crate::writer::Claim>,
+}
+
 impl Harness {
     /// Open a session: resolve the dialect against the vocabulary, seat the tools, render the
     /// stable prefix and record it. Every failure raised here is one that would otherwise be silent
@@ -350,6 +360,157 @@ impl Harness {
 
     /// [`Harness::open_with`] plus the daemon's session registry, so `task` spawns a real session:
     /// a hub an operator can attach and a store row it can resume. Tests pass a fresh one.
+    /// **What the store says before anything is built**: the connection and the corpus beside it, the
+    /// row this session already has and the claim on its transcript, and the workspace, title and seat
+    /// that row decides - a resumed session's tools belong to the tree its conversation is about.
+    ///
+    /// The store opens first because it may CHANGE the configuration, which is why this takes the
+    /// config by `&mut` and hands back what the rest of the open reads.
+    fn open_the_stored(cfg: &mut Config, notes: &mut Vec<String>) -> Result<Opening, HarnessError> {
+    // A `[embeddings]` section the box WROTE and did not get is said here, once per session:
+    // silently scoring the words alone would leave nobody able to fix the key.
+    if let Some(why) = cfg.embedder_fault.clone() {
+        notes.push(format!(
+            "the `[embeddings]` section did not produce an embedder, so every score this \
+             session makes is the words alone: {why}"
+        ));
+    }
+    // The store opens before anything else, because it may change the configuration: a session
+    // already in it carries its own workspace root, and its tools must be confined to THAT tree
+    // rather than to the directory this daemon happened to start in.
+    let store = match &cfg.store {
+        None => None,
+        Some(path) => Some(
+            Store::open(path)
+                .map_err(|e| HarnessError::Store(format!("opening {path:?}: {e}")))?,
+        ),
+    };
+    // A handle onto the connection `store` holds, not a second one, since the store became one
+    // connection per file per process. A corpus that will not open is reported and not fatal: a
+    // harness that will not start because its telemetry will not is a worse harness.
+    let opened_corpus = cfg
+        .store
+        .as_ref()
+        .and_then(|path| crate::corpus::StoreCorpus::open(path).ok())
+        .map(std::sync::Arc::new);
+    // Job handles must be above every one the store has seen, or the first job after a restart
+    // is an old `j7` to every reader. Seeded on every open, because a session can arrive from a
+    // daemon that minted higher handles.
+    if let Some(s) = &store
+        && let Ok(n) = s.max_job_number()
+    {
+        letibot_tools::exec::JobId::seed_above(n);
+    }
+    // As the table holds it, including every earlier run's rows.
+    let corpus_counts = opened_corpus.as_ref().map(|c| c.counts().0);
+    let corpus_sink: Option<std::sync::Arc<dyn letibot_tools::CorpusSink>> =
+        opened_corpus.map(|c| c as std::sync::Arc<dyn letibot_tools::CorpusSink>);
+    let stored = match &store {
+        None => None,
+        Some(s) => s
+            .session(&cfg.session_id)
+            .map_err(|e| HarnessError::Store(e.to_string()))?,
+    };
+    // One process appends to one transcript, and this is where that is decided: the claim is a
+    // row naming this process, taken before a single row is written. A session another live
+    // process holds is refused by name; one whose live copy is elsewhere is never claimed.
+    let moved = stored
+        .as_ref()
+        .and_then(|s| s.lives_on.clone())
+        .filter(|s| !s.is_empty());
+    let writer = match (&store, moved.is_some()) {
+        (Some(s), false) => {
+            Some(crate::writer::claim(s, &cfg.session_id).map_err(HarnessError::Setup)?)
+        }
+        _ => None,
+    };
+    if let Some(st) = &stored {
+        // A copy that lives somewhere else is not opened: `--migrate` marks the copy it leaves,
+        // and a turn in a marked copy writes into a conversation nobody else will see. A
+        // refusal rather than a note, because the note lands in the transcript the model answers in.
+        if let Some(on) = st.lives_on.as_ref().filter(|s| !s.is_empty()) {
+            return Err(HarnessError::Setup(format!(
+                "session {} lives on `{on}`, not here — it was moved there and the copy in \
+                 this store is not being appended to. Nothing was opened. `letibot --session \
+                 {}` attaches to where it is (re-establishing the forwarded socket if it \
+                 dropped), and `letibot --migrate {} --to local` brings it back here.",
+                cfg.session_id, cfg.session_id, cfg.session_id
+            )));
+        }
+        if !st.workspace_root.is_empty()
+            && std::path::Path::new(&st.workspace_root) != cfg.workspace
+        {
+            notes.push(format!(
+                "the workspace is {} — this session's own, from the store — not {}, \
+                 which is where this daemon was started. A resumed session's tools \
+                 are confined to the tree the conversation is about.",
+                st.workspace_root,
+                cfg.workspace.display()
+            ));
+            cfg.workspace = PathBuf::from(&st.workspace_root);
+        }
+        if let Some(t) = st.title.as_ref().filter(|t| !t.is_empty()) {
+            cfg.title = t.clone();
+        }
+        // The seat comes from the session too, and it must land HERE, because `cfg.seat`
+        // decides which backend is built below. Unparseable is an error and not a fallback to
+        // the daemon's role: either way the tools and the backend would disagree.
+        if let Some(name) = st.role.as_ref().filter(|r| !r.is_empty()) {
+            let seat = Seat::parse(name).map_err(|e| {
+                HarnessError::Setup(format!(
+                    "session {} records the role `{name}`, which this build does not know: {e}. Refusing rather than re-seating the conversation with the daemon's own role, which would change its tools without saying so.",
+                    cfg.session_id
+                ))
+            })?;
+            if seat != cfg.seat {
+                notes.push(format!(
+                    "the role is `{}` — this session's own, from the store — not \
+                     `{}`, which is what this daemon was started with. The tools \
+                     AND the backend follow the session's role, or they would \
+                     disagree about what it may write.",
+                    seat.as_str(),
+                    cfg.seat.as_str()
+                ));
+                cfg.seat = seat;
+            }
+        }
+    }
+
+    // An opencode session is seated in ITS directory: the conversation happened there, and a
+    // session at the wrong root is the `--session` defect. Read before the backend is built,
+    // because the root is baked into it.
+    if stored.is_none()
+        && let Some(oc_id) = cfg.session_id.strip_prefix("oc-").map(str::to_string)
+        && let Some(db) = letibot_opencode::default_db_path()
+        && let Ok(src) = letibot_opencode::Source::open(&db)
+        && let Ok(dir) = src.directory(&oc_id)
+        && !dir.is_empty()
+    {
+        cfg.workspace = PathBuf::from(dir);
+    }
+
+    // And the same for a Claude Code transcript, except that a root which is NOT there is not a
+    // seat: its `cwd` is a memory that may since have been deleted, and a session seated at one
+    // fails on its first tool call instead of at startup.
+    if stored.is_none()
+        && let Some(cc_id) = cfg.session_id.strip_prefix("cc-").map(str::to_string)
+        && let Some(dir) = letibot_claude::default_projects_dir()
+        && let Ok(src) = letibot_claude::Source::open(&dir)
+        && let Ok(cwd) = src.directory(&cc_id)
+        && !cwd.is_empty()
+        && std::path::Path::new(&cwd).is_dir()
+    {
+        cfg.workspace = PathBuf::from(cwd);
+    }
+        Ok(Opening {
+            store,
+            corpus_sink,
+            corpus_counts,
+            stored,
+            writer,
+        })
+    }
+
     pub fn open_with_registry(
         parts: &Parts,
         mut cfg: Config,
@@ -358,142 +519,16 @@ impl Harness {
         extra_tool: Option<Box<dyn Tool>>,
         session_registry: Arc<letibot_sessionlog::registry::Registry>,
     ) -> Result<Self, HarnessError> {
-        // The store opens before anything else, because it may change the configuration: a session
-        // already in it carries its own workspace root, and its tools must be confined to THAT tree
-        // rather than to the directory this daemon happened to start in.
-        let store = match &cfg.store {
-            None => None,
-            Some(path) => Some(
-                Store::open(path)
-                    .map_err(|e| HarnessError::Store(format!("opening {path:?}: {e}")))?,
-            ),
-        };
-        // A handle onto the connection `store` holds, not a second one, since the store became one
-        // connection per file per process. A corpus that will not open is reported and not fatal: a
-        // harness that will not start because its telemetry will not is a worse harness.
-        let opened_corpus = cfg
-            .store
-            .as_ref()
-            .and_then(|path| crate::corpus::StoreCorpus::open(path).ok())
-            .map(std::sync::Arc::new);
-        // Job handles must be above every one the store has seen, or the first job after a restart
-        // is an old `j7` to every reader. Seeded on every open, because a session can arrive from a
-        // daemon that minted higher handles.
-        if let Some(s) = &store
-            && let Ok(n) = s.max_job_number()
-        {
-            letibot_tools::exec::JobId::seed_above(n);
-        }
-        // As the table holds it, including every earlier run's rows.
-        let corpus_counts = opened_corpus.as_ref().map(|c| c.counts().0);
-        let corpus_sink: Option<std::sync::Arc<dyn letibot_tools::CorpusSink>> =
-            opened_corpus.map(|c| c as std::sync::Arc<dyn letibot_tools::CorpusSink>);
-        let stored = match &store {
-            None => None,
-            Some(s) => s
-                .session(&cfg.session_id)
-                .map_err(|e| HarnessError::Store(e.to_string()))?,
-        };
         let mut notes: Vec<String> = Vec::new();
-        // A `[embeddings]` section the box WROTE and did not get is said here, once per session:
-        // silently scoring the words alone would leave nobody able to fix the key.
-        if let Some(why) = cfg.embedder_fault.clone() {
-            notes.push(format!(
-                "the `[embeddings]` section did not produce an embedder, so every score this \
-                 session makes is the words alone: {why}"
-            ));
-        }
-        // One process appends to one transcript, and this is where that is decided: the claim is a
-        // row naming this process, taken before a single row is written. A session another live
-        // process holds is refused by name; one whose live copy is elsewhere is never claimed.
-        let moved = stored
-            .as_ref()
-            .and_then(|s| s.lives_on.clone())
-            .filter(|s| !s.is_empty());
-        let writer = match (&store, moved.is_some()) {
-            (Some(s), false) => {
-                Some(crate::writer::claim(s, &cfg.session_id).map_err(HarnessError::Setup)?)
-            }
-            _ => None,
-        };
-        if let Some(st) = &stored {
-            // A copy that lives somewhere else is not opened: `--migrate` marks the copy it leaves,
-            // and a turn in a marked copy writes into a conversation nobody else will see. A
-            // refusal rather than a note, because the note lands in the transcript the model answers in.
-            if let Some(on) = st.lives_on.as_ref().filter(|s| !s.is_empty()) {
-                return Err(HarnessError::Setup(format!(
-                    "session {} lives on `{on}`, not here — it was moved there and the copy in \
-                     this store is not being appended to. Nothing was opened. `letibot --session \
-                     {}` attaches to where it is (re-establishing the forwarded socket if it \
-                     dropped), and `letibot --migrate {} --to local` brings it back here.",
-                    cfg.session_id, cfg.session_id, cfg.session_id
-                )));
-            }
-            if !st.workspace_root.is_empty()
-                && std::path::Path::new(&st.workspace_root) != cfg.workspace
-            {
-                notes.push(format!(
-                    "the workspace is {} — this session's own, from the store — not {}, \
-                     which is where this daemon was started. A resumed session's tools \
-                     are confined to the tree the conversation is about.",
-                    st.workspace_root,
-                    cfg.workspace.display()
-                ));
-                cfg.workspace = PathBuf::from(&st.workspace_root);
-            }
-            if let Some(t) = st.title.as_ref().filter(|t| !t.is_empty()) {
-                cfg.title = t.clone();
-            }
-            // The seat comes from the session too, and it must land HERE, because `cfg.seat`
-            // decides which backend is built below. Unparseable is an error and not a fallback to
-            // the daemon's role: either way the tools and the backend would disagree.
-            if let Some(name) = st.role.as_ref().filter(|r| !r.is_empty()) {
-                let seat = Seat::parse(name).map_err(|e| {
-                    HarnessError::Setup(format!(
-                        "session {} records the role `{name}`, which this build does not know: {e}. Refusing rather than re-seating the conversation with the daemon's own role, which would change its tools without saying so.",
-                        cfg.session_id
-                    ))
-                })?;
-                if seat != cfg.seat {
-                    notes.push(format!(
-                        "the role is `{}` — this session's own, from the store — not \
-                         `{}`, which is what this daemon was started with. The tools \
-                         AND the backend follow the session's role, or they would \
-                         disagree about what it may write.",
-                        seat.as_str(),
-                        cfg.seat.as_str()
-                    ));
-                    cfg.seat = seat;
-                }
-            }
-        }
-
-        // An opencode session is seated in ITS directory: the conversation happened there, and a
-        // session at the wrong root is the `--session` defect. Read before the backend is built,
-        // because the root is baked into it.
-        if stored.is_none()
-            && let Some(oc_id) = cfg.session_id.strip_prefix("oc-").map(str::to_string)
-            && let Some(db) = letibot_opencode::default_db_path()
-            && let Ok(src) = letibot_opencode::Source::open(&db)
-            && let Ok(dir) = src.directory(&oc_id)
-            && !dir.is_empty()
-        {
-            cfg.workspace = PathBuf::from(dir);
-        }
-
-        // And the same for a Claude Code transcript, except that a root which is NOT there is not a
-        // seat: its `cwd` is a memory that may since have been deleted, and a session seated at one
-        // fails on its first tool call instead of at startup.
-        if stored.is_none()
-            && let Some(cc_id) = cfg.session_id.strip_prefix("cc-").map(str::to_string)
-            && let Some(dir) = letibot_claude::default_projects_dir()
-            && let Ok(src) = letibot_claude::Source::open(&dir)
-            && let Ok(cwd) = src.directory(&cc_id)
-            && !cwd.is_empty()
-            && std::path::Path::new(&cwd).is_dir()
-        {
-            cfg.workspace = PathBuf::from(cwd);
-        }
+        // **The store first, because it may change the configuration**: a session already in it
+        // carries its own workspace and seat, and the backend built below follows those.
+        let Opening {
+            store,
+            corpus_sink,
+            corpus_counts,
+            stored,
+            writer,
+        } = Self::open_the_stored(&mut cfg, &mut notes)?;
 
         // The mode is a session property, resolved after the workspace is final: the per-project
         // point is looked up now (longest ancestor wins), so a project with no row keeps the
