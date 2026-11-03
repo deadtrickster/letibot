@@ -653,6 +653,7 @@ pub struct HostProcesses {
     standing_env: Mutex<Vec<(String, String)>>,
     /// The seat's toolchain pointers: also handed to the boundary, which may clear the environment.
     confined_env: Mutex<Vec<(String, String)>>,
+    secret_env: Mutex<super::seat::SecretEnv>,
     /// A directory put in FRONT of the pinned `PATH`: the daemon's shims, so a
     /// `sudo` the session runs is the one that asks the head instead of a tty.
     path_prefix: Mutex<Option<String>>,
@@ -954,6 +955,7 @@ impl HostProcesses {
             }),
             standing_env: Mutex::new(Vec::new()),
             confined_env: Mutex::new(Vec::new()),
+            secret_env: Mutex::new(Default::default()),
             path_prefix: Mutex::new(None),
             monitors: Arc::new(Monitors::new()),
             protected: Mutex::new(Vec::new()),
@@ -1148,6 +1150,11 @@ impl HostProcesses {
     /// earlier ones wholesale.
     pub fn set_confined_env(&self, pairs: Vec<(String, String)>) {
         *self.confined_env.lock().unwrap_or_else(|e| e.into_inner()) = pairs;
+    }
+
+    /// Environment every command carries whose values are masked in any output slice.
+    pub fn set_secret_env(&self, secrets: super::seat::SecretEnv) {
+        *self.secret_env.lock().unwrap_or_else(|e| e.into_inner()) = secrets;
     }
 
     pub fn set_standing_env(&self, pairs: Vec<(String, String)>) {
@@ -1363,8 +1370,17 @@ impl ProcessHost for HostProcesses {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone();
-        let plan_env: Vec<(String, String)> =
-            seat_env.iter().chain(req.env.iter()).cloned().collect();
+        let secret_env = self
+            .secret_env
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let plan_env: Vec<(String, String)> = seat_env
+            .iter()
+            .chain(secret_env.0.iter())
+            .chain(req.env.iter())
+            .cloned()
+            .collect();
         let planned = if req.tty && confined.spares_operator() {
             Ok(Vec::new())
         } else {
@@ -1929,7 +1945,13 @@ impl ProcessHost for HostProcesses {
         }
         let job = self.find(id).ok_or(ExecError::NoSuchJob(id.0.clone()))?;
         let cap = job.capture.lock().expect("capture");
-        Ok(cap.slice(from, limit))
+        let mut slice = cap.slice(from, limit);
+        slice.bytes = self
+            .secret_env
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .mask(&slice.bytes);
+        Ok(slice)
     }
 
     fn kill_job_as(&self, id: &JobId, by: &str) -> Result<Reaping, ExecError> {

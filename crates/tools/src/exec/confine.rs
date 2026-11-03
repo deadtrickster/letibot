@@ -523,6 +523,9 @@ pub struct ViewSpec {
     /// the host coordinator's socket and its lease and marker files are added at spawn time
     /// by [`room_files`], and a caller may add more.
     pub hidden: Vec<PathBuf>,
+    /// Paths inside a read-write grant that stay read-only: a file the operator's own tools run
+    /// later outside the boundary (git hooks and config) must not be writable from inside.
+    pub protected: Vec<PathBuf>,
 }
 
 /// The host room coordinator's files (`room-<host key>.sock`, `.lease`, `.restart`) in
@@ -613,7 +616,14 @@ impl ViewSpec {
             tmp: TmpView::PerCommand,
             grants: Vec::new(),
             hidden: Vec::new(),
+            protected: Vec::new(),
         }
+    }
+
+    /// Keep this path read-only even inside a read-write grant.
+    pub fn protecting(mut self, path: impl Into<PathBuf>) -> ViewSpec {
+        self.protected.push(path.into());
+        self
     }
 
     /// Keep this file out of the view and unconnectable even if a wider bind covers it.
@@ -2167,6 +2177,14 @@ fn pieces_of(
                 arg(&mut a, path.display().to_string());
                 arg(&mut a, AGENT_SOCKET);
             }
+        }
+    }
+
+    for p in &view.protected {
+        if view.classify(p) == Presence::Inside && p.exists() {
+            arg(&mut a, "--ro-bind");
+            arg(&mut a, p.display().to_string());
+            arg(&mut a, p.display().to_string());
         }
     }
 

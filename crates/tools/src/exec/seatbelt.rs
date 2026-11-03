@@ -355,6 +355,16 @@ pub fn render_profile(view: &ViewSpec, egress: &Egress, l: &Layout) -> String {
         }
         s.push_str(")\n");
     }
+    // Read-only inside a read-write grant, after it.
+    if !view.protected.is_empty() {
+        s.push_str("\n; --- read-only inside a read-write grant ---\n(deny file-write*\n");
+        for p in &view.protected {
+            for q in both_spellings(p) {
+                s.push_str(&format!("  (subpath \"{}\")\n", q.display()));
+            }
+        }
+        s.push_str(")\n");
+    }
     // The coordinator's socket and files: no connect, no read, whatever the egress decision and
     // whatever a grant covers. Last, so nothing above can undo it.
     if !l.hidden.is_empty() {

@@ -404,6 +404,7 @@ impl HostBackend {
                 egress: crate::exec::confine::Egress::Denied,
                 env: Vec::new(),
                 home: None,
+                secret_env: Default::default(),
             },
         )
     }
@@ -443,6 +444,18 @@ impl HostBackend {
         {
             view = view.granting(g);
         }
+        // Only the tight view: a top-level session edits its own hooks and config.
+        if seat.home.is_none() {
+            for g in &grants {
+                if let crate::exec::confine::Grant::ReadWrite { path, .. } = g
+                    && path.join("objects").is_dir()
+                {
+                    for p in crate::exec::seat::git_dir_protected(path) {
+                        view = view.protecting(p);
+                    }
+                }
+            }
+        }
         if let Some(h) = &seat.home {
             view = view.with_home(crate::exec::confine::HomeView::Dir(h.clone()));
         }
@@ -451,6 +464,7 @@ impl HostBackend {
         let host = crate::exec::HostProcesses::confined(base.root.clone(), confine)
             .map_err(|e| BackendError::Io(e.to_string()))?;
         host.set_confined_env(seat.env);
+        host.set_secret_env(seat.secret_env);
         Ok(HostBackend {
             processes: Some(std::sync::Arc::new(host)),
             ..base

@@ -288,3 +288,19 @@ fn a_run_ended_by_the_daemon_stopping_says_so() {
 fn may_look_at(pid: u32) -> bool {
     std::fs::read_link(format!("/proc/{pid}/fd/0")).is_ok()
 }
+
+#[test]
+fn a_secret_the_seat_carries_is_masked_in_the_output_a_reader_gets() {
+    let Some(host) = host() else { return };
+    let token = "gho_fixtureFIXTUREfixture0000000000000000";
+    host.set_secret_env(letibot_tools::exec::seat::SecretEnv(vec![(
+        "GH_TOKEN".into(),
+        token.into(),
+    )]));
+    let id = spawn(&host, "echo \"t=$GH_TOKEN\"", false);
+    settled(&host, &id);
+    let out = host.output(&id, 0, 4096).expect("output");
+    let text = String::from_utf8_lossy(&out.bytes).to_string();
+    assert!(text.contains("t=***"), "{text}");
+    assert!(!text.contains(token), "{text}");
+}

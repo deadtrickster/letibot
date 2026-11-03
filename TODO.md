@@ -260,9 +260,9 @@ Two halves, the first smaller and first:
    Mac session ("could not read Username", "not logged into any GitHub hosts"). A top-level session
    is now wide (real `$HOME` read-write, filesystem readable, `DENY_UNDER_HOME` less `.config/gh` as
    the only fence). A child keeps the tight view plus the operator's git identity and its worktree's
-   git dir, with no credentials, so it commits and cannot push. Open: gh's keychain token needs
-   `login.keychain-db` readable, which cannot be scoped to gh's item, so gh is not logged in inside
-   until the operator decides (`gh_is_logged_in_in_a_wide_seat_and_prints_no_token`, ignored). See §4k.
+   git dir (hooks and config read-only), with no credentials, so it commits and cannot push. A
+   top-level seat gets `GH_TOKEN` and a github.com-only git credential helper, from one `gh auth
+   token` the daemon runs at open, masked in output; `Library/Keychains` stays denied. See §4k.
 
    **What half 2 still needs: a Mac.** `crates/tools/src/exec/seatbelt.rs` and
    `crates/tools/tests/seatbelt.rs` are in the tree now, and nothing on a Linux box can run

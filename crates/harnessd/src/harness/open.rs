@@ -700,17 +700,37 @@ impl Harness {
 
     /// The default seat's view: wide for a top-level session, tight for a child.
     #[cfg(target_os = "macos")]
-    fn default_seat(cfg: &Config) -> letibot_tools::exec::seat::SeatView {
+    fn default_seat(cfg: &Config, hub: &Arc<Hub>) -> letibot_tools::exec::seat::SeatView {
         use letibot_tools::exec::seat;
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
             .unwrap_or_default();
+        let level = seat::Level::of(cfg.parent_session_id.as_deref());
+        // Asked once, here, outside the boundary. A child never asks.
+        let token = match level {
+            seat::Level::Wide => match seat::gh_auth_token() {
+                Ok(t) => Some(t),
+                Err(why) => {
+                    hub.publish(SessionEvent::Warning {
+                        code: "gh_token_absent".into(),
+                        detail: format!(
+                            "this session opens without a GitHub token, so `git push` and `gh` \
+                             will not authenticate: {why}"
+                        ),
+                        compaction: None,
+                    });
+                    None
+                }
+            },
+            seat::Level::Tight => None,
+        };
         seat::seat_for_level(
-            seat::Level::of(cfg.parent_session_id.as_deref()),
+            level,
             &cfg.mode,
             "this machine",
             &seat::present_under(&home),
             &home,
+            token.as_deref(),
         )
     }
 
@@ -730,7 +750,7 @@ impl Harness {
             "/",
             &cfg.workspace,
             confined_grants(cfg, cfg.landing_root.as_deref()),
-            Self::default_seat(cfg),
+            Self::default_seat(cfg, hub),
         )
         .and_then(|b| b.with_cwd(&cfg.workspace));
         match built {

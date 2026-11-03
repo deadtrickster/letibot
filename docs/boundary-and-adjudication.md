@@ -804,11 +804,23 @@ tight view only.
   (`seat::worktree_git_grants`), so `git commit` works. A child cannot push or land itself. Its work
   comes back through its branch and the review queue.
 
-Measured open point: gh on macOS keeps its token in the login keychain, and the Security client
-library reads `~/Library/Keychains/login.keychain-db` itself (the `com.apple.SecurityServer` lookup is
-already allowed and is not enough). With `Library/Keychains` denied, `gh auth token` fails inside; with
-that one path readable it succeeds. This cannot be scoped to gh's item, so the deny stays and the test
-`gh_is_logged_in_in_a_wide_seat_and_prints_no_token` is `#[ignore]`d until the operator decides.
+**GitHub credentials.** gh on macOS keeps its token in the login keychain, and the Security client
+library reads `~/Library/Keychains/login.keychain-db` itself, so the deny on `Library/Keychains` makes
+`gh auth token` fail inside (measured; the `SecurityServer` lookup is not enough and the file cannot
+be scoped to gh's item). The deny stays. Instead the daemon, outside the boundary, runs `gh auth
+token` once when a top-level seat opens and hands that seat `GH_TOKEN` plus git credential config
+through the environment (`seat::github_env`: `credential.helper` reset, then a
+`credential.https://github.com.helper` that answers `username=x-access-token` and
+`password=$GH_TOKEN`, so only github.com gets it). If `gh` gives no token the seat opens without it
+and publishes a `gh_token_absent` warning. A child never gets it. The values live in
+`SeatView::secret_env` (`SecretEnv`: its `Debug` prints names only) and `HostProcesses::output` masks
+them to the same length in every slice it returns. A command can still print its own `GH_TOKEN`
+(masked in the result, but present in a job's output file on disk).
+
+**Git dir protection (tight view).** A child's worktree grant is its repository's common git dir
+read-write, so `git commit` works. `hooks`, `config` and each `worktrees/*/config.worktree` inside it
+stay read-only (`ViewSpec::protected`, `seat::git_dir_protected`), because the operator's own git runs
+those later outside the boundary. The wide view does not protect them.
 
 Measured on a Mac (Darwin 25.6, 2026-11-03): `cargo test --offline -p letibot-tools --test seatbelt
 --test seatbelt_no_helper` passes 8/8 (the toolchain runs, the checkout is written, a write outside is

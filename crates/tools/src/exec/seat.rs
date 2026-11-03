@@ -7,9 +7,87 @@ use std::path::{Path, PathBuf};
 
 use super::confine::{Egress, GRANT_CANDIDATES, GRANT_GLOBS, Grant};
 
+/// Environment whose values are secrets: the names print, the values never do.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct SecretEnv(pub Vec<(String, String)>);
+
+impl std::fmt::Debug for SecretEnv {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list()
+            .entries(self.0.iter().map(|(k, _)| k))
+            .finish()
+    }
+}
+
+impl SecretEnv {
+    /// `text` with every secret value masked to the same length, so offsets into it still hold.
+    pub fn mask(&self, text: &[u8]) -> Vec<u8> {
+        let mut out = text.to_vec();
+        for (_, v) in &self.0 {
+            let v = v.as_bytes();
+            if v.len() < 8 {
+                continue;
+            }
+            let mut i = 0;
+            while i + v.len() <= out.len() {
+                if &out[i..i + v.len()] == v {
+                    out[i..i + v.len()].fill(b'*');
+                    i += v.len();
+                } else {
+                    i += 1;
+                }
+            }
+        }
+        out
+    }
+}
+
+/// `GH_TOKEN` and a git credential helper for github.com that answers with it, for a top-level
+/// seat. The token is only in `GH_TOKEN`: the git config values name the variable, not its value.
+pub fn github_env(token: &str) -> SecretEnv {
+    let helper = "!f() { echo username=x-access-token; echo \"password=$GH_TOKEN\"; }; f";
+    SecretEnv(
+        [
+            ("GH_TOKEN", token),
+            ("GIT_CONFIG_COUNT", "2"),
+            ("GIT_CONFIG_KEY_0", "credential.helper"),
+            ("GIT_CONFIG_VALUE_0", ""),
+            ("GIT_CONFIG_KEY_1", "credential.https://github.com.helper"),
+            ("GIT_CONFIG_VALUE_1", helper),
+        ]
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .to_vec(),
+    )
+}
+
+/// The operator's GitHub token, asked of `gh` by the daemon outside any boundary.
+pub fn gh_auth_token() -> Result<String, String> {
+    let gh = ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "gh"]
+        .into_iter()
+        .find(|p| !p.starts_with('/') || Path::new(p).is_file())
+        .unwrap_or("gh");
+    let out = std::process::Command::new(gh)
+        .args(["auth", "token"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("`gh auth token` could not run: {e}"))?;
+    let token = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if out.status.success() && !token.is_empty() {
+        Ok(token)
+    } else {
+        Err(format!(
+            "`gh auth token` gave no token (exit {}): {}",
+            out.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))
+    }
+}
+
 /// The grants, egress and environment a confinement is built with.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SeatView {
+    /// Values never printed; see [`SecretEnv`].
+    pub secret_env: SecretEnv,
     pub grants: Vec<Grant>,
     pub egress: Egress,
     pub env: Vec<(String, String)>,
@@ -46,6 +124,7 @@ pub fn seat_for_level<S: AsRef<str>>(
     place: &str,
     present: &[S],
     operator_home: &Path,
+    gh_token: Option<&str>,
 ) -> SeatView {
     match level {
         Level::Tight => seat_view(mode, place, present),
@@ -54,6 +133,7 @@ pub fn seat_for_level<S: AsRef<str>>(
             egress: network_rule(mode, place),
             env: Vec::new(),
             home: Some(operator_home.to_path_buf()),
+            secret_env: gh_token.map(github_env).unwrap_or_default(),
         },
     }
 }
@@ -126,6 +206,19 @@ pub fn worktree_git_grants(project: &Path) -> Vec<Grant> {
               checkout"
             .to_string(),
     }]
+}
+
+/// What inside a granted git dir stays read-only: hooks and config are run by the operator's own
+/// git later, outside the boundary, so a write there is code execution after the session.
+pub fn git_dir_protected(git_dir: &Path) -> Vec<PathBuf> {
+    let mut out = vec![git_dir.join("hooks"), git_dir.join("config")];
+    if let Ok(rd) = std::fs::read_dir(git_dir.join("worktrees")) {
+        for e in rd.flatten() {
+            out.push(e.path().join("config.worktree"));
+            out.push(e.path().join("hooks"));
+        }
+    }
+    out
 }
 
 /// The variables that point a tool at a granted path, since the view's `$HOME` is fresh.
@@ -203,6 +296,7 @@ pub fn seat_view<S: AsRef<str>>(mode: &crate::mode::Mode, place: &str, present: 
         egress: network_rule(mode, place),
         env,
         home: None,
+        secret_env: SecretEnv::default(),
     }
 }
 
@@ -240,16 +334,51 @@ mod tests {
         assert!(!seat_view(&Mode::READ_ONLY, "x", &present).egress.allowed());
     }
 
+    const FIXTURE_TOKEN: &str = "gho_fixtureFIXTUREfixture0000000000000000";
+
     #[test]
     fn a_top_level_session_is_wide_and_a_child_is_tight() {
         assert_eq!(Level::of(None), Level::Wide);
         assert_eq!(Level::of(Some("s-1")), Level::Tight);
         let h = Path::new("/h");
-        let wide = seat_for_level(Level::Wide, &Mode::WRITES_ALLOWED, "x", &["/h/.cargo"], h);
+        let wide = seat_for_level(
+            Level::Wide,
+            &Mode::WRITES_ALLOWED,
+            "x",
+            &["/h/.cargo"],
+            h,
+            Some(FIXTURE_TOKEN),
+        );
+        assert!(
+            wide.secret_env
+                .0
+                .iter()
+                .any(|(k, v)| k == "GH_TOKEN" && v == FIXTURE_TOKEN)
+        );
+        assert!(
+            !format!("{wide:?}").contains(FIXTURE_TOKEN),
+            "Debug leaked the token"
+        );
+        assert_eq!(
+            wide.secret_env
+                .mask(format!("a {FIXTURE_TOKEN} b").as_bytes()),
+            format!("a {} b", "*".repeat(FIXTURE_TOKEN.len())).into_bytes()
+        );
         assert_eq!(wide.home.as_deref(), Some(h));
         assert!(wide.grants.is_empty() && wide.env.is_empty() && wide.egress.allowed());
-        let tight = seat_for_level(Level::Tight, &Mode::WRITES_ALLOWED, "x", &["/h/.cargo"], h);
+        let tight = seat_for_level(
+            Level::Tight,
+            &Mode::WRITES_ALLOWED,
+            "x",
+            &["/h/.cargo"],
+            h,
+            Some(FIXTURE_TOKEN),
+        );
         assert!(tight.home.is_none() && !tight.grants.is_empty());
+        assert!(
+            tight.secret_env.0.is_empty(),
+            "a child never gets the token"
+        );
     }
 
     #[test]

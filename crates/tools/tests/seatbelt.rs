@@ -520,33 +520,66 @@ fn gh_logged_in_outside() -> bool {
         .unwrap_or(false)
 }
 
-// Measured: with `Library/Keychains` denied, `gh auth token` fails inside (the Security client
-// library reads `login.keychain-db` itself, not only through `securityd`), and with that one path
-// allowed it succeeds. The deny stays, so this is the open question, not a regression.
+/// `run_in` with extra environment, passed the way a seat's env reaches the wrapped command.
+fn run_env(s: &Seatbelt, cwd: &Path, env: &[(String, String)], command: &str) -> (i32, String) {
+    let argv = s
+        .wrap(&letibot_tools::exec::confine::ConfinePlan { cwd, env })
+        .expect("a measured boundary wraps");
+    let out = std::process::Command::new(&argv[0])
+        .args(&argv[1..])
+        .arg("/bin/sh")
+        .arg("-c")
+        .arg(command)
+        .envs(env.iter().cloned())
+        .current_dir(cwd)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("the wrapped command runs");
+    (
+        out.status.code().unwrap_or(-1),
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        ),
+    )
+}
+
+const FIXTURE_TOKEN: &str = "gho_fixtureFIXTUREfixture0000000000000000";
+
 #[test]
-#[ignore = "gh's keychain item needs ~/Library/Keychains/login.keychain-db readable"]
-fn gh_is_logged_in_in_a_wide_seat_and_prints_no_token() {
-    if !gh_logged_in_outside() {
-        eprintln!("skipped: gh is not logged in on this machine");
-        return;
-    }
-    let f = Fixture::new("wide-gh");
-    let view = ViewSpec::project_only(f.project())
-        .with_home(HomeView::Dir(real_home()))
-        .with_tmp(TmpView::Session(f.root.join("tmp")));
-    // `gh auth status` asks GitHub whether the token works, so the network is on.
-    let net = Egress::Host {
-        why: "gh checks its token online".into(),
-    };
-    let s = Seatbelt::probe_as(view, net, vec![], real_home())
-        .unwrap_or_else(|e| panic!("the macOS boundary did not measure on this box: {e}"));
-    let (rc, out) = run_in(&s, &f.project(), "/opt/homebrew/bin/gh auth status 2>&1");
-    assert_eq!(rc, 0, "{out}");
-    assert!(out.contains("Logged in"), "{out}");
-    assert!(
-        !out.contains("gho_") && !out.contains("ghp_"),
-        "token printed"
+fn a_wide_seat_with_the_injected_token_authenticates_gh_and_git_for_github_only() {
+    let f = Fixture::new("wide-token");
+    let (s, _) = wide(&f);
+    let env = letibot_tools::exec::seat::github_env(FIXTURE_TOKEN).0;
+    // gh answers from `GH_TOKEN`, offline.
+    let (rc, out) = run_env(
+        &s,
+        &f.project(),
+        &env,
+        "/opt/homebrew/bin/gh auth token 2>&1",
     );
+    assert_eq!(rc, 0, "{out}");
+    assert_eq!(out.trim(), FIXTURE_TOKEN);
+    // git's credential fill for github.com gets the token, and for another host gets nothing.
+    let fill = |host: &str| {
+        run_env(
+            &s,
+            &f.project(),
+            &env,
+            &format!(
+                "printf 'protocol=https\\nhost={host}\\n\\n' | \
+                 GIT_TERMINAL_PROMPT=0 git credential fill 2>&1"
+            ),
+        )
+    };
+    let (rc, out) = fill("github.com");
+    assert_eq!(rc, 0, "{out}");
+    assert!(out.contains("username=x-access-token"), "{out}");
+    assert!(out.contains(&format!("password={FIXTURE_TOKEN}")), "{out}");
+    let (rc, out) = fill("evil.example");
+    assert_ne!(rc, 0, "{out}");
+    assert!(!out.contains(FIXTURE_TOKEN), "{out}");
 }
 
 #[test]
@@ -597,6 +630,9 @@ fn a_child_commits_in_a_worktree_with_the_operators_identity_and_has_no_credenti
         .with_home(HomeView::Dir(f.home()))
         .with_tmp(TmpView::Session(f.root.join("tmp")));
     for g in letibot_tools::exec::seat::worktree_git_grants(&wt) {
+        for p in letibot_tools::exec::seat::git_dir_protected(g.path()) {
+            view = view.protecting(p);
+        }
         view = view.granting(g);
     }
     let s = Seatbelt::probe_as(view, Egress::Denied, vec![f.denied()], op)
@@ -608,6 +644,23 @@ fn a_child_commits_in_a_worktree_with_the_operators_identity_and_has_no_credenti
     );
     assert_eq!(rc, 0, "{out}");
     assert!(out.contains("Fixture Op,op@example.test"), "{out}");
+    // Hooks and config run later outside the boundary, so a child cannot write them.
+    let common = repo.join(".git").canonicalize().unwrap();
+    let (rc, out) = run_in(
+        &s,
+        &wt,
+        &format!("echo '#!/bin/sh' > {}/hooks/pre-commit", common.display()),
+    );
+    assert_ne!(rc, 0, "a child planted a hook: {out}");
+    let (rc, out) = run_in(
+        &s,
+        &wt,
+        &format!("echo '[core]' >> {}/config", common.display()),
+    );
+    assert_ne!(rc, 0, "a child edited the repository config: {out}");
+    // And the commit still works, with the protected paths in place.
+    let (rc, out) = run_in(&s, &wt, "git commit -q --allow-empty -m again");
+    assert_eq!(rc, 0, "{out}");
     // No helper answers for GitHub, and prompting is off.
     let (rc, out) = run_in(
         &s,
