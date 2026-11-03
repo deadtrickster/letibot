@@ -1,6 +1,7 @@
 //! A model that stops because "my context is full" when it is not gets told so, through the
 //! harness's own round loop. The canned server plays the model: one round ends the turn
-//! with the model's sentence, verbatim, and no tool call.
+//! with the model's sentence, verbatim, and no tool call - and one round says the same sentence
+//! and calls a tool anyway, which is the branch where the correction waits for the step boundary.
 
 use letibot_harnessd::Parts;
 use letibot_harnessd::config::Config;
@@ -18,6 +19,11 @@ use support::qwen::{IM_END, THINK_CLOSE, spoken};
 
 /// The model's sentence, verbatim.
 const EXCUSE: &str = "My context is at the wall, so I'll stop here rather than start a piece I can't finish: what's left of the port is scroll regions.";
+
+/// The tokens Qwen spells a tool call with: a round that calls anything has a step boundary, which
+/// is where a correction waits for a round that went on working.
+const TOOL_CALL_OPEN: u32 = 248058;
+const TOOL_CALL_CLOSE: u32 = 248059;
 
 struct TempDir {
     path: std::path::PathBuf,
@@ -85,6 +91,47 @@ fn a_thoughtful_answer(
     frames.push(canned::Frame::Final {
         stop_type: "eos",
         n_decoded: (thought.len() + answer_ids.len() + 2) as u64,
+        n_prompt,
+        cache_n: 0,
+    });
+    Reply::Frames(frames)
+}
+
+/// A round that says `excuse` and then calls a tool: the turn goes on, so the correction cannot be
+/// the turn's own next round - it has to wait for the step boundary the call opens.
+fn an_excuse_that_calls_a_tool(
+    vocab: &letibot_tokencore::Vocab,
+    excuse: &str,
+    n_prompt: u64,
+) -> Reply {
+    let thought = vocab.tokenize_text("thinking").expect("tokenizes");
+    let text = vocab.tokenize_text(excuse).expect("tokenizes");
+    let call = vocab
+        .tokenize_text(
+            "\n<function=no_such_tool>\n<parameter=why>\nno reason\n</parameter>\n</function>\n",
+        )
+        .expect("tokenizes");
+    let mut frames = vec![canned::Frame::Progress {
+        total: n_prompt,
+        processed: n_prompt,
+    }];
+    frames.extend(spoken(vocab, &thought));
+    frames.extend(spoken(vocab, &[THINK_CLOSE]));
+    frames.extend(spoken(vocab, &text));
+    frames.push(canned::Frame::Token {
+        id: TOOL_CALL_OPEN,
+        text: "<tool_call>",
+    });
+    frames.extend(spoken(vocab, &call));
+    frames.push(canned::Frame::Token {
+        id: TOOL_CALL_CLOSE,
+        text: "</tool_call>",
+    });
+    frames.push(canned::Frame::Final {
+        stop_type: "eos",
+        // Every generated id: the thought, the fence that closes it, the sentence, the two
+        // tool-call fences and the call itself.
+        n_decoded: (thought.len() + text.len() + call.len() + 3) as u64,
         n_prompt,
         cache_n: 0,
     });
@@ -272,6 +319,76 @@ fn a_reasoning_claim_on_a_turn_that_ends_is_not_said() {
     let row: serde_json::Value =
         serde_json::from_str(log.lines().next().expect("one line")).expect("json");
     assert_eq!(row["source"], "reasoning", "{row}");
+}
+
+/// **The same excuse in a round that calls a tool.** The model has not stopped, so the correction is
+/// not the turn's own next round: it rides the step boundary the call opens, and the round after it
+/// is where the model reads it. Before this there was no harness-level test of that branch at all -
+/// every round the fixtures played answered in plain text.
+#[test]
+fn an_excuse_in_a_round_that_calls_a_tool_rides_the_step_boundary() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let dir = TempDir::new("harnessd-context-claim-tools");
+    let mut cfg = config(&dir, "context-claim-tools");
+    cfg.context_window = Some(1_000_000);
+    let parts = Parts::load(&cfg).expect("the vocabulary must load");
+    let vocab = &parts.vocab;
+    let serv = canned::Canned::serve_replies(
+        vec![
+            an_excuse_that_calls_a_tool(vocab, EXCUSE, 30),
+            a_plain_answer(vocab, "Continuing with the scroll regions.", 60),
+        ],
+        2,
+    );
+    cfg.endpoint = serv.endpoint.clone();
+
+    let hub = Hub::new("context-claim-tools");
+    let mut h = Harness::open(&parts, cfg, hub.clone()).expect("the session opens");
+    let reply = h
+        .submit("port the rest of the emulator")
+        .expect("the turn runs");
+
+    assert_eq!(
+        reply.rounds, 2,
+        "the call gave the turn a boundary: {reply:?}"
+    );
+    assert!(
+        reply.tool_calls >= 1,
+        "the premise: a call was made: {reply:?}"
+    );
+    assert!(
+        h.items()
+            .iter()
+            .any(|i| matches!(i, TranscriptItem::ToolResult { .. })),
+        "no result was appended for the call, so there was no boundary to ride"
+    );
+    let checks = context_checks(&h);
+    assert_eq!(checks.len(), 1, "one line, once: {checks:#?}");
+    let (speaker, line) = &checks[0];
+    assert_eq!(
+        *speaker,
+        Speaker::Agent,
+        "the harness speaking, never the operator"
+    );
+    assert_eq!(
+        line,
+        "[context check] Don't size the work by context; the harness handles it. If context was \
+         the only reason you stopped, continue the task."
+    );
+    assert!(
+        reply.text.contains("Continuing with the scroll regions."),
+        "the round after the boundary is the reply: {:?}",
+        reply.text
+    );
+
+    let log =
+        std::fs::read_to_string(dir.path.join(".letibot").join(LOG)).expect("the claim is logged");
+    let row: serde_json::Value =
+        serde_json::from_str(log.lines().next().expect("one line")).expect("json");
+    assert_eq!(row["slapped"], true, "{row}");
+    assert_eq!(row["at_wall"], false, "{row}");
 }
 
 /// The same sentence AT the wall is true - no line, and the turn ends where the model ended it. The
