@@ -469,6 +469,9 @@ pub struct LeticodeConfig {
     /// **The `[skills]` table**: the skills this level pins. A pin asks for a skill to stay
     /// loaded, so the two levels add up instead of one replacing the other.
     pub skills: SkillKeys,
+    /// **The `[github]` table** — whether the reviewer seat posts, and where its token is. See
+    /// [`GithubKeys`].
+    pub github: GithubKeys,
 }
 
 /// **`[permissions]` in a `leticode.toml`** — the gate settings a file may carry, which is to
@@ -517,6 +520,67 @@ impl PermissionKeys {
     pub fn is_empty(&self) -> bool {
         self.ask_unconfined_code.is_none()
     }
+}
+
+/// **`[github]` in a `leticode.toml`** — the two facts the reviewer seat needs before it may post.
+///
+/// ```toml
+/// [github]
+/// post = true
+/// token_path = "~/.config/letibot/github.token"
+/// ```
+///
+/// **Nothing leaves the box until both are set.** `post` is what the operator means and the token
+/// is what makes it possible; a seat told to post without one says *token missing* on its scope
+/// rather than failing on every push. A file that says nothing is the shipped state: every review
+/// is kept as a draft, and the pane draws the draft.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GithubKeys {
+    pub post: Option<bool>,
+    pub token_path: Option<String>,
+}
+
+impl GithubKeys {
+    /// Whether a review is sent: both facts, and neither alone.
+    pub fn posting(&self) -> bool {
+        self.post.unwrap_or(false) && self.token_path.is_some()
+    }
+
+    /// The two levels as one. **A project file may stop the seat and may not start it**: it is a
+    /// file a session with `write` can edit, and starting it posts under the operator's identity
+    /// on a stranger's repository.
+    pub fn overridden_by(&self, other: &GithubKeys) -> GithubKeys {
+        GithubKeys {
+            post: match (self.post, other.post) {
+                (_, Some(false)) => Some(false),
+                (mine, _) => mine,
+            },
+            token_path: other.token_path.clone().or_else(|| self.token_path.clone()),
+        }
+    }
+}
+
+/// The `[github]` table as the file wrote it; unknown keys refused by name.
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GithubTable {
+    #[serde(default)]
+    post: Option<bool>,
+    #[serde(default)]
+    token_path: Option<String>,
+}
+
+fn github_keys(value: &toml::Value) -> Result<GithubKeys, String> {
+    let t: GithubTable = value.clone().try_into().map_err(|e| {
+        format!(
+            "[github]: {e} — the keys are `post` (true posts reviews to GitHub) and `token_path` \
+             (the file `gh` reads; mode 0600)"
+        )
+    })?;
+    Ok(GithubKeys {
+        post: t.post,
+        token_path: t.token_path.as_deref().and_then(non_empty),
+    })
 }
 
 /// The `[permissions]` table as the file wrote it; unknown keys refused by name.
@@ -775,6 +839,10 @@ impl LeticodeConfig {
                 Some(v) => skill_keys(v).map_err(|why| format!("{}: {why}", path.display()))?,
                 None => SkillKeys::default(),
             },
+            github: match &file.github {
+                Some(v) => github_keys(v).map_err(|why| format!("{}: {why}", path.display()))?,
+                None => GithubKeys::default(),
+            },
         };
 
         // One seat, two answers. The guard and the adjudicator are one oracle in this
@@ -867,6 +935,7 @@ impl LeticodeConfig {
             },
             permissions: self.permissions.overridden_by(&other.permissions),
             skills: self.skills.overridden_by(&other.skills),
+            github: self.github.overridden_by(&other.github),
         }
     }
 
@@ -1017,6 +1086,10 @@ struct LeticodeConfigFile {
     /// of the wall, seating no tool and lifting no narrowing.
     #[serde(default)]
     skills: Option<toml::Value>,
+    /// **The `[github]` table** — see [`GithubKeys`]. Accepted here so the seat reads one file
+    /// for both levels; which level may start it is the merge's own rule, not this reader's.
+    #[serde(default)]
+    github: Option<toml::Value>,
 }
 
 /// A model name that is blank is no model at all: an empty string would
@@ -1789,5 +1862,60 @@ mod tests {
             ["a", "b", "c"],
             "the union, each name once, the user's order first"
         );
+    }
+
+    /// **`[github] post` needs its token and nothing is posted without both**, and a project file
+    /// may stop the seat and may not start it: a repository a session can write must not begin
+    /// posting under the operator's identity.
+    #[test]
+    fn the_github_table_reads_both_keys_and_a_project_file_cannot_start_posting() {
+        let dir = project_dir("github");
+        let path = write_file(
+            &dir,
+            "[github]\npost = true\ntoken_path = \"~/.config/letibot/github.token\"\n",
+        );
+        let cfg = LeticodeConfig::load(&path).expect("both keys parse");
+        assert!(cfg.github.posting());
+        assert_eq!(
+            cfg.github.token_path.as_deref(),
+            Some("~/.config/letibot/github.token")
+        );
+        // Neither key alone is posting.
+        assert!(!GithubKeys::default().posting());
+        assert!(
+            !GithubKeys {
+                post: Some(true),
+                token_path: None
+            }
+            .posting()
+        );
+        assert!(
+            !GithubKeys {
+                post: None,
+                token_path: Some("/t".into())
+            }
+            .posting()
+        );
+
+        // The user's yes, then a project's no: the seat stops. A project's yes alone is nothing.
+        let user = GithubKeys {
+            post: Some(true),
+            token_path: Some("/t".into()),
+        };
+        let project_off = GithubKeys {
+            post: Some(false),
+            token_path: None,
+        };
+        assert!(!user.overridden_by(&project_off).posting());
+        assert!(user.overridden_by(&GithubKeys::default()).posting());
+        let project_on = GithubKeys {
+            post: Some(true),
+            token_path: Some("/other".into()),
+        };
+        assert!(!GithubKeys::default().overridden_by(&project_on).posting());
+
+        let path = write_file(&dir, "[github]\npostt = true\n");
+        let err = LeticodeConfig::load(&path).unwrap_err();
+        assert!(err.contains("postt") && err.contains("[github]"), "{err}");
     }
 }
