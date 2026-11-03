@@ -535,6 +535,41 @@ fn c9(update_at: Option<usize>, prefix_intact: bool, prefix_len: usize, after: &
     )
 }
 
+/// C10: the two sides agree on what the prompt was, and the server's own count splits into the
+/// part it reused and the part it processed. A run that asked the server nothing agreed with it
+/// about nothing, so no submission is not a pass.
+fn c10(rows: &[Row]) -> String {
+    let mut bad: Vec<String> = Vec::new();
+    for r in rows {
+        if r.m.prompt_tokens_server != r.m.prompt_tokens {
+            bad.push(format!(
+                "turn {}: we submitted {} tokens, the server counted {}",
+                r.turn, r.m.prompt_tokens, r.m.prompt_tokens_server
+            ));
+        } else if r.m.cached_tokens + r.m.prompt_processed != r.m.prompt_tokens_server {
+            bad.push(format!(
+                "turn {}: cached {} + processed {} ≠ prompt {}",
+                r.turn, r.m.cached_tokens, r.m.prompt_processed, r.m.prompt_tokens_server
+            ));
+        }
+    }
+    if rows.is_empty() {
+        return "C10 NOT RUN  the run submitted nothing to compare a count with".to_string();
+    }
+    if bad.is_empty() {
+        return format!(
+            "C10 PASS  our prompt count equals the server's, and cached+processed = prompt, \
+             on all {} submissions",
+            rows.len()
+        );
+    }
+    format!(
+        "C10 FAIL  {} disagreement(s):\n      {}",
+        bad.len(),
+        bad.join("\n      ")
+    )
+}
+
 fn judge(
     rows: &[Row],
     vectors: &[Vec<TokenId>],
@@ -624,33 +659,7 @@ fn judge(
     ));
 
     // ---- C10: the two sides agree on what the prompt was -------------------
-    let mut c10_bad: Vec<String> = Vec::new();
-    for r in rows {
-        if r.m.prompt_tokens_server != r.m.prompt_tokens {
-            c10_bad.push(format!(
-                "turn {}: we submitted {} tokens, the server counted {}",
-                r.turn, r.m.prompt_tokens, r.m.prompt_tokens_server
-            ));
-        } else if r.m.cached_tokens + r.m.prompt_processed != r.m.prompt_tokens_server {
-            c10_bad.push(format!(
-                "turn {}: cached {} + processed {} ≠ prompt {}",
-                r.turn, r.m.cached_tokens, r.m.prompt_processed, r.m.prompt_tokens_server
-            ));
-        }
-    }
-    out.push(if c10_bad.is_empty() {
-        format!(
-            "C10 PASS  our prompt count equals the server's, and cached+processed = prompt, \
-             on all {} submissions",
-            rows.len()
-        )
-    } else {
-        format!(
-            "C10 FAIL  {} disagreement(s):\n      {}",
-            c10_bad.len(),
-            c10_bad.join("\n      ")
-        )
-    });
+    out.push(c10(rows));
 
     // ---- the post-flight assertion the engine ran on every turn -------------
     let skipped: Vec<&Row> = rows
@@ -948,6 +957,43 @@ mod tests {
 
         let unread = c5(&[row(0, 1_000, 990, 1_000)]);
         assert!(unread.contains("C5  NOT RUN"), "{unread}");
+    }
+
+    /// C10's two ways of disagreeing with the server, which are different facts: a count that is
+    /// not ours, and a count that does not split into reused plus processed.
+    #[test]
+    fn c10_names_the_count_that_disagreed() {
+        let agreed = c10(&[row(0, 1_000, 990, 1_000)]);
+        assert!(agreed.contains("C10 PASS"), "{agreed}");
+        assert!(agreed.contains("on all 1 submissions"), "{agreed}");
+
+        let mut counted = row(1, 1_000, 990, 1_000);
+        counted.m.prompt_tokens_server = 1_005;
+        let line = c10(&[counted]);
+        assert!(line.contains("C10 FAIL"), "{line}");
+        assert!(
+            line.contains("we submitted 1000 tokens, the server counted 1005"),
+            "{line}"
+        );
+
+        let mut split = row(2, 1_000, 990, 1_000);
+        split.m.prompt_processed = 8;
+        let line = c10(&[split]);
+        assert!(line.contains("C10 FAIL"), "{line}");
+        assert!(
+            line.contains("cached 990 + processed 8 ≠ prompt 1000"),
+            "{line}"
+        );
+    }
+
+    /// A run that asked nothing agreed with the server about nothing.
+    #[test]
+    fn a_run_with_no_submission_does_not_pass_c10_by_vacancy() {
+        let line = c10(&[]);
+        assert!(
+            line.contains("C10 NOT RUN"),
+            "an empty run was reported as agreement: {line}"
+        );
     }
 
     /// C9's four verdicts: no change to make is not a pass, a rewritten head is the failure, a
