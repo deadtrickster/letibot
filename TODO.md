@@ -51,7 +51,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R104 | A cmd-chord reaches the head as its plain letter (rano drops the super bit) | Code work | rano's `legacy_bytes` still turns a `CSI ... u` into the legacy spelling, so cmd-C still types a `c` into a `!term` pane - a decision, not a line |
 | R55 | A round's end and a turn's end are the same event on the wire | Code work | `Hub::turn_in_flight` (`crates/sessionlog/src/hub.rs:1632`) still reads the round, not `ends_turn`; a round with no calls followed by a nudge still says `true`; unclear: leticl's `:turn-finished` arm reading `ends_turn` is in another repo, check there |
 | T15 | Replace section 10's compaction design with structural eviction | Code work | a standalone `prune` |
-| R121 | What a command boundary holds is hardcoded and invisible | Code work | grants/env/hide as config with documented defaults, one candidate list for Linux and macOS, a `/boundary` view and `letibot boundary`, refusals that name the key, and the top-level and default subagent perimeters as config |
+| R121 | What a command boundary holds is hardcoded and invisible | Code work | grants/env/hide as config with documented defaults, one candidate list for Linux and macOS, a `/boundary` view and `letibot boundary`, refusals that name the key, the top-level and default subagent perimeters as config, children narrow and widening is an ask |
 | R105 | The work order after the 2026-11-01 review | Code work | step 4's four live facts on lab2x1, step 6's comment rule (486 blocks over three lines by `scripts/comment-blocks.py count`), step 8's two decisions (JS engine source, JS-side contract), step 9 (the backlog entries in this file) |
 | R114 | Embeddings as the second similarity tier, for every similarity caller | Code work | item 3's measurement from the take-up logs (are the misses synonyms?), the paraphrase case scored against the worst measured negative, the per-round cost on lab2x1 |
 | R118 | A GitHub reviewer seat: `letibot attach github` reviews every PR and answers as @letibot | Code work | the seat in the daemon so the pane has a feed, a mirror per repository, the review panel, R116's verdict, R114's similarity offers |
@@ -722,6 +722,13 @@ it and cannot see it: the only account of the view is the manifest the model is 
    `.config/gh` as the only fence) and a "default subagent perimeter" (today: throwaway home,
    project and toolchain, the operator's git identity read-only so it can commit, no
    credentials, no gh, no push), each overridable per project and per spawned child.
+6. Perimeters compose: a child starts from its parent's perimeter and may only narrow it, so
+   the workflow holds (a child cannot push, so its code goes through review). A parent that
+   needs a WIDER child (the operator's example: a disk-cleanup subagent that removes placements
+   on the hosts) names the extra paths or grants at spawn, with a reason; that raises a card
+   for the operator in the head and as an MCP ask (`leticode_asks` / `leticode_answer`), even at
+   `allow-all`, because widening a perimeter is not a call the mode decides. The answer is
+   recorded on that child only; its own children inherit at most the widened set.
 
 ---
 
