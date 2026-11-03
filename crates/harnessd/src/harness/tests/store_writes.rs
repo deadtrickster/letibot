@@ -202,3 +202,51 @@ fn a_settlement_a_refused_door_never_said_is_still_owed() {
         .expect("the table comes back");
     assert_eq!(watch.held_count(), 1, "still owed until a turn carries it");
 }
+
+/// A settlement a turn DID say is delivered however that turn ended: the door is judged by whether
+/// its row went in, and a turn that opened and then failed has already put the words in front of the
+/// model. Judged by the turn's success instead, the same batch is held again and said twice.
+#[test]
+fn a_batch_a_turn_said_and_then_failed_is_not_owed_again() {
+    use crate::jobwatch::{BackgroundKind, JobCompletion};
+    let dir = Scratch::new("r91-11-said");
+    let Some((mut h, _path)) = harness_on_a_store(&dir, "r91-11-said") else {
+        return;
+    };
+    let watch = h.job_watch.clone().expect("a session's watcher set");
+    // Held, as a settlement that landed while the last turn was working: the batch this turn rides.
+    watch.hold(vec![JobCompletion {
+        memory: None,
+        kind: BackgroundKind::Job,
+        owner: "r91-11-said".into(),
+        job: "j2".into(),
+        command: "cargo build".into(),
+        slug: None,
+        state: "exited 0".into(),
+        produced: 12,
+        elapsed_ms: 1500,
+        detail: String::new(),
+        arrived: std::time::SystemTime::now(),
+    }]);
+    // The row goes in and the rounds then fail: this box has no model, so the round after the
+    // appends answers with an error rather than with words.
+    assert!(
+        h.submit("carry on").is_err(),
+        "the premise: the turn opened and its rounds failed"
+    );
+    assert_eq!(
+        watch.held_count(),
+        0,
+        "the model was handed the batch by a row that went in; a failed round does not un-say it"
+    );
+    let said = h
+        .session
+        .items
+        .iter()
+        .filter(|i| format!("{i:?}").contains("a job you backgrounded has ended"))
+        .count();
+    assert_eq!(
+        said, 1,
+        "and it is said once, in the one row that carried it"
+    );
+}

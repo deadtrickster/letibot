@@ -155,8 +155,12 @@ impl Harness {
                 parts
             },
         });
-        let out = self.submit_items(items);
-        self.the_batch_arrived(told, out.is_ok());
+        // The door is judged by whether its row went in, not by how the turn ended: the model reads
+        // the batch the moment the rows are appended, and a round that fails afterwards said nothing
+        // about whether it was read.
+        let mut opened = false;
+        let out = self.submit_items_then(items, |_| opened = true);
+        self.the_batch_arrived(told, opened);
         out
     }
 
@@ -462,11 +466,17 @@ impl Harness {
         let text = parts.join("\n\n");
         self.trail.begin_turn();
         self.trail.say(Speaker::Agent, &text, Some(Instant::now()));
-        let out = self.submit_item(TranscriptItem::User {
-            speaker: letibot_transcript::Speaker::Agent,
-            parts: vec![UserPart::Text { text }],
-        });
-        self.the_batch_arrived(told, out.is_ok());
+        // Opened, not successful: the row is what the model reads, and the rounds after it are the
+        // turn's own business.
+        let mut opened = false;
+        let out = self.submit_items_then(
+            vec![TranscriptItem::User {
+                speaker: letibot_transcript::Speaker::Agent,
+                parts: vec![UserPart::Text { text }],
+            }],
+            |_| opened = true,
+        );
+        self.the_batch_arrived(told, opened);
         out
     }
 
@@ -995,11 +1005,17 @@ impl Harness {
         self.compact_if_at_the_wall();
         self.trail.begin_turn();
         self.trail.say(Speaker::Agent, &text, Some(Instant::now()));
-        let out = self.submit_item(TranscriptItem::User {
-            speaker: letibot_transcript::Speaker::Agent,
-            parts: vec![UserPart::Text { text }],
-        });
-        self.the_batch_arrived(told, out.is_ok());
+        // Opened, not successful: the row is what the model reads, and the rounds after it are the
+        // turn's own business.
+        let mut opened = false;
+        let out = self.submit_items_then(
+            vec![TranscriptItem::User {
+                speaker: letibot_transcript::Speaker::Agent,
+                parts: vec![UserPart::Text { text }],
+            }],
+            |_| opened = true,
+        );
+        self.the_batch_arrived(told, opened);
         out
     }
 
