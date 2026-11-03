@@ -16,6 +16,19 @@ use letibot_tools::remote::{Host, Hosts, Mise, Paths, SshBackend, SshSpec};
 /// The short id this suite's session gets: the last eight of `s-01abcdef`.
 const SHORT: &str = "01abcdef";
 
+/// A name no other fixture in this process holds. The gate and the breaker are per process and
+/// keyed by a host's name, so two fakes under one name are one machine to both - and every fixture
+/// here stands for a machine of its own.
+fn fixture_name(tag: &str) -> String {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    format!(
+        "fake-{tag}-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
 /// One fake remote: a temporary home, a repository to send, and an `ssh` that runs
 /// commands against the first.
 struct Rig {
@@ -259,7 +272,7 @@ fn the_ssh_call_carries_the_policy_and_no_operator_ssh_material() {
         "-o IdentityAgent=none".to_string(),
         "-o ControlMaster=auto".to_string(),
         "-o ControlPath=".to_string(),
-        format!("-i {}", rig.paths.default_key("fake").display()),
+        format!("-i {}", rig.paths.default_key(&rig.host.name).display()),
     ] {
         assert!(
             log.contains(&want),
@@ -358,9 +371,13 @@ fn a_command_runs_in_the_checkout_and_names_the_host() {
 
     // The host is named where a person looks: the card's sentence and the description a
     // session shows.
-    assert_eq!(b.host_label().as_deref(), Some("fake over ssh"));
+    let label = format!("{} over ssh", rig.host.name);
+    assert_eq!(b.host_label().as_deref(), Some(label.as_str()));
     let described = b.describe();
-    assert!(described.contains("`fake`"), "{described}");
+    assert!(
+        described.contains(&format!("`{}`", rig.host.name)),
+        "{described}"
+    );
     assert!(described.contains("NOT CONFINED"), "{described}");
     assert_eq!(
         b.workspace_path().as_deref(),
@@ -570,13 +587,14 @@ fn the_head_goes_out_and_the_branch_comes_back() {
     std::fs::write(rig.worktree.join("scratch.txt"), b"still only there\n").expect("a file");
 
     let said = b.close().expect("a session close says where its work went");
-    assert!(said.contains(&format!("remote/fake/{SHORT}")), "{said}");
+    let came_back = format!("remote/{}/{SHORT}", rig.host.name);
+    assert!(said.contains(&came_back), "{said}");
     assert!(
         said.contains("uncommitted change"),
         "a dirty remote tree is not in the branch, and the report says so: {said}"
     );
     assert_eq!(
-        git(&rig.repo, &["rev-parse", &format!("remote/fake/{SHORT}")]).trim(),
+        git(&rig.repo, &["rev-parse", &came_back]).trim(),
         remote_head,
         "the branch came back at the commit that was made there"
     );
@@ -586,11 +604,7 @@ fn the_head_goes_out_and_the_branch_comes_back() {
         "main"
     );
     assert!(
-        git(
-            &rig.repo,
-            &["show", &format!("remote/fake/{SHORT}:feature.rs")]
-        )
-        .contains("the work"),
+        git(&rig.repo, &["show", &format!("{came_back}:feature.rs")]).contains("the work"),
         "the commit's own contents came with it"
     );
     // Closing twice says the same thing rather than fetching again.
@@ -779,10 +793,14 @@ struct Fake {
     dir: PathBuf,
     program: PathBuf,
     log: PathBuf,
+    /// The machine this fake is, unique in this process: a test that holds a gate holds the gate of
+    /// the machine it named, and no other fixture's.
+    name: String,
 }
 
 impl Fake {
     fn new(tag: &str, body: &str) -> Fake {
+        let name = fixture_name(tag);
         let dir = std::env::temp_dir().join(format!(
             "letibot-fake-ssh-{tag}-{}-{}",
             std::process::id(),
@@ -822,7 +840,12 @@ impl Fake {
                 home = home.display(),
             ),
         );
-        Fake { dir, program, log }
+        Fake {
+            dir,
+            program,
+            log,
+            name,
+        }
     }
 
     fn calls(&self) -> Vec<String> {
@@ -884,20 +907,53 @@ fn host_named(name: &str) -> Host {
     }
 }
 
-fn spec_for(repo: &Path, paths: &Paths, program: &Path, bound: Duration) -> SshSpec {
+fn spec_for(fake: &Fake, repo: &Path, paths: &Paths, bound: Duration) -> SshSpec {
+    // The two facts `Ssh::connect` refuses a connection without, for the name this fixture is: the
+    // identity file a name nobody has placed with does not have yet, and the host key of a machine
+    // nobody has accepted.
+    let host = host_named(&fake.name);
+    std::fs::create_dir_all(paths.keys()).expect("the keys directory");
+    std::fs::write(paths.default_key(&host.name), b"a dedicated key").expect("the key");
+    let mut known = std::fs::read_to_string(paths.known_hosts()).unwrap_or_default();
+    known.push_str(&format!(
+        "{} ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI\n",
+        host.hostname
+    ));
+    std::fs::write(paths.known_hosts(), known).expect("the host key");
     SshSpec {
-        host: host_named("fake"),
+        host,
         name: "s-01abcdef".into(),
         source: repo.to_path_buf(),
         writable: true,
         exec: true,
-        ssh: Some(program.to_path_buf()),
+        ssh: Some(fake.program.clone()),
         paths: Some(paths.clone()),
         bound: Some(bound),
         egress: Egress::Denied,
         confine: Some(false),
         vm: false,
     }
+}
+
+/// One machine's full gate does not stop a placement on another: the queue in [`letibot_tools::rpc`]
+/// is per process and keyed by a host's name, so fixtures sharing one name are starved by each other's
+/// calls - a placement waits the connection's two seconds and is refused a slot it never had.
+#[test]
+fn a_full_gate_on_one_machine_does_not_stop_a_placement_on_another() {
+    let other = Fake::new("holder", "exec bash -lc \"$last\"");
+    let _held: Vec<_> = (0..letibot_tools::rpc::MAX_SESSIONS_PER_HOST)
+        .map(|_| {
+            letibot_tools::rpc::enter(&other.name, Duration::from_secs(5))
+                .expect("a slot of its own")
+        })
+        .collect();
+
+    let fake = Fake::new("placing", "exec bash -lc \"$last\"");
+    let (repo, paths) = repo_and_paths(&fake.dir.join("rig"));
+    let b = SshBackend::place(&spec_for(&fake, &repo, &paths, Duration::from_secs(2)))
+        .expect("this machine's gate is its own, so the placement is not queued behind another's");
+    // And it works, not merely opens: a placement that got a slot has a checkout behind it.
+    assert_eq!(b.read("README").expect("it reads"), b"the first commit\n");
 }
 
 /// A host that stops answering does not hold any operation that is not a command: the fake
@@ -919,7 +975,7 @@ fn every_step_that_is_not_a_command_stops_at_its_bound() {
         ),
     );
     let (repo, paths) = repo_and_paths(&fake.dir.join("rig"));
-    let b = SshBackend::place(&spec_for(&repo, &paths, &fake.program, bound)).expect("placed");
+    let b = SshBackend::place(&spec_for(&fake, &repo, &paths, bound)).expect("placed");
 
     // Standing in for a host that has gone quiet mid-session.
     std::fs::write(&silent, b"stop answering").expect("the marker");
@@ -1024,7 +1080,7 @@ fn a_jobs_output_and_kill_stop_at_their_bound() {
         ),
     );
     let (repo, paths) = repo_and_paths(&fake.dir.join("rig"));
-    let b = SshBackend::place(&spec_for(&repo, &paths, &fake.program, bound)).expect("placed");
+    let b = SshBackend::place(&spec_for(&fake, &repo, &paths, bound)).expect("placed");
     let host = b.processes_arc().expect("this backend starts processes");
     let id = host
         .spawn(&SpawnRequest {
@@ -1094,13 +1150,8 @@ fn a_command_that_loses_its_connection_is_reported_unknown_and_never_re_sent() {
          exec bash -lc \"$last\"",
     );
     let (repo, paths) = repo_and_paths(&fake.dir.join("rig"));
-    let b = SshBackend::place(&spec_for(
-        &repo,
-        &paths,
-        &fake.program,
-        Duration::from_secs(5),
-    ))
-    .expect("placed");
+    let b =
+        SshBackend::place(&spec_for(&fake, &repo, &paths, Duration::from_secs(5))).expect("placed");
 
     let refused = b
         .run(&Command {
@@ -1111,7 +1162,7 @@ fn a_command_that_loses_its_connection_is_reported_unknown_and_never_re_sent() {
         .expect_err("a dropped connection is not a result");
     let said = refused.to_string();
     assert!(
-        said.contains("the connection to fake dropped")
+        said.contains(&format!("the connection to {} dropped", fake.name))
             && said.contains("check before running it again"),
         "the sentence must say the outcome is unknown: {said}"
     );
@@ -1139,13 +1190,8 @@ fn a_read_that_loses_its_connection_is_asked_once_more() {
     );
     let _ = std::fs::remove_file(fake.path("count-read"));
     let (repo, paths) = repo_and_paths(&fake.dir.join("rig"));
-    let b = SshBackend::place(&spec_for(
-        &repo,
-        &paths,
-        &fake.program,
-        Duration::from_secs(5),
-    ))
-    .expect("placed");
+    let b =
+        SshBackend::place(&spec_for(&fake, &repo, &paths, Duration::from_secs(5))).expect("placed");
 
     let bytes = b
         .read("README")
@@ -1172,13 +1218,8 @@ fn a_write_that_drops_mid_way_lands_its_bytes_exactly_once() {
     );
     let _ = std::fs::remove_file(fake.path("count-write"));
     let (repo, paths) = repo_and_paths(&fake.dir.join("rig"));
-    let b = SshBackend::place(&spec_for(
-        &repo,
-        &paths,
-        &fake.program,
-        Duration::from_secs(5),
-    ))
-    .expect("placed");
+    let b =
+        SshBackend::place(&spec_for(&fake, &repo, &paths, Duration::from_secs(5))).expect("placed");
 
     // Two chunks' worth, so a duplicated chunk would be visible as extra bytes.
     let bytes: Vec<u8> = (0..(60 * 1024)).map(|i| (i % 251) as u8).collect();
@@ -1196,15 +1237,10 @@ fn a_write_that_drops_mid_way_lands_its_bytes_exactly_once() {
 fn a_stale_control_master_is_checked_and_dropped() {
     let fake = Fake::new("stale", "exec bash -lc \"$last\"");
     let (repo, paths) = repo_and_paths(&fake.dir.join("rig"));
-    let b = SshBackend::place(&spec_for(
-        &repo,
-        &paths,
-        &fake.program,
-        Duration::from_secs(5),
-    ))
-    .expect("placed");
+    let b =
+        SshBackend::place(&spec_for(&fake, &repo, &paths, Duration::from_secs(5))).expect("placed");
 
-    let stale = letibot_tools::remote::control_path("fake", std::process::id());
+    let stale = letibot_tools::remote::control_path(&fake.name, std::process::id());
     if let Some(dir) = stale.parent() {
         let _ = std::fs::create_dir_all(dir);
     }

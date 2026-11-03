@@ -24,10 +24,25 @@ struct Fake {
     dir: PathBuf,
     program: PathBuf,
     log: PathBuf,
+    /// The machine this fake is, unique in this process: the gate and the breaker are keyed by a
+    /// host's name, and a test that holds either has to be able to say whose it is.
+    name: String,
+}
+
+/// A name no other fixture in this process holds - the same rule `remote_hosts` states.
+fn fixture_name(tag: &str) -> String {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    format!(
+        "fake-{tag}-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    )
 }
 
 impl Fake {
     fn new(tag: &str, body: &str) -> Fake {
+        let name = fixture_name(tag);
         let dir = std::env::temp_dir().join(format!(
             "letibot-ssh-{tag}-{}-{}",
             std::process::id(),
@@ -79,7 +94,12 @@ impl Fake {
                 body = body
             ),
         );
-        Fake { dir, program, log }
+        Fake {
+            dir,
+            program,
+            log,
+            name,
+        }
     }
 
     /// Every invocation, one line each: the argv ssh was handed.
@@ -207,14 +227,25 @@ fn host_named(name: &str) -> Host {
 /// The spec a test places with, and no boundary (`confine: Some(false)`): the probe is a round trip
 /// to the machine behind the fake, which is this box, so the same test would confine on Linux and
 /// not on the Mac.
-fn spec_for(repo: &Path, paths: &Paths, program: &Path, bound: Duration) -> SshSpec {
+fn spec_for(fake: &Fake, repo: &Path, paths: &Paths, bound: Duration) -> SshSpec {
+    // The identity file and the host key `Ssh::connect` refuses a connection without, for the name
+    // this fixture is, since no other fixture places under this one.
+    let host = host_named(&fake.name);
+    std::fs::create_dir_all(paths.keys()).expect("the keys directory");
+    std::fs::write(paths.default_key(&host.name), b"a dedicated key").expect("the key");
+    let mut known = std::fs::read_to_string(paths.known_hosts()).unwrap_or_default();
+    known.push_str(&format!(
+        "{} ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI\n",
+        host.hostname
+    ));
+    std::fs::write(paths.known_hosts(), known).expect("the host key");
     SshSpec {
-        host: host_named("fake"),
+        host,
         name: "s-01abcdef".into(),
         source: repo.to_path_buf(),
         writable: true,
         exec: true,
-        ssh: Some(program.to_path_buf()),
+        ssh: Some(fake.program.clone()),
         paths: Some(paths.clone()),
         bound: Some(bound),
         egress: Egress::Denied,
@@ -264,13 +295,8 @@ fn payload(len: usize) -> Vec<u8> {
 fn a_far_side_that_cannot_decode_never_touches_the_target() {
     let fake = Fake::new("decode-broken", "");
     let (repo, paths) = repo_and_paths(&fake.dir.join("rig"));
-    let b = SshBackend::place(&spec_for(
-        &repo,
-        &paths,
-        &fake.program,
-        Duration::from_secs(10),
-    ))
-    .expect("placed");
+    let b = SshBackend::place(&spec_for(&fake, &repo, &paths, Duration::from_secs(10)))
+        .expect("placed");
     // After the placement, and that is the point: the far side's `base64` stops working, so a
     // decode cannot write. Planted first it would break the placement's own bundle.
     write_executable(
@@ -325,13 +351,8 @@ fn a_far_side_that_cannot_decode_never_touches_the_target() {
 fn a_write_is_one_session_whatever_its_size() {
     let fake = Fake::new("one-call", "");
     let (repo, paths) = repo_and_paths(&fake.dir.join("rig"));
-    let b = SshBackend::place(&spec_for(
-        &repo,
-        &paths,
-        &fake.program,
-        Duration::from_secs(30),
-    ))
-    .expect("placed");
+    let b = SshBackend::place(&spec_for(&fake, &repo, &paths, Duration::from_secs(30)))
+        .expect("placed");
 
     let big = payload(400 * 1024);
     let before = fake.count("base64 -d");
@@ -373,13 +394,8 @@ fn a_refused_session_is_retried_on_a_fresh_connection() {
          fi",
     );
     let (repo, paths) = repo_and_paths(&fake.dir.join("rig"));
-    let b = SshBackend::place(&spec_for(
-        &repo,
-        &paths,
-        &fake.program,
-        Duration::from_secs(10),
-    ))
-    .expect("placed");
+    let b = SshBackend::place(&spec_for(&fake, &repo, &paths, Duration::from_secs(10)))
+        .expect("placed");
 
     let bytes = payload(8 * 1024);
     let before = fake.count("base64 -d");
@@ -408,13 +424,8 @@ fn a_run_whose_session_was_refused_runs_exactly_once() {
          fi",
     );
     let (repo, paths) = repo_and_paths(&fake.dir.join("rig"));
-    let b = SshBackend::place(&spec_for(
-        &repo,
-        &paths,
-        &fake.program,
-        Duration::from_secs(10),
-    ))
-    .expect("placed");
+    let b = SshBackend::place(&spec_for(&fake, &repo, &paths, Duration::from_secs(10)))
+        .expect("placed");
 
     let ran = fake.path("ran");
     let out = b
@@ -464,13 +475,8 @@ fn a_cut_stream_leaves_the_target_byte_identical() {
          fi",
     );
     let (repo, paths) = repo_and_paths(&fake.dir.join("rig"));
-    let b = SshBackend::place(&spec_for(
-        &repo,
-        &paths,
-        &fake.program,
-        Duration::from_secs(10),
-    ))
-    .expect("placed");
+    let b = SshBackend::place(&spec_for(&fake, &repo, &paths, Duration::from_secs(10)))
+        .expect("placed");
 
     let target = Path::new(b.worktree_path()).join("cut.bin");
     let before = b"what was there before the cut\n".to_vec();
@@ -515,13 +521,8 @@ fn twelve_threads_through_one_host_all_get_an_answer() {
     );
     let (repo, paths) = repo_and_paths(&fake.dir.join("rig"));
     let b = std::sync::Arc::new(
-        SshBackend::place(&spec_for(
-            &repo,
-            &paths,
-            &fake.program,
-            Duration::from_secs(20),
-        ))
-        .expect("placed"),
+        SshBackend::place(&spec_for(&fake, &repo, &paths, Duration::from_secs(20)))
+            .expect("placed"),
     );
 
     let mut threads = Vec::new();
@@ -651,7 +652,7 @@ fn a_fanout_of_fetches_never_asks_one_git_master_for_the_eleventh() {
     let (repo, paths) = repo_and_paths(&fake.dir.join("rig"));
     let mut backends = Vec::new();
     for i in 0..12 {
-        let mut spec = spec_for(&repo, &paths, &fake.program, Duration::from_secs(120));
+        let mut spec = spec_for(&fake, &repo, &paths, Duration::from_secs(120));
         spec.name = format!("s-{i:02}abcdef");
         backends.push(SshBackend::place(&spec).unwrap_or_else(|e| panic!("placement {i}: {e}")));
     }
@@ -707,13 +708,8 @@ fn a_refused_fetch_is_retried_and_the_branch_still_comes_back() {
          fi",
     );
     let (repo, paths) = repo_and_paths(&fake.dir.join("rig"));
-    let b = SshBackend::place(&spec_for(
-        &repo,
-        &paths,
-        &fake.program,
-        Duration::from_secs(30),
-    ))
-    .expect("placed");
+    let b = SshBackend::place(&spec_for(&fake, &repo, &paths, Duration::from_secs(30)))
+        .expect("placed");
 
     let said = b.close().expect("a close says where the work went");
     assert_eq!(fake.refusals(), 1, "exactly one fetch was refused");
@@ -731,16 +727,12 @@ fn a_refused_fetch_is_retried_and_the_branch_still_comes_back() {
 fn a_fetch_waits_for_a_git_slot_as_long_as_the_connection_is_given() {
     let fake = Fake::new("slot-bound", "");
     let (repo, paths) = repo_and_paths(&fake.dir.join("rig"));
-    let b = SshBackend::place(&spec_for(
-        &repo,
-        &paths,
-        &fake.program,
-        Duration::from_secs(1),
-    ))
-    .expect("placed");
+    let b =
+        SshBackend::place(&spec_for(&fake, &repo, &paths, Duration::from_secs(1))).expect("placed");
     // Every slot of this process's git gate, held: the fetch cannot have one until these drop.
     let _held: Vec<_> = (0..letibot_tools::rpc::MAX_SESSIONS_PER_HOST)
-        .map(|_| letibot_tools::rpc::enter_git("fake", Duration::from_secs(5)).expect("a git slot"))
+        .map(|_| letibot_tools::rpc::enter_git(&fake.name, Duration::from_secs(5)))
+        .map(|slot| slot.expect("a git slot"))
         .collect();
 
     let (tx, rx) = std::sync::mpsc::channel();
@@ -797,16 +789,11 @@ fn fetch_sockets(fake: &Fake) -> Vec<String> {
 fn a_refused_fetch_leaves_the_shared_git_socket_alone() {
     let fake = refuses_the_first_pack("git-socket-kept");
     let (repo, paths) = repo_and_paths(&fake.dir.join("rig"));
-    let b = SshBackend::place(&spec_for(
-        &repo,
-        &paths,
-        &fake.program,
-        Duration::from_secs(30),
-    ))
-    .expect("placed");
+    let b = SshBackend::place(&spec_for(&fake, &repo, &paths, Duration::from_secs(30)))
+        .expect("placed");
     // A plain file, because the fake is no ssh: this test is about who removes the name, and the
     // name is the one the daemon's own fetches multiplex over.
-    let socket = letibot_tools::remote::git_control_path("fake", std::process::id());
+    let socket = letibot_tools::remote::git_control_path(&fake.name, std::process::id());
     std::fs::write(&socket, b"the socket every session of this daemon shares").expect("planted");
 
     let said = b.close().expect("a close says where the work went");
@@ -830,13 +817,8 @@ fn a_refused_fetch_leaves_the_shared_git_socket_alone() {
 fn a_refused_fetch_retries_over_a_socket_of_its_own() {
     let fake = refuses_the_first_pack("git-socket-retry");
     let (repo, paths) = repo_and_paths(&fake.dir.join("rig"));
-    let b = SshBackend::place(&spec_for(
-        &repo,
-        &paths,
-        &fake.program,
-        Duration::from_secs(30),
-    ))
-    .expect("placed");
+    let b = SshBackend::place(&spec_for(&fake, &repo, &paths, Duration::from_secs(30)))
+        .expect("placed");
 
     let said = b.close().expect("a close says where the work went");
     assert_eq!(fake.refusals(), 1, "exactly one fetch was refused");
