@@ -729,6 +729,11 @@ it and cannot see it: the only account of the view is the manifest the model is 
    for the operator in the head and as an MCP ask (`leticode_asks` / `leticode_answer`), even at
    `allow-all`, because widening a perimeter is not a call the mode decides. The answer is
    recorded on that child only; its own children inherit at most the widened set.
+7. The coding flow this gives: the main session (allow-all, wide perimeter) spawns children in
+   the narrow one; children commit on their branches and cannot push, so the only way their
+   code reaches main is the review queue and its gate. The main session keeps its credentials
+   and can push directly: the operator's "manual" mode, kept on purpose as the fallback for when
+   the queue itself is the thing that is broken.
 
 ---
 
