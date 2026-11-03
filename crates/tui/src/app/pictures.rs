@@ -36,6 +36,10 @@ impl App {
             self.image_uploads.push(bytes);
         }
         self.proto = proto;
+        if let Some(p) = self.edit_pane.as_mut() {
+            p.ed.set_pictures(proto);
+        }
+        self.forward_editor_graphics();
         self.invalidate_history();
         self.redraw = true;
     }

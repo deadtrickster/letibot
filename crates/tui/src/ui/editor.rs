@@ -144,7 +144,9 @@ impl App {
             p.dirty = false;
             p.palette = Some(palette);
         }
-        p.rows.clone()
+        let rows = p.rows.clone();
+        self.forward_editor_graphics();
+        rows
     }
 
     /// The places among lines `start..end` that belong to a finished edit or write row whose

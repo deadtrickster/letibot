@@ -100,10 +100,29 @@ pub struct EditorPane {
     pub(crate) dirty: bool,
     /// The palette `rows` were emitted under.
     pub(crate) palette: Option<rano::style::Palette>,
+    /// Image ids the terminal holds for this pane, read off the bytes rano emitted: rano offers
+    /// no way to free a markdown view's pictures, and the pane's end must not leak them.
+    held: std::collections::BTreeSet<u32>,
+}
+
+/// Keeps `held` in step with a kitty command stream: `a=t` uploads an id, `d=I` frees it.
+fn track_graphics(held: &mut std::collections::BTreeSet<u32>, bytes: &[u8]) {
+    for cmd in String::from_utf8_lossy(bytes).split("\x1b_G").skip(1) {
+        let control = cmd.split([';', '\x1b']).next().unwrap_or("");
+        let id = control
+            .split(',')
+            .find_map(|kv| kv.strip_prefix("i=")?.parse::<u32>().ok());
+        let Some(id) = id else { continue };
+        if control.split(',').any(|kv| kv == "d=I") {
+            held.remove(&id);
+        } else if control.split(',').any(|kv| kv == "a=t") {
+            held.insert(id);
+        }
+    }
 }
 
 impl EditorPane {
-    fn new() -> EditorPane {
+    fn new(proto: rano::term::Proto) -> EditorPane {
         // **The operator's own rano config** in a live head, so the pane is the editor they
         // already use; the defaults under test, so no test reads a home directory.
         #[cfg(not(test))]
@@ -115,6 +134,7 @@ impl EditorPane {
         // rano's keys in the bottom one (`App::editor_rows`) - so rano draws only the text and its
         // status row.
         ed.set_chrome(rano::editor::Chrome::BARE);
+        ed.set_pictures(proto);
         let mut keys = Keymap::new("letibot");
         keys.bind(CROSS, TO_COMPOSER);
         keys.bind(CLOSE, "exit");
@@ -136,7 +156,29 @@ impl EditorPane {
             caret: None,
             dirty: true,
             palette: None,
+            held: Default::default(),
         }
+    }
+
+    /// What rano queued for the terminal, tracked and handed over in write order.
+    fn graphics(&mut self) -> Vec<Vec<u8>> {
+        let out = self.ed.take_graphics();
+        for b in &out {
+            track_graphics(&mut self.held, b);
+        }
+        out
+    }
+
+    /// The pane is done: everything it put in the terminal's memory is freed.
+    fn release(&mut self) -> Vec<Vec<u8>> {
+        self.ed.set_pictures(rano::term::Proto::None);
+        let mut out = self.graphics();
+        out.extend(
+            std::mem::take(&mut self.held)
+                .into_iter()
+                .map(rano::term::graphics::image_delete),
+        );
+        out
     }
 
     /// Give rano its rectangle; true when it changed.
@@ -179,7 +221,8 @@ impl App {
         let path = self.resolve_path(&f.path);
         let fresh = self.edit_pane.is_none();
         let area = self.edit_area;
-        let pane = self.edit_pane.get_or_insert_with(EditorPane::new);
+        let proto = self.proto;
+        let pane = self.edit_pane.get_or_insert_with(|| EditorPane::new(proto));
         // **The rectangle first**, when a frame has already measured it: rano centres the
         // change in the view it has, and a review drawn for no width is a review redrawn a
         // tick later.
@@ -210,7 +253,19 @@ impl App {
 
     /// **Close the pane**: the conversation has its rectangle back and the composer its keys.
     pub(crate) fn close_editor(&mut self) {
-        self.edit_pane = None;
+        if let Some(mut p) = self.edit_pane.take() {
+            self.image_uploads.extend(p.release());
+        }
+    }
+
+    /// rano's picture bytes, to the head's uploads: written to the terminal beside the frame.
+    /// The placements are virtual (Unicode placeholders in the rows), so they carry no screen
+    /// position and the pane's offset needs no translation.
+    pub(crate) fn forward_editor_graphics(&mut self) {
+        if let Some(p) = self.edit_pane.as_mut() {
+            let out = p.graphics();
+            self.image_uploads.extend(out);
+        }
     }
 
     /// **`ctrl-]` from the composer side**: back into an open pane, or open one on the newest
@@ -262,8 +317,9 @@ impl App {
             return;
         }
         let area = self.edit_area;
+        let proto = self.proto;
         let fresh = self.edit_pane.is_none();
-        let pane = self.edit_pane.get_or_insert_with(EditorPane::new);
+        let pane = self.edit_pane.get_or_insert_with(|| EditorPane::new(proto));
         if !area.is_empty() {
             pane.set_area(area);
         }
@@ -371,6 +427,7 @@ impl App {
             p.dirty |= p.ed.tick(now);
         }
         self.after_editor();
+        self.forward_editor_graphics();
     }
 
     /// What the terminal said, routed: the pane's share goes to rano, the rest comes back as this
@@ -453,6 +510,7 @@ impl App {
         for s in sends {
             self.take_send(&s);
         }
+        self.forward_editor_graphics();
     }
 
     /// A send from rano, into the composer: the reference, then the keyboard. Inserted at the
