@@ -167,6 +167,9 @@ pub struct Job<'a> {
     pub diff: &'a str,
     pub since: Option<&'a str>,
     pub standing: Standing,
+    /// **What has already been said on it.** A review of a change somebody has argued about is a
+    /// different review from one of the same diff alone.
+    pub comments: &'a [Comment],
 }
 
 /// **The review machinery behind a trait.** The merge queue's reviewer is the real one; a fork's job
@@ -463,6 +466,12 @@ impl Seat {
             Ok(diff) => diff,
             Err(why) => return self.refused(index, why, said),
         };
+        // The conversation is what the review is handed, so a poll that cannot read it cannot
+        // review either: the row is owed the review rather than reviewed without it.
+        let comments = match source.comments(&pull) {
+            Ok(comments) => comments,
+            Err(why) => return self.refused(index, why, said),
+        };
         self.rows[index].state = ReviewState::Reviewing;
         let job = Job {
             pull: &pull,
@@ -470,6 +479,7 @@ impl Seat {
             diff: &diff,
             since: since.as_deref(),
             standing,
+            comments: &comments,
         };
         let review = match reviewer.review(&job) {
             Ok(review) => review,

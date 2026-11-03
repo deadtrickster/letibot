@@ -18,6 +18,9 @@ struct Asked {
     diff: String,
     since: Option<String>,
     standing: Standing,
+    description: String,
+    /// What had already been said on the pull request, in the order GitHub lists it.
+    comments: Vec<String>,
 }
 
 /// The review machinery, faked: it records what it was asked and answers a fixed review, which is
@@ -50,6 +53,8 @@ impl Reviewer for FakeReviewer {
             diff: job.diff.to_string(),
             since: job.since.map(str::to_string),
             standing: job.standing,
+            description: job.pull.description.clone(),
+            comments: job.comments.iter().map(|c| c.body.clone()).collect(),
         });
         Ok(Review {
             body: format!("a review of {} changed lines", job.diff.lines().count()),
@@ -78,6 +83,7 @@ fn a_pull(number: u64, head: &str) -> Pull {
         branch: format!("topic-{number}"),
         from_fork: false,
         title: "a fix".into(),
+        description: String::new(),
         author: "someone".into(),
         updated_ms: 1_000,
     }
@@ -124,6 +130,35 @@ fn a_new_pull_request_gets_one_draft_and_nothing_is_sent() {
     seat.poll(&source, &mut reviewer, 2_000);
     assert_eq!(reviewer.jobs.len(), 1);
     assert_eq!(seat.drafts().len(), 1);
+}
+
+/// **A review is handed what a reviewer needs**: what the author said the pull request is, and
+/// what has already been said on it. A reviewer given a bare diff cannot answer either.
+#[test]
+fn a_review_is_handed_the_description_and_the_comments_so_far() {
+    let source = FakeSource::new();
+    let mut pull = a_pull(12, "c1");
+    pull.description = "this changes how the widget loads".into();
+    source.open(&pull, vec![Commit::new("c1", "-first\n+first change")]);
+    source.comment(
+        "stroppy-io/letibot",
+        12,
+        Comment {
+            id: 4,
+            author: "someone".into(),
+            body: "why not the other way?".into(),
+            created_ms: 500,
+            in_review: false,
+        },
+    );
+    let mut reviewer = FakeReviewer::default();
+    let mut seat = a_seat();
+    seat.poll(&source, &mut reviewer, 1_000);
+
+    let job = &reviewer.jobs[0];
+    assert_eq!(job.description, "this changes how the widget loads");
+    assert_eq!(job.comments, vec!["why not the other way?".to_string()]);
+    assert_eq!(job.diff, "-first\n+first change");
 }
 
 /// **A push is reviewed as the commits it added**, and the review it makes is a second review - not

@@ -71,6 +71,9 @@ pub struct Pull {
     /// nothing in it is ever run ([`Standing::ReadOnly`]).
     pub from_fork: bool,
     pub title: String,
+    /// **What the author said the pull request is.** A reviewer with only a diff reviews the wrong
+    /// change: the description is where the intent is.
+    pub description: String,
     pub author: String,
     /// When GitHub last saw the pull request change, in milliseconds.
     pub updated_ms: u64,
@@ -268,6 +271,7 @@ mod tests {
             branch: "patch-1".into(),
             from_fork: false,
             title: "a fix".into(),
+            description: String::new(),
             author: "someone".into(),
             updated_ms: 0,
         };

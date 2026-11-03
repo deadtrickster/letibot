@@ -14,7 +14,8 @@ use crate::source::{Comment, Inline, Pull, Review, Scope, Source};
 /// The pull-list question. One JSON array per line: a positional array rather than nine names, so a
 /// `--jq` filter and its reader cannot drift apart by a key.
 const PULLS: &str = ".[] | [.number, .head.sha, .base.sha, .head.ref, .head.repo.full_name, \
-                     .base.repo.full_name, .title, .user.login, (.updated_at | fromdateiso8601)]";
+                     .base.repo.full_name, .title, .user.login, (.updated_at | fromdateiso8601), \
+                     (.body // \"\")]";
 
 /// The same shape for a comment: id, author, when, and what it says.
 const COMMENTS: &str = ".[] | [.id, .user.login, (.created_at | fromdateiso8601), .body]";
@@ -174,6 +175,7 @@ fn read_pull(repo: &str, line: &str) -> Result<Pull, String> {
         // Where the head lives is the fact, not a flag: a fork is another repository's head.
         from_fork: !head_repo.is_empty() && head_repo != repo,
         title: text(6),
+        description: text(9),
         author: text(7),
         updated_ms: updated * 1_000,
     })
@@ -383,6 +385,7 @@ mod tests {
             branch: "topic".into(),
             from_fork: false,
             title: "a fix".into(),
+            description: String::new(),
             author: "someone".into(),
             updated_ms: 0,
         }
@@ -394,7 +397,7 @@ mod tests {
     fn the_org_list_is_asked_repository_by_repository() {
         let rec = Recorder::with(&[
             "stroppy-io/letibot\nstroppy-io/other\n",
-            "[12,\"c1\",\"b0\",\"topic\",\"stroppy-io/letibot\",\"stroppy-io/letibot\",\"a fix\",\"someone\",1700000000]\n",
+            "[12,\"c1\",\"b0\",\"topic\",\"stroppy-io/letibot\",\"stroppy-io/letibot\",\"a fix\",\"someone\",1700000000,\"the why\"]\n",
             "[13,\"d1\",\"b0\",\"patch-1\",\"stranger/letibot\",\"stroppy-io/other\",\"a patch\",\"stranger\",1700000001]\n",
         ]);
         let gh = Gh::with(Box::new(rec.clone()));
@@ -402,6 +405,14 @@ mod tests {
         assert_eq!(pulls.len(), 2);
         assert_eq!(pulls[0].key(), "stroppy-io/letibot#12");
         assert!(!pulls[0].from_fork);
+        assert_eq!(
+            pulls[0].description, "the why",
+            "the author's own sentence is read"
+        );
+        assert_eq!(
+            pulls[1].description, "",
+            "a body GitHub did not send is empty, not missing"
+        );
         assert_eq!(pulls[0].updated_ms, 1_700_000_000_000);
         assert_eq!(pulls[1].key(), "stroppy-io/other#13");
         assert!(pulls[1].from_fork, "the head is another repository's");

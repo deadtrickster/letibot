@@ -200,6 +200,7 @@ mod tests {
             branch: "topic".into(),
             from_fork: false,
             title: "a fix".into(),
+            description: String::new(),
             author: "someone".into(),
             updated_ms: 1_000,
         }
