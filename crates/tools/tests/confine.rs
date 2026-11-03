@@ -75,6 +75,40 @@ fn no_boundary(e: &ExecError, test: &str) {
     boundary_absent();
 }
 
+// --------------------------------------- the require switch reaches every skip
+
+/// **A missing boundary is a SKIP, and a run that demands the apparatus fails instead** - pinned by
+/// running this binary once more with the helper pointed at nothing and the switch set, because no
+/// run can set either variable under its own tests.
+#[test]
+fn a_missing_boundary_fails_the_run_that_demands_the_apparatus() {
+    let Some(_) = letibot_tokencore::apparatus::applies(BOUNDARY, cfg!(target_os = "linux")) else {
+        return;
+    };
+    let out = std::process::Command::new(std::env::current_exe().expect("this test binary"))
+        .args([
+            "--exact",
+            "describe_reports_the_boundary_that_was_measured_and_not_the_one_requested",
+            "--nocapture",
+        ])
+        .env(BWRAP_ENV, "/nonexistent/bwrap")
+        .env("LETIBOT_REQUIRE_APPARATUS", "1")
+        .env("RUST_TEST_THREADS", "1")
+        .output()
+        .expect("the test binary runs");
+    let said = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !out.status.success(),
+        "a boundary that is not there must be refused by the switch, not skipped: {said}"
+    );
+    assert!(said.contains("LETIBOT_REQUIRE_APPARATUS is set"), "{said}");
+    assert!(said.contains("1 failed"), "{said}");
+}
+
 // ------------------------------------------------------- rule 1: fail closed
 
 #[test]
