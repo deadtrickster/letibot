@@ -330,6 +330,17 @@ struct Opening {
     writer: Option<crate::writer::Claim>,
 }
 
+/// Where a session's tools run and what bounds them, with the home, promote channel and scratch
+/// directory every backend is handed before it is boxed.
+struct Placed {
+    backend: Box<dyn letibot_tools::backend::ExecBackend>,
+    described: String,
+    writable: bool,
+    monitors: Option<Arc<Monitors>>,
+    surroundings: letibot_tools::Surroundings,
+    confined: bool,
+}
+
 impl Harness {
     /// Open a session: resolve the dialect against the vocabulary, seat the tools, render the
     /// stable prefix and record it. Every failure raised here is one that would otherwise be silent
@@ -367,141 +378,141 @@ impl Harness {
     /// The store opens first because it may CHANGE the configuration, which is why this takes the
     /// config by `&mut` and hands back what the rest of the open reads.
     fn open_the_stored(cfg: &mut Config, notes: &mut Vec<String>) -> Result<Opening, HarnessError> {
-    // A `[embeddings]` section the box WROTE and did not get is said here, once per session:
-    // silently scoring the words alone would leave nobody able to fix the key.
-    if let Some(why) = cfg.embedder_fault.clone() {
-        notes.push(format!(
-            "the `[embeddings]` section did not produce an embedder, so every score this \
-             session makes is the words alone: {why}"
-        ));
-    }
-    // The store opens before anything else, because it may change the configuration: a session
-    // already in it carries its own workspace root, and its tools must be confined to THAT tree
-    // rather than to the directory this daemon happened to start in.
-    let store = match &cfg.store {
-        None => None,
-        Some(path) => Some(
-            Store::open(path)
-                .map_err(|e| HarnessError::Store(format!("opening {path:?}: {e}")))?,
-        ),
-    };
-    // A handle onto the connection `store` holds, not a second one, since the store became one
-    // connection per file per process. A corpus that will not open is reported and not fatal: a
-    // harness that will not start because its telemetry will not is a worse harness.
-    let opened_corpus = cfg
-        .store
-        .as_ref()
-        .and_then(|path| crate::corpus::StoreCorpus::open(path).ok())
-        .map(std::sync::Arc::new);
-    // Job handles must be above every one the store has seen, or the first job after a restart
-    // is an old `j7` to every reader. Seeded on every open, because a session can arrive from a
-    // daemon that minted higher handles.
-    if let Some(s) = &store
-        && let Ok(n) = s.max_job_number()
-    {
-        letibot_tools::exec::JobId::seed_above(n);
-    }
-    // As the table holds it, including every earlier run's rows.
-    let corpus_counts = opened_corpus.as_ref().map(|c| c.counts().0);
-    let corpus_sink: Option<std::sync::Arc<dyn letibot_tools::CorpusSink>> =
-        opened_corpus.map(|c| c as std::sync::Arc<dyn letibot_tools::CorpusSink>);
-    let stored = match &store {
-        None => None,
-        Some(s) => s
-            .session(&cfg.session_id)
-            .map_err(|e| HarnessError::Store(e.to_string()))?,
-    };
-    // One process appends to one transcript, and this is where that is decided: the claim is a
-    // row naming this process, taken before a single row is written. A session another live
-    // process holds is refused by name; one whose live copy is elsewhere is never claimed.
-    let moved = stored
-        .as_ref()
-        .and_then(|s| s.lives_on.clone())
-        .filter(|s| !s.is_empty());
-    let writer = match (&store, moved.is_some()) {
-        (Some(s), false) => {
-            Some(crate::writer::claim(s, &cfg.session_id).map_err(HarnessError::Setup)?)
+        // A `[embeddings]` section the box WROTE and did not get is said here, once per session:
+        // silently scoring the words alone would leave nobody able to fix the key.
+        if let Some(why) = cfg.embedder_fault.clone() {
+            notes.push(format!(
+                "the `[embeddings]` section did not produce an embedder, so every score this \
+                 session makes is the words alone: {why}"
+            ));
         }
-        _ => None,
-    };
-    if let Some(st) = &stored {
-        // A copy that lives somewhere else is not opened: `--migrate` marks the copy it leaves,
-        // and a turn in a marked copy writes into a conversation nobody else will see. A
-        // refusal rather than a note, because the note lands in the transcript the model answers in.
-        if let Some(on) = st.lives_on.as_ref().filter(|s| !s.is_empty()) {
-            return Err(HarnessError::Setup(format!(
-                "session {} lives on `{on}`, not here — it was moved there and the copy in \
+        // The store opens before anything else, because it may change the configuration: a session
+        // already in it carries its own workspace root, and its tools must be confined to THAT tree
+        // rather than to the directory this daemon happened to start in.
+        let store = match &cfg.store {
+            None => None,
+            Some(path) => Some(
+                Store::open(path)
+                    .map_err(|e| HarnessError::Store(format!("opening {path:?}: {e}")))?,
+            ),
+        };
+        // A handle onto the connection `store` holds, not a second one, since the store became one
+        // connection per file per process. A corpus that will not open is reported and not fatal: a
+        // harness that will not start because its telemetry will not is a worse harness.
+        let opened_corpus = cfg
+            .store
+            .as_ref()
+            .and_then(|path| crate::corpus::StoreCorpus::open(path).ok())
+            .map(std::sync::Arc::new);
+        // Job handles must be above every one the store has seen, or the first job after a restart
+        // is an old `j7` to every reader. Seeded on every open, because a session can arrive from a
+        // daemon that minted higher handles.
+        if let Some(s) = &store
+            && let Ok(n) = s.max_job_number()
+        {
+            letibot_tools::exec::JobId::seed_above(n);
+        }
+        // As the table holds it, including every earlier run's rows.
+        let corpus_counts = opened_corpus.as_ref().map(|c| c.counts().0);
+        let corpus_sink: Option<std::sync::Arc<dyn letibot_tools::CorpusSink>> =
+            opened_corpus.map(|c| c as std::sync::Arc<dyn letibot_tools::CorpusSink>);
+        let stored = match &store {
+            None => None,
+            Some(s) => s
+                .session(&cfg.session_id)
+                .map_err(|e| HarnessError::Store(e.to_string()))?,
+        };
+        // One process appends to one transcript, and this is where that is decided: the claim is a
+        // row naming this process, taken before a single row is written. A session another live
+        // process holds is refused by name; one whose live copy is elsewhere is never claimed.
+        let moved = stored
+            .as_ref()
+            .and_then(|s| s.lives_on.clone())
+            .filter(|s| !s.is_empty());
+        let writer = match (&store, moved.is_some()) {
+            (Some(s), false) => {
+                Some(crate::writer::claim(s, &cfg.session_id).map_err(HarnessError::Setup)?)
+            }
+            _ => None,
+        };
+        if let Some(st) = &stored {
+            // A copy that lives somewhere else is not opened: `--migrate` marks the copy it leaves,
+            // and a turn in a marked copy writes into a conversation nobody else will see. A
+            // refusal rather than a note, because the note lands in the transcript the model answers in.
+            if let Some(on) = st.lives_on.as_ref().filter(|s| !s.is_empty()) {
+                return Err(HarnessError::Setup(format!(
+                    "session {} lives on `{on}`, not here — it was moved there and the copy in \
                  this store is not being appended to. Nothing was opened. `letibot --session \
                  {}` attaches to where it is (re-establishing the forwarded socket if it \
                  dropped), and `letibot --migrate {} --to local` brings it back here.",
-                cfg.session_id, cfg.session_id, cfg.session_id
-            )));
-        }
-        if !st.workspace_root.is_empty()
-            && std::path::Path::new(&st.workspace_root) != cfg.workspace
-        {
-            notes.push(format!(
-                "the workspace is {} — this session's own, from the store — not {}, \
+                    cfg.session_id, cfg.session_id, cfg.session_id
+                )));
+            }
+            if !st.workspace_root.is_empty()
+                && std::path::Path::new(&st.workspace_root) != cfg.workspace
+            {
+                notes.push(format!(
+                    "the workspace is {} — this session's own, from the store — not {}, \
                  which is where this daemon was started. A resumed session's tools \
                  are confined to the tree the conversation is about.",
-                st.workspace_root,
-                cfg.workspace.display()
-            ));
-            cfg.workspace = PathBuf::from(&st.workspace_root);
-        }
-        if let Some(t) = st.title.as_ref().filter(|t| !t.is_empty()) {
-            cfg.title = t.clone();
-        }
-        // The seat comes from the session too, and it must land HERE, because `cfg.seat`
-        // decides which backend is built below. Unparseable is an error and not a fallback to
-        // the daemon's role: either way the tools and the backend would disagree.
-        if let Some(name) = st.role.as_ref().filter(|r| !r.is_empty()) {
-            let seat = Seat::parse(name).map_err(|e| {
+                    st.workspace_root,
+                    cfg.workspace.display()
+                ));
+                cfg.workspace = PathBuf::from(&st.workspace_root);
+            }
+            if let Some(t) = st.title.as_ref().filter(|t| !t.is_empty()) {
+                cfg.title = t.clone();
+            }
+            // The seat comes from the session too, and it must land HERE, because `cfg.seat`
+            // decides which backend is built below. Unparseable is an error and not a fallback to
+            // the daemon's role: either way the tools and the backend would disagree.
+            if let Some(name) = st.role.as_ref().filter(|r| !r.is_empty()) {
+                let seat = Seat::parse(name).map_err(|e| {
                 HarnessError::Setup(format!(
                     "session {} records the role `{name}`, which this build does not know: {e}. Refusing rather than re-seating the conversation with the daemon's own role, which would change its tools without saying so.",
                     cfg.session_id
                 ))
             })?;
-            if seat != cfg.seat {
-                notes.push(format!(
-                    "the role is `{}` — this session's own, from the store — not \
+                if seat != cfg.seat {
+                    notes.push(format!(
+                        "the role is `{}` — this session's own, from the store — not \
                      `{}`, which is what this daemon was started with. The tools \
                      AND the backend follow the session's role, or they would \
                      disagree about what it may write.",
-                    seat.as_str(),
-                    cfg.seat.as_str()
-                ));
-                cfg.seat = seat;
+                        seat.as_str(),
+                        cfg.seat.as_str()
+                    ));
+                    cfg.seat = seat;
+                }
             }
         }
-    }
 
-    // An opencode session is seated in ITS directory: the conversation happened there, and a
-    // session at the wrong root is the `--session` defect. Read before the backend is built,
-    // because the root is baked into it.
-    if stored.is_none()
-        && let Some(oc_id) = cfg.session_id.strip_prefix("oc-").map(str::to_string)
-        && let Some(db) = letibot_opencode::default_db_path()
-        && let Ok(src) = letibot_opencode::Source::open(&db)
-        && let Ok(dir) = src.directory(&oc_id)
-        && !dir.is_empty()
-    {
-        cfg.workspace = PathBuf::from(dir);
-    }
+        // An opencode session is seated in ITS directory: the conversation happened there, and a
+        // session at the wrong root is the `--session` defect. Read before the backend is built,
+        // because the root is baked into it.
+        if stored.is_none()
+            && let Some(oc_id) = cfg.session_id.strip_prefix("oc-").map(str::to_string)
+            && let Some(db) = letibot_opencode::default_db_path()
+            && let Ok(src) = letibot_opencode::Source::open(&db)
+            && let Ok(dir) = src.directory(&oc_id)
+            && !dir.is_empty()
+        {
+            cfg.workspace = PathBuf::from(dir);
+        }
 
-    // And the same for a Claude Code transcript, except that a root which is NOT there is not a
-    // seat: its `cwd` is a memory that may since have been deleted, and a session seated at one
-    // fails on its first tool call instead of at startup.
-    if stored.is_none()
-        && let Some(cc_id) = cfg.session_id.strip_prefix("cc-").map(str::to_string)
-        && let Some(dir) = letibot_claude::default_projects_dir()
-        && let Ok(src) = letibot_claude::Source::open(&dir)
-        && let Ok(cwd) = src.directory(&cc_id)
-        && !cwd.is_empty()
-        && std::path::Path::new(&cwd).is_dir()
-    {
-        cfg.workspace = PathBuf::from(cwd);
-    }
+        // And the same for a Claude Code transcript, except that a root which is NOT there is not a
+        // seat: its `cwd` is a memory that may since have been deleted, and a session seated at one
+        // fails on its first tool call instead of at startup.
+        if stored.is_none()
+            && let Some(cc_id) = cfg.session_id.strip_prefix("cc-").map(str::to_string)
+            && let Some(dir) = letibot_claude::default_projects_dir()
+            && let Ok(src) = letibot_claude::Source::open(&dir)
+            && let Ok(cwd) = src.directory(&cc_id)
+            && !cwd.is_empty()
+            && std::path::Path::new(&cwd).is_dir()
+        {
+            cfg.workspace = PathBuf::from(cwd);
+        }
         Ok(Opening {
             store,
             corpus_sink,
@@ -523,125 +534,106 @@ impl Harness {
         session_registry: &Arc<letibot_sessionlog::registry::Registry>,
         notes: &mut Vec<String>,
     ) -> String {
-    // The mode is a session property, resolved after the workspace is final: the per-project
-    // point is looked up now (longest ancestor wins), so a project with no row keeps the
-    // daemon's default and one with a row takes its own.
-    let mut mode_source = String::from("daemon flag / default");
-    {
-        // **Read fresh**: another daemon may have written a row since this one started.
-        let mut store = parts.mode_store.write().unwrap();
-        store.refresh();
-        let store = &*store;
-        // **The session's own point first** - the one it was put at, which a restart or
-        // a reseat must bring back whatever the project row says now. The operator:
-        // *"and again peerdb allow-all lost after restart/reseat"*.
-        let own = cfg
-            .parent_session_id
-            .is_none()
-            .then(|| store.session(&cfg.session_id))
-            .flatten();
-        // A subagent keeps its parent's point and never re-reads the row: it must not differ
-        // from its parent in either direction, and a row naming a point the child cannot carry
-        // killed it before its first turn. The row is for a session somebody opened there.
-        if let Some((own, when)) = own {
-            cfg.mode = own;
-            mode_source = "this session's own (set with /mode)".into();
-            if own.name == letibot_tools::mode::Mode::ALLOW_ALL.name
-                && let Some(when) = when
-            {
-                cfg.mode = letibot_tools::mode::Mode::ALLOW_ALL_HERE;
-                mode_source = format!("this session's own, at your word of {when}");
-                notes.push(format!(
-                    "`allow-all` for this session — on this box, with nothing confining it, \
+        // The mode is a session property, resolved after the workspace is final: the per-project
+        // point is looked up now (longest ancestor wins), so a project with no row keeps the
+        // daemon's default and one with a row takes its own.
+        let mut mode_source = String::from("daemon flag / default");
+        {
+            // **Read fresh**: another daemon may have written a row since this one started.
+            let mut store = parts.mode_store.write().unwrap();
+            store.refresh();
+            let store = &*store;
+            // **The session's own point first** - the one it was put at, which a restart or
+            // a reseat must bring back whatever the project row says now. The operator:
+            // *"and again peerdb allow-all lost after restart/reseat"*.
+            let own = cfg
+                .parent_session_id
+                .is_none()
+                .then(|| store.session(&cfg.session_id))
+                .flatten();
+            // A subagent keeps its parent's point and never re-reads the row: it must not differ
+            // from its parent in either direction, and a row naming a point the child cannot carry
+            // killed it before its first turn. The row is for a session somebody opened there.
+            if let Some((own, when)) = own {
+                cfg.mode = own;
+                mode_source = "this session's own (set with /mode)".into();
+                if own.name == letibot_tools::mode::Mode::ALLOW_ALL.name
+                    && let Some(when) = when
+                {
+                    cfg.mode = letibot_tools::mode::Mode::ALLOW_ALL_HERE;
+                    mode_source = format!("this session's own, at your word of {when}");
+                    notes.push(format!(
+                        "`allow-all` for this session — on this box, with nothing confining it, \
                      because you said so on {when}. `/mode <other>` takes it back."
-                ));
-            } else {
-                notes.push(format!(
-                    "mode is `{}` for this session (set with /mode)",
-                    cfg.mode.name
-                ));
-            }
-        } else if cfg.parent_session_id.is_some() {
-            // The point itself is the parent's, read live by the spawn and carried in
-            // `cfg.mode`; whether this seat can carry it is decided below, where the
-            // seat's own supplies exist. Here is where the row says where it came from.
-            mode_source = child_mode_source(None);
-        } else if store.is_set(&cfg.workspace) {
-            let before = cfg.mode.name;
-            cfg.mode = store.for_project(&cfg.workspace);
-            mode_source = "project store".into();
-            // And the recorded consent, when the row names the point that needs one: the
-            // operator's answer is in the store so a restart stops throwing it away, and it is
-            // DISCLOSED here, because a point that came back silently is the failure.
-            if cfg.mode.name == letibot_tools::mode::Mode::ALLOW_ALL.name
-                && let Some(when) = store.consent(&cfg.workspace)
-            {
-                cfg.mode = letibot_tools::mode::Mode::ALLOW_ALL_HERE;
-                mode_source = format!("project store, at your word of {when}");
-                notes.push(format!(
-                    "`allow-all` for {} — on this box, with nothing confining it, because you \
+                    ));
+                } else {
+                    notes.push(format!(
+                        "mode is `{}` for this session (set with /mode)",
+                        cfg.mode.name
+                    ));
+                }
+            } else if cfg.parent_session_id.is_some() {
+                // The point itself is the parent's, read live by the spawn and carried in
+                // `cfg.mode`; whether this seat can carry it is decided below, where the
+                // seat's own supplies exist. Here is where the row says where it came from.
+                mode_source = child_mode_source(None);
+            } else if store.is_set(&cfg.workspace) {
+                let before = cfg.mode.name;
+                cfg.mode = store.for_project(&cfg.workspace);
+                mode_source = "project store".into();
+                // And the recorded consent, when the row names the point that needs one: the
+                // operator's answer is in the store so a restart stops throwing it away, and it is
+                // DISCLOSED here, because a point that came back silently is the failure.
+                if cfg.mode.name == letibot_tools::mode::Mode::ALLOW_ALL.name
+                    && let Some(when) = store.consent(&cfg.workspace)
+                {
+                    cfg.mode = letibot_tools::mode::Mode::ALLOW_ALL_HERE;
+                    mode_source = format!("project store, at your word of {when}");
+                    notes.push(format!(
+                        "`allow-all` for {} — on this box, with nothing confining it, because you \
                      said so on {when}. Nothing is asked here and the always-ask list is \
                      admitted; `/mode <other>` takes it back and forgets the answer.",
-                    cfg.workspace.display()
-                ));
-            } else if cfg.mode.name != before {
-                notes.push(format!(
+                        cfg.workspace.display()
+                    ));
+                } else if cfg.mode.name != before {
+                    notes.push(format!(
                     "mode is `{}` for {} (from the project store), not the daemon default `{before}`",
                     cfg.mode.name, cfg.workspace.display()
                 ));
+                }
             }
         }
-    }
 
-    // leticode's opencode parity, and a subagent's inheritance of it, is a fact of the SESSION and
-    // not of the seat: a subagent re-seats to `coder`, so the seat alone would re-confine it. It
-    // is also read back from the store, because the row a spawn leaves says only the SEAT.
-    cfg.unconfined = cfg.unconfined
-        || cfg.seat == Seat::Leticode
-        || match (&store, &stored) {
-            (Some(store), Some(st)) => unconfined_by_inheritance(store, st),
-            _ => false,
-        };
+        // leticode's opencode parity, and a subagent's inheritance of it, is a fact of the SESSION and
+        // not of the seat: a subagent re-seats to `coder`, so the seat alone would re-confine it. It
+        // is also read back from the store, because the row a spawn leaves says only the SEAT.
+        cfg.unconfined = cfg.unconfined
+            || cfg.seat == Seat::Leticode
+            || match (&store, &stored) {
+                (Some(store), Some(st)) => unconfined_by_inheritance(store, st),
+                _ => false,
+            };
 
-    // A session a session started has that session as its parent: every open passes through
-    // here, and only here are the caller's word, the registry's entry and the row in one hand.
-    // After the mode block, which asks whether this session inherits a LIVE parent's point.
-    cfg.parent_session_id = session_registry.parent_for(
-        &cfg.session_id,
-        cfg.parent_session_id.clone(),
-        stored.as_ref().and_then(|s| s.parent_session_id.as_deref()),
-    );
+        // A session a session started has that session as its parent: every open passes through
+        // here, and only here are the caller's word, the registry's entry and the row in one hand.
+        // After the mode block, which asks whether this session inherits a LIVE parent's point.
+        cfg.parent_session_id = session_registry.parent_for(
+            &cfg.session_id,
+            cfg.parent_session_id.clone(),
+            stored.as_ref().and_then(|s| s.parent_session_id.as_deref()),
+        );
         mode_source
     }
 
-    pub fn open_with_registry(
-        parts: &Parts,
-        mut cfg: Config,
-        hub: Arc<Hub>,
-        adjudicator: Option<Box<dyn Adjudicator>>,
-        extra_tool: Option<Box<dyn Tool>>,
-        session_registry: Arc<letibot_sessionlog::registry::Registry>,
-    ) -> Result<Self, HarnessError> {
-        let mut notes: Vec<String> = Vec::new();
-        // **The store first, because it may change the configuration**: a session already in it
-        // carries its own workspace and seat, and the backend built below follows those.
-        let Opening {
-            store,
-            corpus_sink,
-            corpus_counts,
-            stored,
-            writer,
-        } = Self::open_the_stored(&mut cfg, &mut notes)?;
-
-        let mut mode_source = Self::resolve_the_point(
-            parts,
-            &mut cfg,
-            &store,
-            stored.as_ref(),
-            &session_registry,
-            &mut notes,
-        );
-
+    /// **Where this session's tools run, and what bounds them**: the host backend the seat needs, a
+    /// firecode VM, or a checkout on another machine - then the home, the promote channel and the
+    /// scratch directory every one of them shares. The constructor is the disclosure, so this is the
+    /// one place a downgrade, a placement or a missing boundary is decided.
+    fn place_the_tools(
+        cfg: &mut Config,
+        hub: &Arc<Hub>,
+        session_registry: &Arc<letibot_sessionlog::registry::Registry>,
+    ) -> Result<Placed, HarnessError> {
         // The backend the seat needs, and the constructor is the disclosure: choosing
         // `HostBackend::executable` would be choosing no boundary, which no daemon may do on an
         // operator's behalf, and a downgrade closes doors here too. leticode roots at `/`.
@@ -727,12 +719,12 @@ impl Harness {
                 Err(e) => {
                     let said = format!(
                         "this session is UNCONFINED, and its commands run with this user's \
-                         rights over this whole host. A macOS boundary was asked for and could \
-                         not be built: {e}\n\nWhat that means here, in the words the gate uses: \
-                         a command that runs code (a test runner, a build) is decided per \
-                         command by the operator, because nothing else is stopping what that \
-                         code can read. `docs/boundary-and-adjudication.md` §4k says what the \
-                         boundary would have given and why the probe refused."
+                     rights over this whole host. A macOS boundary was asked for and could \
+                     not be built: {e}\n\nWhat that means here, in the words the gate uses: \
+                     a command that runs code (a test runner, a build) is decided per \
+                     command by the operator, because nothing else is stopping what that \
+                     code can read. `docs/boundary-and-adjudication.md` §4k says what the \
+                     boundary would have given and why the probe refused."
                     );
                     eprintln!("letibot: {said}");
                     hub.publish(SessionEvent::Warning {
@@ -754,18 +746,18 @@ impl Harness {
                 Err(e) => {
                     return Err(HarnessError::Setup(format!(
                         "the `{}` role needs a confined execution backend and one could not be \
-                         built over {:?}: {e}.\n\nThis is a refusal, not a degradation: the \
-                         alternative is `HostBackend::executable`, which gives a process the \
-                         cgroup that bounds its lifetime and NO boundary on what it can read \
-                         — the operator's whole filesystem, with a banner that would have to \
-                         say so. Two things it needs and the error above says which is \
-                         missing: a delegated cgroup v2 subtree, and a usable unprivileged \
-                         namespace boundary (bwrap). A third thing the message above may \
-                         name instead: the project root itself. Both `runner` and `coder` \
-                         root their view at the workspace, so a workspace that is a file, \
-                         a dangling symlink or absent fails here and no boundary is the \
-                         wrong thing to blame. Seat `--role orchestrator` for a session \
-                         with no exec path at all.",
+                     built over {:?}: {e}.\n\nThis is a refusal, not a degradation: the \
+                     alternative is `HostBackend::executable`, which gives a process the \
+                     cgroup that bounds its lifetime and NO boundary on what it can read \
+                     — the operator's whole filesystem, with a banner that would have to \
+                     say so. Two things it needs and the error above says which is \
+                     missing: a delegated cgroup v2 subtree, and a usable unprivileged \
+                     namespace boundary (bwrap). A third thing the message above may \
+                     name instead: the project root itself. Both `runner` and `coder` \
+                     root their view at the workspace, so a workspace that is a file, \
+                     a dangling symlink or absent fails here and no boundary is the \
+                     wrong thing to blame. Seat `--role orchestrator` for a session \
+                     with no exec path at all.",
                         cfg.seat.as_str(),
                         cfg.workspace
                     )));
@@ -896,7 +888,7 @@ impl Harness {
                     letibot_tools::exec::Egress::Host {
                         why: format!(
                             "the `{}` mode seats network calls, so a confined command on {} \
-                             shares its network namespace rather than being handed an empty one",
+                         shares its network namespace rather than being handed an empty one",
                             cfg.mode.name, host.name
                         ),
                     }
@@ -1021,6 +1013,53 @@ impl Harness {
         // construction, and a host or ssh backend is one only where a confinement was measured. A
         // remote session whose probe failed is unconfined, which is what its `describe` says.
         let backend_confined = in_vm || backend.boundary().is_some();
+
+        Ok(Placed {
+            backend,
+            described: backend_described,
+            writable: backend_writable,
+            monitors,
+            surroundings,
+            confined: backend_confined,
+        })
+    }
+
+    pub fn open_with_registry(
+        parts: &Parts,
+        mut cfg: Config,
+        hub: Arc<Hub>,
+        adjudicator: Option<Box<dyn Adjudicator>>,
+        extra_tool: Option<Box<dyn Tool>>,
+        session_registry: Arc<letibot_sessionlog::registry::Registry>,
+    ) -> Result<Self, HarnessError> {
+        let mut notes: Vec<String> = Vec::new();
+        // **The store first, because it may change the configuration**: a session already in it
+        // carries its own workspace and seat, and the backend built below follows those.
+        let Opening {
+            store,
+            corpus_sink,
+            corpus_counts,
+            stored,
+            writer,
+        } = Self::open_the_stored(&mut cfg, &mut notes)?;
+
+        let mut mode_source = Self::resolve_the_point(
+            parts,
+            &mut cfg,
+            &store,
+            stored.as_ref(),
+            &session_registry,
+            &mut notes,
+        );
+
+        let Placed {
+            backend,
+            described: backend_described,
+            writable: backend_writable,
+            monitors,
+            surroundings,
+            confined: backend_confined,
+        } = Self::place_the_tools(&mut cfg, &hub, &session_registry)?;
         let backend_boundary = backend.boundary();
         let backend_boundary_refusal = backend.boundary_refusal();
 
