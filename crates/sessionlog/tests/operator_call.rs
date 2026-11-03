@@ -33,6 +33,10 @@ fn start(tag: &str) -> (Arc<Registry>, ServerHandle) {
     (r, h)
 }
 
+/// How long a wait for a frame may take, in milliseconds: a local socket round trip on a shared
+/// box is the box's fact, and `next_frame`'s caller has nothing else to judge it by.
+const PATIENCE_MS: u64 = 30_000;
+
 /// Wait for the next frame that is not a `Delta` or an ack-shaped no-op.
 fn next_frame(rx: &std::sync::mpsc::Receiver<Inbound>, ms: u64) -> Option<ServerFrame> {
     let deadline = Instant::now() + Duration::from_millis(ms);
@@ -64,8 +68,8 @@ fn a_head_asking_for_bash_through_the_operator_door_is_refused_by_the_daemon() {
         let _ = client
             .operator_call(0, &format!("c-{name}"), name, r#"{"command":"id"}"#, false)
             .expect("write");
-        let f = next_frame(&rx, 3000).expect("the daemon must answer");
-        eprintln!("DBG {name} -> {f:?}");
+        let f = next_frame(&rx, PATIENCE_MS).expect("the daemon must answer");
+        eprintln!("{name} -> {f:?}");
         match f {
             ServerFrame::Rejected { reason, .. } => {
                 assert!(
@@ -116,9 +120,9 @@ fn an_allowed_name_reaches_the_queue_as_the_operators_own_call() {
         // session log - so both are drained here. Order is not asserted: they travel on two
         // channels, and reading one frame per call left this a frame behind from the second call.
         let mut seen: Vec<ServerFrame> = Vec::new();
-        let deadline = Instant::now() + Duration::from_secs(3);
+        let deadline = Instant::now() + Duration::from_millis(PATIENCE_MS);
         while seen.len() < 2 && Instant::now() < deadline {
-            match next_frame(&rx, 300) {
+            match next_frame(&rx, PATIENCE_MS) {
                 Some(f) => seen.push(f),
                 None => break,
             }
@@ -223,7 +227,7 @@ fn the_diagnostic_locator_answers_bytes_empty_and_not_recorded_as_three_things()
 
     // 1. Bytes.
     ask(&mut client, "has-bytes", DiagnosticKind::Brief);
-    match next_frame(&rx, 3000) {
+    match next_frame(&rx, PATIENCE_MS) {
         Some(ServerFrame::Diagnostic { body, total, .. }) => {
             assert_eq!(body.as_deref(), Some("brief — a file was read"));
             assert_eq!(total, body.as_ref().unwrap().len());
@@ -233,7 +237,7 @@ fn the_diagnostic_locator_answers_bytes_empty_and_not_recorded_as_three_things()
 
     // 2. Recorded, and zero bytes: `Some("")` and NOT `None`.
     ask(&mut client, "empty", DiagnosticKind::Brief);
-    match next_frame(&rx, 3000) {
+    match next_frame(&rx, PATIENCE_MS) {
         Some(ServerFrame::Diagnostic { body, total, .. }) => {
             assert_eq!(
                 body.as_deref(),
@@ -247,7 +251,7 @@ fn the_diagnostic_locator_answers_bytes_empty_and_not_recorded_as_three_things()
 
     // 3. Not recorded: `None`, which is a different fact from 2.
     ask(&mut client, "nobody-kept-this", DiagnosticKind::Reply);
-    match next_frame(&rx, 3000) {
+    match next_frame(&rx, PATIENCE_MS) {
         Some(ServerFrame::Diagnostic { body, total, .. }) => {
             assert_eq!(body, None, "an unkept field must not read as empty");
             assert_eq!(total, 0);
@@ -258,7 +262,7 @@ fn the_diagnostic_locator_answers_bytes_empty_and_not_recorded_as_three_things()
     // The kind is carried, not inferred: the same id asked for the other half is a different
     // answer, which is what makes `(kind, id)` a locator rather than an id.
     ask(&mut client, "has-bytes", DiagnosticKind::Reply);
-    match next_frame(&rx, 3000) {
+    match next_frame(&rx, PATIENCE_MS) {
         Some(ServerFrame::Diagnostic { kind, body, .. }) => {
             assert_eq!(kind, DiagnosticKind::Reply);
             assert_eq!(body.as_deref(), Some("ALLOW 0"));

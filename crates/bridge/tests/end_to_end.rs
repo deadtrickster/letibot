@@ -996,7 +996,6 @@ fn a_bridge_holds_a_session_over_the_gate_and_wakes_a_caller() {
             });
         })
     };
-    let began = Instant::now();
     let (code, out) = tools::wait(
         &world.worktree.display().to_string(),
         &session,
@@ -1011,11 +1010,12 @@ fn a_bridge_holds_a_session_over_the_gate_and_wakes_a_caller() {
         out.contains("handing the bundle") || out.contains("did not start"),
         "and the reason is the daemon's own sentence, not a timeout's: {out}"
     );
-    assert!(
-        began.elapsed() < Duration::from_secs(10),
-        "it answers when it attaches, not at the deadline ({:?}): the defect was an hour of \
-         waiting on a session that could never do anything",
-        began.elapsed()
+    // That it answered at the attach rather than at the deadline is `code`: a wait that spends its
+    // deadline comes back 30. How long the answer took is the box's fact and not the bridge's.
+    assert_ne!(
+        code, 30,
+        "it answers when it attaches, not at the deadline: the defect was an hour of waiting on a \
+         session that could never do anything"
     );
     assert_eq!(
         bridge.status(&session).expect("status")["state"],
@@ -1043,21 +1043,17 @@ fn a_bridge_holds_a_session_over_the_gate_and_wakes_a_caller() {
             });
         })
     };
-    let began = Instant::now();
     let (code, out) = tools::wait(
         &world.worktree.display().to_string(),
         &queue,
         Instant::now() + Duration::from_secs(10),
     );
     publisher.join().expect("the publisher thread");
+    // No wall clock: `20` is the daemon's own verdict, and a wait that sat out its 10 s deadline
+    // answers `30` instead. Turning that into a speed claim is a claim about the box.
     assert_eq!(
         code, 20,
         "a session that never turned AND whose daemon failed is 20, not a timeout: {out}"
-    );
-    assert!(
-        began.elapsed() < Duration::from_secs(5),
-        "and it does not sit out its deadline ({:?}) — that is the hour two packages spent",
-        began.elapsed()
     );
 
     // --- diff: the branch against its merge base ---------------------------

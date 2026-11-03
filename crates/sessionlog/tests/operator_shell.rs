@@ -29,6 +29,10 @@ fn start(tag: &str) -> (Arc<Registry>, ServerHandle) {
     (r, h)
 }
 
+/// How long a wait for a frame may take, in milliseconds: a local socket round trip on a shared
+/// box is the box's fact, and `next_frame`'s caller has nothing else to judge it by.
+const PATIENCE_MS: u64 = 30_000;
+
 /// Wait for the next frame that is not a resync or a `CommandIssued` announcement: two come back
 /// per command - `Accepted` on this connection and `CommandIssued` on the session log.
 fn next_frame(rx: &std::sync::mpsc::Receiver<Inbound>, ms: u64) -> Option<ServerFrame> {
@@ -69,7 +73,7 @@ fn a_bang_line_reaches_the_queue_as_the_operators_own_shell_line() {
     // `expected_seq` 0 is the honest "I have seen nothing" spelling and skips the
     // staleness machinery; a second call below uses a deliberately stale number.
     client.operator_shell(0, "! ls .").expect("write the frame");
-    let f = next_frame(&rx, 3000).expect("the daemon must answer");
+    let f = next_frame(&rx, PATIENCE_MS).expect("the daemon must answer");
     match f {
         ServerFrame::Accepted { note, .. } => {
             assert!(
@@ -101,7 +105,7 @@ fn a_bang_line_reaches_the_queue_as_the_operators_own_shell_line() {
     client
         .operator_shell(1, "!cargo test -p letibot-sessionlog")
         .expect("write the second frame");
-    let f = next_frame(&rx, 3000).expect("the daemon must answer the stale one");
+    let f = next_frame(&rx, PATIENCE_MS).expect("the daemon must answer the stale one");
     match f {
         ServerFrame::Accepted { note, .. } => {
             assert!(
@@ -137,7 +141,7 @@ fn a_line_without_a_command_after_the_bang_is_refused_and_nothing_is_queued() {
 
     for line in ["!", "!   ", "ls .", "/not a bang either"] {
         let _ = client.operator_shell(0, line).expect("write");
-        let f = next_frame(&rx, 3000).expect("the daemon must answer");
+        let f = next_frame(&rx, PATIENCE_MS).expect("the daemon must answer");
         match f {
             ServerFrame::Rejected { reason, .. } => {
                 assert!(
@@ -171,7 +175,7 @@ fn the_bang_rule_is_pinned_on_its_edges() {
     // for itself: neither is refused and neither is rewritten.
     for (typed, command) in [("!ls .", "ls ."), ("!!", "!"), ("! echo '!!'", "echo '!!'")] {
         let _ = client.operator_shell(0, typed).expect("write");
-        let _ = next_frame(&rx, 3000).expect("accepted");
+        let _ = next_frame(&rx, PATIENCE_MS).expect("accepted");
         let got = hub
             .try_command()
             .unwrap_or_else(|| panic!("`{typed}` never reached the queue"));

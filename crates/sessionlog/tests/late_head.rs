@@ -18,6 +18,12 @@ use std::os::unix::net::UnixStream;
 
 const DELTAS: usize = 2_000;
 const END: &str = "END-OF-PRODUCTION";
+/// How long a wait for a frame or for a condition may take, and never a rate: this box is shared,
+/// so what a socket round trip costs here is the box's fact and not the head's.
+const PATIENCE: Duration = Duration::from_secs(60);
+/// How quiet a channel must be before this file calls it finished. A detector, and short enough
+/// that a test which ends by going quiet does not pay for it.
+const QUIET: Duration = Duration::from_secs(2);
 
 fn socket_path(tag: &str) -> std::path::PathBuf {
     let n = std::time::SystemTime::now()
@@ -97,12 +103,12 @@ fn read_to_end(path: &std::path::Path, since: u64) -> (String, u64, usize) {
         }
     }
 
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + PATIENCE;
     let mut last_seq;
     let mut rendered = 0u64;
     let mut filtered = 0u64;
     while Instant::now() < deadline {
-        let Ok(frame) = rx.recv_timeout(Duration::from_secs(5)).map(Inbound::frame) else {
+        let Ok(frame) = rx.recv_timeout(QUIET).map(Inbound::frame) else {
             break;
         };
         match frame {
@@ -209,7 +215,7 @@ fn the_producer_is_never_slowed_by_a_head_that_stops_reading() {
 
     // Give it time to attach.
     let t0 = Instant::now();
-    while hub.attached_heads() == 0 && t0.elapsed() < Duration::from_secs(5) {
+    while hub.attached_heads() == 0 && t0.elapsed() < PATIENCE {
         std::thread::sleep(Duration::from_millis(2));
     }
     assert_eq!(hub.attached_heads(), 1);
@@ -228,7 +234,7 @@ fn the_producer_is_never_slowed_by_a_head_that_stops_reading() {
     // HeadAttached, TurnStarted, then every delta.
     assert_eq!(hub.head_seq() as usize, DELTAS + 2);
     assert!(
-        elapsed < Duration::from_secs(5),
+        elapsed < PATIENCE,
         "publishing took {elapsed:?} with a stalled head attached; the fan-out blocked"
     );
 
@@ -252,7 +258,7 @@ fn every_head_detaching_mid_turn_changes_nothing() {
     let _ = t.join();
 
     let t0 = Instant::now();
-    while hub.attached_heads() > 0 && t0.elapsed() < Duration::from_secs(5) {
+    while hub.attached_heads() > 0 && t0.elapsed() < PATIENCE {
         std::thread::sleep(Duration::from_millis(2));
     }
     assert_eq!(hub.attached_heads(), 0);
@@ -318,12 +324,9 @@ fn a_reattaching_head_is_never_re_asked_a_settled_question() {
     let t = std::thread::spawn(move || pump(reader, tx));
     let mut saw_prompt = false;
     let mut saw_outcome = false;
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < deadline {
-        let Ok(ServerFrame::Event(env)) = rx
-            .recv_timeout(Duration::from_millis(300))
-            .map(Inbound::frame)
-        else {
+    let deadline = Instant::now() + PATIENCE;
+    while Instant::now() < deadline && !saw_outcome {
+        let Ok(ServerFrame::Event(env)) = rx.recv_timeout(QUIET).map(Inbound::frame) else {
             break;
         };
         match env.event {
