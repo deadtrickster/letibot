@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use letibot_harnessd::config::Config;
+use letibot_harnessd::config::{Config, Seat};
 use letibot_harnessd::sessions::Outcome;
 use letibot_harnessd::{Dialect, Parts, Sessions};
 use letibot_sessionlog::hub::{CommandKind, Hub};
@@ -483,6 +483,92 @@ fn the_offer_is_a_tail_and_never_a_row() {
         !rows.iter().any(|r| r.contains(OFFER_MARK)),
         "the offer became a row the model can never be rid of: {rows:?}"
     );
+}
+
+/// **A skill whose body the model loaded on round one is not offered again on round two.** The body
+/// is in the transcript by then, so it is the newest and most on-topic text the round scores - and
+/// the offer's own sentence would be a claim about a body the model is holding.
+#[test]
+fn a_skill_the_model_loaded_this_turn_is_not_offered_again() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let ws = TempDir::new("ws-loaded");
+    let store = TempDir::new("store-loaded");
+    skills_in(ws.path());
+    let stub = Stub::answering();
+    let mut cfg = config(
+        &store.path().join("sessions.db"),
+        ws.path(),
+        "s-offer-loaded",
+        stub.endpoint.clone(),
+    );
+    // `leticode` seats `skill`: the take-up this turn is about is a real load, so the seat has to
+    // have the tool rather than a refusal that leaves the body out of the transcript.
+    cfg.seat = Seat::Leticode;
+    let parts = parts_for(&cfg);
+    // Round one loads the skill by name; neither the prompt nor the reasoning names slides, so that
+    // round is handed no offer and the second round's subject is the body it just read.
+    stub.script(vec![
+        a_skill_load_turn(&parts.vocab, SLIDES, 30),
+        an_answer_turn(
+            &parts.vocab,
+            "following the body",
+            "the deck is planned",
+            60,
+        ),
+    ]);
+    let (_sessions, _hub) = drive(
+        &parts,
+        &cfg,
+        "s-offer-loaded",
+        "carry on with the thing we discussed yesterday",
+    );
+    assert_eq!(stub.turns(), 2, "the tool call gave the turn a boundary");
+    let first = stub.prompt_of(0, &parts.vocab);
+    assert!(
+        !first.contains(OFFER_MARK),
+        "the fixture's first round must be silent, or the second proves nothing: {first}"
+    );
+    let second = stub.prompt_of(1, &parts.vocab);
+    assert!(
+        !second.contains("[skill offer"),
+        "the round after the load was offered the skill it had just read: {second}"
+    );
+}
+
+/// A turn that calls `skill action=load` for `name` and ends - the model taking the body into its own
+/// conversation, which is the one take-up the offers are settled against.
+fn a_skill_load_turn(vocab: &Vocab, name: &str, n_prompt: u64) -> Vec<Frame> {
+    let mut frames = vec![Frame::Progress {
+        total: n_prompt,
+        processed: n_prompt,
+    }];
+    frames.push(Frame::Token {
+        id: THINK_CLOSE,
+        text: "",
+    });
+    frames.push(Frame::Token {
+        id: TOOL_CALL_OPEN,
+        text: "<tool_call>",
+    });
+    let call = format!(
+        "\n<function=skill>\n<parameter=action>\nload\n</parameter>\n\
+         <parameter=name>\n{name}\n</parameter>\n</function>\n"
+    );
+    let call_ids = support::qwen::ids(vocab, &call);
+    frames.extend(spoken(vocab, &call_ids));
+    frames.push(Frame::Token {
+        id: TOOL_CALL_CLOSE,
+        text: "</tool_call>",
+    });
+    frames.push(Frame::Final {
+        stop_type: "eos",
+        n_decoded: (call_ids.len() + 3) as u64,
+        n_prompt,
+        cache_n: 0,
+    });
+    frames
 }
 
 /// A turn that wedges must fail its own test rather than the suite, so every wait here is bounded

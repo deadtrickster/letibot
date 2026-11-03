@@ -1527,9 +1527,8 @@ impl Harness {
         // per session, settled against the round's own `skill` loads.
         let mut skill_offers = crate::skills_offer::Offers::new();
         skill_offers.recall(&self.cfg.daemon_logs(), &self.cfg.session_id);
-        // And the bodies this session already holds - loaded by the model itself, or declared at its
-        // start - are not news to it.
-        skill_offers.skip_loaded(&self.session.items);
+        // The bodies this session was STARTED with are not news to it. The ones its own rounds load
+        // are read per round, below, because they are in the transcript only once that round ran.
         skill_offers.skip_names(self.cfg.skills.iter());
 
         let backstop = round_backstop(self.cfg.max_tool_rounds);
@@ -1551,7 +1550,10 @@ impl Harness {
                 );
                 // A skill is scored against more than the note's subject: the person's prompt, the
                 // plan, and the model's own latest text and reasoning, since a round that has worked
-                // out what it needs is the round that needs the instructions for it.
+                // out what it needs is the round that needs the instructions for it. What the session
+                // holds is re-read every round: a body loaded in the round before is in the
+                // transcript now, and offering it again would claim the model has not read it.
+                skill_offers.skip_loaded(&self.session.items);
                 skill_offers.compose(
                     &self.skills,
                     &crate::skills_offer::subject(&self.session.items, &self.todos.snapshot()),
