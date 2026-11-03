@@ -520,7 +520,9 @@ impl GithubKeys {
                 (_, Some(false)) => Some(false),
                 (mine, _) => mine,
             },
-            token_path: other.token_path.clone().or_else(|| self.token_path.clone()),
+            // The user's path alone: `post` from one level and a token from the other is a seat
+            // the project started, which is the defect the `post` arm already refuses.
+            token_path: self.token_path.clone(),
         }
     }
 }
@@ -1908,6 +1910,23 @@ mod tests {
             token_path: Some("/other".into()),
         };
         assert!(!GithubKeys::default().overridden_by(&project_on).posting());
+
+        // The two facts may not come from two levels: a project that names only a token has
+        // started the seat the user merely allowed.
+        let user_yes = GithubKeys {
+            post: Some(true),
+            token_path: None,
+        };
+        let project_token = GithubKeys {
+            post: None,
+            token_path: Some("/other".into()),
+        };
+        assert!(!user_yes.overridden_by(&project_token).posting());
+        assert_eq!(
+            user.overridden_by(&project_token).token_path.as_deref(),
+            Some("/t"),
+            "a project names no token, so it can neither add one nor replace the user's"
+        );
 
         let path = write_file(&dir, "[github]\npostt = true\n");
         let err = LeticodeConfig::load(&path).unwrap_err();
