@@ -886,6 +886,22 @@ impl FetchBudget {
     fn wait(&self, connection: Duration) -> Duration {
         connection.min(self.left())
     }
+
+    /// How long the fetch has been running: what a kill is reported against, because the production
+    /// bound is not the only one a caller can give.
+    fn spent(&self) -> Duration {
+        self.began.elapsed()
+    }
+}
+
+/// How a fetch ended, so a kill is reported against the clock it was given rather than [`GIT_BOUND`],
+/// which a caller and a test both may override.
+#[derive(Debug)]
+enum FetchEnded {
+    /// git answered, and its exit status and streams are the answer.
+    Ran(std::process::Output),
+    /// Nothing answered within the bound, which had passed after this long.
+    Killed(Duration),
 }
 
 /// What a caller may do when a call does not answer at all. Retrying follows idempotency: a `read`
@@ -2258,7 +2274,7 @@ impl Ssh {
         repo: &Path,
         url: &str,
         refspec: &str,
-    ) -> Result<Option<std::process::Output>, String> {
+    ) -> Result<FetchEnded, String> {
         self.fetch_within(Path::new("git"), repo, url, refspec, GIT_BOUND)
     }
 
@@ -2272,7 +2288,7 @@ impl Ssh {
         url: &str,
         refspec: &str,
         within: Duration,
-    ) -> Result<Option<std::process::Output>, String> {
+    ) -> Result<FetchEnded, String> {
         let budget = FetchBudget::new(within);
         let mut last: Option<std::process::Output> = None;
         for attempt in 0..2 {
@@ -2293,6 +2309,19 @@ impl Ssh {
                     });
                 }
             };
+            // The wait above is charged to the same budget, so it can be the whole of it. A git
+            // forked with nothing left is killed on its first poll, and the caller would report a
+            // transfer that never had a chance as one that timed out.
+            if budget.left().is_zero() {
+                let why = format!(
+                    "this fetch was given {within:?} and the slot on the git master took all of \
+                     it, so nothing was run"
+                );
+                return Err(match &last {
+                    Some(out) => refused_then_no_slot(&out.stderr, &why),
+                    None => why,
+                });
+            }
             let argv = self.fetch_argv(attempt, repo, url, refspec);
             // Bounded, because this fetch's transport is an ssh connection: a close that waits for
             // ever on a dead host is the same defect as a `read` that does.
@@ -2305,7 +2334,10 @@ impl Ssh {
                 break;
             }
         }
-        Ok(last)
+        Ok(match last {
+            Some(out) => FetchEnded::Ran(out),
+            None => FetchEnded::Killed(budget.spent()),
+        })
     }
 
     /// `git fetch`'s argv for one attempt. The socket is the attempt's own: attempt 0 rides the
@@ -3639,7 +3671,7 @@ impl SshBackend {
         // because a retry must not dial the socket that refused it.
         let fetched = self.ssh.fetch_back(&self.local_repo, &url, &refspec);
         let mut said = match fetched {
-            Ok(Some(out)) if out.status.success() => {
+            Ok(FetchEnded::Ran(out)) if out.status.success() => {
                 let commit = git(
                     &self.local_repo,
                     &["rev-parse", "--short", &self.back_branch],
@@ -3664,7 +3696,7 @@ impl SshBackend {
                     self.host, self.back_branch, ahead, self.base, commit
                 )
             }
-            Ok(Some(out)) => format!(
+            Ok(FetchEnded::Ran(out)) => format!(
                 "the session on {} ended and its branch did NOT come back: `git fetch` said \
                  \"{}\". The work is still there, in {} on that machine (branch `{}`) — reach \
                  it with `git fetch {} {refspec}` once the cause is fixed",
@@ -3674,13 +3706,13 @@ impl SshBackend {
                 self.branch,
                 url
             ),
-            Ok(None) => format!(
+            Ok(FetchEnded::Killed(spent)) => format!(
                 "the session on {} ended and its branch did NOT come back: `git fetch` got no \
                  answer within {} s and was killed, so the connection is the suspect. The work is \
                  still there, in {} on that machine (branch `{}`) — fetch it yourself once the \
                  host answers: `git fetch {} {refspec}`",
                 self.host,
-                GIT_BOUND.as_secs(),
+                spent.as_secs(),
                 self.worktree,
                 self.branch,
                 url
@@ -6006,7 +6038,7 @@ user     = "root"
         let spent = began.elapsed();
         queue.join().expect("the queue thread");
         assert!(
-            matches!(out, Ok(None)),
+            matches!(out, Ok(FetchEnded::Killed(_))),
             "a git that never answers is killed at the deadline: {out:?}"
         );
         assert!(
@@ -6015,6 +6047,67 @@ user     = "root"
              the {} s it was given, and this call took {spent:?}",
             bound.as_secs()
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A fetch killed at its deadline says which deadline. The production bound is `GIT_BOUND`, but a
+    /// caller may give less, and a fetch with nothing left must not fork a git to kill on its first
+    /// poll: both are read off the answer rather than assumed.
+    #[test]
+    fn a_fetch_that_is_killed_says_how_long_it_was_given() {
+        let (dir, paths) = paths_for("git-killed", "git-killed", "git-killed.invalid");
+        let host = Host {
+            name: "git-killed".into(),
+            hostname: "git-killed.invalid".into(),
+            user: Some("tester".into()),
+            key: None,
+            path: Vec::new(),
+            root: "~/letibot-remote".into(),
+            mise: Some(Mise::Off),
+            ..Host::default()
+        };
+        let program = dir.join("git");
+        let ran = dir.join("ran");
+        crate::testing::write_stub(
+            &program,
+            &format!(
+                "#!/bin/sh\n[ $# -eq 0 ] && exit 0\ntouch {}\nsleep 30\n",
+                ran.display()
+            ),
+        );
+        let ssh = Ssh::connect(host, Some(program.clone()), paths).expect("the connection opens");
+
+        let url = "https://example.invalid/repo";
+        let nothing = ssh.fetch_within(&program, &dir, url, "main", Duration::ZERO);
+        assert!(
+            !ran.exists(),
+            "a fetch with no time left in it started a program it could only kill: {nothing:?}"
+        );
+        assert!(
+            matches!(nothing, Ok(FetchEnded::Killed(_))),
+            "a fetch that ran nothing says so, and is not read as a transfer that timed out: \
+             {nothing:?}"
+        );
+        let _ = std::fs::remove_file(&ran);
+
+        let bound = Duration::from_millis(200);
+        let began = Instant::now();
+        let out = ssh.fetch_within(&program, &dir, url, "main", bound);
+        let spent = began.elapsed();
+        assert!(
+            ran.exists(),
+            "a fetch with time in it runs the program: {out:?}"
+        );
+        match out {
+            Ok(FetchEnded::Killed(said)) => {
+                assert!(
+                    said >= bound && said <= spent,
+                    "the kill is reported against the {bound:?} this fetch was given, rather than a \
+                     bound it was not: it said {said:?} of {spent:?}"
+                );
+            }
+            other => panic!("a git that never answers is killed at its deadline: {other:?}"),
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
