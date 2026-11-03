@@ -25,7 +25,7 @@ use letibot_sessionlog::client::{ClientError, HeadClient, Inbound, pump};
 use letibot_sessionlog::event::Envelope;
 use letibot_sessionlog::protocol::{Caps, ServerFrame};
 use letibot_sessionlog::server::default_socket_path;
-use letibot_sessionlog::{SessionBrief, testing};
+use letibot_sessionlog::{SessionBrief, SessionEvent, testing};
 
 use crate::app::App;
 use crate::driver::Link;
@@ -63,6 +63,9 @@ struct Args {
     /// Answer "is there a daemon here, and does it speak this build's protocol" and
     /// exit. No screen, no snapshot, no frame - see [`probe`].
     probe: bool,
+    /// `--models NAME`: the daemon's own `/models NAME`, its answer, and exit. A one-shot
+    /// like `--interrupt-all`, because a script that moves a session's model has no screen.
+    models: Option<String>,
 }
 
 /// `args` is a parameter, and that is the point of the move: the first version left `parse()` reading the process's
@@ -86,6 +89,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
         wait: 30,
         reason: "letibot-tui --interrupt-all".into(),
         probe: false,
+        models: None,
     };
     let mut it = args.iter().cloned();
     while let Some(arg) = it.next() {
@@ -115,6 +119,15 @@ fn parse(args: &[String]) -> Result<Args, String> {
             // `letibot --ls`, which draws the byobu-shaped view across folders.
             "--list-sessions" => a.list_sessions = true,
             "--wait" => a.wait = next()?.parse().map_err(|e| format!("--wait: {e}"))?,
+            // The name is the whole of the flag: a daemon sent a bare `/models` answers a
+            // LISTING, which is not a switch, so an empty one never reaches the socket.
+            "--models" => {
+                let name = next()?;
+                if name.trim().is_empty() {
+                    return Err("--models: the name is empty".into());
+                }
+                a.models = Some(name)
+            }
             "--reason" => a.reason = next()?,
             "-V" | "--version" => a.version = true,
             // Every role with its default look, as a theme file reads them: the starting point
@@ -133,7 +146,7 @@ fn usage() -> String {
      \x20           [--replay FILE.jsonl] [--demo] [--no-tty]\n\
      \x20           [--body-lines N] [--reasoning-lines N]\n\
      \x20           [--interrupt-all [--wait SECS] [--reason TEXT]] [--list-sessions]\n\
-     \x20           [--theme-template]"
+     \x20           [--models NAME] [--theme-template]"
         .into()
 }
 
@@ -180,6 +193,10 @@ pub fn run(args: &[String]) -> i32 {
             return 1;
         }
         return 0;
+    }
+
+    if let Some(name) = args.models.as_deref() {
+        return models(&args, name, &mut std::io::stdout(), &mut std::io::stderr());
     }
 
     if args.probe {
@@ -426,6 +443,106 @@ fn interrupt_all(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         Interrupted::Ended(_) => println!("all turns stopped"),
     }
     Ok(())
+}
+
+/// How long a `/models NAME` sent from the command line may take: the daemon rewrites
+/// `providers.toml` and may have to ask a provider about its key, and neither is this head's
+/// clock to measure.
+const MODELS_WAIT: Duration = Duration::from_secs(30);
+
+/// What the daemon said to a `/models NAME` this head sent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Switched {
+    /// The verb's answer, in the daemon's own words.
+    pub said: String,
+    /// Whether the switch was made: the event's code, never a reading of the prose.
+    pub ok: bool,
+}
+
+/// `--models NAME`: a one-shot in `--interrupt-all`'s shape. The daemon's own sentence is
+/// stdout's and a refusal is stderr's, so a script reads an answer or nothing.
+fn models<W: std::io::Write, E: std::io::Write>(
+    args: &Args,
+    name: &str,
+    out: &mut W,
+    err: &mut E,
+) -> i32 {
+    // `--resume` first: it names a session out of the store, and it is the one the caller
+    // asked about when both flags are there.
+    let session = if args.resume.is_empty() {
+        args.session.as_str()
+    } else {
+        args.resume.as_str()
+    };
+    match switch_model(&args.socket, session, name, MODELS_WAIT) {
+        Ok(Switched { said, ok: true }) => {
+            let _ = writeln!(out, "{said}");
+            0
+        }
+        Ok(Switched { said, ok: false }) => {
+            let _ = writeln!(err, "{said}");
+            1
+        }
+        Err(e) => {
+            let _ = writeln!(err, "letibot-tui: {e}");
+            1
+        }
+    }
+}
+
+/// Send `models NAME` over the frame a typed `/models` uses, and wait for the daemon's answer
+/// under one of the two codes its slash door publishes.
+pub fn switch_model(
+    socket: &std::path::Path,
+    session: &str,
+    name: &str,
+    wait: Duration,
+) -> Result<Switched, Box<dyn std::error::Error>> {
+    let line = format!("models {name}");
+    let deadline = Instant::now() + wait;
+    let (mut client, _hello, reader) =
+        HeadClient::attach(socket, session, 0, "remote", "models", Caps::default())?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || pump(reader, tx));
+    client.slash(0, &line)?;
+    let out = loop {
+        if Instant::now() >= deadline {
+            return Err(format!("no answer to `/{line}` within {}s", wait.as_secs()).into());
+        }
+        match rx.recv_timeout(Duration::from_millis(200)) {
+            Ok(Inbound::Frame(ServerFrame::Event(env))) => {
+                let SessionEvent::Warning { code, detail, .. } = env.event else {
+                    continue;
+                };
+                if code != "slash" && code != "slash_refused" {
+                    continue;
+                }
+                // Another head's verb lands on this stream too, and the echo is the only thing
+                // that says the answer is the one this command asked for.
+                let (echo, said) = detail.split_once('\n').unwrap_or((&detail, ""));
+                if echo.trim().trim_start_matches('/') != line {
+                    continue;
+                }
+                break Switched {
+                    said: said.trim().to_string(),
+                    ok: code == "slash",
+                };
+            }
+            // A frame this head cannot read is not a reason to lose the round trip: the
+            // answer may be the very next one.
+            Ok(Inbound::Unreadable(u)) => {
+                eprintln!("letibot-tui: {}", u.said());
+                continue;
+            }
+            Ok(Inbound::Frame(_)) => continue,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                return Err("the daemon closed the connection".into());
+            }
+        }
+    };
+    let _ = client.detach();
+    Ok(out)
 }
 
 /// How long one ask for the session list may take, on its own clock (see [`interrupt_turns`]).
@@ -903,6 +1020,7 @@ mod probe_tests {
             wait: 30,
             reason: "test".into(),
             probe: true,
+            models: None,
         }
     }
 
@@ -973,6 +1091,109 @@ mod probe_tests {
         peer.join().unwrap();
         assert_eq!(code, 1, "the launcher must not start a second daemon here");
         let _ = std::fs::remove_file(&path);
+    }
+}
+
+#[cfg(test)]
+mod models_tests {
+    use super::*;
+    use letibot_sessionlog::server;
+    use letibot_sessionlog::{CommandKind, Hub, SessionEvent};
+
+    fn socket_path(tag: &str) -> std::path::PathBuf {
+        let mut p = letibot_sessionlog::testing::scratch_root();
+        p.push(format!("letibot-models-{tag}-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&p);
+        p
+    }
+
+    /// The daemon's half of `/models`: take the queued command and publish the answer under the
+    /// codes its own slash door uses. Returns the line the head sent, or `None` if none came.
+    fn daemon(
+        hub: &std::sync::Arc<Hub>,
+        ok: bool,
+        said: &'static str,
+    ) -> std::thread::JoinHandle<Option<String>> {
+        let hub = hub.clone();
+        std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while Instant::now() < deadline {
+                let Some(cmd) = hub.try_command() else {
+                    std::thread::sleep(Duration::from_millis(10));
+                    continue;
+                };
+                let CommandKind::Slash { line } = cmd.kind else {
+                    continue;
+                };
+                hub.publish(SessionEvent::Warning {
+                    code: if ok { "slash" } else { "slash_refused" }.into(),
+                    detail: format!("/{line}\n{said}"),
+                    compaction: None,
+                });
+                return Some(line);
+            }
+            None
+        })
+    }
+
+    fn args_with(socket: &std::path::Path, models: &str) -> Args {
+        let argv: Vec<String> = vec![
+            "--socket".into(),
+            socket.display().to_string(),
+            "--session".into(),
+            "s".into(),
+            "--models".into(),
+            models.into(),
+        ];
+        parse(&argv).expect("a parsable command line")
+    }
+
+    /// The flag is the daemon's own verb: the line it sends is `models NAME`, the answer is
+    /// stdout's, and the exit code is the daemon's verdict rather than this head's reading of it.
+    #[test]
+    fn the_models_flag_moves_a_running_session_and_says_so() {
+        let hub = Hub::new("s");
+        let h = server::serve(hub.clone(), socket_path("moves")).expect("bind");
+        let said = "now answering on dense78 (deepseek); the next turn uses it";
+        let worker = daemon(&hub, true, said);
+        let args = args_with(h.path(), "dense78");
+        let name = args.models.as_deref().expect("the flag's value");
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = models(&args, name, &mut out, &mut err);
+        assert_eq!(worker.join().unwrap().as_deref(), Some("models dense78"));
+        h.shutdown();
+        assert_eq!(String::from_utf8(out).unwrap(), format!("{said}\n"));
+        assert_eq!(String::from_utf8(err).unwrap(), "");
+        assert_eq!(code, 0, "the daemon accepted the switch");
+    }
+
+    /// A refusal is a `1` and its words are stderr's, so a script that reads stdout gets an answer
+    /// or nothing and never a refusal it would take for one.
+    #[test]
+    fn a_refused_models_switch_is_a_one_and_the_refusal_is_on_stderr() {
+        let hub = Hub::new("s");
+        let h = server::serve(hub.clone(), socket_path("refused")).expect("bind");
+        let said = "no provider named \"nosuch\" in providers.toml; /models lists what is there";
+        let worker = daemon(&hub, false, said);
+        let args = args_with(h.path(), "nosuch");
+        let name = args.models.as_deref().expect("the flag's value");
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = models(&args, name, &mut out, &mut err);
+        assert_eq!(worker.join().unwrap().as_deref(), Some("models nosuch"));
+        h.shutdown();
+        assert_eq!(String::from_utf8(out).unwrap(), "");
+        assert_eq!(String::from_utf8(err).unwrap(), format!("{said}\n"));
+        assert_eq!(code, 1, "the daemon refused the switch");
+    }
+
+    /// An empty name is refused by the flag's own name and before a socket is opened: a daemon
+    /// sent `/models` with nothing after it answers a LISTING, which is not what was asked.
+    #[test]
+    fn an_empty_models_name_is_refused_before_anything_is_sent() {
+        let e = parse(&["--models".to_string(), "  ".to_string()])
+            .err()
+            .expect("refused");
+        assert!(e.contains("--models"), "{e}");
     }
 }
 
