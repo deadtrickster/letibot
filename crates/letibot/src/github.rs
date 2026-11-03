@@ -137,6 +137,15 @@ pub fn run(args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    // **The sessions come before the banner**: a seat that announced `polling every 60s` and then
+    // said it had nowhere to review in would have promised work it cannot do.
+    let sessions = match DaemonSessions::at(&cwd) {
+        Ok(sessions) => sessions,
+        Err(why) => {
+            eprintln!("letibot: {why}");
+            return ExitCode::from(2);
+        }
+    };
     println!("the reviewer seat on {}", scope.as_str());
     if config.posting() {
         println!(
@@ -148,13 +157,6 @@ pub fn run(args: &[String]) -> ExitCode {
     }
     println!("  polling every {}s", POLL_MS / 1_000);
 
-    let sessions = match DaemonSessions::at(&cwd) {
-        Ok(sessions) => sessions,
-        Err(why) => {
-            eprintln!("letibot: {why}");
-            return ExitCode::from(2);
-        }
-    };
     let source = letibot_github::gh::Gh::new(config.token.clone());
     let mut reviewer = Worker::new(sessions);
     let mut seat = Seat::new(vec![scope], config);
