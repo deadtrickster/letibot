@@ -733,13 +733,55 @@ fn first_rows(reviews: &[ReviewRow], merges: &[MergeRow]) -> (Vec<String>, usize
     (lines.into_iter().map(|(_, line)| line).collect(), more)
 }
 
-/// One review row as one line - the id, the state, the branch and the target, and what the queue
-/// said. `cap` is the bounded answer's limit on the row's own words.
+/// **A state as a reader of this text understands it.** The store's column names are codes
+/// (`cannot_decide`, `timed_out`), and this answer is read by a model that repeats it to a person;
+/// an unknown state falls back to the store's own word rather than to a guess.
+fn plain_state(state: &str) -> String {
+    let word = match state {
+        // The review queue.
+        "waiting" => "waiting for a reviewer",
+        "reviewing" => "being reviewed",
+        "approved" => "approved, waiting to land",
+        "rejected" => "refused",
+        "cannot_decide" => "the reviewer could not decide",
+        // The merge queue.
+        "queued" => "waiting for the gate",
+        "gating" => "the gate is running",
+        "landed" => "landed",
+        "failed" => "the gate failed",
+        "timed_out" => "the gate timed out",
+        "conflict" => "it does not merge cleanly",
+        "moved" => "replaced by a newer row",
+        // Both.
+        "blocked" => "stopped - a person has to act",
+        "withdrawn" => "withdrawn",
+        "archived" => "archived",
+        other => return other.replace('_', " "),
+    };
+    word.to_string()
+}
+
+/// **Who judged the row**, when the store recorded it - `reviewer:s-x` reads as `s-x`, and a
+/// `human:` verdict as the person. Empty when nobody has.
+fn judged_by(verdict_by: Option<&str>) -> String {
+    let Some(by) = verdict_by.filter(|b| !b.is_empty()) else {
+        return String::new();
+    };
+    let who = by
+        .strip_prefix("reviewer:")
+        .or_else(|| by.strip_prefix("human:"))
+        .unwrap_or(by);
+    format!(" by {who}")
+}
+
+/// One review row as one line - the id, what state it is in and who put it there, the branch and
+/// the target, and what the queue said. `cap` is the bounded answer's limit on the row's own words.
 fn review_line(r: &ReviewRow, cap: Option<usize>) -> String {
     format!(
-        "  `{}` {} `{}` → `{}` at {}: {}",
+        "  `{}` {}{} `{}` → `{}` at {}: {}",
         r.id,
-        r.state.as_str(),
+        plain_state(r.state.as_str()),
+        judged_by(r.verdict_by.as_deref()),
         r.branch,
         r.target,
         short_sha(&r.head_sha),
@@ -759,7 +801,7 @@ fn merge_line(m: &MergeRow, cap: Option<usize>) -> String {
     format!(
         "  `{}` {} `{}` → `{}`: {}",
         m.id,
-        m.state.as_str(),
+        plain_state(m.state.as_str()),
         m.branch,
         m.target,
         shorten(m.evidence.lines().next().unwrap_or_default(), cap)
@@ -1135,6 +1177,47 @@ mod tests {
         );
         assert!(said.contains("review queue: 1 waiting"), "{said}");
         assert!(said.contains("merge queue: 0 open"), "{said}");
+    }
+
+    /// **A row says its state in words, and who judged it** - the store's column names
+    /// (`cannot_decide`, `timed_out`) are codes, and this answer is quoted to a person.
+    #[test]
+    fn a_row_says_its_state_in_words_and_who_judged_it() {
+        // The words themselves, every state either queue has.
+        for (state, want) in [
+            ("waiting", "waiting for a reviewer"),
+            ("reviewing", "being reviewed"),
+            ("cannot_decide", "the reviewer could not decide"),
+            ("rejected", "refused"),
+            ("queued", "waiting for the gate"),
+            ("gating", "the gate is running"),
+            ("timed_out", "the gate timed out"),
+            ("landed", "landed"),
+            ("blocked", "stopped - a person has to act"),
+            ("something_new", "something new"),
+        ] {
+            assert_eq!(plain_state(state), want, "{state}");
+        }
+        // Who judged it, from the way the store keys the decider.
+        assert_eq!(
+            judged_by(Some("reviewer:s-gatekeeper-sub-17917")),
+            " by s-gatekeeper-sub-17917"
+        );
+        assert_eq!(judged_by(Some("human:dead")), " by dead");
+        assert_eq!(judged_by(None), "");
+
+        // And the row the full answer prints carries them.
+        let dir = TempDir::new("desk-words");
+        let mine = a_repo(&dir.0, "mine", None);
+        let db = dir.0.join("sessions.db");
+        let store = Store::open(&db).unwrap();
+        a_review(&store, &mine, "r-waiting", "waiting its turn", 10);
+        let desk = a_desk(&db, &dir.0.join("mine"));
+        let said = desk.status(false, None).unwrap();
+        assert!(
+            said.contains("`r-waiting` waiting for a reviewer `feat/r-waiting` → `main`"),
+            "the row in words: {said}"
+        );
     }
 
     /// `all` is every repository, one line each - the whole box in a screenful, and it says how many and
