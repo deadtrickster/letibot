@@ -58,7 +58,21 @@ impl Tool for RecallTool {
                 if lossy {
                     inv = inv.with_note("the stored body is not valid UTF-8".to_string());
                 }
-                let full = held.named(id).map(|e| e.bytes).unwrap_or(bytes.len());
+                // How much of the body there is, from the map when the map names it and from the
+                // store's own listing otherwise: an id this process did not evict still has a
+                // size, and a read that stopped has to say where the rest of it is.
+                let full = held
+                    .named(id)
+                    .map(|e| e.bytes)
+                    .or_else(|| {
+                        ctx.spiller
+                            .store
+                            .list()
+                            .into_iter()
+                            .find(|e| e.hash == id)
+                            .map(|e| e.bytes)
+                    })
+                    .unwrap_or(bytes.len());
                 let done = (offset + bytes.len()).min(full);
                 if done < full {
                     inv = inv.with_note(format!(
@@ -209,17 +223,29 @@ mod tests {
             text
         );
 
-        // The daemon that restarted: the same directory, and a map no process refilled.
+        // The daemon that restarted: the same directory, and a map no process refilled. Its
+        // window is smaller, so the body must also say where the rest of it is: a body with no
+        // size on the map is still bounded, and a read that stopped must not read as the whole.
         let mut after = harness_with_spiller(Spiller::new(
             Box::new(NoBudget),
             Box::new(crate::spill::FileStore::new(dir.path(), session).unwrap()),
         ));
-        after.rt.recall = Some(Arc::new(Recall::new(Some(262_144))));
+        after.rt.recall = Some(Arc::new(Recall::new(Some(8_192))));
         let r = after.call("recall", &format!(r#"{{"id":"{id}"}}"#));
         assert!(r.is_grounded(), "{}", r.payload);
         assert_eq!(
-            r.payload, text,
-            "the body outlived the map, so it still opens"
+            r.payload.len(),
+            8_192 / 8 * 4,
+            "the bound follows the window even with no map to ask the size of"
+        );
+        assert!(
+            text.starts_with(&r.payload),
+            "and what came back is the body's own first bytes"
+        );
+        assert!(
+            r.notes.iter().any(|n| n.contains("call recall again")),
+            "a read that stopped says where the rest is: {:?}",
+            r.notes
         );
     }
 
