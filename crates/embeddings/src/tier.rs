@@ -342,14 +342,25 @@ impl Tier {
 
     /// Embed every document that has changed and put its vector in memory. Only a text the
     /// cache has never seen costs an embedding, so a restart pays for the corpus once.
+    ///
+    /// A fill that cannot answer empties the tier rather than leaving the last corpus's vectors
+    /// behind: a stale vector would score a text that has since been edited, and the contract a
+    /// caller relies on is that a failure is the words alone.
     pub fn fill(
         &self,
         documents: impl IntoIterator<Item = (String, String)>,
         now_ms: i64,
     ) -> Result<Filled, TierError> {
-        let (rows, done) = self.embedder.vectors(documents, now_ms)?;
-        *self.write() = Index::new(rows);
-        Ok(done)
+        match self.embedder.vectors(documents, now_ms) {
+            Ok((rows, done)) => {
+                *self.write() = Index::new(rows);
+                Ok(done)
+            }
+            Err(e) => {
+                *self.write() = Index::default();
+                Err(e)
+            }
+        }
     }
 
     pub fn query(&self, text: &str, now_ms: i64) -> Result<Vec<f32>, TierError> {
