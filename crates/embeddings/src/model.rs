@@ -114,6 +114,12 @@ impl Model {
         Model::load(&builtin_dir(data_dir), BUILTIN_MODEL.to_string())
     }
 
+    /// Open a directory and name it for the cache, which is what the built-in model's key is:
+    /// the name of the checkpoint and not the path a revision happens to sit under.
+    pub fn open_named(dir: &Path, name: impl Into<String>) -> Result<Model, ModelError> {
+        Model::load(dir, name.into())
+    }
+
     fn load(dir: &Path, name: String) -> Result<Model, ModelError> {
         let missing: Vec<&'static str> = FILES
             .iter()

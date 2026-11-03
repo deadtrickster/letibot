@@ -5,6 +5,7 @@
 //! mode = "off"                      # lexical only, and the default
 //! mode = "internal"                 # candle, here, with the built-in model
 //! model = "<dir>"                   # ... or a directory this build can read
+//! download = false                  # ... and never fetch the built-in model
 //! mode = "http://host:8080"         # an OpenAI-compatible /v1/embeddings
 //! model = "text-embedding-3-small"  # ... and the name it knows
 //! ```
@@ -12,6 +13,10 @@
 //! Three values for one key, because they are three answers to one question: who turns
 //! text into a vector. A key that does nothing is refused by name rather than ignored,
 //! because that is the config defect this tree has already paid for once.
+//!
+//! `download` is the fourth key and the only one that is not about the answer: it says whether
+//! a box with `mode = "internal"` and no `model` may fetch the built-in one, and `false` is a
+//! box that must not reach the network.
 
 use std::path::PathBuf;
 
@@ -47,9 +52,21 @@ impl Mode {
 }
 
 /// The whole `[embeddings]` section, and the answer to "is there a second tier".
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Settings {
     pub mode: Mode,
+    /// Whether a box may fetch the built-in model. `false` is for a box that must not reach
+    /// the network: the model is then whatever is already on disk, and nothing is fetched.
+    pub download: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Settings {
+        Settings {
+            mode: Mode::Off,
+            download: true,
+        }
+    }
 }
 
 /// The model name an endpoint is asked for when the file does not name one: the name
@@ -80,7 +97,8 @@ impl std::fmt::Display for ConfigError {
             ConfigError::Toml(e) => write!(f, "[embeddings]: {e}"),
             ConfigError::UnknownKey(k) => write!(
                 f,
-                "[embeddings] {k} is not a key this build knows; it reads `mode` and `model`"
+                "[embeddings] {k} is not a key this build knows; it reads `mode`, `model` and \
+                 `download`"
             ),
             ConfigError::UnknownMode(m) => write!(
                 f,
@@ -115,6 +133,7 @@ impl std::error::Error for ConfigError {}
 struct Raw {
     mode: Option<String>,
     model: Option<String>,
+    download: Option<bool>,
 }
 
 impl Settings {
@@ -168,7 +187,10 @@ impl Settings {
         } else {
             return Err(ConfigError::UnknownMode(mode));
         };
-        Ok(Settings { mode })
+        Ok(Settings {
+            mode,
+            download: raw.download.unwrap_or(true),
+        })
     }
 
     /// Read the section out of a file. A file that is not there is [`Mode::Off`]: a box
@@ -187,7 +209,7 @@ impl Settings {
 fn unknown_key(e: &toml::de::Error, table: &toml::Table) -> ConfigError {
     let text = e.to_string();
     for key in table.keys() {
-        if key != "mode" && key != "model" {
+        if key != "mode" && key != "model" && key != "download" {
             return ConfigError::UnknownKey(key.clone());
         }
     }
@@ -271,6 +293,27 @@ mod tests {
         let err =
             Settings::from_toml("[embeddings]\nmode = \"off\"\nmodel = \"/m\"\n").unwrap_err();
         assert_eq!(err, ConfigError::ModelUnderOff);
+    }
+
+    /// **The download is on unless a box turns it off.** A box that may not reach the network
+    /// says so in the same table as the mode, and then the built-in model is a refusal and
+    /// never a fetch.
+    #[test]
+    fn the_download_is_on_unless_the_section_turns_it_off() {
+        assert!(
+            Settings::from_toml("[embeddings]\nmode = \"internal\"\n")
+                .unwrap()
+                .download
+        );
+        assert!(
+            !Settings::from_toml("[embeddings]\nmode = \"internal\"\ndownload = false\n")
+                .unwrap()
+                .download
+        );
+        // A box that wrote only the policy has not written the mode, and is still off.
+        let off = Settings::from_toml("[embeddings]\ndownload = false\n").unwrap();
+        assert_eq!(off.mode, Mode::Off);
+        assert!(!off.download);
     }
 
     /// The tree's client speaks HTTP/1.1 and no TLS, so `https://` is refused where it is

@@ -11,12 +11,13 @@
 //! mode = "off"          # lexical only, and the default
 //! mode = "internal"     # candle, in this process, with the built-in model
 //! model = "<dir>"       # ... or a directory with config.json, tokenizer.json, model.safetensors
+//! download = false      # ... and never fetch the built-in model on a box without a network
 //! mode = "http://127.0.0.1:8080"   # an OpenAI-compatible /v1/embeddings
 //! ```
 //!
-//! Nothing is compiled in and nothing is downloaded at build time: the built-in model
-//! is fetched once into the data directory, and a box with no model and no URL says so
-//! by name instead of scoring nothing.
+//! Nothing is compiled in: the built-in model is fetched once into the data directory, from a
+//! pinned revision and checked against a pinned hash per file, and a box that wrote
+//! `download = false` is never fetched for at all.
 //!
 //! The cache is a cache: `<data dir>/embeddings.db`, keyed by `(model, sha256 of the
 //! text)`, so an edited note is a new key and a deleted file costs time and no more.
@@ -33,6 +34,11 @@ pub mod tier;
 /// tests and for a crate that scores with it.
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
+
+/// A scratch directory, the fixture checkpoint and a loopback server: how a test measures a
+/// fetch without the network.
+#[cfg(test)]
+mod fake;
 
 pub use builtin::{DownloadError, Pin, Source};
 pub use cache::{Cache, CacheError, Hit, db_path};

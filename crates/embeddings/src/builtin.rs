@@ -283,7 +283,8 @@ fn attempt(
     source: &Source,
     url: &str,
 ) -> Result<(), Attempt> {
-    let body = letibot_http::send(endpoint, letibot_http::Request::get(path)).map_err(Attempt::Http)?;
+    let body =
+        letibot_http::send(endpoint, letibot_http::Request::get(path)).map_err(Attempt::Http)?;
     let file = std::fs::File::create(temp).map_err(|e| io(temp, e))?;
     let mut sink = Hashing {
         out: file,
@@ -361,12 +362,8 @@ impl<W: std::io::Write> std::io::Write for Hashing<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fake::{Checkpoint, Dir, Fake, answer};
     use crate::testing as fixture;
-    use std::collections::BTreeMap;
-    use std::io::{BufRead, BufReader, Write};
-    use std::net::TcpListener;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{Arc, Mutex};
 
     use letibot_http::retry::Policy;
 
@@ -401,155 +398,11 @@ mod tests {
                 .join(BUILTIN_MODEL)
                 .join(REVISION)
         );
-        assert!(Pin::shipped()
-            .url("config.json")
-            .ends_with(&format!("/{REVISION}/config.json")));
-    }
-
-    /// A scratch directory that removes itself, so a fixture never outlives its test.
-    struct Dir(PathBuf);
-
-    impl Dir {
-        fn new(tag: &str) -> Dir {
-            static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-            let p = std::env::temp_dir().join(format!(
-                "letibot-builtin-{tag}-{}-{}-{}",
-                std::process::id(),
-                letibot_metrics::now_ms(),
-                N.fetch_add(1, Ordering::Relaxed)
-            ));
-            std::fs::create_dir_all(&p).expect("scratch dir");
-            Dir(p)
-        }
-
-        fn path(&self) -> &Path {
-            &self.0
-        }
-    }
-
-    impl Drop for Dir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-
-    /// **The three files a fetch has to find.** They are the tiny BERT's, so the bytes served
-    /// are the bytes of a checkpoint this build can open: the download is measured end to end
-    /// and the model that comes out of it is a real one.
-    struct Checkpoint {
-        files: BTreeMap<&'static str, Vec<u8>>,
-    }
-
-    impl Checkpoint {
-        fn new() -> Checkpoint {
-            let dir = Dir::new("bytes");
-            fixture::tiny_bert(dir.path()).expect("write the fixture");
-            let files = SOURCES
-                .iter()
-                .map(|s| {
-                    let bytes = std::fs::read(dir.path().join(s.file)).expect("read the fixture");
-                    (s.file, bytes)
-                })
-                .collect();
-            Checkpoint { files }
-        }
-
-        /// One file, as this checkpoint's bytes, with `mutate` applied to them.
-        fn bytes(&self, file: &str) -> Vec<u8> {
-            self.files.get(file).cloned().expect("a known file")
-        }
-
-        /// The pin over these bytes, served from `base`: the shipped revision, a test's hashes.
-        fn pin(&self, base: &str) -> Pin {
-            Pin::new(
-                base,
-                REVISION,
-                SOURCES
-                    .iter()
-                    .map(|s| {
-                        let bytes = self.bytes(s.file);
-                        Source {
-                            file: s.file,
-                            sha256: owned_hash(&bytes),
-                            bytes: bytes.len() as u64,
-                        }
-                    })
-                    .collect(),
-            )
-        }
-    }
-
-    /// A `Source`'s hash is a `&'static str` in the table, and a test's is computed, so the
-    /// string it computed is leaked: a handful of bytes for the life of the test binary.
-    fn owned_hash(bytes: &[u8]) -> &'static str {
-        let text = format!("{:x}", <sha2::Sha256 as sha2::Digest>::digest(bytes));
-        Box::leak(text.into_boxed_str())
-    }
-
-    /// A loopback HTTP server that answers each request with the bytes a test names, and
-    /// counts them. The client is the real one; only the socket is local, so no test reaches
-    /// the network.
-    struct Fake {
-        port: u16,
-        seen: Arc<Mutex<Vec<String>>>,
-        stop: Arc<AtomicBool>,
-    }
-
-    impl Fake {
-        fn new(route: impl Fn(&str) -> Vec<u8> + Send + Sync + 'static) -> Fake {
-            let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-            listener.set_nonblocking(true).expect("nonblocking");
-            let port = listener.local_addr().expect("addr").port();
-            let seen = Arc::new(Mutex::new(Vec::new()));
-            let stop = Arc::new(AtomicBool::new(false));
-            let (log, flag, route) = (seen.clone(), stop.clone(), Arc::new(route));
-            std::thread::spawn(move || {
-                while !flag.load(Ordering::Relaxed) {
-                    let Ok((stream, _)) = listener.accept() else {
-                        std::thread::sleep(std::time::Duration::from_millis(2));
-                        continue;
-                    };
-                    let mut reader = BufReader::new(stream.try_clone().expect("clone"));
-                    let mut path = String::new();
-                    loop {
-                        let mut line = String::new();
-                        if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
-                            break;
-                        }
-                        if path.is_empty() {
-                            path = line.split_whitespace().nth(1).unwrap_or("").to_string();
-                        }
-                    }
-                    log.lock().expect("log").push(path.clone());
-                    let mut out = stream;
-                    let _ = out.write_all(&route(&path));
-                    let _ = out.flush();
-                }
-            });
-            Fake { port, seen, stop }
-        }
-
-        fn base(&self) -> String {
-            format!("http://127.0.0.1:{}", self.port)
-        }
-
-        /// How many requests arrived, under any path.
-        fn requests(&self) -> usize {
-            self.seen.lock().expect("log").len()
-        }
-    }
-
-    impl Drop for Fake {
-        fn drop(&mut self) {
-            self.stop.store(true, Ordering::Relaxed);
-        }
-    }
-
-    /// One whole answer, with its length, so the client reads it as a finished body.
-    fn answer(body: &[u8]) -> Vec<u8> {
-        let mut out = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len()).into_bytes();
-        out.extend_from_slice(body);
-        out
+        assert!(
+            Pin::shipped()
+                .url("config.json")
+                .ends_with(&format!("/{REVISION}/config.json"))
+        );
     }
 
     /// **The first use fetches the three files and the second start does not.** The bytes
@@ -558,14 +411,7 @@ mod tests {
     #[test]
     fn the_builtin_model_is_fetched_once_and_then_found_on_disk() {
         let files = Checkpoint::new();
-        let served = files.files.clone();
-        let fake = Fake::new(move |path| {
-            let file = path.rsplit('/').next().unwrap_or("");
-            match served.get(file) {
-                Some(bytes) => answer(bytes),
-                None => b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n".to_vec(),
-            }
-        });
+        let fake = Fake::new(files.route());
         let pin = files.pin(&fake.base());
         let data = Dir::new("fetched");
 
@@ -597,7 +443,11 @@ mod tests {
         })
         .expect("the cache");
         assert_eq!(second, dir);
-        assert_eq!(fake.requests(), 3, "a model already on disk is not fetched again");
+        assert_eq!(
+            fake.requests(),
+            3,
+            "a model already on disk is not fetched again"
+        );
         assert!(again.is_empty(), "nothing is fetched, so nothing is said");
     }
 
@@ -625,7 +475,13 @@ mod tests {
         let err = ensure(&pin, data.path(), Policy::none(), &mut |_| {})
             .expect_err("a hash mismatch is a refusal");
         assert!(
-            matches!(err, DownloadError::Hash { file: "config.json", .. }),
+            matches!(
+                err,
+                DownloadError::Hash {
+                    file: "config.json",
+                    ..
+                }
+            ),
             "{err}"
         );
         assert!(err.to_string().contains("sha-256"), "{err}");
@@ -645,7 +501,7 @@ mod tests {
             // A length the connection then does not honour, which is what a dropped
             // connection looks like to the reader.
             let mut out = b"HTTP/1.1 200 OK\r\nContent-Length: 4096\r\n\r\n".to_vec();
-            out.extend_from_slice(format!("{file}").as_bytes());
+            out.extend_from_slice(file.as_bytes());
             out
         });
         let files = Checkpoint::new();
@@ -654,14 +510,23 @@ mod tests {
         let err = ensure(&pin, data.path(), Policy::none(), &mut |_| {})
             .expect_err("a cut-off body is a refusal");
         assert!(
-            matches!(err, DownloadError::Http { file: "config.json", .. }),
+            matches!(
+                err,
+                DownloadError::Http {
+                    file: "config.json",
+                    ..
+                }
+            ),
             "{err}"
         );
         let said = err.to_string();
         assert!(said.contains("config.json"), "{said}");
         assert!(said.contains(&pin.url("config.json")), "{said}");
         let dir = pin.dir(data.path());
-        assert!(!dir.join("config.json").is_file(), "a short file was renamed");
+        assert!(
+            !dir.join("config.json").is_file(),
+            "a short file was renamed"
+        );
         assert!(!dir.join("config.json.part").exists(), "the temp was left");
     }
 
@@ -671,15 +536,11 @@ mod tests {
     fn an_unfilled_pin_is_refused_before_anything_is_fetched() {
         let fake = Fake::new(|_| b"HTTP/1.1 500 Oops\r\nContent-Length: 0\r\n\r\n".to_vec());
         let data = Dir::new("unpinned");
-        let err = ensure(
-            &Pin::shipped(),
-            data.path(),
-            Policy::none(),
-            &mut |_| panic!("nothing is announced when nothing is fetched"),
-        )
+        let err = ensure(&Pin::shipped(), data.path(), Policy::none(), &mut |_| {
+            panic!("nothing is announced when nothing is fetched")
+        })
         .expect_err("a placeholder pin is a refusal");
         assert!(matches!(err, DownloadError::Unpinned), "{err}");
         assert_eq!(fake.requests(), 0);
     }
 }
-

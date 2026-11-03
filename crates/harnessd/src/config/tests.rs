@@ -33,6 +33,29 @@ fn the_embedder_section_is_read_from_the_project_level_then_the_users() {
     let _ = std::fs::remove_dir_all(&base);
 }
 
+/// **A box that may not reach the network writes it down.** With the download off, a built-in
+/// model that is not on disk is the refusal this tree already had, and never a fetch.
+#[test]
+fn a_section_that_turns_the_download_off_keeps_the_refusal() {
+    let base = std::env::temp_dir().join(format!("config-no-download-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).expect("a scratch dir");
+    let user = base.join("user.toml");
+    std::fs::write(
+        &user,
+        "[embeddings]\nmode = \"internal\"\ndownload = false\n",
+    )
+    .expect("the user file");
+
+    let mut cfg = Config::for_this_box(&base);
+    cfg.leticode_user.path = Some(user);
+    cfg.read_embeddings();
+    assert!(cfg.embedder.is_none(), "nothing was fetched");
+    let said = cfg.embedder_fault.expect("and the refusal is kept");
+    assert!(said.contains("all-MiniLM-L6-v2"), "{said}");
+    let _ = std::fs::remove_dir_all(&base);
+}
+
 /// The tree a VM placement copies is the session's own copy source where it has one, and the
 /// repository it is about otherwise - the one spelling `Harness::open` reads when it boots the VM
 /// and the only thing a test can read on a box it must not boot one on. `None` means the workspace.

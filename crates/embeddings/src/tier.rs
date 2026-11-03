@@ -8,11 +8,14 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex, RwLock};
 
+use crate::builtin::{self, DownloadError, Pin};
 use crate::cache::{Cache, CacheError, EmbedOrCacheError, Hit};
 use crate::config::{Mode, Settings};
 use crate::cosine::Index;
-use crate::model::{Model, ModelError};
+use crate::model::{BUILTIN_MODEL, Model, ModelError};
 use crate::remote::{Remote, RemoteError};
+
+use letibot_http::retry::Policy;
 
 /// Where a vector comes from, once the mode has been read. Boxed because a loaded
 /// checkpoint is megabytes beside a URL's few fields, and an embedder is shared by every
@@ -111,6 +114,8 @@ pub enum TierError {
     Model(ModelError),
     Remote(RemoteError),
     Cache(CacheError),
+    /// The built-in model could not be fetched, in the words of what stopped it.
+    Download(DownloadError),
     /// The engine answered a request with no vector at all.
     Empty(usize),
     /// The engine refused, in its own words - the model's or the endpoint's.
@@ -123,6 +128,7 @@ impl std::fmt::Display for TierError {
             TierError::Model(e) => write!(f, "{e}"),
             TierError::Remote(e) => write!(f, "{e}"),
             TierError::Cache(e) => write!(f, "{e}"),
+            TierError::Download(e) => write!(f, "{e}"),
             TierError::Empty(len) => {
                 write!(f, "the embedder answered a {len}-byte text with no vector")
             }
@@ -157,6 +163,8 @@ pub struct Embedder {
     /// The first failure this box, held until a caller says it: every caller falls back to
     /// the lexical score on a failure, and a line per round would be worse than the silence.
     fault: Mutex<Option<String>>,
+    /// What the box said before it fetched the built-in model, handed out once.
+    announcement: Mutex<Option<String>>,
 }
 
 struct Inner {
@@ -174,11 +182,35 @@ impl Embedder {
     /// Build the embedder the mode asks for, or `None` when the mode is `off` - which is the
     /// whole of "lexical only".
     pub fn open(settings: &Settings, data_dir: &Path) -> Result<Option<Arc<Embedder>>, TierError> {
+        Embedder::open_pinned(settings, data_dir, &Pin::shipped(), Policy::standard())
+    }
+
+    /// [`Embedder::open`] under a stated pin and retry rule. The pin is a parameter because a
+    /// test serves its own bytes from its own socket, and there is no other way to exercise a
+    /// fetch without reaching the network.
+    pub fn open_pinned(
+        settings: &Settings,
+        data_dir: &Path,
+        pin: &Pin,
+        policy: Policy,
+    ) -> Result<Option<Arc<Embedder>>, TierError> {
+        let mut said: Vec<String> = Vec::new();
         let engine = match &settings.mode {
             Mode::Off => return Ok(None),
             Mode::Internal { model } => match model {
                 Some(dir) => {
                     Engine::Internal(Box::new(Model::open(dir).map_err(TierError::Model)?))
+                }
+                // A box that may not reach the network is not fetched for: the built-in model
+                // is then whatever is on disk, and the old refusal is what it gets.
+                None if settings.download => {
+                    let dir = builtin::ensure(pin, data_dir, policy, &mut |line| {
+                        said.push(line.to_string())
+                    })
+                    .map_err(TierError::Download)?;
+                    Engine::Internal(Box::new(
+                        Model::open_named(&dir, BUILTIN_MODEL).map_err(TierError::Model)?,
+                    ))
                 }
                 None => Engine::Internal(Box::new(
                     Model::open_builtin(data_dir).map_err(TierError::Model)?,
@@ -189,15 +221,21 @@ impl Embedder {
             }
         };
         let cache = Cache::open_in(data_dir)?;
-        Ok(Some(Embedder::with(engine, cache)))
+        Ok(Some(Embedder::assemble(engine, cache, said)))
     }
 
     /// An embedder over an engine and a cache the caller already holds, which is what a test
     /// needs.
     pub fn with(engine: Engine, cache: Cache) -> Arc<Embedder> {
+        Embedder::assemble(engine, cache, Vec::new())
+    }
+
+    fn assemble(engine: Engine, cache: Cache, said: Vec<String>) -> Arc<Embedder> {
+        let announcement = (!said.is_empty()).then(|| said.join("\n"));
         Arc::new(Embedder {
             inner: Mutex::new(Inner { engine, cache }),
             fault: Mutex::new(None),
+            announcement: Mutex::new(announcement),
         })
     }
 
@@ -216,6 +254,15 @@ impl Embedder {
     /// sentence, handed out exactly once, and whichever caller asks first says it.
     pub fn take_fault(&self) -> Option<String> {
         self.fault.lock().unwrap_or_else(|e| e.into_inner()).take()
+    }
+
+    /// **What the box said before it fetched the built-in model**, handed out once: the
+    /// download happens once, so the sentence that says so is not repeated.
+    pub fn take_announcement(&self) -> Option<String> {
+        self.announcement
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
     }
 
     /// One vector for a text - the round's query - from the cache when it has been seen
@@ -483,6 +530,99 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    /// **A box that must not reach the network is not fetched for.** With the download off and
+    /// no model on disk, what it gets is the old refusal, naming the directory to fill.
+    #[test]
+    fn a_download_that_is_turned_off_keeps_the_old_refusal() {
+        let data = crate::fake::Dir::new("no-download");
+        let settings = Settings::from_toml("[embeddings]\nmode = \"internal\"\ndownload = false\n")
+            .expect("settings");
+        let err = match Embedder::open(&settings, data.path()) {
+            Ok(_) => panic!("a box with no model and no download has no embedder"),
+            Err(e) => e,
+        };
+        assert!(
+            matches!(err, TierError::Model(ModelError::Missing { .. })),
+            "{err}"
+        );
+        assert!(err.to_string().contains(BUILTIN_MODEL), "{err}");
+    }
+
+    /// A box that may not reach the network still opens a model it already has: the policy is
+    /// about fetching, and never about reading.
+    #[test]
+    fn a_model_already_on_disk_opens_with_the_download_turned_off() {
+        let data = crate::fake::Dir::new("cached-no-download");
+        crate::testing::tiny_bert(&crate::model::builtin_dir(data.path())).expect("fixture model");
+        let settings = Settings::from_toml("[embeddings]\nmode = \"internal\"\ndownload = false\n")
+            .expect("settings");
+        let embedder = Embedder::open(&settings, data.path())
+            .expect("no fault")
+            .expect("an embedder");
+        assert_eq!(embedder.kind(), "internal");
+        assert_eq!(embedder.take_announcement(), None, "nothing was fetched");
+    }
+
+    /// **The fetch a box makes on first use, through the tier.** The model comes back whole,
+    /// the sentence about it is handed out once, and scoring uses the model, not nothing.
+    #[test]
+    fn a_fetched_model_scores_and_says_what_it_fetched_once() {
+        let files = crate::fake::Checkpoint::new();
+        let fake = crate::fake::Fake::new(files.route());
+        let pin = files.pin(&fake.base());
+        let data = crate::fake::Dir::new("fetched-tier");
+        let settings =
+            Settings::from_toml("[embeddings]\nmode = \"internal\"\n").expect("settings");
+        let embedder = Embedder::open_pinned(&settings, data.path(), &pin, Policy::none())
+            .expect("no fault")
+            .expect("an embedder");
+
+        let said = embedder.take_announcement().expect("the sentence");
+        assert!(said.contains(&fake.base()), "{said}");
+        assert!(said.contains("once"), "{said}");
+        assert_eq!(embedder.take_announcement(), None, "once, not every open");
+
+        // The engine is the internal one, named for the cache by the checkpoint and not by
+        // the directory the revision happens to sit in.
+        assert_eq!(embedder.kind(), "internal");
+        assert_eq!(embedder.model(), BUILTIN_MODEL);
+        let vector = embedder
+            .vector("alpha beta gamma", now())
+            .expect("a vector");
+        assert_eq!(vector.len(), fixture::HIDDEN);
+    }
+
+    /// **A fetch that fails leaves the tier off, with the reason and the URL.** It never stands
+    /// in for a score - the caller falls back to its own words - which is why the one sentence
+    /// has to say what went wrong and where it looked.
+    #[test]
+    fn a_failed_download_is_a_fault_with_the_url_in_it() {
+        let files = crate::fake::Checkpoint::new();
+        let mut served = files.files.clone();
+        // The server's config.json is not the file the pin was taken over.
+        let mut altered = served["config.json"].clone();
+        altered[0] ^= 0xff;
+        served.insert("config.json", altered);
+        let fake = crate::fake::Fake::new(move |path| {
+            match served.get(path.rsplit('/').next().unwrap_or("")) {
+                Some(bytes) => crate::fake::answer(bytes),
+                None => b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n".to_vec(),
+            }
+        });
+        let pin = files.pin(&fake.base());
+        let data = crate::fake::Dir::new("failed-tier");
+        let settings =
+            Settings::from_toml("[embeddings]\nmode = \"internal\"\n").expect("settings");
+        let err = match Embedder::open_pinned(&settings, data.path(), &pin, Policy::none()) {
+            Ok(_) => panic!("a hash mismatch is not an embedder"),
+            Err(e) => e,
+        };
+        assert!(matches!(err, TierError::Download(_)), "{err}");
+        let said = err.to_string();
+        assert!(said.contains(&pin.url("config.json")), "{said}");
+        assert!(said.contains("sha-256"), "{said}");
     }
 
     /// Filling a corpus embeds each document once; filling it again from a fresh tier on

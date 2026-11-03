@@ -1610,7 +1610,15 @@ impl Config {
                 Ok(settings) if settings.mode.is_off() => continue,
                 Ok(settings) => {
                     match crate::embeddings::embedder(&settings, data.as_deref()) {
-                        Ok(found) => self.embedder = found,
+                        Ok(found) => {
+                            // A first-use fetch happens on this path - at start, before any
+                            // turn - so its one sentence is said here, and the embedder has it
+                            // only once.
+                            if let Some(said) = found.as_ref().and_then(|e| e.take_announcement()) {
+                                eprintln!("  embeddings: {said}");
+                            }
+                            self.embedder = found;
+                        }
                         Err(why) => self.embedder_fault = Some(why),
                     }
                     return;
