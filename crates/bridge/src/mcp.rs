@@ -35,15 +35,16 @@ pub fn serve<R: BufRead, W: Write + Send>(
     let out = Mutex::new(output);
     let (push_tx, push_rx) = mpsc::channel::<Value>();
     let done = AtomicBool::new(false);
+    let (done, out_ref) = (&done, &out);
     std::thread::scope(|scope| {
-        let writer = scope.spawn(|| {
+        let writer = scope.spawn(move || {
             // The stream's senders live as long as the bridge, so the channel never closes:
             // `done` is what ends this thread when the client's input does.
             while !done.load(Ordering::SeqCst) {
                 let Ok(message) = push_rx.recv_timeout(Duration::from_millis(100)) else {
                     continue;
                 };
-                let mut w = out.lock().unwrap_or_else(|e| e.into_inner());
+                let mut w = out_ref.lock().unwrap_or_else(|e| e.into_inner());
                 if write_message(&mut *w, &message).is_err() {
                     break;
                 }
