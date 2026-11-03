@@ -6542,3 +6542,275 @@ each item's end recorded); items 1, 3 and 4 were in code with no test naming the
 **Landed on `remote/80877000`:** three tests, one commit per crate (tools, harnessd, turn), each
 measured RED first by reverting the line it holds and then restored. No behaviour changed with
 them: the three reverts were the only edits, and each was undone before its commit.
+
+---
+
+---
+
+## T24 — The harness owns what a subagent leaves behind, and monitors need the same owner — **SETTLED 2026-11-03: scopes and monitors (25000d33, 104e3b73, 32fb7267, 4a188380, 56ada70d), then a firing as a bounded typed delivery (c931373e, fd9eb9b8, b51f59dc) and a wake that failed told apart from one nobody armed (b3ecd218)**
+
+Operator, 2026-09-09: *"you guys like to accumulate monitors and shells"* — and, on
+being shown the measurement, *"you are fine, others nt"*. That correction is the
+requirement. The leak is not the top-level agent's own housekeeping; it is **everything
+its children spawn and do not clean up.**
+
+Measured on this box the same evening, mid-session:
+
+| | |
+|---|---|
+| git worktrees in `.claude/worktrees/` | **13**, most from agents that finished hours ago |
+| orphan tmux sessions | `nano_test`, **30 hours** old, from a finished agent |
+| the top-level agent's own leak | 1 listener, 1 poll loop — correct |
+
+`docs/tui-testing.md` already says *"Kill your sessions. An orphaned tmux session holds a
+`harnessd` and its socket, and the next run then attaches to a daemon it did not start."*
+Written here, loaded in context, and it did not bind. That is `docs/closed-loop.md` §1
+again and the fix is the same: not a better rule.
+
+### The mechanism was already chosen
+
+D4, answered by the operator earlier the same day: *"just do byobu, which connects to
+cgroups — use dependent. if a vm is temporary then it is a session cgroup otherwise not.
+still must be clearly reapable."*
+
+So: **every process a turn spawns lands in a cgroup owned by a scope.** Three scopes and
+no fourth — `turn`, `session`, and `explicit` (survives the session because somebody said
+so, and is listed as such). Reaping is `cgroup.kill`, and a subagent's cgroup is a child
+of its parent's, so a parent that ends reaps its children by construction rather than by
+remembering to.
+
+— ✓ fixed in 25000d33, test the_three_scopes_round_trip_and_there_is_no_fourth (and
+`a_reaping_of_an_empty_scope_is_not_the_same_record_as_a_reaping_of_three` for the reaper
+that records what it killed).
+
+### The part that pays for itself immediately
+
+**Cgroups retire pattern matching for both reaping and liveness**, which is T21.1 and
+T21.2 dissolved rather than guarded:
+
+- `pkill -f X` becomes "kill this cgroup" — no pattern, so nothing to self-match.
+- `until pgrep -f X` becomes "is this cgroup non-empty" — no predicate that can match its
+  own waiter.
+
+The evidence that a guard is not enough: on 2026-09-09 a process check self-matched
+**five times in one session**, with `process-checks-that-self-match` loaded in memory and
+T21 open in this file. The fifth was `grep -E '[h]arnessd'` — the bracket trick defeats
+`pgrep`, but the shell wrapper echoes the expanded pattern back into its own command line,
+so the literal string was there to be found. A hazard with that many spellings is not
+one you check for; it is one you make unspellable.
+
+### Monitors, which are the same problem wearing a different hat
+
+Operator, same message: *"btw we need monitors in letibot"*. A monitor is a condition
+watched **between** turns that wakes the loop when it fires — the encoder running while
+the model is not, in `docs/closed-loop.md`'s terms, and the only correct shape for
+listening. The seat brief pays for that distinction: *a Stop hook fires when a session
+goes idle, and a seat that is rate limited, has crashed, or never started is not running
+a session, so no stop event ever fires and the silence looks exactly like a quiet room.*
+
+A monitor is also, structurally, a long-lived process. **Adding monitors before the
+lifetime work multiplies the leak this entry exists to stop**, so they land together:
+
+1. **Scoped at creation.** No monitor without an owner; the default is the session. — ✓ fixed
+   in 104e3b73, test a_monitor_dies_with_the_scope_that_owns_it
+2. **Listable and attributable.** The head can show what is watching and for whom, the
+   way it now shows sessions. An invisible watcher is an unreapable one. — ✓ fixed in
+   32fb7267, test
+   a_monitor_is_owned_listed_says_why_it_fired_and_refuses_a_second_under_one_name
+3. **Reports why it fired**, not just that it did. — ✓ fixed in 104e3b73, test
+   a_monitor_says_what_changed_and_not_merely_that_something_did
+4. **One waiter per name**, enforced. The fleet already learned this: two processes under
+   one reader means the roster shows a seat attached while the real one hears nothing. — ✓
+   fixed in 104e3b73, test a_second_monitor_under_one_name_is_refused_with_what_holds_it
+5. **Bounded.** A TTL or an explicit renewal, so a monitor whose reason has passed dies
+   without anybody remembering it. — ✓ fixed in 104e3b73, test
+   a_ttl_past_the_cap_is_refused_rather_than_clamped
+
+### What the fleet answered, 2026-09-09 — and what it ruled out
+
+Asked in `Lab/#general` with the counts stated first so replies were comparable.
+
+| box | worktrees | orphan tmux | listeners |
+|---|---|---|---|
+| **.79 (here)** | **13**, from finished subagents | 1, 30 h | 1 + 1, correct |
+| .78 (lubuntu2) | 4, **deliberate** — four llama.cpp checkouts, 3 live | 1, **14 days** | 1 + 1, correct |
+| .76 (lubuntu1) | 0 | 0 (the one present is the operator's login) | 1 Monitor + 1 unit |
+
+**lubuntu1's reading is the finding, and it is better than the counts:**
+
+> *"the leak scales with children spawned, not with seat uptime. .76 has been up as long
+> as you and leaked nothing. Reaping belongs wherever subagents are created, not in a
+> periodic sweep on each box."*
+
+That **rules out a design this entry left open**: a per-box reaper on a timer. A sweeper
+cannot tell debris from a deliberate long-lived resource, and it runs on boxes with
+nothing to sweep while the box doing fan-out is the only one that needs it. Reaping is a
+property of the *creation site*, which is what the parent/child cgroup shape already
+gives — and it means the mechanism ships with subagents (S8/M6) rather than as fleet
+housekeeping.
+
+**lubuntu2 supplies the case a sweeper would get wrong**: four worktrees that are not a
+leak at all — three are live llama.cpp variants under active comparison. A long-lived
+resource with a declared owner is correct. That is the `explicit` scope above, and .78 is
+the reason it must exist rather than be a convenience.
+
+**And lubuntu1's caveat is the most useful sentence in the thread**, because it is about
+how the measurement lies:
+
+> *"I killed a stray llama-server earlier tonight after a benchmark, and I only noticed
+> because I went looking. Had I not, it would be in this count. My zero is partly
+> attention, not only design."*
+
+A zero produced by vigilance and a zero produced by a mechanism are the same number and
+different facts — `docs/closed-loop.md` §3 exactly, one layer up. So the acceptance test
+for this work is **not** "the counts are low". It is that the counts stay low when nobody
+is watching, which means the reaper has to be observable: a scope that ended must record
+what it killed, or its zero is unfalsifiable too.
+
+### Blocks on
+
+Nothing. This is substrate for M6 subagents (S8) and it is **cheaper to build before them
+than after**: the leak measured above came from subagents the harness does not yet have,
+run by an agent that does. The requirement was discovered before the feature, which is the
+rare ordering.
+
+### Landed, 2026-09-10 — monitors and background promotion
+
+`crates/tools/src/exec/monitor.rs`, `crates/tools/src/builtins/monitor.rs`,
+`crates/tools/tests/background.rs`. All five requirements above are mechanised and each
+has a test. What is worth recording is the three decisions that were **not** obvious.
+
+**The promotion threshold is 15 s and it is reactive.** Measured, warm, on `.79` at load
+1.4: the whole routine set — `find`, `grep -rn`, `cargo check -p`, `cargo check
+--workspace`, `cargo clippy --workspace --all-targets`, `cargo test -p letibot-tools`, the
+fidelity gate — tops out at **6.5 s**. 15 s clears the slowest by 2.3×, and is 6× under the
+`sleep 90` the operator named as the case that must promote. The previous default was 120 s,
+which would have let `sleep 90` block the turn for a minute and a half and never promote.
+The threshold fires on **elapsed time and never on the command text**: `cargo build` is 3 s
+warm and 4 minutes cold and the string is the same both times, so a predictive rule is
+`docs/closed-loop.md`'s open-loop stepper in a new costume.
+
+**`m2_runner` is nine tools, one over §8.4's ceiling, and it says so in its own
+`max_tools`.** The ceiling's evidence is about confusion between *similar* choices, so the
+monitor surface was cut twice before it was allowed to cost a seat: declare/renew/retire are
+one tool taking an `action` because all three act on one named handle, and **listing is not a
+tool at all** — monitors are in `job_list` beside the jobs, the scopes, the promotions and
+the reap log, because "what is running and what is watching" is one question and a second
+listing nobody opens is how a watcher becomes invisible without anybody hiding it. What is
+left cannot fold into `job_wait`: that blocks *inside* the turn, and a flag switching between
+the two would make "I believed I had waited" spellable. A ceiling quietly raised for
+everybody is not a ceiling; one role declaring its own number with the trade written down is
+a decision somebody can reverse, and a test pins both numbers.
+
+> **2026-09-10: the role is seatable, and it seats eight of the nine.** `--role runner`
+> over `HostBackend::confined`. `bash` needs `--bash` on top, because
+> `docs/boundary-and-adjudication.md` §5's transcript choke point does not exist: the
+> boundary keeps secret bytes out of the process's **view** — `~/.ssh` is *absent* from
+> the mount namespace, not denied — and nothing yet stops a tool result carrying bytes
+> from inside that view into the transcript. `bash` is the tool whose result is an
+> arbitrary byte stream; the job verbs and `monitor` are shaped by the tool. So the
+> common case is eight tools, which is `DEFAULT_MAX_TOOLS` exactly, and the ninth seat is
+> spent only when somebody asks for it. That is a nicer answer than the entry above
+> expected and it is a **consequence**, not a plan: the ceiling was not what kept `bash`
+> off.
+>
+> Measured on `.79`: `HostBackend::confined` builds — delegated cgroup v2 subtree and
+> `bwrap` both present — so the runner seat is real here rather than a constructor that
+> always errors. A box without either gets a refusal naming which half is missing, and
+> never a silent fall back to `HostBackend::executable`, which buys cgroup lifetime and
+> no view at all.
+
+**A port watch has no `host` argument, and that omission is load-bearing.** A monitor that
+could reach an arbitrary address would have to declare `Access::Network` on *every* call,
+including the ones watching a cgroup — which is D12's shape (a network declaration making an
+unrelated capability refuse entirely). Loopback-only keeps the whole tool at `Access::Exec`,
+which is also the honest class: it leaves something watching after the turn ends.
+
+### Still open — the head cannot promote a job yet
+
+Requirement 3 of the operator's three (*"the operator promotes it, mid-flight, from the
+head"*) is **half done**: the daemon-side verb is `ProcessHost::promote`, it is tested with
+`Backgrounding::Operator`, and the frame the head must send is specified verbatim in that
+method's doc comment — `ClientFrame::PromoteJob { client_request_id, expected_seq, job,
+identity }`, queued, idempotent, answered by calling `promote`.
+
+It is **not wired**, deliberately, and the reason belongs with D11. A new `ClientFrame`
+variant is a wire change, so `PROTOCOL_VERSION` goes 5 → 6; both sides refuse a mismatch by
+name; and landing a bump costs the running daemon its live session. Against that, the verb
+buys nothing in production today: `harnessd` seats `m1_orchestrator`, which has no `bash`,
+no jobs, and therefore no job to promote. The constant is also the one line every
+wire-touching branch edits, and 5 was taken deliberately *"to coordinate rather than race"*
+(D10). So: one variant and one integer, whenever a head is ready to send it.
+
+— ✓ fixed in 4a188380, test ctrl_o_promotes_a_running_command_even_after_the_turn_went_terminal:
+the frame landed as `ClientFrame::Promote { client_request_id, expected_seq }`
+(`crates/sessionlog/src/protocol.rs:531`) rather than the doc's `PromoteJob` shape, because the
+head names no job, and `ctrl-o` / `/promote` send it (`crates/tui/src/app/events/mod.rs:694`).
+
+### ~~Still open — nothing calls the monitor wake seam~~ — **CLOSED 2026-09-10**
+
+`Monitors::wait_for_any` now has a caller, and the interesting part is what had to be
+added before it could have one.
+
+**`Bell::ring` was not the door.** `Registry::next_work` skips a session whose command
+queue is empty, so ringing the existing bell for a firing would have been a no-op that
+*read* like a wake — worse than the poll it was replacing, because the poll was honest.
+So `Bell::ring_wake` and `Work::Woken` are new: a third queue, drained **last**, because
+a head that pressed enter is waiting and a monitor is not. A third `Work` variant rather
+than a synthetic `Command`, because a command has an issuing head, an identity and a
+`client_request_id`, and inventing three of those would put a head's name on something no
+head did.
+
+**Two cursors, and they answer different questions.** The waiter thread keeps *"have I
+rung for this?"*; the harness and its steering source share *"has the model seen this?"*.
+That is what makes a firing arrive exactly once whether it is picked up mid-turn (through
+steering, at the next step boundary) or between turns (through the wake). A wake that
+raced a mid-turn pickup returns `Outcome::Ignored` rather than running a turn about
+something already delivered.
+
+**No monitors, no thread**, the same rule `Monitors`' own poller keeps and the same rule
+this entry exists to enforce: the waiter is armed after a turn in which something is
+actually watching, one per session, tracked so a second cannot start. Its `wait_for_any`
+deadline is **not** delivery — the condvar is — it is the only thing a thread blocked in
+that condvar can do about `Bell::close`, which notifies a different one. Named here
+because "no timer, no poll loop" (§18.1-I12) is a property this daemon states about
+itself, and a re-check that went undescribed would read as a violation of it.
+
+— ✓ the seam has a caller and a test:
+`a_jobs_completion_wakes_the_worker_with_no_command_behind_it_and_after_one_that_is`
+(`crates/harnessd/src/jobwatch/tests.rs:434`), and the waiter is `spawn_monitor_wake`
+(`crates/harnessd/src/turn_tail.rs:313`).
+
+What is **not** closed: the wake runs a full turn with the firing as a user item. A
+session with a chatty monitor therefore spends generations on it, and nothing bounds that
+except the monitor's own TTL. A firing that should be noted and not acted on has no
+spelling yet.
+
+— ✓ fixed on branch `t24-firings` (c931373e, fd9eb9b8, b51f59dc): **a firing is a `Notice` row**
+with its own kind, so no `speaker` default can make it read as the operator's words, **folded to one
+line a monitor** carrying the count of what it stands for, and **delivered as one turn** however
+many firings arrived — `a_firing_is_a_notice_and_never_a_row_of_somebodys_words`,
+`a_burst_of_firings_is_one_line_a_monitor_that_counts_the_rest` and
+`a_burst_is_one_delivery_and_it_is_taken_once` (`crates/harnessd/src/harness/tests/firings.rs`), and
+`a_notice_is_drawn_as_the_sessions_own_news` (`crates/tui/src/app/tests/transcript.rs`) for the head.
+The TTL is no longer the only bound: a monitor rings at most once a `FIRING_RATE` (30 s) window, so
+a burst cannot start more than one turn and an ending is never held back
+(`a_burst_of_one_monitors_firings_rings_once_inside_the_window`,
+`a_second_monitor_is_not_held_by_the_first_and_an_ending_is_said_at_once`,
+`crates/harnessd/src/turn_tail.rs`).
+
+### The disclosure can say `POLL ONLY` and the operator cannot tell why — settled
+
+`GateWiring::monitor_wake` is stamped by `Sessions::arm_wake`, so a `Harness` driven
+directly by a test or by `letibot-m1` honestly reports `false`. What it does not
+distinguish is *"no daemon armed one"* from *"the thread failed to start"* — the second
+publishes a `Warning`, the first is silent, and both render the same line. Small, and the
+kind of thing that costs an hour once.
+
+— ✓ fixed in b3ecd218: the `Failed` state's line reads `POLL ONLY · WAKE FAILED`, so a banner read
+at a glance tells a thread that would not start from a session nobody armed
+(`every_new_seam_is_disclosed_and_the_line_moves_with_it`, `crates/harnessd/src/config/tests.rs`).
+What is left is an ordering fact rather than a gap: the startup banner is printed before the first
+turn arms a wake (`crates/harnessd/src/cli.rs:1708`), so the line a reader sees at start is `Unarmed`
+whatever it will become, and the live view asked for mid-session (`crates/harnessd/src/facts.rs`,
+the model's own `harness_view`) carries the state as it happened.

@@ -17,9 +17,12 @@ kept is the point:
   continuous monitor named `flowy` over an `InboxCondition` when a root session opens, and the
   seat's loop renews it every poll - the explicit renewal T24 requires, made by the declarer,
   which lives exactly as long as the seat.
-- **A message is a firing.** `Harness::wake` turns it into one user item and runs the loop, or
-  `HubSteering` injects it at the next step boundary mid-turn. A burst is one firing - `met`
-  drains everything pending - so five messages that land together cost one wake.
+- **A message is a firing.** `Harness::wake` turns it into one `Notice` row - a delivery with a
+  kind of its own, never a `User` row whose `speaker` default reads as the operator's - and runs the
+  loop, or `HubSteering` injects it at the next step boundary mid-turn as the same kind of row. A
+  burst is one firing - `met` drains everything pending - so five messages that land together cost
+  one wake; a continuous monitor rings at most once a `FIRING_RATE` window, and what it fired in
+  between is counted on the one line (`crates/harnessd/src/turn_tail.rs`, `may_ring`).
 - **The board is sampled beside the inbox.** Each poll reads the node's nag too, so a row
   arriving in one of the session's buckets (or a bucket emptying) is a firing: a nag is
   level-triggered, and only its edges are delivered.
