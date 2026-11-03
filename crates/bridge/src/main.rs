@@ -3,9 +3,10 @@
 //! ```text
 //!   letibot-mcp                              MCP over stdio (what Claude Code runs)
 //!   letibot-mcp wait <worktree> <session> --until attention [--timeout 2h]
+//!   letibot-mcp room-wait [--attention to_me|mentions|all] [--timeout 2h]
 //! ```
 //!
-//! Two verbs and no flags beyond the wait's own. The first is the server Claude Code
+//! Three verbs and no flags beyond the waits' own. The first is the server Claude Code
 //! registers and keeps for the life of the conversation; the second is the background
 //! command whose **exit** is the notification (`docs/claude-code-bridge.md`), because
 //! Claude Code wakes its model when a background command finishes and has no other door.
@@ -45,6 +46,14 @@ letibot-mcp — the Claude Code bridge to leticode
 
       --timeout takes s, m or h (2h, 90s, 15m). Default 2h.
 
+  letibot-mcp room-wait [--attention to_me|mentions|all] [--timeout 2h]
+      Connect to the host's chat rooms as `claude-code` and exit when a message arrives
+      for it (default `to_me`: what names it, the operator's unaddressed lines, its DMs).
+        0   a message arrived     (`#seq [room] author -> to: text`, one line each, on
+                                  stdout; the inbox cursor is moved past them)
+        20  the coordinator could not be reached (why is on stderr)
+        30  the timeout passed    (nothing on stdout)
+
 The server is registered with `claude mcp add` and is never run by hand for that job.
 ";
 
@@ -81,6 +90,22 @@ fn main() {
                 2
             }
         },
+        Some("room-wait") => match parse_room_wait(&args[1..]) {
+            Ok((attention, deadline)) => {
+                let link = letibot_bridge::rooms::RoomLink::default();
+                let (code, said) = letibot_bridge::rooms::wait(&link, attention, deadline);
+                match code {
+                    0 => println!("{said}"),
+                    20 => eprintln!("letibot-mcp: {said}"),
+                    _ => eprintln!("letibot-mcp: no room message before the timeout"),
+                }
+                code
+            }
+            Err(e) => {
+                eprintln!("letibot-mcp: {e}\n\n{USAGE}");
+                2
+            }
+        },
         Some(other) => {
             eprintln!("letibot-mcp: unknown command `{other}`\n\n{USAGE}");
             2
@@ -91,7 +116,7 @@ fn main() {
 
 /// Serve MCP on stdin/stdout until the client closes it.
 fn serve() -> i32 {
-    let bridge = Bridge::new();
+    let bridge = Bridge::new().streaming_rooms();
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     match mcp::serve(stdin.lock(), stdout.lock(), &bridge) {
@@ -148,6 +173,27 @@ fn parse_wait(args: &[String]) -> Result<(String, String, Instant), String> {
     let worktree = worktree.ok_or("wait wants a worktree")?;
     let session = session.ok_or("wait wants a session id")?;
     Ok((worktree, session, Instant::now() + timeout))
+}
+
+/// `room-wait [--attention A] [--timeout DUR]`.
+fn parse_room_wait(args: &[String]) -> Result<(letibot_bridge::rooms::Attention, Instant), String> {
+    let mut attention = letibot_bridge::rooms::Attention::ToMe;
+    let mut timeout = DEFAULT_TIMEOUT;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--attention" => {
+                let raw = it.next().ok_or("--attention wants a value (`to_me`)")?;
+                attention = letibot_bridge::rooms::Attention::parse(raw)?;
+            }
+            "--timeout" => {
+                let raw = it.next().ok_or("--timeout wants a duration (2h)")?;
+                timeout = duration(raw)?;
+            }
+            other => return Err(format!("unexpected argument `{other}`")),
+        }
+    }
+    Ok((attention, Instant::now() + timeout))
 }
 
 /// A duration as a person writes it: `90s`, `15m`, `2h`, or a bare number of seconds.
@@ -222,6 +268,18 @@ mod tests {
         assert!(e.contains("completion") && e.contains("attention"), "{e}");
         let e = parse_wait(&args(&["/tmp/wt", "--until", "attention"])).expect_err("no session");
         assert!(e.contains("session"), "{e}");
+    }
+
+    #[test]
+    fn room_wait_defaults_to_to_me_and_takes_both_flags() {
+        let (a, _) = parse_room_wait(&args(&[])).expect("parses");
+        assert_eq!(a, letibot_bridge::rooms::Attention::ToMe);
+        let (a, d) =
+            parse_room_wait(&args(&["--timeout", "90s", "--attention", "all"])).expect("parses");
+        assert_eq!(a, letibot_bridge::rooms::Attention::All);
+        assert!(d < Instant::now() + Duration::from_secs(91));
+        assert!(parse_room_wait(&args(&["--attention", "some"])).is_err());
+        assert!(parse_room_wait(&args(&["x"])).is_err());
     }
 
     /// A duration in the three units, and a refusal that says what the units are.
