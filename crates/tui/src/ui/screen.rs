@@ -455,10 +455,17 @@ impl App {
                     None => Vec::new(),
                 },
                 Target::QuitCard if content_rows == dec_full => {
-                    let [one, two] = self.quit_view().choice_rows(w);
+                    let card = self.quit_view();
+                    let [one, two] = card.choice_rows(w);
+                    // The card's OWN height: the consequence sentence appended under it belongs
+                    // to the choice above and is not a target for it.
+                    let own = card.lines(w).len();
                     (one..two)
                         .map(|r| (top + r, 0))
-                        .chain((two..dec_full).map(|r| (top + r, 1)))
+                        .chain((two..own).map(|r| (top + r, 1)))
+                        // One stop for the consequence sentence appended under the choices, so
+                        // the block above cannot reach down and arm it.
+                        .chain(std::iter::once((top + own, NO_CHOICE)))
                         .collect()
                 }
                 Target::SettingCard => self.mode_hits.clone(),

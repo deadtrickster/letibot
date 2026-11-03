@@ -19,6 +19,10 @@ impl Rect {
     }
 }
 
+/// A stop no choice owns: a card that draws a sentence under its choices gives that sentence a
+/// stop of its own, so the choice above cannot reach down and answer for it.
+pub(crate) const NO_CHOICE: usize = usize::MAX;
+
 /// **What a rectangle on the last frame was.**
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Target {

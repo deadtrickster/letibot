@@ -235,7 +235,9 @@ impl App {
                 _ => return ControlFlow::Break(None),
             },
             (Target::Decision, Some(k)) => self.sel = k,
-            (Target::QuitCard, Some(k)) => self.quit_sel = k,
+            // A stop that is not a choice is the card's consequence rows, drawn under both.
+            (Target::QuitCard, Some(k)) if k != NO_CHOICE => self.quit_sel = k,
+            (Target::QuitCard, Some(_)) => return ControlFlow::Break(None),
             (Target::ReseatCard, Some(k)) => {
                 if let Some(c) = self.reseat.as_mut() {
                     c.sel = k;

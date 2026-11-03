@@ -256,3 +256,39 @@ fn a_click_after_a_wheel_step_in_the_same_read_picks_the_row_that_was_drawn() {
         "the click landed on a row nobody saw there"
     );
 }
+
+/// **The consequence sentence under the quit card is not a target for the row above it.** The card
+/// grew rows saying what else stops, and the second choice's click range took them in, so a click on
+/// that sentence armed *stop the daemon* - and the Enter that followed stopped every job and
+/// subagent on the box.
+#[test]
+fn a_click_on_the_quit_cards_consequence_arms_nothing() {
+    let mut a = app();
+    a.apply(hello(
+        "s",
+        vec![
+            brief("s", "this one", true),
+            brief("s2", "another", true),
+            brief("s3", "a third", true),
+        ],
+        Hub::new("s").snapshot(),
+    ));
+    a.key(Key::CtrlC);
+    a.key(Key::CtrlC);
+    assert!(a.quit_card, "the second ctrl-c opens the card");
+    let frame = a.screen(110, 30);
+    let said = "stopping also kills";
+    assert!(
+        frame.iter().any(|l| l.contains(said)),
+        "the premise: the card says what else the stop takes: {frame:#?}"
+    );
+    assert_eq!(a.quit_sel, 0, "the cheap row is what a fresh card marks");
+    click_on(&mut a, said);
+    assert_eq!(
+        a.quit_sel, 0,
+        "a click on the sentence below the choices armed the row that stops the daemon"
+    );
+    // And the choice above it still works: the click range was narrowed, not dropped.
+    click_on(&mut a, "leave and stop the daemon");
+    assert_eq!(a.quit_sel, 1);
+}
