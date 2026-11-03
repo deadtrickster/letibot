@@ -900,6 +900,28 @@ enum Retry {
     Never,
 }
 
+/// What a caller really did about a call that did not answer, as the refusal has to say it: a
+/// reader acts on that sentence, so it may claim only the attempt that was made.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Asked {
+    /// One more attempt on a fresh connection, whatever the failure was.
+    Again,
+    /// One more attempt only where nothing can have run: a session the multiplexer refused.
+    MuxOnly,
+    /// Nothing: the caller makes one call and no second one ([`Ssh::raw`]'s callers).
+    None,
+}
+
+impl Asked {
+    /// What [`Ssh::call`] does with this policy, which is what [`Retry`] means.
+    fn of(retry: Retry) -> Asked {
+        match retry {
+            Retry::Once => Asked::Again,
+            Retry::Never => Asked::MuxOnly,
+        }
+    }
+}
+
 /// Whether a call owes the record a line: the ring, and how a heartbeat stays out of it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Reported {
@@ -1676,7 +1698,7 @@ impl Ssh {
                 return Swept::asked(Some(format!(
                     "the processes this session started on {} could NOT be shown to have ended: {}",
                     self.host.name,
-                    self.no_answer(step, &other, within)
+                    self.no_answer(step, &other, within, Asked::None)
                 )));
             }
             Some(Err(e)) => {
@@ -1751,7 +1773,12 @@ impl Ssh {
     ) -> Result<(String, Vec<u8>, i32), BackendError> {
         match self.call(step, script, Retry::Once, within, Reported::Always, None)? {
             Call::Answered(out, stderr, exit) => Ok((out, stderr, exit)),
-            other => Err(BackendError::Io(self.no_answer(step, &other, within))),
+            other => Err(BackendError::Io(self.no_answer(
+                step,
+                &other,
+                within,
+                Asked::Again,
+            ))),
         }
     }
 
@@ -1775,7 +1802,12 @@ impl Ssh {
     ) -> Result<(String, Vec<u8>, i32), BackendError> {
         match self.call(step, script, Retry::Never, within, Reported::Always, None)? {
             Call::Answered(out, stderr, exit) => Ok((out, stderr, exit)),
-            other => Err(BackendError::Io(self.no_answer(step, &other, within))),
+            other => Err(BackendError::Io(self.no_answer(
+                step,
+                &other,
+                within,
+                Asked::MuxOnly,
+            ))),
         }
     }
 
@@ -1790,7 +1822,12 @@ impl Ssh {
     ) -> Result<(String, Vec<u8>, i32), BackendError> {
         match self.call(step, script, Retry::Never, within, Reported::Failures, None)? {
             Call::Answered(out, stderr, exit) => Ok((out, stderr, exit)),
-            other => Err(BackendError::Io(self.no_answer(step, &other, within))),
+            other => Err(BackendError::Io(self.no_answer(
+                step,
+                &other,
+                within,
+                Asked::MuxOnly,
+            ))),
         }
     }
 
@@ -1811,7 +1848,14 @@ impl Ssh {
         let (out, stderr, exit) =
             match self.call(what, script, retry, within, Reported::Always, None)? {
                 Call::Answered(out, stderr, exit) => (out, stderr, exit),
-                other => return Err(BackendError::Io(self.no_answer(what, &other, within))),
+                other => {
+                    return Err(BackendError::Io(self.no_answer(
+                        what,
+                        &other,
+                        within,
+                        Asked::of(retry),
+                    )));
+                }
             };
         if exit != 0 {
             let said = if stderr.is_empty() {
@@ -2039,19 +2083,27 @@ impl Ssh {
     }
 
     /// The sentence a step that never answered is refused with: the host, the step, the bound, and
-    /// what was done about it.
-    fn no_answer(&self, step: &str, ended: &Call, within: Duration) -> String {
+    /// what was done about it. `asked` is what the caller really did, because a sentence that
+    /// claims a second attempt nobody made is worse than one that claims nothing.
+    fn no_answer(&self, step: &str, ended: &Call, within: Duration, asked: Asked) -> String {
         if let Call::Denied(kind, stderr) = ended {
             return self.denied(step, *kind, stderr);
         }
         // A refused session gets its own sentence, and it is the one a reader needs: ssh's words were
-        // not the command's, nothing ran, and the call was already asked again on a fresh connection.
+        // not the command's, and nothing ran - which is why every caller but `raw` asks it again.
         if let Call::MuxRefused(kind, stderr) = ended {
+            let then = match asked {
+                Asked::None => "the socket was dropped and nothing was asked again, because this \
+                                call is made once"
+                    .to_string(),
+                _ => "the socket was dropped and the call was asked again on a fresh connection, \
+                      which failed the same way"
+                    .to_string(),
+            };
             return format!(
                 "`{step}` on {} never started: ssh's multiplexer lost the session ({}) — ssh said \
-                 `{}`. Nothing ran there, so nothing on that machine changed; the socket was \
-                 dropped and the call was asked again on a fresh connection, which failed the same \
-                 way. This is a refused session, not your command's exit status.",
+                 `{}`. Nothing ran there, so nothing on that machine changed; {then}. This is a \
+                 refused session, not your command's exit status.",
                 self.host.name,
                 kind.as_str(),
                 first_line(&String::from_utf8_lossy(stderr))
@@ -2067,10 +2119,14 @@ impl Ssh {
             ),
             _ => "did not answer".to_string(),
         };
+        let again = match asked {
+            Asked::Again => "the call was asked once more with a fresh connection",
+            _ => "nothing was asked again, because a second attempt is a second effect",
+        };
         format!(
-            "`{step}` on {} {how}: the local ssh was killed rather than waited on, and the call \
-             was asked once more with a fresh connection. Nothing is left waiting — but the \
-             operation may not have happened, so check before relying on it.",
+            "`{step}` on {} {how}: the local ssh was killed rather than waited on, and {again}. \
+             Nothing is left waiting — but the operation may not have happened, so check before \
+             relying on it.",
             self.host.name
         )
     }
@@ -2408,7 +2464,14 @@ impl Ssh {
         let (out, stderr, exit) =
             match self.call(what, script, retry, within, Reported::Always, Some(fed))? {
                 Call::Answered(out, stderr, exit) => (out, stderr, exit),
-                other => return Err(BackendError::Io(self.no_answer(what, &other, within))),
+                other => {
+                    return Err(BackendError::Io(self.no_answer(
+                        what,
+                        &other,
+                        within,
+                        Asked::of(retry),
+                    )));
+                }
             };
         if exit != 0 {
             let said = if stderr.is_empty() {
