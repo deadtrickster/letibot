@@ -800,7 +800,7 @@ own right**, addressed as R93.<id>; the list below groups them by what to fix fi
 
 ---
 
-## R65 — The model chooses each tool call's memory cap, knowing what is free and what a cap costs — **LANDED on main 2026-10-11 (073c1ea, 51dd340) except the items under "Still open"**
+## R65 — The model chooses each tool call's memory cap, knowing what is free and what a cap costs — **LANDED on main 2026-10-11 (073c1ea, 51dd340); left: item 2 (what is free is not said where the model decides - `memory_arg` is rendered from the policy alone, because the schema is the session's stable prefix), item 5 (an ordinary call's peak is still withheld unless it was killed at or near its cap), item 6's test, the above-ceiling card answered by a person in a head, and the cross-session ledger**
 
 The operator: *"the question is how many for 2. I think model should try to decide, so it should
 know the free, how much it can ask and what are the consequences"*.
