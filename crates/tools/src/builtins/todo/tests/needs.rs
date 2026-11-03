@@ -435,8 +435,12 @@ fn a_need_on_a_row_the_operator_struck_off_says_the_edge_can_never_be_met() {
         "the sentence names the operator's act: {msg}"
     );
     assert!(
-        msg.contains("re-word it"),
+        msg.contains("re-send this row in `todos` with that need removed"),
         "and the remedy, which is the model's own: {msg}"
+    );
+    assert!(
+        !msg.contains("re-word it"),
+        "**not re-wording, which adds a row and leaves this one blocked**: {msg}"
     );
     assert!(
         !msg.contains("(still open)"),

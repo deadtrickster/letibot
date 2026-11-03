@@ -1493,8 +1493,8 @@ fn blocked_line(row: &TodoItem, unmet: &[(String, NeedFate)]) -> String {
             // reader has to act on: nobody is going to finish this row, and the fix is the model's
             // own - drop the need, or point it at work that can happen.
             NeedFate::StruckOff => format!(
-                "`{name}` (struck off by the operator — this edge can never be met; re-word it with \
-                 `todo_write`)"
+                "`{name}` (struck off by the operator — this edge can never be met; re-send this \
+                 row in `todos` with that need removed)"
             ),
             NeedFate::NoSuchRow => format!("`{name}` (no such row on this board)"),
             NeedFate::Ambiguous => format!("`{name}` (two rows on this board say that)"),
