@@ -1640,12 +1640,25 @@ impl Ssh {
     /// placement directory that had already been removed. A process that cleared its own environment
     /// is out of reach, so the answer says what is LEFT rather than claiming a clean machine.
     pub fn end_session_processes(&self) -> Option<String> {
+        self.sweep().said
+    }
+
+    /// The sweep itself, and whether it was asked at all: [`placements_down`] needs the second
+    /// half, because a sweep that never got a slot has not run and must not go with the list.
+    fn sweep(&self) -> Swept {
         // A guest's processes end with the guest, and that is `down`: nothing of the session's runs
         // in the host's own process table, so there is nothing here to sweep for.
         if self.vm.is_some() {
-            return None;
+            return Swept::asked(None);
         }
-        let id = self.mark.as_ref()?.split_once('=').map(|(_, id)| id)?;
+        let Some(id) = self
+            .mark
+            .as_ref()
+            .and_then(|m| m.split_once('='))
+            .map(|(_, id)| id)
+        else {
+            return Swept::asked(None);
+        };
         // `bash -lc <script> name <arg>`: the id is an ARGUMENT, never part of this command's text,
         // because a sweep whose own argv carried the mark would find itself.
         let command = format!(
@@ -1660,27 +1673,31 @@ impl Ssh {
         let out = match self.raw(step, &command, within) {
             Some(Ok(Call::Answered(out, _, 0))) => out,
             Some(Ok(other)) => {
-                return Some(format!(
+                return Swept::asked(Some(format!(
                     "the processes this session started on {} could NOT be shown to have ended: {}",
                     self.host.name,
                     self.no_answer(step, &other, within)
-                ));
+                )));
             }
             Some(Err(e)) => {
-                return Some(format!(
+                return Swept::asked(Some(format!(
                     "the processes this session started on {} could NOT be ended: {e} - anything \
                      the session left running is still running",
                     self.host.name
-                ));
+                )));
             }
+            // Not `asked`: no slot means no call, so nothing ran and the list must keep this one.
             None => {
-                return Some(format!(
-                    "the processes this session started on {} could NOT be ended: no slot in the \
-                     connection queue within {} s, so the sweep never ran and anything the session \
-                     left there is still running",
-                    self.host.name,
-                    within.as_secs()
-                ));
+                return Swept {
+                    said: Some(format!(
+                        "the processes this session started on {} could NOT be ended: no slot in \
+                         the connection queue within {} s, so the sweep never ran and anything the \
+                         session left there is still running",
+                        self.host.name,
+                        within.as_secs()
+                    )),
+                    asked: false,
+                };
             }
         };
         let said = |tag: &str| {
@@ -1692,7 +1709,7 @@ impl Ssh {
         };
         let told = said("TOLD ");
         if told.is_empty() || told == "0" {
-            return None;
+            return Swept::asked(None);
         }
         let left: Vec<&str> = out
             .lines()
@@ -1700,7 +1717,7 @@ impl Ssh {
             .unwrap_or("")
             .split_whitespace()
             .collect();
-        Some(if left.is_empty() {
+        Swept::asked(Some(if left.is_empty() {
             format!(
                 "{told} process(es) this session started on {} were ended, so that machine is not \
                  still running the work of a package that is over",
@@ -1715,7 +1732,7 @@ impl Ssh {
                 left.len(),
                 left.join(" ")
             )
-        })
+        }))
     }
 
     /// One step of this backend's own work, bounded by [`Ssh::bound`] and asked again once when the
@@ -3840,16 +3857,49 @@ fn forget_placement(ssh: &Ssh) {
 /// End what every placement this process made and no session closed left running on its host, and say
 /// what each sweep found. All at once and bounded by [`END_SESSION_BOUND`]: the daemon is on its way
 /// out, and a host that has stopped answering must not be able to hold the exit open.
+///
+/// A sweep that got no slot in the host's queue never ran - the stop reaches this before it
+/// interrupts the session's own calls, so a full queue is the ordinary case - and it goes back on
+/// the list rather than with it: the next door to ask is the only chance that work has.
 pub fn placements_down() -> Vec<String> {
     let all: Vec<Ssh> = std::mem::take(&mut *PLACEMENTS.lock().unwrap_or_else(|e| e.into_inner()));
     let running: Vec<_> = all
         .into_iter()
-        .map(|ssh| std::thread::spawn(move || ssh.end_session_processes()))
+        .map(|ssh| {
+            std::thread::spawn(move || {
+                let swept = ssh.sweep();
+                (ssh, swept)
+            })
+        })
         .collect();
-    running
-        .into_iter()
-        .filter_map(|t| t.join().ok().flatten())
-        .collect()
+    let mut said = Vec::new();
+    for t in running {
+        // A thread that panicked has said nothing, and nothing can be said for it.
+        let Ok((ssh, swept)) = t.join() else {
+            continue;
+        };
+        said.extend(swept.said);
+        if !swept.asked {
+            remember_placement(&ssh);
+        }
+    }
+    said
+}
+
+/// What one sweep came to: the line it has to say, and whether the call was made at all.
+///
+/// The second half is what keeps a sweep alive: no slot in the connection queue means nothing was
+/// sent, so the placement is still owed a sweep and [`placements_down`] puts it back.
+struct Swept {
+    said: Option<String>,
+    asked: bool,
+}
+
+impl Swept {
+    /// The call was made, so this placement owes nothing more: the line may still be a refusal.
+    fn asked(said: Option<String>) -> Swept {
+        Swept { said, asked: true }
+    }
 }
 
 /// How long one guest's `down` gets when the daemon is on its way out: twice what a manual one
