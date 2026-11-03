@@ -135,18 +135,24 @@ impl App {
         }
         // Asked for during a turn, it waits for the turn: the daemon runs a reseat on its queue,
         // between turns and never inside one, so the strip stays up and says when it will go.
-        let said = if c.asked && self.turn.is_some() {
-            "PROMPT IS STALE — reseat queued: it runs when this turn ends · alt-p shows the card"
-                .to_string()
-        } else if c.asked {
-            "PROMPT IS STALE — reseat asked for, waiting for the daemon · alt-p shows the card"
-                .to_string()
-        } else if c.summarise {
-            "PROMPT IS STALE — too big to carry verbatim · alt-r reseats with a summary · alt-p \
-             shows the card"
-                .to_string()
+        // `alt-p` refuses while anything holds the slot (`App::reseat_expand` says so), so the
+        // strip names only `alt-r`, which is handled wherever the keyboard is: a hint that cannot
+        // keep its promise is worse than none.
+        let hint = if self.slot_taken() {
+            ""
         } else {
-            "PROMPT IS STALE — reseat now? · alt-r reseats now · alt-p shows the card".to_string()
+            " · alt-p shows the card"
+        };
+        let said = if c.asked && self.turn.is_some() {
+            format!("PROMPT IS STALE — reseat queued: it runs when this turn ends{hint}")
+        } else if c.asked {
+            format!("PROMPT IS STALE — reseat asked for, waiting for the daemon{hint}")
+        } else if c.summarise {
+            format!(
+                "PROMPT IS STALE — too big to carry verbatim · alt-r reseats with a summary{hint}"
+            )
+        } else {
+            format!("PROMPT IS STALE — reseat now? · alt-r reseats now{hint}")
         };
         row_strings(&rano::agent::status::warning(&said, w), self.cfg.palette())
     }

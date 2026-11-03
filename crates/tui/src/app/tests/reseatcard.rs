@@ -350,7 +350,12 @@ fn an_open_pane_takes_the_slot_and_its_keys_never_reach_the_card() {
     a.key(Key::CtrlT);
     assert_eq!(a.top_surface(), Some(Surface::Todos));
     assert!(!a.reseat_card_up(), "the pane holds the slot");
-    assert!(screen(&mut a).contains("alt-p shows the card"), "the strip");
+    let over_a_pane = strip(&mut a);
+    assert!(over_a_pane.contains("alt-r reseats now"), "{over_a_pane}");
+    assert!(
+        !over_a_pane.contains("alt-p"),
+        "alt-p would refuse over the pane, so the strip does not offer it: {over_a_pane}"
+    );
     for k in [Key::Down, Key::Enter, Key::Char('1'), Key::Tab] {
         let r = a.key(k.clone());
         assert!(
@@ -419,6 +424,54 @@ fn a_payload_window_takes_the_slot_and_its_keys_never_reach_the_card() {
     );
     assert_eq!(a.key(Key::Enter), None, "enter sends, it does not reseat");
     assert!(a.reseat.is_some(), "and the card is still asking");
+}
+
+/// The strip's line, as it is drawn.
+fn strip(a: &mut App) -> String {
+    let s = screen(a);
+    s.lines()
+        .find(|l| l.contains("PROMPT IS STALE"))
+        .unwrap_or_else(|| panic!("the strip stays on the screen: {s}"))
+        .to_string()
+}
+
+/// **The strip never offers a key that would refuse.** `alt-p` answers "the card waits behind what
+/// is open now" whenever something holds the slot, so while it does the strip names only `alt-r`,
+/// which is handled wherever the keyboard is. With nothing in front of the card it names both.
+#[test]
+fn the_strip_does_not_offer_alt_p_while_the_slot_is_taken() {
+    let (mut a, _hub) = stale();
+    a.key(Key::Esc);
+    assert!(!a.slot_taken(), "the premise: nothing holds the slot");
+    let free = strip(&mut a);
+    assert!(free.contains("alt-r reseats now"), "{free}");
+    assert!(free.contains("alt-p shows the card"), "{free}");
+
+    let (mut b, _hub) = stale();
+    shell_row(
+        &mut b,
+        1,
+        "s.t1.0",
+        "tool_result",
+        TranscriptItem::ToolResult {
+            call_id: "c0".into(),
+            name: "bash".into(),
+            outcome: letibot_transcript::ToolOutcome::Ok,
+            payload: (0..40).map(|i| format!("LINE-{i}\n")).collect(),
+            edit: None,
+            origin: None,
+            media: None,
+        },
+    );
+    assert_eq!(b.key(Key::CtrlV), None);
+    assert!(b.payload_sel.is_some(), "the window opened");
+    assert!(b.slot_taken(), "the premise: the window holds the slot");
+    let held = strip(&mut b);
+    assert!(held.contains("alt-r reseats now"), "{held}");
+    assert!(
+        !held.contains("alt-p"),
+        "alt-p refuses while the window holds the slot: {held}"
+    );
 }
 
 /// A digit on the reseat card moves the mark; it does not reseat. Choosing on the digit meant `1`
