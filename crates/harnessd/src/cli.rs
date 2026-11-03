@@ -1977,13 +1977,6 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     for said in letibot_tools::remote::guests_down() {
         eprintln!("  {said}");
     }
-    // And what every placed session started on its host, which no cgroup here can end: said as its
-    // own step, before the session teardown, because it can take a host's four seconds of TERM-and-
-    // wait and the stop's own clock should show it.
-    eprintln!("  stopping: ending what every placed session started on its host");
-    for said in letibot_tools::remote::placements_down() {
-        eprintln!("  {said}");
-    }
     // The queues are told to stop.
     eprintln!(
         "  stopping: the merge queues (a gate in flight is killed, its row put back in line)"
@@ -2009,6 +2002,14 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     eprintln!("  stopping: bringing every placed session's branch home");
     for landed in sessions.close_backends() {
         eprintln!("  {landed}");
+    }
+    // And the placements no close could reach - a session's own thread holds its backend, so a stop
+    // gets neither its sweep nor its fetch. This runs AFTER the closes for that reason: a session
+    // that did close has already ended its processes and brought its branch home, and its placement
+    // is off the last act's list.
+    eprintln!("  stopping: ending what the placed sessions no close reached started on its host");
+    for said in letibot_tools::remote::placements_down() {
+        eprintln!("  {said}");
     }
     // Every subagent thread this daemon started is waited for before the process ends.
     // `daemon.shutdown()` above closed every hub, which is what a child parked between turns
