@@ -410,3 +410,46 @@ fn a_closed_pull_request_is_dropped() {
     seat.poll(&source, &mut reviewer, 2_000);
     assert!(seat.rows().is_empty());
 }
+
+/// **A token that anyone can read is not a token.** Posting needs the file, and the file's mode is
+/// checked here so the child that reads it later is not the first to notice.
+#[test]
+fn posting_needs_a_token_file_only_the_operator_can_read() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
+
+    // Posting off: the path is not even looked at.
+    let cfg = Config::resolved(false, Some("/nowhere/token"), Path::new("/nowhere")).unwrap();
+    assert!(!cfg.posting());
+
+    let home = Path::new("/home/operator");
+    let why = Config::resolved(true, None, home).unwrap_err();
+    assert!(why.contains("token_path"), "{why}");
+    let why = Config::resolved(true, Some("~/.config/github.token"), home).unwrap_err();
+    assert!(
+        why.contains("github.token") && why.contains("not there"),
+        "{why}"
+    );
+
+    let dir = std::env::temp_dir().join(format!("letibot-github-token-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("home/.config/letibot")).unwrap();
+    let token = dir.join("home/.config/letibot/github.token");
+    std::fs::write(&token, "ghp_x\n").unwrap();
+    std::fs::set_permissions(&token, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let why = Config::resolved(true, Some(token.to_str().unwrap()), &dir.join("home")).unwrap_err();
+    assert!(why.contains("0644") && why.contains("0600"), "{why}");
+
+    std::fs::set_permissions(&token, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let cfg = Config::resolved(true, Some(token.to_str().unwrap()), &dir.join("home")).unwrap();
+    assert!(cfg.posting());
+    assert_eq!(cfg.token.as_deref(), Some(token.to_str().unwrap()));
+
+    // `~/` is the operator's home, which is what a config file means by it.
+    let cfg = Config::resolved(
+        true,
+        Some("~/.config/letibot/github.token"),
+        &dir.join("home"),
+    )
+    .unwrap();
+    assert_eq!(cfg.token.as_deref(), Some(token.to_str().unwrap()));
+}

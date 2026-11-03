@@ -6,6 +6,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use std::path::{Path, PathBuf};
+
 use crate::source::{Comment, Pull, Review, Scope, Source, Standing};
 
 /// **What the seat may send, and to whom.** `post = false` is the shipped state: reviews are kept as
@@ -38,6 +40,54 @@ impl Config {
     /// token is the "token missing" state the pane draws, not an attempt that fails per push.
     pub fn posting(&self) -> bool {
         self.post && self.token.is_some()
+    }
+
+    /// **The seat's config from what a file may set**, with the token file's mode checked here so
+    /// the child that reads it later is not the first to notice. `~` is `home`, not the process's.
+    pub fn resolved(post: bool, token_path: Option<&str>, home: &Path) -> Result<Config, String> {
+        let config = Config::default();
+        if !post {
+            return Ok(config);
+        }
+        let Some(given) = token_path else {
+            return Err(
+                "posting is on and `[github] token_path` is not set: a review posted as nobody \
+                 would be a stranger's comment on the operator's repository, so the seat posts \
+                 nothing until the token file is named"
+                    .into(),
+            );
+        };
+        let path = match given.strip_prefix("~/") {
+            Some(rest) => home.join(rest),
+            None => PathBuf::from(given),
+        };
+        std::fs::metadata(&path).map_err(|e| {
+            format!(
+                "the token file {} is not there ({e}) — `[github] token_path` names the file \
+                 `gh` reads, and `letibot attach github` posts nothing without it",
+                path.display()
+            )
+        })?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path)
+                .map(|m| m.permissions().mode() & 0o777)
+                .unwrap_or(0);
+            if mode & 0o077 != 0 {
+                return Err(format!(
+                    "the token file {} is {mode:04o} and a token must be 0600 — \
+                     `chmod 600 {}`",
+                    path.display(),
+                    path.display()
+                ));
+            }
+        }
+        Ok(Config {
+            post: true,
+            token: Some(path.to_string_lossy().into_owned()),
+            ..config
+        })
     }
 }
 
