@@ -520,14 +520,14 @@ fn the_exec_surface_of_each_role_is_exactly_what_was_decided() {
         letibot_tools::builtins::retrieval::Unavailable,
     ))
     .unwrap();
-    // The runner seats twelve; the ceiling was raised to 16 for leticode's tool
-    // union, so this role is under it rather than over.
+    // The runner seats twelve; the ceiling is 17 for leticode's tool union and `recall`,
+    // so this role is under it rather than over.
     let role = roles::m2_runner();
     assert_eq!(role.max_tools, 12, "the runner's own number is 12");
     assert_eq!(
         letibot_tools::runtime::DEFAULT_MAX_TOOLS,
-        16,
-        "the ceiling was raised for leticode's tool union"
+        17,
+        "the ceiling holds leticode's tool union and recall"
     );
     for other in [
         roles::m1_orchestrator(),
