@@ -4535,6 +4535,60 @@ fn a_reader_holding_the_top_row_does_not_keep_the_whole_session() {
     );
 }
 
+/// **And the bound is a bound when there is nothing below to let go.** A reader at the oldest row with
+/// no tail under it leaves the trim only their own row to take, so it takes it and holds the survivor.
+#[test]
+fn a_window_with_nothing_below_takes_the_held_row_rather_than_overshoot_its_bound() {
+    let mut a = app();
+    a.walk_limit = 1;
+    a.held_limit = u64::MAX as usize;
+    let body = "a line of conversation, and enough of them to make a row cost its bytes\n\n\
+                ```rust\nfn f() { let n = 1; }\n```\n";
+    for i in 0..60u64 {
+        a.apply(ServerFrame::Event(env(
+            i * 2 + 1,
+            testing::appended(&format!("s.{i}"), "user"),
+        )));
+        a.apply(ServerFrame::Event(env(
+            i * 2 + 2,
+            testing::content(&format!("s.{i}"), &format!("row {i}\n{body}")),
+        )));
+    }
+    let _ = a.screen(100, 40);
+    for _ in 0..20 {
+        a.key(Key::PageUp);
+        let _ = a.screen(100, 40);
+    }
+    let held = a.anchor.clone().expect("the fixture is not holding a row");
+    assert_eq!(held.ordinal, 0, "the fixture did not reach the top row");
+    // The bound the head must now hold, with no row arriving below to be let go instead.
+    assert_eq!(
+        a.items_below, 0,
+        "the fixture let rows go below the window, so the tail is somewhere to free"
+    );
+    a.held_limit = 2 * 1024;
+    let _ = a.screen(100, 40);
+    assert!(
+        transcript_bytes(&a.items) <= a.held_limit,
+        "the head holds {} bytes of {} rows, over its {} byte window",
+        transcript_bytes(&a.items),
+        a.items.len(),
+        a.held_limit
+    );
+    assert_eq!(
+        a.anchor.as_ref().map(|h| h.ordinal),
+        Some(0),
+        "the reader is not held on the oldest row this head kept"
+    );
+    assert!(
+        a.notice
+            .as_deref()
+            .is_some_and(|n| n.contains("above the window")),
+        "the trim took the held row and said nothing: {:?}",
+        a.notice
+    );
+}
+
 /// **A head at the tail asks for nothing.** `hist_floor == 0` means *everything this head holds is
 /// rendered*, which is true at the tail of every session short enough to walk whole - and the page
 /// ask read it as *the reader has scrolled up*, so a head that had just attached pulled the rows

@@ -708,26 +708,45 @@ impl App {
 
     /// **The head holds a window, not the buffer.** A session that runs for hours appends rows for
     /// ever, and a body this head keeps is text: once the window is over `held_limit` the rows the
-    /// reader is not looking at go, above, and the window is rendered again from what is left. The
-    /// lines go with them, which is why this is cheap: a re-render costs one window and saves the
-    /// history around it.
+    /// reader is not looking at go, and the window is rendered again from what is left. The lines go
+    /// with them, which is why this is cheap: a re-render costs one window and saves the history.
     pub(crate) fn trim_held(&mut self, room: usize) {
+        if transcript_bytes(&self.items) <= self.held_limit {
+            return;
+        }
+        // **The rows below a parked reader go first**: they are not what the reader is looking at,
+        // so letting them go is what keeps the held row on screen and the window under its bound.
+        self.trim_held_below(room);
         let over = transcript_bytes(&self.items).saturating_sub(self.held_limit);
         if over == 0 {
             return;
         }
-        // Enough rows to get back under. **Not capped at the row the reader is holding**: a reader
-        // parked on the top row of a live session would keep every arriving row for the life of the
-        // head, so the bound wins and `drop_rows_above` moves the anchor to the oldest row left.
+        // Then the rows above, never the one the reader is looking at or anything below it: a window
+        // that dropped the held row would move the page under them.
+        let wanted = self.rows_freeing(over);
+        let capped = match &self.anchor {
+            Some(h) => wanted.min(h.ordinal),
+            None => wanted,
+        };
+        if capped > 0 {
+            self.drop_rows_above(capped, room);
+        }
+        // **And the bound still wins.** A reader parked on the oldest row this head keeps left
+        // nothing above them to free, so the trim takes their row too and `drop_rows_above`
+        // re-points at the oldest survivor rather than holding the whole session for the head's life.
+        if wanted > capped && transcript_bytes(&self.items) > self.held_limit {
+            self.drop_rows_above(wanted - capped, room);
+        }
+    }
+
+    /// How many of the oldest rows it takes to free `over` bytes of row text.
+    fn rows_freeing(&self, over: usize) -> usize {
         let (mut freed, mut n) = (0, 0);
         while freed < over && n < self.items.len() {
             freed += self.items[n].item.as_ref().map_or(0, |i| i.bytes());
             n += 1;
         }
-        if n > 0 {
-            self.drop_rows_above(n, room);
-        }
-        self.trim_held_below(room);
+        n
     }
 
     /// **And the other end of the same window.** A reader parked above the tail is not reading what
