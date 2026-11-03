@@ -2843,6 +2843,9 @@ impl Harness {
 
         let mut failure: Option<String> = None;
         let mut since_persist = 0u64;
+        // The run of tool results the read is inside: `render_items` closes a tool turn at the end
+        // of every batch, so a batch boundary inside a run is a turn the rows do not have.
+        let mut held: Vec<TranscriptItem> = Vec::new();
         let report = source.read_tree(oc_id, &mut |ev| match ev {
             letibot_opencode::Event::Progress { done, .. } => {
                 // Throttled: one tick per 64 parts is a live bar, and one per part is
@@ -2855,7 +2858,7 @@ impl Harness {
                 if failure.is_some() {
                     return;
                 }
-                if let Err(e) = self.append_imported(&[r.item]) {
+                if let Err(e) = self.import_row(r.item, &mut held) {
                     failure = Some(e.to_string());
                     return;
                 }
@@ -2869,6 +2872,11 @@ impl Harness {
             }
             letibot_opencode::Event::Scrap(s) => self.import_note("import_scrap", s.said),
         });
+        if failure.is_none()
+            && let Err(e) = self.flush_imported(&mut held)
+        {
+            failure = Some(e.to_string());
+        }
 
         match (failure, report) {
             (Some(e), _) => self.import_note(
@@ -2942,6 +2950,8 @@ impl Harness {
 
         let mut failure: Option<String> = None;
         let mut since_persist = 0u64;
+        // A run of tool results is one batch, for the reason the opencode import gives.
+        let mut held: Vec<TranscriptItem> = Vec::new();
         let report = source.read(cc_id, &mut |ev| match ev {
             letibot_claude::Event::Progress { bytes, .. } => {
                 // Throttled to about one tick a megabyte: a live bar, and not thousands of
@@ -2954,7 +2964,7 @@ impl Harness {
                 if failure.is_some() {
                     return;
                 }
-                if let Err(e) = self.append_imported(&[r.item]) {
+                if let Err(e) = self.import_row(r.item, &mut held) {
                     failure = Some(e.to_string());
                     return;
                 }
@@ -2968,6 +2978,11 @@ impl Harness {
             }
             letibot_claude::Event::Scrap(s) => self.import_note("import_scrap", s.said),
         });
+        if failure.is_none()
+            && let Err(e) = self.flush_imported(&mut held)
+        {
+            failure = Some(e.to_string());
+        }
 
         match (failure, report) {
             (Some(e), _) => self.import_note(

@@ -38,6 +38,7 @@ mod clear;
 mod context;
 mod delivery;
 mod fallback;
+mod import_rows;
 mod intent;
 mod jobs;
 mod misc;

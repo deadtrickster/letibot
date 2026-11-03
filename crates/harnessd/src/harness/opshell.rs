@@ -337,6 +337,34 @@ impl Harness {
         Ok(())
     }
 
+    /// One row of a foreign conversation, as the read hands it over. A run of tool results is
+    /// held, because a batch boundary inside a run writes an end-of-turn the rows do not have.
+    pub(crate) fn import_row(
+        &mut self,
+        item: TranscriptItem,
+        held: &mut Vec<TranscriptItem>,
+    ) -> Result<(), HarnessError> {
+        if matches!(item, TranscriptItem::ToolResult { .. }) {
+            held.push(item);
+            return Ok(());
+        }
+        let mut batch = std::mem::take(held);
+        batch.push(item);
+        self.append_imported(&batch)
+    }
+
+    /// The run of tool results the read ended on.
+    pub(crate) fn flush_imported(
+        &mut self,
+        held: &mut Vec<TranscriptItem>,
+    ) -> Result<(), HarnessError> {
+        if held.is_empty() {
+            return Ok(());
+        }
+        let batch = std::mem::take(held);
+        self.append_imported(&batch)
+    }
+
     /// A warning on this session's log — the one place an import reports itself.
     pub(crate) fn import_note(&self, code: &str, detail: String) {
         self.hub.publish(letibot_sessionlog::SessionEvent::Warning {
