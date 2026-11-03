@@ -1066,9 +1066,11 @@ impl RepoQueue {
             let waited = r.failure.trim();
             let why = match waited.is_empty() {
                 true => format!("claimed for review at {head} by {me}"),
-                false => format!("claimed for review at {head} by {me}"),
+                false => format!(
+                    "claimed for review at {head} by {me}, after waiting: {}",
+                    super::capacity::gist(waited)
+                ),
             };
-            let _ = waited;
             if self.review_to(
                 r,
                 ReviewState::Reviewing,

@@ -62,6 +62,28 @@ fn a_real_placement_failure_is_not_capacity() {
     }
 }
 
+/// **The shortage is read off the facts, not off firecode's banner.** A wrapper that hands on the
+/// refusal without its `[firecode]` prefixes, and one whose shortage sentence is the counts line
+/// alone, are the same refusal - and a message that merely mentions a tap is not.
+#[test]
+fn a_capacity_refusal_is_read_without_firecodes_banner() {
+    for why in [
+        "placing this session in a VM: io: up refused (exit status: 1): this run needs tap \
+         fccode5, and creating one needs root - which cannot be asked for here. 4 tap(s) exist \
+         and 4 have carrier.",
+        "placing this session in a VM: io: up refused (exit status: 1): 3 tap(s) exist and 3 \
+         have carrier, so there is nothing to boot this run on",
+    ] {
+        let cap = vm_capacity(why).unwrap_or_else(|| panic!("capacity: {why}"));
+        assert!(cap.slots.is_some() && cap.busy.is_some(), "{cap:?}");
+    }
+    assert_eq!(
+        vm_capacity("the run needs tap fccode9, and nothing says how many there are"),
+        None,
+        "a tap named without a count or a root sentence is not a shortage"
+    );
+}
+
 #[test]
 fn the_retry_schedule_is_one_two_five_then_every_five_minutes() {
     let mins: Vec<u64> = (1..=6).map(|n| retry_after_ms(n) / 60_000).collect();

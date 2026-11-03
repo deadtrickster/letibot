@@ -1886,6 +1886,44 @@ fn served(store: &Store, desk: &ReviewDesk, me: &str) -> crate::mergequeue::revi
     crate::mergequeue::review::serve(&pool).expect("a pass of the reviewers' host")
 }
 
+/// A capacity wait is not an attempt, so a row under one carries its reason in `failure` with
+/// `attempts` at zero - and the claim used to write *claimed for review at …* over it, leaving the
+/// pane with a row that had waited an hour and no reason on it at all.
+#[test]
+fn a_claimed_row_keeps_the_capacity_wait_it_was_under() {
+    let w = World::new("claim-keeps-wait");
+    let (wt, base, head) = branch(&w.repo, "waited", "w.txt");
+    w.enqueue("waited", &wt, &base, &head);
+    let s = w.store();
+    let wait = format!(
+        "{}: 4 of 4 VM slots are busy for `main`, so the review waits and no attempt is spent",
+        crate::mergequeue::capacity::WAITING_FOR_SLOT
+    );
+    // The wait as the queue writes it: the clause leads, and the not-before time has passed.
+    assert!(
+        s.move_review(
+            "waited",
+            ReviewState::Waiting,
+            ReviewState::Waiting,
+            &Move::new("queue", wait.clone())
+                .set("deadline_ms", gate::now_ms().saturating_sub(1))
+                .set("failure", wait.clone()),
+            gate::now_ms(),
+        )
+        .unwrap()
+    );
+    let q = w.worker(Arc::new(GreenGate), "a");
+    run(&q, 1);
+    let r = s.review_row("waited").unwrap().unwrap();
+    assert_eq!(r.state, ReviewState::Reviewing, "{r:?}");
+    assert_eq!(r.attempts, 0, "a wait spends no attempt: {r:?}");
+    assert!(
+        r.evidence
+            .contains(crate::mergequeue::capacity::WAITING_FOR_SLOT),
+        "the claim keeps the reason it waited: {r:?}"
+    );
+}
+
 /// A reviewer has started on `id` and handed its verdict in at the desk - the two acts that
 /// belong to the child, and the state the queue's worker then has to read correctly. `tree`
 /// is load-bearing, not decoration
