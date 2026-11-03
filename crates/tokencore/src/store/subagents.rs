@@ -189,7 +189,8 @@ impl Store {
 
     /// **A child's state moved**: `state` and `outcome`, and `delivered` back to false - a
     /// settlement written now is one nobody has been handed yet. A handle with no row is a
-    /// child this store never recorded, and nothing is written.
+    /// child this store never recorded, and nothing is written. A later answer standing before
+    /// this settlement is older than it, and is dropped so no reader hands out the turn before.
     pub fn settle_subagent_run(
         &self,
         child_id: &str,
@@ -197,7 +198,8 @@ impl Store {
         outcome: Option<&str>,
     ) -> Result<()> {
         self.exec(
-            "UPDATE subagent_run SET state = ?2, outcome = ?3, delivered = 0, updated_ms = ?4
+            "UPDATE subagent_run SET state = ?2, outcome = ?3, later_answer = NULL,
+                    delivered = 0, updated_ms = ?4
               WHERE child_id = ?1",
             params![child_id, state, outcome, now_ms()],
         )?;
@@ -874,6 +876,29 @@ mod tests {
             Some("third answer")
         );
         store.settle_subagent_run_again("nobody", "x").unwrap();
+    }
+
+    /// **A fresh settlement is the child's last word**, so a later answer written before it is
+    /// older news: left standing it outranks the outcome, and every reader that asks for the
+    /// newest answer gets the turn before the one the child just ended on.
+    #[test]
+    fn a_settlement_drops_the_later_answer_before_it() {
+        let store = Store::open_in_memory().unwrap();
+        store.put_subagent_run(&run("s-1-sub-1", "s-1")).unwrap();
+        store
+            .settle_subagent_run("s-1-sub-1", "done", Some("A"))
+            .unwrap();
+        store.settle_subagent_run_again("s-1-sub-1", "B").unwrap();
+        // A resumed child, or a reap after a restart, settles the row again.
+        store
+            .settle_subagent_run("s-1-sub-1", "done", Some("C"))
+            .unwrap();
+        let got = store.subagent_run("s-1-sub-1").unwrap().unwrap();
+        assert_eq!(got.outcome.as_deref(), Some("C"));
+        assert_eq!(
+            got.later_answer, None,
+            "the answer the new settlement supersedes is not the newest one"
+        );
     }
 
     #[test]
