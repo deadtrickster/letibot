@@ -108,11 +108,17 @@ impl ScopeTree for PlainDirectories {
     }
 
     /// What the kernel would answer: the pids the join script wrote into this scope's
-    /// `cgroup.procs`. A tree that answered `empty` would fail every spawn that outlives the
-    /// five-second membership check, which is the check that makes an unowned process impossible.
+    /// `cgroup.procs`, less the ones that have exited - the kernel drops a pid from the file when
+    /// its process goes, and a fake that kept it would call a settled job's scope populated for
+    /// ever. A tree that answered `empty` for a live process would fail every spawn that outlives
+    /// the five-second membership check.
     fn members(&self, scope: &ScopeId) -> Result<Vec<u32>, ExecError> {
         let body = std::fs::read_to_string(scope.path.join("cgroup.procs")).unwrap_or_default();
-        Ok(body.lines().filter_map(|l| l.trim().parse().ok()).collect())
+        Ok(body
+            .lines()
+            .filter_map(|l| l.trim().parse().ok())
+            .filter(|pid| letibot_tools::exec::procs::read(*pid).is_some())
+            .collect())
     }
 
     fn end(&self, scope: &ScopeId) -> Reaping {
@@ -222,14 +228,14 @@ fn a_job_row_outlives_its_job_and_the_captures_do_not() {
         held <= 64 * 1024 * 1024,
         "the settled captures are over the budget: {held} bytes held"
     );
-    // And the scopes: one per job, and a job that ended by itself is never `end`ed, so on a real
-    // cgroup tree each of these is a directory until the session's own scope goes.
+    // And the scopes: a job that ended by itself released its own, so what is open afterwards is
+    // the session's alone. A cgroup directory per command ever run is debris the host can drop.
     let scopes = host.scopes().len();
     println!("  {scopes} scope(s) open for {rows} row(s)");
     assert_eq!(
-        scopes,
-        JOBS + 1,
-        "one session scope and one per job, and nothing removed a job's"
+        scopes, 1,
+        "a job that ended by itself released its scope, and the session's own stays: {JOBS} jobs \
+         ran, so {JOBS} job scopes must have gone"
     );
     // And what one publish of that table costs. `Harness::publish_jobs` runs several times a turn
     // and calls `jobs()`, which clones every view - so a session's per-turn allocation grows with

@@ -780,6 +780,15 @@ fn scope_kind_of(scope: &str) -> (super::scope::ScopeKind, String) {
     }
 }
 
+/// Release a job's own scope once its leader has gone. Only an EMPTY one goes: a scope still
+/// holding a process is one the command left behind and somebody's live work, and `end` would
+/// kill it. Left alone, each of these is a cgroup directory per command a session ever ran.
+fn release_settled_scope(tree: &dyn ScopeTree, scope: &ScopeId) {
+    if tree.members(scope).is_ok_and(|m| m.is_empty()) {
+        let _ = tree.end(scope);
+    }
+}
+
 impl HostProcesses {
     /// Hold settled output to `budget` bytes, releasing the oldest first ([`SETTLED_CAPTURE_BUDGET`]).
     /// Called at each spawn, the only moment the set can have grown past a bound. Newest first, so
@@ -1444,6 +1453,7 @@ impl ProcessHost for HostProcesses {
         };
 
         let waiter = Arc::clone(&job);
+        let tree = Arc::clone(&self.tree);
         std::thread::Builder::new()
             .name(format!("letibot-job-{id}"))
             .spawn(move || {
@@ -1501,6 +1511,10 @@ impl ProcessHost for HostProcesses {
                     waiter.record_memory(used);
                 }
                 waiter.settle(state);
+                // The leader is gone, so its own scope is debris unless the command left a
+                // process in it: one directory per command ever run otherwise, and a scope still
+                // holding work is somebody's live process and stays.
+                release_settled_scope(tree.as_ref(), &waiter.lifetime().scope);
             })
             .map_err(|e| ExecError::Spawn(e.to_string()))?;
 
@@ -1611,6 +1625,7 @@ impl ProcessHost for HostProcesses {
         let identity = a.identity.clone();
         let pid = a.pid;
         let watched = Arc::clone(&job);
+        let tree = Arc::clone(&self.tree);
         let _ = std::thread::Builder::new()
             .name(format!("adopted-{}", &a.handle[..a.handle.len().min(20)]))
             .spawn(move || {
@@ -1621,6 +1636,7 @@ impl ProcessHost for HostProcesses {
                         // process is not there.
                         _ => {
                             watched.settle(JobState::Dead);
+                            release_settled_scope(tree.as_ref(), &watched.lifetime().scope);
                             break;
                         }
                     }
