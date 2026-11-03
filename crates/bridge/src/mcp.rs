@@ -8,6 +8,7 @@
 //! stderr, because one stray `print!` lands in the middle of a JSON line.
 
 use std::io::{BufRead, Write};
+use std::sync::{Mutex, mpsc};
 
 use serde_json::{Value, json};
 
@@ -21,11 +22,42 @@ pub const PROTOCOL_VERSION: &str = "2025-06-18";
 /// Serve one client, reading requests from `input` and writing answers to `output`. Returns when
 /// the input ends. Errors on the writer are returned rather than swallowed: a client that closed
 /// stdout is gone, and reading its requests would be work nobody receives.
-pub fn serve<R: BufRead, W: Write>(
+///
+/// The output is shared with the room stream's writer thread, so a pushed notification and an
+/// answer are never interleaved inside one line.
+pub fn serve<R: BufRead, W: Write + Send>(
     mut input: R,
-    mut output: W,
+    output: W,
     bridge: &Bridge,
 ) -> std::io::Result<()> {
+    let out = Mutex::new(output);
+    let (push_tx, push_rx) = mpsc::channel::<Value>();
+    std::thread::scope(|scope| {
+        let writer = scope.spawn(|| {
+            for message in push_rx {
+                let mut w = out.lock().unwrap_or_else(|e| e.into_inner());
+                if write_message(&mut *w, &message).is_err() {
+                    break;
+                }
+            }
+        });
+        let result = read_loop(&mut input, &out, bridge, &push_tx);
+        drop(push_tx);
+        let _ = writer.join();
+        result
+    })
+}
+
+fn read_loop<R: BufRead, W: Write>(
+    input: &mut R,
+    out: &Mutex<W>,
+    bridge: &Bridge,
+    push: &mpsc::Sender<Value>,
+) -> std::io::Result<()> {
+    let send = |message: &Value| {
+        let mut w = out.lock().unwrap_or_else(|e| e.into_inner());
+        write_message(&mut *w, message)
+    };
     let mut line = String::new();
     loop {
         line.clear();
@@ -36,7 +68,7 @@ pub fn serve<R: BufRead, W: Write>(
             Ok(0) => return Ok(()),
             Ok(_) => {}
             Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
-                write_message(&mut output, &error(Value::Null, -32700, "parse error"))?;
+                send(&error(Value::Null, -32700, "parse error"))?;
                 continue;
             }
             Err(e) => return Err(e),
@@ -45,11 +77,21 @@ pub fn serve<R: BufRead, W: Write>(
             continue;
         }
         let answer = match serde_json::from_str::<Value>(line.trim()) {
-            Ok(request) => handle(bridge, &request),
+            Ok(request) => {
+                // The client has applied `initialize`: from here a channel notification is
+                // legal, so the room's stream may start.
+                if request["method"] == "notifications/initialized" && bridge.stream_rooms() {
+                    let tx = push.clone();
+                    bridge.rooms().stream(std::sync::Arc::new(move |m| {
+                        let _ = tx.send(crate::rooms::channel_notification(m));
+                    }));
+                }
+                handle(bridge, &request)
+            }
             Err(e) => Some(error(Value::Null, -32700, &format!("parse error: {e}"))),
         };
         if let Some(answer) = answer {
-            write_message(&mut output, &answer)?;
+            send(&answer)?;
         }
     }
 }
@@ -74,7 +116,12 @@ fn handle(bridge: &Bridge, request: &Value) -> Option<Value> {
     let result = match method {
         "initialize" => Some(json!({
             "protocolVersion": PROTOCOL_VERSION,
-            "capabilities": { "tools": {} },
+            // `claude/channel` lets Claude Code start a turn on a room message; a client that
+            // was not started with the channel flag ignores it and the tools still work.
+            "capabilities": { "tools": {}, "experimental": { "claude/channel": {} } },
+            "instructions": "Room messages for `claude-code` arrive as <channel> events: read \
+                them, answer with `room_say` or `room_dm`, and `room_inbox` with ack true marks \
+                what you handled.",
             "serverInfo": {
                 "name": "letibot-mcp",
                 "version": env!("CARGO_PKG_VERSION"),
@@ -185,13 +232,13 @@ mod tests {
         assert_eq!(r["result"]["serverInfo"]["name"], "letibot-mcp");
     }
 
-    /// **Thirteen tools, each with a schema** — the design's table, and the shape MCP requires.
+    /// **Nineteen tools, each with a schema** — the design's table, and the shape MCP requires.
     /// Ten from B1–B6, B8's `leticode_transcript` and `leticode_mode`, and `leticode_model`.
     #[test]
-    fn tools_list_lists_the_thirteen_tools_with_schemas() {
+    fn tools_list_lists_the_nineteen_tools_with_schemas() {
         let answers = run(&[r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#]);
         let tools = answers[0]["result"]["tools"].as_array().expect("tools");
-        assert_eq!(tools.len(), 13, "{:?}", answers[0]);
+        assert_eq!(tools.len(), 19, "{:?}", answers[0]);
         for t in tools {
             assert!(t["name"].is_string(), "{t}");
             assert!(t["description"].is_string(), "{t}");
