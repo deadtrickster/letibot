@@ -118,13 +118,14 @@ impl Harness {
     /// vanishing, because an orientation that leaves out no jobs cannot be told from one that forgot to look.
     pub(crate) fn orientation(&self, next: Option<&str>) -> String {
         let me = self.cfg.session_id.clone();
-        let mut out = format!(
-            "[cleared] The operator cleared the conversation; assume nothing from before - not \
-             even a summary, so no decision, finding or instruction from it stands. Your board, \
-             jobs and subagents are listed below as they stand now. The old conversation is still \
-             in the store and the `transcript` tool reaches it, because its `history` is on by \
-             default and the search walks back through the transcripts this session came from.\n"
-        );
+        let mut out =
+            "[cleared] The operator cleared the conversation; assume nothing from before - \
+                        not even a summary, so no decision, finding or instruction from it stands. \
+                        Your board, jobs and subagents are listed below as they stand now. The old \
+                        conversation is still in the store and the `transcript` tool reaches it, \
+                        because its `history` is on by default and the search walks back through \
+                        the transcripts this session came from.\n"
+                .to_string();
         if let Some(next) = next.map(str::trim).filter(|t| !t.is_empty()) {
             out.push_str(&format!("\nThe operator said, with the clear: «{next}»\n"));
         }
