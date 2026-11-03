@@ -509,6 +509,68 @@ fn the_same_content_succeeds_when_it_was_not_truncated() {
     assert_eq!(ok.metrics.prefix_check, PrefixCheck::FirstTurn);
 }
 
+/// C10 compares our prompt count with the server's, and that is a measurement only when the
+/// second number is the one the server sent. A frame that counted a different prompt is the
+/// case that tells the two apart: ours is the ledger's, its is `tokens_evaluated`.
+#[test]
+fn the_two_prompt_counts_are_the_server_s_frame_numbers() {
+    let _lock = serial();
+    let Some(_) = letibot_llama::apparatus::present_gguf() else {
+        return;
+    };
+    let thought = ids_of("brief");
+    let answer = ids_of("Blue.");
+    let mut frames = vec![Frame::Token {
+        id: THINK_OPEN,
+        text: "",
+    }];
+    frames.extend(token_frames(&thought));
+    frames.push(Frame::Token {
+        id: THINK_CLOSE,
+        text: "",
+    });
+    frames.extend(token_frames(&answer));
+    frames.push(Frame::Token {
+        id: IM_END,
+        text: "",
+    });
+    let n = 3 + thought.len() + answer.len();
+    frames.push(Frame::Final {
+        stop_type: "eos",
+        n_decoded: n as u64,
+        n_prompt: 501,
+        cache_n: 4,
+    });
+    let canned = Canned::serve(frames, 1);
+
+    let mut engine = engine(canned.endpoint.clone());
+    let mut session = session(&engine, "server-counts");
+    let mut sink = RecordingSink::new();
+    session
+        .append_items(&engine, &[user("a colour")], &mut sink)
+        .unwrap();
+
+    let ok = engine.run_turn(&mut session, &mut sink).unwrap();
+    assert!(
+        ok.metrics.prompt_tokens < 501,
+        "the ledger submitted more tokens than the frame carries, so the two counts are not two \
+         numbers: {}",
+        ok.metrics.prompt_tokens
+    );
+    assert_eq!(
+        ok.metrics.prompt_tokens_server, 501,
+        "the count C10 compares against is ours, not the server's"
+    );
+    assert_eq!(
+        ok.metrics.prompt_processed, 501,
+        "processed is the server's `prompt_n`, not `prompt_tokens - cached`"
+    );
+    assert_eq!(
+        ok.metrics.cached_tokens, 4,
+        "reuse is the frame's `cache_n`"
+    );
+}
+
 // --------------------------------------------------------------------------
 // §8.5 - the guards
 // --------------------------------------------------------------------------
