@@ -931,3 +931,38 @@ fn the_worktree_sweep_takes_the_debris_and_keeps_the_living() {
         "another checkout's live worktree stays"
     );
 }
+
+/// A checkout with a local change under the landing makes `follow_checkouts` refuse before any
+/// checkout moves.
+#[test]
+fn a_dirty_checkout_stops_every_checkout_from_following() {
+    let dir = TempDir::new("follow-dirty");
+    let repo = repo(&dir.0);
+    let old = sh(&repo, &["rev-parse", "main"]);
+    let second = dir.0.join("second");
+    sh(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "--force",
+            &second.to_string_lossy(),
+            "main",
+        ],
+    );
+    let (_wt, _base, new) = branch(&repo, "x", "a.txt");
+    // The landing moves the ref only; the checkouts still hold `old`'s files.
+    update_ref_cas(&repo, "main", &new, &old).unwrap();
+    std::fs::write(second.join("a.txt"), "local edit\n").unwrap();
+    let err = follow_checkouts(&repo, "main", &old, &new).unwrap_err();
+    assert!(err.contains("local changes overlap"), "{err}");
+    assert!(err.contains("a.txt"), "{err}");
+    assert!(
+        !repo.join("x.txt").exists() && !repo.join("a.txt").to_string_lossy().is_empty(),
+        "the clean checkout did not move before the refusal"
+    );
+    // A clean pair follows.
+    std::fs::write(second.join("a.txt"), "one\n").unwrap();
+    follow_checkouts(&repo, "main", &old, &new).unwrap();
+}

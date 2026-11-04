@@ -230,7 +230,10 @@ pub(super) fn parked_merge(m: MergeState) -> bool {
     m.is_open()
         || matches!(
             m,
-            MergeState::Failed | MergeState::TimedOut | MergeState::Conflict
+            MergeState::Failed
+                | MergeState::TimedOut
+                | MergeState::Conflict
+                | MergeState::LandedLocal
         )
 }
 
@@ -751,6 +754,7 @@ pub(crate) fn plain_state(state: &str) -> String {
         "queued" => "waiting for the gate",
         "gating" => "the gate is running",
         "landed" => "landed",
+        "landed_local" => "landed locally, not pushed",
         "failed" => "the gate failed",
         "timed_out" => "the gate timed out",
         "conflict" => "it does not merge cleanly",
@@ -1207,6 +1211,7 @@ mod tests {
             ("gating", "the gate is running"),
             ("timed_out", "the gate timed out"),
             ("landed", "landed"),
+            ("landed_local", "landed locally, not pushed"),
             ("blocked", "stopped - a person has to act"),
             ("something_new", "something new"),
         ] {

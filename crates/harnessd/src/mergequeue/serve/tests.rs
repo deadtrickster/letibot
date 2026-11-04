@@ -945,7 +945,11 @@ fn the_landing_pushes_then_installs_and_a_failed_push_installs_nothing() {
     let m = w.accept("q", "test/a");
     run(&q, 2);
     let row = w.store().merge_row(&m).unwrap().unwrap();
-    assert_eq!(row.state, MergeState::Landed);
+    assert_eq!(
+        row.state,
+        MergeState::LandedLocal,
+        "landed on the target, not pushed: its own state"
+    );
     assert!(row.pushed.contains("FAILED"), "{}", row.pushed);
     assert!(!marker.exists(), "nothing installed that was not pushed");
     assert!(
@@ -974,7 +978,7 @@ fn a_failed_push_with_no_install_step_is_said() {
     let m = w.accept("p", "test/a");
     run(&q, 2);
     let row = w.store().merge_row(&m).unwrap().unwrap();
-    assert_eq!(row.state, MergeState::Landed, "{row:?}");
+    assert_eq!(row.state, MergeState::LandedLocal, "{row:?}");
     let said = w.door.warnings("queue_push_failed");
     assert_eq!(said.len(), 1, "{said:?}");
     assert!(said[0].contains("FAILED"), "{}", said[0]);
@@ -5385,4 +5389,88 @@ fn one_approved_branch_takes_the_single_path_even_with_a_train_of_three() {
     assert_eq!(row.state, MergeState::Landed, "{row:?}");
     assert!(!row.evidence.contains("in a train of"), "{}", row.evidence);
     assert_eq!(gate.runs().len(), 2, "{:?}", gate.runs());
+}
+
+/// A store error on the lease heartbeat is a refusal to land, never "held".
+#[test]
+fn a_lease_that_cannot_be_confirmed_refuses_to_land() {
+    let Some(()) = letibot_tokencore::apparatus::present(
+        "the sqlite3 command",
+        std::process::Command::new("sqlite3")
+            .arg("-version")
+            .output()
+            .is_ok(),
+    ) else {
+        return;
+    };
+    let w = World::new("lease-error");
+    let q = w.worker(Arc::new(GreenGate), "a");
+    assert_eq!(q.lease_refusal(), None, "a held lease lands");
+    let out = std::process::Command::new("sqlite3")
+        .arg(&w.db)
+        .arg("ALTER TABLE queue_lease RENAME TO queue_lease_gone;")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let why = q.lease_refusal().expect("a store error refuses");
+    assert!(why.contains("could not be confirmed"), "{why}");
+}
+
+/// The target moves while a train's gate runs: the target lands nothing of the train, and every
+/// car goes back in line. It is never left on an intermediate tip the gate did not judge.
+#[test]
+fn a_train_whose_target_moved_lands_nothing_and_requeues_every_car() {
+    struct HandCommitDuringTrainGate {
+        repo: PathBuf,
+        done: Mutex<bool>,
+    }
+    impl GateRunner for HandCommitDuringTrainGate {
+        fn run(&self, wt: &Path, steps: &[String], ctl: &GateControl) -> GateRun {
+            let mut done = self.done.lock().unwrap();
+            if wt.join("three.txt").exists() && !*done {
+                *done = true;
+                commit(&self.repo, "hand.txt", "by hand\n", "a hand commit");
+            }
+            GreenGate.run(wt, steps, ctl)
+        }
+    }
+    let w = World::new("train-moved");
+    let q = w.worker_with(
+        Arc::new(HandCommitDuringTrainGate {
+            repo: w.repo.clone(),
+            done: Mutex::new(false),
+        }),
+        "a",
+        train_of(3),
+    );
+    let ms = three_approved(&w);
+    run(&q, 2);
+    // The failed swap moved nothing, so the one landing the reflog holds is the retry's, and
+    // it carries all three cars on top of the hand commit.
+    assert_eq!(
+        sh(&w.repo, &["reflog", "show", "main"])
+            .matches("letibot merge queue: land")
+            .count(),
+        1,
+        "one move of the target for the whole train"
+    );
+    assert_eq!(
+        sh(&w.repo, &["log", "--format=%s", "-5", "main"]),
+        "work on three\nwork on two\nwork on one\na hand commit\nbase"
+    );
+    for m in &ms {
+        let back = w
+            .store()
+            .transitions("merge", m)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.from_state.as_deref() == Some("gating") && t.to_state != "gating")
+            .expect("every car left gating");
+        assert_eq!(back.to_state, "queued", "{back:?}");
+        assert!(
+            back.why.contains("Nothing of the train landed"),
+            "{}",
+            back.why
+        );
+    }
 }

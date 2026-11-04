@@ -231,6 +231,8 @@ pub enum MergeState {
     Gating,
     /// On the target, pushed when there was somewhere to push.
     Landed,
+    /// On the target locally, and the push to `origin` failed. A person has to push it.
+    LandedLocal,
     /// The gate was red - the branch is bad. Terminal.
     Failed,
     /// The gate ran past its deadline and was killed (decision 9) - not `failed`.
@@ -249,10 +251,11 @@ pub enum MergeState {
 }
 
 impl MergeState {
-    pub const ALL: [MergeState; 9] = [
+    pub const ALL: [MergeState; 10] = [
         MergeState::Queued,
         MergeState::Gating,
         MergeState::Landed,
+        MergeState::LandedLocal,
         MergeState::Failed,
         MergeState::TimedOut,
         MergeState::Conflict,
@@ -265,6 +268,7 @@ impl MergeState {
             MergeState::Queued => "queued",
             MergeState::Gating => "gating",
             MergeState::Landed => "landed",
+            MergeState::LandedLocal => "landed_local",
             MergeState::Failed => "failed",
             MergeState::TimedOut => "timed_out",
             MergeState::Conflict => "conflict",

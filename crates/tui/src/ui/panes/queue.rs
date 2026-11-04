@@ -294,6 +294,7 @@ pub(crate) fn mark_of(state: &str) -> (&'static str, rano::style::Role) {
         "reviewing" | "gating" => ("[~]", rano::style::Role::Code),
         "approved" | "landed" => ("[x]", rano::style::Role::Success),
         "blocked" | "failed" | "timed_out" | "conflict" => ("[!]", rano::style::Role::Failure),
+        "landed_local" => ("[!]", rano::style::Role::Attention),
         "rejected" | "cannot_decide" => ("[!]", rano::style::Role::Attention),
         _ => ("[-]", rano::style::Role::Faint),
     }
@@ -428,7 +429,7 @@ pub(crate) fn standings_where(
     for m in q.merges.iter().filter(|m| keep(&m.repository)) {
         match m.state.as_str() {
             "queued" | "gating" => s.merging += 1,
-            "blocked" | "failed" | "timed_out" | "conflict" => s.stuck += 1,
+            "blocked" | "failed" | "timed_out" | "conflict" | "landed_local" => s.stuck += 1,
             "landed" if recent(m.state_ms) => s.landed += 1,
             _ => {}
         }
@@ -652,6 +653,7 @@ pub(crate) fn verb_moves(verb: Verb, row: &Selected) -> Result<(), String> {
         }
         (_, _, "gating") => "the queue is gating it right now".into(),
         (_, _, "landed") => "it has landed".into(),
+        (_, _, "landed_local") => "it landed locally and the push failed".into(),
         (_, _, "approved") => "it is approved and in the merge queue".into(),
         (_, _, s) => format!("it is `{s}`"),
     })

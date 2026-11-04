@@ -794,16 +794,67 @@ pub fn checkouts_of(repo: &Path, target: &str) -> Vec<PathBuf> {
     out
 }
 
+/// Paths a checkout has changed locally (tracked edits and untracked files) that the landing
+/// from `old` to `new` would also write.
+fn overlap(wt: &Path, old: &str, new: &str) -> Result<Vec<String>, String> {
+    let changed = git(wt, &["diff", "--name-only", "-z", old, new])?;
+    let theirs: std::collections::HashSet<&str> =
+        changed.split('\0').filter(|p| !p.is_empty()).collect();
+    // Against `old`, not HEAD: the ref has already moved when this runs.
+    let mut hits = Vec::new();
+    for args in [
+        &["diff", "--name-only", "-z", old][..],
+        &["diff", "--name-only", "--cached", "-z", old][..],
+        &["ls-files", "--others", "--exclude-standard", "-z"][..],
+    ] {
+        for path in git(wt, args)?.split('\0') {
+            if theirs.contains(path) && !path.is_empty() && !hits.iter().any(|h| h == path) {
+                hits.push(path.to_string());
+            }
+        }
+    }
+    Ok(hits)
+}
+
 /// Bring every checkout of `target` from `old` to `new` the way a fast-forward would -
-/// `read-tree -m -u old new`, which refuses when a local change overlaps the landing.
+/// `read-tree -m -u old new`, which refuses when a local change overlaps the landing. Every
+/// checkout is checked first and none moves unless all can; one that fails anyway puts the
+/// ones already moved back.
 pub fn follow_checkouts(repo: &Path, target: &str, old: &str, new: &str) -> Result<(), String> {
-    for wt in checkouts_of(repo, target) {
-        git(&wt, &["read-tree", "-m", "-u", old, new]).map_err(|e| {
+    let wts = checkouts_of(repo, target);
+    for wt in &wts {
+        let said = |e: String| {
             format!(
                 "the checkout of `{target}` at {} could not follow the landing: {e}",
                 wt.display()
             )
-        })?;
+        };
+        let hits = overlap(wt, old, new).map_err(said)?;
+        if !hits.is_empty() {
+            return Err(said(format!(
+                "local changes overlap the landing: {}",
+                hits.join(", ")
+            )));
+        }
+    }
+    let mut moved: Vec<&PathBuf> = Vec::new();
+    for wt in &wts {
+        if let Err(e) = git(wt, &["read-tree", "-m", "-u", old, new]) {
+            let mut said = format!(
+                "the checkout of `{target}` at {} could not follow the landing: {e}",
+                wt.display()
+            );
+            for done in moved {
+                if let Err(u) = git(done, &["read-tree", "-m", "-u", new, old]) {
+                    said.push_str(&format!(
+                        "; the checkout at {} could not be put back: {u}",
+                        done.display()
+                    ));
+                }
+            }
+            return Err(said);
+        }
+        moved.push(wt);
     }
     Ok(())
 }

@@ -308,6 +308,9 @@ struct Landing {
     install: Vec<String>,
 }
 
+/// How a failed push opens in the row; [`Self::landed`] reads it to pick `landed_local`.
+const PUSH_FAILED: &str = "the push FAILED";
+
 /// A train - several approved branches, rebased one onto the last, judged by ONE gate run
 /// on the final tree (`[queue] gate_train`).
 struct Train {
@@ -497,6 +500,20 @@ impl RepoQueue {
             self.lease_ok.store(false, Ordering::Relaxed);
         }
         Ok(ours)
+    }
+
+    /// Why this daemon may not land now, or `None`. A store error is a refusal: a lease that
+    /// cannot be confirmed is not held.
+    fn lease_refusal(&self) -> Option<String> {
+        match self.beat() {
+            Ok(true) => None,
+            Ok(false) => {
+                Some("this daemon lost the repository's lease, so it may not land".to_string())
+            }
+            Err(e) => Some(format!(
+                "the repository's lease could not be confirmed ({e}), so this daemon may not land"
+            )),
+        }
     }
 
     /// One pass. It never waits for a gate: it starts one, or applies the verdict of one that
@@ -2723,14 +2740,13 @@ impl RepoQueue {
         // The gate ran on its own thread while the pass went on: the lease is asked again
         // before anything is written into the repository - a daemon that no longer holds it must
         // not land into it.
-        if !self.beat().unwrap_or(true) {
+        if let Some(why) = self.lease_refusal() {
             self.gating_to(
                 row,
                 MergeState::Queued,
                 Move::new(
                     &me,
-                    "this daemon lost the repository's lease, so it may not land; it goes back in \
-                     line and is gated again",
+                    format!("{why}; it goes back in line and is gated again"),
                 )
                 .set("gate_steps_json", rows_json(&run.steps)),
             )?;
@@ -2754,32 +2770,36 @@ impl RepoQueue {
             return Ok(());
         }
         if let Err(e) = git::follow_checkouts(&repo, &target, &tip, &rebased) {
-            let undone = git::update_ref_cas(&repo, &target, &tip, &rebased);
-            let why = format!(
-                "{e}. The landing was {}: `{target}` is at {tip} as before.",
-                if undone.is_ok() {
-                    "undone"
-                } else {
-                    "NOT undone (the ref moved again)"
-                }
-            );
+            if git::update_ref_cas(&repo, &target, &tip, &rebased).is_ok() {
+                let why = format!("{e}. The landing was undone: `{target}` is at {tip} as before.");
+                self.raise(
+                    "queue_blocked",
+                    format!("`{}` could not land: {why}", row.branch),
+                );
+                self.gating_to(
+                    row,
+                    MergeState::Blocked,
+                    Move::new(&me, why).set("gate_steps_json", rows_json(&run.steps)),
+                )?;
+                return Ok(());
+            }
+            // The target holds the commit and cannot be put back: the row says landed, and the
+            // checkout is the thing that needs a person.
             self.raise(
                 "queue_blocked",
-                format!("`{}` could not land: {why}", row.branch),
+                format!(
+                    "`{}` landed on `{target}` at {rebased} but a checkout did not follow and the \
+                     landing could not be undone (the ref moved again): {e}",
+                    row.branch
+                ),
             );
-            self.gating_to(
-                row,
-                MergeState::Blocked,
-                Move::new(&me, why).set("gate_steps_json", rows_json(&run.steps)),
-            )?;
-            return Ok(());
         }
         // Push, then install (decision 7).
         let pushed = git::push(&repo, &target, &rebased);
         let (pushed_text, may_install) = match &pushed {
             git::Pushed::Yes(s) => (s.clone(), true),
             git::Pushed::NoRemote => ("no `origin` to push to".to_string(), true),
-            git::Pushed::Failed(e) => (format!("the push FAILED: {e}"), false),
+            git::Pushed::Failed(e) => (format!("{PUSH_FAILED}: {e}"), false),
         };
         let mut install_note = String::new();
         if !landing.install.is_empty() {
@@ -2909,86 +2929,59 @@ impl RepoQueue {
         }
     }
 
-    /// Every car lands - one commit each, in the order it was rebased. The target moves once
-    /// per car, each move a real compare-and-swap, so the history a bisect walks is the tree
-    /// the gate judged and every row's `landed_sha` is the tip at its own landing.
+    /// Every car lands - one commit each, in the order it was rebased. The target moves once, to
+    /// the final tip the gate judged, so the history a bisect walks is that tree and every row's
+    /// `landed_sha` is its own commit on the way there.
     fn land_the_train(&self, train: Box<Train>, run: GateRun) -> Result<(), StoreError> {
-        let me = self.me().to_string();
         let target = train.cars[0].row.target.clone();
         let n = train.cars.len();
-        let rows_json = |steps: &[letibot_tokencore::store::MergeGateStep]| {
-            serde_json::to_string(steps).unwrap_or_else(|_| "[]".into())
-        };
         // The gate ran on its own thread while the pass went on: the lease is asked again before
         // anything is written into the repository.
-        if !self.beat().unwrap_or(true) {
-            let why = "this daemon lost the repository's lease, so it may not land; the train goes \
-                       back in line and is gated again";
-            self.train_back(&train.cars, why, &run.steps)?;
+        if let Some(why) = self.lease_refusal() {
+            let why = format!("{why}; the train goes back in line and is gated again");
+            self.train_back(&train.cars, &why, &run.steps)?;
             return Ok(());
         }
-        let mut prev = train.tip.clone();
-        let mut landed = 0usize;
-        let mut stopped: Option<String> = None;
-        for (i, c) in train.cars.iter().enumerate() {
-            if let Err(e) = git::update_ref_cas(&self.repo, &target, &c.rebased, &prev) {
-                stopped = Some(format!(
-                    "`{target}` moved while the train's gate ran (it was {prev}): {e}. The train \
-                     stopped at car {} of {n}, and the branches from there on go back in line and \
-                     are rebased onto the new tip and gated again",
-                    i + 1
-                ));
-                break;
-            }
-            if let Err(e) = git::follow_checkouts(&self.repo, &target, &prev, &c.rebased) {
-                let undone = git::update_ref_cas(&self.repo, &target, &prev, &c.rebased);
-                stopped = Some(format!(
-                    "{e}. Car {} of {n} was {}: `{target}` is at {prev} as before, and the \
-                     branches from there on go back in line",
-                    i + 1,
-                    if undone.is_ok() {
-                        "undone"
+        // One compare-and-swap to the gated final tip: the target is never on a tip the gate did not
+        // judge, and a failure leaves every car in line.
+        let prev = train.cars[n - 1].rebased.clone();
+        let stopped = match git::update_ref_cas(&self.repo, &target, &prev, &train.tip) {
+            Err(e) => Some(format!(
+                "`{target}` moved while the train's gate ran (it was {}): {e}. Nothing of the \
+                 train landed, and its branches go back in line and are rebased onto the new tip \
+                 and gated again",
+                train.tip
+            )),
+            Ok(()) => match git::follow_checkouts(&self.repo, &target, &train.tip, &prev) {
+                Ok(()) => None,
+                Err(e) => {
+                    if git::update_ref_cas(&self.repo, &target, &train.tip, &prev).is_ok() {
+                        Some(format!(
+                            "{e}. The train's landing was undone: `{target}` is at {} as before, \
+                             and its branches go back in line",
+                            train.tip
+                        ))
                     } else {
-                        "NOT undone (the ref moved again)"
+                        // The target holds the train and cannot be put back: it stands as landed.
+                        self.raise(
+                            "queue_blocked",
+                            format!(
+                                "a train onto `{target}` landed at {prev} but a checkout did not \
+                                 follow and the landing could not be undone (the ref moved \
+                                 again): {e}"
+                            ),
+                        );
+                        None
                     }
-                ));
-                break;
-            }
-            prev = c.rebased.clone();
-            landed = i + 1;
-        }
+                }
+            },
+        };
         if let Some(why) = stopped {
-            // A ref moved is a landing, so the cars that are on the target say so - a row left
-            // `gating` about a commit the target holds would be a lie. Nothing is pushed: the train
-            // never reached its last car.
-            let pushed = format!("nothing was pushed: the train stopped after car {landed} of {n}");
             self.raise(
                 "queue_blocked",
                 format!("a train onto `{target}` stopped: {why}"),
             );
-            for i in 0..landed {
-                self.landed(
-                    &train.landing(i),
-                    run.clone(),
-                    run.steps.clone(),
-                    pushed.clone(),
-                    String::new(),
-                    &train_note(n, i),
-                )?;
-            }
-            for c in &train.cars[landed..] {
-                if self
-                    .store
-                    .merge_row(&c.row.id)?
-                    .is_some_and(|r| r.state == MergeState::Gating)
-                {
-                    self.gating_to(
-                        &c.row,
-                        MergeState::Queued,
-                        Move::new(&me, &why).set("gate_steps_json", rows_json(&run.steps)),
-                    )?;
-                }
-            }
+            self.train_back(&train.cars, &why, &run.steps)?;
             return Ok(());
         }
         // Push, then install (decision 7) - once, on the last car's tip.
@@ -2996,7 +2989,7 @@ impl RepoQueue {
         let (pushed_text, may_install) = match &pushed {
             git::Pushed::Yes(s) => (s.clone(), true),
             git::Pushed::NoRemote => ("no `origin` to push to".to_string(), true),
-            git::Pushed::Failed(e) => (format!("the push FAILED: {e}"), false),
+            git::Pushed::Failed(e) => (format!("{PUSH_FAILED}: {e}"), false),
         };
         if !train.install.is_empty() && may_install {
             let wt = train.wt.clone();
@@ -3223,9 +3216,14 @@ impl RepoQueue {
         let why = format!(
             "landed on `{target}` at {rebased} (onto {tip}){train_note}; {pushed_text}.{install_note}"
         );
+        let state = if pushed_text.starts_with(PUSH_FAILED) {
+            MergeState::LandedLocal
+        } else {
+            MergeState::Landed
+        };
         self.gating_to(
             row,
-            MergeState::Landed,
+            state,
             Move::new(&me, why)
                 .set("landed_sha", rebased.clone())
                 .set("pushed", pushed_text)
