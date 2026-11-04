@@ -103,6 +103,8 @@ impl Probe for Fake {
 fn rec(session: &str, handle: &str, host: Option<&str>, pid: u32) -> ProcessRecord {
     let mut r = ProcessRecord::starting(session, handle, host.map(str::to_string), pid);
     r.state = ProcState::Starting;
+    // A fixed start: records order by it, then by handle, so a clock tick cannot reorder them.
+    r.started_ms = 1_000;
     r.pgid = Some(pid);
     r.identity = format!("starttime:{pid}00");
     r.command = "cargo test --offline".into();
