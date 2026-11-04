@@ -1259,13 +1259,18 @@ fn a_wedged_master_fails_a_big_write_at_its_deadline_and_the_next_call_is_fresh(
     );
 
     let pid = std::fs::read_to_string(&master_pid).expect("the fake master started");
-    let alive = std::process::Command::new("kill")
-        .args(["-0", pid.trim()])
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-    assert!(!alive, "the wedged master {pid} was torn down");
+    // Torn down is observed by a bounded poll: the kill is sent at the deadline and the exit
+    // is seen a moment later on a loaded box. A zombie is gone.
+    let alive = || {
+        std::fs::read_to_string(format!("/proc/{}/stat", pid.trim()))
+            .map(|t| !t.contains(") Z "))
+            .unwrap_or(false)
+    };
+    let gone_by = Instant::now() + Duration::from_secs(30);
+    while alive() && Instant::now() < gone_by {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(!alive(), "the wedged master {pid} was torn down");
 
     std::fs::remove_file(&marker).expect("the host answers again");
     assert_eq!(
