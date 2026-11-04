@@ -707,7 +707,7 @@ fn a_round_embeds_only_what_changed() {
         waits.compose(&rows, &brief);
         eprintln!("DBG waits {:?}", embedder.spent());
         done.compose(&records, &brief);
-        eprintln!("DBG done {:?}", embedder.spent());
+        eprintln!("DBG done {:?} fault {:?}", embedder.spent(), embedder.take_fault());
         let after = embedder.spent();
         (
             after.embedded - before.embedded,
