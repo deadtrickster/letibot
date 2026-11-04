@@ -2964,6 +2964,43 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// A file inside a directory that is masked as an empty tmpfs is already hidden, and bwrap
+    /// cannot make a mount point in that read-only tmpfs: no mount is emitted for it.
+    #[test]
+    fn nothing_is_mounted_inside_a_directory_masked_as_empty() {
+        let dir = std::env::temp_dir().join(format!("letibot-wide-in-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let home = dir.join("home");
+        let store = home.join(".local/share/letibot");
+        std::fs::create_dir_all(&store).expect("a fake store");
+        let lease = store.join("room-x.lease");
+        std::fs::write(&lease, "").expect("a fake lease");
+        std::fs::create_dir_all(dir.join("project")).expect("a project");
+        let view = ViewSpec::project_only(dir.join("project"))
+            .with_home(HomeView::Dir(home.clone()))
+            .wide()
+            .masking([store.clone()])
+            .hiding(lease.clone());
+        let joined = build_argv_with(
+            Path::new("/usr/bin/bwrap"),
+            &view,
+            &Egress::Denied,
+            &ConfinePlan {
+                cwd: &dir,
+                env: &[],
+            },
+            Session::Detached,
+        )
+        .join(" ");
+        let s = store.display().to_string();
+        assert!(joined.contains(&format!("--tmpfs {s} ")), "{joined}");
+        assert!(
+            !joined.contains(&format!("/dev/null {}", lease.display())),
+            "a mount under the emptied store fails every spawn: {joined}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// One list, two renderings: the Linux seat's masks are the paths the macOS profile denies,
     /// over the same home, so a store added to one cannot be missing from the other.
     #[test]
