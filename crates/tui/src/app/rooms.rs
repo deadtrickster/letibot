@@ -83,7 +83,13 @@ pub(crate) struct RoomsView {
     pub read_to: BTreeMap<String, u64>,
     /// The newest `seq` shown per channel key.
     pub seen: BTreeMap<String, u64>,
-    pub sel: usize,
+    /// The selected channel by identity, never by position: a poll replaces `rows` wholesale,
+    /// so a room arriving ahead of the current one would move an index and send the next line
+    /// to another channel.
+    pub sel: Option<Chan>,
+    /// The channel that vanished while selected, named so the view can say so. `None` until a
+    /// poll drops the selected channel, cleared by the next explicit move.
+    pub gone: Option<String>,
     pub roster_open: bool,
     pub roster: BTreeMap<String, Vec<Member>>,
     pub next_poll_ms: u64,
@@ -129,9 +135,11 @@ impl RoomsView {
         out
     }
 
-    pub(crate) fn selected(&self) -> Chan {
+    /// The selected channel, if it is still a channel: a poll that dropped it selects nothing
+    /// rather than landing the next line on whichever channel took its index.
+    pub(crate) fn selected(&self) -> Option<Chan> {
         let all = self.channels();
-        all[self.sel.min(all.len() - 1)].clone()
+        self.sel.clone().filter(|c| all.contains(c))
     }
 
     pub(crate) fn key(c: &Chan) -> String {
@@ -192,17 +200,19 @@ impl RoomsView {
     }
 
     /// What one poll asks: the room list with counts, the selected channel's news, and the DMs.
+    /// With nothing selected - the channel went away - only the list is asked for.
     pub(crate) fn poll_ops(&self) -> Vec<Value> {
         let mut ops = vec![json!({"type": "rooms"})];
         match self.selected() {
-            Chan::Room(id) => {
+            Some(Chan::Room(id)) => {
                 ops.push(self.read_op(&id));
                 ops.push(self.read_op("dm"));
                 if self.roster_open {
                     ops.push(json!({"type": "roster", "room": id}));
                 }
             }
-            Chan::Dm(_) => ops.push(self.read_op("dm")),
+            Some(Chan::Dm(_)) => ops.push(self.read_op("dm")),
+            None => {}
         }
         ops
     }
@@ -210,7 +220,7 @@ impl RoomsView {
     /// Mark the selected channel shown, and say how far the inbox cursor may move. The cursor is
     /// one number for every channel, so it stays put while a message nobody has seen sits past it.
     pub(crate) fn shown(&mut self) -> Option<u64> {
-        let c = self.selected();
+        let c = self.selected()?;
         let top = self.messages(&c).last().map(|m| m.seq)?;
         self.seen.insert(Self::key(&c), top);
         let held_room = self.rows.iter().any(|r| {
@@ -268,6 +278,10 @@ impl App {
     pub(crate) fn open_rooms(&mut self) -> Option<Action> {
         self.rooms.heard = false;
         self.rooms.error = None;
+        self.rooms.gone = None;
+        // A fresh open starts on the host room, and so does a reopen after the selected channel
+        // went away: `gone` is a state of one selection, not of the view.
+        self.rooms.sel.get_or_insert(Chan::Room("host".into()));
         self.rooms.next_poll_ms = self.now_ms.saturating_add(POLL_MS);
         let mut ops = self.rooms.poll_ops().into_iter();
         let first = ops.next()?;
@@ -298,6 +312,19 @@ impl App {
             "rooms" => {
                 if let Ok(r) = serde_json::from_value(rows(&reply)) {
                     self.rooms.rows = r;
+                    // A room the coordinator dropped takes its channel with it. Say so and
+                    // select nothing: the next line must not land on whichever channel took
+                    // its place in the list.
+                    let gone = self
+                        .rooms
+                        .sel
+                        .as_ref()
+                        .is_some_and(|c| !self.rooms.channels().contains(c));
+                    if gone {
+                        let name = Self::rooms_name(self.rooms.sel.as_ref().expect("just checked"));
+                        self.rooms.gone = Some(name);
+                        self.rooms.sel = None;
+                    }
                     self.rooms.heard = true;
                     self.rooms.error = None;
                 }
@@ -341,15 +368,41 @@ impl App {
         }
     }
 
+    /// A channel's name in a sentence: the room id a project channel is known by, the host room
+    /// as itself, a DM by its peer.
+    pub(crate) fn rooms_name(c: &Chan) -> String {
+        match c {
+            Chan::Room(id) => match id.strip_prefix("project/") {
+                Some(key) => format!("#{key}"),
+                None => id.clone(),
+            },
+            Chan::Dm(p) => format!("dm with {p}"),
+        }
+    }
+
     /// A submitted line while the view is up: a message to the selected channel.
     pub(crate) fn rooms_say(&mut self, text: &str) -> Option<Action> {
         let (thread, body) = split_reply(text.trim());
         if body.is_empty() {
             return None;
         }
+        let Some(chan) = self.rooms.selected() else {
+            let which = self
+                .rooms
+                .gone
+                .clone()
+                .unwrap_or_else(|| "the channel".into());
+            // The line is held, not swallowed: nothing was sent, so the words are still the
+            // operator's to send somewhere real.
+            self.set_composer(text.trim());
+            self.say(&format!(
+                "{which} is gone, so nothing is selected - up or down picks a channel"
+            ));
+            return None;
+        };
         self.rooms.said += 1;
         let id = format!("op-{}-{}", self.now_ms, self.rooms.said);
-        let op = match self.rooms.selected() {
+        let op = match chan {
             Chan::Room(room) => {
                 json!({"type": "say", "id": id, "room": room, "text": body, "thread": thread})
             }
@@ -378,20 +431,28 @@ impl App {
             self.queued.extend(open);
         }
         self.rooms.fresh.insert(name.to_string());
-        let at = self
-            .rooms
-            .channels()
-            .iter()
-            .position(|c| *c == Chan::Dm(name.to_string()));
-        self.rooms.sel = at.unwrap_or(0);
+        self.rooms.sel = Some(Chan::Dm(name.to_string()));
+        self.rooms.gone = None;
         self.rooms_say(text)
     }
 
-    /// Move to the next or previous channel.
+    /// Move to the next or previous channel. A move is explicit, so from nothing selected it
+    /// lands on the first channel (down) or the last (up).
     pub(crate) fn rooms_step(&mut self, up: bool) {
-        let n = self.rooms.channels().len();
-        let at = self.rooms.sel.min(n - 1);
-        self.rooms.sel = if up { (at + n - 1) % n } else { (at + 1) % n };
+        let all = self.rooms.channels();
+        let n = all.len();
+        let at = self
+            .rooms
+            .selected()
+            .and_then(|c| all.iter().position(|x| *x == c));
+        let next = match at {
+            Some(i) if up => (i + n - 1) % n,
+            Some(i) => (i + 1) % n,
+            None if up => n - 1,
+            None => 0,
+        };
+        self.rooms.sel = Some(all[next].clone());
+        self.rooms.gone = None;
         self.scroll_rooms_to_tail();
         self.rooms.next_poll_ms = 0;
         self.rooms_shown();

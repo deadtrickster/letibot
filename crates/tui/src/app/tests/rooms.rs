@@ -164,6 +164,83 @@ fn a_line_in_a_project_room_goes_to_that_room() {
     assert_eq!(op["room"], PROJECT);
 }
 
+/// The selection is the channel, not its index: a poll that lists a new room ahead of the
+/// current one must not move what Enter posts to.
+#[test]
+fn a_room_arriving_ahead_of_the_selection_does_not_move_it() {
+    let mut a = opened(1_000);
+    reply(
+        &mut a,
+        rooms_reply(&[("host", 2, 0, 0), (PROJECT, 2, 0, 0)]),
+    );
+    a.key(Key::Down);
+    a.take_actions();
+    assert_eq!(
+        a.rooms.selected(),
+        Some(crate::app::rooms::Chan::Room(PROJECT.into()))
+    );
+    // A new project lands first in the coordinator's list, which shifts every index.
+    let other = "project/000000000001";
+    reply(
+        &mut a,
+        rooms_reply(&[("host", 2, 0, 0), (other, 1, 0, 0), (PROJECT, 2, 0, 0)]),
+    );
+    a.set_composer("still here?");
+    let Some(Action::RoomChat { op }) = a.key(Key::Enter) else {
+        panic!("no chat request");
+    };
+    assert_eq!(op["room"], PROJECT, "the selection moved with the index");
+    assert_eq!(
+        a.rooms.selected(),
+        Some(crate::app::rooms::Chan::Room(PROJECT.into()))
+    );
+}
+
+/// A poll that drops the selected room selects nothing, says which channel went, and a line
+/// goes nowhere rather than to whichever channel took its index.
+#[test]
+fn a_channel_that_disappears_selects_nothing_and_says_so() {
+    let mut a = opened(1_000);
+    reply(
+        &mut a,
+        rooms_reply(&[("host", 2, 0, 0), (PROJECT, 2, 0, 0)]),
+    );
+    reply(
+        &mut a,
+        history(PROJECT, vec![msg(3, PROJECT, "s-a", "session", "hi")]),
+    );
+    a.key(Key::Down);
+    a.take_actions();
+
+    // The room is gone on the next poll: the project's last session left.
+    reply(&mut a, rooms_reply(&[("host", 2, 0, 0)]));
+    assert_eq!(
+        a.rooms.selected(),
+        None,
+        "another channel was selected instead"
+    );
+    assert_eq!(a.rooms.gone.as_deref(), Some("#ab12cd34ef56"));
+    let rows = screen(&mut a, 80);
+    let all = rows.join("\n");
+    assert!(all.contains("#ab12cd34ef56 is gone"), "{all}");
+
+    // The line goes nowhere, and the poll asks only for the list.
+    a.set_composer("anyone?");
+    assert_eq!(a.key(Key::Enter), None);
+    assert_eq!(a.input(), "anyone?", "the words are held, not swallowed");
+    assert!(
+        ops(&mut a).is_empty(),
+        "a poll read a channel that is not selected"
+    );
+    // An explicit move lands somewhere real and clears the sentence.
+    a.key(Key::Down);
+    assert_eq!(a.rooms.gone, None);
+    assert_eq!(
+        a.rooms.selected(),
+        Some(crate::app::rooms::Chan::Room("host".into()))
+    );
+}
+
 #[test]
 fn greater_than_and_a_number_answers_that_message() {
     let mut a = opened(1_000);
@@ -229,7 +306,7 @@ fn slash_dm_sends_and_selects_the_peer() {
     assert!(a.is_open(Surface::Rooms));
     assert_eq!(
         a.rooms.selected(),
-        crate::app::rooms::Chan::Dm("s-z".into())
+        Some(crate::app::rooms::Chan::Dm("s-z".into()))
     );
 }
 
@@ -251,12 +328,12 @@ fn switching_channel_reads_the_new_one_at_once() {
     a.key(Key::Up);
     assert_eq!(
         a.rooms.selected(),
-        crate::app::rooms::Chan::Room("host".into())
+        Some(crate::app::rooms::Chan::Room("host".into()))
     );
     a.key(Key::Up);
     assert_eq!(
         a.rooms.selected(),
-        crate::app::rooms::Chan::Room(PROJECT.into())
+        Some(crate::app::rooms::Chan::Room(PROJECT.into()))
     );
 }
 

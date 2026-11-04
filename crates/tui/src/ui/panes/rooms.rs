@@ -208,27 +208,39 @@ impl RoomsView {
 impl App {
     fn rooms_left(&self, lw: usize, room: usize) -> Vec<Line> {
         let channels = self.rooms.channels();
-        let sel = self.rooms.sel.min(channels.len() - 1);
+        let picked = self.rooms.selected();
         let mut lines = vec![padded(pane::faint(trim_to("channels", lw)), lw)];
         let mut sel_row = 0;
         let mut dm_heading = false;
-        for (i, c) in channels.iter().enumerate() {
+        for c in channels.iter() {
             if matches!(c, Chan::Dm(_)) && !dm_heading {
                 dm_heading = true;
                 lines.push(padded(pane::faint("direct messages"), lw));
             }
-            if i == sel {
+            let is_sel = picked.as_ref() == Some(c);
+            if is_sel {
                 sel_row = lines.len();
             }
-            let unread = if i == sel { 0 } else { self.rooms.unread(c) };
-            lines.push(entry(c, i == sel, unread, lw));
+            let unread = if is_sel { 0 } else { self.rooms.unread(c) };
+            lines.push(entry(c, is_sel, unread, lw));
         }
         let skip = (sel_row + 1).saturating_sub(room);
         lines.into_iter().skip(skip).take(room).collect()
     }
 
     fn rooms_body(&self, rw: usize) -> Vec<Line> {
-        let c = self.rooms.selected();
+        let Some(c) = self.rooms.selected() else {
+            // The selected channel is gone rather than empty, and the sentence says which:
+            // an empty channel draws "nothing here yet", which would be a lie here.
+            let which = self
+                .rooms
+                .gone
+                .clone()
+                .unwrap_or_else(|| "the channel".into());
+            return vec![pane::faint(format!(
+                "  {which} is gone - up or down selects a channel"
+            ))];
+        };
         if self.rooms.roster_open {
             let key = match &c {
                 Chan::Room(id) => id.as_str(),
@@ -286,8 +298,11 @@ impl App {
         // Newest at the bottom, as in a chat.
         let mut right: Vec<Line> = vec![Line::default(); chat_room - shown.len()];
         right.append(&mut shown);
-        let c = self.rooms.selected();
-        right.insert(0, self.rooms.header(&c, rw));
+        let header = self
+            .rooms
+            .selected()
+            .map_or_else(|| pane::title("no channel"), |c| self.rooms.header(&c, rw));
+        right.insert(0, header);
         right.push(self.rooms.footer(rw));
 
         let rows: Vec<Line> = left
