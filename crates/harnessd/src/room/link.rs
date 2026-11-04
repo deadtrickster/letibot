@@ -470,7 +470,9 @@ impl SessionRoom {
         *self.seen.lock().unwrap_or_else(|e| e.into_inner()) = Some(instance);
         let snap = self.read_room();
         *self.room.lock().unwrap_or_else(|e| e.into_inner()) = Some(snap);
-        Ok(format!("{said} — and it begins with no items at all"))
+        Ok(format!(
+            "{said} — and the queues are read back from the store beside the socket"
+        ))
     }
 
     /// Watch the room's instance, and write the note nobody asked for. An instance that is not
@@ -1681,7 +1683,10 @@ mod tests {
         // No lease: nothing was running. The act is a start, and the note says so - the key did
         // not empty the queue, the room had already gone.
         let said = me.restart().expect("the supervisor answers");
-        assert!(said.contains("no items at all"), "{said}");
+        assert!(
+            said.contains("read back from the store"),
+            "the act says where the queues come back from: {said}"
+        );
         let frames = rec.0.lock().unwrap().clone();
         assert_eq!(frames.len(), 1, "one act, one frame");
         assert_eq!(frames[0].by, "s-a");

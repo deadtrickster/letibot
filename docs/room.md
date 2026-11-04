@@ -127,7 +127,8 @@ An answer to a post is a `post` under the same tag. The item and its tag are the
 
 `/pane room/room` draws one line per tag, one row per item (claimant, age of its beat, abandonment
 count), the open questions, the arbiter and who is connected, the project's tree, and the room's
-identity sentence: *started T ago and holding N item(s)*, which also says that the room keeps no store.
+identity sentence: *started T ago and holding N item(s)*, which also says whether the room keeps
+a store.
 The daemon's feed carries the newest chat the session heard in `chat`, for a pane that draws it.
 
 A row offers only the verbs that would do something there: `claim` on the head, `release` and `abandon`
@@ -517,7 +518,11 @@ project.
 - Liveness is two facts, both given: the beat (it is working) and the caller's word (it is gone). The
   room never asks the OS.
 - One writer: every mutating method is `&mut self`.
-- No durability. A restart empties the queue, the chat rings and the cursors, and the pane says so.
+- The queues are kept in an append-only store beside the socket (`crates/room/src/store.rs`, one
+  file for every project's room): a restart brings the items, the leases and the open questions
+  back, and a claim whose beat stopped while the coordinator was down is taken back on reload by
+  the same sweep the clock runs. Membership, connections and who has spoken are not kept - the
+  daemons say all three again when they reconnect. Chat keeps its own store (`chat.rs`).
 
 ## Still owed
 

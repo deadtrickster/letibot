@@ -1,5 +1,6 @@
-//! A restart leaves a note: when the room began again, and why. The room's items are memory only (chat has a store), so a
-//! note on the socket's own directory is the only place a person can read what happened.
+//! A restart leaves a note: when the room began again, and why. The note is a person's reading -
+//! the queues themselves are kept in the store beside the socket (`crate::store`), so what this
+//! file holds is the one thing no store can say: what happened, and who asked for it.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -87,7 +88,7 @@ impl Marker {
 
     /// The sentence a pane prints. The age is measured from the act, so a restart asked for a minute ago
     /// and finished a second ago reads as a minute - the identity sentence already says how long the
-    /// room has been up. Every arm ends with *a restart begins with no items at all*.
+    /// room has been up, and it is the one that says whether the queues were kept.
     pub fn sentence(&self, now: u64) -> String {
         let age = duration(now.saturating_sub(self.at_ms));
         let mut said = match self.cause {
@@ -106,7 +107,7 @@ impl Marker {
         if !self.says.is_empty() {
             said.push_str(&format!(" ({})", self.says));
         }
-        said.push_str(". A restart begins with no items at all.");
+        said.push('.');
         said
     }
 
@@ -295,8 +296,8 @@ mod tests {
 
         for said in [&asked, &daemon, &crashed] {
             assert!(
-                said.contains("A restart begins with no items at all"),
-                "every one says what survives: {said}"
+                said.ends_with('.'),
+                "every one ends clean, with nothing appended after its own words: {said}"
             );
         }
         assert_ne!(asked, daemon);

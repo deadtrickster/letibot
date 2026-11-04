@@ -287,9 +287,10 @@ pub enum Response {
     /// SERVER's, not the room's: the state machine cannot say what a process is, who arbitrates it or who
     /// is connected to it, and [`crate::Server`]'s dispatch fills them in one place.
     Room {
-        /// `Server::identity()`: *started T ago and holding N item(s)*, and the sentence saying the
-        /// room keeps no store. This is the field that makes *restarted clean* and *restarted empty*
-        /// two readings, because an in-memory room is empty at every start.
+        /// `Server::identity()`: *started T ago and holding N item(s)*, and the sentence saying
+        /// whether the room keeps a store. With a store this is the field that says the queues came
+        /// back; without one it is what makes *restarted clean* and *restarted empty* two readings,
+        /// because an in-memory room is empty at every start.
         identity: String,
         /// The session that arbitrates this room, when one is named.
         arbiter: Option<String>,

@@ -1,5 +1,6 @@
-//! The coordinator: a whole `harnessd` whose only job is the room - its own socket, no project
-//! no store. Lease, then bind, then refuse if no model can arbitrate: that order is the point, and
+//! The coordinator: a whole `harnessd` whose only job is the room - its own socket, no project,
+//! no session store; the queues and the chat live in files beside the socket. Lease, then bind,
+//! then refuse if no model can arbitrate: that order is the point, and
 //! a room nobody arbitrates is a queue that freezes. `docs/room.md` holds the argument.
 
 use std::collections::BTreeSet;
@@ -20,8 +21,9 @@ pub const TIE_BREAKER_EVERY_MS: u64 = 2_000;
 /// loaded: a coordinator with no model must not spend a vocabulary load to find out.
 pub fn configure(cfg: &mut Config) -> Result<(), String> {
     cfg.room = true;
-    // No store, and it is the whole point. The room's state is in memory; `sessions.db` is the
-    // operator's and shared by every daemon, and this one has no business in it.
+    // No session store, and it is the whole point. `sessions.db` is the operator's and shared by
+    // every daemon, and this one has no business in it; the room's own queues live in a file
+    // beside the socket (`super::items_path`), not in a session store.
     cfg.store = None;
     // One session, derived from the box, so `letibot --session host` always reaches the agent
     // that arbitrates this machine.
@@ -65,8 +67,8 @@ pub fn configure(cfg: &mut Config) -> Result<(), String> {
     cfg.allow_bash = false;
     cfg.serve_queues = false;
     // And it does not idle out. A folder's daemon can exit because the next `leticode` resumes
-    // it from the store; a coordinator has no store, so an idle exit would be a room that silently
-    // emptied overnight and every session's `room` tool would find no socket.
+    // it from the store; a coordinator has no session store, so an idle exit would be a room that
+    // silently emptied overnight and every session's `room` tool would find no socket.
     cfg.idle_exit_after = None;
     // The model: `--model`, else `providers.toml`, else deepseek - the operator's *"a tie
     // breaker agent (model configurable with deepseek as default)"*. The arg loop already applied
@@ -140,6 +142,9 @@ impl Coordinator {
         })?;
         if let Some(chat) = super::chat_path() {
             server.with_chat_store(&chat);
+        }
+        if let Some(items) = super::items_path() {
+            server.with_item_store(&items);
         }
         server.with_arbiter(session).with_lease(lease.clone());
         eprintln!("harnessd: {}", server.identity());
@@ -280,7 +285,7 @@ mod tests {
             return;
         }
         assert!(cfg.room);
-        assert_eq!(cfg.store, None, "the room keeps no store");
+        assert_eq!(cfg.store, None, "the room keeps no session store");
         assert_eq!(cfg.session_id, super::super::session_id());
         assert_ne!(
             cfg.socket, socket,

@@ -4,10 +4,12 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 
 use crate::item::{Abandonment, Claim, Item, Speaker, State, Wait, Why, duration};
+use crate::store::Store;
 
 /// Ninety seconds, the merge queue's own number: eighteen missed beats at a five second beat, so a
 /// daemon held up by a slow write is not mistaken for a dead one, and a dead one is replaced within
@@ -42,6 +44,13 @@ pub struct Room {
     members: Vec<crate::tree::Member>,
     replay: BTreeMap<(String, String), Outcome>,
     replay_order: VecDeque<(String, String)>,
+    /// Which project's room this is, on store records only: the room's own name is the server's
+    /// fact (a [`Question`] carries it filled by the server), but a record must say whose queue
+    /// the row is, because every project's room shares one file.
+    project: String,
+    /// The store every change is appended to, or `None` for a room that keeps nothing - the
+    /// state machine alone, as every test that does not ask for durability drives it.
+    store: Option<Arc<Mutex<Store>>>,
 }
 
 /// What a verb did: the item as it now stands, and what a subscriber should be told. `events` is
@@ -546,11 +555,47 @@ impl Room {
             members: Vec::new(),
             replay: BTreeMap::new(),
             replay_order: VecDeque::new(),
+            project: String::new(),
+            store: None,
         }
     }
 
     pub fn lease_ms(&self) -> u64 {
         self.lease_ms
+    }
+
+    /// Load this project's rows from the store and keep the store from now on. A claim whose beat
+    /// stopped while the coordinator was down is taken back by the same [`Room::sweep`] the clock
+    /// runs, so the count, the reason and any raise are the live ones and the take-back is
+    /// recorded. The sweep's events are the caller's to say: at a reload no connection exists to
+    /// route them to.
+    pub fn load(&mut self, store: &Arc<Mutex<Store>>, project: &str, now: u64) -> Vec<Event> {
+        self.project = project.to_string();
+        {
+            let s = store.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(rows) = s.items_in(project) {
+                self.next_item = self
+                    .next_item
+                    .max(rows.iter().map(|i| i.id).max().unwrap_or(0));
+                self.items = rows.into_iter().map(|i| (i.id, i)).collect();
+            }
+            if let Some(rows) = s.questions_in(project) {
+                self.next_question = self
+                    .next_question
+                    .max(rows.iter().map(|q| q.id).max().unwrap_or(0));
+                self.questions = rows;
+            }
+        }
+        self.store = Some(Arc::clone(store));
+        self.sweep(now)
+    }
+
+    /// [`Room::load`], once: a room that already keeps a store has already loaded, and loading
+    /// again would trade its live rows for the older shadow.
+    pub fn ensure_loaded(&mut self, store: &Arc<Mutex<Store>>, project: &str, now: u64) {
+        if self.store.is_none() {
+            self.load(store, project, now);
+        }
     }
 
     /// Replace the room's membership with the tree the daemon just described: a replacement and
@@ -611,6 +656,7 @@ impl Room {
         };
         self.items.insert(id, item.clone());
         self.met(who);
+        self.put(&item);
         let out = Outcome {
             item,
             events: vec![Event::Posted {
@@ -764,6 +810,7 @@ impl Room {
             claim.beat_ms = now;
         }
         let it = it.clone();
+        self.put(&it);
         self.met(who);
         let out = Outcome {
             item: it,
@@ -818,6 +865,7 @@ impl Room {
             };
         }
         let it = it.clone();
+        self.put(&it);
         self.met(who);
         let out = Outcome {
             item: it,
@@ -871,6 +919,7 @@ impl Room {
             };
         }
         let it = it.clone();
+        self.put(&it);
         self.met(who);
         let out = Outcome {
             item: it,
@@ -916,6 +965,7 @@ impl Room {
         };
         it.question = None;
         let it = it.clone();
+        self.put(&it);
         self.met(who);
         let out = Outcome {
             item: it.clone(),
@@ -1025,11 +1075,14 @@ impl Room {
         let q = self.ask_disputed(&it, who, says, now);
         self.items.get_mut(&item).expect("checked above").question = Some(q.id);
         self.met(who);
+        let it = self.items[&item].clone();
+        self.put(&it);
+        let tag = it.tag.clone();
         let out = Outcome {
-            item: self.items[&item].clone(),
+            item: it,
             events: vec![Event::Asked {
                 item,
-                tag: it.tag.clone(),
+                tag,
                 question: q.id,
             }],
         };
@@ -1134,7 +1187,11 @@ impl Room {
         if let Some(q) = self.questions.iter_mut().find(|q| q.id == question) {
             q.answer = Some(ruling);
         }
+        if let Some(answered) = self.question(question).cloned() {
+            self.put_question(&answered);
+        }
         let it = self.items[&item].clone();
+        self.put(&it);
         Ok(Outcome {
             item: it.clone(),
             events: vec![Event::Ruled {
@@ -1345,6 +1402,7 @@ impl Room {
         };
         it.question = None;
         let it = it.clone();
+        self.put(&it);
         self.met(who);
         Ok(Outcome {
             item: it.clone(),
@@ -1386,10 +1444,9 @@ impl Room {
         }
         // Read it back after the raise, so the outcome carries the question id too: a caller that
         // holds an item with `question: None` would draw a frozen item as claimable.
-        Outcome {
-            item: self.items[&item].clone(),
-            events,
-        }
+        let it = self.items[&item].clone();
+        self.put(&it);
+        Outcome { item: it, events }
     }
 
     /// Build the question an item at the threshold asks.
@@ -1441,6 +1498,7 @@ impl Room {
             answer: None,
         };
         self.questions.push(q.clone());
+        self.put_question(&q);
         q
     }
 
@@ -1483,6 +1541,7 @@ impl Room {
             answer: None,
         };
         self.questions.push(q.clone());
+        self.put_question(&q);
         q
     }
 
@@ -1516,6 +1575,26 @@ impl Room {
         self.seen
             .entry(who.session.clone())
             .or_insert_with(|| who.parent.clone());
+    }
+
+    /// Append the item as it now stands, if the room keeps a store. Every state change ends in a
+    /// put, so the file cannot drift from the room; the lock is taken with `into_inner` because a
+    /// poisoned sibling would otherwise cost every verb its durability for no gain.
+    fn put(&self, item: &Item) {
+        let Some(store) = &self.store else { return };
+        store
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .put_item(&self.project, item.clone());
+    }
+
+    /// Append the question as it now stands - asked, or answered.
+    fn put_question(&self, question: &Question) {
+        let Some(store) = &self.store else { return };
+        store
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .put_question(&self.project, question.clone());
     }
 
     fn replayed(&self, who: &Speaker, request: &str) -> Result<Option<Outcome>, Refused> {

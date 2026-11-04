@@ -9,6 +9,7 @@ pub mod lease;
 pub mod restart;
 pub mod room;
 pub mod server;
+pub mod store;
 pub mod tree;
 pub mod wire;
 
@@ -30,6 +31,7 @@ pub use room::{
     normalise_tag,
 };
 pub use server::Server;
+pub use store::Store;
 pub use tree::{
     DEFAULT_PROJECT, Group, Member, PROJECT_KEY_LEN, is_project_key, project_key, room_name,
     room_of_name, tree_order,

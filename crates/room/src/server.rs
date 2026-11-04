@@ -1,6 +1,7 @@
 //! The coordinator's socket: accept loop, a read loop per connection, the [`Room`] behind one lock, bell routing.
 //! A close is the daemon's liveness and a beat is the work's; they are kept apart.
-//! The room has no durability: [`Server::identity`] tells "restarted clean" from "restarted empty".
+//! Durability is the caller's: [`Server::with_item_store`] keeps the queues across a restart, and
+//! [`Server::identity`] says which of the two rooms this one is.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader, Write};
@@ -136,6 +137,9 @@ struct Inner {
     missed: Mutex<BTreeMap<String, Missed>>,
     /// The chat log, its rings and every principal's inbox cursor. Kept in a store when [`Server::with_chat_store`] was called, memory only otherwise.
     chat: Mutex<Chat>,
+    /// The rooms' items and leases, kept in one store when [`Server::with_item_store`] was called
+    /// and memory only otherwise. Shared by every project's room, so all append to one file.
+    items: Mutex<Option<Arc<Mutex<crate::store::Store>>>>,
     /// Names of externals that have connected, so a message to one that is away is not refused.
     externals: Mutex<BTreeSet<String>>,
     /// The principals this room has armed an inbox cursor for - [`MAX_PRINCIPALS`], or what a test
@@ -227,6 +231,7 @@ impl Server {
                 lease: Mutex::new(None),
                 missed: Mutex::new(BTreeMap::new()),
                 chat: Mutex::new(Chat::new()),
+                items: Mutex::new(None),
                 externals: Mutex::new(BTreeSet::new()),
                 armed: Mutex::new(BTreeSet::new()),
                 pending: Mutex::new(BTreeMap::new()),
@@ -246,10 +251,22 @@ impl Server {
     /// sentence says so.
     fn with_room<R>(&self, project: &str, f: impl FnOnce(&mut Room) -> R) -> R {
         let lease_ms = self.inner.lease_ms;
+        // A room made after the store was attached loads what the store holds for it on first
+        // touch, so a project nobody has dialled in again still finds its queue.
+        let store = self
+            .inner
+            .items
+            .lock()
+            .expect("the items store lock")
+            .clone();
         let mut rooms = self.inner.rooms.lock().expect("the rooms lock");
-        f(rooms
+        let room = rooms
             .entry(project.to_string())
-            .or_insert_with(|| Room::with_lease_ms(lease_ms)))
+            .or_insert_with(|| Room::with_lease_ms(lease_ms));
+        if let Some(store) = &store {
+            room.ensure_loaded(store, project, now_ms());
+        }
+        f(room)
     }
 
     /// Which projects have a room here, sorted - the default project included, because it is a
@@ -289,6 +306,36 @@ impl Server {
     /// connection, so no message is made against the empty chat it replaces.
     pub fn with_chat_store(&self, path: &Path) -> &Self {
         *self.inner.chat.lock().expect("the chat lock") = Chat::open(path);
+        self
+    }
+
+    /// Keep every room's items and leases in `path`: load what it holds - one room per project it
+    /// knows - and append from now on. Call before the first connection, so no verb is answered
+    /// against the empty rooms it replaces.
+    pub fn with_item_store(&self, path: &Path) -> &Self {
+        self.with_item_store_at(path, now_ms())
+    }
+
+    /// [`Server::with_item_store`] at a clock the caller names, so a test can make a lease stale
+    /// without sleeping one out. A claim whose beat is older than the lease is taken back here,
+    /// by the room's own sweep, and the take-back is recorded.
+    pub fn with_item_store_at(&self, path: &Path, now: u64) -> &Self {
+        let store = Arc::new(Mutex::new(crate::store::Store::open(path)));
+        *self.inner.items.lock().expect("the items store lock") = Some(Arc::clone(&store));
+        // Every project the file holds is rebuilt before the first connection: the tie-breaker
+        // reads open questions at start, so a raised item must not wait for its project to dial
+        // in again. The box's own room is loaded too, empty or not, so its verbs persist.
+        let mut projects = store.lock().unwrap_or_else(|e| e.into_inner()).projects();
+        if !projects.iter().any(|p| p == crate::DEFAULT_PROJECT) {
+            projects.push(crate::DEFAULT_PROJECT.to_string());
+        }
+        for project in projects {
+            let mut rooms = self.inner.rooms.lock().expect("the rooms lock");
+            let room = rooms
+                .entry(project.clone())
+                .or_insert_with(|| Room::with_lease_ms(self.inner.lease_ms));
+            room.ensure_loaded(&store, &project, now);
+        }
         self
     }
 
@@ -426,12 +473,24 @@ impl Server {
     /// nothing at every start, so *no items* alone cannot tell a restart from an idle hour.
     pub fn identity_at(&self, project: &str, now: u64) -> String {
         let n = self.inner.served.load(Ordering::SeqCst);
+        // Read before the rooms lock is taken: the items lock is a leaf, and nesting it under
+        // `with_room` would hold two guards for one sentence.
+        let kept = if self
+            .inner
+            .items
+            .lock()
+            .expect("the items store lock")
+            .is_some()
+        {
+            "its queues are kept in a store beside the socket, so a restart brings them back"
+        } else {
+            "the room keeps no store, so a restart begins with no items at all"
+        };
         let items = self.with_room(project, |r| r.all().len());
         let up = now.saturating_sub(self.inner.started_ms);
         format!(
-            "the room of `{}` — started {} ago and holding {items} item(s) since then; the room \
-             keeps no store, so a restart begins with no items at all ({n} connection(s) served \
-             since it started)",
+            "the room of `{}` — started {} ago and holding {items} item(s) since then; {kept} \
+             ({n} connection(s) served since it started)",
             self.room_name_of(project),
             crate::item::duration(up),
         )
@@ -1481,7 +1540,10 @@ impl Server {
 
                 // The close is a fact. This session's daemon is not there any more - it
                 // exited, restarted, or was stopped - so every claim it holds goes back to the
-                // queue NOW, rather than ninety seconds from now.
+                // queue NOW, rather than ninety seconds from now. One close is not that fact: a
+                // stopping coordinator shut this socket itself, and the session's daemon keeps
+                // running and redials the next one. Its claim rides the store, and the lease -
+                // not the coordinator's own exit - decides whether it is still alive.
                 me.inner
                     .conns
                     .lock()
@@ -1502,7 +1564,7 @@ impl Server {
                         .expect("the externals lock")
                         .remove(&speaker.session);
                 }
-                if seat.is_wide() {
+                if seat.is_wide() || me.inner.stop.load(Ordering::SeqCst) {
                     return;
                 }
                 let events = me.with_room(&project, |room| {

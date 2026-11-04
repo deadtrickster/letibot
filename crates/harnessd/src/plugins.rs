@@ -5467,8 +5467,9 @@ mod tests {
             note["sentence"]
                 .as_str()
                 .unwrap_or_default()
-                .contains("no items at all"),
-            "{note}"
+                .contains("by the daemon"),
+            "the note says its cause in its own words - what survives a restart is the identity's \
+             to say, not the note's: {note}"
         );
 
         // A supervisor that refuses is a notice too: the middle register, with the reason.

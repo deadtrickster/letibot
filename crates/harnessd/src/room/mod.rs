@@ -43,6 +43,13 @@ pub fn chat_path() -> Option<PathBuf> {
     socket_path().map(|p| p.with_extension("chat"))
 }
 
+/// The queues' store beside the socket: the same one append-only file for every project's room, so
+/// a coordinator restart keeps the items, the leases and the open questions, and takes back a
+/// claim whose beat stopped while it was down.
+pub fn items_path() -> Option<PathBuf> {
+    socket_path().map(|p| p.with_extension("items"))
+}
+
 /// The coordinator's own session id - `s-room-<host key>`, derived and never invented, so
 /// `letibot --session host` always reaches the one agent that arbitrates this machine.
 pub fn session_id() -> String {

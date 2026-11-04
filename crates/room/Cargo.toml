@@ -12,9 +12,9 @@ repository.workspace = true
 # because the wire is `crate::wire` and its frames are values.
 #
 # Slice 2 added the socket (`server`), the client (`client`) and the coordinator's lease
-# (`lease`) — and `serde_json` with them, because a frame on the wire is one line of JSON. Still
-# no store and no `tokencore`: the coordinator keeps its queue in memory on purpose, and a crate
-# that could reach a database would eventually do it.
+# (`lease`) — and `serde_json` with them, because a frame on the wire is one line of JSON. The
+# queues' own store (`store`) is one append-only file beside the socket, not a database: no
+# `tokencore`, because a crate that could reach one would eventually do it.
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true

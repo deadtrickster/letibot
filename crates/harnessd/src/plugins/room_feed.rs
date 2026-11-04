@@ -605,8 +605,9 @@ mod tests {
         let sentence = marker["sentence"].as_str().unwrap();
         assert!(sentence.contains("`s-a` pressed restart"), "{sentence}");
         assert!(
-            sentence.contains("no items at all"),
-            "what survives a restart is said, not assumed: {sentence}"
+            !sentence.contains("items"),
+            "what survives a restart is the identity sentence's to say - the note that claims it \
+             would deny the store: {sentence}"
         );
 
         // And each of the three causes is a different sentence in the same slot.
