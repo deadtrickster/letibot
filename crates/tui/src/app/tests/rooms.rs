@@ -655,9 +655,9 @@ fn fits(rows: &[String], cols: usize) {
     }
 }
 
-/// The left column of a row: the channel list's width at that screen width.
-fn left_of(row: &str, cols: usize) -> String {
-    let lw = if cols >= 110 { 28 } else { 22 };
+/// The left column of a row, as wide as the frame drew it: the width is content-sized now, so
+/// the test reads what the draw recorded rather than re-deriving it.
+fn left_of(row: &str, lw: usize) -> String {
     // Two columns of gutter, then the list.
     row.chars().skip(2).take(lw).collect()
 }
@@ -734,17 +734,92 @@ fn many_channels_show_their_unread_counts_and_the_selected_one_shows_none() {
         );
         let rows = screen(&mut a, cols);
         fits(&rows, cols);
-        let host = left_of(row_with(&rows, "▸ host"), cols);
+        let lw = a.rooms_left_w;
+        let host = left_of(row_with(&rows, "▸ host"), lw);
         assert_eq!(
             host.trim_end(),
             "▸ host",
             "the selected channel has no count"
         );
-        let one = left_of(row_with(&rows, "#ab12cd34"), cols);
+        let one = left_of(row_with(&rows, "#ab12cd34"), lw);
         assert!(one.trim_end().ends_with(" 3"), "{one:?}");
-        let two = left_of(row_with(&rows, "#ffeeddcc"), cols);
+        let two = left_of(row_with(&rows, "#ffeeddcc"), lw);
         assert!(two.trim_end().ends_with("12"), "{two:?}");
     }
+}
+
+/// Two projects whose keys share a prefix are two channels: the column is sized from the
+/// labels, so both whole keys fit at any ordinary width instead of both reading as the first
+/// eight characters.
+#[test]
+fn two_projects_sharing_a_prefix_are_distinguishable() {
+    for cols in WIDTHS {
+        let mut a = opened(1_000);
+        reply(
+            &mut a,
+            rooms_reply(&[
+                ("host", 1, 0, 0),
+                ("project/ab12cd34ef56", 2, 21, 3),
+                ("project/ab12cd34ef99", 2, 22, 4),
+            ]),
+        );
+        let rows = screen(&mut a, cols);
+        fits(&rows, cols);
+        let one = left_of(row_with(&rows, "#ab12cd34ef56"), a.rooms_left_w);
+        let two = left_of(row_with(&rows, "#ab12cd34ef99"), a.rooms_left_w);
+        assert!(
+            one.trim_end().contains("#ab12cd34ef56"),
+            "{one:?} at {cols}"
+        );
+        assert!(
+            two.trim_end().contains("#ab12cd34ef99"),
+            "{two:?} at {cols}"
+        );
+        assert_ne!(one.trim_end(), two.trim_end(), "the channels read as one");
+    }
+}
+
+/// When the column must cut, it cuts the middle: both names keep their tail, so the two
+/// channels stay distinguishable even at a width no whole key fits in.
+#[test]
+fn a_narrow_pane_cuts_names_keeping_their_ends() {
+    let mut a = opened(1_000);
+    reply(
+        &mut a,
+        rooms_reply(&[
+            ("host", 1, 0, 0),
+            ("project/ab12cd34ef56", 2, 21, 3),
+            ("project/ab12cd34ef99", 2, 22, 4),
+        ]),
+    );
+    let cols = 34;
+    let rows = screen(&mut a, cols);
+    fits(&rows, cols);
+    let lw = a.rooms_left_w;
+    assert!(lw < 13 + 3, "the pane is wide enough to cut nothing: {lw}");
+    let one = left_of(row_with(&rows, "…4ef56"), lw);
+    let two = left_of(row_with(&rows, "…4ef99"), lw);
+    assert!(one.contains('…'), "the name was cut whole: {one:?}");
+    assert_ne!(one.trim_end(), two.trim_end(), "both channels read as one");
+    // The tail is what an end cut would have thrown away, and it is the distinguishing half.
+    assert!(one.contains("ef56"), "{one:?}");
+    assert!(two.contains("ef99"), "{two:?}");
+}
+
+/// The channel header carries the full name whatever the column did to it.
+#[test]
+fn the_channel_header_shows_the_whole_name() {
+    let mut a = opened(1_000);
+    reply(
+        &mut a,
+        rooms_reply(&[("host", 1, 0, 0), ("project/ab12cd34ef99", 2, 21, 3)]),
+    );
+    a.key(Key::Down);
+    // The chat column is wide enough here to hold the whole key, where the cut column never
+    // was: the header is where the full name lives.
+    let rows = screen(&mut a, 80);
+    let all = rows.join("\n");
+    assert!(all.contains("project ab12cd34ef99"), "{all}");
 }
 
 #[test]
@@ -881,7 +956,7 @@ fn a_dm_channel_is_listed_under_direct_messages_with_its_unread_count() {
         let rows = screen(&mut a, cols);
         fits(&rows, cols);
         assert!(rows.join("\n").contains("direct messages"));
-        let entry = left_of(row_with(&rows, "s-a"), cols);
+        let entry = left_of(row_with(&rows, "s-a"), a.rooms_left_w);
         assert!(entry.trim_end().ends_with('1'), "{entry:?}");
 
         a.key(Key::Down);
@@ -889,7 +964,10 @@ fn a_dm_channel_is_listed_under_direct_messages_with_its_unread_count() {
         let all = rows.join("\n");
         assert!(all.contains("dm with s-a"), "{all}");
         assert!(row_with(&rows, "psst").contains("<s-a>"));
-        assert_eq!(left_of(row_with(&rows, "▸ s-a"), cols).trim_end(), "▸ s-a");
+        assert_eq!(
+            left_of(row_with(&rows, "▸ s-a"), a.rooms_left_w).trim_end(),
+            "▸ s-a"
+        );
     }
 }
 

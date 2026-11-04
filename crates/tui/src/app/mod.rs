@@ -777,6 +777,10 @@ pub struct App {
     /// or height of its own.
     pub(crate) pane_len: usize,
     pub(crate) pane_room: usize,
+    /// The channel column's width at the last `/rooms` draw: sized from the labels and the
+    /// pane width, so a test reading a row's left half reads what the frame actually used
+    /// instead of re-deriving it and drifting.
+    pub(crate) rooms_left_w: usize,
     /// How far into an unfolded row's payload the reader has paged, in wrapped display lines from
     /// the head and clamped at draw time. A result can wrap to thousands of lines and the fold's
     /// seam must reveal more of one row, not just allow long rows.
@@ -1327,6 +1331,7 @@ impl App {
             pane_scroll: 0,
             pane_len: 0,
             pane_room: 0,
+            rooms_left_w: 0,
             payload_page: 0,
             payload_max: std::cell::Cell::new(usize::MAX),
             payload_sel: None,

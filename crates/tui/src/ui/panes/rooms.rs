@@ -12,21 +12,59 @@ use rano::style::Role;
 
 const SEP: &str = " │ ";
 
-/// The channel list's width: wide enough for a project's short key and a count.
-fn left_width(w: usize) -> usize {
-    if w >= 110 {
-        28
-    } else if w >= 70 {
-        22
-    } else {
-        (w / 3).max(10)
+/// The channel column's floor: enough for the column's own heading ("direct messages"), so a
+/// short list does not shrink the column into a sliver that cuts every name.
+const LEFT_FLOOR: usize = 16;
+
+impl App {
+    /// The channel column's width: what the widest label and its count need, capped so the
+    /// chat keeps at least half the pane. The labels decide, not a fixed tier - two projects
+    /// whose keys share a prefix must both fit whole at any ordinary width.
+    pub(crate) fn rooms_left_width(&self, w: usize) -> usize {
+        let mut needed = LEFT_FLOOR;
+        for c in self.rooms.channels() {
+            let count = self.rooms.unread(&c).to_string().len();
+            let name = visible_width(&label(&c));
+            needed = needed.max(2 + name + 1 + count);
+        }
+        let cap = (w / 2).saturating_sub(visible_width(SEP) + 1);
+        needed.min(cap.max(12))
     }
+}
+
+/// A name cut to `n` columns, keeping BOTH ends around `…`: two names that share a prefix
+/// stay distinguishable by their tail, which an end cut would take.
+fn cut_keeping_ends(s: &str, n: usize) -> String {
+    if visible_width(s) <= n {
+        return s.to_string();
+    }
+    if n <= 1 {
+        return "…".into();
+    }
+    let budget = n - 1;
+    let chars: Vec<char> = s.chars().collect();
+    let head_at = budget.div_ceil(2);
+    let head: String = chars[..head_at.min(chars.len())].iter().collect();
+    let mut tail: String = if chars.len() > head_at {
+        chars[chars.len() - (budget / 2).min(chars.len() - head_at)..]
+            .iter()
+            .collect()
+    } else {
+        String::new()
+    };
+    // A wide glyph can make the kept ends wider than the column asked for; drop from the tail
+    // until it fits rather than push the count off the column's edge.
+    while visible_width(&format!("{head}…{tail}")) > n && !tail.is_empty() {
+        tail.pop();
+    }
+    format!("{head}…{tail}")
 }
 
 fn label(c: &Chan) -> String {
     match c {
+        // The whole key: the column is cut only when it must be, and the cut keeps the ends.
         Chan::Room(id) => match id.strip_prefix("project/") {
-            Some(key) => format!("#{}", key.chars().take(8).collect::<String>()),
+            Some(key) => format!("#{key}"),
             None => id.clone(),
         },
         Chan::Dm(p) => clean_line(p),
@@ -60,7 +98,7 @@ fn entry(c: &Chan, picked: bool, unread: u64, lw: usize) -> Line {
         String::new()
     };
     let room = lw.saturating_sub(count.len() + 1).max(3);
-    let name = trim_to(&format!("{} {}", pane::mark(picked), label(c)), room);
+    let name = cut_keeping_ends(&format!("{} {}", pane::mark(picked), label(c)), room);
     let mut l = Line::new(vec![Span::raw(name)]);
     let pad = lw.saturating_sub(l.width() + count.len());
     l.push(Span::raw(" ".repeat(pad)));
@@ -318,7 +356,10 @@ impl App {
                 palette,
             );
         }
-        let lw = left_width(w);
+        let lw = self.rooms_left_width(w);
+        // Recorded for the same reason click arithmetic is: a test reading the column must
+        // not re-derive a width the frame already computed.
+        self.rooms_left_w = lw;
         let rw = w.saturating_sub(lw + visible_width(SEP));
         let chat_room = room - 2;
 
