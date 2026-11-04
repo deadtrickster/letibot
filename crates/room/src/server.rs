@@ -7,7 +7,8 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
 
 use crate::chat::{self, Chat, Seat};
@@ -20,8 +21,20 @@ use crate::wire::{Answer, ROOM_PROTOCOL_VERSION, Request, Response};
 /// beat stopped is taken back promptly and a beat that is one pass late is not mistaken for death.
 pub const DEFAULT_SWEEP_EVERY_MS: u64 = 5_000;
 
-/// One connection's identity - what its `Hello` said, the room it is in, and the writer a push
-/// goes out on.
+/// How many frames one connection may have waiting for its writer thread. A frame is at most a
+/// chat message's 4 000 bytes plus its envelope, so this is roughly a megabyte of memory per
+/// connection - the slack a reader is allowed to fall behind by, and the point at which it is
+/// not reading any more.
+pub const OUTBOX: usize = 256;
+
+/// How long one frame may take to reach a reader before its connection is ended. A local socket
+/// that cannot take 4 KiB in this long has a peer that is not reading, and waiting longer means
+/// the room's own writer threads pile up behind it.
+pub const WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// One connection's identity - what its `Hello` said, the room it is in, and the queue its writer
+/// thread drains. Nothing writes to a peer's socket from another thread: a reader that has stopped
+/// reading must not be able to stop the room.
 struct Conn {
     who: Speaker,
     seat: Seat,
@@ -29,7 +42,45 @@ struct Conn {
     /// every frame from this connection is answered under. A connection that moved rooms would be a
     /// session in two projects; there is no verb for that and there does not need to be one.
     project: String,
-    writer: Mutex<UnixStream>,
+    /// Frames for this connection, in the order they were made. Bounded: a full queue is a reader
+    /// that has stopped, and it is disconnected rather than waited for.
+    outbox: SyncSender<Response>,
+    /// The socket, kept for the one act another thread may do to this connection - ending it.
+    socket: UnixStream,
+    /// Set by the first failure, so one broken connection says its reason once.
+    gone: AtomicBool,
+}
+
+impl Conn {
+    /// Hand a frame to this connection's writer thread. Never blocks: the room's clock, its
+    /// router and every author go on to the next connection whatever this one is doing.
+    fn send(&self, response: Response) {
+        if self.gone.load(Ordering::SeqCst) {
+            return;
+        }
+        match self.outbox.try_send(response) {
+            Ok(()) => {}
+            Err(std::sync::mpsc::TrySendError::Full(_)) => {
+                self.give_up(&format!("{OUTBOX} frames were waiting and it took none"))
+            }
+            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                self.give_up("its writer thread had already gone")
+            }
+        }
+    }
+
+    /// End this connection, saying why. The shutdown is what ends the read loop too: it is blocked
+    /// on a frame that will never come, and a reader nobody closed is a thread nobody can stop.
+    fn give_up(&self, why: &str) {
+        if self.gone.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        eprintln!(
+            "room: disconnecting `{}` from `{}` - {why}; the other connections are unaffected",
+            self.who.session, self.project
+        );
+        let _ = self.socket.shutdown(std::net::Shutdown::Both);
+    }
 }
 
 /// The server's own state, shared by the accept loop, the read loops and the clock.
@@ -42,6 +93,9 @@ struct Inner {
     lease_ms: u64,
     conns: Mutex<BTreeMap<u64, Arc<Conn>>>,
     next_conn: AtomicU64,
+    /// How many frames one connection may have waiting - [`OUTBOX`], or what a test set. Atomic
+    /// because it is read at every accept and written by nothing but a test, before it connects.
+    outbox: AtomicUsize,
     path: PathBuf,
     started_ms: u64,
     sweep_every_ms: u64,
@@ -128,6 +182,7 @@ impl Server {
                 lease_ms,
                 conns: Mutex::new(BTreeMap::new()),
                 next_conn: AtomicU64::new(0),
+                outbox: AtomicUsize::new(OUTBOX),
                 path: path.to_path_buf(),
                 started_ms: now_ms(),
                 sweep_every_ms: sweep_every_ms.max(100),
@@ -268,6 +323,15 @@ impl Server {
     /// daemon that wants its own head to speak as the person) reads instead of the file.
     pub fn operator_token(&self) -> String {
         self.inner.operator_token.clone()
+    }
+
+    /// Shrink one connection's queue of frames - a test's door onto [`OUTBOX`], so a reader that
+    /// stops can be driven to the bound in a few dozen frames instead of a megabyte.
+    pub fn with_outbox(&self, frames: usize) -> &Self {
+        // Zero is a rendezvous channel, which would make every connection a race; one frame is the
+        // smallest bound that still means *a queue*.
+        self.inner.outbox.store(frames.max(1), Ordering::SeqCst);
+        self
     }
 
     pub fn started_ms(&self) -> u64 {
@@ -588,11 +652,7 @@ impl Server {
             .expect("the connections lock")
             .values()
         {
-            let _ = conn
-                .writer
-                .lock()
-                .expect("a writer")
-                .shutdown(std::net::Shutdown::Both);
+            let _ = conn.socket.shutdown(std::net::Shutdown::Both);
         }
     }
 
@@ -986,13 +1046,10 @@ impl Server {
             if name == message.author || !self.visible(name, c.seat, &c.project, &message) {
                 continue;
             }
-            let _ = write_to(
-                &c,
-                &Response::Chat {
-                    names_you: message.names(name),
-                    message: message.clone(),
-                },
-            );
+            c.send(Response::Chat {
+                names_you: message.names(name),
+                message: message.clone(),
+            });
         }
         Response::Said {
             id: id.to_string(),
@@ -1055,6 +1112,10 @@ impl Server {
                     Ok(w) => w,
                     Err(_) => return,
                 };
+                // The handshake is written on this thread, before any writer thread exists, so the
+                // bound applies to it too: a peer that connects and reads nothing must not hold a
+                // thread for ever. Options belong to the socket, so the clone shares it.
+                let _ = stream.set_write_timeout(Some(WRITE_TIMEOUT));
                 let mut reader = BufReader::new(stream);
                 // The door. The first frame is the `Hello`, and a connection that does not
                 // open with one has nothing to say that the room could act on.
@@ -1114,11 +1175,26 @@ impl Server {
                     }
                 }
                 let id = me.inner.next_conn.fetch_add(1, Ordering::SeqCst) + 1;
+                // From here on, this connection's frames go through ONE writer thread, and the
+                // room's threads only ever enqueue. The handshake above was written directly
+                // because there was no other writer then, and it is written before the thread
+                // starts so the two cannot interleave a frame.
+                let Ok(their_writer) = w.try_clone() else {
+                    // A socket that cannot be cloned has no writer thread, so there is nobody to
+                    // send a frame and nothing to keep: the close is the only thing left to say.
+                    let _ = w.shutdown(std::net::Shutdown::Both);
+                    return;
+                };
+                let (outbox, frames) =
+                    std::sync::mpsc::sync_channel(me.inner.outbox.load(Ordering::SeqCst));
+                spawn_writer(speaker.session.clone(), their_writer, frames);
                 let conn = Arc::new(Conn {
                     who: speaker.clone(),
                     seat,
                     project: project.clone(),
-                    writer: Mutex::new(w),
+                    outbox,
+                    socket: w,
+                    gone: AtomicBool::new(false),
                 });
                 me.inner
                     .conns
@@ -1152,9 +1228,8 @@ impl Server {
                     };
                     let answer: Answer =
                         me.answer_frame(&project, seat, &speaker, &frame, now_ms());
-                    if write_to(&conn, &answer.response).is_err() {
-                        break;
-                    }
+                    let parting = matches!(answer.response, Response::Bye { .. });
+                    conn.send(answer.response);
                     // A ruling lands in the room it names, so its events go there too.
                     let landed_in = match &frame {
                         Request::Rule {
@@ -1164,7 +1239,7 @@ impl Server {
                         _ => project.clone(),
                     };
                     me.route(&landed_in, &answer.events);
-                    if matches!(answer.response, Response::Bye { .. }) {
+                    if parting {
                         break;
                     }
                 }
@@ -1312,12 +1387,9 @@ impl Server {
                 if !audience.contains(&conn.who.session) {
                     continue;
                 }
-                let _ = write_to(
-                    conn,
-                    &Response::Event {
-                        event: event.clone(),
-                    },
-                );
+                conn.send(Response::Event {
+                    event: event.clone(),
+                });
             }
         }
     }
@@ -1362,9 +1434,33 @@ fn is_chat_frame(frame: &Request) -> bool {
     )
 }
 
-fn write_to(conn: &Conn, response: &Response) -> std::io::Result<()> {
-    let mut w = conn.writer.lock().expect("a writer");
-    write_frame(&mut *w, response)
+/// One connection's writer: drain its frames onto its socket, one at a time, and end the
+/// connection when the socket will not take one. The timeout is the point - a peer that stopped
+/// reading must cost its own thread and nobody else's turn.
+fn spawn_writer(
+    session: String,
+    mut socket: UnixStream,
+    frames: std::sync::mpsc::Receiver<Response>,
+) {
+    let name = format!("room-write-{session}");
+    let _ = socket.set_write_timeout(Some(WRITE_TIMEOUT));
+    let _ = std::thread::Builder::new().name(name).spawn(move || {
+        for frame in frames {
+            if let Err(e) = write_frame(&mut socket, &frame) {
+                let why = match e.kind() {
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => {
+                        format!("it took no frame in {}s", WRITE_TIMEOUT.as_secs())
+                    }
+                    _ => format!("writing to it failed ({e})"),
+                };
+                eprintln!("room: closing `{session}`'s connection - {why}");
+                break;
+            }
+        }
+        // The read loop is blocked on a peer that will never write again, and the socket is the
+        // only thing that can end it.
+        let _ = socket.shutdown(std::net::Shutdown::Both);
+    });
 }
 
 /// One frame, one line of JSON. A line rather than a length prefix because the two ends are this
@@ -1938,5 +2034,39 @@ mod tests {
         assert!(same_secret(&one, &one));
         assert!(!same_secret(&one, &two));
         assert!(!same_secret(&one[..63], &one), "a prefix is not the token");
+    }
+
+    /// A reader that takes nothing is disconnected at the bound, and the queue in front of it
+    /// stays bounded - which is the whole reason a push is a `try_send` and not a write.
+    #[test]
+    fn a_reader_that_takes_nothing_is_disconnected_at_the_bound() {
+        use std::io::Read;
+        let (mine, mut theirs) = UnixStream::pair().expect("a socket pair");
+        // The receiver is held and never drained: dropping it would make the channel
+        // `Disconnected` rather than `Full`, which is a different failure.
+        let (outbox, _frames) = std::sync::mpsc::sync_channel(2);
+        let conn = Conn {
+            who: Speaker::top_level("s-slow"),
+            seat: Seat::Session,
+            project: crate::DEFAULT_PROJECT.to_string(),
+            outbox,
+            socket: mine.try_clone().expect("a clone"),
+            gone: AtomicBool::new(false),
+        };
+        let bye = |why: &str| Response::Bye { why: why.into() };
+        conn.send(bye("one"));
+        conn.send(bye("two"));
+        // The channel had room for two and nothing drained it, so a third is the bound: the
+        // connection ends, and its socket is closed under the reader that was not reading.
+        conn.send(bye("three"));
+        assert!(conn.gone.load(Ordering::SeqCst), "the bound was reached");
+        let mut sink = Vec::new();
+        assert_eq!(
+            theirs.read_to_end(&mut sink).expect("the peer's read ends"),
+            0,
+            "a shut-down socket gives the reader end-of-file, not a frame"
+        );
+        // And a send after the end is a no-op rather than a second disconnection.
+        conn.send(bye("four"));
     }
 }

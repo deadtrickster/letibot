@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 use letibot_room::client::Client;
 use letibot_room::server::Server;
 use letibot_room::{
-    Decision, Event, OPERATOR, ROOM_PROTOCOL_VERSION, Request, Response, Room, Seat, Speaker,
-    State, operator_token_path,
+    Decision, Event, HOST_ROOM, Message, OPERATOR, ROOM_PROTOCOL_VERSION, Request, Response, Room,
+    Seat, Speaker, State, operator_token_path,
 };
 
 /// A directory of this test's own, removed when the test ends.
@@ -749,5 +749,94 @@ fn the_operator_seat_is_granted_by_the_coordinators_token() {
         other => panic!("a session seat cannot be the operator: {other:?}"),
     }
     other.stop();
+    server.stop();
+}
+
+/// A client whose pushed chat is collected, so a test can assert what reached it rather than
+/// sleeping and hoping.
+fn chatty(server: &Server, session: &str) -> (Client, Receiver<Message>) {
+    let (client, _events) = client(server, session);
+    let (tx, heard) = mpsc::channel();
+    let tx = Mutex::new(tx);
+    client.on_chat(Arc::new(move |m: &Message, _names: bool| {
+        let _ = tx.lock().expect("the heard lock").send(m.clone());
+    }));
+    (client, heard)
+}
+
+/// A reader that stops reading must cost its own connection and nobody else's turn. The bound is
+/// the queue in front of its writer, and the resource is the memory one silent peer may hold.
+#[test]
+fn a_stalled_reader_is_disconnected_and_does_not_block_the_others() {
+    let scratch = Scratch::new("stall");
+    let server = Server::serve(&scratch.socket(), Room::new()).expect("a socket");
+    // A healthy reader never has this many frames in flight; a stalled one has nothing else.
+    server.with_outbox(64);
+    // The stalled connection: a hand-written client that reads its `welcome` and then nothing.
+    let mut stalled = {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixStream;
+        let mut stream = UnixStream::connect(scratch.socket()).expect("a connection");
+        let hello = serde_json::to_string(&operator_hello(None, "s-stalled", Seat::Session))
+            .expect("a frame");
+        stream
+            .write_all(format!("{hello}\n").as_bytes())
+            .expect("the hello");
+        let mut answer = String::new();
+        BufReader::new(stream.try_clone().expect("a reader"))
+            .read_line(&mut answer)
+            .expect("the welcome");
+        assert!(answer.contains("welcome"), "{answer}");
+        stream
+    };
+    let (healthy, heard) = chatty(&server, "s-healthy");
+    let (poster, _events) = client(&server, "s-poster");
+    // A frame is at most 4 000 bytes of text, and this is more than any socket buffer on a box:
+    // the stalled writer blocks on its socket, and then its queue is the only thing taking frames.
+    const FRAMES: usize = 400;
+    let text = "x".repeat(3_990);
+    for i in 0..FRAMES {
+        let answer = call(
+            &poster,
+            Request::Say {
+                id: format!("s{i}"),
+                room: HOST_ROOM.to_string(),
+                text: format!("{i:05}{text}"),
+                to: None,
+                thread: None,
+                refs: Vec::new(),
+            },
+        );
+        assert!(matches!(answer, Response::Said { .. }), "{answer:?}");
+    }
+    // The stalled connection went, saying so, and the room is still serving the other two.
+    until("the stalled reader to be disconnected", || {
+        server.connections() == 2
+    });
+    // Every message reached the reader that was reading, in order - the poster was never blocked
+    // behind the reader that was not.
+    let mut got = Vec::new();
+    while let Ok(m) = heard.recv_timeout(Duration::from_secs(5)) {
+        got.push(m.seq);
+        if got.len() == FRAMES {
+            break;
+        }
+    }
+    assert_eq!(
+        got.len(),
+        FRAMES,
+        "every message reached the healthy reader"
+    );
+    assert!(
+        got.windows(2).all(|w| w[0] < w[1]),
+        "in the order they were said"
+    );
+    // And the stalled socket is at end-of-file: the peer the room gave up on is told by the close.
+    {
+        use std::io::Read;
+        let mut sink = Vec::new();
+        let _ = stalled.read_to_end(&mut sink);
+    }
+    healthy.session();
     server.stop();
 }
