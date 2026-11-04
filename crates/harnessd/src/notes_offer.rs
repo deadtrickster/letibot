@@ -89,6 +89,13 @@ impl Offers {
         self
     }
 
+    /// Score this round against the vector the loop embedded once for every offer.
+    pub fn share_round(&self, vector: Option<Vec<f32>>) {
+        if let Some(tier) = &self.tier {
+            tier.set_round(vector);
+        }
+    }
+
     /// Seed the memory with what this SESSION has already been offered. The memory is not the
     /// turn's alone, which would be wrong about a session
     /// The log is the memory, so the fact survives a restart and there is no second copy of it.

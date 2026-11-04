@@ -674,8 +674,8 @@ fn log_lines(ws: &Path) -> Vec<serde_json::Value> {
 }
 
 /// What a round of offers costs the box's embedder: three callers sharing it, three rounds. The
-/// first pays for the corpora and the subjects. A round whose inputs did not change pays for
-/// nothing, and a round with one new tool result pays for that subject only.
+/// first pays for the corpora and the round's subject. A round whose inputs did not change pays
+/// for nothing, and a round with one new tool result pays for one subject, whatever the callers.
 #[test]
 fn a_round_embeds_only_what_changed() {
     use crate::waits_offer::OpenRow;
@@ -693,17 +693,28 @@ fn a_round_embeds_only_what_changed() {
         content: "alpha beta gamma delta".into(),
     }];
     let records = crate::done_offer::subjects_of("abc1234\tkappa lambda mu nu\n");
-    let brief = "alpha beta gamma";
 
     let mut round = |items: &[TranscriptItem]| {
         let before = embedder.spent();
+        let brief = crate::waits_offer::draft(items);
+        let text = format!("{brief}\n{}", subject(items));
+        let shared = embedder
+            .vector(
+                letibot_tools::similarity::bounded(&text),
+                letibot_metrics::now_ms() as i64,
+            )
+            .ok();
+        notes.share_round(shared.clone());
+        waits.share_round(shared.clone());
+        done.share_round(shared);
         notes.compose(&f.reader(), &f.global, &f.box_dirs, "", items);
-        waits.compose(&rows, brief);
-        done.compose(&records, brief);
+        waits.compose(&rows, &brief);
+        done.compose(&records, &brief);
         let after = embedder.spent();
         (
             after.embedded - before.embedded,
             after.lookups - before.lookups,
+            after.bytes - before.bytes,
         )
     };
     let mut items = prompt(ABOUT);
@@ -713,12 +724,24 @@ fn a_round_embeds_only_what_changed() {
         "a new tool result about the floor and the take-up log",
     ));
     let moved = round(&items);
-    // Measured before the fill fingerprint and the query memo: same (0, 8), moved (1, 8), first (7, 8).
-    assert_eq!(first, (7, 8), "the corpora and the subjects, once");
+    // Before: first (7, 8, _), same (0, 8, 0), moved (1, 8, one subject per caller that differed).
+    assert_eq!(
+        (first.0, first.1),
+        (4, 4),
+        "three corpora and the subject, once"
+    );
     assert_eq!(
         same,
-        (0, 0),
+        (0, 0, 0),
         "nothing changed, so nothing is read or embedded"
     );
-    assert_eq!(moved, (1, 1), "one new subject: one lookup, one embed");
+    assert_eq!(
+        (moved.0, moved.1),
+        (1, 1),
+        "one new subject: one lookup, one embed"
+    );
+    assert!(
+        moved.2 <= letibot_tools::similarity::EMBED_CHARS as u64,
+        "{moved:?}"
+    );
 }

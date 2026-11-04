@@ -34,7 +34,7 @@ pub const MIN_TERM: usize = 3;
 pub const EMBED_CHARS: usize = 1_500;
 
 /// The first [`EMBED_CHARS`] of a text, cut on a character boundary.
-fn bounded(text: &str) -> &str {
+pub fn bounded(text: &str) -> &str {
     let cut = (0..=EMBED_CHARS.min(text.len()))
         .rev()
         .find(|&i| text.is_char_boundary(i))
@@ -209,7 +209,7 @@ impl Corpus {
     /// in-memory index, so a round costs one embedding and never one per note.
     fn scored_with(&self, text: &str, tier: Option<&Tier>) -> Vec<(&Path, f64)> {
         let q = self.weigh(text);
-        let query = tier.and_then(|t| t.query(bounded(text), now_ms()).ok());
+        let query = tier.and_then(|t| t.round().or_else(|| t.query(bounded(text), now_ms()).ok()));
         self.notes
             .iter()
             .map(|n| {

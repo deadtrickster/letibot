@@ -1748,6 +1748,24 @@ impl Harness {
                 // host is the one worth offering, and the daemon's copy of the tree is not.
                 let notes =
                     crate::standing_notes::Reader::new(&*self.runtime.backend, &self.cfg.workspace);
+                // One embedding of the round's subject, read by all four offers: the model's latest
+                // words first, then the turn's prompt and results, bounded.
+                let shared = self.cfg.embedder.get().and_then(|e| {
+                    let text = format!(
+                        "{}\n{}",
+                        crate::waits_offer::draft(&self.session.items),
+                        crate::notes_offer::subject(&self.session.items)
+                    );
+                    e.vector(
+                        letibot_tools::similarity::bounded(&text),
+                        letibot_metrics::now_ms() as i64,
+                    )
+                    .ok()
+                });
+                offers.share_round(shared.clone());
+                skill_offers.share_round(shared.clone());
+                waits.share_round(shared.clone());
+                done.share_round(shared);
                 offers.compose(
                     &notes,
                     &self.cfg.global_notes(),

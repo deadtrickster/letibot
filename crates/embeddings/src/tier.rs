@@ -159,6 +159,7 @@ pub struct Embedder {
     /// Texts handed to the engine, and cache lookups made: what a round costs.
     embedded: AtomicU64,
     lookups: AtomicU64,
+    bytes: AtomicU64,
     /// The last [`QUERY_MEMO`] query vectors by text hash, so a text asked twice in a few rounds
     /// is neither embedded nor read from disk again.
     memo: Mutex<std::collections::VecDeque<(String, Vec<f32>)>>,
@@ -174,6 +175,8 @@ pub struct Spent {
     pub embedded: u64,
     /// Cache lookups, hit or miss.
     pub lookups: u64,
+    /// Bytes of those texts.
+    pub bytes: u64,
 }
 
 /// The engine, and only the lock it actually needs. The in-process checkpoint is not thread-safe and
@@ -305,6 +308,7 @@ impl Embedder {
             announcement: Mutex::new(announcement),
             embedded: AtomicU64::new(0),
             lookups: AtomicU64::new(0),
+            bytes: AtomicU64::new(0),
             memo: Mutex::new(std::collections::VecDeque::new()),
         })
     }
@@ -314,6 +318,7 @@ impl Embedder {
         Spent {
             embedded: self.embedded.load(Ordering::Relaxed),
             lookups: self.lookups.load(Ordering::Relaxed),
+            bytes: self.bytes.load(Ordering::Relaxed),
         }
     }
 
@@ -376,6 +381,10 @@ impl Embedder {
             // connection is taken again for the writes below, and never across this call.
             self.embedded
                 .fetch_add(texts.len() as u64, Ordering::Relaxed);
+            self.bytes.fetch_add(
+                texts.iter().map(|t| t.len() as u64).sum(),
+                Ordering::Relaxed,
+            );
             let embedded = self
                 .engine
                 .embed_many(&texts)
@@ -426,6 +435,7 @@ impl Embedder {
             Err(e) => return Err(self.fail(EmbedOrCacheError::Cache(e))),
         }
         self.embedded.fetch_add(1, Ordering::Relaxed);
+        self.bytes.fetch_add(text.len() as u64, Ordering::Relaxed);
         let vector = self
             .engine
             .embed(text)
@@ -481,6 +491,9 @@ pub struct Tier {
     /// Hash of the documents the index was built from: the same documents again are the same
     /// vectors, so a fill that matches it touches neither the cache nor the engine.
     filled: Mutex<Option<String>>,
+    /// The round's one subject vector, set by the loop that owns the round. When present every
+    /// score through this tier reads it instead of embedding its own text.
+    round: RwLock<Option<Vec<f32>>>,
 }
 
 impl std::fmt::Debug for Tier {
@@ -507,6 +520,7 @@ impl Tier {
             embedder,
             index: RwLock::new(Index::default()),
             filled: Mutex::new(None),
+            round: RwLock::new(None),
         }
     }
 
@@ -563,6 +577,16 @@ impl Tier {
                 Err(e)
             }
         }
+    }
+
+    /// Share one subject vector for the round, or clear it with `None`.
+    pub fn set_round(&self, vector: Option<Vec<f32>>) {
+        *self.round.write().unwrap_or_else(|e| e.into_inner()) = vector;
+    }
+
+    /// The round's shared subject vector, if the loop set one.
+    pub fn round(&self) -> Option<Vec<f32>> {
+        self.round.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     pub fn query(&self, text: &str, now_ms: i64) -> Result<Vec<f32>, TierError> {
