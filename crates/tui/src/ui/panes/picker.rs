@@ -5,6 +5,12 @@ use crate::app::*;
 use crate::ui::render::row_strings;
 use rano::agent::picker::{SettingPicker, SettingValue};
 
+/// How the setting card's keys are named on the hint bar: a row number MARKS the row and Enter
+/// answers it, as on every numbered card. rano's own `HintMode::Pick` line promises the number
+/// switches, and a bare digit did answer the card until this head stopped granting that.
+pub(crate) const SETTING_BAR: &str =
+    "a row number marks · ↑↓ then enter · or type a name · esc closes";
+
 impl App {
     /// The picker's rows as one list - the tests' entry point, since the drawing path reads
     /// [`App::picker_layout`] for the row spans as well.

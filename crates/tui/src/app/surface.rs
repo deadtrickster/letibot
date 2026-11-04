@@ -200,6 +200,20 @@ impl App {
         }
     }
 
+    /// Whether the setting card is the one in the slot, drawn and therefore owning its keys:
+    /// the screen's own match (`compose_screen`), as one function so the keys and the drawing
+    /// cannot disagree. A card in front hides it, and its keys fall to whatever is in front.
+    pub(crate) fn pick_card_up(&self) -> bool {
+        self.pick.is_some()
+            && (self.secret.is_none() || self.secret_away)
+            && self.term_ask.is_none()
+            && (self.prompt.is_none() || self.prompt_away)
+            && self.key_ask.is_none()
+            && self.todo_draft.is_none()
+            && self.open.is_empty()
+            && !self.quit_card
+    }
+
     /// Whether `s` is anywhere on the stack - open, drawn or not.
     pub(crate) fn is_open(&self, s: Surface) -> bool {
         self.surfaces.iter().any(|o| o.surface == s)

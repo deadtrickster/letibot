@@ -42,7 +42,10 @@ impl App {
             // back; every other key a person might be typing steps the card aside rather than
             // answering it, because a key aimed at the composer must settle nothing.
             if matches!(k, Key::Esc)
-                || !matches!(k, Key::Char('y') | Key::Char('Y') | Key::Enter | Key::Char('n') | Key::Char('N'))
+                || !matches!(
+                    k,
+                    Key::Char('y') | Key::Char('Y') | Key::Enter | Key::Char('n') | Key::Char('N')
+                )
             {
                 let asked = self.mode_asked.take();
                 self.mode_confirm = None;
@@ -479,11 +482,13 @@ impl App {
         ControlFlow::Continue(())
     }
 
-    /// An open picker owns Up/Down and Enter on an empty line, after the decision ladder for the
-    /// same reason. The empty-composer rule is the ladder's own: a half-typed line's Enter still
-    /// means the line, and the typed path lands in `pick_mode` through `submit`.
+    /// An open picker owns Up/Down, Enter and the digits while it is the card in the slot: one in
+    /// front hides it, and a digit typed there is that card's answer. The composer keeps its own
+    /// rule - a half-typed line's Enter means the line, which lands in `pick_mode`.
     pub(crate) fn key_pick(&mut self, k: &Key) -> ControlFlow<Option<Action>> {
-        if let Some(subject) = self.pick {
+        if self.pick_card_up()
+            && let Some(subject) = self.pick
+        {
             let choices = self
                 .pick_values()
                 .into_iter()
@@ -525,10 +530,14 @@ impl App {
                     let name = choices[self.mode_sel.min(n - 1)].clone();
                     return ControlFlow::Break(self.take_pick(name));
                 }
+                // A row number MARKS the row and Enter answers it, as on the ladder and the quit
+                // card: answering on the digit took the `2` of a free-text answer meant for the
+                // card in front.
                 _ if self.editor.text().is_empty() && digit_row(k, n).is_some() => {
-                    let at = digit_row(k, n).unwrap();
-                    self.mode_sel = at;
-                    return ControlFlow::Break(self.take_pick(choices[at].clone()));
+                    self.mode_sel = digit_row(k, n).expect("just checked");
+                    self.pick_unseeded = false;
+                    self.redraw = true;
+                    return ControlFlow::Break(None);
                 }
                 // Esc leaves the setting alone and closes the card - the card's own key now,
                 // because the card is in front of any surface, not one arm of a

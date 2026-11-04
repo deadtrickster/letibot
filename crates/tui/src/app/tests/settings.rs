@@ -461,10 +461,16 @@ fn the_cards_first_moments_take_no_enter() {
         name: "allow-all".into(),
         asked_by: "mcp".into(),
     });
-    assert_eq!(a.key(Key::Enter), None, "enter on the card's heels answered it");
+    assert_eq!(
+        a.key(Key::Enter),
+        None,
+        "enter on the card's heels answered it"
+    );
     assert!(a.mode_confirm.is_some(), "the card did not stay up");
     assert!(
-        a.notice.as_deref().is_some_and(|n| n.contains("just came up")),
+        a.notice
+            .as_deref()
+            .is_some_and(|n| n.contains("just came up")),
         "the refusal must say what to do"
     );
     a.now_ms += crate::app::keys::MODE_ARM_MS + 1;
@@ -489,11 +495,18 @@ fn enter_over_words_in_the_composer_does_not_answer_the_card() {
     a.now_ms += crate::app::keys::MODE_ARM_MS + 1;
     a.set_composer("one more thing");
     assert!(
-        matches!(a.key_mode_confirm(&Key::Enter), std::ops::ControlFlow::Break(None)),
+        matches!(
+            a.key_mode_confirm(&Key::Enter),
+            std::ops::ControlFlow::Break(None)
+        ),
         "enter over words answered the card"
     );
     assert!(a.mode_confirm.is_some(), "the card did not stay up");
-    assert!(a.notice.as_deref().is_some_and(|n| n.contains("words in it")));
+    assert!(
+        a.notice
+            .as_deref()
+            .is_some_and(|n| n.contains("words in it"))
+    );
     a.set_composer("");
     assert_eq!(
         a.key(Key::Char('y')),
@@ -546,7 +559,10 @@ fn the_card_holds_the_line_the_operator_was_typing() {
 #[test]
 fn a_second_confirmation_waits_behind_the_card_in_front() {
     let mut a = App::new(plain_cfg(120));
-    a.apply(mode_settings("writes allowed", &["writes allowed", "allow-all"]));
+    a.apply(mode_settings(
+        "writes allowed",
+        &["writes allowed", "allow-all"],
+    ));
     a.session_id = "s-1".into();
     for req in ["h2:req-1", "h2:req-2"] {
         a.apply(ServerFrame::ModeConfirm {
@@ -562,7 +578,11 @@ fn a_second_confirmation_waits_behind_the_card_in_front() {
         "the second request replaced the card the screen was showing"
     );
     assert_eq!(a.mode_waiting.len(), 1, "the second request was dropped");
-    assert!(a.notice.as_deref().is_some_and(|n| n.contains("waiting behind")));
+    assert!(
+        a.notice
+            .as_deref()
+            .is_some_and(|n| n.contains("waiting behind"))
+    );
 
     // Answering the front card settles ITS id, and the waiting one takes the slot.
     a.now_ms += crate::app::keys::MODE_ARM_MS + 1;
@@ -643,7 +663,10 @@ fn a_confirmation_another_head_asked_for_is_the_same_card_answered_by_its_id() {
     assert_eq!(a.key(Key::Esc), None, "esc sent a refusal");
     assert!(a.mode_confirm.is_none() && a.mode_away.is_some());
     a.key(Key::AltA);
-    assert!(a.mode_confirm.is_some(), "alt-a did not bring the card back");
+    assert!(
+        a.mode_confirm.is_some(),
+        "alt-a did not bring the card back"
+    );
     a.now_ms += crate::app::keys::MODE_ARM_MS + 1;
     assert_eq!(
         a.key(Key::Char('n')),
@@ -912,6 +935,128 @@ fn the_mode_picker_moves_with_arrows_and_enter_takes_the_marked_row() {
     );
 }
 
+/// A row number marks the row and Enter answers it, the same contract the decision ladder
+/// and the quit card keep: a digit is also the first character of a line somebody is typing.
+#[test]
+fn a_digit_marks_and_enter_answers_on_the_setting_card() {
+    let mut a = app();
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", false)],
+        Hub::new("s").snapshot(),
+    ));
+    a.apply(mode_settings("read-only", MODES));
+    assert_eq!(a.command("mode"), Some(Action::Settings));
+    assert_eq!(a.mode_sel, 0, "the cursor is seeded to the current mode");
+    assert_eq!(a.key(Key::Char('2')), None, "a digit answers nothing");
+    assert_eq!(a.mode_sel, 1, "it moved the mark");
+    assert!(a.pick == Some(Pick::Mode), "the card stays up until Enter");
+    // Enter takes the marked row: `always-ask` is an ordinary point and goes straight out.
+    assert_eq!(
+        a.key(Key::Enter),
+        Some(Action::Mode {
+            name: "always-ask".into(),
+            consented: false
+        })
+    );
+    assert!(a.pick.is_none());
+}
+
+/// The setting card answers no key while another card hides it: a question in front takes the
+/// digit as its own answer, and the mode the card holds must not change behind the question.
+#[test]
+fn a_hidden_setting_card_takes_no_digit() {
+    let mut a = app();
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", false)],
+        Hub::new("s").snapshot(),
+    ));
+    a.apply(mode_settings("read-only", MODES));
+    assert_eq!(a.command("mode"), Some(Action::Settings));
+    // A question lands over the card: the card is not drawn, and its keys are not its own.
+    a.apply(ServerFrame::Event(env(
+        1,
+        testing::asked("q1", "which branch?", &["main", "release"], ""),
+    )));
+    assert!(
+        a.hint_bar(200).contains("↑↓ marks"),
+        "the bar names the card in front: {}",
+        a.hint_bar(200)
+    );
+    assert_eq!(a.key(Key::Char('2')), None);
+    assert_eq!(a.mode_sel, 0, "the hidden card's cursor moved");
+    assert_eq!(
+        a.editor.text(),
+        "2",
+        "the digit did not reach the question's answer"
+    );
+    assert!(a.pick == Some(Pick::Mode), "the card itself was closed");
+}
+
+/// The picker's keys are its own exactly while the slot draws it: the keys and the drawing read
+/// one rule, and this checks it against the frame rather than against a second copy of the arms.
+#[test]
+fn the_setting_card_is_keyed_exactly_while_the_slot_draws_it() {
+    let mut a = app();
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", false)],
+        Hub::new("s").snapshot(),
+    ));
+    a.apply(mode_settings("read-only", MODES));
+    assert_eq!(a.command("mode"), Some(Action::Settings));
+    let title = "the mode this session runs under";
+    let drawn = |a: &mut App| a.screen(110, 30).iter().any(|l| l.contains(title));
+    assert!(
+        drawn(&mut a) && a.pick_card_up(),
+        "alone, it is drawn and keyed"
+    );
+    // The two cards that can take the slot over a picker: a question, and the new-todo card.
+    for front in ["q1", "todo"] {
+        if front == "q1" {
+            a.apply(ServerFrame::Event(env(
+                1,
+                testing::asked("q1", "which branch?", &["main", "release"], ""),
+            )));
+        } else {
+            assert_eq!(a.command("todo"), None, "bare /todo opens the card");
+        }
+        assert!(
+            !drawn(&mut a) && !a.pick_card_up(),
+            "under {front} the card is neither drawn nor keyed"
+        );
+        a.key(Key::Esc);
+    }
+    assert!(
+        drawn(&mut a) && a.pick_card_up(),
+        "and it comes back with the slot"
+    );
+}
+
+/// A click recorded on the setting card lands on nothing once another card has taken the slot:
+/// its rows were measured from a frame whose card is no longer the one in front.
+#[test]
+fn a_click_on_the_setting_card_lands_on_nothing_once_a_decision_is_up() {
+    let mut a = app();
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", false)],
+        Hub::new("s").snapshot(),
+    ));
+    a.apply(mode_settings("read-only", MODES));
+    assert_eq!(a.command("mode"), Some(Action::Settings));
+    let frame = a.screen(110, 24);
+    let y = value_row(&frame, 3, MODES[2]);
+    a.apply(ServerFrame::Event(env(
+        1,
+        testing::asked("q1", "which branch?", &["main", "release"], ""),
+    )));
+    assert_eq!(a.key(Key::Click { x: 6, y }), None);
+    assert_eq!(a.mode_sel, 0, "the hidden card's cursor moved");
+    assert_eq!(a.sel, 0, "the click took the question's ladder");
+}
+
 /// The screen row a setting card's value `n` (1-based, as the card numbers it) was drawn on,
 /// found on the frame - never counted, which is how the click arithmetic went wrong.
 fn value_row(frame: &[String], n: usize, name: &str) -> u16 {
@@ -1071,10 +1216,13 @@ fn the_mode_picker_takes_a_row_number_a_name_and_refuses_an_ambiguous_prefix() {
     ));
     a.apply(mode_settings("read-only", MODES));
     assert_eq!(a.command("mode"), Some(Action::Settings));
-    // A row number takes that row on the keypress - it is focus and
-    // enter in one, which is what a numbered list means. See `digit_row`.
+    // A row number MARKS that row and Enter takes it - an answer on the digit itself was the
+    // first character of a line somebody was typing. See `digit_row`.
+    assert_eq!(a.key(Key::Char('5')), None);
+    assert_eq!(a.mode_sel, 4, "the digit moved the mark");
+    assert!(a.pick == Some(Pick::Mode), "and answered nothing");
     assert_eq!(
-        a.key(Key::Char('5')),
+        a.key(Key::Enter),
         Some(Action::Mode {
             name: "automode-edits".into(),
             consented: false

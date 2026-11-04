@@ -445,9 +445,19 @@ impl App {
         // The card in the slot, as a click target, and only on a frame whose chrome the backstop did not drain:
         // rows measured from a front that was cut are rows nobody can see. The decision's ladder is its answer
         // half, which the fit never trims; the quit card's choices need the whole card.
+        // Cleared first: a frame that drew no card must not leave the last one armed as the click's provenance.
+        self.drawn_card = None;
         if drained == 0
             && let Some(target) = card_target
         {
+            // Which card this frame drew and, for a decision, which request's rows - the hits'
+            // provenance, checked again when the click arrives.
+            self.drawn_card = Some((
+                target,
+                self.open
+                    .first()
+                    .map_or(String::new(), |d| d.req_id.clone()),
+            ));
             let top = body_rows + card_chrome_at;
             let stops: Vec<(usize, usize)> = match target {
                 Target::Decision => match self.open.first().cloned() {

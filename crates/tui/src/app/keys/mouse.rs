@@ -38,10 +38,21 @@ impl App {
             // the same read can have closed it (Esc, `ctrl-v`, a prompt sent), and the rows the
             // last frame recorded are then text again.
             Target::PayloadLine => self.payload_window_open(),
-            Target::Decision => !self.open.is_empty(),
+            // A decision's rows answer only while the decision the FRAME drew is the front
+            // card: a key earlier in the same read can have answered it and another decision
+            // taken the slot, and a row index from the old card marks a row on the new one.
+            Target::Decision => match (&self.drawn_card, self.open.first()) {
+                (Some((Target::Decision, drew)), Some(d)) => drew == &d.req_id,
+                _ => false,
+            },
             Target::QuitCard => self.quit_card,
             Target::ReseatCard => self.reseat_card_up(),
-            Target::SettingCard => self.pick.is_some(),
+            // The setting card is a target only while it is the card in the slot: hidden
+            // behind a decision it is not drawn, and a click at its old rows must not move
+            // a cursor nobody can see.
+            Target::SettingCard => {
+                matches!(self.drawn_card, Some((Target::SettingCard, _))) && self.pick_card_up()
+            }
             // The chrome's labels are drawn by whatever screen is up - the composer's two
             // edges and the header belong to no surface, so there is none that can have closed
             // under them between the frame and the click.

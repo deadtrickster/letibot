@@ -597,6 +597,10 @@ pub struct App {
     /// for every row value `k` was drawn on, its wrapped `why` included. Empty unless the whole
     /// card fit, because a click is trusted only for a list the frame proved was all on screen.
     pub(crate) mode_hits: Vec<(usize, usize)>,
+    /// The card the last frame drew in the slot and, for a decision, which request's: a click is
+    /// answered only while that same card is still in front, since a key earlier in the read can
+    /// have answered it - and a row index from the old card marks a row on the new one.
+    pub(crate) drawn_card: Option<(Target, String)>,
     /// The count labels on the composer's top edge as the last frame drew them, `None` when the
     /// frame drew no edge or cut it. A click on a label opens the pane its count names.
     pub(crate) box_top_hits: Option<BoxTopHits>,
@@ -1298,6 +1302,7 @@ impl App {
             mode_sel: 0,
             pick_unseeded: false,
             mode_hits: Vec::new(),
+            drawn_card: None,
             box_top_hits: None,
             standing: Vec::new(),
             standing_sel: 0,

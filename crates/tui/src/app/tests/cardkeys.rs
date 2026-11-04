@@ -43,6 +43,25 @@ fn the_next_card_up_starts_at_its_own_top() {
     assert_eq!(a.key(Key::Enter), answer("r2", "allow"));
 }
 
+/// A click marks a row of the card the FRAME drew, and of no other: a key earlier in the same
+/// read can have answered that card and put another in the slot, and the row the frame
+/// recorded then names a row the operator never saw.
+#[test]
+fn a_click_aimed_at_a_decision_marks_no_row_of_the_card_that_took_the_slot() {
+    let mut a = app();
+    ask(&mut a, 1, testing::requested("r1", "rm"));
+    let frame = a.screen(100, 30);
+    let y = frame
+        .iter()
+        .position(|l| l.contains("2  Deny"))
+        .expect("the second rung is drawn") as u16;
+    ask(&mut a, 2, testing::answered("r1", "deny"));
+    ask(&mut a, 3, testing::requested("r2", "rm -rf"));
+    assert_eq!(a.open[0].req_id, "r2");
+    assert_eq!(a.key(Key::Click { x: 6, y }), None);
+    assert_eq!(a.sel, 0, "a row index from r1's card marked a row of r2's");
+}
+
 // ───────────────── a question over typed words does not take them ─────────────────
 
 /// A question that arrives while a prompt is half typed: the words are held, the card's field is
@@ -363,7 +382,10 @@ fn a_card_that_owns_the_keyboard_has_its_own_bar() {
 #[test]
 fn esc_puts_a_card_away_and_the_explicit_key_refuses() {
     let mut a = app();
-    a.apply(mode_settings("writes allowed", &["writes allowed", "allow-all"]));
+    a.apply(mode_settings(
+        "writes allowed",
+        &["writes allowed", "allow-all"],
+    ));
     a.session_id = "s-1".into();
     a.apply(ServerFrame::ModeConfirm {
         session_id: "s-1".into(),
@@ -380,7 +402,10 @@ fn esc_puts_a_card_away_and_the_explicit_key_refuses() {
     );
     // And the card comes back armed, and settles when answered.
     a.key(Key::AltA);
-    assert!(a.mode_confirm.is_some(), "alt-a did not bring the card back");
+    assert!(
+        a.mode_confirm.is_some(),
+        "alt-a did not bring the card back"
+    );
     a.now_ms += crate::app::keys::MODE_ARM_MS + 1;
     assert_eq!(
         a.key(Key::Char('n')),

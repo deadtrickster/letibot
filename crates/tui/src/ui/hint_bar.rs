@@ -3,6 +3,7 @@
 //! rano's cards and editor pane keep rano's own sentences, pinned by tag.
 
 use crate::app::*;
+use crate::ui::panes::picker::SETTING_BAR;
 use rano::agent::hint_bar::{HintBar, HintMode, centred};
 use rano::render::Line;
 use rano::style::Role;
@@ -78,7 +79,8 @@ impl App {
                 false,
             ),
             Card::Secret => (
-                "type the password · enter gives it · ctrl-c refuses · esc puts it away".to_string(),
+                "type the password · enter gives it · ctrl-c refuses · esc puts it away"
+                    .to_string(),
                 false,
             ),
             Card::TermAsk => (
@@ -170,9 +172,9 @@ impl App {
         } else if self.editor_drawn() {
             Some(HintMode::EditorBehind)
         } else if self.pick.is_some() {
-            // The cards in the chrome are in front of the surface - they take their keys
-            // first in `App::key` - so the bar describes the card while one is up.
-            Some(HintMode::Pick)
+            // The card's bar is this head's, not rano's `HintMode::Pick`, whose line promises a
+            // key that only moves a mark - see `SETTING_BAR`.
+            return crate::ui::render::row(&centred(Some(&editor), SETTING_BAR, w), p);
         } else {
             None
         };
