@@ -1240,6 +1240,17 @@ fn pg_members(dir: &Path) -> Vec<u32> {
     v
 }
 
+/// Is this recorded group still the one that was observed? A group id is a pid, and a number the
+/// kernel has handed on is not ours to signal: at least one current member has to be a process
+/// this scope listed, still running what it was running.
+#[cfg(target_os = "macos")]
+fn still_ours(group: u32, observed: &[Reaped]) -> bool {
+    super::darwin::members_of_groups(&[group])
+        .into_iter()
+        .filter_map(super::darwin::info)
+        .any(|i| observed.iter().any(|o| o.pid == i.pid && o.comm == i.comm))
+}
+
 #[cfg(target_os = "macos")]
 impl ScopeTree for ProcessGroups {
     fn describe(&self) -> String {
@@ -1310,10 +1321,17 @@ impl ScopeTree for ProcessGroups {
         // Repeated, because a member can fork between one `killpg` and its exit; the child is in
         // the same group and the next pass reaches it.
         let deadline = Instant::now() + Duration::from_secs(5);
+        // `pg_members` FIRST: it strikes a recorded group the kernel no longer shows a member for,
+        // and a group id whose group has gone is a number the kernel may hand to somebody else.
+        let _ = pg_members(&scope.path);
         let mut groups = Vec::new();
         pg_recorded_at(&scope.path, &mut groups);
         loop {
             for g in &groups {
+                // And again, per pass: a group that has died since the read is not ours to signal.
+                if !still_ours(*g, &observed) {
+                    continue;
+                }
                 unsafe { libc::killpg(*g as libc::pid_t, libc::SIGKILL) };
             }
             if pg_members(&scope.path).is_empty() || Instant::now() >= deadline {
@@ -1324,8 +1342,18 @@ impl ScopeTree for ProcessGroups {
         let survivors = pg_members(&scope.path);
 
         let removed = survivors.is_empty() && std::fs::remove_dir_all(&scope.path).is_ok();
-        let note = (!removed && survivors.is_empty())
+        let mut note = (!removed && survivors.is_empty())
             .then(|| "every process is gone but the scope directory would not be removed".into());
+        // Said on every group reaping, not only when something is left: a group kill cannot reach
+        // a process that called `setsid`, and the count above is of the scope, not of the machine.
+        if mechanism == PGROUP_KILL {
+            let escaped = "a process that called setsid or setpgid left this scope and a group kill \
+                           cannot reach it, so this record does not count one";
+            note = Some(match note {
+                Some(n) => format!("{n}; {escaped}"),
+                None => escaped.to_string(),
+            });
+        }
         self.open.lock().expect("scope list").retain(|s| s != scope);
 
         Reaping {
@@ -1735,5 +1763,45 @@ mod tests {
         assert!(live.exists(), "a live owner's root was removed");
         drop(t);
         let _ = std::fs::remove_dir_all(&parent);
+    }
+
+    /// A group kill cannot reach a process that called `setsid`, so the record of one says so. The
+    /// count that follows is of the scope, and a reader who took it for the machine would be told
+    /// nothing is left when something may be.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_group_reaping_says_a_setsid_process_can_have_left_the_scope() {
+        use std::os::unix::process::CommandExt;
+        let Some(_) = letibot_tokencore::apparatus::present(
+            "a process-lifetime tree (cgroup v2; process groups on macOS)",
+            super::ProcessGroups::probe().is_ok(),
+        ) else {
+            return;
+        };
+        let tree = super::ProcessGroups::probe().expect("a tree");
+        let scope = tree
+            .open(ScopeKind::Session, "setsid-note", None)
+            .expect("a scope");
+        // A live member of the scope: this test's own child, in a group of its own so the kill
+        // reaches it and not this process.
+        let child = std::process::Command::new("/bin/sh")
+            .args(["-c", "sleep 60"])
+            .process_group(0)
+            .spawn()
+            .expect("a child in its own group");
+        let pgid = child.id();
+        std::fs::write(scope.path.join("cgroup.procs"), format!("{pgid}\n"))
+            .expect("a recorded group");
+        let reaping = tree.end(&scope);
+        let _ = std::process::Command::new("kill")
+            .args(["-KILL", &format!("-{pgid}")])
+            .output();
+        assert!(
+            reaping
+                .note
+                .as_deref()
+                .is_some_and(|n| n.contains("setsid")),
+            "the record has to say what a group kill cannot reach: {reaping:?}"
+        );
     }
 }
