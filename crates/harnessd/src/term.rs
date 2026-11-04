@@ -889,6 +889,22 @@ mod tests {
             "two programs are running"
         );
 
+        // The pane's shell joins the scope then execs, a moment after `open` returns; ending the
+        // scope before that finds it empty and records nothing killed.
+        for pane in [one, two] {
+            let procs = tree
+                .at(&format!("session.term-s-pane-{pane}"))
+                .join("cgroup.procs");
+            let deadline = Instant::now() + PATIENCE;
+            while std::fs::read_to_string(&procs).map_or(true, |t| t.trim().is_empty()) {
+                assert!(
+                    Instant::now() < deadline,
+                    "pane {pane} never joined its scope"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+
         let ended = terminals.end_session("s-pane");
         assert_eq!(
             ended, 2,
