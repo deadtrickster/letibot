@@ -43,24 +43,6 @@ impl Engine {
             Engine::Planted(_) => "planted",
         }
     }
-
-    fn embed(&self, text: &str) -> Result<Vec<f32>, TierError> {
-        let mut vectors = self.embed_many(&[text])?;
-        vectors.pop().ok_or_else(|| TierError::Empty(text.len()))
-    }
-
-    /// One vector per text, in the order given. A remote engine asks once for the whole slice,
-    /// which is what its `input` array is for; the local engines loop inside their own crate.
-    fn embed_many(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, TierError> {
-        if texts.is_empty() {
-            return Ok(Vec::new());
-        }
-        Ok(match self {
-            Engine::Internal(m) => m.embed(texts).map_err(TierError::Model)?,
-            Engine::Remote(r) => r.embed(texts).map_err(TierError::Remote)?,
-            Engine::Planted(p) => texts.iter().map(|t| p.vector(t)).collect(),
-        })
-    }
 }
 
 /// How many texts one request carries. The endpoint's `input` is an array, and a corpus of 300
@@ -163,9 +145,11 @@ pub struct Filled {
 /// being scored: the corpus's vectors belong to the caller that holds them, so four callers
 /// on one box load one model between them and pay for a text once.
 pub struct Embedder {
-    /// One lock, because the cache is a single connection: a query is milliseconds and there
-    /// is one per round per caller, which is not worth a second model.
-    inner: Mutex<Inner>,
+    /// The engine, behind whatever lock it needs - see [`EngineLock`].
+    engine: EngineLock,
+    /// The box's one cache connection. Held for a lookup or a write and never across an embed:
+    /// holding it across one was a slow fill stopping every other caller's scoring.
+    cache: Mutex<Cache>,
     /// The first failure this box, held until a caller says it: every caller falls back to
     /// the lexical score on a failure, and a line per round would be worse than the silence.
     fault: Mutex<Option<String>>,
@@ -173,9 +157,62 @@ pub struct Embedder {
     announcement: Mutex<Option<String>>,
 }
 
-struct Inner {
-    engine: Engine,
-    cache: Cache,
+/// The engine, and only the lock it actually needs. The in-process checkpoint is not thread-safe and
+/// takes a mutex; a remote endpoint is a request, and holding the box's one lock across it meant one
+/// slow fill blocked every caller for as long as the HTTP read could take.
+enum EngineLock {
+    Internal(Mutex<Box<Model>>),
+    /// A request, not a model: `Sync`, and called with no lock held at all.
+    Remote(Remote),
+    Planted(Planted),
+}
+
+impl EngineLock {
+    fn new(engine: Engine) -> EngineLock {
+        match engine {
+            Engine::Internal(m) => EngineLock::Internal(Mutex::new(m)),
+            Engine::Remote(r) => EngineLock::Remote(r),
+            Engine::Planted(p) => EngineLock::Planted(p),
+        }
+    }
+
+    fn name(&self) -> String {
+        match self {
+            EngineLock::Internal(m) => {
+                let model = m.lock().unwrap_or_else(|e| e.into_inner());
+                model.name().to_string()
+            }
+            EngineLock::Remote(r) => r.name().to_string(),
+            EngineLock::Planted(p) => p.name().to_string(),
+        }
+    }
+
+    fn kind(&self) -> &'static str {
+        match self {
+            EngineLock::Internal(_) => "internal",
+            EngineLock::Remote(_) => "url",
+            EngineLock::Planted(_) => "planted",
+        }
+    }
+
+    fn embed(&self, text: &str) -> Result<Vec<f32>, TierError> {
+        let mut vectors = self.embed_many(&[text])?;
+        vectors.pop().ok_or_else(|| TierError::Empty(text.len()))
+    }
+
+    fn embed_many(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, TierError> {
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
+        match self {
+            EngineLock::Internal(m) => {
+                let model = m.lock().unwrap_or_else(|e| e.into_inner());
+                model.embed(texts).map_err(TierError::Model)
+            }
+            EngineLock::Remote(r) => r.embed(texts).map_err(TierError::Remote),
+            EngineLock::Planted(p) => Ok(texts.iter().map(|t| p.vector(t)).collect()),
+        }
+    }
 }
 
 impl std::fmt::Debug for Embedder {
@@ -243,7 +280,8 @@ impl Embedder {
     fn assemble(engine: Engine, cache: Cache, said: Vec<String>) -> Arc<Embedder> {
         let announcement = (!said.is_empty()).then(|| said.join("\n"));
         Arc::new(Embedder {
-            inner: Mutex::new(Inner { engine, cache }),
+            engine: EngineLock::new(engine),
+            cache: Mutex::new(cache),
             fault: Mutex::new(None),
             announcement: Mutex::new(announcement),
         })
@@ -251,11 +289,11 @@ impl Embedder {
 
     /// The engine's name, which is what a disclosure and a cache row are keyed by.
     pub fn model(&self) -> String {
-        self.lock().engine.name().to_string()
+        self.engine.name()
     }
 
     pub fn kind(&self) -> &'static str {
-        self.lock().engine.kind()
+        self.engine.kind()
     }
 
     /// The first failure, once. Callers fall back to the lexical score on any failure, so saying
@@ -288,12 +326,11 @@ impl Embedder {
         now_ms: i64,
     ) -> Result<(Vec<(String, Vec<f32>)>, Filled), TierError> {
         let docs: Vec<(String, String)> = documents.into_iter().collect();
-        let lock = self.lock();
-        let name = lock.engine.name().to_string();
+        let name = self.engine.name();
         let mut vectors: Vec<Option<Vec<f32>>> = Vec::with_capacity(docs.len());
         let mut misses: Vec<usize> = Vec::new();
         for (i, (_, text)) in docs.iter().enumerate() {
-            match lock.cache.get(&name, text, now_ms) {
+            match self.cache().get(&name, text, now_ms) {
                 Ok(Some(v)) => vectors.push(Some(v)),
                 Ok(None) => {
                     vectors.push(None);
@@ -304,7 +341,9 @@ impl Embedder {
         }
         for chunk in misses.chunks(BATCH) {
             let texts: Vec<&str> = chunk.iter().map(|&i| docs[i].1.as_str()).collect();
-            let embedded = lock
+            // Asked with no lock held unless the engine is the in-process model: the one cache
+            // connection is taken again for the writes below, and never across this call.
+            let embedded = self
                 .engine
                 .embed_many(&texts)
                 .map_err(|e| self.fail(EmbedOrCacheError::Embed(e.to_string())))?;
@@ -315,9 +354,10 @@ impl Embedder {
                     embedded.len()
                 ))));
             }
+            let cache = self.cache();
             for (&i, vector) in chunk.iter().zip(embedded) {
                 let vector = normalise(vector);
-                lock.cache
+                cache
                     .put(&name, &docs[i].1, &vector, now_ms)
                     .map_err(|e| self.fail(EmbedOrCacheError::Cache(e)))?;
                 vectors[i] = Some(vector);
@@ -336,23 +376,27 @@ impl Embedder {
     }
 
     fn embed_or_get(&self, text: &str, now_ms: i64) -> Result<(Vec<f32>, Hit), TierError> {
-        let inner = self.lock();
-        let name = inner.engine.name().to_string();
-        let embedded = |t: &str| {
-            inner
-                .engine
-                .embed(t)
-                .map(normalise)
-                .map_err(|e| e.to_string())
-        };
-        inner
-            .cache
-            .embed_or_get(&name, text, now_ms, embedded)
-            .map_err(|e| self.fail(e))
+        let name = self.engine.name();
+        // Two visits to the cache with the embed between them rather than `Cache::embed_or_get`,
+        // which would hold the box's one connection for the whole of a request to an endpoint.
+        match self.cache().get(&name, text, now_ms) {
+            Ok(Some(v)) => return Ok((v, Hit::Cached)),
+            Ok(None) => {}
+            Err(e) => return Err(self.fail(EmbedOrCacheError::Cache(e))),
+        }
+        let vector = self
+            .engine
+            .embed(text)
+            .map(normalise)
+            .map_err(|e| self.fail(EmbedOrCacheError::Embed(e.to_string())))?;
+        self.cache()
+            .put(&name, text, &vector, now_ms)
+            .map_err(|e| self.fail(EmbedOrCacheError::Cache(e)))?;
+        Ok((vector, Hit::Embedded))
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    fn cache(&self) -> std::sync::MutexGuard<'_, Cache> {
+        self.cache.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Remember why this call could not answer, keeping the first reason of the box, and hand
@@ -645,6 +689,103 @@ mod tests {
             asked.lock().expect("log").clone(),
             vec![3, 32, 8],
             "a batch is 32 texts and the rest follow"
+        );
+    }
+
+    /// A loopback endpoint that holds its answer for a second and a half, and only for a text that
+    /// says `slow`: a warm-up fill must not pay it.
+    fn slow_endpoint() -> String {
+        use std::io::{BufRead, BufReader, Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let url = format!(
+            "http://127.0.0.1:{}",
+            listener.local_addr().expect("addr").port()
+        );
+        std::thread::spawn(move || {
+            for conn in listener.incoming() {
+                let Ok(mut conn) = conn else { continue };
+                let mut reader = BufReader::new(conn.try_clone().expect("clone"));
+                let mut length = 0usize;
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                        break;
+                    }
+                    let lower = line.to_ascii_lowercase();
+                    if let Some(n) = lower.strip_prefix("content-length:") {
+                        length = n.trim().parse().unwrap_or(0);
+                    }
+                    if line == "\r\n" {
+                        break;
+                    }
+                }
+                let mut body = vec![0u8; length];
+                let _ = reader.read_exact(&mut body);
+                let asked: serde_json::Value = serde_json::from_slice(&body).expect("json");
+                let n = asked["input"].as_array().map(|a| a.len()).unwrap_or(0);
+                let slow = body.windows(4).any(|w| w == b"slow");
+                if slow {
+                    std::thread::sleep(std::time::Duration::from_millis(1_500));
+                }
+                let data: Vec<serde_json::Value> = (0..n)
+                    .map(|i| serde_json::json!({ "index": i, "embedding": [1.0, 0.0] }))
+                    .collect();
+                let body = serde_json::json!({ "data": data }).to_string();
+                let answer = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = conn.write_all(answer.as_bytes());
+                let _ = conn.flush();
+            }
+        });
+        url
+    }
+
+    /// One caller's slow fill must not stop another caller's scoring. The box has one lock, and it
+    /// was held across the endpoint's request: a fill waiting out a request blocked every session's
+    /// cache-hit read for the whole of it.
+    #[test]
+    fn a_slow_fill_does_not_hold_another_callers_cached_read() {
+        let url = slow_endpoint();
+        let data = Dir::new("remote-slow");
+        let cache = Cache::open_in(data.path()).expect("cache");
+        let engine = Engine::Remote(Remote::open(&url, "bge-m3").expect("remote"));
+        let embedder = Embedder::with(engine, cache);
+
+        // Warm the cache, so the second caller needs no endpoint at all.
+        Tier::over(embedder.clone())
+            .fill(vec![("n0".into(), "already here".into())], now())
+            .expect("the warm fill answers");
+
+        // A fill that says `slow`, inside the endpoint for a second and a half.
+        let slow = {
+            let tier = Tier::over(embedder.clone());
+            std::thread::spawn(move || {
+                tier.fill(vec![("s0".into(), "slow text".into())], now())
+                    .map(|f| f.embedded)
+            })
+        };
+        // Long enough for that thread to be inside the request.
+        std::thread::sleep(std::time::Duration::from_millis(400));
+
+        let started = std::time::Instant::now();
+        let filled = Tier::over(embedder.clone())
+            .fill(vec![("n0".into(), "already here".into())], now())
+            .expect("a cached read needs no endpoint");
+        let took = started.elapsed();
+        assert_eq!((filled.embedded, filled.cached), (0, 1));
+        assert!(
+            took < std::time::Duration::from_millis(800),
+            "a cached read waited {took:?} behind another caller's fill"
+        );
+        assert_eq!(
+            slow.join()
+                .expect("the slow fill ended")
+                .expect("one vector"),
+            1
         );
     }
 
