@@ -1,4 +1,4 @@
-//! Claude Code in the rooms: the bridge as the external seat `claude-code`. It speaks the chat wire
+//! Claude Code in the rooms: the bridge as an external seat, `cc@<folder>` by default. It speaks the chat wire
 //! as JSON and takes only the protocol number from the room crate (`docs/room.md`). No tool argument reaches
 //! `author`, `kind` or `seat`, so it cannot post as the operator or a session.
 
@@ -12,8 +12,67 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
+/// The environment variable that names this bridge in the rooms.
+pub const NAME_ENV: &str = "LETIBOT_ROOM_NAME";
+
+/// The room handle for a bridge: `$LETIBOT_ROOM_NAME` when set, else `cc@<folder>` from the
+/// bridge's working folder. Cut to the characters and length a handle may have.
+pub fn base_name(env: Option<&str>, cwd: &std::path::Path) -> String {
+    let clean = |raw: &str| -> String {
+        let s: String = raw
+            .to_lowercase()
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '@' {
+                    c
+                } else {
+                    '-'
+                }
+            })
+            .collect();
+        s.trim_matches(|c| c == '-' || c == '@').to_string()
+    };
+    if let Some(named) = env
+        .map(clean)
+        .filter(|n| !n.is_empty() && !n.starts_with("s-"))
+    {
+        return named.chars().take(32).collect();
+    }
+    let folder = cwd
+        .file_name()
+        .map(|n| clean(&n.to_string_lossy()))
+        .filter(|n| !n.is_empty() && !n.contains('@'))
+        .unwrap_or_else(|| "host".to_string());
+    format!("cc@{folder}").chars().take(32).collect()
+}
+
+/// `name` with a short suffix from `salt`, for a second bridge in a folder of the same name.
+pub fn suffixed(name: &str, salt: u32) -> String {
+    let tail = format!("-{:x}", salt & 0xfff);
+    let keep = 32 - tail.len();
+    format!("{}{tail}", name.chars().take(keep).collect::<String>())
+}
+
+fn name_cell() -> &'static Mutex<String> {
+    static NAME: std::sync::OnceLock<Mutex<String>> = std::sync::OnceLock::new();
+    NAME.get_or_init(|| {
+        let env = std::env::var(NAME_ENV).ok();
+        let cwd = std::env::current_dir().unwrap_or_default();
+        Mutex::new(base_name(env.as_deref(), &cwd))
+    })
+}
+
 /// The handle this bridge speaks as.
-pub const HANDLE: &str = "claude-code";
+pub fn handle() -> String {
+    name_cell()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
+fn set_handle(name: String) {
+    *name_cell().lock().unwrap_or_else(|e| e.into_inner()) = name;
+}
 
 /// The room wire's version. A coordinator on another number refuses the hello with both numbers,
 /// which reaches the tool as its error.
@@ -115,7 +174,7 @@ impl Attention {
     /// Does a pushed message pass? `names_you` is the coordinator's word that it addresses or
     /// mentions this seat.
     pub fn passes(self, message: &Value, names_you: bool) -> bool {
-        if message["author"] == HANDLE {
+        if message["author"] == handle().as_str() {
             return false;
         }
         match self {
@@ -199,6 +258,8 @@ struct Inner {
     /// The coordinator start the last welcome named. A different one means the log restarted, so
     /// `delivered` no longer orders anything.
     instance: Mutex<Option<u64>>,
+    /// A welcome has named this bridge, so its name no longer changes.
+    named: Mutex<bool>,
 }
 
 impl Drop for Inner {
@@ -236,6 +297,7 @@ impl RoomLink {
                 ids: AtomicU64::new(0),
                 delivered: Mutex::new(0),
                 instance: Mutex::new(None),
+                named: Mutex::new(false),
             }),
         }
     }
@@ -283,7 +345,7 @@ impl RoomLink {
         let hello = json!({
             "type": "hello",
             "protocol": PROTOCOL,
-            "speaker": { "session": HANDLE, "parent": null },
+            "speaker": { "session": handle(), "parent": null },
             "room": "",
             "seat": "external",
         });
@@ -294,8 +356,17 @@ impl RoomLink {
             .map_err(|e| format!("reading from the room: {e}"))?;
         let first: Value = serde_json::from_str(first.trim())
             .map_err(|_| "the room closed the connection before saying hello".to_string())?;
+        // Another bridge already holds this name (two folders of one name): take a suffixed one
+        // for good, so the name does not change under a reader mid-session.
+        if first["why"]["refused"] == "name_in_use"
+            && !*self.inner.named.lock().unwrap_or_else(|e| e.into_inner())
+        {
+            set_handle(suffixed(&handle(), std::process::id()));
+            return self.open();
+        }
         match first["type"].as_str() {
             Some("welcome") => {
+                *self.inner.named.lock().unwrap_or_else(|e| e.into_inner()) = true;
                 let now = first["instance"].as_u64().unwrap_or(0);
                 let mut seen = self
                     .inner
@@ -315,7 +386,8 @@ impl RoomLink {
             Some("refused") => {
                 let said = why(&first["why"]);
                 return Err(format!(
-                    "the room refused `{HANDLE}`: {said}{}",
+                    "the room refused `{}`: {said}{}",
+                    handle(),
                     upgrade_note(&said)
                 ));
             }
@@ -571,12 +643,15 @@ fn tool(name: &str, description: &str, schema: Value) -> Value {
 }
 
 pub fn tool_list() -> Vec<Value> {
+    let me = handle();
     vec![
         tool(
             "rooms",
-            "The chat rooms on this host as `claude-code` sees them (`host` and one \
-             `project/<key>` per project), with members, the newest `last_seq` and `unread` \
-             (messages after your inbox cursor).",
+            &format!(
+                "The chat rooms on this host as `{me}` sees them (`host` and one \
+             `project/<key>` per project, with `label` the project's folder name), with members, \
+             the newest `last_seq` and `unread` (messages after your inbox cursor)."
+            ),
             json!({ "type": "object", "properties": {} }),
         ),
         tool(
@@ -597,11 +672,15 @@ pub fn tool_list() -> Vec<Value> {
         ),
         tool(
             "room_say",
-            "Say something in a room, as `claude-code`. The author and kind come from this \
+            &format!(
+                "Say something in a room, as `{me}`. The author and kind come from this \
              connection, never from arguments. `to` names one session, `operator` or a handle: \
              a session named wakes and starts a turn. `@session-id` in the text does the same. \
+             `cc` or `claude-code` names the one connected Claude Code bridge and is refused, \
+             listing the full `cc@<folder>` names, when several are connected. \
              `thread` answers a message by its seq. `refs` points at a todo (`<session>/<title>`) \
-             or a queue row. Text is at most 4000 bytes and is refused, never cut.",
+             or a queue row. Text is at most 4000 bytes and is refused, never cut."
+            ),
             json!({
                 "type": "object",
                 "properties": {
@@ -649,10 +728,12 @@ pub fn tool_list() -> Vec<Value> {
         ),
         tool(
             "room_inbox",
-            "What `claude-code` missed since its inbox cursor, through an attention filter: \
+            &format!(
+                "What `{me}` missed since its inbox cursor, through an attention filter: \
              `to_me` (default: what names you, the operator's unaddressed messages, DMs), \
              `mentions` or `all`. Delivery is at least once: with `ack: true` the cursor moves \
-             past what this call returned, so the next call does not repeat it.",
+             past what this call returned, so the next call does not repeat it."
+            ),
             json!({
                 "type": "object",
                 "properties": {
@@ -864,6 +945,31 @@ mod tests {
     }
 
     #[test]
+    fn the_default_name_is_cc_at_the_folder_and_the_env_overrides_it() {
+        let cwd = std::path::Path::new("/home/dead/Projects/letibot");
+        assert_eq!(base_name(None, cwd), "cc@letibot");
+        assert_eq!(
+            base_name(None, std::path::Path::new("/x/My Repo.git")),
+            "cc@my-repo-git"
+        );
+        assert_eq!(base_name(Some("Reviewer One"), cwd), "reviewer-one");
+        assert_eq!(base_name(Some(""), cwd), "cc@letibot");
+        assert!(base_name(None, std::path::Path::new("/a/".repeat(1).as_str())).starts_with("cc@"));
+        let long = std::path::Path::new("/x/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        assert!(letibot_room::valid_handle(&base_name(None, long)));
+    }
+
+    #[test]
+    fn a_second_bridge_in_one_folder_gets_a_short_suffix_that_still_fits() {
+        let name = suffixed("cc@letibot", 0x1234_5abc);
+        assert_eq!(name, "cc@letibot-abc");
+        assert!(letibot_room::valid_handle(&name));
+        let long = suffixed(&"a".repeat(32), 7);
+        assert_eq!(long.len(), 32);
+        assert!(long.ends_with("-7"));
+    }
+
+    #[test]
     fn to_me_passes_what_names_the_seat_and_the_operators_broadcast() {
         let from_op =
             json!({"seq": 1, "author": "operator", "kind": "operator", "room": "host", "to": null});
@@ -877,7 +983,7 @@ mod tests {
         assert!(Attention::ToMe.passes(&from_s, true));
         assert!(Attention::All.passes(&from_s, false));
         assert!(!Attention::Mentions.passes(&from_op, false));
-        let own = json!({"seq": 3, "author": HANDLE, "kind": "external", "room": "host"});
+        let own = json!({"seq": 3, "author": handle(), "kind": "external", "room": "host"});
         assert!(!Attention::All.passes(&own, true));
     }
 }

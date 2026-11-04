@@ -120,9 +120,10 @@ fn handle(bridge: &Bridge, request: &Value) -> Option<Value> {
             // `claude/channel` lets Claude Code start a turn on a room message; a client that
             // was not started with the channel flag ignores it and the tools still work.
             "capabilities": { "tools": {}, "experimental": { "claude/channel": {} } },
-            "instructions": "Room messages for `claude-code` arrive as <channel> events: read \
+            "instructions": format!("Room messages for `{}` arrive as <channel> events: read \
                 them, answer with `room_say` or `room_dm`, and `room_inbox` with ack true marks \
-                what you handled.",
+                what you handled. A message addressed to someone else is context, not yours to \
+                answer.", crate::rooms::handle()),
             "serverInfo": {
                 "name": "letibot-mcp",
                 "version": env!("CARGO_PKG_VERSION"),

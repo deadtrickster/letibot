@@ -829,12 +829,74 @@ impl Server {
             Seat::External => chat::valid_handle(name) && who.is_top_level(),
             Seat::System => false,
         };
+        if ok && seat == Seat::External && self.external_names().iter().any(|n| n == name) {
+            return Some(Response::Refused {
+                id: None,
+                why: crate::Refused::NameInUse {
+                    name: name.to_string(),
+                },
+            });
+        }
         (!ok).then(|| Response::Refused {
             id: None,
             why: crate::Refused::ReservedName {
                 name: name.to_string(),
             },
         })
+    }
+
+    /// The external names holding a connection now.
+    fn external_names(&self) -> Vec<String> {
+        self.conn_list()
+            .iter()
+            .filter(|c| c.seat == Seat::External)
+            .map(|c| c.who.session.clone())
+            .collect()
+    }
+
+    /// What a name a sender wrote means: itself when somebody answers to it, else the one
+    /// connected bridge a short name (`cc`, `claude-code`) stands for. `Err` lists the full names
+    /// when the short name fits several.
+    fn resolve_name(&self, name: &str) -> Result<String, Vec<String>> {
+        if self.is_known(name) || !chat::BRIDGE_ALIASES.contains(&name) {
+            return Ok(name.to_string());
+        }
+        let mut found: Vec<String> = self
+            .external_names()
+            .into_iter()
+            .filter(|n| n.split('@').next().is_some_and(|h| h == "cc") && n.contains('@'))
+            .collect();
+        found.sort();
+        found.dedup();
+        match found.len() {
+            1 => Ok(found.remove(0)),
+            0 => Ok(name.to_string()),
+            _ => Err(found),
+        }
+    }
+
+    /// `text` with each short bridge name in an `@mention` made the full name, or the refusal
+    /// for one that fits several.
+    fn resolve_mentions(&self, text: &str) -> Result<String, crate::Refused> {
+        let mut out = text.to_string();
+        for m in chat::mentions(text) {
+            if !chat::BRIDGE_ALIASES.contains(&m.as_str()) {
+                continue;
+            }
+            match self.resolve_name(&m) {
+                Ok(full) if full != m => {
+                    out = replace_mention(&out, &m, &full);
+                }
+                Ok(_) => {}
+                Err(candidates) => {
+                    return Err(crate::Refused::Ambiguous {
+                        name: m,
+                        candidates,
+                    });
+                }
+            }
+        }
+        Ok(out)
     }
 
     fn conn_list(&self) -> Vec<Arc<Conn>> {
@@ -1220,6 +1282,16 @@ impl Server {
                     .as_deref()
                     .map(|t| t.trim().trim_start_matches('@').to_string())
                     .filter(|t| !t.is_empty());
+                let to = match to.map(|t| self.resolve_name(&t).map_err(|c| (t, c))) {
+                    Some(Err((name, candidates))) => {
+                        return refuse(Some(id), crate::Refused::Ambiguous { name, candidates });
+                    }
+                    other => other.and_then(Result::ok),
+                };
+                let text = &match self.resolve_mentions(text) {
+                    Ok(t) => t,
+                    Err(why) => return refuse(Some(id), why),
+                };
                 if let Some(t) = &to
                     && !self.is_known(t)
                 {
@@ -1237,6 +1309,22 @@ impl Server {
                 thread,
             } => {
                 let to = to.trim().trim_start_matches('@').to_string();
+                let to = match self.resolve_name(&to) {
+                    Ok(t) => t,
+                    Err(candidates) => {
+                        return refuse(
+                            Some(id),
+                            crate::Refused::Ambiguous {
+                                name: to,
+                                candidates,
+                            },
+                        );
+                    }
+                };
+                let text = &match self.resolve_mentions(text) {
+                    Ok(t) => t,
+                    Err(why) => return refuse(Some(id), why),
+                };
                 if to.is_empty() || to == name || !self.is_known(&to) {
                     return refuse(Some(id), crate::Refused::UnknownAddressee { name: to });
                 }
@@ -1856,6 +1944,36 @@ impl Server {
                 since_ms: 0,
             })
     }
+}
+
+/// `text` with the whole-word `@from` mentions made `@to`.
+fn replace_mention(text: &str, from: &str, to: &str) -> String {
+    let lower = text.to_ascii_lowercase();
+    let needle = format!("@{from}");
+    let bytes = text.as_bytes();
+    let mut out = String::new();
+    let mut at = 0;
+    while let Some(i) = lower
+        .get(at..)
+        .and_then(|r| r.find(&needle))
+        .map(|i| i + at)
+    {
+        let end = i + needle.len();
+        let before_ok = i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_');
+        let after_ok = !bytes
+            .get(end)
+            .is_some_and(|b| b.is_ascii_alphanumeric() || matches!(*b, b'-' | b'_' | b'@'));
+        out.push_str(&text[at..i]);
+        if before_ok && after_ok {
+            out.push('@');
+            out.push_str(to);
+        } else {
+            out.push_str(&text[i..end]);
+        }
+        at = end;
+    }
+    out.push_str(&text[at..]);
+    out
 }
 
 fn is_chat_frame(frame: &Request) -> bool {

@@ -45,10 +45,17 @@ pub fn valid_handle(name: &str) -> bool {
         && name.len() <= 32
         && name != OPERATOR
         && !name.starts_with("s-")
+        && name.matches('@').count() <= 1
+        && !name.starts_with('@')
+        && !name.ends_with('@')
         && name
             .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'@')
 }
+
+/// The short names a bare `to` or `@mention` may use for the Claude Code bridges, whose own names
+/// are `cc@<folder>`.
+pub const BRIDGE_ALIASES: [&str; 2] = ["cc", "claude-code"];
 
 /// What kind of participant a connection is. It is fixed at the `Hello`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -117,7 +124,13 @@ pub fn mentions(text: &str) -> Vec<String> {
             let start = i + 1;
             let mut end = start;
             while end < bytes.len()
-                && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'-' || bytes[end] == b'_')
+                && (bytes[end].is_ascii_alphanumeric()
+                    || bytes[end] == b'-'
+                    || bytes[end] == b'_'
+                    // `cc@folder`: an `@` joins two parts of one handle.
+                    || (bytes[end] == b'@'
+                        && end > start
+                        && bytes.get(end + 1).is_some_and(u8::is_ascii_alphanumeric)))
             {
                 end += 1;
             }

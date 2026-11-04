@@ -47,7 +47,7 @@ letibot-mcp — the Claude Code bridge to leticode
       --timeout takes s, m or h (2h, 90s, 15m). Default 2h.
 
   letibot-mcp room-wait [--attention to_me|mentions|all] [--timeout 2h]
-      Connect to the host's chat rooms as `claude-code` and exit when a message arrives
+      Connect to the host's chat rooms as `cc@<folder>` ($LETIBOT_ROOM_NAME names it) and exit when a message arrives
       for it (default `to_me`: what names it, the operator's unaddressed lines, its DMs).
         0   a message arrived     (`#seq [room] author -> to: text`, one line each, on
                                   stdout; the inbox cursor is moved past them)

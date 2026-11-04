@@ -263,6 +263,15 @@ pub enum Refused {
     ReservedName {
         name: String,
     },
+    /// Another live connection already speaks as this external name.
+    NameInUse {
+        name: String,
+    },
+    /// A short name that fits more than one connected member, so the message names no one.
+    Ambiguous {
+        name: String,
+        candidates: Vec<String>,
+    },
     /// Only a head's operator seat may do this.
     NotTheOperator,
     /// The operator's seat is not a claim. A connection asking for it must present the token the
@@ -374,6 +383,14 @@ impl fmt::Display for Refused {
             Refused::ReservedName { name } => {
                 write!(f, "`{name}` is not a name this connection may speak under")
             }
+            Refused::NameInUse { name } => {
+                write!(f, "another connection already speaks as `{name}`")
+            }
+            Refused::Ambiguous { name, candidates } => write!(
+                f,
+                "`{name}` fits more than one member - name one of: {}",
+                candidates.join(", ")
+            ),
             Refused::NotTheOperator => write!(f, "only the operator's seat may do this"),
             Refused::OperatorSeat { why } => write!(
                 f,

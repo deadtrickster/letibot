@@ -24,6 +24,12 @@ struct Fake {
 
 impl Fake {
     fn start(tag: &str) -> Fake {
+        // The handle is read once per process: these tests speak as the legacy handle.
+        static NAME: std::sync::Once = std::sync::Once::new();
+        NAME.call_once(|| {
+            // SAFETY: runs before any thread of this file reads the environment for the handle.
+            unsafe { std::env::set_var(rooms::NAME_ENV, "claude-code") };
+        });
         let dir = letibot_sessionlog::testing::scratch_root().join(format!(
             "room-fake-{tag}-{}-{}",
             std::process::id(),
