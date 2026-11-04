@@ -72,11 +72,7 @@ impl Fixture {
                 worktree.to_str().unwrap(),
             ],
         );
-        // `git init` writes sample hooks, and the defect was that a MISSING hooks directory was
-        // the one a child could create: the state under test is the one a new repository has not
-        // got.
         let common = repo.join(".git");
-        let _ = std::fs::remove_dir_all(common.join("hooks"));
 
         let mut view = ViewSpec::project_only(&worktree)
             .with_home(HomeView::Tmpfs)
@@ -171,6 +167,9 @@ fn a_child_cannot_create_hooks_where_the_repository_has_none() {
     let Some(f) = Fixture::new("hooks") else {
         return;
     };
+    // The state under test is a repository with no hooks directory: git's template and the
+    // probe's mountpoint both leave one, so it is removed after both and before the run.
+    let _ = std::fs::remove_dir_all(f.common.join("hooks"));
     assert!(
         !f.common.join("hooks").exists(),
         "the fixture must start with no hooks directory, or this measures nothing"
@@ -241,6 +240,8 @@ fn an_absent_protected_file_cannot_be_created() {
     let Some(f) = Fixture::new("absent") else {
         return;
     };
+    // The probe's mountpoint leaves an empty file here; the run must start without one.
+    let _ = std::fs::remove_file(f.common.join("packed-refs"));
     assert!(
         !f.common.join("packed-refs").exists(),
         "the fixture must start with no packed-refs"
