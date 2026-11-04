@@ -15,9 +15,11 @@ use serde_json::{Value, json};
 /// The environment variable that names this bridge in the rooms.
 pub const NAME_ENV: &str = "LETIBOT_ROOM_NAME";
 
-/// The room handle for a bridge: `$LETIBOT_ROOM_NAME` when set, else `cc@<folder>` from the
-/// bridge's working folder. Cut to the characters and length a handle may have.
-pub fn base_name(env: Option<&str>, cwd: &std::path::Path) -> String {
+/// The room handle for a bridge: `$LETIBOT_ROOM_NAME` when set, else `cc@<folder>:<name>` (just
+/// `cc@<name>` when the two match). The name is the folder's nick when one was set with
+/// `room_nick`, else the repository's name (the main worktree's folder). The folder is the one
+/// holding that repository, or the working folder itself outside a repository.
+pub fn base_name(env: Option<&str>, nick: Option<&str>, cwd: &std::path::Path) -> String {
     let clean = |raw: &str| -> String {
         let s: String = raw
             .to_lowercase()
@@ -38,21 +40,50 @@ pub fn base_name(env: Option<&str>, cwd: &std::path::Path) -> String {
     {
         return named.chars().take(32).collect();
     }
-    let folder = project_folder(cwd)
-        .file_name()
-        .map(|n| clean(&n.to_string_lossy()))
+    let part = |p: &std::path::Path| {
+        p.file_name()
+            .map(|n| clean(&n.to_string_lossy()))
+            .filter(|n| !n.is_empty() && !n.contains('@'))
+    };
+    let repo = repo_root(cwd);
+    let own = part(repo.as_deref().unwrap_or(cwd));
+    let folder = match &repo {
+        Some(r) => r.parent().and_then(part),
+        None => own.clone(),
+    };
+    let name = nick
+        .map(clean)
         .filter(|n| !n.is_empty() && !n.contains('@'))
+        .or(own)
         .unwrap_or_else(|| "host".to_string());
-    format!("cc@{folder}").chars().take(32).collect()
+    qualified(&folder.unwrap_or_else(|| name.clone()), &name)
 }
 
-/// The folder whose name stands for the project: the main worktree of the repository holding
-/// `cwd`, else `cwd` itself. Reads `.git` directly so no git process is needed.
-fn project_folder(cwd: &std::path::Path) -> PathBuf {
+/// `cc@folder:name`, or `cc@name` when they are the same, within 32 characters.
+pub fn qualified(folder: &str, name: &str) -> String {
+    if folder == name {
+        return format!("cc@{name}").chars().take(32).collect();
+    }
+    let (mut f, mut n) = (folder.to_string(), name.to_string());
+    while f.len() + n.len() > 28 {
+        if f.len() > n.len() {
+            f.pop();
+        } else {
+            n.pop();
+        }
+    }
+    let f = f.trim_end_matches('-');
+    let n = n.trim_end_matches('-');
+    format!("cc@{f}:{n}")
+}
+
+/// The main worktree of the repository holding `cwd`, `None` outside a repository. Reads `.git`
+/// directly so no git process is needed.
+fn repo_root(cwd: &std::path::Path) -> Option<PathBuf> {
     for dir in cwd.ancestors() {
         let dot_git = dir.join(".git");
         if dot_git.is_dir() {
-            return dir.to_path_buf();
+            return Some(dir.to_path_buf());
         }
         let Ok(text) = std::fs::read_to_string(&dot_git) else {
             continue;
@@ -67,9 +98,89 @@ fn project_folder(cwd: &std::path::Path) -> PathBuf {
             .filter(|w| w.file_name().is_some_and(|n| n == "worktrees"))
             .and_then(|w| w.parent())
             .and_then(|g| g.parent());
-        return main.unwrap_or(dir).to_path_buf();
+        return Some(main.unwrap_or(dir).to_path_buf());
     }
-    cwd.to_path_buf()
+    None
+}
+
+/// The letibot data directory.
+fn data_dir() -> PathBuf {
+    std::env::var_os("XDG_DATA_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .filter(|v| !v.is_empty())
+                .map(|h| PathBuf::from(h).join(".local/share"))
+        })
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("letibot")
+}
+
+/// Where the nick for `cwd` is kept, keyed by the folder's canonical path.
+fn nick_file(dir: &std::path::Path, cwd: &std::path::Path) -> PathBuf {
+    let canon = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in canon.to_string_lossy().as_bytes() {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    dir.join("nicks").join(format!("{h:016x}"))
+}
+
+fn read_nick(dir: &std::path::Path, cwd: &std::path::Path) -> Option<String> {
+    std::fs::read_to_string(nick_file(dir, cwd))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+fn write_nick(dir: &std::path::Path, cwd: &std::path::Path, nick: &str) -> Result<(), String> {
+    let file = nick_file(dir, cwd);
+    if let Some(parent) = file.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("cannot keep the nick in {}: {e}", parent.display()))?;
+    }
+    std::fs::write(&file, nick)
+        .map_err(|e| format!("cannot keep the nick in {}: {e}", file.display()))
+}
+
+/// A nick: lowercase letters, digits and `-`, at most 20, not a session prefix, the operator or
+/// a bridge alias.
+fn valid_nick(nick: &str) -> Result<(), String> {
+    let ok = !nick.is_empty()
+        && nick.len() <= 20
+        && !nick.starts_with("s-")
+        && !nick.starts_with('-')
+        && !nick.ends_with('-')
+        && !["operator", "cc", "claude-code"].contains(&nick)
+        && nick
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+    if ok {
+        Ok(())
+    } else {
+        Err(format!(
+            "`{nick}` is not a nick: 1-20 of a-z, 0-9 and `-`, no leading or trailing `-`, not \
+             `operator`, `cc`, `claude-code` or starting `s-`"
+        ))
+    }
+}
+
+/// Does `author` (a handle as the room shows it) name the bridge `me`?
+fn is_me(author: &str, me: &str) -> bool {
+    match letibot_room_parts(me) {
+        Some((folder, name)) => {
+            author == me || author == format!("cc@{name}") || author == format!("cc@{folder}:{name}")
+        }
+        None => author == me,
+    }
+}
+
+/// `(folder, name)` of a `cc@folder:name` or `cc@name` handle.
+fn letibot_room_parts(handle: &str) -> Option<(&str, &str)> {
+    let rest = handle.strip_prefix("cc@").filter(|r| !r.is_empty())?;
+    Some(rest.split_once(':').unwrap_or((rest, rest)))
 }
 
 /// `name` with a short suffix from `salt`, for a second bridge in a folder of the same name.
@@ -84,7 +195,8 @@ fn name_cell() -> &'static Mutex<String> {
     NAME.get_or_init(|| {
         let env = std::env::var(NAME_ENV).ok();
         let cwd = std::env::current_dir().unwrap_or_default();
-        Mutex::new(base_name(env.as_deref(), &cwd))
+        let nick = read_nick(&data_dir(), &cwd);
+        Mutex::new(base_name(env.as_deref(), nick.as_deref(), &cwd))
     })
 }
 
@@ -146,16 +258,7 @@ pub fn socket_path() -> PathBuf {
     if let Some(p) = std::env::var_os("LETIBOT_ROOM_SOCKET").filter(|v| !v.is_empty()) {
         return PathBuf::from(p);
     }
-    let data = std::env::var_os("XDG_DATA_HOME")
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME")
-                .filter(|v| !v.is_empty())
-                .map(|h| PathBuf::from(h).join(".local/share"))
-        })
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("letibot");
+    let data = data_dir();
     let name = std::process::Command::new("uname")
         .arg("-n")
         .stdin(std::process::Stdio::null())
@@ -200,7 +303,10 @@ impl Attention {
     /// Does a pushed message pass? `names_you` is the coordinator's word that it addresses or
     /// mentions this seat.
     pub fn passes(self, message: &Value, names_you: bool) -> bool {
-        if message["author"] == handle().as_str() {
+        if message["author"]
+            .as_str()
+            .is_some_and(|a| is_me(a, &handle()))
+        {
             return false;
         }
         match self {
@@ -258,11 +364,22 @@ pub fn channel_notification(m: &Value) -> Value {
     if let Some(t) = m["thread"].as_u64() {
         meta.insert("thread".into(), json!(t.to_string()));
     }
+    let mut content = line(m);
+    if let Some(group) = group_mention(m["text"].as_str().unwrap_or(""), &handle()) {
+        content.push_str(&format!(" [to {group} (you)]"));
+    }
     json!({
         "jsonrpc": "2.0",
         "method": "notifications/claude/channel",
-        "params": { "content": line(m), "meta": meta },
+        "params": { "content": content, "meta": meta },
     })
+}
+
+/// The group mention in `text` that addresses the bridge `me`, as written (`cc@folder:*`).
+fn group_mention(text: &str, me: &str) -> Option<String> {
+    let (folder, _) = letibot_room_parts(me)?;
+    let want = format!("@cc@{folder}:*");
+    text.to_lowercase().contains(&want).then(|| want[1..].to_string())
 }
 
 struct Live {
@@ -446,6 +563,37 @@ impl RoomLink {
         *self.inner.live.lock().unwrap_or_else(|e| e.into_inner()) =
             Some(Live { writer, generation });
         Ok(())
+    }
+
+    /// Take the name part `nick` for this bridge: reconnect as the new handle, and keep the nick
+    /// for this working folder. Refused, with the old handle kept, when a live member holds it.
+    pub fn nick(&self, nick: &str) -> Result<Value, String> {
+        valid_nick(nick)?;
+        let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+        let env = std::env::var(NAME_ENV).ok();
+        let new = base_name(env.as_deref(), Some(nick), &cwd);
+        let _one = self.inner.call.lock().unwrap_or_else(|e| e.into_inner());
+        let old = handle();
+        if new != old {
+            self.drop_connection();
+            set_handle(new.clone());
+            if let Err(e) = self.open() {
+                set_handle(old.clone());
+                for _ in 0..20 {
+                    if self.open().is_ok() {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                return Err(if e.contains("name in use") {
+                    format!("`{new}` is held by a live member; this bridge stays `{old}`")
+                } else {
+                    e
+                });
+            }
+        }
+        write_nick(&data_dir(), &cwd, nick)?;
+        Ok(json!({ "type": "nick", "handle": new, "previous": old, "env_override": env.is_some() }))
     }
 
     /// A fresh request id, unique to this bridge process.
@@ -664,13 +812,14 @@ fn why(v: &Value) -> String {
 }
 
 /// The tool names this module serves.
-pub const TOOLS: [&str; 6] = [
+pub const TOOLS: [&str; 7] = [
     "rooms",
     "room_read",
     "room_say",
     "room_dm",
     "room_roster",
     "room_inbox",
+    "room_nick",
 ];
 
 fn tool(name: &str, description: &str, schema: Value) -> Value {
@@ -712,7 +861,8 @@ pub fn tool_list() -> Vec<Value> {
              connection, never from arguments. `to` names one session, `operator` or a handle: \
              a session named wakes and starts a turn. `@session-id` in the text does the same. \
              `cc` or `claude-code` names the one connected Claude Code bridge and is refused, \
-             listing the full `cc@<folder>` names, when several are connected. \
+             listing the full `cc@<folder>:<name>` names, when several are connected. `cc@<name>` \
+             names the one bridge with that name, and `cc@<folder>` every bridge of that folder. \
              `thread` answers a message by its seq. `refs` points at a todo (`<session>/<title>`) \
              or a queue row. Text is at most 4000 bytes and is refused, never cut."
             ),
@@ -776,6 +926,19 @@ pub fn tool_list() -> Vec<Value> {
                     "limit": { "type": "integer", "description": "Default 50." },
                     "ack": { "type": "boolean", "description": "Move the cursor past the returned rows." }
                 }
+            }),
+        ),
+        tool(
+            "room_nick",
+            "Set the name part of your room handle (`cc@<folder>:<name>`), kept for this working \
+             folder. Use it when the folder holds several repos and the default is not the \
+             project you work on. Refused when a live member holds the handle.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "nick": { "type": "string", "description": "1-20 of a-z, 0-9 and `-`." }
+                },
+                "required": ["nick"]
             }),
         ),
     ]
@@ -878,6 +1041,7 @@ pub fn call(link: &RoomLink, name: &str, args: &Value) -> Result<Value, String> 
             }
             link.request(&f)
         }
+        "room_nick" => link.nick(&arg_str(args, "nick")?),
         "room_roster" => link.request(&json!({ "type": "roster", "room": arg_str(args, "room")? })),
         "room_inbox" => {
             let attention = match arg_opt_str(args, "attention")? {
@@ -971,7 +1135,7 @@ mod tests {
         n.len() <= 32
             && n.matches('@').count() <= 1
             && n.bytes()
-                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'@')
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'@' || b == b':')
     }
 
     /// Pins the same table as the room crate's `the_host_key_matches_what_the_launcher_derives`.
@@ -991,16 +1155,16 @@ mod tests {
     #[test]
     fn the_default_name_is_cc_at_the_folder_and_the_env_overrides_it() {
         let cwd = std::path::Path::new("/home/dead/Projects/letibot");
-        assert_eq!(base_name(None, cwd), "cc@letibot");
+        assert_eq!(base_name(None, None, cwd), "cc@letibot");
         assert_eq!(
-            base_name(None, std::path::Path::new("/x/My Repo.git")),
+            base_name(None, None, std::path::Path::new("/x/My Repo.git")),
             "cc@my-repo-git"
         );
-        assert_eq!(base_name(Some("Reviewer One"), cwd), "reviewer-one");
-        assert_eq!(base_name(Some(""), cwd), "cc@letibot");
-        assert!(base_name(None, std::path::Path::new("/")).starts_with("cc@"));
+        assert_eq!(base_name(Some("Reviewer One"), None, cwd), "reviewer-one");
+        assert_eq!(base_name(Some(""), None, cwd), "cc@letibot");
+        assert!(base_name(None, None, std::path::Path::new("/")).starts_with("cc@"));
         let long = std::path::Path::new("/x/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-        assert!(a_handle(&base_name(None, long)));
+        assert!(a_handle(&base_name(None, None, long)));
     }
 
     #[test]
@@ -1028,12 +1192,27 @@ mod tests {
         let plain = root.join("scratch");
         std::fs::create_dir_all(&plain).unwrap();
 
-        assert_eq!(base_name(None, &repo), "cc@stroppy-conformity");
-        assert_eq!(base_name(None, &sub), "cc@stroppy-conformity");
-        assert_eq!(base_name(None, &wt), "cc@stroppy-conformity");
-        assert_eq!(base_name(None, &multi), "cc@stroppy-io");
-        assert_eq!(base_name(None, &plain), "cc@scratch");
-        assert_eq!(base_name(Some("Mine"), &wt), "mine");
+        let want = "cc@stroppy-io:stroppy-conformity";
+        assert_eq!(base_name(None, None, &repo), want);
+        assert_eq!(base_name(None, None, &sub), want);
+        assert_eq!(base_name(None, None, &wt), want);
+        assert_eq!(base_name(None, None, &multi), "cc@stroppy-io");
+        assert_eq!(base_name(None, None, &plain), "cc@scratch");
+        assert_eq!(base_name(Some("Mine"), None, &wt), "mine");
+        assert_eq!(base_name(None, Some("proj"), &multi), "cc@stroppy-io:proj");
+        assert_eq!(base_name(None, Some("proj"), &wt), "cc@stroppy-io:proj");
+        assert_eq!(base_name(Some("Mine"), Some("proj"), &wt), "mine");
+
+        let data = root.join("data");
+        assert_eq!(read_nick(&data, &multi), None);
+        write_nick(&data, &multi, "proj").unwrap();
+        assert_eq!(read_nick(&data, &multi).as_deref(), Some("proj"));
+        assert_eq!(read_nick(&data, &repo), None, "keyed by the folder");
+        assert!(valid_nick("proj-2").is_ok());
+        for bad in ["", "Proj", "a b", "s-x", "cc", "operator", "-a", &"x".repeat(21)] {
+            assert!(valid_nick(bad).is_err(), "{bad}");
+        }
+        assert!(a_handle(&qualified(&"f".repeat(30), &"n".repeat(30))));
         let _ = std::fs::remove_dir_all(&root);
     }
 

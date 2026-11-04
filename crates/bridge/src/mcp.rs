@@ -123,7 +123,7 @@ fn handle(bridge: &Bridge, request: &Value) -> Option<Value> {
             "instructions": format!("Room messages for `{}` arrive as <channel> events: read \
                 them, answer with `room_say` or `room_dm`, and `room_inbox` with ack true marks \
                 what you handled. A message addressed to someone else is context, not yours to \
-                answer.", crate::rooms::handle()),
+                answer. `room_nick` renames you (the name part of `cc@<folder>:<name>`) when this folder holds several repos.", crate::rooms::handle()),
             "serverInfo": {
                 "name": "letibot-mcp",
                 "version": env!("CARGO_PKG_VERSION"),

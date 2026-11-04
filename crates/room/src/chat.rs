@@ -39,7 +39,8 @@ pub fn project_of_room(room: &str) -> Option<&str> {
 }
 
 /// A handle an external participant may use: lowercase letters, digits and `-`, at most 32, not
-/// starting with `s-` (a session id's prefix) and never the operator's name.
+/// starting with `s-` (a session id's prefix) and never the operator's name. One `@` is allowed,
+/// and one `:` after it (`cc@folder:name`).
 pub fn valid_handle(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 32
@@ -48,9 +49,37 @@ pub fn valid_handle(name: &str) -> bool {
         && name.matches('@').count() <= 1
         && !name.starts_with('@')
         && !name.ends_with('@')
-        && name
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'@')
+        && !name.ends_with(':')
+        && name.matches(':').count() <= 1
+        && name.find(':').is_none_or(|c| name.find('@').is_some_and(|a| a < c))
+        && name.bytes().all(|b| {
+            b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'-' | b'@' | b':')
+        })
+}
+
+/// The `(folder, name)` of a Claude Code bridge handle: `cc@folder:name`, or `cc@name` when the
+/// two are the same. `None` for any other handle.
+pub fn bridge_parts(handle: &str) -> Option<(&str, &str)> {
+    let rest = handle.strip_prefix("cc@").filter(|r| !r.is_empty())?;
+    Some(match rest.split_once(':') {
+        Some((f, n)) if !f.is_empty() && !n.is_empty() => (f, n),
+        Some(_) => return None,
+        None => (rest, rest),
+    })
+}
+
+/// The folder a group mention `cc@folder:*` addresses.
+pub fn group_folder(mention: &str) -> Option<&str> {
+    mention
+        .strip_prefix("cc@")
+        .and_then(|r| r.strip_suffix(":*"))
+        .filter(|f| !f.is_empty() && !f.contains(':'))
+}
+
+/// Does the group mention `mention` address the bridge `who`?
+pub fn group_names(mention: &str, who: &str) -> bool {
+    group_folder(mention)
+        .is_some_and(|f| bridge_parts(who).is_some_and(|(folder, _)| folder == f))
 }
 
 /// May a session's name slug stand as its member handle: lowercase letters, digits and `-`, not
@@ -139,10 +168,14 @@ pub fn mentions(text: &str) -> Vec<String> {
                 && (bytes[end].is_ascii_alphanumeric()
                     || bytes[end] == b'-'
                     || bytes[end] == b'_'
-                    // `cc@folder`: an `@` joins two parts of one handle.
-                    || (bytes[end] == b'@'
+                    // `cc@folder:name` and the group `cc@folder:*`: `@` and `:` join the parts
+                    // of one handle.
+                    || (matches!(bytes[end], b'@' | b':')
                         && end > start
-                        && bytes.get(end + 1).is_some_and(u8::is_ascii_alphanumeric)))
+                        && bytes.get(end + 1).is_some_and(|n| {
+                            n.is_ascii_alphanumeric() || (bytes[end] == b':' && *n == b'*')
+                        }))
+                    || (bytes[end] == b'*' && bytes[end - 1] == b':'))
             {
                 end += 1;
             }
@@ -202,6 +235,8 @@ impl Message {
             "to everyone".to_string()
         } else if named.iter().any(|n| n == who) {
             "to you".to_string()
+        } else if let Some(group) = named.iter().find(|n| group_names(n, who)) {
+            format!("to {group} (you)")
         } else {
             format!("to {} (not you)", named.join(", "))
         }
@@ -209,7 +244,10 @@ impl Message {
 
     /// Does this message name `who`: addressed to them, or `@who` in the text?
     pub fn names(&self, who: &str) -> bool {
-        self.to.as_deref() == Some(who) || mentions(&self.text).iter().any(|m| m == who)
+        self.to.as_deref() == Some(who)
+            || mentions(&self.text)
+                .iter()
+                .any(|m| m == who || group_names(m, who))
     }
 
     /// Does `attention` let this message through to `who`? Their own never pass.

@@ -860,6 +860,16 @@ impl Server {
     /// connected bridge a short name (`cc`, `claude-code`) stands for, else the session whose
     /// handle it is. `Err` lists the full names when the short name fits several.
     fn resolve_name(&self, project: &str, name: &str) -> Result<String, Vec<String>> {
+        let collapsed = Self::collapse_bridge(name);
+        if collapsed != name && self.is_known(&collapsed) {
+            return Ok(collapsed);
+        }
+        let name = &collapsed;
+        match self.bridge_lookup(name) {
+            Some(Lookup::One(full)) => return Ok(full),
+            Some(Lookup::Many(c) | Lookup::Group(_, c)) => return Err(c),
+            None => {}
+        }
         if self.is_known(name) {
             return Ok(name.to_string());
         }
@@ -878,6 +888,74 @@ impl Server {
             0 => Ok(name.to_string()),
             _ => Err(found),
         }
+    }
+
+    /// `cc@folder:folder` is the handle `cc@folder`.
+    fn collapse_bridge(name: &str) -> String {
+        match chat::bridge_parts(name) {
+            Some((f, n)) if f == n && name.contains(':') => format!("cc@{f}"),
+            _ => name.to_string(),
+        }
+    }
+
+    /// What a `cc@x` a sender wrote means among the connected bridges: the one whose full handle
+    /// it is (unless others share its folder), else the one whose name part it is, else every
+    /// bridge of folder `x`, else the several whose name part it is. `None` when no bridge fits.
+    fn bridge_lookup(&self, name: &str) -> Option<Lookup> {
+        if name.contains(':') {
+            return None;
+        }
+        let x = name.strip_prefix("cc@").filter(|x| !x.is_empty())?;
+        let mut bridges: Vec<String> = self
+            .external_names()
+            .into_iter()
+            .filter(|n| chat::bridge_parts(n).is_some())
+            .collect();
+        bridges.sort();
+        bridges.dedup();
+        let in_folder: Vec<String> = bridges
+            .iter()
+            .filter(|b| chat::bridge_parts(b).is_some_and(|(f, _)| f == x))
+            .cloned()
+            .collect();
+        if bridges.iter().any(|b| b == name) && in_folder.len() <= 1 {
+            return Some(Lookup::One(name.to_string()));
+        }
+        let named: Vec<String> = bridges
+            .iter()
+            .filter(|b| chat::bridge_parts(b).is_some_and(|(_, n)| n == x))
+            .cloned()
+            .collect();
+        match (named.len(), in_folder.is_empty()) {
+            (1, _) => Some(Lookup::One(named[0].clone())),
+            (_, false) => Some(Lookup::Group(x.to_string(), in_folder)),
+            (0, true) => None,
+            _ => Some(Lookup::Many(named)),
+        }
+    }
+
+    /// How each connected bridge reads to others: `cc@name` when its name is unique among the
+    /// connected bridges, else the qualified `cc@folder:name`.
+    fn bridge_display(&self) -> BTreeMap<String, String> {
+        let bridges: Vec<String> = self.external_names();
+        let mut count: BTreeMap<&str, usize> = BTreeMap::new();
+        for b in &bridges {
+            if let Some((_, n)) = chat::bridge_parts(b) {
+                *count.entry(n).or_default() += 1;
+            }
+        }
+        bridges
+            .iter()
+            .filter_map(|b| {
+                let (f, n) = chat::bridge_parts(b)?;
+                let shown = if count[n] == 1 {
+                    format!("cc@{n}")
+                } else {
+                    format!("cc@{f}:{n}")
+                };
+                Some((b.clone(), shown))
+            })
+            .collect()
     }
 
     /// The session id a member handle means: the one in the sender's project if that is unambiguous,
@@ -914,13 +992,17 @@ impl Server {
 
     /// Every named top-level member's handle, by session id.
     fn handles(&self) -> BTreeMap<String, String> {
-        let rooms = self.inner.rooms.lock().expect("the rooms lock");
-        rooms
-            .values()
-            .flat_map(|r| r.members().to_vec())
-            .filter(|m| m.group == crate::Group::Top && !m.handle.is_empty())
-            .map(|m| (m.session, m.handle))
-            .collect()
+        let mut out: BTreeMap<String, String> = {
+            let rooms = self.inner.rooms.lock().expect("the rooms lock");
+            rooms
+                .values()
+                .flat_map(|r| r.members().to_vec())
+                .filter(|m| m.group == crate::Group::Top && !m.handle.is_empty())
+                .map(|m| (m.session, m.handle))
+                .collect()
+        };
+        out.extend(self.bridge_display());
+        out
     }
 
     /// `message` as a reader sees it: a named session's id in the author, the addressee and the
@@ -955,6 +1037,10 @@ impl Server {
     fn resolve_mentions(&self, project: &str, text: &str) -> Result<String, crate::Refused> {
         let mut out = text.to_string();
         for m in chat::mentions(text) {
+            if let Some(Lookup::Group(folder, _)) = self.bridge_lookup(&m) {
+                out = replace_mention(&out, &m, &format!("cc@{folder}:*"));
+                continue;
+            }
             match self.resolve_name(project, &m) {
                 Ok(full) if full != m => {
                     out = replace_mention(&out, &m, &full);
@@ -1291,6 +1377,14 @@ impl Server {
             });
             row.connected = true;
             row.kind = c.seat;
+        }
+        let display = self.bridge_display();
+        for row in rows.values_mut() {
+            if row.kind == Seat::External
+                && let Some(d) = display.get(&row.id)
+            {
+                row.name = d.clone();
+            }
         }
         rows.into_values().collect()
     }
@@ -2053,7 +2147,7 @@ fn replace_mention(text: &str, from: &str, to: &str) -> String {
         let before_ok = i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_');
         let after_ok = !bytes
             .get(end)
-            .is_some_and(|b| b.is_ascii_alphanumeric() || matches!(*b, b'-' | b'_' | b'@'));
+            .is_some_and(|b| b.is_ascii_alphanumeric() || matches!(*b, b'-' | b'_' | b'@' | b':' | b'*'));
         out.push_str(&text[at..i]);
         if before_ok && after_ok {
             out.push('@');
@@ -2065,6 +2159,16 @@ fn replace_mention(text: &str, from: &str, to: &str) -> String {
     }
     out.push_str(&text[at..]);
     out
+}
+
+/// What a short bridge name stands for.
+enum Lookup {
+    /// The one bridge, by its full handle.
+    One(String),
+    /// Every connected bridge of one folder.
+    Group(String, Vec<String>),
+    /// Several bridges that share the name.
+    Many(Vec<String>),
 }
 
 fn is_chat_frame(frame: &Request) -> bool {

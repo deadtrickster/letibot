@@ -672,6 +672,101 @@ fn a_short_bridge_name_is_the_one_connected_bridge_or_ambiguous() {
     );
 }
 
+fn roster_names(who: &Seated) -> Vec<String> {
+    match who.call(Request::Roster {
+        room: "host".into(),
+    }) {
+        Response::Roster { rows, .. } => rows
+            .into_iter()
+            .filter(|r| r.kind == Seat::External)
+            .map(|r| r.name)
+            .collect(),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn a_short_bridge_name_resolves_when_unique_and_both_show_qualified_when_two_share_it() {
+    let dir = Scratch::new();
+    let server = coordinator(&dir);
+    let a1 = seat(&server, "s-a1", A, Seat::Session);
+    let one = seat(&server, "cc@stroppy-io:stroppy-conformity", "", Seat::External);
+
+    let m = said(a1.say("1", "host", "@cc@stroppy-conformity hi"));
+    assert_eq!(m.text, "@cc@stroppy-conformity hi", "the short form is shown");
+    let (heard, named) = one.next();
+    assert_eq!(heard.text, "@cc@stroppy-conformity hi");
+    assert!(named, "the short form reached the bridge");
+    assert_eq!(roster_names(&a1), vec!["cc@stroppy-conformity".to_string()]);
+
+    let two = seat(&server, "cc@other:stroppy-conformity", "", Seat::External);
+    match refused(a1.say("2", "host", "@cc@stroppy-conformity hi")) {
+        Refused::Ambiguous { candidates, .. } => assert_eq!(
+            candidates,
+            vec![
+                "cc@other:stroppy-conformity".to_string(),
+                "cc@stroppy-io:stroppy-conformity".to_string()
+            ]
+        ),
+        other => panic!("{other:?}"),
+    }
+    let mut shown = roster_names(&a1);
+    shown.sort();
+    assert_eq!(
+        shown,
+        vec![
+            "cc@other:stroppy-conformity".to_string(),
+            "cc@stroppy-io:stroppy-conformity".to_string()
+        ]
+    );
+    let q = said(a1.say("3", "host", "@cc@other:stroppy-conformity hi"));
+    assert_eq!(q.text, "@cc@other:stroppy-conformity hi");
+    let (heard, named) = one.next();
+    assert_eq!(heard.seq, q.seq);
+    assert!(!named, "the other bridge's qualified name is not this one");
+
+    drop(two);
+    until("the second bridge to leave", || {
+        roster_names(&a1).len() == 1
+    });
+    assert_eq!(roster_names(&a1), vec!["cc@stroppy-conformity".to_string()]);
+    let again = said(a1.say("4", "host", "@cc@stroppy-conformity hi"));
+    assert_eq!(again.text, "@cc@stroppy-conformity hi");
+}
+
+#[test]
+fn a_folder_mention_wakes_every_bridge_of_the_folder_and_an_exact_single_stays_single() {
+    let dir = Scratch::new();
+    let server = coordinator(&dir);
+    let a1 = seat(&server, "s-a1", A, Seat::Session);
+    let g1 = seat(&server, "cc@stroppy-io:alpha", "", Seat::External);
+    let g2 = seat(&server, "cc@stroppy-io:beta", "", Seat::External);
+    let g3 = seat(&server, "cc@elsewhere:gamma", "", Seat::External);
+
+    let m = said(a1.say("1", "host", "@cc@stroppy-io go"));
+    assert_eq!(m.text, "@cc@stroppy-io:* go");
+    assert!(g1.next().1, "alpha is addressed");
+    assert!(g2.next().1, "beta is addressed");
+    assert!(!g3.next().1, "a bridge of another folder is not");
+
+    let solo = seat(&server, "cc@solo", "", Seat::External);
+    let m = said(a1.say("2", "host", "@cc@solo hi"));
+    assert_eq!(m.text, "@cc@solo hi", "the exact handle stays single");
+    assert!(solo.next().1);
+    assert!(!g1.next().1);
+    let _ = (g2.next(), g3.next());
+
+    let sibling = seat(&server, "cc@solo:other", "", Seat::External);
+    let m = said(a1.say("3", "host", "@cc@solo hi"));
+    assert_eq!(m.text, "@cc@solo:* hi", "a shared folder makes the folder form a group");
+    assert!(solo.next().1);
+    assert!(sibling.next().1);
+    let m = said(a1.say("4", "host", "@cc@solo:solo only"));
+    assert_eq!(m.text, "@cc@solo only", "the qualified collapsed form is the handle");
+    assert!(solo.next().1);
+    assert!(!sibling.next().1);
+}
+
 #[test]
 fn a_room_is_labelled_by_its_project_folder() {
     let dir = Scratch::new();
