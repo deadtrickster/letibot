@@ -35,7 +35,8 @@ impl Roster {
 
     /// The project root `workspace` belongs to - the repository's own folder, so a session in a
     /// worktree or a review clone hangs under the project it was cut from. A folder outside any
-    /// repository is no project, and answers empty: the box's own room.
+    /// repository is its own project; only a missing or empty workspace answers empty (the box's
+    /// own room).
     pub fn project_of(&self, workspace: &str) -> String {
         if workspace.trim().is_empty() {
             return String::new();
@@ -45,7 +46,16 @@ impl Roster {
         {
             return found.clone();
         }
-        let found = crate::plugins::feed::repository_of(std::path::Path::new(workspace));
+        let path = std::path::Path::new(workspace);
+        let mut found = crate::plugins::feed::repository_of(path);
+        // A folder outside any repository is still the operator's project (a folder of several
+        // repositories), so it keys a room of its own rather than dropping to the host room.
+        if found.is_empty() && path.is_dir() {
+            found = std::fs::canonicalize(path)
+                .unwrap_or_else(|_| path.to_path_buf())
+                .display()
+                .to_string();
+        }
         if let Ok(mut cache) = self.projects.lock() {
             cache.insert(workspace.to_string(), found.clone());
         }
@@ -112,7 +122,8 @@ pub fn members_of(
     project: &str,
     project_of: impl Fn(&str) -> String,
 ) -> Vec<Member> {
-    let key = letibot_room::project_key(project);
+    // `project` is the room's key, as the link holds it, not a path.
+    let key = project;
     let mine: Vec<&Row<'_>> = rows
         .iter()
         .filter(|r| {

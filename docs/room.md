@@ -164,7 +164,7 @@ server in `crates/room/src/server.rs`. Frames are one line of JSON, `Request` an
 | `dm` | not a room: the pseudo id a principal reads its direct messages from |
 
 `<key>` is the project key: twelve hex characters of the SHA-256 of the project's canonical root (the
-same key `s-gatekeeper-<key>` and `scripts/letibot` use). A session in no project (the daemon could not
+same key `s-gatekeeper-<key>` and `scripts/letibot` use). A session whose folder is no repository is in the project of that folder. A session in no project (the daemon could not
 place it) is in the host room only. A project room exists once a session of that project has connected.
 Subagents are in no chat room. The roster of a room is the tree's top-level sessions for it plus
 everything connected.

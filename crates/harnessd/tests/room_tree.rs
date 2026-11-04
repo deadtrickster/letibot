@@ -336,3 +336,33 @@ fn a_subagent_at_depth_two_and_the_gatekeeper_are_members_of_the_same_room() {
     assert!(server.members_of(&elsewhere).is_empty());
     server.stop();
 }
+
+/// A session whose workspace is no git repository still joins `project/<key>`, and the roster
+/// shows that project for it. The key comes from the daemon's own placement, as `open.rs` does.
+#[test]
+fn a_session_in_a_plain_folder_joins_its_project_room() {
+    let dir = scratch("plain");
+    let workspace = dir.join("rano");
+    std::fs::create_dir_all(&workspace).expect("a workspace");
+    let socket = dir.join("room.sock");
+    let server = Server::serve(&socket, letibot_room::Room::new()).expect("a socket");
+
+    let roster =
+        letibot_harnessd::room::roster::Roster::new(letibot_sessionlog::registry::Registry::new());
+    let root = roster.project_of(&workspace.display().to_string());
+    assert!(!root.is_empty(), "a folder is a project root");
+    let key = letibot_room::project_key(&root);
+    let quiet: Arc<dyn Fn(&str) + Send + Sync> = Arc::new(|_: &str| {});
+    let _a =
+        SessionRoom::connect("s-plain-a", &socket, &key, None, quiet, None).expect("a session");
+
+    let room = letibot_room::chat::project_room(&key);
+    assert!(server.projects().contains(&key), "the room exists");
+    let rows = server.roster_of(&room);
+    assert!(
+        rows.iter()
+            .any(|p| p.name == "s-plain-a" && p.project == key && p.connected),
+        "{rows:?}"
+    );
+    server.stop();
+}

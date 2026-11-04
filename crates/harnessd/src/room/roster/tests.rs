@@ -27,7 +27,9 @@ fn the_project_s_own_sessions_their_subagents_and_its_system_agent() {
         row("s-a-sub-2", "the second look", Some("s-a-sub-1")),
         row("s-gatekeeper-aaaaaaaaaaaa", "review queue", None),
     ];
-    let members = members_of(&rows, PROJECT, |_| PROJECT.to_string());
+    let members = members_of(&rows, &letibot_room::project_key(PROJECT), |_| {
+        PROJECT.to_string()
+    });
     let found: Vec<(&str, Group, u32)> = members
         .iter()
         .map(|m| (m.session.as_str(), m.group, m.depth))
@@ -70,10 +72,10 @@ fn a_row_of_another_project_is_not_in_this_one_s_roster() {
         },
     ];
     let project_of = |w: &str| w.to_string();
-    let here = members_of(&rows, PROJECT, project_of);
+    let here = members_of(&rows, &letibot_room::project_key(PROJECT), project_of);
     assert_eq!(here.len(), 1);
     assert_eq!(here[0].session, "s-a");
-    let there = members_of(&rows, other, project_of);
+    let there = members_of(&rows, &letibot_room::project_key(other), project_of);
     assert_eq!(there.len(), 1);
     assert_eq!(there[0].session, "s-b");
 }
@@ -96,7 +98,7 @@ fn a_child_of_another_workspace_is_placed_by_its_root() {
     // The clone is not in any repository, so its own workspace would be its own project - and the
     // ROOT is what says otherwise.
     let project_of = |w: &str| w.to_string();
-    let members = members_of(&rows, PROJECT, project_of);
+    let members = members_of(&rows, &letibot_room::project_key(PROJECT), project_of);
     assert_eq!(
         members
             .iter()
@@ -126,7 +128,9 @@ fn the_gatekeeper_is_the_queue_and_its_children_are_reviewers() {
             Some("s-gatekeeper-aaaaaaaaaaaa-sub-1"),
         ),
     ];
-    let members = members_of(&rows, PROJECT, |_| PROJECT.to_string());
+    let members = members_of(&rows, &letibot_room::project_key(PROJECT), |_| {
+        PROJECT.to_string()
+    });
     let groups: Vec<Group> = members.iter().map(|m| m.group).collect();
     assert_eq!(
         groups,
@@ -154,7 +158,9 @@ fn the_notes_keeper_is_a_keeper_and_a_brief_is_a_reviewer() {
         row("s-keeper-1", &keeper, None),
         row("s-review-1", &review, None),
     ];
-    let members = members_of(&rows, PROJECT, |_| PROJECT.to_string());
+    let members = members_of(&rows, &letibot_room::project_key(PROJECT), |_| {
+        PROJECT.to_string()
+    });
     let group = |session: &str| {
         members
             .iter()
@@ -166,23 +172,22 @@ fn the_notes_keeper_is_a_keeper_and_a_brief_is_a_reviewer() {
     assert_eq!(group("s-review-1"), Group::Reviewer);
 }
 
-/// A folder that is no repository is no project, and the empty project is the box's own room -
-/// so the sessions that have none (a one-shot, a fixture, the coordinator's own arbiter and its tag
-/// agents) land there rather than in a project minted per temp directory.
+/// A folder outside any repository is its own project, so a session there has a room. Only an
+/// empty or missing workspace is the box's room.
 #[test]
-fn a_workspace_outside_a_repository_is_no_project_at_all() {
+fn a_workspace_outside_a_repository_is_its_own_project() {
     let dir = std::env::temp_dir().join(format!("letibot-roster-norepo-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("a temp dir");
     let roster = Roster::new(letibot_sessionlog::registry::Registry::new());
+    let found = roster.project_of(&dir.display().to_string());
     assert_eq!(
-        roster.project_of(&dir.display().to_string()),
-        "",
-        "a scratch folder is not a project"
+        letibot_room::project_key(&found),
+        letibot_room::project_key(&dir.display().to_string()),
+        "a scratch folder keys its own room"
     );
     assert_eq!(roster.project_of(""), "");
+    assert_eq!(roster.project_of("/definitely/not/here"), "");
 
-    // And the filter says the same: a row whose workspace is no repository is in the box's room and
-    // in nobody else's.
     let at = dir.display().to_string();
     let rows = vec![Row {
         session: "s-a",
@@ -193,6 +198,8 @@ fn a_workspace_outside_a_repository_is_no_project_at_all() {
         live: true,
     }];
     let project_of = |w: &str| roster.project_of(w);
-    assert_eq!(members_of(&rows, "", project_of).len(), 1);
-    assert!(members_of(&rows, PROJECT, project_of).is_empty());
+    let key = letibot_room::project_key(&at);
+    assert_eq!(members_of(&rows, &key, project_of).len(), 1);
+    assert!(members_of(&rows, "", project_of).is_empty());
+    assert!(members_of(&rows, &letibot_room::project_key(PROJECT), project_of).is_empty());
 }
