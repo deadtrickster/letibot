@@ -16,6 +16,7 @@
 //! store queries - no socket, no vocabulary, no model:
 //! harnessd --store PATH --list-sessions [--workspace DIR] [--tsv]
 //! harnessd --store PATH --latest-session [--workspace DIR]
+//! harnessd --store PATH --resolve-session NAME [--scope DIR]
 //! harnessd --store PATH --rename ID TITLE
 //! harnessd --store PATH --delete ID
 //! ```
@@ -713,6 +714,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
                 query = Some(Query::Revert { transcript, backup });
             }
             "--latest-session" => query = Some(Query::Latest),
+            "--resolve-session" => query = Some(Query::Resolve(next()?)),
             "--tsv" => tsv = true,
             "--rename" => {
                 let id = next()?;
@@ -2303,6 +2305,7 @@ fn resume_disclosure(n: u64, store: Option<&std::path::Path>) -> Disclosure {
 enum Query {
     List,
     Latest,
+    Resolve(String),
     Rename(String, String),
     Delete(String),
     Calibrate {
@@ -2585,7 +2588,7 @@ fn run_query(
             Ok(0)
         }
         Query::Rename(id, title) => {
-            store.set_title(&id, &title).map_err(|e| match e {
+            store.rename_unique(&id, &title).map_err(|e| match e {
                 letibot_tokencore::store::StoreError::NotFound(_) => {
                     no_such_session(format!("no such session: {id}"))
                 }
@@ -2615,6 +2618,11 @@ fn run_query(
             }
             Err(e) => Err(e.to_string()),
         },
+        Query::Resolve(name) => {
+            let id = resolve_session_name(&scoped(&store, scope)?, &name, scope)?;
+            println!("{id}");
+            Ok(0)
+        }
         Query::Latest => {
             let latest = newest_conversation(scoped(&store, scope)?, scope);
             // What the pick walked past is said, not silently dropped. The launcher deliberately
@@ -2792,6 +2800,76 @@ fn scoped(
         .into_iter()
         .filter(|s| std::path::Path::new(&s.workspace_root).starts_with(root))
         .collect())
+}
+
+/// The session a name means in this project: an id as typed, else the exact name
+/// (case-insensitive), else a unique prefix. Ambiguity and absence are refused with the
+/// candidates.
+fn resolve_session_name(
+    all: &[letibot_tokencore::store::StoredSession],
+    name: &str,
+    scope: Option<&std::path::Path>,
+) -> Result<String, String> {
+    if let Some(s) = all.iter().find(|s| s.id == name) {
+        return Ok(s.id.clone());
+    }
+    let named: Vec<_> = all
+        .iter()
+        .filter(|s| is_conversation(s))
+        .filter(|s| s.title.as_deref().is_some_and(|t| !t.is_empty()))
+        .collect();
+    let want = name.to_lowercase();
+    let title = |s: &letibot_tokencore::store::StoredSession| {
+        s.title.as_deref().unwrap_or_default().to_lowercase()
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let list = |rows: &[&letibot_tokencore::store::StoredSession]| {
+        rows.iter()
+            .map(|s| {
+                format!(
+                    "  {}  {}  {} ago",
+                    s.title.as_deref().unwrap_or_default(),
+                    s.id,
+                    age(now - s.last_activity_ms)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let exact: Vec<_> = named.iter().copied().filter(|s| title(s) == want).collect();
+    let hits = if exact.is_empty() {
+        named
+            .iter()
+            .copied()
+            .filter(|s| title(s).starts_with(&want))
+            .collect()
+    } else {
+        exact
+    };
+    match hits.as_slice() {
+        [one] => Ok(one.id.clone()),
+        [] => {
+            let here = scope
+                .map(|p| format!(" under {}", p.display()))
+                .unwrap_or_default();
+            Err(if named.is_empty() {
+                format!("no session named {name:?}{here}, and none here has a name")
+            } else {
+                format!(
+                    "no session named {name:?}{here}. Named sessions:\n{}",
+                    list(&named)
+                )
+            })
+        }
+        many => Err(format!(
+            "{name:?} names {} sessions. Use an id or a longer name:\n{}",
+            many.len(),
+            list(many)
+        )),
+    }
 }
 
 /// Is this row a conversation a person can be brought back to? `--continue` promises to
@@ -3076,6 +3154,54 @@ fn term_cols() -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn stored(rows: &[(&str, Option<&str>)]) -> Vec<letibot_tokencore::store::StoredSession> {
+        use letibot_tokencore::store::{SessionRecord, Store};
+        let s = Store::open_in_memory().unwrap();
+        for (id, title) in rows {
+            s.put_session(&SessionRecord {
+                id: (*id).into(),
+                title: title.map(Into::into),
+                model_id: "m".into(),
+                dialect_sha: "d".into(),
+                workspace_root: "/w".into(),
+                owner: "op".into(),
+                role: None,
+                approvers: vec![],
+                parent_session_id: None,
+            })
+            .unwrap();
+        }
+        s.list_sessions().unwrap()
+    }
+
+    #[test]
+    fn a_name_resolves_exact_then_unique_prefix_and_an_id_is_unchanged() {
+        let all = stored(&[
+            ("s-1", Some("stroppy-rust")),
+            ("s-2", Some("stroppy-go")),
+            ("s-3", Some("stroppy")),
+            ("s-4", None),
+        ]);
+        let r = |n: &str| resolve_session_name(&all, n, None);
+        assert_eq!(r("STROPPY-Rust").unwrap(), "s-1", "exact, any case");
+        assert_eq!(r("stroppy").unwrap(), "s-3", "exact beats prefix");
+        assert_eq!(r("stroppy-g").unwrap(), "s-2", "unique prefix");
+        assert_eq!(r("s-4").unwrap(), "s-4", "an id is an id");
+    }
+
+    #[test]
+    fn an_ambiguous_or_unknown_name_is_refused_with_the_names() {
+        let all = stored(&[("s-1", Some("stroppy-rust")), ("s-2", Some("stroppy-go"))]);
+        let e = resolve_session_name(&all, "stro", None).unwrap_err();
+        assert!(e.contains("s-1") && e.contains("s-2"), "{e}");
+        assert!(
+            e.contains("stroppy-rust") && e.contains("stroppy-go"),
+            "{e}"
+        );
+        let e = resolve_session_name(&all, "nope", None).unwrap_err();
+        assert!(e.contains("no session named") && e.contains("s-1"), "{e}");
+    }
 
     /// : the two asks, and the pair that means a VM on that machine - the mapping `run`
     /// calls once the whole command line has been read. Each half alone is what it always was.

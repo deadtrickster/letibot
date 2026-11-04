@@ -705,6 +705,13 @@ with open(os.environ["STUB_ARGV"], "a") as log:
 if "--latest-session" in sys.argv:
     print("s-latest")
     sys.exit(0)
+if "--resolve-session" in sys.argv:
+    name = sys.argv[sys.argv.index("--resolve-session") + 1]
+    if name == "my-work":
+        print("s-named-1")
+        sys.exit(0)
+    sys.stderr.write("no session named %r\n" % name)
+    sys.exit(1)
 p = sys.argv[sys.argv.index("--socket") + 1]
 try:
     os.unlink(p)
@@ -833,23 +840,33 @@ STUB
     stop_case "$d"
   done
 
-  # An argument that is not a session id is a mistake about the verb, not a prompt: refused with
-  # the sentence and the usage, and nothing started — a one-shot's prompt is the FIRST argument
-  # and only the first.
+  # A session NAME is resolved by the daemon binary's store query, for both verbs, and the id it
+  # answers is what the daemon is started on. An unresolvable one is refused and starts nothing.
+  for verb in --continue --session; do
+    d="$T/named${verb#--}"
+    mkdir -p "$d"
+    fresh
+    out="$(RUN_WS="$d" run "$DEFAULT_ONLY" "$verb" my-work)"
+    expect "$verb my-work opens the session that name means" "$(daemon_argv)" \
+      "--session s-named-1( |\$)"
+    refuse "  ...and the name itself is not passed on" "$(daemon_argv)" "--session my-work"
+    stop_case "$d"
+  done
+
+  # An argument that is not a session id or a name is refused and nothing is started: a
+  # one-shot's prompt is the FIRST argument and only the first.
   mkdir -p "$T/contbad"
   fresh
   out="$(RUN_WS="$T/contbad" run "$DEFAULT_ONLY" --continue please-reopen-it)"
   rc=$?
-  expect "a stray argument after --continue is refused" "$out" \
-    "--continue takes no argument, and 'please-reopen-it' is not a session id"
-  expect "  ...with the usage line" "$out" "letibot --session ID"
+  expect "an unknown name after --continue is refused" "$out" "no session named 'please-reopen-it'"
   if [ "$rc" -ne 0 ]; then echo "ok   ...and exits non-zero"; else
     echo "FAIL ...and exits non-zero: exit $rc"
-                                                 fails=$((fails + 1))
+    fails=$((fails + 1))
   fi
   if [ -z "$(daemon_argv)" ]; then echo "ok   ...and starts no daemon with it as a prompt"; else
     echo "FAIL ...and starts no daemon with it as a prompt:"
-                                                              daemon_argv | sed 's/^/     /'
+    daemon_argv | sed 's/^/     /'
     fails=$((fails + 1))
   fi
 

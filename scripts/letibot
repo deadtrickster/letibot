@@ -13,8 +13,10 @@
 #                               (never a resume: that is --continue's, and only its)
 #   letibot --continue          reopen the newest session in THIS workspace — the only verb
 #                               that reopens anything without being asked which. Takes no argument;
-#                               a session id after it is read as --session ID (and said).
-#   letibot --session ID        reopen a particular one
+#                               a session id after it is read as --session ID (and said);
+#                               a session NAME (its /rename title) after it opens that one.
+#   letibot --session ID|NAME   reopen a particular one; a NAME is a /rename title in THIS
+#                               workspace: exact (any case), else a unique prefix
 #   letibot --sessions          what is on disk, grouped: your conversations first, then the
 #                               harness's own work (subagents, the review queue, packages,
 #                               one-shots) one line each with a count
@@ -360,6 +362,15 @@ KEY="$(printf '%s' "$WORKSPACE" | sha12)"
 SOCKET="${LETIBOT_SOCKET:-$RUNDIR/$KEY.sock}"
 RECORD="$RUNDIR/$KEY.json"
 STORE="${LETIBOT_STORE:-$HOME/.local/share/letibot/sessions.db}"
+
+# A session's name (its /rename title) to its id, in this workspace. Ids pass through
+# untouched; a refusal's candidates are on stderr, so no session is opened on a guess.
+resolve_session() {
+  case "$1" in
+    s-[0-9]* | cc-*) printf '%s\n' "$1" ;;
+    *) "${NOGPU[@]}" "$BIN/harnessd" --store "$STORE" --resolve-session "$1" --scope "$WORKSPACE" ;;
+  esac
+}
 # **Each folder's daemon logs to its own file** (TODO R92.3), keyed like its socket. One file
 # shared by every folder's daemon meant a boot failure's reason sat among other daemons' lines,
 # and the "did not come up" tail below could show another folder's. The shared file
@@ -435,16 +446,19 @@ letibot --continue
   without being asked which; it takes no argument.
 
   --continue s-ID   an id is read as `--session s-ID` and the reading is said out loud
+  --continue NAME   a session name (its /rename title) opens that session, as `--session NAME`
 
   example:
     letibot --continue
 EOF
       ;;
     --session|-s) cat <<'EOF'
-letibot --session ID
+letibot --session ID|NAME
   Reopen one stored session, starting this folder's daemon if none is up.
 
   ID   the session id (`letibot --sessions` lists them, and so does ctrl-s in the head)
+  NAME a /rename title in this workspace: exact (any case), else a unique prefix. An
+       ambiguous or unknown name is refused with the candidates.
 
   example:
     letibot --session s-1789919514688401228
@@ -684,7 +698,7 @@ already up, then attaches the TUI head to it.
   letibot --continue          reopen the newest session in THIS workspace — the only verb that
                               reopens anything without being asked which. It takes NO argument;
                               `--continue s-…` is read as `--session s-…` and says so
-  letibot --session ID        reopen a particular one
+  letibot --session ID|NAME   reopen a particular one (a NAME is a /rename title here)
   letibot --sessions          what is on disk, grouped: your conversations first, then the
                               harness's own work (subagents, the review queue, packages,
                               one-shots) one line each with a count. `--tsv` is the plain form
@@ -2616,6 +2630,11 @@ case "${1:-}" in
       echo "letibot: --continue takes no argument; $1 is a session id, so this is --session $1" >&2
       SESSION="$1"; shift
     fi
+    # A name, when it is the only argument left: resolved here, refused with candidates if not one.
+    if [ -z "$SESSION" ] && [ $# -eq 1 ] && [[ "$1" != -* ]]; then
+      SESSION="$(resolve_session "$1")" || exit 1
+      shift
+    fi
     if [ $# -gt 0 ]; then
       # Two lines, the second carrying both doors. The wall that followed this refusal is the same
       # defect as `--help` printing twenty commands: a person reads none of it.
@@ -2644,7 +2663,8 @@ case "${1:-}" in
     ;;
   --session|-s)
     [ $# -ge 2 ] || need "ID" --session
-    SESSION="$2"; shift 2 ;;
+    SESSION="$(resolve_session "$2")" || exit 1
+    shift 2 ;;
   --new|-n)
     shift
     WANT_NEW=1

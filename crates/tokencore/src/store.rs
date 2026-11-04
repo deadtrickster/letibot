@@ -2781,6 +2781,28 @@ impl Store {
         Ok(())
     }
 
+    /// [`Store::set_title`] for a name a person typed: refused when another session in the same
+    /// workspace already has it (case-insensitive), because `--session NAME` must pick one.
+    pub fn rename_unique(&self, id: &str, title: &str) -> Result<()> {
+        if !title.is_empty() {
+            let me = self
+                .session(id)?
+                .ok_or_else(|| StoreError::NotFound(format!("session {id}")))?;
+            let want = title.to_lowercase();
+            if let Some(o) = self.list_sessions()?.into_iter().find(|o| {
+                o.id != id
+                    && o.workspace_root == me.workspace_root
+                    && o.title.as_deref().is_some_and(|t| t.to_lowercase() == want)
+            }) {
+                return Err(StoreError::Refused(format!(
+                    "the name {title:?} is taken in this project by {}",
+                    o.id
+                )));
+            }
+        }
+        self.set_title(id, title)
+    }
+
     /// Write down who this session is for. Set once, and the `AND origin IS NULL` is the guarantee:
     /// how a session came to exist does not change.
     pub fn set_session_origin(&self, id: &str, origin: &str) -> Result<()> {

@@ -1410,7 +1410,7 @@ impl Harness {
     pub fn rename(&mut self, title: &str) -> Result<(), HarnessError> {
         if let Some(store) = &self.store {
             store
-                .set_title(&self.cfg.session_id, title)
+                .rename_unique(&self.cfg.session_id, title)
                 .map_err(|e| HarnessError::Store(e.to_string()))?;
         }
         self.cfg.title = title.to_string();

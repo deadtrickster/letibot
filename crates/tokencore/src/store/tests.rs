@@ -3009,3 +3009,40 @@ fn a_listed_session_counts_its_newest_transcripts_rows() {
     assert!(got.last_activity_ms > 0);
     let _ = prefix_id;
 }
+
+fn named_session(s: &Store, id: &str, root: &str, title: Option<&str>) {
+    s.put_session(&SessionRecord {
+        id: id.into(),
+        title: title.map(Into::into),
+        model_id: "qwen".into(),
+        dialect_sha: prefix().dialect_sha,
+        workspace_root: root.into(),
+        owner: "deadtrickster".into(),
+        role: None,
+        approvers: vec![],
+        parent_session_id: None,
+    })
+    .unwrap();
+}
+
+/// A name another session in the project holds is refused, whatever its case, and the refusal
+/// says who has it. Another project's name, and a session's own, are free.
+#[test]
+fn rename_refuses_a_name_another_session_in_the_project_has() {
+    let s = store();
+    seeded(&s);
+    named_session(&s, "sess-2", "/w", None);
+    named_session(&s, "sess-3", "/other", None);
+    s.rename_unique("sess-1", "stroppy-rust").unwrap();
+
+    let e = s.rename_unique("sess-2", "Stroppy-Rust").unwrap_err();
+    assert!(matches!(e, StoreError::Refused(_)), "{e}");
+    assert!(e.to_string().contains("sess-1"), "names the holder: {e}");
+    assert_eq!(s.title("sess-2").unwrap(), None, "nothing was written");
+
+    s.rename_unique("sess-3", "stroppy-rust")
+        .expect("another project");
+    s.rename_unique("sess-1", "stroppy-rust")
+        .expect("its own name again");
+    s.rename_unique("sess-1", "").expect("clearing is free");
+}

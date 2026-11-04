@@ -5070,7 +5070,8 @@ fn record_wall(c: &Config) -> (u64, u64) {
 impl SessionSource for StoreSessions {
     fn set_title(&self, session_id: &str, title: &str) -> Result<(), String> {
         let g = self.store.lock().unwrap_or_else(|e| e.into_inner());
-        g.set_title(session_id, title).map_err(|e| e.to_string())
+        g.rename_unique(session_id, title)
+            .map_err(|e| e.to_string())
     }
 
     /// Make it durable who this session is for - see `letibot_sessionlog::SessionOrigin`.
