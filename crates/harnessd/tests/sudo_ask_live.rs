@@ -259,10 +259,9 @@ fn a_real_root_process_waiting_on_the_terminal_is_the_operators_own_shape() {
         return;
     };
     let su = Path::new("/usr/bin/su");
-    if !su.exists() {
-        eprintln!("no {} on this box — nothing to reproduce", su.display());
+    let Some(_) = letibot_tokencore::apparatus::present("/usr/bin/su", su.exists()) else {
         return;
-    }
+    };
     let dir = scratch("root");
     let log = dir.join("harnessd.stderr");
     let socket = letibot_sessionlog::testing::socket_path(&dir, "harnessd.sock");
@@ -356,10 +355,11 @@ fn the_operators_own_sudo_line_says_something_while_it_is_stuck() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
-    if !Path::new("/usr/bin/sudo").exists() {
-        eprintln!("no sudo on this box — nothing to reproduce");
+    let Some(_) =
+        letibot_tokencore::apparatus::present("/usr/bin/sudo", Path::new("/usr/bin/sudo").exists())
+    else {
         return;
-    }
+    };
     let dir = scratch("sudo");
     let log = dir.join("harnessd.stderr");
     let socket = letibot_sessionlog::testing::socket_path(&dir, "harnessd.sock");
@@ -514,10 +514,11 @@ fn the_operators_own_run_outlives_the_models_deadline() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
-    if !Path::new("/usr/bin/su").exists() {
-        eprintln!("no /usr/bin/su on this box — nothing to measure");
+    let Some(_) =
+        letibot_tokencore::apparatus::present("/usr/bin/su", Path::new("/usr/bin/su").exists())
+    else {
         return;
-    }
+    };
     let dir = scratch("deadline");
     let log = dir.join("harnessd.stderr");
     let socket = letibot_sessionlog::testing::socket_path(&dir, "harnessd.sock");

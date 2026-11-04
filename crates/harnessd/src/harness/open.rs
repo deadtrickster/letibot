@@ -4114,8 +4114,7 @@ mod mac_default_seat_tests {
     #[test]
     fn the_default_seat_with_bash_runs_inside_the_seatbelt_boundary() {
         if !probe_works() {
-            eprintln!("skipped: the seatbelt probe refuses on this Mac");
-            return;
+            return letibot_tokencore::apparatus::absent("a seatbelt boundary the probe accepts");
         }
         let (p, warned) = placed(true);
         assert!(p.confined, "no boundary: {}", p.described);
@@ -4126,8 +4125,7 @@ mod mac_default_seat_tests {
     #[test]
     fn its_commands_write_the_checkout_and_are_refused_outside_it() {
         if !probe_works() {
-            eprintln!("skipped: the seatbelt probe refuses on this Mac");
-            return;
+            return letibot_tokencore::apparatus::absent("a seatbelt boundary the probe accepts");
         }
         let (p, _) = placed(true);
         let dir = checkout();
@@ -4153,8 +4151,7 @@ mod mac_default_seat_tests {
     #[test]
     fn the_seat_gets_the_network_when_its_mode_seats_network_calls_and_not_otherwise() {
         if !probe_works() {
-            eprintln!("skipped: the seatbelt probe refuses on this Mac");
-            return;
+            return letibot_tokencore::apparatus::absent("a seatbelt boundary the probe accepts");
         }
         use letibot_tools::mode::Mode;
         let egress = |m: Mode| {
@@ -4172,8 +4169,7 @@ mod mac_default_seat_tests {
     #[test]
     fn a_grant_into_the_view_keeps_the_sessions_network() {
         if !probe_works() {
-            eprintln!("skipped: the seatbelt probe refuses on this Mac");
-            return;
+            return letibot_tokencore::apparatus::absent("a seatbelt boundary the probe accepts");
         }
         let (p, _) = placed_in(true, Some(letibot_tools::mode::Mode::WRITES_ALLOWED));
         let extra = std::env::temp_dir().join(format!("letibot-macseat-g-{}", std::process::id()));
@@ -4187,8 +4183,7 @@ mod mac_default_seat_tests {
     #[test]
     fn the_model_is_told_the_in_view_scratch_and_not_the_daemons_root() {
         if !probe_works() {
-            eprintln!("skipped: the seatbelt probe refuses on this Mac");
-            return;
+            return letibot_tokencore::apparatus::absent("a seatbelt boundary the probe accepts");
         }
         let dir = checkout();
         let mut cfg = Config::for_this_box(&dir);

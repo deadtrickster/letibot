@@ -248,8 +248,9 @@ fn the_childs_commands_carry_cargo_target_dir() {
     let h = match Harness::open_with_registry(&parts, cfg.clone(), hub, None, None, registry) {
         Ok(h) => h,
         Err(e) => {
-            eprintln!("build-cache-env: no exec host on this box: {e}");
-            return;
+            return letibot_tokencore::apparatus::absent(&format!(
+                "an exec host (build-cache-env): {e}"
+            ));
         }
     };
     let r = call(

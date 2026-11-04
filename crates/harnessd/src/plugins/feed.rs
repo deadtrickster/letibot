@@ -176,10 +176,8 @@ mod tests {
                 .unwrap_or(false)
         };
         if !git(&["init", "-q"]) {
-            // A box with no git: the sentence a reader needs, not a red test (AGENTS.md).
-            eprintln!("skipped: this box has no `git` to ask");
             let _ = std::fs::remove_dir_all(&root);
-            return;
+            return letibot_tokencore::apparatus::absent("`git`");
         }
         letibot_tools::testing::repo_config(&repo);
         let made = git(&[

@@ -112,8 +112,9 @@ fn a_bang_line_runs_in_the_workspace_and_lands_as_two_rows_with_no_decision() {
                 msg.contains("cgroup") || msg.contains("reap") || msg.contains("exec"),
                 "a refusal must name what was missing: {msg}"
             );
-            eprintln!("bang-rows: no exec host on this box, refusing open: {msg}");
-            return;
+            return letibot_tokencore::apparatus::absent(&format!(
+                "an exec host (bang-rows): {msg}"
+            ));
         }
     };
 
@@ -206,8 +207,9 @@ fn the_turn_the_line_starts_hands_the_model_the_commands_output() {
     let mut h = match Harness::open_with(&p, cfg, hub.clone(), None, None) {
         Ok(h) => h,
         Err(e) => {
-            eprintln!("bang-model-reads: no exec host on this box: {e}");
-            return;
+            return letibot_tokencore::apparatus::absent(&format!(
+                "an exec host (bang-model-reads): {e}"
+            ));
         }
     };
     let marker = format!("bang-reads-marker-{}", std::process::id());
@@ -289,8 +291,9 @@ fn a_command_that_cannot_start_lands_as_a_failed_row() {
     let mut h = match Harness::open_with(&p, cfg, hub.clone(), None, None) {
         Ok(h) => h,
         Err(e) => {
-            eprintln!("bang-nostart: no exec host on this box: {e}");
-            return;
+            return letibot_tokencore::apparatus::absent(&format!(
+                "an exec host (bang-nostart): {e}"
+            ));
         }
     };
     // A command that cannot start: the shell is asked to `exec` a binary that does not exist.
@@ -337,8 +340,7 @@ fn a_sudo_inside_a_bang_line_asks_the_head_for_the_password_and_gets_it() {
     let h = match Harness::open_with(p, cfg.clone(), hub.clone(), None, None) {
         Ok(h) => h,
         Err(e) => {
-            eprintln!("bang-sudo: no exec host on this box: {e}");
-            return;
+            return letibot_tokencore::apparatus::absent(&format!("an exec host (bang-sudo): {e}"));
         }
     };
     // The registry that serves the socket, so the helper's attach reaches THIS hub.
@@ -534,8 +536,9 @@ fn a_bang_line_that_asks_is_answered_and_finishes() {
     ) {
         Ok(h) => h,
         Err(e) => {
-            eprintln!("bang-answered: no exec host on this box: {e}");
-            return;
+            return letibot_tokencore::apparatus::absent(&format!(
+                "an exec host (bang-answered): {e}"
+            ));
         }
     };
     let server = serve_registry(registry, &socket).expect("bind");
@@ -659,8 +662,9 @@ fn the_manual_send_reaches_a_running_commands_stdin() {
     ) {
         Ok(h) => h,
         Err(e) => {
-            eprintln!("bang-manual: no exec host on this box: {e}");
-            return;
+            return letibot_tokencore::apparatus::absent(&format!(
+                "an exec host (bang-manual): {e}"
+            ));
         }
     };
     let server = serve_registry(registry, &socket).expect("bind");
@@ -734,8 +738,9 @@ fn a_program_that_prints_a_question_and_exits_raises_no_card() {
         ) {
             Ok(h) => h,
             Err(e) => {
-                eprintln!("bang-noquestion: no exec host on this box: {e}");
-                return;
+                return letibot_tokencore::apparatus::absent(&format!(
+                    "an exec host (bang-noquestion): {e}"
+                ));
             }
         };
         let server = serve_registry(registry, &socket).expect("bind");
@@ -780,8 +785,9 @@ fn a_program_that_prints_a_question_and_exits_raises_no_card() {
         ) {
             Ok(h) => h,
             Err(e) => {
-                eprintln!("bang-blocked: no exec host on this box: {e}");
-                return;
+                return letibot_tokencore::apparatus::absent(&format!(
+                    "an exec host (bang-blocked): {e}"
+                ));
             }
         };
         let server = serve_registry(registry, &socket).expect("bind");

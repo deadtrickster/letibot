@@ -49,8 +49,9 @@ fn a_transcript_from_the_other_dialect_re_renders_under_this_one() {
     let view = LiveView::open(&store_path)
         .unwrap_or_else(|e| panic!("opening {}: {e}", store_path.display()));
     let Some(transcript_id) = biggest_foreign(&view, &ours) else {
-        eprintln!("skipped: no transcript recorded under a different dialect");
-        return;
+        return letibot_tokencore::apparatus::absent(
+            "a stored transcript recorded under a different dialect",
+        );
     };
     let loaded = view.load(&transcript_id).expect("it loads");
 

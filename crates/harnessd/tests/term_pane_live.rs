@@ -547,8 +547,7 @@ fn a_pane_runs_inside_the_boundary_its_session_installed() {
     let bwrap = match Bwrap::project(&ws) {
         Ok(b) => Arc::new(b),
         Err(e) => {
-            eprintln!("SKIP: no usable boundary on this box: {e}");
-            return;
+            return letibot_tokencore::apparatus::absent(&format!("a usable boundary: {e}"));
         }
     };
     let registry = daemon("s-confined", &ws);

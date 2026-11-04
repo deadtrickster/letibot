@@ -353,11 +353,10 @@ fn the_runner_role_does_not_seat_bash_without_its_own_flag() {
                 e.contains("refusal") || e.contains("coder"),
                 "the refusal must say what to do instead: {e}"
             );
-            eprintln!(
-                "SKIPPING THE SEATING HALF: this box cannot build a confined backend, \
-                 and that is the correct outcome rather than an unconfined one. {e}"
-            );
-            return;
+            return letibot_tokencore::apparatus::absent(&format!(
+                "a boundary this box can build (the refusal is the correct outcome, not an \
+                 unconfined backend): {e}"
+            ));
         }
     };
 
@@ -427,8 +426,9 @@ fn the_coder_role_does_not_seat_bash_without_its_own_flag_and_grants_reach_the_v
                 e.contains("cgroup") || e.contains("boundary") || e.contains("confin"),
                 "a confined backend failed for a reason it did not name: {e}"
             );
-            eprintln!("SKIPPING THE SEATING HALF: this box cannot build a boundary. {e}");
-            return;
+            return letibot_tokencore::apparatus::absent(&format!(
+                "a boundary this box can build: {e}"
+            ));
         }
     };
     assert!(
@@ -466,12 +466,10 @@ fn the_coder_role_does_not_seat_bash_without_its_own_flag_and_grants_reach_the_v
     // A grant is a rule of a boundary, so there is nothing for the view to name when there is
     // no view.
     if w.backend.contains("NOT CONFINED") {
-        eprintln!(
-            "SKIPPING THE GRANT HALF: no boundary was built for this checkout — {} — so there is \
-             no view for a grant to be in. The seating half above did measure.",
+        return letibot_tokencore::apparatus::absent(&format!(
+            "a boundary for this checkout ({}), so there is no view for a grant to be in",
             w.backend
-        );
-        return;
+        ));
     }
     assert!(
         all.contains(".cargo"),
