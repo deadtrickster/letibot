@@ -597,3 +597,102 @@ fn the_header_and_the_tree_lead_with_the_name_and_keep_the_id_in_details() {
         own[at + 1]
     );
 }
+
+/// A daemon with the head's own workspace, one project moved an hour ago, one three days ago and
+/// one that never moved.
+fn recency_daemon() -> App {
+    let now = letibot_sessionlog::registry::now_ms();
+    let in_ws = |id: &str, ws: &str, moved: u64| {
+        let mut b = brief(id, &format!("work in {ws}"), false);
+        b.wiring = letibot_sessionlog::SessionWiring {
+            workspace: format!("/home/dead/Projects/{ws}"),
+            ..wiring()
+        };
+        b.moved_ms = moved;
+        b
+    };
+    let hour = 60 * 60 * 1000;
+    standing_in(
+        "s-own",
+        vec![
+            in_ws("s-old", "dusty", now - 72 * hour),
+            in_ws("s-own", "home-ws", now - 30 * hour),
+            in_ws("s-fresh", "fresh", now - hour),
+            in_ws("s-never", "never", 0),
+        ],
+    )
+}
+
+fn node_titles(a: &App) -> Vec<String> {
+    a.session_rows()
+        .iter()
+        .filter(|r| r.idx.is_none())
+        .map(|r| r.node.title())
+        .collect()
+}
+
+/// The daemon's own workspace opens the list, expanded, whatever its age. Everything else sits in
+/// two folded groups by recency, and every project is still counted.
+#[test]
+fn projects_are_grouped_by_recency_with_the_own_workspace_first() {
+    let a = recency_daemon();
+    let rows = a.session_rows();
+    assert_eq!(
+        node_titles(&a),
+        vec!["home-ws (1)", "other projects (1)", "older (2)"],
+        "own first, then the recent group, then the older one"
+    );
+    assert_eq!(rows[0].depth, 0);
+    assert_eq!(rows[0].open, Some(true), "the own workspace is expanded");
+    assert!(rows[1].idx.is_some(), "its session is the next row");
+    let groups: Vec<_> = rows
+        .iter()
+        .filter(|r| r.depth == 0 && r.idx.is_none())
+        .collect();
+    assert_eq!(groups[1].open, Some(false));
+    assert_eq!(groups[2].open, Some(false));
+    // Nothing dropped: opening both groups and their projects shows all four sessions.
+    let mut a = a;
+    for key in [
+        "groups/recent",
+        "groups/older",
+        "/home/dead/Projects/fresh",
+        "/home/dead/Projects/dusty",
+        "/home/dead/Projects/never",
+    ] {
+        a.set_row_fold(key, true);
+    }
+    assert_eq!(tree(&a).len(), 4, "{:?}", node_titles(&a));
+    let (own, plugins) = both_lists(&a);
+    assert_eq!(own, plugins, "both drawings group alike");
+}
+
+/// A project line explains itself once, on the first one, and not under each.
+#[test]
+fn the_workspace_root_line_is_said_once() {
+    let mut a = recency_daemon();
+    for key in [
+        "groups/recent",
+        "groups/older",
+        "/home/dead/Projects/fresh",
+        "/home/dead/Projects/dusty",
+        "/home/dead/Projects/never",
+    ] {
+        a.set_row_fold(key, true);
+    }
+    let (own, plugins) = both_lists(&a);
+    assert_eq!(own, plugins);
+    let said = |lines: &[String]| {
+        lines
+            .iter()
+            .filter(|l| l.contains("a workspace root, and every session that runs in it"))
+            .count()
+    };
+    assert_eq!(said(&own), 1, "{}", own.join("\n"));
+    assert_eq!(said(&plugins), 1);
+    assert!(
+        own.iter().any(|l| l.contains("other projects (1)")),
+        "{}",
+        own.join("\n")
+    );
+}

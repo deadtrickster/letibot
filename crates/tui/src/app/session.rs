@@ -245,17 +245,24 @@ impl App {
         let place = self.placements();
         let projects = self.projects(&place);
         let here = self.here_nodes(&place);
-        for project in &projects {
-            // A removed session is not counted either - a project line saying `(7)` over six
-            // rows is a number that lies about what it hides, and the same filter feeds the
-            // built-in layer's copy of this list (`App::sessions_feed`).
-            let members: Vec<usize> = (0..self.sessions.len())
-                .filter(|&i| place[i].project == project.key && !self.removed_chain(i))
-                .collect();
-            let node = Node::Project {
-                key: project.key.clone(),
-                name: project.name.clone(),
-                count: members.len(),
+        let now = letibot_sessionlog::registry::now_ms();
+        let in_bucket = |b: Bucket| -> Vec<&Project> {
+            projects
+                .iter()
+                .filter(|p| self.bucket_of(&place, &p.key, now) == b)
+                .collect()
+        };
+        for project in in_bucket(Bucket::Own) {
+            self.push_project(&mut out, project, 0, &place, &here, &path);
+        }
+        for b in [Bucket::Recent, Bucket::Older] {
+            let group = in_bucket(b);
+            if group.is_empty() {
+                continue;
+            }
+            let node = Node::Bucket {
+                bucket: b,
+                count: group.len(),
             };
             let open = self.node_open(&node, &here);
             out.push(SessionRow {
@@ -264,85 +271,9 @@ impl App {
                 node,
                 open: Some(open),
             });
-            if !open {
-                continue;
-            }
-            // The project's own tree - the sessions nobody spawned, and their children at any
-            // depth. A child whose parent is not on this list (a session whose parent is gone) is
-            // a root here, which is the honest reading: an orphan is not a subagent.
-            let branch = Branch {
-                project: &project.key,
-                system: None,
-                place: &place,
-            };
-            for &i in &members {
-                if place[i].system.is_some() || self.parent_on_list(i).is_some() {
-                    continue;
-                }
-                self.push_session(&mut out, i, 1, &path, false, Some(branch));
-            }
-            // The `system` branch, when this project has one.
-            let system: Vec<usize> = members
-                .iter()
-                .copied()
-                .filter(|&i| place[i].system.is_some())
-                .collect();
-            if system.is_empty() {
-                continue;
-            }
-            let node = Node::System {
-                key: system_key(&project.key),
-                count: system.len(),
-            };
-            let open = self.node_open(&node, &here);
-            out.push(SessionRow {
-                idx: None,
-                depth: 1,
-                node,
-                open: Some(open),
-            });
-            if !open {
-                continue;
-            }
-            for kind in SystemKind::ALL {
-                let group: Vec<usize> = system
-                    .iter()
-                    .copied()
-                    .filter(|&i| place[i].system == Some(kind))
-                    .collect();
-                if group.is_empty() {
-                    continue;
-                }
-                let node = Node::Group {
-                    key: group_key(&project.key, kind),
-                    kind,
-                    count: group.len(),
-                };
-                let open = self.node_open(&node, &here);
-                out.push(SessionRow {
-                    idx: None,
-                    depth: 2,
-                    node,
-                    open: Some(open),
-                });
-                if !open {
-                    continue;
-                }
-                let branch = Branch {
-                    project: &project.key,
-                    system: Some(kind),
-                    place: &place,
-                };
-                for &i in &group {
-                    // A row is drawn once, under its parent when that parent is in this same
-                    // group; a reviewer whose parent is the operator's own conversation is a root
-                    // of `reviewers`, because its parent is not on this branch.
-                    if self.parent_on_list(i).is_some_and(|p| {
-                        place[p].system == Some(kind) && place[p].project == project.key
-                    }) {
-                        continue;
-                    }
-                    self.push_session(&mut out, i, 3, &path, false, Some(branch));
+            if open {
+                for project in group {
+                    self.push_project(&mut out, project, 1, &place, &here, &path);
                 }
             }
         }
@@ -379,6 +310,118 @@ impl App {
             }
         }
         out
+    }
+
+    /// One project's line and, when it is open, its tree and `system` branch. `base` is the line's own
+    /// depth: 0 on its own, 1 inside a recency group.
+    fn push_project(
+        &self,
+        out: &mut Vec<SessionRow>,
+        project: &Project,
+        base: usize,
+        place: &[Placement],
+        here: &[String],
+        path: &[String],
+    ) {
+        // A removed session is not counted either - a project line saying `(7)` over six
+        // rows is a number that lies about what it hides, and the same filter feeds the
+        // built-in layer's copy of this list (`App::sessions_feed`).
+        let members: Vec<usize> = (0..self.sessions.len())
+            .filter(|&i| place[i].project == project.key && !self.removed_chain(i))
+            .collect();
+        let node = Node::Project {
+            key: project.key.clone(),
+            name: project.name.clone(),
+            count: members.len(),
+        };
+        let open = self.node_open(&node, here);
+        out.push(SessionRow {
+            idx: None,
+            depth: base,
+            node,
+            open: Some(open),
+        });
+        if !open {
+            return;
+        }
+        // The project's own tree - the sessions nobody spawned, and their children at any
+        // depth. A child whose parent is not on this list (a session whose parent is gone) is
+        // a root here, which is the honest reading: an orphan is not a subagent.
+        let branch = Branch {
+            project: &project.key,
+            system: None,
+            place,
+        };
+        for &i in &members {
+            if place[i].system.is_some() || self.parent_on_list(i).is_some() {
+                continue;
+            }
+            self.push_session(out, i, base + 1, path, false, Some(branch));
+        }
+        // The `system` branch, when this project has one.
+        let system: Vec<usize> = members
+            .iter()
+            .copied()
+            .filter(|&i| place[i].system.is_some())
+            .collect();
+        if system.is_empty() {
+            return;
+        }
+        let node = Node::System {
+            key: system_key(&project.key),
+            count: system.len(),
+        };
+        let open = self.node_open(&node, here);
+        out.push(SessionRow {
+            idx: None,
+            depth: base + 1,
+            node,
+            open: Some(open),
+        });
+        if !open {
+            return;
+        }
+        for kind in SystemKind::ALL {
+            let group: Vec<usize> = system
+                .iter()
+                .copied()
+                .filter(|&i| place[i].system == Some(kind))
+                .collect();
+            if group.is_empty() {
+                continue;
+            }
+            let node = Node::Group {
+                key: group_key(&project.key, kind),
+                kind,
+                count: group.len(),
+            };
+            let open = self.node_open(&node, here);
+            out.push(SessionRow {
+                idx: None,
+                depth: base + 2,
+                node,
+                open: Some(open),
+            });
+            if !open {
+                continue;
+            }
+            let branch = Branch {
+                project: &project.key,
+                system: Some(kind),
+                place,
+            };
+            for &i in &group {
+                // A row is drawn once, under its parent when that parent is in this same
+                // group; a reviewer whose parent is the operator's own conversation is a root
+                // of `reviewers`, because its parent is not on this branch.
+                if self.parent_on_list(i).is_some_and(|p| {
+                    place[p].system == Some(kind) && place[p].project == project.key
+                }) {
+                    continue;
+                }
+                self.push_session(out, i, base + 3, path, false, Some(branch));
+            }
+        }
     }
 
     /// One session's row and, when it is open, its children: the recursive half of the tree, shared
@@ -573,6 +616,27 @@ impl App {
             };
         }
         out
+    }
+
+    /// Which top-level group a project is drawn in: the daemon's own workspace (the project of the session this
+    /// head is in), a session active inside [`RECENT_MS`] of `now`, or everything older.
+    pub(crate) fn bucket_of(&self, place: &[Placement], key: &str, now: u64) -> Bucket {
+        if self
+            .index_of(&self.session_id)
+            .is_some_and(|i| place[i].project == key)
+        {
+            return Bucket::Own;
+        }
+        let moved = (0..self.sessions.len())
+            .filter(|&i| place[i].project == key && !self.removed_chain(i))
+            .map(|i| self.sessions[i].moved_ms)
+            .max()
+            .unwrap_or(0);
+        if moved >= now.saturating_sub(RECENT_MS) && moved > 0 {
+            Bucket::Recent
+        } else {
+            Bucket::Older
+        }
     }
 
     /// The nodes on the way to where this head is standing: the project, its `system` branch and
@@ -1386,6 +1450,33 @@ impl SystemKind {
 pub(crate) const PACKAGES_KEY: &str = "fleet/packages";
 pub(crate) const UNLISTED_KEY: &str = "fleet/unlisted";
 
+/// How recent a project's newest session must be for it to sit in `other projects` rather than `older`.
+pub(crate) const RECENT_MS: u64 = 24 * 60 * 60 * 1000;
+pub(crate) const RECENT_KEY: &str = "groups/recent";
+pub(crate) const OLDER_KEY: &str = "groups/older";
+
+/// What the first project line says it is. Said once, since the same words under forty lines are noise.
+pub(crate) const PROJECT_LEGEND: &str = "a workspace root, and every session that runs in it";
+
+/// Where a project is drawn: open at the top, or in one of two folded groups.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Bucket {
+    Own,
+    Recent,
+    Older,
+}
+
+impl Bucket {
+    /// The word the feed carries for it.
+    pub(crate) fn word(self) -> &'static str {
+        match self {
+            Bucket::Own => "own",
+            Bucket::Recent => "recent",
+            Bucket::Older => "older",
+        }
+    }
+}
+
 /// What the line over other daemons' packages says it is.
 pub(crate) const FLEET_LEGEND: &str =
     "package sessions of other folders' daemons - enter says how to attach";
@@ -1409,6 +1500,11 @@ pub(crate) enum Node {
         count: usize,
     },
     Session,
+    /// A folded group of projects: `Recent` or `Older`, never `Own`.
+    Bucket {
+        bucket: Bucket,
+        count: usize,
+    },
     /// The line over the package sessions of other daemons.
     Packages {
         count: usize,
@@ -1429,6 +1525,11 @@ impl Node {
     pub(crate) fn key(&self) -> &str {
         match self {
             Node::Project { key, .. } | Node::System { key, .. } | Node::Group { key, .. } => key,
+            Node::Bucket {
+                bucket: Bucket::Older,
+                ..
+            } => OLDER_KEY,
+            Node::Bucket { .. } => RECENT_KEY,
             Node::Packages { .. } => PACKAGES_KEY,
             Node::FleetUnlisted { .. } => UNLISTED_KEY,
             Node::Fleet { id } => id,
@@ -1442,6 +1543,11 @@ impl Node {
             Node::Project { name, count, .. } => format!("{name} ({count})"),
             Node::System { count, .. } => format!("system ({count})"),
             Node::Group { kind, count, .. } => format!("{} ({count})", kind.title()),
+            Node::Bucket {
+                bucket: Bucket::Older,
+                count,
+            } => format!("older ({count})"),
+            Node::Bucket { count, .. } => format!("other projects ({count})"),
             Node::Packages { count } => format!("packages in other daemons ({count})"),
             Node::FleetUnlisted { count } => letibot_sessionlog::fleet::unlisted_words(*count),
             Node::Session | Node::Fleet { .. } => String::new(),
@@ -1451,7 +1557,12 @@ impl Node {
     /// The faint line under a node, saying what it is.
     pub(crate) fn legend(&self) -> &'static str {
         match self {
-            Node::Project { .. } => "a workspace root, and every session that runs in it",
+            Node::Project { .. } => "",
+            Node::Bucket {
+                bucket: Bucket::Older,
+                ..
+            } => "projects with nothing in the last 24 hours",
+            Node::Bucket { .. } => "projects with a session active in the last 24 hours",
             Node::System { .. } => "the sessions the harness runs for itself",
             Node::Group { kind, .. } => kind.legend(),
             Node::Packages { .. } => FLEET_LEGEND,

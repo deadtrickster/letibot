@@ -76,6 +76,11 @@ struct Fleet {
 /// The fold key of the packages line, the head's `PACKAGES_KEY`.
 const PACKAGES_KEY: &str = "fleet/packages";
 const UNLISTED_KEY: &str = "fleet/unlisted";
+/// The fold keys of the two project groups, the head's `RECENT_KEY` and `OLDER_KEY`.
+const RECENT_KEY: &str = "groups/recent";
+const OLDER_KEY: &str = "groups/older";
+/// Said under the first project line only.
+const PROJECT_LEGEND: &str = "a workspace root, and every session that runs in it";
 
 /// One session, as the head holds it and as this list reads it.
 #[derive(Debug, Deserialize)]
@@ -126,6 +131,9 @@ struct Session {
     project: String,
     #[serde(default)]
     project_name: String,
+    /// `own`, `recent` or `older`: the top-level group the head put the project in.
+    #[serde(default)]
+    bucket: String,
     /// **Which group under `system` this row belongs to** (`gatekeepers`, `reviewers`,
     /// `keepers`), or `None` for a session of the project's own tree.
     #[serde(default)]
@@ -202,9 +210,9 @@ impl Ctx<'_> {
     }
 
     /// **The projects this feed holds, in the order it lists them** - the key and the name to draw.
-    fn projects(&self) -> Vec<(&str, &str)> {
+    fn projects(&self, bucket: &str) -> Vec<(&str, &str)> {
         let mut out: Vec<(&str, &str)> = Vec::new();
-        for s in self.sessions {
+        for s in self.sessions.iter().filter(|s| s.bucket == bucket) {
             if !out.iter().any(|(k, _)| *k == s.project) {
                 out.push((&s.project, &s.project_name));
             }
@@ -277,100 +285,44 @@ fn rows(ctx: &Ctx<'_>) -> Vec<Out> {
     }
     let mut out = Vec::new();
     let mut number = 0;
-    for (project, name) in ctx.projects() {
-        let members: Vec<usize> = (0..ctx.sessions.len())
-            .filter(|&i| ctx.sessions[i].project == project)
-            .collect();
-        let key = project.to_string();
-        let open = ctx.node_open(&key);
+    let mut said = false;
+    let mut say = || {
+        let l = if said { "" } else { PROJECT_LEGEND };
+        said = true;
+        l
+    };
+    for p in ctx.projects("own") {
+        push_project(ctx, &mut out, &mut number, p, 0, say());
+    }
+    for (bucket, key, title, legend) in [
+        (
+            "recent",
+            RECENT_KEY,
+            "other projects",
+            "projects with a session active in the last 24 hours",
+        ),
+        (
+            "older",
+            OLDER_KEY,
+            "older",
+            "projects with nothing in the last 24 hours",
+        ),
+    ] {
+        let group = ctx.projects(bucket);
+        if group.is_empty() {
+            continue;
+        }
+        let open = ctx.node_open(key);
         out.push(node_row(
-            key,
+            key.to_string(),
             0,
-            format!("{name} ({})", members.len()),
-            "a workspace root, and every session that runs in it",
+            format!("{title} ({})", group.len()),
+            legend,
             open,
         ));
-        if !open {
-            continue;
-        }
-        // **The project's own tree** - the sessions nobody spawned, and their children.
-        for &i in &members {
-            if ctx.sessions[i].system.is_some() || ctx.parent_in(i, project, None) {
-                continue;
-            }
-            number += 1;
-            let fold = has_fold(ctx, i, Some((project, None)));
-            out.push(session_row(ctx, i, 1, number, fold));
-            children(
-                ctx,
-                &mut out,
-                &ctx.sessions[i].id,
-                2,
-                &mut number,
-                false,
-                Some((project, None)),
-            );
-        }
-        // **The `system` branch**, when this project has one - and no line at all when it has not.
-        let system: Vec<usize> = members
-            .iter()
-            .copied()
-            .filter(|&i| ctx.sessions[i].system.is_some())
-            .collect();
-        if system.is_empty() {
-            continue;
-        }
-        let skey = format!("{project}/system");
-        let open = ctx.node_open(&skey);
-        out.push(node_row(
-            skey,
-            1,
-            format!("system ({})", system.len()),
-            "the sessions the harness runs for itself",
-            open,
-        ));
-        if !open {
-            continue;
-        }
-        for (group, legend) in SYSTEM {
-            let group_members: Vec<usize> = system
-                .iter()
-                .copied()
-                .filter(|&i| ctx.sessions[i].system.as_deref() == Some(group))
-                .collect();
-            if group_members.is_empty() {
-                continue;
-            }
-            let gkey = format!("{project}/system/{group}");
-            let open = ctx.node_open(&gkey);
-            out.push(node_row(
-                gkey,
-                2,
-                format!("{group} ({})", group_members.len()),
-                legend,
-                open,
-            ));
-            if !open {
-                continue;
-            }
-            for &i in &group_members {
-                // **A row is drawn once**, under its parent when that parent is in this same
-                // group; anything else is a root of the group's tree.
-                if ctx.parent_in(i, project, Some(group)) {
-                    continue;
-                }
-                number += 1;
-                let fold = has_fold(ctx, i, Some((project, Some(group))));
-                out.push(session_row(ctx, i, 3, number, fold));
-                children(
-                    ctx,
-                    &mut out,
-                    &ctx.sessions[i].id,
-                    4,
-                    &mut number,
-                    false,
-                    Some((project, Some(group))),
-                );
+        if open {
+            for p in group {
+                push_project(ctx, &mut out, &mut number, p, 1, say());
             }
         }
     }
@@ -420,6 +372,113 @@ fn rows(ctx: &Ctx<'_>) -> Vec<Out> {
     out
 }
 
+/// One project's line and, when it is open, its tree and `system` branch. `base` is the line's own depth,
+/// and `legend` the sentence under it (empty after the first project line).
+fn push_project(
+    ctx: &Ctx<'_>,
+    out: &mut Vec<Out>,
+    number: &mut usize,
+    (project, name): (&str, &str),
+    base: usize,
+    legend: &str,
+) {
+    let members: Vec<usize> = (0..ctx.sessions.len())
+        .filter(|&i| ctx.sessions[i].project == project)
+        .collect();
+    let key = project.to_string();
+    let open = ctx.node_open(&key);
+    out.push(node_row(
+        key,
+        base,
+        format!("{name} ({})", members.len()),
+        legend,
+        open,
+    ));
+    if !open {
+        return;
+    }
+    // **The project's own tree** - the sessions nobody spawned, and their children.
+    for &i in &members {
+        if ctx.sessions[i].system.is_some() || ctx.parent_in(i, project, None) {
+            continue;
+        }
+        *number += 1;
+        let fold = has_fold(ctx, i, Some((project, None)));
+        out.push(session_row(ctx, i, base + 1, *number, fold));
+        children(
+            ctx,
+            out,
+            &ctx.sessions[i].id,
+            base + 2,
+            number,
+            false,
+            Some((project, None)),
+        );
+    }
+    // **The `system` branch**, when this project has one - and no line at all when it has not.
+    let system: Vec<usize> = members
+        .iter()
+        .copied()
+        .filter(|&i| ctx.sessions[i].system.is_some())
+        .collect();
+    if system.is_empty() {
+        return;
+    }
+    let skey = format!("{project}/system");
+    let open = ctx.node_open(&skey);
+    out.push(node_row(
+        skey,
+        base + 1,
+        format!("system ({})", system.len()),
+        "the sessions the harness runs for itself",
+        open,
+    ));
+    if !open {
+        return;
+    }
+    for (group, group_legend) in SYSTEM {
+        let group_members: Vec<usize> = system
+            .iter()
+            .copied()
+            .filter(|&i| ctx.sessions[i].system.as_deref() == Some(group))
+            .collect();
+        if group_members.is_empty() {
+            continue;
+        }
+        let gkey = format!("{project}/system/{group}");
+        let open = ctx.node_open(&gkey);
+        out.push(node_row(
+            gkey,
+            base + 2,
+            format!("{group} ({})", group_members.len()),
+            group_legend,
+            open,
+        ));
+        if !open {
+            continue;
+        }
+        for &i in &group_members {
+            // **A row is drawn once**, under its parent when that parent is in this same
+            // group; anything else is a root of the group's tree.
+            if ctx.parent_in(i, project, Some(group)) {
+                continue;
+            }
+            *number += 1;
+            let fold = has_fold(ctx, i, Some((project, Some(group))));
+            out.push(session_row(ctx, i, base + 3, *number, fold));
+            children(
+                ctx,
+                out,
+                &ctx.sessions[i].id,
+                base + 4,
+                number,
+                false,
+                Some((project, Some(group))),
+            );
+        }
+    }
+}
+
 /// One node's line: what it is, how many rows it holds, how it folds and what Enter does to it.
 fn node_row(key: String, depth: usize, title: String, legend: &str, open: bool) -> Out {
     Out {
@@ -429,7 +488,11 @@ fn node_row(key: String, depth: usize, title: String, legend: &str, open: bool) 
         // **A project's line is a PATH**, which is somebody's too - the same rule as a row's words.
         cells: vec![Cell::role(clean(&title), Role::Strong)],
         facts: Vec::new(),
-        under: vec![legend.to_string()],
+        under: if legend.is_empty() {
+            Vec::new()
+        } else {
+            vec![legend.to_string()]
+        },
         open: Some(if open { Fold::Open } else { Fold::Closed }),
         enter: Some(Act::fold()),
     }

@@ -593,6 +593,7 @@ impl App {
     pub(crate) fn sessions_feed(&self) -> Value {
         let place = self.placements();
         let projects = self.projects(&place);
+        let now = letibot_sessionlog::registry::now_ms();
         let name_of = |key: &str| {
             projects
                 .iter()
@@ -633,6 +634,9 @@ impl App {
                     // group when it is one of the harness's own agents.
                     "project": place[i].project,
                     "project_name": name_of(&place[i].project),
+                    // Which top-level group the project is drawn in, decided here for the same
+                    // reason as `project`.
+                    "bucket": self.bucket_of(&place, &place[i].project, now).word(),
                     "system": place[i].system.map(|k| k.title()),
                 })
             })
@@ -745,6 +749,7 @@ impl App {
         let mut tree: Vec<TreeRow> = Vec::with_capacity(rows.len());
         let mut listed: Vec<Listed> = Vec::with_capacity(rows.len());
         let mut number = 0;
+        let mut said_project = false;
         for r in &rows {
             let open = r.open.map(|o| if o { Fold::Open } else { Fold::Closed });
             match r.idx {
@@ -835,6 +840,15 @@ impl App {
                     });
                 }
                 None => {
+                    // The project legend is said on the first project line only.
+                    let legend = match &r.node {
+                        crate::app::session::Node::Project { .. } if !said_project => {
+                            said_project = true;
+                            crate::app::session::PROJECT_LEGEND
+                        }
+                        crate::app::session::Node::Project { .. } => "",
+                        _ => r.node.legend(),
+                    };
                     // A node's line is a stop with an act of its own - `enter` folds it - and
                     // it carries no number, because a number is somewhere to go.
                     let key = r.node.key().to_string();
@@ -853,7 +867,11 @@ impl App {
                             rano::style::Role::Strong,
                         )],
                         facts: Vec::new(),
-                        detail: vec![r.node.legend().to_string()],
+                        detail: if legend.is_empty() {
+                            Vec::new()
+                        } else {
+                            vec![legend.to_string()]
+                        },
                         detail_column: None,
                         actions: vec![TreeAction::new("enter", words)],
                         ..TreeRow::default()
