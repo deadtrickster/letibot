@@ -349,7 +349,7 @@ mod tests {
         }
     }
 
-    /// The live case, replayed on the controller. the fold of
+    /// The live case, replayed on the controller: the fold of
     /// 941,101 was ESTIMATED at 1,039,055 - past the window - and the first round on `#t18`
     /// measured 507,355.
     #[test]
@@ -403,8 +403,8 @@ mod tests {
     }
 
     /// A refusal after `Stuck` still folds, with the hardest press, and so does
-    /// one in every other state: the wedge was a stood-down switch that
-    /// the refused door also read.
+    /// one in every other state: the wedge to avoid is a stood-down switch
+    /// that the refused door also read.
     #[test]
     fn a_refusal_is_folded_from_every_state_stuck_included() {
         let mut c = WallControl::default();

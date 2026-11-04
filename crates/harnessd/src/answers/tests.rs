@@ -959,7 +959,7 @@ fn what_the_person_was_shown_is_recorded_verbatim() {
 }
 
 /// The decider is read, not guessed: `close` must not derive the kind from the outcome, or a
-/// head draws `by human human:dead` and an oracle's own admission drew `by human` over a model
+/// head draws `by human human:dead` and an oracle's own admission draws `by human` over a model
 /// id.
 #[test]
 fn a_decider_is_split_into_its_kind_and_its_identity() {

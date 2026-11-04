@@ -1194,7 +1194,7 @@ impl Harness {
     }
 
     /// The turn and its tail, with the speaker given: the body both doors above share, and nothing
-    /// but the shared tail with no owner around it, so it cannot fall behind the daemon's copy.
+    /// but the shared tail with no owner around it, so there is no second copy to fall behind the daemon's.
     fn submit_spoken_as_a_normal_session(
         &mut self,
         speaker: Speaker,
@@ -3803,7 +3803,7 @@ pub(crate) fn provider_refusal(e: &HarnessError) -> Option<u16> {
 /// `HttpError::Status` renders as `http {code}: {body}` and lands as a backend error,
 /// so every recovery gated on `HarnessError::ContextWall` (the turn tail's
 /// `out.is_ok() || wall`) reads false and no door reacts.
-/// : thirty consecutive
+/// Thirty consecutive
 /// 400s, the first attributed to `monitor`, the last to `todo check`, none recovered.
 ///
 /// The two measured shapes, verbatim, because a matcher is only as narrow as its

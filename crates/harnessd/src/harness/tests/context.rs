@@ -296,7 +296,7 @@ fn the_compacted_line_is_one_unit_said_once() {
     };
     let said = super::compacted_line(937_686, base, "deepseek tokens", true);
     // An estimate is labelled as one: ≈ 1,039,055 printed and
-    // judged as if measured; the provider then counted 507,355).
+    // judged as if measured; the provider then counted 507,355.
     assert!(
         said.starts_with("compacted: 937686 → ≈ 75408 deepseek tokens resident"),
         "{said}"

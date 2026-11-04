@@ -177,7 +177,7 @@ mod tests {
     use serde_json::json;
 
     /// Nothing in this contract can admit a call. The five fields are the whole answer, and
-    /// not one of them is a decision the gate asks for: this is the type-level half of the
+    /// not one of them is a decision the gate asks for: this is the type-level half of
     /// principle 3, and it is asserted rather than promised in prose.
     #[test]
     fn there_is_no_field_by_which_a_layer_could_admit_a_call() {

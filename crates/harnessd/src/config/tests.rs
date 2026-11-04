@@ -1813,9 +1813,9 @@ fn every_new_seam_is_disclosed_and_the_line_moves_with_it() {
         detail(&woken, "monitor wake"),
         detail(&watching, "monitor wake")
     );
-    // And a wake nobody could arm is its own line. this one was open: from a bool,
-    // *the daemon's waiter would not start* and *no daemon armed one* were one sentence, and a
-    // reader told *POLL ONLY* goes looking for a knob that would not have helped.
+    // And a wake nobody could arm is its own line. Derived from a bool,
+    // *the daemon's waiter would not start* and *no daemon armed one* would be one sentence, and a
+    // reader told *POLL ONLY* would go looking for a knob that would not help.
     let failed = GateWiring {
         monitor_wake: crate::config::MonitorWake::Failed,
         ..watching.clone()

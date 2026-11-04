@@ -389,7 +389,7 @@ impl TokenLedger {
     }
 
     /// Fork at a row boundary: a new ledger over a new region, with `self` untouched. This is
-    /// fork, not truncate.
+    /// a fork, not a truncation.
     pub fn fork(&self, name: &str, keep_rows: usize) -> Result<TokenLedger, LedgerError> {
         if keep_rows > self.rows.len() {
             return Err(LedgerError::ForkPastEnd {

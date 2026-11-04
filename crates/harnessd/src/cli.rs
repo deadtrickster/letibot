@@ -489,9 +489,9 @@ enum Step {
 /// is the process's exit
 const SUBAGENT_EXIT_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// The daemon's memory caps, said once, by the daemon - /. It is
+/// The daemon's memory caps, said once, by the daemon. It is
 /// not printed by the `harnessd` binary's `main`, or every short-lived invocation of that
-/// binary would say it
+/// binary would say it.
 fn say_memory_caps() {
     match letibot_tools::exec::delegate_memory() {
         Ok(scope) => eprintln!(
@@ -736,7 +736,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             // never reinstated from the row.
             "--etalon" => query = Some(Query::Etalon(PathBuf::from(next()?))),
             // The guard itself over an etalon-shaped JSONL - an attack set, with
-            // the main task as the operator's ask. (BashArena). Needs
+            // the main task as the operator's ask, as in BashArena. Needs
             // --oracle. Rows are seated in a scratch copy of the store.
             "--etalon-oracle" => query = Some(Query::EtalonOracle(PathBuf::from(next()?))),
             // Every command's tree-sitter shape, aggregated and laid out on a
@@ -791,7 +791,8 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             "--role" => cfg.seat = Seat::parse(&next()?)?,
             // The approval policy, separate from the role. `Config::mode` has existed and been
             // disclosed at startup since roles and policy were split -- its own doc says `--role
-            // coder` means both -- but nothing sets it, so every session runs at the
+            // coder` means both -- but nothing sets it, so every session runs at
+            // `UNSEEN_PROJECT`.
             "--mode" => cfg.mode = letibot_tools::mode::Mode::parse(&next()?)?,
             // Bind one path read-only into the confined view. Repeatable. The boundary is hermetic
             // `$HOME` inside is a fresh tmpfs, so `~/.cargo` and `~/.rustup` are absent and `cargo`
@@ -823,7 +824,8 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             }
             // A daemon that serves no queue. The merge and review queues belong to the
             // repository's session daemons, which means a daemon the Claude Code bridge starts in a
-            // package's worktree is one of them by construction - and the one started
+            // package's worktree is one of them by construction - so a daemon started there must be
+            // able to opt out.
             "--no-queue" => cfg.serve_queues = false,
             // The box's room coordinator (the room's slice 2). A whole daemon whose only job is
             // the room: its own socket, no store, no project, and one session of its own that
@@ -1548,7 +1550,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
 
     // What to try when the model this session is on is OUT - `[fallback] models` in the
     // same file, read once here rather than at the moment of need. A model that cannot answer
-    // is the one failure a person cannot fix by waiting
+    // is the one failure a person cannot fix by waiting.
     match letibot_provider::keys::fallback_models(None) {
         Ok(list) if !list.is_empty() => {
             eprintln!(
@@ -3165,8 +3167,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The header names the model that ANSWERS the turns, and says the local binding is the
-    /// binding
+    /// The header names the model that ANSWERS the turns, and says the local binding is only the
+    /// binding.
     #[test]
     fn the_header_names_the_model_that_answers_and_labels_the_binding() {
         // A metered session: the provider answers, the local alias is only the vocabulary.

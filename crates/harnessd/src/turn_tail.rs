@@ -33,7 +33,7 @@ pub enum Door {
     Reseat,
     /// The turn the daemon owes after it moved the session off a model that was out - the
     /// operator's ruling: *"when it finally applied the turn didnt continue"*. The
-    /// model that refused has already been replaced
+    /// model that refused has already been replaced.
     Fallback,
 }
 
@@ -290,7 +290,7 @@ fn settle(
 
 /// Announce a failed turn on the session's own log, as a terminal event. A `Warning` alone
 /// would leave a head's `TurnState` `Running` for the rest of
-/// the session with its spinner on a dead turn. Both frames go out
+/// the session with its spinner on a dead turn. Both frames go out, the terminal event and then the warning.
 pub(crate) fn publish_failure(hub: &Arc<Hub>, turn_id: &str, e: &HarnessError) {
     hub.publish(SessionEvent::TurnFailed {
         turn_id: turn_id.to_string(),

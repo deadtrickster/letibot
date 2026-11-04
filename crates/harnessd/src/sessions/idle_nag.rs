@@ -333,7 +333,7 @@ fn an_unchanged_plan_is_not_a_new_notice() {
 }
 
 /// A change to the QUESTION is a new thing to say - the named row started, or another row named.
-/// A row added elsewhere is not : the notice carries no *"(N more open)"*, which would make any
+/// A row added elsewhere is not a change to the question: the notice carries no *"(N more open)"*, which would make any
 /// row added or closed anywhere a new question and reset the backoff.
 #[test]
 fn a_plan_that_moved_is_armed_again() {

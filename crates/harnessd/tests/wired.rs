@@ -486,7 +486,7 @@ fn the_coder_role_does_not_seat_bash_without_its_own_flag_and_grants_reach_the_v
 // ---------------------------------------------------------------------------
 
 /// The plan mode, and the two tools that make a plan a plan. The interesting assertion is
-/// the negative one
+/// the negative one.
 #[test]
 fn the_planner_seat_can_write_its_plan_and_not_the_work() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -544,7 +544,7 @@ fn the_researcher_seat_carries_seams_that_refuse_by_name() {
 // ---------------------------------------------------------------------------
 
 /// End to end through the parts that will actually carry it. The chain the requirement
-/// exists for
+/// exists for.
 #[test]
 fn a_refusal_reaches_the_operators_log_at_the_moment_it_is_decided() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {

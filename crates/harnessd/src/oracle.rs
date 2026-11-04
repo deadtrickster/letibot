@@ -136,7 +136,7 @@ impl HttpOracle {
         .to_string();
 
         // The budget, made real: a budget the caller merely promises to respect is not one, and
-        // it reaches the request, not only `describe`, whatever the endpoint's own 180-second read
+        // it bounds the request, not only `describe`, in place of the endpoint's own 180-second read
         // timeout.
         let mut endpoint = self.endpoint.clone();
         endpoint.read_timeout = self.budget;

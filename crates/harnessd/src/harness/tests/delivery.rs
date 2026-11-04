@@ -359,7 +359,8 @@ fn the_held_counts_are_said_on_the_hub_when_they_change() {
 }
 
 /// A `when: job` row's job is delivered at once - to a ROOT too, at the round boundary of the
-/// turn that is running. A routine one beside it stays held.
+/// turn that is running. Otherwise a root hears nothing mid-turn: every settlement waits for the
+/// turn to end and then costs a wake turn. A routine one beside it stays held.
 #[test]
 fn a_when_job_rows_job_is_delivered_at_once() {
     let dir = Scratch::new("r79-when");

@@ -40,7 +40,7 @@
 //! - No transport but Unix sockets. The remote head is WebSocket + TLS
 //!   over *the same frames*; [`wire`] is deliberately generic over `Read`/`Write`
 //!   so that head is a transport and not a protocol. It is not built here.
-//! - No ACP adapter. it is an adapter over the same vocabulary; the
+//! - No ACP adapter. It would be an adapter over the same vocabulary; the
 //!   vocabulary is in [`event`] (`DecisionOption`, `option_id`, the four
 //!   `OptionKind`s) so the adapter is a mapping when somebody writes it.
 

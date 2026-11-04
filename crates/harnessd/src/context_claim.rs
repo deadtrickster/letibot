@@ -33,7 +33,7 @@
 //!
 //! # The floor, measured
 //!
-//! on this box's store: 747 distinct sentences carrying `context`, `room`
+//! Measured on this box's store: 747 distinct sentences carrying `context`, `room`
 //! or `running low`, labelled by hand - 79 positives, 641 negatives. Through [`find`]
 //!
 //! ```text
@@ -117,7 +117,7 @@ pub const EXEMPLARS: &[&str] = &[
     "I can't keep all of this in my context, so a subagent will do it.",
     "It is too big for my context, so I'm dispatching it with the sites named.",
     // A capacity claim can RATION work, in reasoning: *"Hmm - my context 49% → one call"*.
-    // Nothing stops, so none of the families above match
+    // Nothing stops, so none of the families above match.
     "My context is at 49%, so one call.",
     "My context is long, so keep the reply tight.",
     "My context is at 90%, so one call and a tight reply.",

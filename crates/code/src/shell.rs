@@ -852,7 +852,7 @@ fn walk(node: &Node, source: &str, ctx: &mut Vec<Context>, out: &mut Normalised)
         "pipeline" => {
             // The pipe flags are a property of position in the pipeline, and they
             // decide `Stage::stdout_surfaces` - which is the structural half of
-            // The "may never enter the transcript".
+            // the flow rule that secrets "may never enter the transcript".
             let members: Vec<&Node> = kids(node)
                 .into_iter()
                 .filter(|c| c.kind != "|" && c.kind != "|&")

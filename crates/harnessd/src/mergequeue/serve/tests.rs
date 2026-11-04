@@ -1527,9 +1527,9 @@ fn a_judged_tip_is_gated_again_on_request_and_when_a_daemon_takes_the_queue() {
     assert_eq!(health().state, HealthState::Green);
 }
 
-/// A red target puts its sentence on a session, not only on a bell - the operator's report
-///: *"those red states must reach top session agent or a gatekeeper"*. A ring
-/// wakes a project's roots and leaves what happened to the store
+/// A red target puts its sentence on a session, not only on a bell - the operator's report:
+/// *"those red states must reach top session agent or a gatekeeper"*. A ring
+/// wakes a project's roots and leaves what happened to the store.
 #[test]
 fn a_red_target_is_told_to_a_session_not_only_rung() {
     let w = World::new("redwords");
@@ -3517,8 +3517,8 @@ fn leases_seen_over(
     (store, out)
 }
 
-/// A repository whose target declares no `Merge gate` is not a queue target - the operator
-/// *"red most of the time everywhere … something happens somewhere and result
+/// A repository whose target declares no `Merge gate` is not a queue target - the operator's
+/// report: *"red most of the time everywhere … something happens somewhere and result
 /// is ignored"*.
 #[test]
 fn a_repository_with_no_merge_gate_is_not_a_queue_target() {
@@ -4506,8 +4506,8 @@ fn the_leases_a_pass_gave_up_are_said_in_one_line() {
     );
 }
 
-/// The startup line is the supervisor's own list - the contradiction the operator read on
-/// *"queues
+/// The startup line is the supervisor's own list, so it must not contradict what the
+/// supervisor examines.
 #[test]
 fn the_serving_line_names_what_the_supervisor_will_actually_examine() {
     // One project of several - the operator's `~/Projects/stroppy-io`, in miniature.
@@ -5038,7 +5038,7 @@ impl GateRunner for Counting {
 
 /// One gate for three branches, and the target moves once per landing. The operator's
 /// decision - *"we can batch merges at this point"* - on the numbers that
-/// made it
+/// made it.
 #[test]
 fn a_train_of_three_green_branches_lands_three_commits_with_one_gate() {
     let w = World::new("train-green");

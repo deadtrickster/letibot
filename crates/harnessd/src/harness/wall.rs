@@ -1861,8 +1861,8 @@ impl Harness {
 ///
 /// # Why equality was the test, and why it is not any more
 ///
-/// The pair is not given back only when the stored ledger EQUALS the
-/// rebuilt one, since the pair would be used as a RATIO: `ledger_now ÷ ratio`. A
+/// Equality of the stored and rebuilt ledgers was once required, because the pair
+/// is used as a RATIO: `ledger_now ÷ ratio`. A
 /// count from a smaller conversation divided into a bigger ledger overstates the
 /// ratio, and the session compacts too late: a store holding
 /// 940,211, measured on a ~950k-token conversation, was paired with a rebuilt
@@ -1873,8 +1873,7 @@ impl Harness {
 /// the last round's `persist_context` - a notice, a nag, the tool result of a turn
 /// that did not end in a round - broke it, the pair was refused, the window went
 /// UNSCALED, and the raw ledger was compared against the provider's window.
-/// On deepseek-flash,
-/// the first idle pass after a restart:
+/// On deepseek-flash, the first idle pass after a restart logged:
 ///
 /// ```text
 /// compacting: 3454266 of 1000000 tokens resident, less than the 62500 the next turn needs
@@ -1886,9 +1885,9 @@ impl Harness {
 /// direction nobody loses a session to"*), and early by 4.6× is losing the
 /// session's working context on every restart.
 ///
-/// An anchor has neither failure. The conversation comes back as
+/// An anchor has neither failure. The 950k conversation comes back as
 /// 940,211 PLUS the ~536k ledger tokens appended since, sized as sent - larger, so
-/// it compacts; the one comes back as ~740k plus one notice - and does
+/// it compacts; the restarted one comes back as ~740k plus one notice - and does
 /// not. Nothing is divided, so a stale count cannot shrink a big ledger, and a
 /// later append cannot throw the count away.
 ///
@@ -1937,8 +1936,7 @@ pub(crate) fn wall_stops_round(
 /// Whether the wall stops THIS round - [`wall_stops_round`]'s arithmetic plus the one
 /// question about where the count came from.
 ///
-/// A session switched from deepseek to
-/// `glm-coding` was stopped at round 0 with
+/// A session switched from deepseek to `glm-coding` was stopped at round 0 with
 ///
 /// ```text
 /// context wall: stopped after 0 round(s) at 2708271 of 1000000 ledger tokens

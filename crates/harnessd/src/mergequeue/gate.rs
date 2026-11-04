@@ -3247,7 +3247,7 @@ exit 101
         );
     }
 
-    /// The arithmetic, on a real cargo stream - on this box
+    /// The arithmetic, on a real cargo stream from this box.
     #[test]
     fn a_real_workspace_stream_is_cut_into_targets_and_only_the_failing_one_is_quoted() {
         let text = r#"   Compiling probe-a v0.1.0 (/w/a)

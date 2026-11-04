@@ -701,7 +701,7 @@ mod tests {
         );
     }
 
-    /// A child still booting its VM is a child
+    /// A child still booting its VM is a child, so it can be waited on by id or name.
     #[test]
     fn a_child_still_booting_its_vm_can_be_waited_on_by_id_or_name() {
         let dir = letibot_sessionlog::testing::scratch_root().join(format!(

@@ -124,7 +124,7 @@ impl Seat {
     /// Whether this seat needs a backend that can start processes, and therefore
     /// the boundary that goes around one.
     pub fn needs_exec_backend(self) -> bool {
-        // Coder joined Runner: a role that writes code and cannot run it leaves
+        // Coder is in Runner: a role that writes code and cannot run it leaves
         // the loop open where it would have paid. `HostBackend::confined` is writable + EXEC, so this
         // adds a project-rooted boundary, not file access - and it does NOT seat `bash`.
         matches!(self, Seat::Runner | Seat::Coder | Seat::Gatekeeper)
@@ -153,7 +153,7 @@ pub struct FlowyConfig {
     pub new_reader: bool,
 }
 
-/// A cloud provider for the turns - the mode 3. `None` is the local server
+/// A cloud provider for the turns - mode 3. `None` is the local server
 /// which is the default and what every invocation got before this existed.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ProviderConfig {

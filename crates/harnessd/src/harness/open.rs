@@ -2297,7 +2297,7 @@ impl Harness {
                 have.push(Prereq::Confinement);
             }
             // The guard model, by the same fact the advisor is built from: `cfg.oracle` is `Some` when an endpoint is
-            // known. Without this `automode` could not open however the box is configured. Reachability
+            // known. Without this `automode` cannot open however the box is configured. Reachability
             // is not tested here, since a probe at open would wait on another box.
             if cfg.oracle.is_some() {
                 have.push(Prereq::Oracle);

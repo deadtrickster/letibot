@@ -70,7 +70,7 @@ pub const SWEEP_AFTER: Duration = Duration::from_secs(2);
 const SETTLE_PATIENCE: Duration = Duration::from_secs(30);
 
 /// How long a `Sessions` being dropped waits for the threads that served its sessions.
-/// a court still freeing the vocabulary when
+/// A court still freeing the vocabulary when
 /// the process runs its ELF finalizers is a SIGSEGV with no `panicked at` anywhere.
 const COURT_TEARDOWN: Duration = Duration::from_secs(2);
 
@@ -588,8 +588,8 @@ enum Follow {
 }
 
 /// One session, on its own thread - the reader that serves it, the shape a subagent already
-/// had (`harness::serve_child`). Before this every session was served by ONE worker, one
-/// command at a time across all of them -
+/// had (`harness::serve_child`). Sessions must not share ONE worker running one command at a
+/// time, or a prompt to one waits behind an unrelated session's turn.
 struct Court {
     /// The nudge. A job sent here does not wake the thread by itself: it is blocked in the hub's
     /// condvar, so [`Court::ask`] rings that too.
@@ -1772,8 +1772,8 @@ impl<'a> Sessions<'a> {
                     lines.push(format!("session {session_id} is not open"));
                     return SlashReply { lines, ok: false };
                 };
-                // The act itself is the harness's - `Harness::apply_model_choice` which is now the ONE
-                // implementation of this verb. It has a second caller as
+                // The act itself is the harness's - `Harness::apply_model_choice`, the ONE
+                // implementation of this verb. The harness's own slash door is its other caller.
                 h.apply_model_choice(choice, lines)
             }
         }
@@ -2293,7 +2293,7 @@ impl<'a> Sessions<'a> {
         };
         // The daemon's session list, handed to the host - a pane on disk that declares the
         // `sessions` feed is drawn from it (`docs/plugins-plan.md`). The registry is the one
-        // holder of *every* session, live and on disk, so it is the whole source
+        // holder of *every* session, live and on disk, so it is the whole source.
         let host =
             crate::plugins::PluginHost::production(session_id, &workspace).with_sessions(Arc::new(
                 crate::plugins::feed::RegistryFeed::new(self.registry.clone()),
@@ -3406,7 +3406,7 @@ impl<'a> Sessions<'a> {
     }
 
     /// Arm the monitor wake for a session that has declared one - the *"wakes the loop when
-    /// it fires"*, which had no caller. A thread and not a poll
+    /// it fires"*, which had no caller. A thread and not a poll.
     pub fn arm_wake(&mut self, session_id: &str) {
         let Some(mut h) = self.open.remove(session_id) else {
             return;
@@ -4041,7 +4041,7 @@ impl<'a> Sessions<'a> {
                 let _ = n;
                 // ARMING HERE IS THE WHOLE POINT OF A ROW THE OPERATOR ADDS. The clock must not start in
                 // one place only - the end of a turn - or a row added to an IDLE session is never
-                // checked. It is the same arm the turn end makes, and an ADD is more than a moved board
+                // checked. It is the same arm the turn end makes, and an ADD is more than a moved board.
                 let after = self
                     .open
                     .get(session_id)
@@ -4553,7 +4553,7 @@ impl<'a> Sessions<'a> {
                     harness.workspace().to_path_buf()
                 };
                 // A consented `allow-all` IS written - with the answer that opens it. It is
-                // otherwise left out of the row, for a good reason
+                // otherwise left out of the row, for a good reason.
                 let consented_here =
                     *consented && mode.name == letibot_tools::mode::Mode::ALLOW_ALL.name;
                 // The row, and then the answer - in that order, through one lock, so a reader of the file
@@ -4835,7 +4835,7 @@ fn shown_tokens(scale: Option<(u64, u64)>) -> impl Fn(usize) -> u64 {
 }
 
 /// The two pairs a compaction's numbers convert through - the history's, and the new
-/// base's. One pair must not convert both: it would be the HISTORY's
+/// base's. One pair must not convert both, or the new base would be read in the HISTORY's units.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Scales {
     pub before: Option<(u64, u64)>,
@@ -5308,9 +5308,9 @@ mod the_wake_route {
         assert_eq!(wake_route(false, None), WakeRoute::Gone);
     }
 
-    /// A dropped wake is a SENTENCE, and it names the session - the half the board named as
-    /// *HOLE NAMED, NOT FIXED*: `Gone` is not `return Outcome::Ignored` with nothing said
-    /// anywhere, or a ring that woke nobody was the one fact in this file with no witness.
+    /// A dropped wake is a SENTENCE, and it names the session: `Gone` must not be
+    /// `return Outcome::Ignored` with nothing said anywhere, or a ring that woke nobody
+    /// would be the one fact in this file with no witness.
     #[test]
     fn a_dropped_wake_names_the_session_and_says_what_is_not_lost() {
         let said = super::dropped_wake("s-gone");

@@ -900,7 +900,7 @@ impl TurnEngine {
             _ => None,
         };
         // The same two ways `TurnOk::truncated` counts - the kept text and
-        // The kept partial. Stamped onto the rows before they are committed so
+        // the kept partial. Stamped onto the rows before they are committed so
         // the transcript and the turn record answer the question identically.
         produced.mark_truncated(
             interrupt_reason.is_some() || matches!(verdict, LengthVerdict::TruncatedText),
