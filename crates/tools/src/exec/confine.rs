@@ -2400,12 +2400,16 @@ fn pieces_of(
     // The seat's fence, after the mounts it has to win over: a wide view reaches every store, and a
     // tight one reaches the few a grant covers. A store the view does not reach, or that is not on
     // the disk, gets no mount: bwrap would make the mount point in the operator's own home.
+    // A directory masked as an empty read-only tmpfs holds nothing to hide and nothing to mount
+    // over: bwrap cannot make a mount point in it, so later mounts under it are skipped.
+    let mut emptied: Vec<&Path> = Vec::new();
     for p in &view.masked {
-        if view.classify(p) != Presence::Inside {
+        if view.classify(p) != Presence::Inside || emptied.iter().any(|d| p.starts_with(d)) {
             continue;
         }
         match (p.is_dir(), p.is_file()) {
             (true, _) => {
+                emptied.push(p);
                 arg(&mut a, "--tmpfs");
                 arg(&mut a, p.display().to_string());
                 // Read-only too, so a command cannot fill it and have the operator's own tools read
@@ -2423,7 +2427,9 @@ fn pieces_of(
     }
 
     for p in &view.protected {
-        if view.classify(&p.path) != Presence::Inside {
+        if view.classify(&p.path) != Presence::Inside
+            || emptied.iter().any(|d| p.path.starts_with(d))
+        {
             continue;
         }
         // A path that is there is bound over itself; one that is not gets an empty read-only
@@ -2463,7 +2469,10 @@ fn pieces_of(
     hidden.sort();
     hidden.dedup();
     for p in &hidden {
-        if view.classify(p) == Presence::Inside && p.exists() {
+        if view.classify(p) == Presence::Inside
+            && p.exists()
+            && !emptied.iter().any(|d| p.starts_with(d))
+        {
             arg(&mut a, "--ro-bind");
             arg(&mut a, "/dev/null");
             arg(&mut a, p.display().to_string());
