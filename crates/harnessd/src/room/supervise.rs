@@ -55,24 +55,27 @@ pub trait RoomSupervisor: Send + Sync {
 /// One restart at a time in this process, and the act runs off the caller's thread. A box has one
 /// room, so two stops and two starts is a race, and the loser would report a collision as a failure.
 /// RAII because a guard released in a `match` arm would go before the thread had started.
-pub struct InFlight(());
+pub struct InFlight(&'static std::sync::atomic::AtomicBool);
 
 static IN_FLIGHT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 impl InFlight {
     /// Take the right to restart, or `None` when one is already running here.
     pub fn take() -> Option<InFlight> {
+        Self::take_from(&IN_FLIGHT)
+    }
+
+    fn take_from(flag: &'static std::sync::atomic::AtomicBool) -> Option<InFlight> {
         use std::sync::atomic::Ordering;
-        IN_FLIGHT
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        flag.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .ok()
-            .map(|_| InFlight(()))
+            .map(|_| InFlight(flag))
     }
 }
 
 impl Drop for InFlight {
     fn drop(&mut self) {
-        IN_FLIGHT.store(false, std::sync::atomic::Ordering::SeqCst);
+        self.0.store(false, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -297,15 +300,17 @@ mod tests {
     /// has one room, so two stops and two starts is a race rather than a restart.
     #[test]
     fn only_one_restart_runs_at_a_time_and_the_right_comes_back() {
-        let first = InFlight::take().expect("nothing is running");
+        // Its own flag: the process-wide one is taken by any test that presses restart.
+        static FLAG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        let first = InFlight::take_from(&FLAG).expect("nothing is running");
         assert!(
-            InFlight::take().is_none(),
+            InFlight::take_from(&FLAG).is_none(),
             "a second press while one runs is refused, not queued"
         );
         drop(first);
-        let again = InFlight::take().expect("the right comes back when the act ends");
+        let again = InFlight::take_from(&FLAG).expect("the right comes back when the act ends");
         drop(again);
-        assert!(InFlight::take().is_some());
+        assert!(InFlight::take_from(&FLAG).is_some());
     }
 
     /// A supervisor is a door a test can stand in - the trait's own reason for existing.
