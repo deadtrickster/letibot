@@ -849,7 +849,7 @@ impl SessionView {
     /// One row's body, whole, by the row's position in the session. `row` is the session ordinal,
     /// where 0 is the first row of the conversation.
     pub fn row_body_at(&self, row: usize) -> Option<String> {
-        let idx = row.checked_sub(self.items_dropped as usize)? + self.lead();
+        let idx = self.slot(row)?;
         let item = self.items.get(idx)?.item.as_ref()?;
         Some(body_of(item))
     }
@@ -857,8 +857,13 @@ impl SessionView {
     /// One whole row by the same ordinal: a head scrolling above its window needs the block and
     /// its kind, not only the text, or it could draw the words as the wrong thing.
     pub fn row_at(&self, row: usize) -> Option<SnapshotItem> {
-        let idx = row.checked_sub(self.items_dropped as usize)? + self.lead();
-        self.items.get(idx).cloned()
+        self.items.get(self.slot(row)?).cloned()
+    }
+
+    /// Position in `items` of a session ordinal. The ordinal comes off the wire, so the sum is checked.
+    fn slot(&self, row: usize) -> Option<usize> {
+        row.checked_sub(self.items_dropped as usize)?
+            .checked_add(self.lead())
     }
 
     /// Whether this view already holds a row's body, by the row's id: an announcement that carried
@@ -1529,6 +1534,8 @@ mod tests {
             Some("s#t3.0".to_string()),
             "ordinal 0 names a row above the base"
         );
+        assert!(v.row_at(usize::MAX).is_none(), "an ordinal past the end is absent");
+        assert!(v.row_body_at(usize::MAX).is_none());
         assert_eq!(v.snapshot(100, 0).items_dropped, 0);
         // And the snapshot says how many of its rows sit above that base, because a head cannot
         // work it out: the daemon's own trim adds `n - lead`, and a head that guessed zero drifted
