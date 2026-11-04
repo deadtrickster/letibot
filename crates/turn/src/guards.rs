@@ -31,7 +31,9 @@ impl GuardSet {
         let max_window = guards
             .iter()
             .filter_map(|g| match g {
-                Guard::RepetitionNgram { window, times } => Some((*window as usize).saturating_mul(*times as usize)),
+                Guard::RepetitionNgram { window, times } => {
+                    Some((*window as usize).saturating_mul(*times as usize))
+                }
                 _ => None,
             })
             .max()

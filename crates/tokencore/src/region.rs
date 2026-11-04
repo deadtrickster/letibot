@@ -189,9 +189,10 @@ impl TokenRegion {
     /// Append tokens and publish the new chain head: the only mutation this type has. Appending zero
     /// tokens is legal and meaningful, because a `SegmentMark` renders to nothing.
     pub fn append(&mut self, tokens: &[TokenId], head_hash: &[u8; 32]) -> io::Result<()> {
-        let needed = self.len.checked_add(tokens.len()).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::OutOfMemory, "token region overflow")
-        })?;
+        let needed = self
+            .len
+            .checked_add(tokens.len())
+            .ok_or_else(|| io::Error::new(io::ErrorKind::OutOfMemory, "token region overflow"))?;
         if needed > self.capacity {
             self.grow_to(needed)?;
         }
