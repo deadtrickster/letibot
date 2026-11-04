@@ -1,31 +1,10 @@
-//! **`plugin scaffold`: a pane plugin's source, written by the session that will use it.**
+//! `plugin scaffold`: a pane plugin's source, written by the session that will use it.
 //!
-//! The template is three files and nothing else, and each is load-bearing:
+//! Three files: `Cargo.toml` (cdylib for the host, rlib for tests, rano SDK by path), `plugin.toml` (the manifest) and `src/lib.rs` (pane hook, one pure `view`, a native test of it).
 //!
-//! | file | is |
-//! |---|---|
-//! | `Cargo.toml` | a `cdylib` for the host and an `rlib` for the tests, the rano SDK by path, and a release profile that keeps the module small |
-//! | `plugin.toml` | the C2 manifest: the name, the one-line purpose a person consents to, the hooks, no capabilities by default, contract 1 |
-//! | `src/lib.rs` | the pane hook (`pane_<ident>`), one pure `view` function, and a native test of it |
+//! The native test is why hooks are pure (`docs/plugins-plan.md` §1): the logic can be asserted without a wasm host, and a pane that only ran inside wasm cannot be checked before loading.
 //!
-//! # Why a native test in the template
-//!
-//! `docs/plugins-plan.md` §1 principle 1 makes a hook a pure function: JSON in, JSON out. That is
-//! why the whole dashboard can be asserted without a wasm host — and why the template ships the
-//! test that proves it. A pane whose logic only ran inside wasm would be a pane nobody could check
-//! before loading it, and the measured rake of this slice is exactly that: the example's committed
-//! `.wasm` had never been executed once and trapped on every call
-//! (`.letibot/notes/the-pane-contracts-two-look-keys.md`).
-//!
-//! # What the template deliberately does not do
-//!
-//! **No clock.** `std::time::SystemTime::now()` on `wasm32-unknown-unknown` answers a panic, and a
-//! panic in a guest is a trap: a pane that wants to say *how old* something is has to be handed
-//! the time by its look. The comment in the template says so, in the place somebody would write it.
-//!
-//! **No I/O.** A plugin never reads a file or runs a program (`docs/plugins-plan.md` §1): it asks
-//! for a `look` and the host runs it. The template's view is therefore a pure function of its
-//! input, and that is what makes `plugin test` (and the shadow gate's replay) mean anything.
+//! The template uses no clock (`SystemTime::now()` panics on wasm32, which traps; the look hands time in) and no I/O (the host runs a declared `look`).
 
 use std::path::{Path, PathBuf};
 
@@ -58,15 +37,9 @@ pub struct Sdk {
     pub found: bool,
 }
 
-/// **Where the SDK is on this box**, in the order the tree resolves such things: the environment
-/// first (a box may have rano anywhere), then the conventional checkout under `$HOME`, then **the
-/// checkout cargo itself resolved the workspace's rano dependency from**, which is one a box that
-/// can build this daemon has, whatever it keeps in `$HOME`.
+/// Where the SDK is on this box: the environment first, then the conventional checkout under `$HOME`, then the checkout cargo resolved the workspace's rano dependency from.
 ///
-/// A path that does not exist is still WRITTEN, with `found: false` and the sentence the tool
-/// result carries: scaffolding a plugin is useful on a box that cannot build it yet — the source
-/// is what gets committed and reviewed — and refusing would make the first step of the loop need
-/// a toolchain the last step is what checks for.
+/// A missing path is still written, with `found: false`: scaffolding is useful on a box that cannot build yet, and the source is what gets reviewed.
 pub fn sdk() -> Sdk {
     let from_env = std::env::var("LETIBOT_RANO_SDK")
         .ok()
@@ -100,11 +73,8 @@ pub fn sdk() -> Sdk {
     }
 }
 
-/// **Rano's source where cargo put it**: the SDK that belongs to the rano this workspace links.
-///
-/// The workspace depends on rano by git rev, so its source is in cargo's checkouts directory on
-/// every box that built the daemon. `Cargo.lock` names the rev and `CARGO_HOME` says where the
-/// checkouts are, which is two facts rather than a path somebody is expected to have cloned.
+/// Rano's source where cargo put it: the SDK of the rano this workspace links.
+/// `Cargo.lock` names the rev and `CARGO_HOME` the checkouts, so no clone is assumed.
 fn cargo_cache_checkout() -> Option<PathBuf> {
     let lock = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.lock");
     let rev = locked_rev(&std::fs::read_to_string(lock).ok()?)?;
@@ -152,11 +122,8 @@ fn locked_rev(lock: &str) -> Option<String> {
     None
 }
 
-/// **A plugin name**, checked where it becomes a directory, a crate and a hook.
-///
-/// Cargo's rule for a package name is the loosest of the three, so this is stricter on purpose: a
-/// name is also half a pane id (`<name>/<hook>`) and a Rust function name, and a name that had to
-/// be escaped differently in each of the three is a defect waiting for the second plugin.
+/// A plugin name, checked where it becomes a directory, a crate and a hook.
+/// Stricter than cargo on purpose: it is also half a pane id (`<name>/<hook>`) and a Rust function name.
 pub fn check_name(name: &str) -> Result<(), String> {
     if name.is_empty() {
         return Err("a plugin needs a name".to_string());
@@ -189,12 +156,8 @@ pub fn check_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// **Where the hook contracts are**: `crates/plugin-sdk` in the tree this daemon was compiled
-/// from — which is the only tree that is certain to have one, and the right answer for a session
-/// patching the harness it is running inside.
-///
-/// `LETIBOT_PLUGIN_SDK` overrides it, for the box where the daemon is an installed binary and a
-/// guest is built somewhere else.
+/// Where the hook contracts are: `crates/plugin-sdk` in the tree this daemon was compiled from.
+/// `LETIBOT_PLUGIN_SDK` overrides it, for an installed daemon building a guest elsewhere.
 pub fn types_sdk() -> Sdk {
     let from_env = std::env::var("LETIBOT_PLUGIN_SDK")
         .ok()
@@ -404,12 +367,8 @@ fn cargo_toml(name: &str, kind: &str, sdk: &str, types: &str) -> String {
     )
 }
 
-/// The guest's source. Kept as a `format!` rather than as a file under `templates/` so that the
-/// name, the purpose and the hook cannot drift out of the three files that must agree about them.
-///
-/// **`pane` has its own template** (slice 1's, unchanged: a pure `view`, no typed dependency);
-/// **the four patch points share one shape** — the tree's contract crate, one pure function, and a
-/// native test of it — because that is what makes a hook testable without a wasm host.
+/// The guest's source, a `format!` so the name, purpose and hook cannot drift across the three files.
+/// `pane` has its own template (pure `view`, no typed dependency). The four patch points share one shape: contract crate, one pure function, a native test.
 fn lib_rs(name: &str, purpose: &str, hook: &str, kind: &str) -> String {
     if kind == "pane" {
         return pane_lib_rs(name, purpose, hook, kind);

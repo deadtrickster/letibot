@@ -711,11 +711,8 @@ pub(crate) fn stop_children_first(
     Some(said)
 }
 
-/// **Say what a child left, on the session that owns it**, for the estate a child settles after its
-/// answer is already given. The answer is the parent's MODEL's channel and it is closed by then; this
-/// is the operator's - the head draws a warning where the child's own row is - and it is a warning
-/// rather than silence because a leftover named only in a registry that is about to be dropped is not
-/// named at all.
+/// Say what a child left, on the session that owns it, when the child settles after its answer was given.
+/// The answer is the model's channel and closed; this is the operator's, a warning the head draws at the child's row. Not silence, because a leftover named only in a registry about to drop is not named.
 pub(crate) fn say_a_childs_estate(hub: Option<Arc<Hub>>, sub_id: &str, said: &str) {
     let Some(hub) = hub else {
         return;
@@ -1296,10 +1293,8 @@ fn later_turn(
     out
 }
 
-/// **A later turn of a child the daemon's WORKER ran**: a parked child has no thread, so the two
-/// acts its own thread would have made in [`later_turn`] are made here, from the parent's side.
-/// Without them the parent is never told and `task_result` keeps answering the first answer.
-/// `settled_before` is read BEFORE the turn: a turn of the hold is not news of its own.
+/// A later turn of a child the daemon's worker ran: a parked child has no thread, so the parent's side makes the two acts its thread would make in [`later_turn`].
+/// Without them `task_result` keeps answering the first answer. `settled_before` is read before the turn.
 pub(crate) fn a_child_turn_ended(
     trees: &super::trees::Trees,
     parent: &str,
@@ -1379,11 +1374,8 @@ pub(crate) struct HarnessTaskRunner {
     /// The daemon's session registry, so a subagent is a real session an operator
     /// can see and attach rather than a turn hidden inside the parent's.
     pub(crate) registry: Arc<letibot_sessionlog::registry::Registry>,
-    /// **This session, as the heir of its children's estates**: the process host a child's
-    /// survivor is handed to. A slot because the runner is built before the backend's host
-    /// exists - the same reason `tree_watch` is one - and it carries the watchers too
-    /// ([`letibot_tools::exec::ProcessHost::monitors`]), so one field answers both halves of
-    /// *what outlives a child and who takes it*.
+    /// This session as heir of its children's estates: the process host a child's survivor is handed to.
+    /// A slot because the runner is built before the backend host exists. Carries the watchers too ([`letibot_tools::exec::ProcessHost::monitors`]).
     pub(crate) heir: Arc<std::sync::Mutex<Option<Arc<dyn letibot_tools::exec::ProcessHost>>>>,
     /// The parent's configuration, already resolved (workspace, mode, title) by
     /// [`Harness::open_with_registry`] before this was built. Cloned as the base for
@@ -2690,10 +2682,8 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
                     child: Some(child),
                 },
                 TaskStatus::Done { answer, .. } => TaskStatus::Done {
-                    // **The last word, not the first.** A child that answered again after the slot
-                    // settled said something newer, and every notice of it promises `task_result`.
-                    // A turn the worker ran moves the slot; the record is the second half, for a
-                    // daemon whose slot a restart left behind.
+                    // The last word, not the first: a child that answered again after the slot settled said something newer.
+                    // A worker turn moves the slot; the record covers a daemon restarted with a stale slot.
                     answer: slot
                         .newest_again()
                         .or_else(|| self.a_later_answer(handle))
@@ -3195,11 +3185,8 @@ impl HarnessTaskRunner {
         )
     }
 
-    /// **A tree with nothing in it is nobody's deliverable.** A child that ended without answering -
-    /// a refusal, a failed first turn - leaves a worktree of its own behind, and nothing reaps it.
-    /// [`git::retire_if_empty`] is the whole rule: a commit over the base is the only copy of that
-    /// work and a dirty tree may hold what was never committed, so both are kept and only the empty
-    /// clean tree goes.
+    /// A tree with nothing in it is nobody's deliverable: a child that ended without answering leaves a worktree nothing reaps.
+    /// [`git::retire_if_empty`] is the rule: a commit over base or a dirty tree is kept, only the empty clean tree goes.
     pub(crate) fn retire_an_empty_tree(&self, handle: &str) {
         let Some(child) = self
             .placed
@@ -3289,10 +3276,8 @@ impl HarnessTaskRunner {
         said
     }
 
-    /// **The child's own config, settled from the spec it was spawned with**: the worktree it works in
-    /// and that tree's build cache, the tree its VM copies, the VM it attaches to, the local model's own
-    /// address and sampling, and the project's parameters for the seat it was given. Everything here is
-    /// a fact about the CALL rather than the parent, which is why it cannot ride `..base.clone()`.
+    /// The child's own config, settled from its spawn spec: worktree and build cache, VM tree and attachment, local model address and sampling, and the project's parameters for its seat.
+    /// Facts about the call, not the parent, so they cannot ride `..base.clone()`.
     #[allow(clippy::too_many_arguments)]
     fn seat_the_child(
         base: &Config,
@@ -3828,10 +3813,8 @@ impl HarnessTaskRunner {
                 // running with nobody to report to, and a VM child keeps its VM up while it runs, so orphaned
                 // grandchildren held VM slots for a day. Stopped before the backend is closed, as a stop does.
                 a_child_that_ends_stops_its_own(Some(&sub.subagents), &sub.hub);
-                // What this child was holding ends here, said in the failure itself: there is no
-                // answer to carry the line. The tree goes FIRST: a survivor handed to the parent
-                // keeps the directory it stands in, and the reap that follows this call removes
-                // that tree.
+                // What this child held ends here, in the failure itself, since there is no answer to carry it.
+                // The tree goes first: a survivor handed to the parent keeps its directory, which the following reap removes.
                 let mut why = said_failure(&e);
                 let heir = self.heir();
                 let said = a_failed_childs_ending(
@@ -3927,10 +3910,8 @@ impl HarnessTaskRunner {
         // only after serving every later turn, and the queue reads a branch's head once, at the
         // enqueue: without this call the work done after the answer is never put up for review.
         self.enqueue_finished(&sub_id);
-        // **And again, for the turns it ran after answering** - a child that was woken, worked and parked
-        // started its processes after the answer above settled its estate. This one cannot ride the
-        // settlement (it is given), so it goes on the parent's hub, where the head draws the child's
-        // row: a leftover named only in a registry that is about to be dropped is not named at all.
+        // Again for turns run after answering: a woken child's processes started after the answer settled its estate.
+        // Goes on the parent's hub, where the head draws the child's row.
         let heir = self.heir();
         if let Some(said) = sub.settle_estate(heir.as_deref()) {
             say_a_childs_estate(self.registry.get(&parent), &sub_id, &said);

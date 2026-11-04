@@ -545,10 +545,8 @@ impl Harness {
         out
     }
 
-    /// A settlement this daemon queued and nobody was told about is not lost: `JobWatchers` is built
-    /// per open, so its queue dies with that harness, but the ROW survives with `delivered = 0`, and this
-    /// reads it at the moments that is true - an open, and a fork, which replaces the transcript it was
-    /// addressed to. The queue's own guard makes a second call say nothing twice. Only rows this daemon wrote.
+    /// A settlement queued but never announced survives as a `delivered = 0` row; `JobWatchers` is per open.
+    /// Read at open and at fork (which replaces the addressed transcript). The queue guard dedups repeats.
     fn deliver_settlements_left_undelivered(&self, store: &Store, me: &str, sid: &str) -> usize {
         let Some(watch) = self.job_watch.clone() else {
             return 0;
@@ -628,10 +626,8 @@ impl Harness {
         queued
     }
 
-    /// **A fork is the second moment a settlement nobody was told is true**: the rows the store has
-    /// as `delivered = 0` were addressed to the transcript this fork replaced, so they are re-armed
-    /// into the new one. The door an open uses, and the set's own queue is what makes a second fork
-    /// - or a settlement the queue still holds - say nothing twice. Returns how many it queued.
+    /// Re-arms `delivered = 0` rows into the transcript a fork just created; they were addressed to the one it replaced.
+    /// The set's queue dedups. Returns how many were queued.
     pub(crate) fn rearm_owed_settlements(&self) -> usize {
         let Some(store) = self.store.as_ref() else {
             return 0;
@@ -1259,11 +1255,8 @@ impl Harness {
         out
     }
 
-    /// A turn's rounds are over, counted on the watcher set's read record, which is how the plan check's grace
-    /// tells *delivered in the turn that just ended* from *delivered a turn ago*. Called by both doors into
-    /// `run_rounds`, since a turn that failed still ended. What the ending was decides whether a result it left
-    /// held rings this session's wake: only a turn that finished on its own does, because an operator who stopped
-    /// it asked for quiet and a failed turn has nobody waiting on its wake.
+    /// Marks a turn's rounds over on the watcher set's read record, so the plan check's grace can tell this turn's deliveries from older ones.
+    /// Only a turn that finished on its own rings the wake of a held result: a stop asked for quiet, a failure has no waiter.
     pub(crate) fn note_turn_ended(&self, out: &Result<Reply, HarnessError>) {
         // Swapped rather than read: one turn, one answer, and a stop taken during the next turn is the next
         // turn's. The stop comes from the steering and not from `out` because a stopped turn is reported as a
@@ -1664,11 +1657,8 @@ impl Harness {
                     &self.prefix.system,
                     &self.session.items,
                 );
-                // A skill is scored against more than the note's subject: the person's prompt, the
-                // plan, and the model's own latest text and reasoning, since a round that has worked
-                // out what it needs is the round that needs the instructions for it. What the session
-                // holds is re-read every round: a body loaded in the round before is in the
-                // transcript now, and offering it again would claim the model has not read it.
+                // Score a skill against the prompt, plan and the model's latest text and reasoning, not just the note's subject.
+                // Session contents are re-read each round so an already-loaded body is not offered again.
                 skill_offers.skip_loaded(&self.session.items);
                 skill_offers.compose(
                     &self.skills,
@@ -2005,10 +1995,9 @@ impl Harness {
         Ok(())
     }
 
-    /// **The round's calls, run in the order they were proposed, each as the row it is appended as.**
-    /// The order is the contract: GLM's template sorts results by call order, so a batch run any other
-    /// way would rewrite bytes the KV cache already holds. Answers the rows and whether one of them
-    /// gave the floor back to the operator.
+    /// The round's calls, run in proposed order, each as its appended row.
+    /// Order is the contract: GLM's template sorts results by call order, so any other order rewrites bytes the KV cache holds.
+    /// Answers the rows and whether one gave the floor back to the operator.
     fn run_the_rounds_calls(
         &mut self,
         calls: &[ToolCall],
@@ -2212,10 +2201,8 @@ impl Harness {
         Ok(RoundEnd::Go(ok))
     }
 
-    /// **One round as the provider took it**, and the ladder that decides whether it is taken
-    /// again: an endpoint failure is retried here rather than in `rounds`, because a retry produced
-    /// nothing and so must not spend one of the turn's rounds. `key_asks` is the turn's budget for a
-    /// refused key and is handed back; everything else this needs is per round and built here.
+    /// One round as the provider took it, plus the retry ladder. Endpoint failures retry here, not in `rounds`, since a retry produced nothing and must not spend a round.
+    /// `key_asks` is the turn's refused-key budget, handed back.
     fn take_the_round(
         &mut self,
         sink: &mut CapturingSink,
@@ -2582,13 +2569,8 @@ impl Harness {
         })
     }
 
-    /// This attempt failed, and the outage remembers it. The host is asked of the thing that was contacted: this
-    /// read the LOCAL endpoint on a path that also serves cloud turns, so a resolver failure against a provider was
-    /// reported as a problem with `127.0.0.1:8080`, which is what made the message expensive.
-    ///
-    /// **And it is published, as the series' ONE row**, from the second failure: a head that holds the
-    /// row rewrites it, which is what makes five attempts one line rather than five, and a failure the
-    /// ladder never retried is not a series.
+    /// Records a failed attempt on the outage. The host named is the one contacted, not the local endpoint.
+    /// From the second failure it is published as the series' one row (a head holding the row rewrites it); a failure the ladder never retried is not a series.
     fn outage_failed(&mut self, e: &letibot_turn::HttpError) {
         let host = retry_host(self.provider.as_deref(), &self.cfg.endpoint);
         let now = letibot_sessionlog::event::now_ms();
@@ -2647,13 +2629,8 @@ impl Harness {
         });
     }
 
-    /// The outage is over, and this is the one row it earns. `answered` is the round ending on anything but an HTTP
-    /// failure, which includes a round that failed another way, since the endpoint spoke. The record is TAKEN, so
-    /// this is the only place that writes the row and it writes it once.
-    ///
-    /// **The row's last value goes first, the record after it.** A head holding the row rewrites it to the
-    /// line; the warning below is the same fact in the daemon's words, which is what a head that attaches
-    /// after the series is left with and what `/notes` lists.
+    /// The outage is over: writes its one row, once (the record is taken). `answered` is any round ending on something other than an HTTP failure.
+    /// The row's last value goes first, then the record; the warning below serves heads that attach later and `/notes`.
     fn settle_outage(&mut self, answered: bool) {
         let Some(outage) = self.outage.take() else {
             return;
@@ -2672,10 +2649,8 @@ impl Harness {
             });
             return;
         }
-        // **One failure the ladder never retried is not an outage**: with `http_retries = 0`
-        // the turn's own `turn_failed` is the whole of the news, and a row saying `attempt 1`
-        // beside it would be the same fact twice. No row was published for it either, so there is
-        // nothing to settle.
+        // A failure the ladder never retried (`http_retries = 0`) is not an outage: `turn_failed` is the whole news,
+        // and no row was published, so nothing to settle.
         if outage.attempts < 2 {
             return;
         }
@@ -2734,10 +2709,8 @@ impl Harness {
         }
     }
 
-    /// The model is out and this box has somewhere else to go: a `[fallback] models` list, tried once each. It
-    /// records the move and does not make it, because a re-issued round carries the rest of the old turn and a
-    /// thinking-mode provider refuses that. A refusal by the provider, a spent account, a 5xx, or a run of
-    /// timeouts long enough that the model is the likelier fault - and a metered name only.
+    /// The model is out and a `[fallback] models` entry exists, tried once each. Records the move without making it: a re-issued round carries the old turn's rest, which a thinking-mode provider refuses.
+    /// Triggers: provider refusal, spent account, 5xx, or a long timeout run. Metered names only.
     fn fall_back_from(
         &mut self,
         e: &letibot_turn::HttpError,
@@ -3237,10 +3210,8 @@ impl Harness {
         }
     }
 
-    /// The database enforces the append-only property itself, so a divergence between the ledger and the store is
-    /// a failed INSERT rather than a quiet inconsistency. And this waits, unless the session is going away or the
-    /// operator asked for a stop - `Waited` names which, since a stop must not abandon a store write but must end a
-    /// retry. Sliced, so a daemon asked to stop is not held here.
+    /// The database enforces append-only, so ledger/store divergence is a failed INSERT.
+    /// Waits unless the session is going away or a stop was asked: `Waited` names which, since a stop must not abandon a store write but must end a retry. Sliced so a stopping daemon is not held.
     fn sleep_unless_closed(&self, total: std::time::Duration) -> Waited {
         let slice = std::time::Duration::from_millis(250);
         let deadline = std::time::Instant::now() + total;
@@ -3887,10 +3858,8 @@ struct SilenceWatch {
 }
 
 impl SilenceWatch {
-    /// Start watching, or return an inert one when there is nothing worth saying.
-    ///
-    /// `host` is `Some` only for a metered route; see the type's own docs. `model` and `streak` are what
-    /// the typed event carries: what answered, and how many stalls came before this one.
+    /// Start watching, or return an inert watcher when there is nothing to say.
+    /// `host` is `Some` only for a metered route. `model` and `streak` go into the typed event.
     fn start(
         hub: std::sync::Arc<letibot_sessionlog::hub::Hub>,
         host: Option<String>,
@@ -4035,10 +4004,8 @@ impl SweptCalls {
     }
 }
 
-// The answer lookups this thread's sweeps have made, so the cost is a number a test can read.
-// The sweep runs on the worker after every turn, over a transcript that only grows: one probe
-// per asked call, never a scan of the answers - and one row read per row appended since the last
-// sweep, never a walk of the conversation.
+// Answer lookups this thread's sweeps made, readable by tests.
+// The sweep runs after every turn: one probe per asked call, one row read per row appended since the last sweep.
 #[cfg(test)]
 thread_local! {
     static ANSWER_PROBES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -4424,10 +4391,7 @@ mod endpoint_retry {
         assert!(said.contains("after 1 attempt / 2s"), "{said}");
     }
 
-    /// **The one row a retried call draws, in every value it has.** A reader watching an endpoint
-    /// go away sees the count and the reason move on the SAME row, and then the same row say how
-    /// it ended: three attempts and a give-up is `gave up after 3 attempts`, and one that answers
-    /// names the attempts that failed before it did.
+    /// The one row a retried call draws, in every value: the count and reason move on the same row, which ends as `gave up after 3 attempts` or names the failed attempts before an answer.
     #[test]
     fn a_series_of_retries_is_one_row_that_moves_and_then_settles() {
         let outage = Outage {

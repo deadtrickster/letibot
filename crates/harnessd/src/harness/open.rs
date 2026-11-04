@@ -411,14 +411,8 @@ impl Harness {
         )
     }
 
-    /// [`Harness::open_with`] plus the daemon's session registry, so `task` spawns a real session:
-    /// a hub an operator can attach and a store row it can resume. Tests pass a fresh one.
-    /// **What the store says before anything is built**: the connection and the corpus beside it, the
-    /// row this session already has and the claim on its transcript, and the workspace, title and seat
-    /// that row decides - a resumed session's tools belong to the tree its conversation is about.
-    ///
-    /// The store opens first because it may CHANGE the configuration, which is why this takes the
-    /// config by `&mut` and hands back what the rest of the open reads.
+    /// [`Harness::open_with`] plus the daemon's session registry, so `task` spawns a real session: an attachable hub and a resumable store row. Tests pass a fresh one.
+    /// Opens the store first (it may change the config, hence `&mut`): connection, corpus, the session's row and transcript claim, and the workspace, title and seat that row decides.
     fn open_the_stored(cfg: &mut Config, notes: &mut Vec<String>) -> Result<Opening, HarnessError> {
         // A `[embeddings]` section the box WROTE and did not get is said here, once per session:
         // silently scoring the words alone would leave nobody able to fix the key.
@@ -564,10 +558,8 @@ impl Harness {
         })
     }
 
-    /// **This session's point, and the two facts that ride the config rather than the mode store**:
-    /// the per-project point (longest ancestor wins, with the recorded consent disclosed where one
-    /// applies), whether the session is unconfined, and whose child it is. Answers the settings row's
-    /// own field: where the point came from.
+    /// This session's point and the two facts that ride the config: the per-project point (longest ancestor wins, recorded consent disclosed), whether the session is unconfined, and whose child it is.
+    /// Answers where the point came from.
     fn resolve_the_point(
         parts: &Parts,
         cfg: &mut Config,
@@ -767,10 +759,8 @@ impl Harness {
         None
     }
 
-    /// **Where this session's tools run, and what bounds them**: the host backend the seat needs, a
-    /// firecode VM, or a checkout on another machine - then the home, the promote channel and the
-    /// scratch directory every one of them shares. The constructor is the disclosure, so this is the
-    /// one place a downgrade, a placement or a missing boundary is decided.
+    /// Where this session's tools run and what bounds them: host backend, firecode VM, or remote checkout, then the shared home, promote channel and scratch directory.
+    /// The one place a downgrade, placement or missing boundary is decided.
     fn place_the_tools(
         cfg: &mut Config,
         hub: &Arc<Hub>,
@@ -1142,14 +1132,8 @@ impl Harness {
         })
     }
 
-    /// **The conversation this session opens on**: one it already has, resumed as it stands - or
-    /// forked onto the prompt this build composes when the stored rendering or vocabulary moved, or
-    /// repaired onto the prefix its rows really chain from when it will not rebuild - else a fresh one,
-    /// created under the prefix composed above.
-    ///
-    /// Answers the transcript id, the session, how many rows are already stored, what the resume
-    /// rebuilt, the prefix the session is seated with and its store id, and the sentence a head must be
-    /// told at attach when the session speaks a prompt this daemon would not compose now.
+    /// The conversation this session opens on: the stored one resumed as it stands, forked onto this build's prompt when the stored rendering or vocabulary moved, repaired onto the prefix its rows chain from when it will not rebuild, else a fresh one.
+    /// Answers transcript id, session, stored row count, resume rebuild, seat prefix and store id, and the attach sentence when the prompt is one this daemon would not compose now.
     #[allow(clippy::type_complexity)]
     fn open_the_conversation(
         store: &Option<Store>,
@@ -1939,10 +1923,8 @@ impl Harness {
                 ),
             ))
             .map_err(|e| HarnessError::Setup(format!("registering the review verdict: {e}")))?;
-        // Standing notes, written: the loop was one-way until the `notes` tool, scoped to the
-        // stored workspace and the box-wide dir. Registered for every session so a role that names
-        // it resolves; the ROLE decides who seats it. The near-copy gate scores with the box's
-        // second tier, so a paraphrased duplicate is refused where the words would have let it in.
+        // Standing notes, scoped to the stored workspace and the box-wide dir. Registered for every session; the role decides who seats it.
+        // The near-copy gate scores with the box's second tier, so a paraphrased duplicate is refused.
         registry
             .register(Box::new(
                 letibot_tools::builtins::notes::NotesTool::new(std::sync::Arc::new(
@@ -2641,10 +2623,8 @@ impl Harness {
         };
 
         let spiller = build_spiller(&cfg)?;
-        // Where a compaction's evicted bodies go, and the window that bounds one read of one: the
-        // same handle the runtime's `recall` tool asks through, so the ids the map prints and the ids
-        // a model can open are one list. Built here, before the runtime, because the tool is seated
-        // at open and needs somewhere to look the moment the session has compacted once.
+        // Where a compaction's evicted bodies go: the handle the runtime's `recall` tool asks through, so ids the map prints are ids a model can open.
+        // Built before the runtime because the tool is seated at open.
         let recall = std::sync::Arc::new(letibot_tools::Recall::new(cfg.planning_window()));
         // The question a long tool asks before spending another minute: for the whole of a `digest` or a `job_wait`
         // nothing polls the head, so the hub's answer goes down into the runtime and a tool about to spend real time can
@@ -2753,11 +2733,8 @@ impl Harness {
         // And this endpoint's media marker - see `engine_for`, whose construction this duplicates.
         engine.media_marker = cfg.media_marker.clone();
 
-        // The standing notes are composed HERE, at open, and not only at a base rebuild: `reseat_target` re-reads
-        // them on every fork, and a fork was the only thing that ran it, so a FRESH session's message zero carried
-        // none. A resumed session is unaffected. And the skills this session was STARTED with, in the same section.
-        // A pin that answers to nothing is the operator's typo, and silence is how it reads as a
-        // pin that took effect: said once, here, with the name they typed.
+        // Standing notes are composed here at open, not only at a base rebuild, so a fresh session's message zero carries them, plus the skills it started with.
+        // A pin that answers to nothing is the operator's typo: said once, with the name typed.
         let unknown = parts.skills.unknown_pins();
         if !unknown.is_empty() {
             hub.publish(SessionEvent::Warning {
@@ -3495,10 +3472,8 @@ pub(crate) fn render_sampling(s: &serde_json::Map<String, serde_json::Value>) ->
         .join(" ")
 }
 
-/// A provider backend from its config: the preset, the key (a missing one is a refusal naming the variable and the
-/// file), the model and the switches. `notes` is where a provider says something a person has to read, passed in
-/// rather than found, because the provider must stay below this crate's session log. `answer_within` is the
-/// session's patience with a provider that has said nothing yet; `None` is the provider's own.
+/// /// A provider backend from its config: preset, key (missing is a refusal naming variable and file), model, switches.
+/// /// `notes` is passed in because the provider must stay below this crate's session log. `answer_within` is the patience for a silent provider; `None` is its own.
 pub fn build_provider(
     pc: &crate::config::ProviderConfig,
     sampling: &serde_json::Value,
@@ -3929,12 +3904,9 @@ pub fn surroundings_for(cfg: &Config) -> letibot_tools::Surroundings {
              seat time and BASH_ENV, ENV, SHELLOPTS, BASHOPTS are never set",
         );
     }
-    // The environment every command of this session really gets, read from the same two places `spawn` reads them,
-    // so nothing is inferred from a command's text. And what this gate can see of the disk: `Host` only where the
-    // command runs in this process's view, since a VM, a remote host and a confined session are different disks.
-    // Only on this box: a remote host and a guest export the CALL's own pairs into their own shell,
-    // so a seed built here reads a command as placed on a machine it is not on. `Host` is the one
-    // placement whose environment this process composes.
+    // The environment every command gets, read from the same places `spawn` reads, so nothing is inferred from command text.
+    // `Host` only where the command runs in this process's view (a VM, remote host or confined session is another disk),
+    // since only then does this process compose the environment.
     let on_this_box = matches!(
         cfg.placement,
         letibot_tools::builtins::task::Placement::Host
