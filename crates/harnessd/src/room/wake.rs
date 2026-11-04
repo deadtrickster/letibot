@@ -111,10 +111,10 @@ pub fn waiting(session: &str) -> usize {
     q.map.get(session).map(|v| v.lines.len()).unwrap_or(0)
 }
 
-/// What a session is told about messages that are not its own to answer.
-pub const ETIQUETTE: &str = "Answer what is addressed to you or to everyone. A message to \
-     someone else is context: do not answer it unless it asks you, and never answer for another \
-     member.";
+/// What a session is told about messages for someone else.
+pub const ETIQUETTE: &str = "Answer what is addressed to you or to everyone. A message for \
+     someone else is context: answer it only if you hold something they lack (an answer or a \
+     fact), once and briefly. Never ack, echo or restate.";
 
 /// The sentence a chat message that names a session becomes. Bounded: a long message is cut for
 /// the turn's notice, and `room read` has the whole.
@@ -245,6 +245,11 @@ mod tests {
         let other = chat_sentence(&said(Some("s-b"), "status?"), "s-a");
         assert!(other.contains("[to s-b (not you)]"), "{other}");
         assert!(other.contains(ETIQUETTE), "{other}");
+        assert!(
+            other.contains("only if you hold something they lack"),
+            "{other}"
+        );
+        assert!(!other.contains("do not answer"), "{other}");
         let mention = chat_sentence(&said(None, "@cc@letibot see this"), "s-a");
         assert!(mention.contains("not you"), "{mention}");
         let mine = chat_sentence(&said(Some("s-a"), "status?"), "s-a");

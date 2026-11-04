@@ -122,8 +122,8 @@ fn handle(bridge: &Bridge, request: &Value) -> Option<Value> {
             "capabilities": { "tools": {}, "experimental": { "claude/channel": {} } },
             "instructions": format!("Room messages for `{}` arrive as <channel> events: read \
                 them, answer with `room_say` or `room_dm`, and `room_inbox` with ack true marks \
-                what you handled. A message addressed to someone else is context, not yours to \
-                answer. `room_nick` renames you (the name part of `cc@<folder>:<name>`) when this folder holds several repos.", crate::rooms::handle()),
+                what you handled. {} `room_nick` renames you (the name part of `cc@<folder>:<name>`) when \
+                this folder holds several repos.", crate::rooms::handle(), crate::rooms::etiquette(&crate::rooms::handle())),
             "serverInfo": {
                 "name": "letibot-mcp",
                 "version": env!("CARGO_PKG_VERSION"),
@@ -231,6 +231,32 @@ mod tests {
         assert_eq!(r["result"]["protocolVersion"], "2025-06-18");
         assert!(r["result"]["capabilities"]["tools"].is_object(), "{r}");
         assert_eq!(r["result"]["serverInfo"]["name"], "letibot-mcp");
+        let said = r["result"]["instructions"].as_str().unwrap_or("");
+        let me = crate::rooms::handle();
+        assert!(
+            said.contains(&format!("As `{me}` you see every message")),
+            "{said}"
+        );
+        assert!(
+            said.contains("only if you hold something they lack"),
+            "{said}"
+        );
+        assert!(said.contains("Never ack, echo or restate"), "{said}");
+    }
+
+    /// The room tools carry the same etiquette to whoever reads their descriptions.
+    #[test]
+    fn the_room_tool_descriptions_carry_the_etiquette() {
+        for t in crate::rooms::tool_list() {
+            let name = t["name"].as_str().unwrap_or("");
+            if ["room_say", "room_read", "room_inbox"].contains(&name) {
+                let d = t["description"].as_str().unwrap_or("");
+                assert!(
+                    d.contains("only if you hold something they lack"),
+                    "{name}: {d}"
+                );
+            }
+        }
     }
 
     /// Twenty-one tools, each with a schema - the design's table, and the shape MCP requires.

@@ -15,6 +15,15 @@ use serde_json::{Value, json};
 /// The environment variable that names this bridge in the rooms.
 pub const NAME_ENV: &str = "LETIBOT_ROOM_NAME";
 
+/// How `me` behaves in the rooms: it sees every message, whoever it is for.
+pub fn etiquette(me: &str) -> String {
+    format!(
+        "As `{me}` you see every message in the rooms. Answer what is addressed to you or to \
+         everyone. A message for someone else is context: answer it only if you hold something \
+         they lack (an answer or a fact), once and briefly. Never ack, echo or restate."
+    )
+}
+
 /// The room handle for a bridge: `$LETIBOT_ROOM_NAME` when set, else `cc@<folder>:<name>` (just
 /// `cc@<name>` when the two match). The name is the folder's nick when one was set with
 /// `room_nick`, else the repository's name (the main worktree's folder). The folder is the one
@@ -844,9 +853,12 @@ pub fn tool_list() -> Vec<Value> {
         ),
         tool(
             "room_read",
-            "Read a room's messages. Moves no cursor. `room` is `host`, `project/<key>` or `dm` \
+            &format!(
+                "Read a room's messages. Moves no cursor. `room` is `host`, `project/<key>` or `dm` \
              (your direct messages). `since` is a seq, `last` the newest N (default and most \
-             200), `thread` a root seq: the root and its replies.",
+             200), `thread` a root seq: the root and its replies. {}",
+                etiquette(&me)
+            ),
             json!({
                 "type": "object",
                 "properties": {
@@ -868,7 +880,8 @@ pub fn tool_list() -> Vec<Value> {
              listing the full `cc@<folder>:<name>` names, when several are connected. `cc@<name>` \
              names the one bridge with that name, and `cc@<folder>` every bridge of that folder. \
              `thread` answers a message by its seq. `refs` points at a todo (`<session>/<title>`) \
-             or a queue row. Text is at most 4000 bytes and is refused, never cut."
+             or a queue row. Text is at most 4000 bytes and is refused, never cut. {}",
+                etiquette(&me)
             ),
             json!({
                 "type": "object",
@@ -921,7 +934,8 @@ pub fn tool_list() -> Vec<Value> {
                 "What `{me}` missed since its inbox cursor, through an attention filter: \
              `to_me` (default: what names you, the operator's unaddressed messages, DMs), \
              `mentions` or `all`. Delivery is at least once: with `ack: true` the cursor moves \
-             past what this call returned, so the next call does not repeat it."
+             past what this call returned, so the next call does not repeat it. {}",
+                etiquette(&me)
             ),
             json!({
                 "type": "object",

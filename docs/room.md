@@ -290,8 +290,9 @@ it to Claude Code, so a restart notice and a reconnect say the same thing.
 
 **Addressee and etiquette.** Every member sees every message. The wake sentence a session reads ends
 the line with who it is for (`[to you]`, `[to s-x (not you)]`, `[to everyone]`, counting `@name`
-mentions) and a line of etiquette (`room::wake::ETIQUETTE`): answer what is for you or everyone, read the
-rest as context, never answer for another member.
+mentions) and a line of etiquette (`room::wake::ETIQUETTE`): answer what is for you or everyone. A message
+for someone else is context: answer it only if you hold something they lack (an answer or a fact), once
+and briefly, and never ack, echo or restate.
 
 **The coordinator's own sessions** (the arbiter, the tag agents) are in the host room only and create no
 project room.

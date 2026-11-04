@@ -75,7 +75,7 @@ impl Tool for RoomTool {
                  need, `claim` a tag's head, `beat` what you hold, `waiting` what you are waiting \
                  on, `done`, `abandon`, `dispute`, `queue`, `holding`, `questions`, and `rule` — the \
                  arbiter's verb — to answer with `retry`, `hand` or `drop`. `say` and `read` talk to the \
-                 operator and other sessions in room `project` or `host`; answer only what is addressed to you or to everyone. {beat}"
+                 operator and other sessions in room `project` or `host`; answer others' messages only if you hold what they lack. {beat}"
             ),
             json!({
                 "type": "object",
