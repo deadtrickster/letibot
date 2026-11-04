@@ -46,6 +46,9 @@ pub(crate) struct CapturingSink {
     /// The round's ending, held: emitted before the round's calls have run and before a nudge is
     /// earned, so whether the turn ends with it is not known until the loop says.
     finish: Option<SessionEvent>,
+    /// The flag the round's silence watch reads: a delta on this sink is the round speaking, and
+    /// the watch's only other clock is the round's start.
+    spoke: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl CapturingSink {
@@ -58,7 +61,14 @@ impl CapturingSink {
             turn_id: None,
             hold_end: false,
             finish: None,
+            spoke: None,
         }
+    }
+
+    /// Arm the flag the silence watch reads for this round. Set by the round loop, since it is the
+    /// one place that knows which round is running.
+    pub(crate) fn note_speech_to(&mut self, flag: std::sync::Arc<std::sync::atomic::AtomicBool>) {
+        self.spoke = Some(flag);
     }
 
     /// Holds the round's ending back for [`Self::finish`], which is the round loop's, since it is the
@@ -91,6 +101,11 @@ impl EventSink for CapturingSink {
         match &event {
             TurnEvent::TranscriptAppended { item_id, .. } => self.ids.push(item_id.clone()),
             TurnEvent::TurnStarted { turn_id, .. } => self.turn_id = Some(turn_id.clone()),
+            TurnEvent::Delta { .. } => {
+                if let Some(flag) = &self.spoke {
+                    flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+            }
             _ => {}
         }
         if self.hold_end && matches!(&event, TurnEvent::TurnFinished { .. }) {
@@ -2325,12 +2340,15 @@ impl Harness {
             } else {
                 0
             };
+            let spoke = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            sink.note_speech_to(spoke.clone());
             let watch = SilenceWatch::start(
                 self.hub.clone(),
                 cloud_host,
                 std::time::Duration::from_secs(SILENT_ROUND_SECS),
                 self.model_name(),
                 stalls,
+                spoke,
             );
             let attempted = match &self.provider {
                 None => self.engine.run_turn_steered_with_tail(
@@ -3985,12 +4003,14 @@ struct SilenceWatch {
 impl SilenceWatch {
     /// Start watching, or return an inert watcher when there is nothing to say.
     /// `host` is `Some` only for a metered route. `model` and `streak` go into the typed event.
+    /// `spoke` is the round's own word that it has started answering, set by the sink it streams through.
     fn start(
         hub: std::sync::Arc<letibot_sessionlog::hub::Hub>,
         host: Option<String>,
         threshold: std::time::Duration,
         model: String,
         streak: u32,
+        spoke: std::sync::Arc<std::sync::atomic::AtomicBool>,
     ) -> Self {
         use std::sync::atomic::Ordering;
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -4015,6 +4035,12 @@ impl SilenceWatch {
             let started = std::time::Instant::now();
             loop {
                 if flag.load(Ordering::SeqCst) {
+                    return;
+                }
+                // A round that has spoken is not silent, whatever its clock says. Measured from the
+                // start alone, every streamed round past the threshold named a stall while text
+                // was arriving; after the first delta the read timeout is the liveness instrument.
+                if spoke.load(Ordering::SeqCst) {
                     return;
                 }
                 let silent = started.elapsed();
@@ -4184,7 +4210,7 @@ mod endpoint_retry {
     //! beside it in `crates/http/src/retry.rs`, since that is one subject with one home. What is left in this module
     //! is what the DAEMON does with an answer: which host a warning names, what a fallback says, when silence matters.
     use super::{
-        ContextLengthRefusal, Outage, SilenceWatch, context_length_refusal,
+        CapturingSink, ContextLengthRefusal, Outage, SilenceWatch, context_length_refusal,
         fallback_continuation_notice, fallback_notice, model_refused, outage_span, retry_host,
         silence_host, silence_notice,
     };
@@ -4673,6 +4699,8 @@ mod endpoint_retry {
             std::time::Duration::from_millis(50),
             "deepseek/deepseek-flash".into(),
             0,
+            // Never set: this round says nothing at all.
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         );
         // Long enough for several 100 ms slices - so a version that published per
         // slice would be caught here rather than in production.
@@ -4690,6 +4718,47 @@ mod endpoint_retry {
         watch.finish();
         assert_eq!(said.len(), 1, "one notice, not one per slice: {said:?}");
         assert!(said[0].contains("api.deepseek.com"), "{}", said[0]);
+    }
+
+    /// A round that is STREAMING is not silent. The watch's clock was the round's start and it never
+    /// saw a delta, so every cloud round over the threshold published `model_slow_first_byte` and a
+    /// `stall` trouble while text was arriving, which on a thinking-mode provider is most rounds.
+    #[test]
+    fn a_delta_on_the_sink_ends_the_silence_watch() {
+        use letibot_sessionlog::SessionEvent;
+        use letibot_turn::{DeltaTarget, EventSink, TurnEvent};
+        let hub = letibot_sessionlog::hub::Hub::new("silence-stream");
+        let spoke = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        // The real path: the flag is the one the sink the engine streams through sets.
+        let mut sink = CapturingSink::new(hub.clone());
+        sink.note_speech_to(spoke.clone());
+        let watch = SilenceWatch::start(
+            hub.clone(),
+            Some("api.deepseek.com".into()),
+            std::time::Duration::from_millis(50),
+            "deepseek/deepseek-flash".into(),
+            0,
+            spoke,
+        );
+        sink.emit(TurnEvent::Delta {
+            turn_id: "t#1".into(),
+            target: DeltaTarget::Text,
+            text: "Hel".into(),
+        });
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        let said = hub
+            .retained()
+            .iter()
+            .filter(|e| {
+                matches!(&e.event,
+                    SessionEvent::Warning { code, .. } if code == "model_slow_first_byte")
+            })
+            .count();
+        assert!(
+            !watch.finish(),
+            "a round that spoke is not a stalled round, and the streak must not grow"
+        );
+        assert_eq!(said, 0, "a streaming round was named silent");
     }
 
     /// And a local round is never nagged about silence: a cold GGUF reload is 29-31 s and a long prefill is minutes,
@@ -4744,6 +4813,7 @@ mod endpoint_retry {
             std::time::Duration::from_millis(50),
             "deepseek/deepseek-flash".into(),
             0,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         );
         std::thread::sleep(std::time::Duration::from_millis(300));
         let said = hub
