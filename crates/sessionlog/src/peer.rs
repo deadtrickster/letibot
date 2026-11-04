@@ -259,10 +259,10 @@ fn in_daemon_tree(pid: i32, daemon: i32) -> bool {
 #[cfg(any(test, target_os = "macos"))]
 fn recorded_group(parent: &std::path::Path, daemon: i32, pgid: i32) -> bool {
     fn walk(dir: &std::path::Path, pgid: i32) -> bool {
-        if let Ok(s) = std::fs::read_to_string(dir.join("cgroup.procs")) {
-            if s.lines().any(|l| l.trim().parse::<i32>() == Ok(pgid)) {
-                return true;
-            }
+        if let Ok(s) = std::fs::read_to_string(dir.join("cgroup.procs"))
+            && s.lines().any(|l| l.trim().parse::<i32>() == Ok(pgid))
+        {
+            return true;
         }
         let Ok(rd) = std::fs::read_dir(dir) else {
             return false;
