@@ -846,6 +846,14 @@ impl Host {
 /// this bound has its local ssh killed and the operation fails, naming the host and the step.
 pub const STEP_BOUND: Duration = Duration::from_secs(20);
 
+/// A remote call that has run this long is reported to the session. Short against [`STEP_BOUND`]
+/// (20 s) because a read or write on a healthy host answers in milliseconds, so a few seconds of
+/// silence is already a stall worth seeing.
+pub const SLOW_AFTER: Duration = Duration::from_secs(8);
+
+/// The warning code a head shows for a slow remote call.
+pub const SLOW_CODE: &str = "remote_call_slow";
+
 /// The bound on one status poll ([`RemoteProcesses::refresh`]), shorter than [`STEP_BOUND`] because a
 /// poll's answer arrives for the next tick: a `job_wait` polling every 120 ms must still return within
 /// the deadline it was given.
@@ -1273,7 +1281,13 @@ pub struct Ssh {
     /// placed. A host has no cgroup per session, so this mark is the only handle on the tree the
     /// session forked; [`Ssh::end_session_processes`] is its one reader.
     mark: Option<String>,
+    /// Where a call that has run past [`Ssh::slow_after`] is said, shared by every clone of this
+    /// connection. Set once by whoever owns the session's hub ([`Ssh::on_slow`]).
+    slow: Arc<Mutex<Option<SlowSink>>>,
 }
+
+/// What a slow call is reported to: `(code, detail)`, the shape of a session warning.
+pub type SlowSink = Arc<dyn Fn(&str, String) + Send + Sync>;
 
 impl Ssh {
     /// Open the connection a host is reached through, or say why it cannot be. Two refusals happen here
@@ -1305,6 +1319,7 @@ impl Ssh {
             dir: None,
             vm: None,
             mark: None,
+            slow: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -1340,6 +1355,35 @@ impl Ssh {
     pub fn with_bound(mut self, within: Duration) -> Ssh {
         self.bound = within;
         self
+    }
+
+    /// Say every call that runs past [`Ssh::slow_after`] to `sink`, once per call.
+    pub fn on_slow(&self, sink: SlowSink) {
+        *self.slow.lock().unwrap_or_else(|e| e.into_inner()) = Some(sink);
+    }
+
+    /// When a call is called slow: half its deadline, and never more than [`SLOW_AFTER`]. Always
+    /// before the deadline, so the warning is out while the call can still end well.
+    fn slow_after(&self, within: Duration) -> Duration {
+        SLOW_AFTER.min(within / 2)
+    }
+
+    /// The warning for a call still running after `after`.
+    fn say_slow(&self, step: &str, after: Duration, within: Duration) {
+        let sink = self.slow.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if let Some(sink) = sink {
+            sink(
+                SLOW_CODE,
+                format!(
+                    "`{step}` on {} has not answered after {} s. It is given {} s, then it fails \
+                     and may or may not have applied: after a failed write, read the file again \
+                     before retrying.",
+                    self.host.name,
+                    after.as_secs_f32(),
+                    within.as_secs_f32()
+                ),
+            );
+        }
     }
 
     /// The bound this connection's non-command calls carry.
@@ -1985,12 +2029,20 @@ impl Ssh {
             }
         };
         let argv = self.argv(&command);
-        let ended = match fed {
-            // The bytes go on stdin and nowhere near the argv: a command line is capped (`ARG_MAX`),
-            // which is why this cannot be a series of calls with a slice spliced into each one.
-            Some(bytes) => rpc::run_bounded_fed(&self.program, &argv, within, bytes),
-            None => rpc::run_bounded(&self.program, &argv, within),
-        };
+        // The bytes go on stdin and nowhere near the argv: a command line is capped (`ARG_MAX`),
+        // which is why this cannot be a series of calls with a slice spliced into each one.
+        let after = self.slow_after(within);
+        let notify = || self.say_slow(step, after, within);
+        let ended = rpc::run_bounded_watched(
+            &self.program,
+            &argv,
+            within,
+            fed,
+            Some(rpc::Slow {
+                after,
+                notify: &notify,
+            }),
+        );
         match ended {
             rpc::Ended::Unstartable(why) => {
                 note(rpc::Outcome::Unknown);
@@ -2004,7 +2056,7 @@ impl Ssh {
                 // The master may be the thing that stopped answering, and a socket that is still there
                 // would make the next call wait on it too.
                 note(rpc::Outcome::TimedOut);
-                self.drop_socket();
+                self.tear_down_master();
                 Ok(Call::TimedOut(within))
             }
             rpc::Ended::Answered(out) => {
@@ -2073,7 +2125,7 @@ impl Ssh {
                     began.elapsed(),
                     rpc::Outcome::TimedOut,
                 );
-                self.drop_socket();
+                self.tear_down_master();
                 Some(Ok(Call::TimedOut(within)))
             }
             rpc::Ended::Answered(out) => {
@@ -2273,6 +2325,19 @@ impl Ssh {
     /// answering, so asking it to shut down cleanly would wait out another `MASTER_BOUND`.
     fn drop_socket(&self) {
         let _ = std::fs::remove_file(&self.control);
+    }
+
+    /// End a master that stopped answering and remove its socket, so the next call dials a fresh
+    /// connection. `-O exit` is tried first; a master too wedged to hear it is signalled by the
+    /// socket path it was started with, which is unique to this daemon and host.
+    fn tear_down_master(&self) {
+        let exited = self.master("exit").is_some_and(|o| o.status.success());
+        if !exited {
+            let pattern = format!("ControlPath={}( |$)", regex_escape(&self.control.display().to_string()));
+            let args: Vec<String> = vec!["-KILL".into(), "-f".into(), "--".into(), pattern];
+            let _ = run_bounded(Path::new("pkill"), &args, MASTER_BOUND);
+        }
+        self.drop_socket();
     }
 
     /// The one ssh this process does not start: `git fetch` builds it from `core.sshCommand` and
@@ -2552,6 +2617,18 @@ impl std::fmt::Debug for Ssh {
             .field("program", &self.program)
             .finish()
     }
+}
+
+/// `text` as an extended regular expression that matches exactly itself.
+fn regex_escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if !c.is_ascii_alphanumeric() && c != '/' && c != '_' && c != '-' {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// The first line of something a machine said, for a sentence that has to stay one sentence.
@@ -3435,6 +3512,11 @@ impl SshBackend {
     }
 
     /// The host's name, for a card, a progress line or a test.
+    /// Report this placement's calls that run past [`SLOW_AFTER`] to `sink`.
+    pub fn on_slow(&self, sink: SlowSink) {
+        self.ssh.on_slow(sink);
+    }
+
     pub fn host_name(&self) -> &str {
         &self.host
     }

@@ -1049,6 +1049,13 @@ impl Harness {
             };
             let sb = letibot_tools::remote::SshBackend::place(&spec)
                 .map_err(|e| HarnessError::Setup(e.to_string()))?;
+            // A stalled host call is on the head while it stalls, not only when it fails.
+            {
+                let hub = hub.clone();
+                sb.on_slow(std::sync::Arc::new(move |code: &str, detail: String| {
+                    hub.warn(code, detail);
+                }));
+            }
             // Where the session is, and what was left behind. Published rather than
             // logged: a tree the operator is not looking at has to say so on the surface
             // they read, including the local edits that were NOT carried.

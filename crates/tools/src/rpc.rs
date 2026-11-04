@@ -445,28 +445,46 @@ pub enum Ended {
 /// on their own threads, because a child that fills a pipe blocks for ever, and the process group is
 /// killed rather than the child, or a grandchild holds the inherited pipes open.
 pub fn run_bounded(program: &Path, args: &[String], within: Duration) -> Ended {
-    run_with_input(program, args, within, None)
+    run_with_input(program, args, within, None, None)
 }
 
 /// The same runner with bytes fed to the child's stdin, so a large write leaves this box without being
 /// spliced into an argv. A child that exits early is not a write failure: `EPIPE` closes the writer and
 /// the exit status is the answer.
 pub fn run_bounded_fed(program: &Path, args: &[String], within: Duration, fed: &[u8]) -> Ended {
-    run_with_input(program, args, within, Some(fed))
+    run_with_input(program, args, within, Some(fed), None)
 }
 
-fn run_with_input(program: &Path, args: &[String], within: Duration, fed: Option<&[u8]>) -> Ended {
-    std::thread::scope(|scope| run_in_scope(scope, program, args, within, fed))
+/// A call that has run longer than `after`: `notify` is called once, from the waiting thread, while the
+/// child is still running.
+pub struct Slow<'a> {
+    pub after: Duration,
+    pub notify: &'a dyn Fn(),
 }
 
-/// The body, inside a [`std::thread::Scope`] - so the writer may borrow the caller's
-/// bytes without copying them, and the threads it starts are joined before this returns.
-fn run_in_scope<'scope, 'env>(
-    scope: &'scope std::thread::Scope<'scope, 'env>,
+/// [`run_bounded`] and [`run_bounded_fed`] with a slow notice, so a stall is visible long before the
+/// deadline kills it.
+pub fn run_bounded_watched(
     program: &Path,
     args: &[String],
     within: Duration,
-    fed: Option<&'scope [u8]>,
+    fed: Option<&[u8]>,
+    slow: Option<Slow<'_>>,
+) -> Ended {
+    run_with_input(program, args, within, fed, slow)
+}
+
+/// The most a finished child's pipes may take to reach end of file once it has exited. A mux master
+/// holds the passed descriptors of a session until it closes the channel, so a wedged master keeps a
+/// pipe open after the client is gone.
+const PIPE_GRACE: Duration = Duration::from_secs(2);
+
+fn run_with_input(
+    program: &Path,
+    args: &[String],
+    within: Duration,
+    fed: Option<&[u8]>,
+    slow: Option<Slow<'_>>,
 ) -> Ended {
     let mut child = match std::process::Command::new(program)
         .args(args)
@@ -483,19 +501,21 @@ fn run_in_scope<'scope, 'env>(
         Err(e) => return Ended::Unstartable(format!("running `{}`: {e}", program.display())),
     };
     let pid = child.id();
-    // The writer is spawned before the readers are joined, and it is inside the scope so a
-    // child that never reads is still waited on: the deadline kills the group, which
-    // closes the pipe.
+    // The writer owns its bytes and is not joined: a wedged mux master keeps the pipe's read end
+    // open after the client is killed, so a write larger than the pipe never returns and a joined
+    // writer would hold this call past its deadline.
     if let (Some(bytes), Some(mut pipe)) = (fed, child.stdin.take()) {
-        scope.spawn(move || {
+        let bytes = bytes.to_vec();
+        std::thread::spawn(move || {
             use std::io::Write;
-            let _ = pipe.write_all(bytes);
+            let _ = pipe.write_all(&bytes);
             let _ = pipe.flush();
         });
     }
     let out = drain(child.stdout.take());
     let err = drain(child.stderr.take());
     let began = Instant::now();
+    let mut warned = false;
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break Some(status),
@@ -505,12 +525,17 @@ fn run_in_scope<'scope, 'env>(
                 let _ = child.wait();
                 break None;
             }
-            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+            Ok(None) => {
+                if let Some(s) = slow.as_ref().filter(|s| !warned && began.elapsed() >= s.after) {
+                    warned = true;
+                    (s.notify)();
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
             Err(e) => {
                 kill_group(pid);
                 let _ = child.kill();
                 let _ = child.wait();
-                let _ = (out.join(), err.join());
                 return Ended::Unstartable(format!("waiting for `{}`: {e}", program.display()));
             }
         }
@@ -518,14 +543,31 @@ fn run_in_scope<'scope, 'env>(
     let Some(status) = status else {
         // The readers belong to a group that is now dead, so they end on their own; a
         // timed-out call has no use for what it did not finish reading.
-        let _ = (out, err);
+        return Ended::TimedOut;
+    };
+    // The pipes are read to the end under a clock of their own: an exited client whose pipe is
+    // still held open is a call that did not finish.
+    let until = Instant::now() + within.saturating_sub(began.elapsed()).max(PIPE_GRACE);
+    let (Some(stdout), Some(stderr)) = (join_by(out, until), join_by(err, until)) else {
+        kill_group(pid);
         return Ended::TimedOut;
     };
     Ended::Answered(std::process::Output {
         status,
-        stdout: out.join().unwrap_or_default(),
-        stderr: err.join().unwrap_or_default(),
+        stdout,
+        stderr,
     })
+}
+
+/// A drain's bytes, or `None` when it has not reached end of file by `until`.
+fn join_by(h: std::thread::JoinHandle<Vec<u8>>, until: Instant) -> Option<Vec<u8>> {
+    while !h.is_finished() {
+        if Instant::now() >= until {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    Some(h.join().unwrap_or_default())
 }
 
 /// Drain a pipe on its own thread, so a child that writes more than a buffer does not block.
@@ -745,5 +787,49 @@ mod tests {
             "the group was killed with the child: {:?}",
             began.elapsed()
         );
+    }
+
+    /// A wedged mux master keeps the read end of the child's stdin after the client is killed. The
+    /// stand-in is a process in its own session holding the pipe: a write larger than the pipe never
+    /// returns, and the call must still end at its clock.
+    #[test]
+    fn a_held_stdin_does_not_hold_the_call_past_its_clock() {
+        let began = Instant::now();
+        let ended = run_bounded_fed(
+            Path::new("sh"),
+            &[
+                "-c".to_string(),
+                "setsid sleep 20 <&0 >/dev/null 2>&1 & sleep 30".to_string(),
+            ],
+            Duration::from_millis(300),
+            &vec![b'x'; 4 * 1024 * 1024],
+        );
+        assert!(matches!(ended, Ended::TimedOut));
+        assert!(
+            began.elapsed() < Duration::from_secs(5),
+            "the call ended at its clock: {:?}",
+            began.elapsed()
+        );
+    }
+
+    /// The slow notice fires once, while the child still runs, and before the deadline.
+    #[test]
+    fn the_slow_notice_comes_once_before_the_deadline() {
+        let hits = std::sync::atomic::AtomicUsize::new(0);
+        let notify = || {
+            hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        };
+        let ended = run_bounded_watched(
+            Path::new("sh"),
+            &["-c".to_string(), "sleep 30".to_string()],
+            Duration::from_millis(900),
+            None,
+            Some(Slow {
+                after: Duration::from_millis(200),
+                notify: &notify,
+            }),
+        );
+        assert!(matches!(ended, Ended::TimedOut));
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 }

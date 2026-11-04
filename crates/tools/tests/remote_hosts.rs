@@ -1178,6 +1178,88 @@ fn every_step_that_is_not_a_command_stops_at_its_bound() {
     let _ = std::fs::remove_file(&silent);
 }
 
+/// A wedged master keeps the stdin pipe of a killed client open, so a write larger than the pipe
+/// never finishes writing. The write must fail at its deadline naming the host, the session must be
+/// told the call was slow before that, the wedged master must be gone, and the next call must work.
+#[test]
+fn a_wedged_master_fails_a_big_write_at_its_deadline_and_the_next_call_is_fresh() {
+    let bound = Duration::from_secs(2);
+    let marker = PathBuf::from(format!("/tmp/letibot-wedge-{}.marker", std::process::id()));
+    let master_pid = PathBuf::from(format!("/tmp/letibot-wedge-{}.pid", std::process::id()));
+    let _ = std::fs::remove_file(&marker);
+    let _ = std::fs::remove_file(&master_pid);
+    let fake = Fake::new(
+        "wedged",
+        &format!(
+            "if [ -f '{m}' ]; then\n\
+               cp=$(printf '%s\\n' \"$*\" | grep -o 'ControlPath=[^ ]*')\n\
+               setsid bash -c 'echo $$ > \"$1\"; exec -a \"fakemaster $2\" sleep 30' x '{p}' \"$cp\" <&0 >/dev/null 2>&1 &\n\
+               sleep 30\n\
+             fi\n\
+             exec bash -lc \"$last\"",
+            m = marker.display(),
+            p = master_pid.display()
+        ),
+    );
+    let (repo, paths) = repo_and_paths(&fake.dir.join("rig"));
+    let b = SshBackend::place(&spec_for(&fake, &repo, &paths, bound)).expect("placed");
+    let began = Instant::now();
+    let told: std::sync::Arc<std::sync::Mutex<Vec<(String, String, Duration)>>> =
+        Default::default();
+    {
+        let told = told.clone();
+        b.on_slow(std::sync::Arc::new(move |code: &str, detail: String| {
+            told.lock()
+                .unwrap()
+                .push((code.to_string(), detail, began.elapsed()));
+        }));
+    }
+
+    std::fs::write(&marker, b"wedge").expect("the marker");
+    let began_write = Instant::now();
+    let said = format!(
+        "{:?}",
+        b.write("big.bin", &vec![7u8; 1 << 20])
+            .expect_err("a write the host never takes is refused")
+    );
+    assert!(
+        began_write.elapsed() < bound * 4 + Duration::from_secs(8),
+        "the write ended at its deadline, not when the wedge did: {:?}",
+        began_write.elapsed()
+    );
+    assert!(
+        said.contains("wedged") && said.contains("no answer within"),
+        "{said}"
+    );
+    assert!(said.contains("may not have happened"), "{said}");
+
+    let told = told.lock().unwrap().clone();
+    assert!(!told.is_empty(), "the session was told the call was slow");
+    let (code, detail, at) = &told[0];
+    assert_eq!(code, letibot_tools::remote::SLOW_CODE);
+    assert!(detail.contains("writing") && detail.contains("read the file again"), "{detail}");
+    assert!(
+        *at - (began_write.duration_since(began)) < bound,
+        "the warning came before the deadline: {at:?}"
+    );
+
+    let pid = std::fs::read_to_string(&master_pid).expect("the fake master started");
+    let alive = std::process::Command::new("kill")
+        .args(["-0", pid.trim()])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    assert!(!alive, "the wedged master {pid} was torn down");
+
+    std::fs::remove_file(&marker).expect("the host answers again");
+    assert_eq!(
+        b.read("README").expect("the next call is fresh"),
+        b"the first commit\n"
+    );
+    let _ = std::fs::remove_file(&master_pid);
+}
+
 /// A job's output and a job's kill are bounded too, and a kill that could not read back says
 /// the process's fate is unknown rather than counting it as removed.
 #[test]
