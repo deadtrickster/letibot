@@ -88,6 +88,7 @@ fn words(rows: &[Out]) -> Vec<String> {
 fn feed(sessions: Vec<Session>, here: &str) -> Feed {
     Feed {
         sessions,
+        fleet: Vec::new(),
         here: here.to_string(),
         home: "/home/dead".into(),
     }
