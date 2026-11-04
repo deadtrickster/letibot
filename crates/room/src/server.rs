@@ -32,6 +32,12 @@ pub const OUTBOX: usize = 256;
 /// the room's own writer threads pile up behind it.
 pub const WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// How long one frame may be, in bytes: one line of JSON. The frames a client sends are a `hello`,
+/// a chat message of at most `MAX_TEXT` bytes and the project's tree, which is a few hundred bytes
+/// a session - 1 MiB holds a project of several thousand sessions. Past it the line is a peer
+/// holding the room's memory, not a request, and the connection is closed.
+pub const MAX_FRAME_BYTES: usize = 1 << 20;
+
 /// One connection's identity - what its `Hello` said, the room it is in, and the queue its writer
 /// thread drains. Nothing writes to a peer's socket from another thread: a reader that has stopped
 /// reading must not be able to stop the room.
@@ -1120,8 +1126,28 @@ impl Server {
                 // The door. The first frame is the `Hello`, and a connection that does not
                 // open with one has nothing to say that the room could act on.
                 let first = match read_frame(&mut reader) {
-                    Ok(Some(frame)) => frame,
-                    _ => return,
+                    ReadFrame::Frame(frame) => frame,
+                    ReadFrame::OverLong(got) => {
+                        let mut w = writer;
+                        let _ = write_frame(
+                            &mut w,
+                            &Response::Bye {
+                                why: over_long_sentence(got),
+                            },
+                        );
+                        let _ = w.shutdown(std::net::Shutdown::Both);
+                        return;
+                    }
+                    ReadFrame::End => return,
+                    // Not JSON, so not a frame: there is no name to answer and no request to
+                    // refuse, and the line is said on the log so it can be found afterwards.
+                    ReadFrame::Bad(why) => {
+                        eprintln!(
+                            "room: a connection sent a line that is not a frame ({why}); it is \
+                             closed"
+                        );
+                        return;
+                    }
                 };
                 let hello = match &first {
                     Request::Hello { .. } => first.clone(),
@@ -1223,8 +1249,26 @@ impl Server {
                         break;
                     }
                     let frame = match read_frame(&mut reader) {
-                        Ok(Some(f)) => f,
-                        _ => break,
+                        ReadFrame::Frame(f) => f,
+                        // A line past the bound is answered before the close: the peer is told
+                        // what it sent and what the room takes, rather than reading a bare close.
+                        ReadFrame::OverLong(got) => {
+                            conn.send(Response::Bye {
+                                why: over_long_sentence(got),
+                            });
+                            break;
+                        }
+                        ReadFrame::End => break,
+                        // Not JSON, so not a frame: the room cannot answer it, and the log is the
+                        // only place a person could find out what the peer tried to send.
+                        ReadFrame::Bad(why) => {
+                            eprintln!(
+                                "room: `{}` sent a line that is not a frame ({why}); its \
+                                 connection is closed",
+                                speaker.session
+                            );
+                            break;
+                        }
                     };
                     let answer: Answer =
                         me.answer_frame(&project, seat, &speaker, &frame, now_ms());
@@ -1474,19 +1518,51 @@ fn write_frame(w: &mut impl Write, response: &Response) -> std::io::Result<()> {
     w.flush()
 }
 
-fn read_frame(reader: &mut BufReader<UnixStream>) -> std::io::Result<Option<Request>> {
-    let mut line = String::new();
-    let n = reader.read_line(&mut line)?;
+/// `read_frame`'s answer, as four different facts: a frame, the peer's end, a line past the bound
+/// (which is answered with a sentence before the close), and a line that is not a frame.
+enum ReadFrame {
+    Frame(Request),
+    End,
+    OverLong(usize),
+    Bad(String),
+}
+
+fn read_frame(reader: &mut BufReader<UnixStream>) -> ReadFrame {
+    use std::io::Read;
+    let mut line = Vec::new();
+    // One byte past the bound is what tells a long line from a line too long: a frame of exactly
+    // the bound ends in its newline inside the window, and anything else does not.
+    let window = (MAX_FRAME_BYTES + 1) as u64;
+    let n = match (&mut *reader).take(window).read_until(b'\n', &mut line) {
+        Ok(n) => n,
+        Err(e) => return ReadFrame::Bad(e.to_string()),
+    };
     if n == 0 {
-        return Ok(None);
+        return ReadFrame::End;
     }
-    let line = line.trim();
-    if line.is_empty() {
-        return Ok(None);
+    if line.last() != Some(&b'\n') {
+        return ReadFrame::OverLong(line.len());
     }
-    serde_json::from_str(line)
-        .map(Some)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+    let text = String::from_utf8_lossy(&line);
+    let text = text.trim();
+    if text.is_empty() {
+        return ReadFrame::End;
+    }
+    match serde_json::from_str(text) {
+        Ok(request) => ReadFrame::Frame(request),
+        Err(e) => ReadFrame::Bad(e.to_string()),
+    }
+}
+
+/// The sentence an over-long line is refused with: what arrived, what the room accepts, and that
+/// nothing was done. A refusal that only said *closed* would leave the peer guessing at a bound it
+/// cannot see.
+fn over_long_sentence(got: usize) -> String {
+    format!(
+        "this connection sent a line longer than {MAX_FRAME_BYTES} bytes ({got} were read) - a \
+         frame is one line of JSON, and a longer line is not a request: nothing was done, and the \
+         connection is closed"
+    )
 }
 
 /// The token an operator's seat is granted by: 32 bytes from the kernel's pool, hex. Read from

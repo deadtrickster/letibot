@@ -840,3 +840,43 @@ fn a_stalled_reader_is_disconnected_and_does_not_block_the_others() {
     healthy.session();
     server.stop();
 }
+
+/// A line past the bound is refused with the bound in the sentence, and the connection goes with
+/// it: an unbounded `read_line` is a peer deciding how much memory the coordinator holds.
+#[test]
+fn a_line_past_the_bound_is_refused_with_the_bound_in_the_sentence() {
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::os::unix::net::UnixStream;
+    let scratch = Scratch::new("too-long");
+    let server = Server::serve(&scratch.socket(), Room::new()).expect("a socket");
+    let max = letibot_room::server::MAX_FRAME_BYTES;
+    let mut stream = UnixStream::connect(scratch.socket()).expect("a connection");
+    let mut reader = BufReader::new(stream.try_clone().expect("a reader"));
+    // A line the peer never ends. The first chunks are taken and then the room stops reading, so
+    // a write after that point fails on a closed socket - which is the refusal arriving.
+    let chunk = vec![b'x'; max / 2];
+    for _ in 0..3 {
+        if stream.write_all(&chunk).is_err() {
+            break;
+        }
+    }
+    let mut answer = String::new();
+    reader.read_line(&mut answer).expect("the refusal");
+    let bye: Response = serde_json::from_str(answer.trim()).expect("a frame");
+    match bye {
+        Response::Bye { why } => {
+            assert!(why.contains(&max.to_string()), "the bound is named: {why}");
+            assert!(why.contains("nothing was done"), "{why}");
+            assert!(why.contains("connection is closed"), "{why}");
+        }
+        other => panic!("a line past the bound is refused: {other:?}"),
+    }
+    // And the rest of the line is not read: the connection ended with the sentence.
+    let mut rest = Vec::new();
+    let _ = reader.read_to_end(&mut rest);
+    assert!(rest.is_empty(), "nothing followed the refusal");
+    until("the refused connection to be gone", || {
+        server.connections() == 0
+    });
+    server.stop();
+}
