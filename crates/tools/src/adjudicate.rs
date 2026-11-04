@@ -2651,15 +2651,21 @@ impl Gate for AdjudicatedGate {
             return GateDecision::refuse_and_tell(ToolOutcome::Denied { req_id: id }, tell);
         }
 
-        // 1. The `never` rows, overridable by none. Two questions, one rule: `never_hit` asks it
-        // of the SPELLING and [`ssh_resolution_hit`] of the PATH - what the argument names after
-        // every symlink, for a file that may not exist yet.
-        let refused = never_hit(call.args).map(|hit| {
-            format!(
-                "`{hit}` is on the never-write list: no adjudicator is consulted and none \
-                 can override it"
-            )
-        });
+        // 1. The `never` rows, overridable by none. A call that WRITES is judged by its
+        // spelling, because what the list is about is what a write leaves behind; a call that can
+        // only read is not, or `read {"path": ".git/HEAD"}` and `cat ./.git/config` are refused
+        // in every mode. Two questions, one rule: `never_hit` asks it of the SPELLING and
+        // [`ssh_resolution_hit`] of the PATH - what the argument names after every symlink, for a
+        // file that may not exist yet.
+        let refused = matches!(access, Access::Write | Access::Exec)
+            .then(|| never_hit(call.args))
+            .flatten()
+            .map(|hit| {
+                format!(
+                    "`{hit}` is on the never-write list: no adjudicator is consulted and none \
+                     can override it"
+                )
+            });
         let refused = refused.or_else(|| {
             let home = self.surroundings.home.as_deref()?;
             let real = ssh_resolution_hit(call, std::path::Path::new(home))?;

@@ -94,6 +94,56 @@ fn the_never_write_list_outranks_the_widest_point_on_this_box() {
     assert!(!matches!(g.admit(&bash(&read)), GateDecision::Admit));
 }
 
+/// The list is about what a write leaves behind. Judged on spelling alone it also refused READS,
+/// so `read .git/HEAD` and `cat ./.git/config` came back `denied` at every point including
+/// allow-all, and a session could not look at its own repository.
+#[test]
+fn the_never_write_list_judges_a_write_and_not_a_read() {
+    let mut g = AdjudicatedGate::closed()
+        .with_surroundings(pinned())
+        .with_mode(crate::mode::Mode::ALLOW_ALL_HERE);
+
+    // A file tool's read: the argument names the store, and nothing is written into it.
+    let head = json!({"path": "/w/.git/HEAD"});
+    let read_head = GateCall {
+        access: Access::Read,
+        ..call("read", &head)
+    };
+    assert!(
+        matches!(g.admit(&read_head), GateDecision::Admit),
+        "a read of .git/HEAD is a read: {:?}",
+        g.log.last().map(|r| r.decision.basis.clone())
+    );
+
+    // And the same read through the shell, which layer A reads as reads-only and therefore as
+    // `Read` rather than `Exec`.
+    let cat = json!({"command": "cat ./.git/config"});
+    assert!(
+        matches!(g.admit(&bash(&cat)), GateDecision::Admit),
+        "`cat` writes nothing: {:?}",
+        g.log.last().map(|r| r.decision.basis.clone())
+    );
+
+    // The write into the same path is refused, and by the list rather than by the mode.
+    let config = json!({"path": "/w/.git/config", "content": "[core]\n"});
+    assert!(
+        !matches!(g.admit(&call("write", &config)), GateDecision::Admit),
+        "a write into .git is the write the list exists for"
+    );
+    let said = g.log.last().expect("a row").decision.basis.clone();
+    assert!(said.contains("never-write list"), "{said}");
+
+    // A shell call that writes is judged the same way: the class comes from the command, not
+    // from the tool's declaration.
+    let redirect = json!({"command": "echo x > ./.git/config"});
+    assert!(
+        !matches!(g.admit(&bash(&redirect)), GateDecision::Admit),
+        "a shell write into .git must still be refused"
+    );
+    let said = g.log.last().expect("a row").decision.basis.clone();
+    assert!(said.contains("never-write list"), "{said}");
+}
+
 /// opencode's `permission` config governs the gate before the mode: `deny`
 /// refuses, `allow` admits, `ask` falls through.
 #[test]
