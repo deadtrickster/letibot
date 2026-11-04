@@ -99,7 +99,8 @@ impl TaskJournal {
                     .lsp
                     .servers
                     .get(lang)
-                    .map(|a| a[0].as_str())
+                    .and_then(|a| a.first())
+                    .map(String::as_str)
                     .unwrap_or("");
                 json!({
                     "language": lang,
@@ -166,3 +167,25 @@ pub fn default_state_path() -> Option<PathBuf> {
 /// A handle a runner can clone, kept in an `Arc` so it is `Send + Sync` while the
 /// journal itself stays behind a `Mutex`.
 pub type SharedTaskJournal = Arc<TaskJournal>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_language_server_configured_with_no_argv_does_not_panic_the_flush() {
+        let mut lsp = letibot_tools::builtins::lsp::LspConfig::default();
+        lsp.servers.insert("empty".into(), Vec::new());
+        let path = letibot_sessionlog::testing::scratch_root()
+            .join(format!("letibot-tasks-flush-{}.json", std::process::id()));
+        let journal = TaskJournal::new(
+            Some(path.clone()),
+            Arc::new(lsp),
+            Arc::new(SkillRegistry::default()),
+        );
+        journal.flush();
+        let body = std::fs::read_to_string(&path).expect("the state file is written");
+        let _ = std::fs::remove_file(&path);
+        assert!(body.contains("\"empty\""), "{body}");
+    }
+}
