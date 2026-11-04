@@ -290,6 +290,9 @@ pub struct RoomInfo {
     /// The project key, empty for the host room.
     #[serde(default)]
     pub project: String,
+    /// What a person calls the room: the project's folder name, empty for the host room.
+    #[serde(default)]
+    pub label: String,
     /// Participants connected or known now.
     pub members: u64,
     /// The `seq` of the newest message in the room, 0 when empty.
@@ -619,6 +622,7 @@ impl Chat {
         since: u64,
         last: Option<usize>,
         thread: Option<u64>,
+        before: Option<u64>,
         see: impl Fn(&Message) -> bool,
     ) -> History {
         let mut rows: Vec<Message> = self
@@ -626,7 +630,7 @@ impl Chat {
             .get(room)
             .into_iter()
             .flatten()
-            .filter(|m| m.seq > since && see(m))
+            .filter(|m| m.seq > since && before.is_none_or(|b| m.seq < b) && see(m))
             .filter(|m| thread.is_none_or(|t| m.seq == t || m.thread == Some(t)))
             .cloned()
             .collect();
@@ -866,14 +870,27 @@ mod tests {
         for i in 0..(RING + 5) {
             say(&mut c, &i.to_string(), HOST_ROOM, "s-a", Seat::Session, "m");
         }
-        let h = c.read(HOST_ROOM, 0, Some(MAX_READ), None, |_| true);
+        let h = c.read(HOST_ROOM, 0, Some(MAX_READ), None, None, |_| true);
         assert!(h.trimmed, "the first five are gone");
         assert_eq!(h.rows.len(), MAX_READ);
         assert_eq!(h.rows.last().map(|m| m.seq), Some((RING + 5) as u64));
-        let tail = c.read(HOST_ROOM, 10, Some(3), None, |_| true);
+        let tail = c.read(HOST_ROOM, 10, Some(3), None, None, |_| true);
         assert!(!tail.trimmed, "nothing after seq 10 was lost");
         assert_eq!(tail.rows.len(), 3);
         assert_eq!(c.rings[HOST_ROOM].len(), RING);
+    }
+
+    #[test]
+    fn a_read_before_a_seq_is_the_page_back_from_it() {
+        let mut c = Chat::new();
+        for i in 0..30 {
+            say(&mut c, &i.to_string(), HOST_ROOM, "s-a", Seat::Session, "m");
+        }
+        let page = c.read(HOST_ROOM, 0, Some(10), None, Some(21), |_| true);
+        let seqs: Vec<u64> = page.rows.iter().map(|m| m.seq).collect();
+        assert_eq!(seqs, (11..=20).collect::<Vec<_>>());
+        let first = c.read(HOST_ROOM, 0, Some(10), None, Some(1), |_| true);
+        assert!(first.rows.is_empty(), "nothing is older than the first");
     }
 
     #[test]
@@ -894,7 +911,7 @@ mod tests {
             )
             .unwrap();
         say(&mut c, "3", HOST_ROOM, "s-c", Seat::Session, "other");
-        let h = c.read(HOST_ROOM, 0, None, Some(root.seq), |_| true);
+        let h = c.read(HOST_ROOM, 0, None, Some(root.seq), None, |_| true);
         assert_eq!(
             h.rows.iter().map(|m| m.seq).collect::<Vec<_>>(),
             vec![root.seq, r.seq]
@@ -1044,13 +1061,13 @@ mod store_tests {
         for i in 0..n {
             say(&mut c, &i.to_string(), HOST_ROOM, &big);
         }
-        let h = c.read(HOST_ROOM, 0, Some(MAX_READ), None, |_| true);
+        let h = c.read(HOST_ROOM, 0, Some(MAX_READ), None, None, |_| true);
         assert!(h.rows.iter().map(|m| m.text.len()).sum::<usize>() <= ROOM_BYTES);
         assert!(h.trimmed);
         let again = Chat::open(&p);
         assert_eq!(again.head(), n as u64);
         assert_eq!(again.last_in(HOST_ROOM), n as u64);
-        assert!(again.read(HOST_ROOM, 0, None, None, |_| true).trimmed);
+        assert!(again.read(HOST_ROOM, 0, None, None, None, |_| true).trimmed);
         let _ = std::fs::remove_file(&p);
     }
 

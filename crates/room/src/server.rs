@@ -936,6 +936,10 @@ impl Server {
             .lock()
             .expect("the pending lock")
             .remove(session);
+        // The operator reads the whole log with `read`; a digest is for an agent's context.
+        if conn.seat == Seat::Operator {
+            return;
+        }
         let now = now_ms();
         let (seen, head, rows) = {
             let chat = self.inner.chat.lock().expect("the chat lock");
@@ -1089,6 +1093,20 @@ impl Server {
         }
     }
 
+    /// Every project room's label, told apart from its namesakes.
+    fn project_label_map(&self) -> BTreeMap<String, String> {
+        let rows: Vec<(String, String)> = self
+            .inner
+            .rooms
+            .lock()
+            .expect("the rooms lock")
+            .iter()
+            .filter(|(k, _)| !k.is_empty())
+            .map(|(k, r)| (k.clone(), r.root().to_string()))
+            .collect();
+        crate::project_labels(&rows, &std::env::var("HOME").unwrap_or_default())
+    }
+
     /// Who is in a chat room: the tree's top-level sessions, whoever is connected, and the wide
     /// seats, which are in every room.
     pub fn roster_of(&self, room: &str) -> Vec<chat::Presence> {
@@ -1164,12 +1182,14 @@ impl Server {
                 } else if !project.is_empty() {
                     ids.push(chat::project_room(project));
                 }
+                let labels = self.project_label_map();
                 let chat = self.inner.chat.lock().expect("the chat lock");
                 let rows = ids
                     .into_iter()
                     .map(|id| {
                         let key = chat::project_of_room(&id).unwrap_or("").to_string();
                         chat::RoomInfo {
+                            label: labels.get(&key).cloned().unwrap_or_default(),
                             kind: if key.is_empty() { "host" } else { "project" }.into(),
                             members: self.roster_of(&id).len() as u64,
                             last_seq: chat.last_in(&id),
@@ -1273,6 +1293,7 @@ impl Server {
                 since,
                 last,
                 thread,
+                before,
             } => {
                 let room = match room.trim() {
                     "" => Self::default_chat_room(seat, project),
@@ -1287,6 +1308,7 @@ impl Server {
                     *since,
                     last.map(|n| n as usize),
                     *thread,
+                    *before,
                     |m| self.visible(name, seat, project, m),
                 ))
             }

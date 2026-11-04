@@ -42,6 +42,8 @@ pub struct Room {
     /// Who is in this room: the project's tree, as the daemon that holds it last described it.
     /// Not the connections, because a subagent never opens one.
     members: Vec<crate::tree::Member>,
+    /// The project's folder as its daemon last named it, for the channel's label.
+    root: String,
     replay: BTreeMap<(String, String), Outcome>,
     replay_order: VecDeque<(String, String)>,
     /// Which project's room this is, on store records only: the room's own name is the server's
@@ -553,6 +555,7 @@ impl Room {
             next_question: 0,
             seen: BTreeMap::new(),
             members: Vec::new(),
+            root: String::new(),
             replay: BTreeMap::new(),
             replay_order: VecDeque::new(),
             project: String::new(),
@@ -603,6 +606,18 @@ impl Room {
     pub fn set_members(&mut self, rows: Vec<crate::tree::Member>) {
         self.members = rows;
         crate::tree::tree_order(&mut self.members);
+    }
+
+    /// Record the project's folder.
+    pub fn set_root(&mut self, root: String) {
+        if !root.trim().is_empty() {
+            self.root = root;
+        }
+    }
+
+    /// The project's folder, empty until a daemon named it.
+    pub fn root(&self) -> &str {
+        &self.root
     }
 
     /// Who is in this room, in the tree's order.

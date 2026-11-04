@@ -137,9 +137,8 @@ fn the_gatekeeper_is_the_queue_and_its_children_are_reviewers() {
         vec![Group::Gatekeeper, Group::Reviewer, Group::Reviewer],
         "a reviewer of a reviewer is still a reviewer"
     );
-    // A row with no title is drawn by its id: a member a person cannot recognise is a row the
-    // tree draws as an id anyway.
-    assert_eq!(members[0].label, "s-gatekeeper-aaaaaaaaaaaa");
+    // A row with no title is its folder and a short id.
+    assert_eq!(members[0].label, "letibot …aaaaaaaa");
 }
 
 /// The notes keeper is its own group - it is a child of nobody, it repairs memory and it runs

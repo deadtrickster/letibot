@@ -1,6 +1,8 @@
 //! The `/rooms` view: the channel list on the left, the selected channel on the right. Text only,
 //! cut to the width it is given, so it reads the same at 80 columns and at 120.
 
+use std::collections::BTreeMap;
+
 use crate::app::rooms::{Chan, ChatRef, Member, Msg, OPERATOR, RoomsView, Send, mentions_operator};
 use crate::app::*;
 use crate::ui::render::{row_strings, trim_to, visible_width, wrap};
@@ -24,7 +26,7 @@ impl App {
         let mut needed = LEFT_FLOOR;
         for c in self.rooms.channels() {
             let count = self.rooms.unread(&c).to_string().len();
-            let name = visible_width(&label(&c));
+            let name = visible_width(&label(&self.rooms, &c));
             needed = needed.max(2 + name + 1 + count);
         }
         let cap = (w / 2).saturating_sub(visible_width(SEP) + 1);
@@ -60,21 +62,21 @@ fn cut_keeping_ends(s: &str, n: usize) -> String {
     format!("{head}…{tail}")
 }
 
-fn label(c: &Chan) -> String {
+/// The project's folder name, as the coordinator labelled it.
+fn label(v: &RoomsView, c: &Chan) -> String {
     match c {
-        // The whole key: the column is cut only when it must be, and the cut keeps the ends.
         Chan::Room(id) => match id.strip_prefix("project/") {
-            Some(key) => format!("#{key}"),
+            Some(_) => format!("#{}", clean_line(&v.room_label(id))),
             None => id.clone(),
         },
         Chan::Dm(p) => clean_line(p),
     }
 }
 
-fn title(c: &Chan) -> String {
+fn title(v: &RoomsView, c: &Chan) -> String {
     match c {
         Chan::Room(id) => match id.strip_prefix("project/") {
-            Some(key) => format!("project {key}"),
+            Some(_) => format!("project {}", clean_line(&v.room_label(id))),
             None => format!("{id} room"),
         },
         Chan::Dm(p) => format!("dm with {}", clean_line(p)),
@@ -91,14 +93,14 @@ fn padded(mut l: Line, w: usize) -> Line {
 }
 
 /// One channel row: mark, name, and the unread count at the right edge.
-fn entry(c: &Chan, picked: bool, unread: u64, lw: usize) -> Line {
+fn entry(v: &RoomsView, c: &Chan, picked: bool, unread: u64, lw: usize) -> Line {
     let count = if unread > 0 {
         unread.to_string()
     } else {
         String::new()
     };
     let room = lw.saturating_sub(count.len() + 1).max(3);
-    let name = cut_keeping_ends(&format!("{} {}", pane::mark(picked), label(c)), room);
+    let name = cut_keeping_ends(&format!("{} {}", pane::mark(picked), label(v, c)), room);
     let mut l = Line::new(vec![Span::raw(name)]);
     let pad = lw.saturating_sub(l.width() + count.len());
     l.push(Span::raw(" ".repeat(pad)));
@@ -152,7 +154,12 @@ fn system_line(m: &Msg, rw: usize) -> Line {
     pane::faint(trim_to(&text, rw))
 }
 
-fn message_lines(m: &Msg, rw: usize, with_time: bool) -> Vec<Line> {
+fn message_lines(
+    m: &Msg,
+    rw: usize,
+    with_time: bool,
+    names: &BTreeMap<String, String>,
+) -> Vec<Line> {
     if m.kind == "system" {
         return vec![system_line(m, rw)];
     }
@@ -168,7 +175,8 @@ fn message_lines(m: &Msg, rw: usize, with_time: bool) -> Vec<Line> {
         String::new()
     };
     let seq = format!("{:>3}{}", m.seq, if named { '!' } else { ' ' });
-    let author = format!("<{}> ", trim_to(&clean_line(&m.author), 12));
+    let who = names.get(&m.author).unwrap_or(&m.author);
+    let author = format!("<{}> ", trim_to(&clean_line(who), 16));
     let indent = visible_width(&seq) + visible_width(&time) + visible_width(&author);
     let cols = rw.saturating_sub(indent).max(8);
     let reply = m.thread.map(|t| format!("↳{t} ")).unwrap_or_default();
@@ -217,18 +225,34 @@ fn message_lines(m: &Msg, rw: usize, with_time: bool) -> Vec<Line> {
     out
 }
 
-fn roster_lines(c: &Chan, members: Option<&Vec<Member>>, rw: usize) -> Vec<Line> {
+fn roster_lines(
+    c: &Chan,
+    members: Option<&Vec<Member>>,
+    all: bool,
+    names: &BTreeMap<String, String>,
+    rw: usize,
+) -> Vec<Line> {
     if matches!(c, Chan::Dm(_)) {
         return vec![pane::faint("  a direct chat has two people in it")];
     }
     let Some(members) = members else {
         return vec![pane::faint("  asking the coordinator...")];
     };
-    let mut out = vec![pane::faint(format!("  {} in this channel", members.len()))];
-    for m in members {
+    let online = members.iter().filter(|m| m.connected).count();
+    let offline = members.len() - online;
+    let mut head = format!("  {online} connected");
+    if offline > 0 {
+        head.push_str(&format!(
+            ", +{offline} offline ({})",
+            if all { "r hides" } else { "r lists" }
+        ));
+    }
+    let mut out = vec![pane::faint(head)];
+    for m in members.iter().filter(|m| all || m.connected) {
         let dot = if m.connected { "●" } else { "○" };
-        let mut text = format!("  {dot} {}  {}", clean_line(&m.name), clean_line(&m.kind));
-        if !m.label.is_empty() {
+        let name = names.get(&m.name).unwrap_or(&m.name);
+        let mut text = format!("  {dot} {}  {}", clean_line(name), clean_line(&m.kind));
+        if !m.label.is_empty() && m.label != *name {
             text.push_str(&format!("  {}", clean_line(&m.label)));
         }
         let role = if m.connected {
@@ -243,7 +267,7 @@ fn roster_lines(c: &Chan, members: Option<&Vec<Member>>, rw: usize) -> Vec<Line>
 
 impl RoomsView {
     fn header(&self, c: &Chan, rw: usize) -> Line {
-        let mut spans = vec![Span::role(title(c), Role::Strong)];
+        let mut spans = vec![Span::role(title(self, c), Role::Strong)];
         if let Chan::Room(id) = c
             && let Some(r) = self.rows.iter().find(|r| &r.id == id)
         {
@@ -302,13 +326,38 @@ impl App {
                 sel_row = lines.len();
             }
             let unread = if is_sel { 0 } else { self.rooms.unread(c) };
-            lines.push(entry(c, is_sel, unread, lw));
+            lines.push(entry(&self.rooms, c, is_sel, unread, lw));
         }
         let skip = (sel_row + 1).saturating_sub(room);
         lines.into_iter().skip(skip).take(room).collect()
     }
 
+    /// What a session is called: its title or slug in this head's session list, else the
+    /// label the roster carries, else its id.
+    fn rooms_names(&self) -> BTreeMap<String, String> {
+        let mut names = BTreeMap::new();
+        for list in self.rooms.roster.values() {
+            for m in list {
+                if !m.label.is_empty() {
+                    names.insert(m.name.clone(), m.label.clone());
+                }
+            }
+        }
+        for b in &self.sessions {
+            let named = if b.slug.trim().is_empty() {
+                b.title.trim()
+            } else {
+                b.slug.trim()
+            };
+            if !named.is_empty() {
+                names.insert(b.session_id.clone(), named.to_string());
+            }
+        }
+        names
+    }
+
     fn rooms_body(&self, rw: usize) -> Vec<Line> {
+        let names = self.rooms_names();
         let Some(c) = self.rooms.selected() else {
             // The selected channel is gone rather than empty, and the sentence says which:
             // an empty channel draws "nothing here yet", which would be a lie here.
@@ -326,14 +375,30 @@ impl App {
                 Chan::Room(id) => id.as_str(),
                 Chan::Dm(_) => "",
             };
-            return roster_lines(&c, self.rooms.roster.get(key), rw);
+            return roster_lines(
+                &c,
+                self.rooms.roster.get(key),
+                self.rooms.roster_all,
+                &names,
+                rw,
+            );
         }
         let msgs = self.rooms.messages(&c);
         let with_time = rw >= 64;
-        let mut out: Vec<Line> = msgs
-            .into_iter()
-            .flat_map(|m| message_lines(m, rw, with_time))
-            .collect();
+        let mut out: Vec<Line> = Vec::new();
+        if let Chan::Room(id) = &c
+            && !msgs.is_empty()
+        {
+            out.push(pane::faint(if self.rooms.oldest_known.contains(id) {
+                "  start of the stored history"
+            } else {
+                "  scroll up for older messages"
+            }));
+        }
+        out.extend(
+            msgs.into_iter()
+                .flat_map(|m| message_lines(m, rw, with_time, &names)),
+        );
         out.extend(send_lines(&self.rooms.sends, &c, rw));
         if out.is_empty() {
             let said = if self.rooms.heard {
@@ -368,11 +433,28 @@ impl App {
 
         // Stay on the tail unless the reader scrolled back from it.
         let max = body.len().saturating_sub(chat_room);
+        // A page of older messages landing above keeps the lines the reader was on.
+        let key = self.rooms.selected().map(|c| RoomsView::key(&c));
+        let first = self
+            .rooms
+            .selected()
+            .and_then(|c| self.rooms.messages(&c).first().map(|m| m.seq));
+        if let (Some((k, seq, len)), Some(key), Some(first)) =
+            (self.rooms.prev_first.clone(), key.clone(), first)
+            && k == key
+            && first < seq
+            && self.pane_scroll < self.rooms.prev_max
+        {
+            self.pane_scroll += body.len().saturating_sub(len);
+        }
+        self.rooms.prev_first = key.zip(first).map(|(k, f)| (k, f, body.len()));
         if self.pane_scroll >= self.rooms.prev_max {
             self.pane_scroll = max;
         }
         self.pane_scroll = self.pane_scroll.min(max);
         self.rooms.prev_max = max;
+        self.rooms.at_top = self.pane_scroll == 0;
+        self.rooms_page_back();
         self.pane_len = body.len();
         self.pane_room = chat_room;
 

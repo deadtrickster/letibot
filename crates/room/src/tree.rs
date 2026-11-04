@@ -18,6 +18,55 @@ pub const PROJECT_KEY_LEN: usize = 12;
 /// The project a workspace root belongs to, as the key the rest of the tree already uses. The path is
 /// canonicalised first, because `/var/folders` and `/private/var/folders` are one directory and two
 /// strings, and two strings are two rooms; one that cannot be is hashed as given.
+/// A label for each project folder: its own name, `~` for the home folder, and for two folders
+/// of one name a suffix of the parent folder (then the key) so they stay apart. `rows` is
+/// `(key, root)`. A key with no known root is labelled by its first eight characters.
+pub fn project_labels(
+    rows: &[(String, String)],
+    home: &str,
+) -> std::collections::BTreeMap<String, String> {
+    let base = |key: &str, root: &str| -> String {
+        let root = root.trim_end_matches('/');
+        if root.is_empty() {
+            return key.chars().take(8).collect();
+        }
+        if !home.is_empty() && root == home.trim_end_matches('/') {
+            return "~".to_string();
+        }
+        std::path::Path::new(root)
+            .file_name()
+            .map_or_else(|| root.to_string(), |n| n.to_string_lossy().to_string())
+    };
+    let parent = |root: &str| -> String {
+        std::path::Path::new(root.trim_end_matches('/'))
+            .parent()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default()
+    };
+    let mut out = std::collections::BTreeMap::new();
+    for (key, root) in rows {
+        let name = base(key, root);
+        let same: Vec<&(String, String)> =
+            rows.iter().filter(|(k, r)| base(k, r) == name).collect();
+        let label = if same.len() < 2 {
+            name
+        } else {
+            let p = parent(root);
+            let twins = same.iter().filter(|(_, r)| parent(r) == p).count();
+            if twins > 1 {
+                format!("{name} ({})", key.chars().take(4).collect::<String>())
+            } else if p.is_empty() {
+                name
+            } else {
+                format!("{name} ({p})")
+            }
+        };
+        out.insert(key.clone(), label);
+    }
+    out
+}
+
 pub fn project_key(root: &str) -> String {
     use sha2::Digest;
     let path = std::fs::canonicalize(root).unwrap_or_else(|_| std::path::PathBuf::from(root));
@@ -217,6 +266,33 @@ mod tests {
     use super::*;
 
     const KEY: &str = "lab2x1-e666427d";
+
+    #[test]
+    fn a_project_is_labelled_by_its_folder_and_namesakes_by_their_parent() {
+        let rows = |v: &[(&str, &str)]| -> Vec<(String, String)> {
+            v.iter()
+                .map(|(a, b)| (a.to_string(), b.to_string()))
+                .collect()
+        };
+        let l = project_labels(
+            &rows(&[
+                ("k1", "/home/d/Projects/rano"),
+                ("k2", "/home/d"),
+                ("k3", "/home/d/a/app"),
+                ("k4", "/home/d/b/app"),
+                ("k5", "/home/d/b/app2/../x"),
+                ("k6", "/home/d/c/x"),
+                ("k7", ""),
+            ]),
+            "/home/d",
+        );
+        assert_eq!(l["k1"], "rano");
+        assert_eq!(l["k2"], "~");
+        assert_eq!(l["k3"], "app (a)");
+        assert_eq!(l["k4"], "app (b)");
+        assert_eq!(l["k7"], "k7");
+        assert_ne!(l["k5"], l["k6"]);
+    }
 
     /// SAFETY: the directory is one this test makes, because a key is the resolved folder and a path the
     /// machine happens to have would make the answer a fact about the machine. The name itself runs both

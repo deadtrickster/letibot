@@ -114,7 +114,10 @@ pub fn report_queue_move_in(queue: &str, id: &str, to: &str, why: &str, key: Opt
         .filter_map(Weak::upgrade)
         .filter(|l| l.plain)
         .collect();
-    let (link, room) = match key.as_ref().and_then(|k| plain.iter().find(|l| &l.project == k)) {
+    let (link, room) = match key
+        .as_ref()
+        .and_then(|k| plain.iter().find(|l| &l.project == k))
+    {
         Some(l) => (l.clone(), ""),
         None => match plain.first() {
             Some(l) => (l.clone(), "host"),
@@ -129,7 +132,10 @@ pub fn report_queue_move_in(queue: &str, id: &str, to: &str, why: &str, key: Opt
     link.notify_in(
         room,
         "queue",
-        format!("queue:{}:{queue}:{id}:{to}:{why}", key.as_deref().unwrap_or("host")),
+        format!(
+            "queue:{}:{queue}:{id}:{to}:{why}",
+            key.as_deref().unwrap_or("host")
+        ),
         text,
         vec![letibot_room::Ref {
             kind: "queue".into(),
@@ -306,7 +312,8 @@ impl SessionRoom {
             return;
         };
         let rows = roster.members(&self.project);
-        let _ = self.client.request(&Request::Members { rows });
+        let root = roster.root(&self.project);
+        let _ = self.client.request(&Request::Members { rows, root });
     }
 
     /// Report a fact into this session's project room (or the host's when it has none), off the
@@ -898,6 +905,7 @@ fn request_of(verb: &str, args: &serde_json::Value) -> Result<Request, String> {
             // A bare read is the tail, not the whole ring.
             last: Some(n("last").unwrap_or(20).min(200) as u32),
             thread: n("thread"),
+            before: n("before"),
         },
         "queue" => Request::Queue { tag: s("tag") },
         "holding" => Request::Holding {

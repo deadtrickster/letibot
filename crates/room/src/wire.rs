@@ -123,6 +123,9 @@ pub enum Request {
         last: Option<u32>,
         #[serde(default)]
         thread: Option<u64>,
+        /// Only messages older than this `seq`, the newest `last` of them: one page back.
+        #[serde(default)]
+        before: Option<u64>,
     },
     /// Who is in a room.
     Roster { room: String },
@@ -173,7 +176,12 @@ pub enum Request {
     /// The project's tree, as the daemon holding it sees it - who is in this room. The room cannot work
     /// this out: it keeps no tree, and a subagent never opens a connection, so the connections are not the
     /// membership either. A replacement and not a merge, because a merge would keep a session closed since.
-    Members { rows: Vec<crate::tree::Member> },
+    /// `root` is the project's folder, which the room names the channel from.
+    Members {
+        rows: Vec<crate::tree::Member>,
+        #[serde(default)]
+        root: String,
+    },
     /// A tag's queue, in order - the read that makes polling unnecessary after a reconnect.
     Queue { tag: String },
     /// What a session holds and what it is waiting on. `session: None` means *me*.
@@ -598,8 +606,9 @@ impl Room {
             // The tree, replaced. No id and no event: a membership is a set, a repeat is the same
             // set, and a bell for *somebody else joined the project* would be a turn for every
             // session on every change.
-            Request::Members { rows } => {
+            Request::Members { rows, root } => {
                 self.set_members(rows.clone());
+                self.set_root(root.clone());
                 Answer::quiet(Response::Members {
                     count: self.members().len() as u64,
                 })

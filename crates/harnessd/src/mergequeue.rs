@@ -45,7 +45,12 @@ pub const HANDED_TO_PROJECT: &str = "handed to the project's main session";
 /// has that id.
 pub fn repository_of_row(path: &Path, id: &str) -> Option<String> {
     let store = Store::open(path).ok()?;
-    if let Some(r) = store.review_rows(None).ok()?.into_iter().find(|r| r.id == id) {
+    if let Some(r) = store
+        .review_rows(None)
+        .ok()?
+        .into_iter()
+        .find(|r| r.id == id)
+    {
         return Some(r.repository);
     }
     store

@@ -1887,12 +1887,17 @@ impl Harness {
                 // Which room this session is in: the project its chain hangs from, keyed the way
                 // the rest of the tree keys a folder. A session the daemon cannot place is in the
                 // box's own room, which is [`letibot_room::DEFAULT_PROJECT`].
-                let project = crate::room::roster::Roster::new(session_registry.clone())
-                    .room_key_of(
+                // The coordinator's own sessions (the arbiter, the tag agents) serve every
+                // project, so they are in the host room only.
+                let project = if cfg.room {
+                    String::new()
+                } else {
+                    crate::room::roster::Roster::new(session_registry.clone()).room_key_of(
                         &cfg.session_id,
                         cfg.parent_session_id.as_deref(),
                         &cfg.workspace.display().to_string(),
-                    );
+                    )
+                };
                 // The tree, which the room cannot see for itself. One roster per daemon would
                 // be one cache per daemon; this is one per open, which is what the link needs and
                 // nothing more - `Registry::list` is the same call the plugin feed makes per frame.

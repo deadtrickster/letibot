@@ -13,8 +13,14 @@ use crate::app::*;
 /// How often the open view asks for new messages and counts.
 pub(crate) const POLL_MS: u64 = 2_000;
 
-/// Messages kept per room here, the coordinator's own ring size.
+/// The coordinator's ring size per room. This head keeps up to four rings of one room.
 const KEEP: usize = 500;
+
+/// Request id prefix of a page-back read, so its answer is told from a poll's.
+pub(crate) const OLDER: &str = "older:";
+
+/// Messages asked for per page back, the most one read returns.
+const PAGE: u32 = 200;
 
 /// The name the head speaks under.
 pub(crate) const OPERATOR: &str = "operator";
@@ -28,6 +34,9 @@ pub(crate) struct RoomRow {
     pub last_seq: u64,
     #[serde(default)]
     pub unread: u64,
+    /// The project's folder name, empty for the host room.
+    #[serde(default)]
+    pub label: String,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -103,7 +112,18 @@ pub(crate) struct RoomsView {
     /// poll drops the selected channel, cleared by the next explicit move.
     pub gone: Option<String>,
     pub roster_open: bool,
+    /// The roster lists the offline members too, not just their count.
+    pub roster_all: bool,
     pub roster: BTreeMap<String, Vec<Member>>,
+    /// Rooms whose oldest stored message is on screen, so asking further back finds nothing.
+    pub oldest_known: BTreeSet<String>,
+    /// Rooms with a page-back request in flight.
+    pub paging: BTreeSet<String>,
+    /// The chat was at its first line at the last draw: older messages are wanted.
+    pub at_top: bool,
+    /// The first seq and line count of the last draw, to keep the view in place when a page of
+    /// older messages lands above it.
+    pub prev_first: Option<(String, u64, usize)>,
     pub next_poll_ms: u64,
     pub error: Option<String>,
     /// The inbox cursor this head last set.
@@ -231,8 +251,32 @@ impl RoomsView {
             }
         }
         list.sort_by_key(|m| m.seq);
-        if list.len() > KEEP {
-            list.drain(..list.len() - KEEP);
+        // Paging back adds to what the ring holds, so the cap is a multiple of it. Past it the
+        // oldest go and the view stops paging, so a dropped page is not fetched again.
+        if list.len() > KEEP * 4 {
+            list.drain(..list.len() - KEEP * 4);
+            self.oldest_known.insert(room.to_string());
+        }
+    }
+
+    /// The page before the oldest message held, for a room that may have older ones.
+    pub(crate) fn older_op(&self, room: &str) -> Option<Value> {
+        if self.oldest_known.contains(room) || self.paging.contains(room) {
+            return None;
+        }
+        let first = self.msgs.get(room)?.first()?.seq;
+        Some(json!({"type": "read", "room": room, "before": first, "last": PAGE}))
+    }
+
+    /// The label of a project channel's room, the folder name; the id when the coordinator
+    /// sent none.
+    pub(crate) fn room_label(&self, id: &str) -> String {
+        match self.rows.iter().find(|r| r.id == id) {
+            Some(r) if !r.label.is_empty() => r.label.clone(),
+            _ => match id.strip_prefix("project/") {
+                Some(key) => key.to_string(),
+                None => id.to_string(),
+            },
         }
     }
 
@@ -366,6 +410,9 @@ impl App {
             if self.rooms.send_failed(id, format!("not sent: {e}")) {
                 return;
             }
+            if let Some(room) = id.strip_prefix(OLDER) {
+                self.rooms.paging.remove(room);
+            }
             self.rooms.error = Some(e.to_string());
             return;
         }
@@ -383,7 +430,7 @@ impl App {
                         .as_ref()
                         .is_some_and(|c| !self.rooms.channels().contains(c));
                     if gone {
-                        let name = Self::rooms_name(self.rooms.sel.as_ref().expect("just checked"));
+                        let name = self.rooms_name(self.rooms.sel.as_ref().expect("just checked"));
                         self.rooms.gone = Some(name);
                         self.rooms.sel = None;
                     }
@@ -394,6 +441,12 @@ impl App {
             "history" => {
                 let room = reply.get("room").and_then(Value::as_str).unwrap_or("");
                 if let Ok(r) = serde_json::from_value::<Vec<Msg>>(rows(&reply)) {
+                    if id.starts_with(OLDER) {
+                        self.rooms.paging.remove(room);
+                        if r.is_empty() {
+                            self.rooms.oldest_known.insert(room.to_string());
+                        }
+                    }
                     self.rooms.merge(room, r);
                     self.rooms.heard = true;
                     self.rooms.error = None;
@@ -424,6 +477,24 @@ impl App {
         }
     }
 
+    /// Ask for the page before the oldest message on screen, once, when the chat is scrolled to
+    /// its first line.
+    pub(crate) fn rooms_page_back(&mut self) {
+        if !self.rooms.at_top {
+            return;
+        }
+        let Some(Chan::Room(room)) = self.rooms.selected() else {
+            return;
+        };
+        if let Some(op) = self.rooms.older_op(&room) {
+            self.rooms.paging.insert(room.clone());
+            self.queued.push(Action::RoomChat {
+                op,
+                id: Some(format!("{OLDER}{room}")),
+            });
+        }
+    }
+
     /// What the selected channel shows is seen, and the inbox cursor follows when it can.
     pub(crate) fn rooms_shown(&mut self) {
         if !self.is_open(Surface::Rooms) {
@@ -439,10 +510,10 @@ impl App {
 
     /// A channel's name in a sentence: the room id a project channel is known by, the host room
     /// as itself, a DM by its peer.
-    pub(crate) fn rooms_name(c: &Chan) -> String {
+    pub(crate) fn rooms_name(&self, c: &Chan) -> String {
         match c {
             Chan::Room(id) => match id.strip_prefix("project/") {
-                Some(key) => format!("#{key}"),
+                Some(_) => format!("#{}", self.rooms.room_label(id)),
                 None => id.clone(),
             },
             Chan::Dm(p) => format!("dm with {p}"),
@@ -570,8 +641,16 @@ impl App {
     }
 
     /// The roster of the selected channel, on or off.
+    /// Closed, then connected members with the offline count, then everyone.
     pub(crate) fn rooms_toggle_roster(&mut self) -> ControlFlow<Option<Action>> {
-        self.rooms.roster_open = !self.rooms.roster_open;
+        if !self.rooms.roster_open {
+            self.rooms.roster_open = true;
+            self.rooms.roster_all = false;
+        } else if !self.rooms.roster_all {
+            self.rooms.roster_all = true;
+        } else {
+            self.rooms.roster_open = false;
+        }
         self.rooms.next_poll_ms = 0;
         self.redraw = true;
         ControlFlow::Break(None)

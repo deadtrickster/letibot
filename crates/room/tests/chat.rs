@@ -140,7 +140,8 @@ fn two_projects_and_the_host_room_on_one_coordinator() {
             room: project_room(A),
             since: 0,
             last: None,
-            thread: None
+            thread: None,
+            before: None
         })),
         Refused::UnknownChatRoom { .. }
     ));
@@ -220,6 +221,7 @@ fn dms_mentions_threads_and_the_inbox() {
         since: 0,
         last: None,
         thread: Some(root.seq),
+        before: None,
     }) {
         Response::History(h) => assert_eq!(
             h.rows.iter().map(|m| m.seq).collect::<Vec<_>>(),
@@ -248,6 +250,7 @@ fn dms_mentions_threads_and_the_inbox() {
             since: 0,
             last: None,
             thread: None,
+            before: None,
         }) {
             Response::History(h) => assert!(h.rows.is_empty(), "{:?}", h.rows),
             other => panic!("{other:?}"),
@@ -368,6 +371,7 @@ fn chat_history_seq_cursor_and_dedup_survive_a_coordinator_restart() {
         since: 0,
         last: None,
         thread: None,
+        before: None,
     }) {
         Response::History(h) => assert_eq!(
             h.rows.iter().map(|m| m.text.as_str()).collect::<Vec<_>>(),
@@ -572,6 +576,7 @@ fn a_member_joining_a_busy_room_gets_a_digest_and_its_mention_verbatim() {
         since: 0,
         last: None,
         thread: None,
+        before: None,
     }) {
         Response::History(h) => assert_eq!(h.rows.len(), 32, "full history on demand"),
         other => panic!("{other:?}"),

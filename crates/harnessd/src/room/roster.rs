@@ -13,6 +13,10 @@ use letibot_sessionlog::registry::Registry;
 pub trait RosterSource: Send + Sync {
     /// Every session in the project whose key is `project`, in the order the tree draws them.
     fn members(&self, project: &str) -> Vec<Member>;
+    /// The folder of the project whose key is `project`, empty when unknown.
+    fn root(&self, _project: &str) -> String {
+        String::new()
+    }
 }
 
 /// The daemon's own answer: the registry's briefs, filtered to one project and grouped the way
@@ -130,6 +134,16 @@ impl Roster {
 }
 
 impl RosterSource for Roster {
+    fn root(&self, project: &str) -> String {
+        self.registry
+            .list()
+            .iter()
+            .filter(|b| b.parent_session_id.is_none())
+            .map(|b| self.project_of(&b.wiring.workspace))
+            .find(|root| !root.is_empty() && letibot_room::project_key(root) == project)
+            .unwrap_or_default()
+    }
+
     fn members(&self, project: &str) -> Vec<Member> {
         let briefs = self.registry.list();
         let rows: Vec<Row> = briefs
@@ -282,14 +296,22 @@ fn group_of(rows: &[&Row<'_>], row: &Row<'_>) -> Group {
     }
 }
 
-/// What the tree writes on the row - the session's title, and its id when it has none, because
-/// a member a person cannot recognise is a row the tree draws as an id anyway.
+/// What the room writes for a member: the session's title, else its folder and a short id, so
+/// an untitled session still says which project it works in.
 fn label_of(row: &Row<'_>) -> String {
     let title = row.title.trim();
-    if title.is_empty() {
-        row.session.to_string()
+    if !title.is_empty() {
+        return title.to_string();
+    }
+    let folder = std::path::Path::new(row.workspace.trim_end_matches('/'))
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let short = letibot_sessionlog::registry::short_id(row.session);
+    if folder.is_empty() {
+        short
     } else {
-        title.to_string()
+        format!("{folder} {short}")
     }
 }
 
