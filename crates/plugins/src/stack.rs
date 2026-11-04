@@ -111,7 +111,13 @@ pub struct Resolved {
     /// answers for itself.
     pub by: Option<String>,
     pub failures: Vec<Failure>,
+    /// Set for a guard hook (`on_tool_call`) when a layer failed or the resolution gave up:
+    /// the layer's id and why. The caller refuses the call; a failed guard never reads as a pass.
+    pub refused: Option<(String, String)>,
 }
+
+/// Hooks whose failure must stop what they guard rather than let it through.
+const FAIL_CLOSED: &[&str] = &["on_tool_call"];
 
 /// A layer's module changed on disk and is waiting for the gate.
 /// The gate fills in the module it loaded and `Stack::apply` swaps in exactly that one: a second
@@ -642,21 +648,27 @@ impl Stack {
     /// Resolve one hook through the stack, from the top: pass or unchanged falls through, mask
     /// stops everything below, `below` round trips, anything else answers. A layer that fails is
     /// recorded and skipped - one failure never stops the resolution, so a broken fix costs only itself.
+    /// Guard hooks ([`FAIL_CLOSED`]) are the exception: a failed layer sets `refused`. Every other
+    /// hook (notices, panes, results) fails open.
     pub fn call(&self, hook: &str, input: &Value) -> Resolved {
         let mut walk = Walk {
             hook,
             failures: Vec::new(),
             calls: 0,
             spent: false,
+            closed: FAIL_CLOSED.contains(&hook),
+            broke: None,
         };
-        let (answer, by) = match self.run(0, input, &mut walk) {
-            Step::Answer { value, by } => (Some(value), Some(by)),
-            Step::Passed | Step::Masked => (None, None),
+        let (answer, by, refused) = match self.run(0, input, &mut walk) {
+            Step::Answer { value, by } => (Some(value), Some(by), None),
+            Step::Failed { by, why } => (None, None, Some((by, why))),
+            Step::Passed | Step::Masked => (None, None, None),
         };
         Resolved {
             answer,
             by,
             failures: walk.failures,
+            refused,
         }
     }
 
@@ -964,7 +976,7 @@ impl Stack {
     fn run(&self, from: usize, input: &Value, walk: &mut Walk<'_>) -> Step {
         for i in from..self.layers.len() {
             if walk.spent {
-                break;
+                return walk.step_after_failure();
             }
             let layer = &self.layers[i];
             if layer.disabled {
@@ -998,7 +1010,7 @@ impl Stack {
     ) -> Step {
         let layer = &self.layers[i];
         if walk.spent {
-            return Step::Passed;
+            return walk.step_after_failure();
         }
         if walk.calls >= MAX_CALLS {
             walk.spent = true;
@@ -1009,7 +1021,7 @@ impl Stack {
                      itself for answers in a loop"
                 ),
             );
-            return Step::Passed;
+            return walk.step_after_failure();
         }
         walk.calls += 1;
         let text = match module.call(walk.hook, &input.to_string()) {
@@ -1017,11 +1029,11 @@ impl Stack {
             Ok(None) => return Step::Passed,
             Err(why) => {
                 walk.fail(layer, why);
-                return Step::Passed;
+                return walk.step_after_failure();
             }
         };
         let Some(answer) = parse(&text, layer, walk) else {
-            return Step::Passed;
+            return walk.step_after_failure();
         };
         if is(&answer, "mask") {
             return Step::Masked;
@@ -1033,13 +1045,14 @@ impl Stack {
                     "a second `below` inside one resolution — a layer may ask below once"
                         .to_string(),
                 );
-                return Step::Passed;
+                return walk.step_after_failure();
             }
             // The layer below is resolved and its answer is handed back to this layer, which is
             // asked again with the same input plus `below`. A mask or a pass below is `null`:
             // the lower stack answered nothing, and the layer that asked is told so.
             let below = match self.run(i + 1, below_input, walk) {
                 Step::Answer { value, .. } => value,
+                failed @ Step::Failed { .. } => return failed,
                 Step::Passed | Step::Masked => Value::Null,
             };
             let Some(mut second) = input.as_object().cloned() else {
@@ -1048,7 +1061,7 @@ impl Stack {
                     "asked below, but the hook's input is not an object, so `below` has nowhere to go"
                         .to_string(),
                 );
-                return Step::Passed;
+                return walk.step_after_failure();
             };
             second.insert("below".to_string(), below);
             let second = Value::Object(second);
@@ -1066,9 +1079,17 @@ impl Stack {
 
 /// One layer's step in a resolution.
 enum Step {
-    Answer { value: Value, by: String },
+    Answer {
+        value: Value,
+        by: String,
+    },
     Passed,
     Masked,
+    /// A guard hook's layer failed: the caller refuses what the hook guards.
+    Failed {
+        by: String,
+        why: String,
+    },
 }
 
 /// The mutable half of one resolution: what it has recorded, and whether it still may ask.
@@ -1077,10 +1098,26 @@ struct Walk<'a> {
     failures: Vec<Failure>,
     calls: usize,
     spent: bool,
+    /// The hook is a guard: a failure refuses instead of passing.
+    closed: bool,
+    /// The layer and reason of the last failure.
+    broke: Option<(String, String)>,
 }
 
 impl Walk<'_> {
+    /// What a failed layer yields: a pass for an advisory hook, a refusal for a guard.
+    fn step_after_failure(&self) -> Step {
+        match (&self.broke, self.closed) {
+            (Some((by, why)), true) => Step::Failed {
+                by: by.clone(),
+                why: why.clone(),
+            },
+            _ => Step::Passed,
+        }
+    }
+
     fn fail(&mut self, layer: &Layer, why: String) {
+        self.broke = Some((layer.id.clone(), why.clone()));
         self.failures.push(Failure {
             layer: layer.id.clone(),
             scope: layer.scope,
@@ -2304,5 +2341,55 @@ mod tests {
             answer_of(&s.call("notice_fired", &json!({}))),
             json!({"text": "b"})
         );
+    }
+
+    /// A guard layer that traps, returns malformed text or asks below twice refuses the call and
+    /// names itself. An advisory hook falls through to the layer below as before.
+    #[test]
+    fn a_failed_guard_refuses_and_a_failed_advisory_layer_falls_through() {
+        for (tag, act) in [
+            ("trap", Act::trap("out of fuel")),
+            ("malformed", Act::malformed("not json")),
+            ("twice", Act::always_ask(json!({"v": 1}))),
+        ] {
+            let t = TempDir::new(&format!("guard-{tag}"));
+            layer(
+                &t.path().join("session"),
+                "a",
+                &["on_tool_call", "notice_fired"],
+                act,
+            );
+            layer(
+                &t.path().join("project/.letibot/plugins"),
+                "b",
+                &["on_tool_call", "notice_fired"],
+                Act::answer(json!({"from": "below"})),
+            );
+            let s = stack(&t);
+            let r = s.call("on_tool_call", &json!({}));
+            let (by, why) = r.refused.clone().unwrap_or_else(|| panic!("{tag}: {r:?}"));
+            assert_eq!(by, "p1", "{tag}");
+            assert!(!why.is_empty(), "{tag}");
+            assert_eq!(
+                r.answer, None,
+                "{tag}: the layer below does not answer for a failed guard"
+            );
+        }
+        let t = TempDir::new("advisory-trap");
+        layer(
+            &t.path().join("session"),
+            "a",
+            &["notice_fired"],
+            Act::trap("boom"),
+        );
+        layer(
+            &t.path().join("project/.letibot/plugins"),
+            "b",
+            &["notice_fired"],
+            Act::answer(json!({"from": "below"})),
+        );
+        let r = stack(&t).call("notice_fired", &json!({}));
+        assert_eq!(r.refused, None);
+        assert_eq!(r.answer, Some(json!({"from": "below"})));
     }
 }

@@ -2129,23 +2129,63 @@ impl PluginHost {
         let input = ToolCallIn::new(call.clone(), session);
         let input = serde_json::to_value(&input).ok()?;
         let resolved = self.ask(hub, letibot_plugin::tool_call::HOOK, &input)?;
+        // A guard that failed refuses the call: the layer's id and why go to the model.
+        if let Some((by, why)) = resolved.refused {
+            let said = format!(
+                "plugin layer `{by}` guards this call and failed, so the call is refused: {why}"
+            );
+            self.complain(hub, &by, &said);
+            return Some(Answered {
+                out: ToolCallOut::refuse(said),
+                by,
+            });
+        }
         let answer = resolved.answer?;
         let by = resolved.by.clone().unwrap_or_default();
+        let refuse = |this: &Self, why: String| {
+            let said = format!(
+                "plugin layer `{by}` answered badly for a guard, so the call is refused: {why}"
+            );
+            this.complain(hub, &by, &said);
+            Some(Answered {
+                out: ToolCallOut::refuse(said),
+                by: by.clone(),
+            })
+        };
         match serde_json::from_value::<ToolCallOut>(answer.clone()) {
-            Ok(out) => Some(Answered { out, by }),
-            Err(why) => {
-                self.complain(
-                    hub,
-                    &by,
-                    &format!(
-                        "the layer `{by}` answered something that is not a call's verdict — \
-                         `pass`, `arguments`, `refuse` and `answer` are the whole of it: {why}. \
-                         Its answer was {answer}, so the call runs as the model proposed it"
-                    ),
-                );
-                None
+            Ok(out) => {
+                if let letibot_plugin::tool_call::Verdict::Rewrite(args) = out.verdict()
+                    && let Err(why) = only_smaller(&call.arguments, args)
+                {
+                    return refuse(self, why);
+                }
+                Some(Answered { out, by })
+            }
+            Err(why) => refuse(
+                self,
+                format!(
+                    "its answer was {answer}, which is not a call's verdict (`pass`, `arguments`, \
+                     `refuse` and `answer` are the whole of it): {why}"
+                ),
+            ),
+        }
+    }
+}
+
+/// A rewrite may only make a call smaller: the tool is fixed by the contract, and no argument
+/// may appear that the model did not send.
+fn only_smaller(was: &serde_json::Value, now: &serde_json::Value) -> Result<(), String> {
+    match (was, now) {
+        (_, serde_json::Value::Null) => Ok(()),
+        (serde_json::Value::Object(was), serde_json::Value::Object(now)) => {
+            match now.keys().find(|k| !was.contains_key(*k)) {
+                Some(k) => Err(format!(
+                    "its rewrite adds the argument `{k}`, and a layer can only make a call smaller"
+                )),
+                None => Ok(()),
             }
         }
+        _ => Err("its rewrite changes the shape of the arguments, and a layer can only make a call smaller".into()),
     }
 }
 
@@ -4119,7 +4159,10 @@ mod tests {
         );
         let host = table_host(&root, &table);
         let hub = Hub::new("s-plugins");
-        let asked = letibot_plugin::Call::new("monitor", json!({"name": "pr-24-coderabbit"}));
+        let asked = letibot_plugin::Call::new(
+            "monitor",
+            json!({"name": "pr-24-coderabbit", "until": "coderabbit"}),
+        );
         let answered = host
             .on_tool_call(&hub, &asked, &standing())
             .expect("a layer answers");
@@ -4233,6 +4276,35 @@ mod tests {
         )
         .expect("answers");
         assert_eq!(patched.note, None);
+    }
+
+    /// A guard's malformed verdict, or a rewrite that adds an argument, refuses the call and
+    /// names the layer - never "runs as the model proposed".
+    #[test]
+    fn a_guard_that_answers_badly_or_widens_a_call_refuses_it() {
+        for (tag, answer, want) in [
+            ("bad", json!({"refuse": 5}), "not a call's verdict"),
+            (
+                "widen",
+                json!({"arguments": {"name": "x", "extra": true}}),
+                "adds the argument `extra`",
+            ),
+        ] {
+            let root = tempdir(&format!("call-{tag}"));
+            let table = Table::new();
+            table.layer(&root, "guard", &[("on_tool_call", says(answer))]);
+            let host = table_host(&root, &table);
+            let hub = Hub::new("s-plugins");
+            let asked = letibot_plugin::Call::new("monitor", json!({"name": "x"}));
+            let out = host
+                .on_tool_call(&hub, &asked, &standing())
+                .expect("answers")
+                .out;
+            let letibot_plugin::tool_call::Verdict::Refuse(why) = out.verdict() else {
+                panic!("{tag}: {out:?}");
+            };
+            assert!(why.contains("`p1`") && why.contains(want), "{tag}: {why}");
+        }
     }
 
     /// A mask lets the call through untouched - the hook switched off from that layer down, which
