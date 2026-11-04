@@ -105,6 +105,17 @@ enum Framing {
     UntilClose,
 }
 
+/// Read exactly `n` bytes into `buf`. The buffer grows as bytes arrive, because `n` is the
+/// server's word and a size it cannot back must not be allocated up front. It keeps its capacity
+/// across chunks.
+fn fill(reader: &mut BufReader<TcpStream>, buf: &mut Vec<u8>, n: usize) -> std::io::Result<()> {
+    reader.take(n as u64).read_to_end(buf)?;
+    if buf.len() < n {
+        return Err(std::io::ErrorKind::UnexpectedEof.into());
+    }
+    Ok(())
+}
+
 impl Body {
     /// Read the next chunk of decoded body bytes into `buf`, or `false` at end of
     /// body. The caller brings the buffer because both callers copy the bytes into a
@@ -135,17 +146,13 @@ impl Body {
                     self.done = true;
                     return Ok(false);
                 }
-                // `resize` and not `vec![0u8; size]`: the buffer keeps its capacity across chunks,
-                // so this is an allocation only when a chunk is larger than any before it.
-                buf.resize(size, 0);
-                self.reader.read_exact(buf)?;
+                fill(&mut self.reader, buf, size)?;
                 let mut crlf = [0u8; 2];
                 self.reader.read_exact(&mut crlf)?;
                 Ok(true)
             }
             Framing::Length(n) => {
-                buf.resize(n, 0);
-                self.reader.read_exact(buf)?;
+                fill(&mut self.reader, buf, n)?;
                 self.done = true;
                 Ok(true)
             }

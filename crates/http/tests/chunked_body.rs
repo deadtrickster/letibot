@@ -137,3 +137,40 @@ fn a_body_with_no_frames_at_all_is_empty_rather_than_an_error() {
     assert_eq!(payloads(&endpoint), Vec::<String>::new());
     server.join().unwrap();
 }
+
+/// A server that sends `head` after the status line, then a few bytes, then closes.
+fn lying_server(head: &'static [u8]) -> letibot_http::Endpoint {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        let Ok((mut conn, _)) = listener.accept() else {
+            return;
+        };
+        let mut reader = BufReader::new(conn.try_clone().unwrap());
+        let mut line = String::new();
+        while reader.read_line(&mut line).unwrap_or(0) > 0 && line.trim_end() != "" {
+            line.clear();
+        }
+        let _ = conn.write_all(head);
+        let _ = conn.write_all(b"abc");
+    });
+    letibot_http::Endpoint::new("127.0.0.1", port)
+}
+
+#[test]
+fn a_chunk_size_the_server_cannot_back_is_an_error_not_an_allocation() {
+    let e = lying_server(
+        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\nffffffffffffffff\r\n",
+    );
+    let body = letibot_http::get(&e, "/").expect("the head parses");
+    assert!(body.read_to_string().is_err());
+}
+
+#[test]
+fn a_content_length_the_server_cannot_back_is_an_error_not_an_allocation() {
+    let e = lying_server(
+        b"HTTP/1.1 200 OK\r\nContent-Length: 18446744073709551615\r\nConnection: close\r\n\r\n",
+    );
+    let body = letibot_http::get(&e, "/").expect("the head parses");
+    assert!(body.read_to_string().is_err());
+}
