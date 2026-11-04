@@ -683,6 +683,8 @@ pub struct Registry {
     /// Whether this stop has already said what it is about to end - see
     /// [`Registry::announce_runs_ending`]. One sentence per stop, whichever thread says it.
     announced: std::sync::atomic::AtomicBool,
+    /// Set by the first attach this daemon serves, which is the one that opens its eager session.
+    first_attach: std::sync::atomic::AtomicBool,
     /// One per session that has a process host, installed by its harness at open beside
     /// [`Registry::runs`]. See [`PaneBoundary`].
     panes: Mutex<std::collections::HashMap<String, PaneBoundary>>,
@@ -837,6 +839,7 @@ impl Registry {
             runs: Mutex::new(std::collections::HashMap::new()),
             run_names: Mutex::new(std::collections::HashMap::new()),
             announced: std::sync::atomic::AtomicBool::new(false),
+            first_attach: std::sync::atomic::AtomicBool::new(false),
             panes: Mutex::new(std::collections::HashMap::new()),
             notes: Mutex::new(std::collections::HashMap::new()),
             skills: Mutex::new(std::collections::HashMap::new()),
@@ -1319,6 +1322,17 @@ impl Registry {
             .entry(session_id)
             .map(|e| e.origin)
             .unwrap_or_default()
+    }
+
+    /// The first attach a daemon serves lands on the session it opened eagerly, which was recorded
+    /// as the operator's before anybody asked for it. Whoever opens it is who it is for.
+    pub fn note_attach(&self, session_id: &str, kind: &str, identity: &str) {
+        let first = !self
+            .first_attach
+            .swap(true, std::sync::atomic::Ordering::SeqCst);
+        if first && self.default_id() == session_id {
+            self.record_origin(session_id, SessionOrigin::of_opener(kind, identity));
+        }
     }
 
     /// Write down who this session is for: the one door for the fact, in memory and on disk. Two

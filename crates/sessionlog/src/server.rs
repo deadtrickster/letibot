@@ -596,6 +596,8 @@ pub fn serve_conn_rooted(
         return Ok(());
     };
 
+    registry.note_attach(&hub.session_id(), &kind, &identity);
+
     let mut seat = seat_in(
         &registry, hub, peer, since_seq, &kind, &identity, &caps, &writer,
     )?;

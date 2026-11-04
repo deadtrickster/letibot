@@ -654,3 +654,45 @@ fn a_stop_closes_the_registry_even_with_a_command_queued_and_nobody_draining() {
     );
     let _ = rx;
 }
+
+#[test]
+fn the_session_a_package_opened_a_fresh_daemon_on_is_the_packages_whichever_door_it_was() {
+    // The daemon opens its first session eagerly as the operator's; the first attach is what says
+    // who it is for. A later attach by the bridge to a session a terminal opened first changes nothing.
+    let (reg, server) = start("first-attach");
+    let (mut mcp, _h, _r) = HeadClient::attach(
+        server.path(),
+        "",
+        0,
+        "remote",
+        "letibot-mcp",
+        Caps::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        reg.origin_of("a"),
+        letibot_sessionlog::SessionOrigin::Package,
+        "the default session opened by the bridge is a package's"
+    );
+    let _ = mcp.detach();
+    server.shutdown();
+
+    let (reg, server) = start("first-attach-tui");
+    let (_tui, _h, _r) =
+        HeadClient::attach(server.path(), "", 0, "tui", "dead", Caps::default()).unwrap();
+    let (_mcp, _h2, _r2) = HeadClient::attach(
+        server.path(),
+        "a",
+        0,
+        "remote",
+        "letibot-mcp",
+        Caps::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        reg.origin_of("a"),
+        letibot_sessionlog::SessionOrigin::Operator,
+        "a terminal's session stays the operator's when the bridge joins it later"
+    );
+    server.shutdown();
+}
