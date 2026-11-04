@@ -26,3 +26,10 @@ from `confine.rs`'s own tests, and asserting the flag sequence there is the hone
 A fake-ssh fixture (`tests/support/fake_remote.rs`, `Fake` in `tests/remote_sweep.rs`) runs the
 command locally, so its jobs are real processes and its ledger is a real directory: the remote
 tests that look impossible do measure, and they are the ones that caught the ledger's move.
+
+Correction, 2026-11-04 later the same day: the `No space left on device` is the DEPTH of the
+daemon's own namespace chain and not AppArmor. `kernel.apparmor_restrict_unprivileged_userns` is 1
+here, but `/proc/sys/user/max_user_namespaces` reads 2147483647, so a 0 limit is not the cause
+either: the kernel refuses a user namespace whose parent is already at its nesting limit, and the
+daemon this session hangs off is deep. See
+`a-bwrap-mask-needs-a-mount-point-that-is-already-there.md`.
