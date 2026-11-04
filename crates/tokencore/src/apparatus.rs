@@ -1,10 +1,6 @@
-//! Whether the apparatus a test needs is on THIS machine.
-//!
-//! A test that panics because the box has no vocabulary, no cgroup subtree or no store is
-//! reporting absent apparatus as a failed assertion, which is a different thing. So a test
-//! asks first, and the answer is `Some` when the thing is here and `None` after a line saying
-//! what could not be shown. `LETIBOT_REQUIRE_APPARATUS=1` turns a skip into a failure, and it
-//! is read per process, never set here.
+//! Whether the apparatus a test needs is on this machine. A test asks first and gets `Some`,
+//! or `None` after a line saying what is missing, rather than failing an assertion.
+//! `LETIBOT_REQUIRE_APPARATUS=1` turns a skip into a failure and is never set here.
 
 use std::path::PathBuf;
 
@@ -30,8 +26,8 @@ pub fn glm_gguf_path() -> PathBuf {
 }
 
 /// [`gguf_path`] with `LETIBOT_VOCAB_GGUF` and `HOME` handed in rather than read, so its test
-/// sets no variable (R67 item 17: a `set_var` in a test is seen by every other test running in
-/// the binary at that moment).
+/// sets no variable (a `set_var` in a test is seen by every other test running in
+/// the binary).
 fn gguf_path_from(over: Option<std::ffi::OsString>, home: Option<std::ffi::OsString>) -> PathBuf {
     const UNDER_HOME: &str =
         "models/qwen3.8-flash-next/Qwen3.8-Flash-Next-UD-Q6_K_XL-00001-of-00006.gguf";
@@ -114,7 +110,7 @@ pub fn real_store_allowed() -> bool {
 }
 
 /// [`real_store_allowed`] with the reading handed in rather than read - the seam its test uses,
-/// so the test never sets a variable under a run that set it for real (R67 item 17).
+/// so the test never sets a variable under a run that set it for real.
 fn real_store_allowed_given(flag: Option<&str>) -> bool {
     matches!(flag, Some(v) if !v.is_empty() && v != "0")
 }
@@ -196,7 +192,7 @@ mod tests {
 
     /// `gguf_path` honours the override and never returns an empty path - the
     /// message a person reads depends on it naming something. The readings are handed to
-    /// [`gguf_path_from`], not set in the environment (R67 item 17).
+    /// [`gguf_path_from`], not set in the environment.
     #[test]
     fn gguf_path_honours_the_override_and_is_never_empty() {
         assert_eq!(

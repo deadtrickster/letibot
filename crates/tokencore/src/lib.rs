@@ -1,9 +1,6 @@
-//! The token core: vocabulary, tokenizer, token ledger and store.
-//!
-//! This is the crate where a conversation stops being text and becomes the thing the server
-//! accounts for: ids, their region, the chain over them, and the SQLite store that keeps them.
-//! Everything here is built so a restart can rebuild the region by replaying the ledger's
-//! spans rather than re-rendering, which is why the tokens are stored at all.
+//! The token core: vocabulary, tokenizer, token ledger and store. Conversation text becomes ids,
+//! their region, the chain over them and the SQLite store, so a restart replays the ledger's
+//! spans rather than re-rendering.
 
 pub mod apparatus;
 pub mod control;

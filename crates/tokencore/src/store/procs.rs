@@ -1,15 +1,12 @@
-//! A process in the world, and how to say it is still the same one.
-//!
-//! The `job` table answers what became of a handle and is written twice per job by two
-//! callers who each know half. This is one record's answers: where it runs, what makes a
-//! reused pid not it, which group a teardown signals, when it must be gone, and how it was
-//! last looked at, including a process a restarted daemon ADOPTED rather than started.
+//! A process in the world, and how to say it is still the same one: where it runs, what makes a
+//! reused pid not it, which group a teardown signals, when it must be gone, and how it was last
+//! looked at, including a process a restarted daemon adopted.
 
 use rusqlite::{OptionalExtension, params};
 
 use super::{Result, Store, now_ms};
 
-/// **The table both a fresh store and the v34 migration create.**
+/// The table both a fresh store and the v34 migration create.
 pub const PROCS_SQL: &str = r#"
 -- **Every process letibot started, as the supervisor sees it** (schema 34). Written by
 -- `harnessd`'s supervisor and by nothing else; the `job` table beside it stays the pane's
@@ -53,7 +50,7 @@ CREATE INDEX IF NOT EXISTS process_open_idx ON process (state);
 CREATE INDEX IF NOT EXISTS process_session_idx ON process (session_id, state);
 "#;
 
-/// **Where a supervised process stands** - six states, and see the module header for why the last
+/// Where a supervised process stands - six states, and see the module header for why the last
 /// three are not interchangeable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProcState {
@@ -67,7 +64,7 @@ pub enum ProcState {
     Stopped,
     /// Gone, with no exit recorded.
     Dead,
-    /// The host could not be reached to say - the process **may still run**.
+    /// The host could not be reached to say - the process may still run.
     Lost,
 }
 
@@ -98,7 +95,7 @@ impl ProcState {
         })
     }
 
-    /// **Is this a process the supervisor still has to look after?** `lost` is - the job may
+    /// Is this a process the supervisor still has to look after? `lost` is - the job may
     /// still be running - and that is the whole point of the state.
     pub fn is_open(self) -> bool {
         matches!(
@@ -107,14 +104,14 @@ impl ProcState {
         )
     }
 
-    /// **Did it end, whatever the ending was?** The complement of [`ProcState::is_open`] once a
+    /// Did it end, whatever the ending was? The complement of [`ProcState::is_open`] once a
     /// check has said so.
     pub fn is_ended(self) -> bool {
         !self.is_open()
     }
 }
 
-/// **One supervised process**, as the store holds it. See the module header.
+/// One supervised process, as the store holds it. See the module header.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProcessRecord {
     /// The session that owns it: what a teardown of that session kills, and what a restart's
@@ -122,8 +119,8 @@ pub struct ProcessRecord {
     pub session: String,
     /// The handle the model knows it by - `j65`.
     pub handle: String,
-    /// `None` for this box, a host from `hosts.toml` otherwise. **The unit of a liveness check
-    /// is this field**, never the job: one check per host per tick.
+    /// `None` for this box, a host from `hosts.toml` otherwise. The unit of a liveness check
+    /// is this field, never the job: one check per host per tick.
     pub host: Option<String>,
     pub pid: u32,
     /// The process group a teardown signals, when the pid leads one - asked rather than assumed,
@@ -146,7 +143,7 @@ pub struct ProcessRecord {
     /// `<id>.out`, or a promoted run's spill.
     pub log_path: Option<String>,
     pub log_read: u64,
-    /// **The last check**: when, how long it took, and what it answered. `check_how` is a short
+    /// The last check: when, how long it took, and what it answered. `check_how` is a short
     /// word - `proc`, `ps`, `ssh`, `jobdir`, `expired` - never a payload.
     pub check_ms: Option<i64>,
     pub check_took_ms: Option<u64>,
@@ -184,7 +181,7 @@ impl ProcessRecord {
         }
     }
 
-    /// **The line a reader is shown for this record**, e.g. `j65 on lab2x1 · running`. One
+    /// The line a reader is shown for this record, e.g. `j65 on lab2x1 · running`. One
     /// spelling, because the activity, the pane and a notice all name the same record.
     pub fn label(&self) -> String {
         match &self.host {
@@ -194,7 +191,7 @@ impl ProcessRecord {
     }
 }
 
-/// **What one check of one process answered** - the three fields a check writes, in one value so
+/// What one check of one process answered - the three fields a check writes, in one value so
 /// a caller cannot set the outcome and forget the clock that dates it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Check {
@@ -316,7 +313,7 @@ impl Store {
         Ok(out)
     }
 
-    /// **Every process this session owns**, open or ended, oldest first - what a teardown reads
+    /// Every process this session owns, open or ended, oldest first - what a teardown reads
     /// and what a test asserts against.
     pub fn processes_of(&self, session_id: &str) -> Result<Vec<ProcessRecord>> {
         let conn = self.conn();
@@ -362,7 +359,7 @@ impl Store {
         Ok(())
     }
 
-    /// **How much of its log has been read back**, so a reader that comes back after a restart
+    /// How much of its log has been read back, so a reader that comes back after a restart
     /// resumes rather than re-reading a file from the top.
     pub fn set_process_log_read(&self, session_id: &str, handle: &str, bytes: u64) -> Result<()> {
         self.exec(

@@ -556,7 +556,7 @@ mod tests {
             "{err}"
         );
 
-        // And a hole where a row used to be.
+        // And a hole where a row was.
         let mut gapped: Vec<(LedgerRow, Vec<TokenId>)> = l
             .rows()
             .iter()
@@ -683,9 +683,9 @@ mod tests {
             "len",
             "is_empty",
             "capacity",
-            // Added on purpose with R66's census: the bytes this region is MAPPED at, read from a
+            // Added on purpose: the bytes this region is MAPPED at, read from a
             // field the constructor set and only `grow_to` moves. It cannot shorten, reorder or
-            // overwrite anything — it answers a number.
+            // overwrite anything - it answers a number.
             "bytes",
             "as_slice",
             "append",

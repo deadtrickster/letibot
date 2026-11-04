@@ -1,9 +1,6 @@
-//! Where each project sits, and where each session does: the permission modes.
-//!
-//! They were `modes.tsv`, which each daemon rewrote whole from the copy it read at start, so one
-//! daemon's write undid another's. Here a write is one row: `project_mode` is the point a NEW
-//! session in a project opens at, and `session_mode` the point THIS session was put at, which is
-//! the session's fact and comes back with it on a restart.
+//! Where each project sits, and where each session does: the permission modes. A write is one
+//! row. `project_mode` is where a new session opens; `session_mode` is where this one was put,
+//! and comes back with it on a restart.
 
 use rusqlite::{OptionalExtension, params};
 

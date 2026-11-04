@@ -11,7 +11,7 @@ use rusqlite::{OptionalExtension, params};
 
 use super::{Result, Store};
 
-/// **The table both a fresh store and the v32 migration create.**
+/// The table both a fresh store and the v32 migration create.
 pub const WRITERS_SQL: &str = r#"
 -- **Who may append to a session's transcript** (schema 32). One row per session, and only while
 -- somebody has it open: the harness that claimed it deletes the row when it goes. Nothing here
@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS session_writer (
 );
 "#;
 
-/// **One session's writer, as the store holds it.**
+/// One session's writer, as the store holds it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionWriter {
     pub session_id: String,
@@ -45,11 +45,11 @@ pub struct SessionWriter {
 /// What a claim came to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WriterOutcome {
-    /// **Yours.** `previous` is the claim it displaced, which is `None` for a free session and
+    /// Yours. `previous` is the claim it displaced, which is `None` for a free session and
     /// `Some` when the claimant judged the holder gone (that holder is named in the caller's log
     /// line, so a takeover is never silent).
     Claimed { previous: Option<SessionWriter> },
-    /// **Somebody else is writing it.** The row is theirs and it was not displaced.
+    /// Somebody else is writing it. The row is theirs and it was not displaced.
     HeldBy(SessionWriter),
 }
 
@@ -58,7 +58,7 @@ const WRITER_COLUMNS: &str = "session_id, owner, pid, host, heartbeat_ms, claime
 fn writer_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<SessionWriter> {
     // `.max(0) as u64` for the two timestamps, the way the queue lease's rows are read: the
     // column is an INTEGER and the field is a `u64`, and a negative value can only be a row
-    // written by something else — this reads it as *long ago* rather than refusing the whole row.
+    // written by something else - this reads it as *long ago* rather than refusing the whole row.
     Ok(SessionWriter {
         session_id: r.get(0)?,
         owner: r.get(1)?,
@@ -99,7 +99,7 @@ impl Store {
                 Some(w) if w.owner == owner => {
                     return Ok(WriterOutcome::Claimed { previous: None });
                 }
-                // **The holder judged gone**: take the row over, but only if it has not beaten
+                // The holder judged gone: take the row over, but only if it has not beaten
                 // since the caller looked.
                 Some(w) if w.heartbeat_ms < expired_before_ms => Some(w),
                 Some(w) => return Ok(WriterOutcome::HeldBy(w)),
@@ -146,7 +146,7 @@ impl Store {
             .optional()?)
     }
 
-    /// **Give the session back** — on the harness's way out, and only when the row is still
+    /// Give the session back - on the harness's way out, and only when the row is still
     /// this owner's. Guarded on the owner because a claim taken over (its holder having been
     /// judged gone) must not be deleted by the zombie that comes back.
     pub fn release_session_writer(&self, session_id: &str, owner: &str) -> Result<bool> {
@@ -166,7 +166,7 @@ mod tests {
         Store::open_in_memory().expect("in-memory store")
     }
 
-    /// **A free session is claimed, and giving it back leaves the row gone** — the ordinary
+    /// A free session is claimed, and giving it back leaves the row gone - the ordinary
     /// life of a claim, which is every open and every shutdown.
     #[test]
     fn a_free_session_is_claimed_and_given_back() {
@@ -188,7 +188,7 @@ mod tests {
         assert!(s.session_writer("s-1").expect("the row reads").is_none());
     }
 
-    /// **A claim somebody else made is not displaced by a second one** — the defect, at its
+    /// A claim somebody else made is not displaced by a second one - the defect, at its
     /// smallest: two writers, one row, and the second is told no.
     #[test]
     fn a_second_claim_is_refused_while_the_first_stands() {
@@ -210,8 +210,7 @@ mod tests {
         );
     }
 
-    /// **A claim older than the caller's cutoff is taken over, and says whom it displaced** —
-    /// which is what a daemon that died mid-session leaves for the next one.
+    /// A claim older than the caller's cutoff is taken over, and says whom it displaced -     /// which is what a daemon that died mid-session leaves for the next one.
     #[test]
     fn a_stale_claim_is_taken_over_and_the_previous_holder_is_named() {
         let s = store();
@@ -248,9 +247,8 @@ mod tests {
         assert_eq!(s.session_writer("s-1").unwrap().unwrap().pid, 2);
     }
 
-    /// **A holder that beat between the caller's read and the claim keeps its session.** The
-    /// cutoff is the one the caller JUDGED, so a heartbeat newer than it is a live holder —
-    /// which is the compare-and-swap that makes a slow claimant harmless.
+    /// A holder that beat between the caller's read and the claim keeps its session. The
+    /// cutoff is the one the caller JUDGED, so a heartbeat newer than it is a live holder -     /// which is the compare-and-swap that makes a slow claimant harmless.
     #[test]
     fn a_holder_that_beat_after_the_judgement_keeps_its_session() {
         let s = store();
@@ -267,7 +265,7 @@ mod tests {
         }
     }
 
-    /// **The claim's identity is per claim and not per process.** Two `Sessions` in one process
+    /// The claim's identity is per claim and not per process. Two `Sessions` in one process
     /// are two owners, which is what makes the guard reachable at all inside one test binary.
     #[test]
     fn a_second_claim_in_one_process_is_a_second_owner() {
@@ -283,7 +281,7 @@ mod tests {
         );
     }
 
-    /// **The release is only the owner's.** A claim that was taken over must not be deleted by
+    /// The release is only the owner's. A claim that was taken over must not be deleted by
     /// the process it was taken from.
     #[test]
     fn the_release_is_guarded_on_the_owner() {

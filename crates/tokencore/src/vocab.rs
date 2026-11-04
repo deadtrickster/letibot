@@ -1,9 +1,6 @@
-//! The vocabulary, and the two tokenization entry points the dialect contract needs different:
-//! [`Vocab::tokenize_text`] asks with `parse_special = false`, so `<|im_start|>` in a user
-//! message becomes ordinary tokens and cannot become a control id. [`Vocab::resolve_control`]
-//! parses specials, demands exactly one id, and takes a literal from a dialect, not from a
-//! conversation. `add_special` is `false` on both paths - a BOS is a dialect decision, not a
-//! property of the GGUF.
+//! The vocabulary and its two tokenization entry points. [`Vocab::tokenize_text`] uses
+//! `parse_special = false`, so `<|im_start|>` in a user message cannot become a control id.
+//! [`Vocab::resolve_control`] demands exactly one id. `add_special` is `false` on both: BOS is a dialect decision.
 
 //! A [`VocabBackend`] answers [`Vocab`]: a GGUF through llama.cpp, or [`Vocab::bytes`] for a
 //! session whose turns go to a cloud provider.
@@ -64,7 +61,7 @@ impl std::fmt::Display for VocabError {
 
 impl std::error::Error for VocabError {}
 
-/// **What answers a [`Vocab`].** The primitives only; the rules built on them  -
+/// What answers a [`Vocab`]. The primitives only; the rules built on them  -
 /// one id per control literal, no specials from text, bytes-then-decode - live in
 /// [`Vocab`] once, whichever backend is underneath.
 pub trait VocabBackend: Send + Sync {
@@ -298,7 +295,7 @@ impl std::fmt::Display for ResolveCause {
 /// The prefix of the byte vocabulary's [`Vocab::source`].
 pub const BYTES_SOURCE: &str = "bytes";
 
-/// **The byte backend.** Ids 0–255 are bytes; `256 + i` is `specials[i]`.
+/// The byte backend. Ids 0–255 are bytes; `256 + i` is `specials[i]`.
 struct Bytes {
     specials: Vec<String>,
     eog: Vec<TokenId>,

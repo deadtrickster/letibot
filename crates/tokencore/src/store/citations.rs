@@ -1,11 +1,6 @@
-//! **The lines a reply cited, as they were when it was written** (schema 30).
-//!
-//! A model citing code writes a fence labelled `path:start-end` with nothing in it, and the daemon
-//! fills it from the file (`letibot_harnessd::citations`). What it read is kept here rather than in
-//! the reply: rewriting a message the model already generated would make the next request's
-//! prefix differ from the cached one from that message on. The rows are keyed by the reply's own
-//! text, not by its row id, because a fork (`/reseat`, a compaction) carries the reply under a new
-//! id and the citation must come with it - what was cited is a fact about the words, not the row.
+//! The lines a reply cited, as they were when written. The daemon fills a `path:start-end` fence
+//! from the file; rewriting the message would change the cached prefix, so the text is kept here,
+//! keyed by the reply's text, not its row id, so it survives a fork.
 
 use rusqlite::{OptionalExtension, params};
 
@@ -34,7 +29,7 @@ impl Store {
             .optional()?)
     }
 
-    /// **Keep a reply's citations** - the first snapshot wins: a reply is cited once, when it
+    /// Keep a reply's citations - the first snapshot wins: a reply is cited once, when it
     /// lands, and a later write for the same words is the same reply carried, not a new reading.
     pub fn put_citations(
         &self,

@@ -1,8 +1,5 @@
-//! What the queues have already said, kept across a restart.
-//!
-//! The sets lived in the daemon's memory, so every restart re-gated the same red tip and resumed
-//! dormant sessions to re-tell them. Here "this was said" is a row keyed by what was said about,
-//! one table for every teller, carrying the count and the clock a backoff reads.
+//! What the queues have already said, kept across a restart. "This was said" is a row keyed by
+//! what was said about, one table for every teller, with the count and clock a backoff reads.
 
 use rusqlite::{OptionalExtension, params};
 
@@ -24,8 +21,8 @@ pub struct Told {
 }
 
 impl Store {
-    /// **Say `key` once**: `true` when this call is the first (the row was written), `false`
-    /// when it was already said — by this daemon or one before it.
+    /// Say `key` once: `true` when this call is the first (the row was written), `false`
+    /// when it was already said - by this daemon or one before it.
     pub fn tell_once(&self, key: &str, now_ms: u64) -> Result<bool> {
         let n = self.exec(
             "INSERT OR IGNORE INTO queue_told (key, count, at_ms) VALUES (?1, 1, ?2)",
@@ -34,7 +31,7 @@ impl Store {
         Ok(n == 1)
     }
 
-    /// **Count another telling of `key`** and answer the count after it (1 for the first).
+    /// Count another telling of `key` and answer the count after it (1 for the first).
     pub fn tell_again(&self, key: &str, now_ms: u64) -> Result<u32> {
         self.exec(
             "INSERT INTO queue_told (key, count, at_ms) VALUES (?1, 1, ?2)
@@ -61,7 +58,7 @@ impl Store {
             .optional()?)
     }
 
-    /// **Every key written under `prefix`**, oldest first, with what was said about it: the reading a
+    /// Every key written under `prefix`, oldest first, with what was said about it: the reading a
     /// queue of owed things needs, of what was written down and has not been forgotten yet.
     pub fn told_with_prefix(&self, prefix: &str) -> Result<Vec<(String, Told)>> {
         let conn = self.conn();
@@ -81,7 +78,7 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    /// **Forget every key that starts with `prefix`** — the state they were about is over (a red
+    /// Forget every key that starts with `prefix` - the state they were about is over (a red
     /// target is green again), so the next time it comes back it is news. Answers how many rows
     /// were forgotten: more than none is "this was said, and is not true any more".
     pub fn untell_prefix(&self, prefix: &str) -> Result<usize> {
@@ -132,7 +129,7 @@ mod tests {
         assert_eq!(s.untell_prefix("rung:/r:health:main:").unwrap(), 0);
         assert!(s.tell_once("rung:/r:health:main:abc:red", 8).unwrap());
 
-        // **What was written down under a prefix, and only that**: a queue of owed notices reads
+        // What was written down under a prefix, and only that: a queue of owed notices reads
         // this, so another teller's key has to stay out and the clock has to come back with it.
         assert!(s.tell_once("refusal:abc:s-1", 30).unwrap());
         assert!(s.tell_once("refusal:def:s-2", 40).unwrap());

@@ -1,11 +1,6 @@
-//! A read-only window onto a store somebody else is writing, for the tests that measure the
-//! operator's real `sessions.db` without copying it.
-//!
-//! An in-memory [`Store`] with the real file `ATTACH`ed `mode=ro`: [`LiveView::load`] copies one
-//! transcript in inside one transaction, loads it through [`Store::load_transcript`], and rolls
-//! the copy back. SQLite refuses every write through that connection, so it never checkpoints.
-//! The copy drops the append-only triggers on purpose: a copy is not a writer, and a test must see
-//! the stored bytes as they are.
+//! A read-only window onto a store somebody else is writing, for tests that measure the real
+//! `sessions.db`. An in-memory [`Store`] with the file `ATTACH`ed `mode=ro`; [`LiveView::load`]
+//! copies a transcript in, loads it, and rolls back. The copy drops the append-only triggers.
 
 use std::path::Path;
 
@@ -227,7 +222,7 @@ mod tests {
         (scratch, path)
     }
 
-    /// **The view loads what the writer wrote, and cannot write back.** The load is
+    /// The view loads what the writer wrote, and cannot write back. The load is
     /// compared with `Store::load_transcript` on the file itself; the refusal is SQLite's
     /// own, not a convention; and the file's bytes are the same after the view is gone.
     #[test]

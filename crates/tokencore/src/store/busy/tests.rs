@@ -1,10 +1,5 @@
-//! The failure mode, its remedy, the retry ladder and the long copy - each against a real WAL
-//! file with two connections, because an in-memory store has no second connection to lose a
-//! race to.
-//!
-//! The report: *"the child died on sqlite: database is locked in the harness's own store,
-//! which is the second infrastructure ending tonight … Neither is something I can fix from
-//! inside a session, and both cost an agent's worth of work."* (pg-noop's model, 2026-10-12.)
+//! The failure mode, its remedy, the retry ladder and the long copy, each against a real WAL
+//! file with two connections, because an in-memory store has no second connection to race.
 
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -90,8 +85,8 @@ fn hold_write_lock(path: &std::path::Path) -> (mpsc::Sender<()>, std::thread::Jo
     (go, h)
 }
 
-/// **The failure: a deferred transaction that reads, then writes, is refused AT ONCE while another
-/// connection holds the write lock - the busy timeout is never consulted**, because a connection
+/// The failure: a deferred transaction that reads, then writes, is refused AT ONCE while another
+/// connection holds the write lock - the busy timeout is never consulted, because a connection
 /// already inside a (read) transaction is not offered the busy handler. So every write begins IMMEDIATE.
 #[test]
 fn a_deferred_read_then_write_is_refused_at_once_whatever_the_timeout() {
@@ -120,8 +115,8 @@ fn a_deferred_read_then_write_is_refused_at_once_whatever_the_timeout() {
     holder.join().unwrap();
 }
 
-/// **The remedy: `Store::write_tx` takes the lock before it reads, so the same read-then-write
-/// WAITS for the other writer and then succeeds.**
+/// The remedy: `Store::write_tx` takes the lock before it reads, so the same read-then-write
+/// WAITS for the other writer and then succeeds.
 #[test]
 fn a_write_tx_waits_for_the_lock_and_then_reads_and_writes() {
     let db = TempDb::new("immediate");
@@ -153,9 +148,9 @@ fn a_write_tx_waits_for_the_lock_and_then_reads_and_writes() {
     holder.join().unwrap();
 }
 
-/// **A store write outlasts its own busy timeout.** The connection's timeout is cut to 100 ms and
-/// another connection holds the lock for 700 ms: before this change `append_item` came back
-/// `database is locked` and a child's turn ended on it. Now the store takes it again.
+/// A store write outlasts its own busy timeout. The connection's timeout is cut to 100 ms and
+/// another connection holds the lock for 700 ms. `append_item` must retry, not return
+/// `database is locked` and end a child's turn.
 #[test]
 fn an_append_outlasts_a_lock_held_past_the_busy_timeout() {
     let db = TempDb::new("outlast");
@@ -184,9 +179,9 @@ fn an_append_outlasts_a_lock_held_past_the_busy_timeout() {
     holder.join().unwrap();
 }
 
-/// **A queue write waiting on another process's lock does not hold this process's connection.**
-/// `acquire_queue_lease` used to take the one connection and *then* retry `BEGIN IMMEDIATE` inside it,
-/// so every wait locked the whole process out. The transaction is begun inside the retry closure now.
+/// A queue write waiting on another process's lock does not hold this process's connection.
+/// `acquire_queue_lease` begins the transaction inside the retry closure; taking the connection
+/// first would lock the whole process out for every wait.
 #[test]
 fn a_queue_write_waiting_on_another_process_leaves_the_store_readable() {
     let db = TempDb::new("queue-wait");
@@ -260,7 +255,7 @@ fn a_queue_write_waiting_on_another_process_leaves_the_store_readable() {
     );
 }
 
-/// **The ladder**: a busy failure is taken again, anything else is returned at once, and a
+/// The ladder: a busy failure is taken again, anything else is returned at once, and a
 /// failure that stays busy is returned once the budget is spent.
 #[test]
 fn the_busy_retry_retries_busy_only_and_stops_at_its_budget() {
@@ -307,7 +302,7 @@ fn the_busy_retry_retries_busy_only_and_stops_at_its_budget() {
     assert!(!StoreError::NotFound("x".into()).is_busy());
 }
 
-/// **The long copy commits in chunks, and lands the same rows as the per-row path.** The temp dir
+/// The long copy commits in chunks, and lands the same rows as the per-row path. The temp dir
 /// here is tmpfs, so the wall clock cannot show what the change is for; the assertions are on what
 /// does not depend on the disk: every row reads back identically and the batched copy is not slower.
 #[test]
@@ -374,7 +369,7 @@ fn a_long_copy_commits_in_chunks_and_lands_every_row() {
     );
 }
 
-/// **A chunk that breaks the append-only rule is refused, and the chunks before it stay.**
+/// A chunk that breaks the append-only rule is refused, and the chunks before it stay.
 /// The trigger still runs per row inside a batch, so a batch cannot smuggle a hole in.
 #[test]
 fn a_batch_with_a_hole_is_refused_by_the_trigger() {

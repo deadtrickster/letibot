@@ -1,8 +1,6 @@
-//! A busy store is waited for, never died of.
-//!
-//! `SQLITE_BUSY` means another connection holds the lock, which is an ordinary state on a box
-//! where many sessions share one file. So a write takes `BEGIN IMMEDIATE` and retries within a
-//! budget, and only a failure that is not busy is an error.
+//! A busy store is waited for, never died of. `SQLITE_BUSY` is ordinary where sessions share a
+//! file, so a write takes `BEGIN IMMEDIATE` and retries within a budget; only a non-busy
+//! failure is an error.
 
 use std::time::{Duration, Instant};
 

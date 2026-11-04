@@ -1,8 +1,6 @@
 //! Control tokens resolved once at startup, a rendered span tokenized, and a parser handed the
-//! vocabulary it is not allowed to own.
-//!
-//! A control token that is silently two ids never fires, so resolution happens once, at start,
-//! and fails loudly there rather than at the turn that would have used it.
+//! vocabulary it is not allowed to own. A control token that is silently two ids never fires,
+//! so resolution fails loudly at start, not at the turn that would use it.
 
 use std::collections::HashMap;
 
@@ -25,7 +23,7 @@ pub struct ControlMap {
 }
 
 impl ControlMap {
-    /// The id a literal resolves to. **The primary lookup**: a literal is exactly
+    /// The id a literal resolves to. The primary lookup: a literal is exactly
     /// one vocabulary entry or resolution failed at startup.
     pub fn id(&self, literal: &str) -> Option<TokenId> {
         self.by_literal.get(literal).copied()

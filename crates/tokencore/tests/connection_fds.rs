@@ -1,17 +1,12 @@
-//! **A closed connection does not give its descriptor back while this process still holds one to
-//! the same file** - the SQLite fact [`Store::open`](letibot_tokencore::store::Store::open)'s sharing
-//! exists for, measured here rather than argued. `sqlite3`'s unix VFS caches the descriptor in the
-//! inode's own record and releases it when the process's *last* connection to that inode closes, so
-//! a daemon keeping one connection for its whole life held a descriptor from every connection it had
-//! ever opened: 253 descriptors, 210 on `sessions.db`/`-wal`, which on the Mac ended in `ENFILE`.
-//! **Sequential** open/close leaves ONE descriptor behind; **concurrent** ones are each their own and
-//! return nothing while the keeper lives. So the count is the high-water mark of CONCURRENT connections.
+//! A closed connection does not return its descriptor while this process holds another to the
+//! same file: the SQLite fact `Store::open`'s sharing exists for. The unix VFS releases it only
+//! when the process's last connection to that inode closes, so the count is the concurrent high-water mark.
 
 use std::path::Path;
 
 use rusqlite::Connection;
 
-/// **This process's descriptors on `path` and its WAL companions** - `/proc/self/fd` on Linux,
+/// This process's descriptors on `path` and its WAL companions - `/proc/self/fd` on Linux,
 /// `/dev/fd` on Darwin. Matched on the DIRECTORY and the file name, not on the name alone: every
 /// fixture here opens a `sessions.db`, and a census that counted its neighbours' would read theirs.
 fn descriptors_on(path: &Path) -> usize {
@@ -96,9 +91,9 @@ impl Drop for Scratch {
     }
 }
 
-/// **Twenty connections opened one after another and closed leave ONE descriptor behind** - the next
+/// Twenty connections opened one after another and closed leave ONE descriptor behind - the next
 /// `open` takes the one the last `close` left, so the count is a high-water mark of CONCURRENT
-/// connections. **The census must match the DIRECTORY**: matching the file name read a sibling's 39.
+/// connections. The census must match the DIRECTORY: matching the file name read a sibling's 39.
 #[test]
 fn sequential_open_and_close_reuses_the_descriptor() {
     let scratch = Scratch::new("letibot-fds-sequential");
@@ -133,7 +128,7 @@ fn sequential_open_and_close_reuses_the_descriptor() {
     );
 }
 
-/// **A closed connection's descriptor outlives it while another connection to the file lives**  -
+/// A closed connection's descriptor outlives it while another connection to the file lives  -
 /// so a session that closes its store gives the store back and not the descriptor.
 #[test]
 fn a_closed_connection_holds_its_descriptor_until_the_last_one_goes() {

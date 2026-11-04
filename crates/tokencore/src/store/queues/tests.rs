@@ -1,4 +1,4 @@
-//! The two queues' store, asserted against the defects of the 2026-10-11 review (TODO.md R61):
+//! The two queues' store, asserted against the v23 table's defects:
 //! every test here would fail on the v23 table, which had whole-row upserts, no owner, no
 //! history, no lease, no binding of a verdict to a commit and a recovery that moved every row.
 
@@ -61,7 +61,7 @@ fn claim(owner: &str) -> LeaseClaim {
     }
 }
 
-/// **A wake reads the rows it still has business with, not the whole table.** Nothing deletes a
+/// A wake reads the rows it still has business with, not the whole table. Nothing deletes a
 /// review row, so a reading that selects every row ever and filters in Rust grows with the box's
 /// history.
 #[test]
@@ -122,7 +122,7 @@ fn only_the_states_asked_for_are_read_and_an_old_row_never_comes_back() {
     assert_eq!(s.review_rows(None).unwrap().len(), 6);
 }
 
-/// **A move is conditional on the state it expects, and every move that happened is history.**
+/// A move is conditional on the state it expects, and every move that happened is history.
 /// On v23 `put_merge_entry` overwrote the whole row from a snapshot, so a second writer's stale
 /// view silently undid the first's move and no record said either had happened.
 #[test]
@@ -215,7 +215,7 @@ fn a_move_from_a_state_the_row_left_is_refused_and_every_real_move_is_recorded()
     );
 }
 
-/// **A move may only write the columns the queue names.** A typo is a refusal, not SQL.
+/// A move may only write the columns the queue names. A typo is a refusal, not SQL.
 #[test]
 fn a_move_cannot_write_a_column_outside_its_list() {
     let d = TempDir::new("cols");
@@ -229,8 +229,8 @@ fn a_move_cannot_write_a_column_outside_its_list() {
     ));
 }
 
-/// **The verdict and the hand-off are one transaction, and the merge row carries the head the
-/// verdict judged** (decision 6). On v23 the verdict was a word on a separate row with no sha,
+/// The verdict and the hand-off are one transaction, and the merge row carries the head the
+/// verdict judged (decision 6). On v23 the verdict was a word on a separate row with no sha,
 /// and the queue landed whatever the branch was by then.
 #[test]
 fn an_approval_binds_the_reviewed_head_and_creates_the_merge_row_once() {
@@ -296,13 +296,13 @@ fn an_approval_binds_the_reviewed_head_and_creates_the_merge_row_once() {
     assert!(r.reviewed_sha.is_none() && r.verdict.is_none());
 }
 
-/// **One owner per repository, by compare-and-swap; a live holder is never displaced; an
-/// expired one is, and the claimant is told whom it replaced** (requirement 1). On v23 every
+/// One owner per repository, by compare-and-swap; a live holder is never displaced; an
+/// expired one is, and the claimant is told whom it replaced (requirement 1). On v23 every
 /// daemon started a queue and nothing said which one served a row.
 #[test]
 fn the_lease_is_held_by_one_daemon_and_taken_over_only_when_its_heartbeat_expires() {
     let d = TempDir::new("lease");
-    // **Two daemons are two CONNECTIONS** - `Store::open` would hand `b` the connection `a` is
+    // Two daemons are two CONNECTIONS - `Store::open` would hand `b` the connection `a` is
     // holding, and the compare-and-swap would be one daemon talking to itself.
     let a = Store::open_private(&d.db()).unwrap();
     let b = Store::open_private(&d.db()).unwrap();
@@ -349,7 +349,7 @@ fn the_lease_is_held_by_one_daemon_and_taken_over_only_when_its_heartbeat_expire
     );
 }
 
-/// **A lease nobody will claim can still be given up, and only while it is still expired** - the
+/// A lease nobody will claim can still be given up, and only while it is still expired - the
 /// supervisor's sweep. `acquire`'s takeover needs a claimant, and rows from daemons dead for weeks
 /// on repositories nobody serves had none. A holder that beat in between is left alone.
 #[test]
@@ -388,8 +388,8 @@ fn a_stale_lease_is_released_with_its_history_and_never_after_a_heartbeat() {
     assert!(last.why.contains("600 s old"), "{}", last.why);
 }
 
-/// **A daemon whose build the store has moved past never takes a lease** - the schema is read live, in
-/// the claim's own transaction. **What "moved past" means is the READER FLOOR, not the version**: an
+/// A daemon whose build the store has moved past never takes a lease - the schema is read live, in
+/// the claim's own transaction. What "moved past" means is the READER FLOOR, not the version: an
 /// additive bump keeps the lease, a raised floor takes it away.
 #[test]
 fn a_store_the_queue_has_moved_past_grants_no_lease_and_stops_a_heartbeat() {
@@ -436,7 +436,7 @@ fn a_store_the_queue_has_moved_past_grants_no_lease_and_stops_a_heartbeat() {
     assert!(!s.heartbeat_queue_lease("/repo", "A", 5).unwrap());
 }
 
-/// **Recovery touches only this repository's rows, and only those another owner held** - on v23
+/// Recovery touches only this repository's rows, and only those another owner held - on v23
 /// `recover` turned EVERY `taken` row in the store `stale`, including another daemon's live one.
 #[test]
 fn recovery_moves_only_the_rows_a_gone_owner_held_in_this_repository() {
@@ -473,7 +473,7 @@ fn recovery_moves_only_the_rows_a_gone_owner_held_in_this_repository() {
     );
 }
 
-/// **The target's health records a move only when the state changes.**
+/// The target's health records a move only when the state changes.
 #[test]
 fn the_targets_health_is_one_row_and_its_changes_are_history() {
     let d = TempDir::new("health");
@@ -516,7 +516,7 @@ CREATE TABLE merge_review (
     commands_json TEXT NOT NULL DEFAULT '[]');
 ";
 
-/// **Decision 13, as a migration** - every v23 row archived, nothing deleted; the waiting, taken and
+/// Decision 13, as a migration - every v23 row archived, nothing deleted; the waiting, taken and
 /// stale rows carried forward as reviews; the waiting row whose review said `reject` not carried;
 /// and an OLD daemon's own write to `merge_queue` refused by the new table's shape.
 #[test]

@@ -1,9 +1,6 @@
-//! A block of a shared host's ports, held by one session.
-//!
-//! Agents on the operator's hosts collided over ports because each picked its own, and a lock
-//! in one process is a lock for half the callers: two daemons on this box share this file. So
-//! the block is a record, taken inside `BEGIN IMMEDIATE` (that transaction is the per-host
-//! lock), and it outlives a restart because the row does.
+//! A block of a shared host's ports, held by one session. Two daemons share this file, so a
+//! process lock is not enough: the block is a record taken inside `BEGIN IMMEDIATE`, and it
+//! outlives a restart because the row does.
 
 use std::collections::BTreeSet;
 
@@ -11,7 +8,7 @@ use rusqlite::{OptionalExtension, params};
 
 use super::{Result, Store, StoreError, now_ms};
 
-/// **The table both a fresh store and the v35 migration create.**
+/// The table both a fresh store and the v35 migration create.
 pub const LEASES_SQL: &str = r#"
 -- **A block of a shared host's ports, held by one session** (schema 35). See
 -- `crates/tokencore/src/store/leases.rs` for why a lock in a tool would be half a lock, and for
@@ -41,11 +38,11 @@ CREATE INDEX IF NOT EXISTS host_lease_host_idx ON host_lease (host, released_ms)
 CREATE INDEX IF NOT EXISTS host_lease_session_idx ON host_lease (session_id, released_ms);
 "#;
 
-/// **The lowest port this build will ever hand out.** Below it a bind needs a privilege the remote
+/// The lowest port this build will ever hand out. Below it a bind needs a privilege the remote
 /// session's user may not have, so a block there would be a lease nothing could use.
 pub const FIRST_PORT: u16 = 1024;
 
-/// **One held block**, as the store holds it.
+/// One held block, as the store holds it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Lease {
     pub id: i64,
@@ -67,7 +64,7 @@ pub struct Lease {
 }
 
 impl Lease {
-    /// **Is anybody holding this?** The whole of `released_ms IS NULL`.
+    /// Is anybody holding this? The whole of `released_ms IS NULL`.
     pub fn held(&self) -> bool {
         self.released_ms.is_none()
     }
@@ -94,7 +91,7 @@ impl Lease {
         ]
     }
 
-    /// **The name a person reads**: `lab2x1/7`, or `local/7`.
+    /// The name a person reads: `lab2x1/7`, or `local/7`.
     pub fn name(&self) -> String {
         format!("{}/{}", self.host.as_deref().unwrap_or("local"), self.id)
     }
@@ -118,7 +115,7 @@ impl Lease {
     }
 }
 
-/// **What is being asked for** - the ports, the prefix, and the two facts about the host that the
+/// What is being asked for - the ports, the prefix, and the two facts about the host that the
 /// caller measured rather than guessed.
 #[derive(Debug, Clone)]
 pub struct Ask<'a> {
@@ -129,10 +126,10 @@ pub struct Ask<'a> {
     pub prefix: &'a str,
     /// How many consecutive ports. At least one; a block is never split.
     pub ports: u16,
-    /// The escape hatch of the host's kernel, read **there**: `(low, high)` as
+    /// The escape hatch of the host's kernel, read there: `(low, high)` as
     /// `/proc/sys/net/ipv4/ip_local_port_range` spells it.
     pub ephemeral: (u16, u16),
-    /// **Every port something is listening on there right now** - the `ss -ltn` half.
+    /// Every port something is listening on there right now - the `ss -ltn` half.
     pub busy: &'a BTreeSet<u16>,
     pub now_ms: i64,
 }
@@ -173,7 +170,7 @@ pub fn pick(
     })
 }
 
-/// **Where a block below the ephemeral range may start.** Under it sit the registered ports that
+/// Where a block below the ephemeral range may start. Under it sit the registered ports that
 /// well-known services listen on (databases, caches, dev servers), and a lease is a promise that
 /// nothing else is there.
 pub const LOW_FIRST: u16 = 10000;
@@ -268,7 +265,7 @@ impl Store {
         })
     }
 
-    /// **Every block still held**, across every host and session - the reaper's work list and what
+    /// Every block still held, across every host and session - the reaper's work list and what
     /// `hosts` prints.
     pub fn held_leases(&self) -> Result<Vec<Lease>> {
         let conn = self.conn();
@@ -308,7 +305,7 @@ impl Store {
             .optional()?)
     }
 
-    /// **Give one block back.** `false` when it was not held - a release is idempotent because a
+    /// Give one block back. `false` when it was not held - a release is idempotent because a
     /// session's close, a scenario's end and the reaper can all reach the same lease, and two of
     /// them arriving is a fact about the code rather than a fault.
     pub fn release_lease(&self, id: i64, by: &str, now_ms: i64) -> Result<bool> {
@@ -320,7 +317,7 @@ impl Store {
         Ok(n == 1)
     }
 
-    /// **Give back every block a session still holds** - what its close does, and what the reaper
+    /// Give back every block a session still holds - what its close does, and what the reaper
     /// does for a session that is gone. Returns the ones that were actually held, so the caller can
     /// say what it released and tear down the prefixes of exactly those.
     pub fn release_session_leases(
@@ -366,7 +363,7 @@ mod tests {
         ports.iter().copied().collect()
     }
 
-    /// **Two sessions asking one host get disjoint blocks** - the rule the whole table exists for,
+    /// Two sessions asking one host get disjoint blocks - the rule the whole table exists for,
     /// and the one a lock in a tool could only half keep.
     #[test]
     fn two_sessions_on_one_host_get_disjoint_blocks() {
@@ -414,7 +411,7 @@ mod tests {
         assert_eq!((c.port_first, c.port_last), (61000, 61003));
     }
 
-    /// **A lease is per HOST**: the same ports on another machine are a different question, and
+    /// A lease is per HOST: the same ports on another machine are a different question, and
     /// this box (`host IS NULL`) is a third.
     #[test]
     fn a_block_is_per_host() {
@@ -438,7 +435,7 @@ mod tests {
         assert_eq!(firsts, vec![61000, 61000, 61000]);
     }
 
-    /// **A port the census found in use is skipped**, and a release is idempotent because three
+    /// A port the census found in use is skipped, and a release is idempotent because three
     /// callers can reach one lease.
     #[test]
     fn a_busy_port_is_skipped_and_a_release_is_idempotent() {
@@ -465,7 +462,7 @@ mod tests {
         assert_eq!(after.released_ms, Some(2));
     }
 
-    /// **A restart keeps the leases**, because the row is the lease: a second connection to the
+    /// A restart keeps the leases, because the row is the lease: a second connection to the
     /// same file finds the block held and allocates past it.
     #[test]
     fn a_second_connection_sees_the_block_as_held() {
@@ -532,7 +529,7 @@ mod tests {
         assert!(said.contains("10000-65533"), "{said}");
     }
 
-    /// **The block, as the environment a session's containers read.**
+    /// The block, as the environment a session's containers read.
     #[test]
     fn a_lease_says_its_block_and_its_prefix() {
         let lease = Lease {
@@ -556,7 +553,7 @@ mod tests {
         assert!(lease.held());
     }
 
-    /// **The rule, as arithmetic**: the first run of `ports` consecutive free ports above the
+    /// The rule, as arithmetic: the first run of `ports` consecutive free ports above the
     /// host's ephemeral range.
     #[test]
     fn a_block_starts_above_the_ephemeral_range() {
@@ -566,7 +563,7 @@ mod tests {
         );
     }
 
-    /// **A held block is skipped, not trimmed** - a block is contiguous because the service that
+    /// A held block is skipped, not trimmed - a block is contiguous because the service that
     /// takes four ports wants `first + 3` to be its own.
     #[test]
     fn a_held_block_is_stepped_over_whole() {
@@ -596,7 +593,7 @@ mod tests {
         );
     }
 
-    /// **Nothing inside the ephemeral range is ever handed out**, whatever the run would fit.
+    /// Nothing inside the ephemeral range is ever handed out, whatever the run would fit.
     #[test]
     fn nothing_inside_the_range_is_offered() {
         // A range that ends at the top leaves only below it - never inside it.
@@ -620,7 +617,7 @@ mod tests {
         assert_eq!(pick(&all, &busy(&[]), (32768, 60999), 1), None);
     }
 
-    /// **Below [`FIRST_PORT`] nothing is ever offered** - even when the ephemeral range says the
+    /// Below [`FIRST_PORT`] nothing is ever offered - even when the ephemeral range says the
     /// whole space is free, a block a session's user may not bind is a lease nothing can use.
     #[test]
     fn the_floor_is_an_unprivileged_port() {

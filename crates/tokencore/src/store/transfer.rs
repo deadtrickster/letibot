@@ -1,10 +1,6 @@
-//! One session, out of one store and into another: the transfer half of a session whose daemon
-//! moves to a remote host and back.
-//!
-//! The file describes itself (its columns come from the statement that wrote them) and carries a
-//! digest over everything the token chain cannot see, so an item's JSON or a todo list cannot be
-//! edited unnoticed. An import refuses by name before it writes, and a file whose digest or
-//! chain does not check out changes nothing.
+//! One session, out of one store and into another, for a daemon moving to a remote host and
+//! back. The file describes itself and carries a digest over what the token chain cannot see.
+//! An import refuses by name before writing; a bad digest or chain changes nothing.
 
 use rusqlite::OptionalExtension;
 use rusqlite::types::{Value as SqlValue, ValueRef};
@@ -69,7 +65,7 @@ impl TableExport {
     }
 }
 
-/// **One session, its transcripts and everything keyed by it** - the file that travels.
+/// One session, its transcripts and everything keyed by it - the file that travels.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SessionTransfer {
     pub format: u32,
@@ -124,7 +120,7 @@ impl SessionTransfer {
         self.table(name).map(|t| t.rows.as_slice()).unwrap_or(&[])
     }
 
-    /// **The session's own row**, or a refusal - nothing else in the file means anything
+    /// The session's own row, or a refusal - nothing else in the file means anything
     /// without it.
     pub fn session_row(&self) -> Result<(&TableExport, &Vec<Value>)> {
         let t = self.table("session").ok_or_else(|| {
@@ -162,7 +158,7 @@ impl SessionTransfer {
 }
 
 impl Store {
-    /// **Write one session out** - every row of every table in [`TABLES`], and the digest
+    /// Write one session out - every row of every table in [`TABLES`], and the digest
     /// over them.
     pub fn export_session(&self, session_id: &str) -> Result<SessionTransfer> {
         if self.session(session_id)?.is_none() {
@@ -257,7 +253,7 @@ impl Store {
             report.caught_up = true;
             return Ok(report);
         }
-        // **The chain, before anything is written.** The same rebuild a resume does: the
+        // The chain, before anything is written. The same rebuild a resume does: the
         // prefix's tokens, the rows in `seq` order, every link re-hashed.
         verify_chains(transfer)?;
 
@@ -309,7 +305,7 @@ impl Store {
         Ok(report)
     }
 
-    /// **Say where a session lives now** - `None` for the store you are reading (it is
+    /// Say where a session lives now - `None` for the store you are reading (it is
     /// live here), or the endpoint's name and when it moved.
     pub fn lives_on(&self, session_id: &str) -> Result<Option<(String, Option<i64>)>> {
         Ok(self
@@ -496,7 +492,7 @@ fn catch_up(
             )?;
         }
     }
-    // **The mutable and keyed tables are the file's**, not this copy's: the live copy is the
+    // The mutable and keyed tables are the file's, not this copy's: the live copy is the
     // authority for a todo list, a job's state, a monitor, a mode, a ruling and a citation.
     for table in transfer.tables.iter().filter(|t| {
         !matches!(
@@ -545,7 +541,7 @@ fn insert_rows(tx: &rusqlite::Transaction<'_>, table: &TableExport, verb: &str) 
     Ok(())
 }
 
-/// One cell out of the store, as JSON. **A blob is the only thing that is an object**, so
+/// One cell out of the store, as JSON. A blob is the only thing that is an object, so
 /// a text column that happens to hold JSON is still a string and the two cannot be
 /// confused on the way back.
 fn cell_out(value: ValueRef<'_>) -> Result<Value> {
@@ -1138,7 +1134,7 @@ mod tests {
         assert!(to.session("sess-1").unwrap().is_none());
     }
 
-    /// **A store that already holds the session refuses the second copy.** Two rows for one
+    /// A store that already holds the session refuses the second copy. Two rows for one
     /// conversation, each going on being appended to, is the state a migration exists to
     /// prevent.
     #[test]
@@ -1222,7 +1218,7 @@ mod tests {
         ledger.verify_chain().unwrap();
     }
 
-    /// **A copy that appended while it was marked is refused, not merged.** Two conversations
+    /// A copy that appended while it was marked is refused, not merged. Two conversations
     /// under one id is not something an import can be asked to reconcile.
     #[test]
     fn a_copy_that_diverged_is_refused() {
@@ -1270,7 +1266,7 @@ mod tests {
         );
     }
 
-    /// **The marker is one column and it round trips** - `--sessions` reads it, and a
+    /// The marker is one column and it round trips - `--sessions` reads it, and a
     /// session that came home is a session whose marker is cleared rather than a row that
     /// was rewritten.
     #[test]

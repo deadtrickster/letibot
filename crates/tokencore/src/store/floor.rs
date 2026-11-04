@@ -13,7 +13,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use super::{Result, SCHEMA_VERSION, Store, StoreError};
 
-/// **The first schema** - the floor of a store nothing breaking has ever migrated. Version 1 is
+/// The first schema - the floor of a store nothing breaking has ever migrated. Version 1 is
 /// not a migration here (`migrate`'s `None` arm creates the first schema), it is the ground.
 pub const FIRST_SCHEMA: i64 = 1;
 
@@ -26,15 +26,15 @@ CREATE TABLE IF NOT EXISTS schema_reader_floor (
 );
 "#;
 
-/// **What a migration does to a reader younger than itself** - the two readings [`READER_ARMS`]
+/// What a migration does to a reader younger than itself - the two readings [`READER_ARMS`]
 /// is written in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Arm {
-    /// **Only adds** - a new table, a nullable column, a new index, or a backfill of a column that
+    /// Only adds - a new table, a nullable column, a new index, or a backfill of a column that
     /// did not exist for an older reader to read. An older reader's `SELECT` never names what
     /// arrived, and its `INSERT` fills the `NOT NULL … DEFAULT` ones with the default.
     Additive,
-    /// **Changes or drops what older code READS** - see [`READER_ARMS`]'s own notes for the two
+    /// Changes or drops what older code READS - see [`READER_ARMS`]'s own notes for the two
     /// arms this tree has, and the module doc for why a deleted ROW breaks a reader just as hard as
     /// a renamed table.
     Breaks,
@@ -161,7 +161,7 @@ impl Store {
         *self.shared.newer.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// **The floor this store records**, or `None` for one written before there were floors.
+    /// The floor this store records, or `None` for one written before there were floors.
     pub(crate) fn reader_floor(&self) -> Result<Option<i64>> {
         read_floor(&self.conn(), "main")
     }
