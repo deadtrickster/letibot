@@ -1006,14 +1006,23 @@ fn the_roster_column_shows_connected_members_with_markers_by_default() {
     fits(&rows, 120);
     let all = rows.join("\n");
     assert!(all.contains("hello there"), "chat stays: {all}");
-    assert!(row_with(&rows, "operator").contains("● op operator"), "{all}");
-    assert!(row_with(&rows, "cc@letibot").contains("● cc cc@letibot (other)"), "{all}");
+    assert!(
+        row_with(&rows, "operator").contains("● op operator"),
+        "{all}"
+    );
+    assert!(
+        row_with(&rows, "cc@letibot").contains("● cc cc@letibot (other)"),
+        "{all}"
+    );
     assert!(row_with(&rows, "gk").contains("● q gk"), "{all}");
     assert!(row_with(&rows, "+1 offline").contains("r lists"), "{all}");
     assert!(!all.contains("the doc writer"), "offline is a count: {all}");
     // Connected members come first, by name.
     let at = |n: &str| rows.iter().position(|r| r.contains(n)).unwrap();
-    assert!(at("cc@letibot") < at("gk") && at("gk") < at("operator"), "{all}");
+    assert!(
+        at("cc@letibot") < at("gk") && at("gk") < at("operator"),
+        "{all}"
+    );
 }
 
 #[test]
@@ -1022,7 +1031,10 @@ fn r_lists_the_offline_members_and_again_hides_them() {
     host_roster(&mut a);
     a.key(Key::Char('r'));
     let rows = screen(&mut a, 120);
-    assert!(row_with(&rows, "the doc writer").contains("○ s "), "{rows:?}");
+    assert!(
+        row_with(&rows, "the doc writer").contains("○ s "),
+        "{rows:?}"
+    );
     a.key(Key::Char('r'));
     assert!(!screen(&mut a, 120).join("\n").contains("the doc writer"));
 }
@@ -1034,12 +1046,18 @@ fn a_narrow_pane_shows_a_strip_under_the_header() {
     let rows = screen(&mut a, 70);
     fits(&rows, 70);
     let all = rows.join("\n");
-    assert!(row_with(&rows, "3 here:").contains("cc@letibot, gk, operator"), "{all}");
+    assert!(
+        row_with(&rows, "3 here:").contains("cc@letibot, gk, operator"),
+        "{all}"
+    );
     assert!(!all.contains("● op"), "no column: {all}");
     let rows = screen(&mut a, 52);
     fits(&rows, 52);
     let strip = row_with(&rows, "3 here:");
-    assert!(strip.contains(" +"), "the names that do not fit are counted: {strip}");
+    assert!(
+        strip.contains(" +"),
+        "the names that do not fit are counted: {strip}"
+    );
 }
 
 #[test]
@@ -1060,11 +1078,20 @@ fn a_click_on_a_member_inserts_the_mention() {
     let mut a = opened(1_000);
     host_roster(&mut a);
     let rows = screen(&mut a, 120);
-    let y = rows.iter().position(|r| r.contains("● cc cc@letibot")).unwrap();
+    let y = rows
+        .iter()
+        .position(|r| r.contains("● cc cc@letibot"))
+        .unwrap();
     let x = rows[y].chars().position(|c| c == '●').unwrap();
-    a.key(Key::Click { x: x as u16, y: y as u16 });
+    a.key(Key::Click {
+        x: x as u16,
+        y: y as u16,
+    });
     assert_eq!(a.editor.text(), "@cc@letibot ");
-    a.key(Key::Click { x: x as u16, y: y as u16 });
+    a.key(Key::Click {
+        x: x as u16,
+        y: y as u16,
+    });
     assert_eq!(a.editor.text(), "@cc@letibot @cc@letibot ");
 }
 

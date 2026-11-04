@@ -284,7 +284,11 @@ fn member_column(
         if !m.project.is_empty() && m.project != room_label {
             text.push_str(&format!(" ({})", clean_line(&m.project)));
         }
-        let role = if m.connected { Role::Plain } else { Role::Faint };
+        let role = if m.connected {
+            Role::Plain
+        } else {
+            Role::Faint
+        };
         rows.push((text, role, Some(m.name.clone())));
     }
     if hidden > 0 {
