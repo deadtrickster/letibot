@@ -2692,7 +2692,7 @@ if [ -n "$SESSION" ] && [ "$WANT_NEW" != 1 ]; then
       echo "letibot: $SESSION lives on $MIGRATED_HOST — re-establishing the forward" >&2
       "$BIN/letibot" migrate --reattach "$SESSION" --store "$STORE" >&2 ||
         die "$SESSION lives on $MIGRATED_HOST and its daemon could not be reached.
-         Nothing was opened. `$ME --migrate $SESSION --to local` brings it back here."
+         Nothing was opened. \`$ME --migrate $SESSION --to local\` brings it back here."
     fi
     exec "$HEAD" --socket "$MIGRATED_SOCKET" --identity "${USER:-operator}" --resume "$SESSION"
   fi
