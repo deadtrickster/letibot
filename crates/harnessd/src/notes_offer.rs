@@ -33,6 +33,8 @@ pub struct Offer {
     pub path: PathBuf,
     pub score: f64,
     pub blended: bool,
+    /// Set by `settle`: the round read it.
+    pub taken: bool,
 }
 
 impl Offer {
@@ -170,6 +172,7 @@ impl Offers {
             path: path.to_path_buf(),
             score,
             blended: self.tier.is_some(),
+            taken: false,
         });
         true
     }
@@ -187,12 +190,13 @@ impl Offers {
     /// take-up is a `read` of the offered path, or a `notes` read of it, because nothing else puts
     /// the note in the conversation. Logged either way, because the ratio tunes [`OFFER_FLOOR`].
     pub fn settle(&mut self, logs: &Path, session: &str, calls: &[ToolCall]) -> Option<&Offer> {
-        let offer = self.open.take()?;
+        let mut offer = self.open.take()?;
         let taken = calls.iter().any(|c| {
             read_of(c)
                 .map(|p| same_note(&p, &offer.path))
                 .unwrap_or(false)
         });
+        offer.taken = taken;
         self.offered.insert(offer.path.clone());
         let line = format!(
             "{{\"at\":{},\"session\":{},\"path\":{},\"score\":{:.3},\"taken\":{taken}}}\n",

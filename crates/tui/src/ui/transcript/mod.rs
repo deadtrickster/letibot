@@ -11,6 +11,7 @@ pub mod line_cards;
 pub mod live;
 pub mod markers;
 pub mod notice_card;
+pub mod offer_card;
 pub mod reasoning;
 pub mod red_card;
 pub mod restart_card;

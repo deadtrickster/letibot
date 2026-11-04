@@ -62,7 +62,7 @@ impl<'a> Reader<'a> {
 
     /// One file's text. A note that cannot be read is not injected, the same silence a missing one
     /// gets: the section is best effort, and a file nobody can read is one no prompt can carry.
-    fn read(&self, path: &Path) -> Option<String> {
+    pub(crate) fn read(&self, path: &Path) -> Option<String> {
         match self.on_backend(path) {
             Some(rel) => String::from_utf8(self.backend.read(&rel).ok()?).ok(),
             None => std::fs::read_to_string(path).ok(),

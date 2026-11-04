@@ -323,6 +323,10 @@ pub const TABLE: &[(&str, Class)] = &[
     // the prefix it was created with, and the remedy is a verb the operator has (`/reseat`).
     // Written by `Harness::open` through `prefix_fingerprint`.
     ("prefix_stale", Class::Routine),
+    // What the model was offered this round (a skill, a standing note) and whether it took it up:
+    // the operator's view of a line that is only ever in the request tail, never a row.
+    ("skill_offer", Class::Routine),
+    ("note_offer", Class::Routine),
     // A wall the prompt goes on past - compacted, room for the next turn, continuations
     // left: one routine line, not a red failure. The wall that
     // ends the prompt is still `turn_failed`.
@@ -765,8 +769,8 @@ mod the_register_census {
         // The census, kept where it cannot drift. Each assert below is a register's count;
         // a code moved or added without a thought fails here rather than silently changing what
         // a reader is taught by the colour of the screen.
-        assert_eq!(TABLE.len(), 181, "the table's size");
-        assert_eq!(count(Class::Routine), 73);
+        assert_eq!(TABLE.len(), 183, "the table's size");
+        assert_eq!(count(Class::Routine), 75);
         assert_eq!(count(Class::Refused), 15, "the fifteen in READER_INPUT");
         assert_eq!(count(Class::Failure), 93);
         // A code with an id is read by its family.

@@ -34,6 +34,8 @@ pub struct Offer {
     pub name: String,
     pub score: f64,
     pub blended: bool,
+    /// Set by `settle`: the round loaded it.
+    pub taken: bool,
 }
 
 impl Offer {
@@ -144,6 +146,7 @@ impl Offers {
                 name,
                 score,
                 blended: self.tier.is_some(),
+                taken: false,
             })
             .collect();
         !self.open.is_empty()
@@ -159,15 +162,16 @@ impl Offers {
     /// is a `skill` load of the offered name, because nothing else puts the body in the conversation.
     /// Logged either way, because the ratio is what tunes [`OFFER_FLOOR`].
     pub fn settle(&mut self, logs: &Path, session: &str, calls: &[ToolCall]) -> Vec<Offer> {
-        let open = std::mem::take(&mut self.open);
+        let mut open = std::mem::take(&mut self.open);
         if open.is_empty() {
             return Vec::new();
         }
         let mut lines = String::new();
-        for offer in &open {
+        for offer in &mut open {
             let taken = calls
                 .iter()
                 .any(|c| loaded_of(c).as_deref() == Some(&offer.name));
+            offer.taken = taken;
             self.offered.insert(offer.name.clone());
             lines.push_str(&format!(
                 "{{\"at\":{},\"session\":{},\"skill\":{},\"score\":{:.3},\"taken\":{taken}}}\n",

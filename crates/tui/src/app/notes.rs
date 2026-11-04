@@ -551,7 +551,12 @@ pub const COALESCE_MS: u64 = 60_000;
 
 /// Codes that are re-said while they still stand, and so are never coalesced: a burst counts things that happened,
 /// and a line saying *this is still true* is not one of them.
-pub const LIVE: &[&str] = &["store_busy_wait", "model_retry"];
+pub const LIVE: &[&str] = &[
+    "store_busy_wait",
+    "model_retry",
+    "skill_offer",
+    "note_offer",
+];
 
 /// The plural a burst of this code is counted in - `5 reviews could not run` rather than
 /// `5 × queue_blocked`. A code with no row here is counted by its code, which is the head's own

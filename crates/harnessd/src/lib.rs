@@ -59,6 +59,7 @@ pub mod modes;
 pub mod nag_pause;
 pub mod notes_offer;
 pub mod notes_scope;
+pub mod offer_rows;
 pub mod operator_ask;
 pub mod oracle;
 pub mod plugins;

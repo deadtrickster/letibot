@@ -1814,8 +1814,12 @@ impl Harness {
             let text = visible_text(&appended);
             // The offer is settled here, where the round's calls are known, and logged whichever way it went. A round
             // that ends the turn with no calls settles with an empty list, which is an untaken offer recorded as one.
-            offers.settle(&self.cfg.daemon_logs(), &self.cfg.session_id, &calls);
-            skill_offers.settle(&self.cfg.daemon_logs(), &self.cfg.session_id, &calls);
+            let note_offer = offers
+                .settle(&self.cfg.daemon_logs(), &self.cfg.session_id, &calls)
+                .cloned();
+            let skill_taken =
+                skill_offers.settle(&self.cfg.daemon_logs(), &self.cfg.session_id, &calls);
+            self.show_offers(note_offer.as_ref(), &skill_taken);
             waits.settle(&self.cfg.daemon_logs(), &self.cfg.session_id, &calls);
             done.settle(&self.cfg.daemon_logs(), &self.cfg.session_id, &calls);
             // What the agent says it is doing, recorded before its calls are adjudicated: the sentence in front of its
@@ -2925,6 +2929,26 @@ impl Harness {
             window: self.cfg.shown_wall().0,
             at_wall: self.cfg.at_the_wall(resident),
         })
+    }
+
+    /// Show the operator what the model was offered this round, settled. A hub warning and not a row: a row
+    /// would enter the prompt, and the model already holds its own tail line.
+    fn show_offers(
+        &self,
+        note: Option<&crate::notes_offer::Offer>,
+        skills: &[crate::skills_offer::Offer],
+    ) {
+        use crate::offer_rows as rows;
+        if let Some(o) = note {
+            let notes =
+                crate::standing_notes::Reader::new(&*self.runtime.backend, &self.cfg.workspace);
+            let text = notes.read(&o.path);
+            rows::show_note(&self.hub, o, text.as_deref());
+        }
+        for o in skills {
+            let body = self.skills.load(&o.name);
+            rows::show_skill(&self.hub, o, body);
+        }
     }
 
     /// Tell this session's model something the HARNESS found, without running a turn: a plugin failure is a fact

@@ -177,3 +177,51 @@ fn a_handed_over_skill_draws_as_one_folded_row_at_80_columns() {
     assert!(!drawn.contains("step 7 of the release"), "{drawn}");
     assert!(drawn.lines().count() <= 4, "{drawn}");
 }
+
+/// A skill offered to the model draws as one faint row, and a click opens its body.
+#[test]
+fn an_offered_skill_draws_as_a_row_and_a_click_opens_its_body() {
+    use super::redcard::{holds, popup_text, rows_with, with_warning};
+    let detail =
+        "skill offered: rust-skills (0.41) · loaded\n\nStep one: run clippy.\nStep two: fmt.";
+    let mut a = with_warning("skill_offer", detail);
+    let screen = a.screen(100, 30);
+    let drawn = screen.join("\n");
+    assert_eq!(
+        rows_with(
+            &screen,
+            "skill offered: rust-skills (0.41) · loaded · click for details"
+        )
+        .len(),
+        1,
+        "{drawn}"
+    );
+    assert!(!drawn.contains("Step one"), "{drawn}");
+    assert_eq!(a.card_rows.len(), 1, "{drawn}");
+    let (y, _) = a.card_rows[0];
+    a.key(Key::Click { x: 10, y: y as u16 });
+    let whole = popup_text(&mut a);
+    assert!(holds(&whole, "Step one: run clippy."), "{whole}");
+}
+
+/// Two offers in a minute stay two rows, not a counted burst.
+#[test]
+fn two_offers_close_together_are_two_rows() {
+    use super::redcard::{rows_with, with_warning};
+    let mut a = with_warning("note_offer", "note offered: build.md (0.33)\n\nbody");
+    a.apply(ServerFrame::Event(env(
+        2,
+        SessionEvent::Warning {
+            code: "skill_offer".into(),
+            detail: "skill offered: release (0.30)".into(),
+            compaction: None,
+        },
+    )));
+    let screen = a.screen(100, 30);
+    assert_eq!(
+        rows_with(&screen, "offered:").len(),
+        2,
+        "{}",
+        screen.join("\n")
+    );
+}
