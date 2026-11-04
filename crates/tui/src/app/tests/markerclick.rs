@@ -317,6 +317,27 @@ fn opened_run_scrolls(clause: &str, shown: &str) {
     }
 }
 
+/// The open run's rows unfold on a click, so the pointer is the hand over them.
+#[test]
+fn the_rows_of_an_open_run_show_the_hand() {
+    let mut a = a_run();
+    let screen = a.screen(200, 40);
+    let (x, y) = find(&screen, "4 tool calls");
+    a.key(Key::Click { x: x + 1, y });
+    let open = a.screen(200, 40);
+    let (cx, cy) = find(&open, "CONTENTS-0");
+    a.take_pointer();
+    a.key(Key::Hover { x: cx, y: cy });
+    a.screen(200, 40);
+    assert_eq!(
+        a.take_pointer(),
+        Some(true),
+        "no hand over an open run's row"
+    );
+    a.key(Key::Hover { x: 0, y: 0 });
+    assert_eq!(a.take_pointer(), Some(false));
+}
+
 #[test]
 fn a_run_opened_on_its_thinking_scrolls_to_both_ends() {
     opened_run_scrolls("thinking lines", "THINK-131");

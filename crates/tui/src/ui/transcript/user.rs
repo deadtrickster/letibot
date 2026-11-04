@@ -226,6 +226,8 @@ pub(crate) fn agent_row_text(it: &SnapshotItem) -> Option<String> {
             parts,
             speaker: letibot_transcript::Speaker::Agent,
         } => Some(user_text(parts)),
+        // A delivery is drawn by the same card walk, so it opens the same way.
+        TranscriptItem::Notice { text, .. } => Some(text.clone()),
         _ => None,
     }
 }

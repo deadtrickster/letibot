@@ -236,7 +236,10 @@ impl App {
             Target::Conversation => {
                 let top = hit.rect.y;
                 let r = row.checked_sub(top)?;
-                let place = &self.file_rows.iter().find(|(rr, _)| *rr == r)?.1;
+                let Some((_, place)) = self.file_rows.iter().find(|(rr, _)| *rr == r) else {
+                    // The open run's rows unfold on a click, so they show the hand too.
+                    return self.run_row_at(y).then(|| Hovered::one(row, None));
+                };
                 Some(Hovered {
                     rows: self
                         .file_rows

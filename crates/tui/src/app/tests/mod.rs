@@ -1319,6 +1319,7 @@ mod bindings;
 mod bursts;
 mod cardkeys;
 mod cite;
+mod clickables;
 mod commands;
 mod composer;
 mod decisions;
