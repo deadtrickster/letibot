@@ -86,6 +86,12 @@ pub const PEEK_PATIENCE: Duration = Duration::from_secs(10);
 /// that has stopped talking, not for one that is thinking.
 pub const SLASH_PATIENCE: Duration = Duration::from_secs(20);
 
+/// How long `set_model` waits for the daemon's reply to `/models`. The reply comes off the session's
+/// worker, which on a host placement opens its remote tree first (an ssh connect and a checkout)
+/// and on a busy box queues behind the daemon's other starts, so it is far longer than one round
+/// trip. The wait is one deadline, not a retry: `/models` is applied once.
+pub const MODEL_PATIENCE: Duration = Duration::from_secs(120);
+
 /// The answer to one request for a mode confirmation. `answer` is `yes`, `no` or
 /// `nobody`; `applied` is a different question, and a `yes` the session cannot carry is
 /// `applied: false` with the prerequisite check's words in `said`.
@@ -1627,6 +1633,11 @@ impl Head {
     /// is per SESSION. It writes the session's own row, so a restart restores it; a refusal
     /// is the answer, not a silence, because a brief must not run on a model nobody asked for.
     pub fn set_model(&self, want: &str) -> Result<String, String> {
+        self.set_model_within(want, MODEL_PATIENCE)
+    }
+
+    /// [`Head::set_model`] with the wait named, so the silence it reports is testable.
+    pub fn set_model_within(&self, want: &str, patience: Duration) -> Result<String, String> {
         self.may_write()?;
         let line = format!("models {}", want.trim());
         let before = {
@@ -1637,7 +1648,7 @@ impl Head {
             let mut c = self.said_client()?;
             c.slash(0, &line).map_err(|e| e.to_string())?;
         }
-        let deadline = Instant::now() + SLASH_PATIENCE;
+        let deadline = Instant::now() + patience;
         loop {
             let g = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
             if g.slashes > before
@@ -1656,7 +1667,10 @@ impl Head {
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
                 return Err(format!(
-                    "the daemon did not answer `/{line}` within {SLASH_PATIENCE:?}"
+                    "the daemon is up and kept this connection, but its session did not answer \
+                     `/{line}` within {patience:?}: the session's worker was still opening (a \
+                     host placement's first open, or a busy box). The request was sent once and \
+                     may still apply; ask `leticode_status` before repeating it"
                 ));
             }
             let (next, _) = self
@@ -2071,6 +2085,41 @@ pub fn create_session_in(d: &Daemon, title: &str, workspace: &str) -> Result<Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A daemon that accepts the attach and never answers `/models`: the silence is reported with
+    /// the wait that ran out and what that means, and the real wait is longer than one round trip.
+    #[test]
+    fn a_silent_session_is_reported_with_the_wait_and_the_cause() {
+        let socket = letibot_sessionlog::testing::scratch_root()
+            .join(format!("bridge-silent-{}.sock", std::process::id()));
+        let server = letibot_sessionlog::server::serve(
+            letibot_sessionlog::hub::Hub::new("s"),
+            socket.clone(),
+        )
+        .expect("bind");
+        let d = crate::daemon::Daemon {
+            workspace: socket.clone(),
+            key: "k".into(),
+            socket,
+            log: Default::default(),
+            store: Default::default(),
+            placement: None,
+            started: false,
+        };
+        let h = Head::attach(&d, "s").expect("attach");
+        let why = h
+            .set_model_within("glm", Duration::from_millis(300))
+            .expect_err("nobody answers");
+        assert!(
+            why.contains("300ms") && why.contains("still opening") && why.contains("once"),
+            "{why}"
+        );
+        assert!(
+            MODEL_PATIENCE >= Duration::from_secs(60),
+            "a host's first open fits"
+        );
+        server.shutdown();
+    }
 
     /// A question is answered by its choice, its number, typed words, or an abstention.
     #[test]
