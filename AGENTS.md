@@ -175,6 +175,9 @@ layer. The head and the plugin layer draw rows twice, held together by
 `sessions_list.rs::the_heads_list_and_the_plugins_list_draw_the_same_rows` and committed pictures
 re-blessed with `LETIBOT_BLESS=1 cargo test -p letibot-tui sessions_list`. `letibot --sessions`
 (`harnessd::cli`) is a third shape over the same marks.
+Packages of OTHER daemons are not in `App::sessions`: `App::fleet` (read in the background by
+`letibot_bridge::fleet`) draws as a `packages in other daemons` node after the projects, in both
+drawings, and Enter says the attach command. The feed carries the fleet rows already worded.
 
 webfetch's curl transport resolves then pins (`--resolve`), refuses private addresses (the model
 server on loopback is why), walks redirects manually, caps the body, and splits curl's metadata by
