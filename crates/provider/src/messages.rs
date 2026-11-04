@@ -735,7 +735,7 @@ pub fn tools(tools_json: &[String]) -> Result<Vec<Value>, String> {
             }
             Err(format!(
                 "a tool schema has neither `function` nor `name`: {}",
-                &t[..t.len().min(80)]
+                t.chars().take(80).collect::<String>()
             ))
         })
         .collect()
@@ -1469,6 +1469,12 @@ mod tests {
         assert_eq!(bare[0]["function"]["name"], "read");
         assert_eq!(bare[0]["type"], "function");
         assert!(tools(&["\"read\"".into()]).unwrap_err().contains("neither"));
+    }
+
+    #[test]
+    fn a_long_multibyte_schema_is_refused_without_a_panic() {
+        let wide = format!("\"{}\"", "\u{3042}".repeat(60));
+        assert!(tools(&[wide]).unwrap_err().contains("neither"));
     }
 }
 

@@ -455,6 +455,13 @@ fn the_speaker_is_the_sources_declaration() {
     assert_eq!(of("{}"), Speaker::Operator);
 }
 
+/// An offset with a multibyte character in it is not a time, and not a panic.
+#[test]
+fn a_multibyte_offset_is_no_time() {
+    assert_eq!(parse_ts("2026-10-07T12:28:34+a\u{e9}a"), None);
+    assert_eq!(parse_ts("2026-10-07T12:28:34+\u{e9}:0"), None);
+}
+
 /// The ISO-8601 parse, which is rule 3's only clock: a time it cannot read is `None`,
 /// never a guess.
 #[test]

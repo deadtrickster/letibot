@@ -1598,8 +1598,8 @@ pub fn parse_ts(s: &str) -> Option<u64> {
     } else if let Some(sign) = rest.strip_prefix(['+', '-']) {
         let mult = if rest.starts_with('-') { -1 } else { 1 };
         let (oh, om) = match sign.len() {
-            5 if sign.as_bytes()[2] == b':' => (num_str(&sign[..2])?, num_str(&sign[3..])?),
-            4 => (num_str(&sign[..2])?, num_str(&sign[2..])?),
+            5 if sign.as_bytes()[2] == b':' => (num_str(sign.get(..2)?)?, num_str(sign.get(3..)?)?),
+            4 => (num_str(sign.get(..2)?)?, num_str(sign.get(2..)?)?),
             2 => (num_str(sign)?, 0),
             _ => return None,
         };
