@@ -133,11 +133,9 @@ impl App {
         if self.reseat_card_up() {
             return Vec::new();
         }
-        // Asked for during a turn, it waits for the turn: the daemon runs a reseat on its queue,
-        // between turns and never inside one, so the strip stays up and says when it will go.
-        // `alt-p` refuses while anything holds the slot (`App::reseat_expand` says so), so the
-        // strip names only `alt-r`, which is handled wherever the keyboard is: a hint that cannot
-        // keep its promise is worse than none.
+        // Asked for during a turn, it waits for the turn: the daemon runs a reseat between turns, so the strip stays up
+        // and says when it will go. `alt-p` refuses while anything holds the slot (`App::reseat_expand`), so the strip
+        // names only `alt-r`: a hint that cannot keep its promise is worse than none.
         let hint = if self.slot_taken() {
             ""
         } else {

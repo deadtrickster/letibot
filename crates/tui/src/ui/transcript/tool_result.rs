@@ -86,7 +86,7 @@ pub(crate) fn tool_result_row_lines(
         _ => String::new(),
     };
     let verb = rano::agent::card::Verb::of(shown);
-    // **An edit draws its diff, not the tool's prose** — when this head holds both sides; a
+    // An edit draws its diff, not the tool's prose - when this head holds both sides; a
     // row it did not watch keeps the prose, which is the `Replayed` rule.
     let diff = edit
         .filter(|_| verb.is_an_edit())
@@ -97,7 +97,7 @@ pub(crate) fn tool_result_row_lines(
     let detected = edit
         .filter(|_| !verb.is_an_edit())
         .map(|e| detected_diff_rows(e, &target, w.saturating_sub(2), cfg, diff_split, tools));
-    // **The payload's own window**: `payload_view` carries *which* row, because several
+    // The payload's own window: `payload_view` carries *which* row, because several
     // payloads can be unfolded on one screen and a bare offset would page all of them.
     let window = payload_view
         .filter(|(id, _)| *id == it.item_id.as_str())
@@ -109,7 +109,7 @@ pub(crate) fn tool_result_row_lines(
         diff,
         decision: decision.map(crate::ui::settled_decision),
         picture,
-        // **The file, as a link** (OSC 8) where the terminal speaks it: the full target the
+        // The file, as a link (OSC 8) where the terminal speaks it: the full target the
         // shortened subject stands for, so a click opens the file and not `…/app.rs`.
         link_root: cfg.links.clone(),
         fold: tools.into(),

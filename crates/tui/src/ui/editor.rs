@@ -1,4 +1,4 @@
-//! **The editor pane, drawn** - rano's own renderer into the conversation's rectangle - and the
+//! The editor pane, drawn - rano's own renderer into the conversation's rectangle - and the
 //! map from the conversation's rows to the files they are about.
 
 use crate::app::*;
@@ -14,7 +14,7 @@ fn cells(n: usize) -> u16 {
     n.min(u16::MAX as usize) as u16
 }
 
-/// **Where rano draws inside the pane's frame**: under the top edge, over the bottom one, and
+/// Where rano draws inside the pane's frame: under the top edge, over the bottom one, and
 /// two columns in from each side - the diff popup's own indent, so the two read as one kind of
 /// thing. The one rectangle both the drawing and the mouse routing use (`App::edit_area`).
 pub(crate) fn editor_inner(x: usize, y: usize, w: usize, room: usize) -> Rect {
@@ -60,7 +60,7 @@ fn editor_title(name: &str, t: &rano::editor::FrameTitle, w: usize) -> Line {
     Line::new(spans)
 }
 
-/// **The pane's bottom edge: rano's keys, in the head's words** - `C-o write out · C-f where
+/// The pane's bottom edge: rano's keys, in the head's words - `C-o write out · C-f where
 /// is · …`, faint like every other key line here, as many as the edge holds. What rano's
 /// function bar would have said, in the order it would have said it.
 fn editor_keys(keys: &[(String, String)]) -> Line {
@@ -100,7 +100,7 @@ impl App {
             return Vec::new();
         };
         let rect = editor_inner(x, y, w, room);
-        // **A new size is laid out before it is drawn**: rano's scroll and its diff view's lines
+        // A new size is laid out before it is drawn: rano's scroll and its diff view's lines
         // are measured against the area, and `tick` is where it measures them.
         if p.set_area(rect.into()) {
             p.ed.tick(Instant::now());
@@ -112,7 +112,7 @@ impl App {
             // rano says `(column, row)`; the head's caret is `(row, column)`.
             p.caret = rano::ui::draw_in(&mut p.buf, rect, &p.ed)
                 .map(|(col, row)| (row as usize, col as usize));
-            // **The frame**: the popup's two edges around rano's text, each row of the text
+            // The frame: the popup's two edges around rano's text, each row of the text
             // indented by the columns `editor_inner` left.
             let mut rows = Vec::with_capacity(room);
             rows.push(row(
@@ -176,7 +176,7 @@ impl App {
             if let Some(f) = place {
                 out.push((line - start, f));
             } else if !self.items[sp.row].citations.is_empty() {
-                // **A cited line opens its file there** - the header at the range's first line,
+                // A cited line opens its file there - the header at the range's first line,
                 // each numbered line at its own. Read off the drawn row, so the line clicked is
                 // the line named.
                 if let Some(f) = self.cited_line(sp.at, line) {
@@ -187,7 +187,7 @@ impl App {
         out
     }
 
-    /// **The file and line a drawn line of a citation names**, walking up from `line` to the
+    /// The file and line a drawn line of a citation names, walking up from `line` to the
     /// header of the block it is in - `None` for a line outside any citation (the reply's prose).
     fn cited_line(&self, row_at: usize, line: usize) -> Option<FileRef> {
         let plain = |l: usize| -> String {

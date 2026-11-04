@@ -1,12 +1,9 @@
-//! **How many screen rows the session's notices take, measured on real rows** (R89).
+//! How many screen rows the session's notices take, measured on real rows.
 //!
-//! Not a test of behaviour - a measurement, run by hand: the rows are exported read-only from a
-//! `sessions.db` (agent-spoken user rows and System rows, texts deduplicated) to JSONL, one
-//! `{"kind":"agent"|"system","origin":…,"ts":…,"text":…}` an line, and every row is drawn
-//! through the transcript's own renderers ([`session_row_lines`], [`system_row_lines`]) at 100
-//! columns. A row is a WALL when it draws more screen rows than it has notices - one line a
-//! notice is the rule (`line_cards`), with the job card's two lines a job the one exception the
-//! operator asked for.
+//! Not a test of behaviour - a measurement, run by hand: rows exported read-only from a `sessions.db` to JSONL
+//! (`{"kind":"agent"|"system","origin":…,"ts":…,"text":…}`) are drawn through [`session_row_lines`] and [`system_row_lines`] at 100
+//! columns. A row is a WALL when it draws more screen rows than it has notices; one line a notice is the rule (`line_cards`),
+//! with the job card's two lines a job the one exception.
 //!
 //! ```text
 //! LETIBOT_WALL_ROWS=rows.jsonl cargo test -p letibot-tui walls -- --ignored --nocapture

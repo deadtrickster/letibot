@@ -17,10 +17,10 @@ impl App {
         };
         let split = self.diff_split;
         // The body is two columns in from each side, so the rows read as inside the box. No
-        // floor wider than the box (R90.31): `max(20)` overflowed every row below ~24 columns.
+        // floor wider than the box: `max(20)` overflowed every row below ~24 columns.
         let inner = w.saturating_sub(4).max(1);
-        // **With a decision open the card has ↑↓ and Home/End** (`key_diff_popup` yields them),
-        // so the edge offers only the keys that still scroll the popup (R90.28).
+        // With a decision open the card has ↑↓ and Home/End (`key_diff_popup` yields them),
+        // so the edge offers only the keys that still scroll the popup.
         let deciding = !self.open.is_empty();
         let stale = self
             .diff_popup
@@ -35,7 +35,7 @@ impl App {
                 } => self.notice_popup_layout(text, jobs, answer.as_deref(), inner),
                 PopupBody::Picture { id, png, px, .. } => {
                     let laid = self.picture_popup_layout(*id, png, *px, inner);
-                    // **The bytes, for the box this frame gives it** — the widget's own decision
+                    // The bytes, for the box this frame gives it - the widget's own decision
                     // (upload once, place when the box moves, delete when the view closes), so a
                     // resize under an open picture costs a placement and not the megabytes.
                     let (cols, rows) = (laid.rows.first().map(|l| l.width()), laid.rows.len());
@@ -61,7 +61,7 @@ impl App {
         let body = room.saturating_sub(2 + note_rows);
         p.room = body;
         let max = laid.rows.len().saturating_sub(body);
-        // **On the first change, with a little of what comes before it**: the reader opened the
+        // On the first change, with a little of what comes before it: the reader opened the
         // popup to see the change, and two lines above it say where in the file they are.
         if !p.placed {
             p.scroll = laid.first.saturating_sub(2).min(max);
@@ -81,7 +81,7 @@ impl App {
                     ),
                     Span::raw(format!(" · the change at line {}", file.line)),
                 ]),
-                // **The switch belongs where a change is read.** `/diff` is the verb, and naming
+                // The switch belongs where a change is read. `/diff` is the verb, and naming
                 // both ways it draws is what a reader had to be told from another screen; the hint
                 // is a button, so it opens that picker where the change is.
                 format!(
@@ -99,8 +99,8 @@ impl App {
             PopupBody::Notice {
                 jobs, text, title, ..
             } if jobs.is_empty() => {
-                // **The title is the card's**, whichever card drew the line (R89): the opener's
-                // when it knew it, a reader's, or the fallback's — never a bare `notice` in red.
+                // The title is the card's, whichever card drew the line: the opener's
+                // when it knew it, a reader's, or the fallback's - never a bare `notice` in red.
                 let (title, role) = title
                     .clone()
                     .or_else(|| crate::ui::transcript::line_cards::popup_title(text))
@@ -139,7 +139,7 @@ impl App {
                     "esc closes · ↑↓ pgup/pgdn home/end".to_string()
                 },
             ),
-            // **A picture names itself**: what it is, how big it is in pixels and in cells.
+            // A picture names itself: what it is, how big it is in pixels and in cells.
             PopupBody::Picture {
                 media_type,
                 px,

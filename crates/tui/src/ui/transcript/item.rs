@@ -1,4 +1,4 @@
-//! **One row of the conversation, drawn**: `item_lines` turns a transcript item into its
+//! One row of the conversation, drawn: `item_lines` turns a transcript item into its
 //! lines, under the visibility, folds and budgets the frame was asked for.
 
 use crate::app::*;
@@ -63,7 +63,7 @@ pub(crate) enum RowClass {
     Speech,
     /// The model working: reasoning, and tool calls.
     Activity,
-    /// Anything else — a system row, a segment mark, an announcement with no
+    /// Anything else - a system row, a segment mark, an announcement with no
     /// body yet.
     Other,
 }
@@ -78,16 +78,16 @@ pub(crate) struct ItemCtx<'a> {
     pub(crate) think: Fold,
     pub(crate) tools: Fold,
     pub(crate) raw: bool,
-    /// Display targets for **this row's round**, keyed by call id.
+    /// Display targets for this row's round, keyed by call id.
     pub(crate) targets: &'a std::collections::HashMap<String, String>,
     /// Call ids in this round that already have a settled result row below.
     /// Their card is that row; the assistant row does not draw them again.
     pub(crate) answered: &'a std::collections::HashSet<String>,
-    /// **The children this head has watched**, for the one fact a completion notice cannot say
-    /// for itself: what a child was asked. Looked up by handle — see [`subagent_asked`], which
+    /// The children this head has watched, for the one fact a completion notice cannot say
+    /// for itself: what a child was asked. Looked up by handle - see [`subagent_asked`], which
     /// the subagents pane and the notice share so the two cannot describe one child differently.
     pub(crate) subagents: &'a [SubagentState],
-    /// **What this head holds of each ended job's output**, by handle — the second line of a
+    /// What this head holds of each ended job's output, by handle - the second line of a
     /// completion notice's compact form (see `job_card`). Asked for by the window that draws the
     /// notice, so a row drawn before the answer lands says what the notice itself knows.
     pub(crate) job_tails:
@@ -103,7 +103,7 @@ pub(crate) struct ItemCtx<'a> {
     /// The settled decision this row's call was gated by, when there was one.
     /// See `App::call_decisions`.
     pub(crate) decision: Option<&'a letibot_sessionlog::view::SettledDecision>,
-    /// **The session's workspace**, which a citation's path is relative to — read to tell whether
+    /// The session's workspace, which a citation's path is relative to - read to tell whether
     /// the cited lines still say what they said. Empty where there is no file to compare with.
     pub(crate) workspace: &'a str,
     /// The echo this head bound to this row, when the row is a `user` row whose body has not
@@ -114,7 +114,7 @@ pub(crate) struct ItemCtx<'a> {
     /// from `bound`: the same words are `queued` when a row is expected and `unconfirmed` when a
     /// snapshot already replaced the transcript without it, and only `App` knows which.
     pub(crate) echo_mark: &'a str,
-    /// **Whether an echo is drawn in full or as its elided headline** (R33).
+    /// Whether an echo is drawn in full or as its elided headline.
     pub(crate) echo_open: bool,
     /// Which set of switches this row is drawn for. On the context because `item_lines` is a free
     /// function and the walk holds the app apart. A SET and not a rung: `keeps` is the ladder's
@@ -141,7 +141,7 @@ pub(crate) struct ItemCtx<'a> {
     pub(crate) replied_to: Option<&'a str>,
 }
 
-/// **The question the row at `k` answers**, when the row before it is the session's question
+/// The question the row at `k` answers, when the row before it is the session's question
 /// to a person (`asked_card`): the text the walk hands [`ItemCtx::replied_to`].
 pub(crate) fn question_before(items: &[SnapshotItem], k: usize) -> Option<String> {
     let prev = items.get(k.checked_sub(1)?)?;

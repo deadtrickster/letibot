@@ -1,4 +1,4 @@
-//! **A turn's footer**: how it ended, its tokens and its timings.
+//! A turn's footer: how it ended, its tokens and its timings.
 
 use crate::ui::render::{RenderConfig, row_strings};
 use letibot_sessionlog::view::TurnState;

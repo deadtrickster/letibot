@@ -1,4 +1,4 @@
-//! **A row the model wrote**: its prose, and a line for each call it made that has no result.
+//! A row the model wrote: its prose, and a line for each call it made that has no result.
 
 use crate::ui::render::{BlockCache, row};
 use crate::ui::*;
@@ -33,11 +33,10 @@ pub(crate) fn assistant_row_lines(
     // control byte the model emitted is an instruction to the operator's terminal. Sanitised BEFORE
     // the lexer, so lexer, wrapper and width arithmetic all work on one string.
     let text = without_control_lines(text);
-    // **The lines it cited, in the fences that name them** — before the lexer, so rano draws them
+    // The lines it cited, in the fences that name them - before the lexer, so rano draws them
     // as a citation (see `cite`). A row that cites nothing is borrowed straight through.
     let text = crate::ui::transcript::cite::fill(&text, &it.citations, workspace);
-    // A `Cow`, and the borrow is what the change bought: this used to force the
-    // allocation even when the sanitiser had nothing to do.
+    // A `Cow`: the borrow avoids an allocation when the sanitiser had nothing to do.
     let text: &str = &text;
     let mut md = IncrementalMarkdown::new();
     md.push(text);
@@ -68,8 +67,8 @@ pub(crate) fn assistant_row_lines(
     }
     let mut acted = false;
     let p = cfg.palette();
-    // **A model's answer is the conversation; the calls it made are the working**
-    // (R37). The prose above is kept and the call rows below are not, which is the
+    // A model's answer is the conversation; the calls it made are the working
+    //. The prose above is kept and the call rows below are not, which is the
     // same line the ladder draws everywhere else.
     for c in tool_calls.iter().filter(|_| !vis.hides_the_working()) {
         // ONE ROW PER CALL: a call whose result is on the screen is drawn by that result, not here,

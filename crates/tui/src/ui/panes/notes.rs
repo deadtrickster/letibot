@@ -1,4 +1,4 @@
-//! **The notes**: the disclosures this head has shown, folded and unfolded (`/notes`)  -
+//! The notes: the disclosures this head has shown, folded and unfolded (`/notes`)  -
 //! drawn by `rano::agent::notes` from the notes this head holds.
 
 use crate::app::*;
@@ -30,9 +30,9 @@ impl App {
 /// anywhere, so this is a disclosure decision and not a fold over a record.
 pub(crate) const PANE_LAST_LINES: usize = 4;
 
-/// **A note, in rano's words.** The register a warning is drawn in is its code's class, and
+/// A note, in rano's words. The register a warning is drawn in is its code's class, and
 /// the class is `letibot_sessionlog::warning`'s - the log's vocabulary, not this head's
-/// (R19, R29 part two) - so it is decided here and handed over.
+/// - so it is decided here and handed over.
 pub(crate) fn note_view(n: &Note) -> view::Note {
     match n {
         Note::Warned(w) => {
@@ -58,7 +58,7 @@ pub(crate) fn note_view(n: &Note) -> view::Note {
         } => view::Note::NotRun {
             detail: format!("{summary} — {by}: {said}"),
         },
-        // **The register is the operator's own act, and it is a fact this head holds**:
+        // The register is the operator's own act, and it is a fact this head holds:
         // `closed` is the head's own record that it sent `Action::TermClose`, never a match
         // on the daemon's wording of the reason.
         Note::Pane {
@@ -72,7 +72,7 @@ pub(crate) fn note_view(n: &Note) -> view::Note {
             reason: reason.clone(),
             closed: *closed,
         },
-        // **The settled row and the one still trying are one register in `/notes`**, the dot and
+        // The settled row and the one still trying are one register in `/notes`, the dot and
         // the sentence: the listing is what a reader scrolls for the words, and the card is what
         // they see in the conversation.
         Note::Retrying(r) => view::Note::NotRun {
@@ -99,7 +99,7 @@ pub(crate) fn note_view(n: &Note) -> view::Note {
     }
 }
 
-/// One note, as the transcript draws it: ONE line a note (R89) - a card's ([`card_row`]) - and a
+/// One note, as the transcript draws it: ONE line a note - a card's ([`card_row`]) - and a
 /// pane's ending whole. See `rano::agent::notes::Note::lines` for the pane's.
 pub(crate) fn note_lines(cfg: &RenderConfig, n: &Note) -> Vec<String> {
     match card_row(cfg, n) {
@@ -108,7 +108,7 @@ pub(crate) fn note_lines(cfg: &RenderConfig, n: &Note) -> Vec<String> {
     }
 }
 
-/// **The mark and the role a warning's lead is drawn in** - its code's register in the census
+/// The mark and the role a warning's lead is drawn in - its code's register in the census
 /// (`letibot_sessionlog::warning`), rano's three marks for the three.
 pub(crate) fn class_mark(code: &str) -> (&'static str, rano::style::Role) {
     use letibot_sessionlog::warning::Class;
@@ -137,7 +137,7 @@ pub(crate) fn note_card(
             });
             Some((card, w.detail.clone(), w.ts))
         }
-        // **A refusal nobody made**, in the faint register and with the mark it has always had:
+        // A refusal nobody made, in the faint register and with the mark it has always had:
         // what was not run, in the head's own one sentence.
         Note::NotRun(w) => Some((
             whole_parts("·", Role::Faint, &w.detail),
@@ -151,10 +151,9 @@ pub(crate) fn note_card(
             let text = format!("{summary} — {by}: {said}");
             Some((whole_parts("·", Role::Faint, &text), text, 0))
         }
-        // **A settled decision is a notice too** - three wrapped rows of a permission's outcome
-        // with nothing to open. Its words are rano's, read back from the renderer rather than
-        // written a second time here, so the row and the listing cannot disagree. Every line of
-        // them, because a summary that carries a newline puts the verdict on the last one.
+        // A settled decision is a notice too. Its words are rano's, read back from the renderer rather than written a
+        // second time, so the row and the listing cannot disagree. Every line of them, because a summary that carries
+        // a newline puts the verdict on the last one.
         Note::Decided(d) => {
             let said = note_view(n)
                 .unfolded(UNBOUNDED)
@@ -165,7 +164,7 @@ pub(crate) fn note_card(
             if said.trim().is_empty() {
                 return None;
             }
-            // **The row leads with the verdict.** rano writes it last, at the end of a sentence
+            // The row leads with the verdict. rano writes it last, at the end of a sentence
             // that begins with the summary, and a card cuts from its right end - so at eighty
             // columns an allow and a refuse drew alike.
             let (word, role) = settled(&d.outcome);
@@ -178,7 +177,7 @@ pub(crate) fn note_card(
             );
             Some((card, said, 0))
         }
-        // **A retried call, one line**, in the register the durable warning has ([`class_mark`] of
+        // A retried call, one line, in the register the durable warning has ([`class_mark`] of
         // [`RETRY_CODE`]): the row and the warning beside it are one outage, so they cannot be two
         // registers. The mark is the frame's own `·` for a routine row, so the words stand alone.
         Note::Retrying(r) => {
@@ -227,7 +226,7 @@ fn settled(outcome: &letibot_sessionlog::event::DecisionOutcome) -> (String, ran
     }
 }
 
-/// **The popup a retry row opens**: the row's own line whole - the frame cut it - and every failed
+/// The popup a retry row opens: the row's own line whole - the frame cut it - and every failed
 /// attempt with its clock, which is the shape of the outage a reader asks about and the one thing a
 /// row cannot say.
 fn retry_popup(r: &Retry) -> String {
@@ -260,8 +259,7 @@ pub(crate) fn card_row(cfg: &RenderConfig, n: &Note) -> Option<Vec<String>> {
     Some(crate::ui::session_card_block(&[line], ts, cfg))
 }
 
-/// **A burst, as ONE row with a count** - the shape the retry row already has, applied to a kind
-/// rather than to one endpoint's attempts.
+/// A burst, as ONE row with a count - the shape the retry row has, applied to a kind rather than one endpoint's attempts:
 ///
 /// ```text
 /// · 5 branches queued · click for details
@@ -269,15 +267,9 @@ pub(crate) fn card_row(cfg: &RenderConfig, n: &Note) -> Option<Vec<String>> {
 /// × 3 reviews need you · click for details
 /// ```
 ///
-/// The line is the count and the kind, in the kind's own register (`class_mark`, so a red burst
-/// is red and a refusal's is not), and the clock is the NEWEST member's - the row is news about
-/// the newest thing in it. At one member there is no burst at all: the walk draws the notice's
-/// own card, byte for byte what this head drew before there were bursts.
-///
-/// **The details are not lost and are not a second click.** The popup lists every member newest
-/// first, each with its own line - its clock and its first clause, which for the queue's raises
-/// names the branch - and its whole text under it. A member is retired and listed and counted by
-/// its own key, so `/notes dismiss N` and `ctrl-n` still act on one notice or on the whole kind.
+/// The line is the count and the kind, in the kind's register (`class_mark`), and the clock is the NEWEST member's. At one member there
+/// is no burst: the walk draws the notice's own card. The popup lists every member newest first with its clock, first clause and whole
+/// text. A member is retired, listed and counted by its own key, so `/notes dismiss N` and `ctrl-n` act on one notice or the whole kind.
 pub(crate) fn burst_card(
     members: &[&Note],
 ) -> Option<(crate::ui::transcript::line_cards::Card, String, u64)> {
@@ -287,7 +279,7 @@ pub(crate) fn burst_card(
     let (mark, role) = class_mark(&kind);
     let words = crate::app::counted_as(&kind).to_string();
     let n = members.len();
-    // **The routine mark is the frame's own `·`** (`notice_card::warning_notice`'s rule, one
+    // The routine mark is the frame's own `·` (`notice_card::warning_notice`'s rule, one
     // register over): drawn twice it reads as a stutter, so the quiet register is the count
     // alone - and still not red.
     let line = if mark == "·" {
@@ -380,9 +372,9 @@ mod tests {
         })
     }
 
-    /// **A compaction is one row and the model's record is not on it** - the figures, the code
-    /// once, and the hint; a click opens the whole sentence (R89: it was `· /notes`, unclickable,
-    /// and said its code twice).
+    /// A compaction is one row and the model's record is not on it - the figures, the code
+    /// once, and the hint; a click opens the whole sentence, which must not be an unclickable `· /notes`
+    /// or say its code twice.
     #[test]
     fn a_compaction_is_one_line_whatever_note_lines_says() {
         let cfg = RenderConfig {
@@ -411,10 +403,10 @@ mod tests {
             !row.contains("THE MODEL'S OWN RECORD"),
             "the model's record is not the conversation's row: {row:?}"
         );
-        // **And nothing was swallowed**: the popup's text is the whole detail.
+        // And nothing was swallowed: the popup's text is the whole detail.
         let (_, text, _) = note_card(&n).expect("a card");
         assert_eq!(text, detail);
-        // **Every warning is one line now** - a code no card reads included, and a failure:
+        // Every warning is one line now - a code no card reads included, and a failure:
         // its reason's first clause, the rest a click away.
         for code in [
             "ledger_chain_mismatch",
@@ -433,8 +425,8 @@ mod tests {
         }
     }
 
-    /// **A long line is cut in its facts, and the hint survives** (R89: the hint at the end of
-    /// a line was the first thing a narrow terminal cut).
+    /// A long line is cut in its facts, and the hint survives: the hint at the end of
+    /// a line is the first thing a narrow terminal cuts.
     #[test]
     fn a_long_account_is_trimmed_and_the_hint_is_kept() {
         let cfg = RenderConfig {

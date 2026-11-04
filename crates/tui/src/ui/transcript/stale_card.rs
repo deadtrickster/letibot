@@ -1,30 +1,24 @@
-//! **A stale prompt's note, drawn as ONE line** - what changed, and the daemon's whole sentence
+//! A stale prompt's note, drawn as ONE line - what changed, and the daemon's whole sentence
 //! one click away.
 //!
-//! The operator, pasting what pg-noop's head drew after its restart - the `prefix_stale` note
-//! as three wrapped rows and a `… +1 lines · /notes` seam: *"these gray walls are hilarious …
-//! make them the usual one liners"*.
+//! The `prefix_stale` note drew as three wrapped rows and a `… +1 lines · /notes` seam; the ask was the usual one-liner.
 //!
 //! ```text
 //! prompt stale · seated 09-20 17:51 · new: task_resume · click for details
 //! prompt stale · seated 09-20 17:51 · instructions changed · new: task_resume, pkill · gone: job_wait · changed: todo_write · click for details
 //! ```
 //!
-//! **The line is a pointer, not the decision.** The reseat card (`app::reseat`) is where the
-//! operator chooses - `alt-r` reseats, `alt-p` shows the card - and it stays on the screen while
-//! the prompt is stale. The note is the record that it was said, so it says what changed and
-//! where to decide, and a click opens the sentence whole.
+//! The line is a pointer, not the decision: the reseat card (`app::reseat`) is where the operator chooses (`alt-r` reseats, `alt-p` shows
+//! the card). The note says what changed and where to decide; a click opens the sentence whole.
 //!
-//! The sentence is `harness::stale_prefix_sentence` in harnessd; the parser keys on its opening
-//! (`session ID was seated WHEN with a prompt this daemon would not compose now: WHAT changed
-//! since.`) and on the three tool lists' own lead-ins. Anything else is `None` and the note is
-//! drawn as it always was.
+//! The sentence is `harness::stale_prefix_sentence` in harnessd; the parser keys on its opening and the three tool lists' lead-ins.
+//! Anything else is `None` and the note is drawn as before.
 
 use rano::style::Role;
 
 use crate::ui::transcript::line_cards::{Card, WarningKind};
 
-/// What the line ends with: the one hint every notice line carries (R89). The reseat card's own
+/// What the line ends with: the one hint every notice line carries. The reseat card's own
 /// keys are on its strip - `alt-r` reseats, `alt-p` shows the card - and the popup holds the
 /// daemon's whole sentence.
 use crate::ui::transcript::line_cards::CLICK as POINTER;
@@ -37,7 +31,7 @@ const GONE: &str = "In the prompt but not seated here, so a call to them refuses
 const GREW: &str =
     "Seated on both sides with a different schema, so the model is working from the older one: ";
 
-/// **One stale prompt, as the sentence says it.**
+/// One stale prompt, as the sentence says it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Stale {
     pub(crate) session: String,
@@ -108,7 +102,7 @@ fn list_after(text: &str, lead: &str) -> Vec<String> {
         .collect()
 }
 
-/// **A `prefix_stale` warning's detail, read** - `None` for a shape this head does not know.
+/// A `prefix_stale` warning's detail, read - `None` for a shape this head does not know.
 pub(crate) fn stale_of(detail: &str) -> Option<Stale> {
     let r = detail.strip_prefix("session ")?;
     let (session, r) = r.split_once(SEATED)?;
@@ -129,7 +123,7 @@ pub(crate) fn stale_of(detail: &str) -> Option<Stale> {
     })
 }
 
-/// **The stale prompt in the card registry** (`line_cards`): the `prefix_stale` note.
+/// The stale prompt in the card registry (`line_cards`): the `prefix_stale` note.
 pub(crate) const WARNING: WarningKind = WarningKind {
     codes: &["prefix_stale"],
     read: warning_card,
@@ -139,8 +133,8 @@ fn warning_card(detail: &str) -> Option<Card> {
     stale_card(detail)
 }
 
-/// **The stale prompt's card**, from the warning's detail or from the same sentence written as a
-/// session row (R89 item 11: the session row was drawn whole).
+/// The stale prompt's card, from the warning's detail or from the same sentence written as a
+/// session row.
 pub(crate) fn stale_card(text: &str) -> Option<Card> {
     stale_of(text).map(|s| s.card())
 }

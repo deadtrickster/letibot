@@ -20,7 +20,7 @@ impl App {
         self.standing_stop_rows = content.stop_rows.clone();
         let moved = match &self.standing_corpus {
             Some(prev) => *prev != corpus,
-            // **The first draw after the rows landed is the baseline, not a change.** The ask
+            // The first draw after the rows landed is the baseline, not a change. The ask
             // that produced them was a moment ago, and re-asking here would be a round trip
             // per pane-open for nothing.
             None => false,
@@ -77,7 +77,7 @@ impl App {
                     Style::new(),
                 ),
             ]);
-            // **The disk's half, read now** - see the module doc. `None` is the file being
+            // The disk's half, read now - see the module doc. `None` is the file being
             // gone, and it is said in the same column the size and the age would be, so a row
             // that cannot answer them does not look like one that answered them badly.
             let right = match &disk {

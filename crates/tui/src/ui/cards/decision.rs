@@ -92,10 +92,9 @@ impl App {
         let view = self.decision_view(d);
         let (content, mut choices) = view.split(w);
         let p = self.cfg.palette();
-        // The ladder's hint, in this head's words: a permission's row number marks a row and Enter
-        // answers it, a question's digits are its answer so only the arrows mark, and a question
-        // with nothing to choose from has no ladder at all - its line is typed. One casing with
-        // the bar.
+        // The ladder's hint, in this head's words: a permission's row number marks a row and Enter answers it, a
+        // question's digits are its answer so only the arrows mark, and a question with nothing to choose from has no
+        // ladder - its line is typed. One casing with the bar.
         let question = d.kind == "question";
         let rows = decision_rows(d);
         // rano's rungs go, this head's take their place: what it draws after them - the deadline,
@@ -165,10 +164,9 @@ impl App {
         (row_strings(&content, p), row_strings(&choices, p))
     }
 
-    /// The card's facts, in rano's words: the ask and its target, whose call it is, the files it
-    /// would write, layer A's reading and the model's reason, the guard's verdict, the ladder with
-    /// this head's highlighted row, and the deadline. `decision_card` drops rano's ladder rows and
-    /// puts this head's there; nothing here preselects an option.
+    /// The card's facts, in rano's words: the ask and target, whose call it is, the files it would write, layer A's
+    /// reading, the model's reason, the guard's verdict, the ladder with this head's highlighted row, and the deadline.
+    /// `decision_card` drops rano's ladder rows for this head's; nothing here preselects an option.
     pub(crate) fn decision_view(&self, d: &OpenDecision) -> card::DecisionCard {
         use letibot_sessionlog::event::{OnTimeout as T, OptionKind as K};
         card::DecisionCard {
@@ -255,7 +253,7 @@ impl App {
             self.dec_scroll = 0;
             return (content.to_vec(), 0);
         }
-        // One row of the viewport is the seam, and it is spent even at `room == 1` — a
+        // One row of the viewport is the seam, and it is spent even at `room == 1` - a
         // viewport whose whole height is the sentence saying how much is missing is the
         // honest shape of a screen with nowhere to put the content.
         let shown = room - 1;

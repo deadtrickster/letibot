@@ -90,11 +90,11 @@ impl App {
     /// question: it quotes the first, counts the rest and names the key. A question card put away with
     /// Esc is said first, because it holds a running call that lapses at its deadline.
     pub(crate) fn waiting_line(&self, w: usize) -> Vec<String> {
-        // **Folded away with alt-h** - the bottom edge counts them instead (`app/waiting.rs`).
+        // Folded away with alt-h - the bottom edge counts them instead (`app/waiting.rs`).
         if self.asks_folded() {
             return Vec::new();
         }
-        // **The operator's own command, its card put away** (R90.5) - the run is blocked on a
+        // The operator's own command, its card put away - the run is blocked on a
         // line and nothing on the screen said so once Esc had taken the card down.
         if let Some(p) = self.prompt.as_ref().filter(|_| self.prompt_away) {
             let asks = p
@@ -130,7 +130,7 @@ impl App {
                 ),
                 None => String::new(),
             };
-            // **Every other card put away here is counted too** (R90.26) - the line named one
+            // Every other card put away here is counted too - the line named one
             // and counted only the todo questions.
             let others = self
                 .away
@@ -154,7 +154,7 @@ impl App {
             } else {
                 format!(" ({})", more.join(", "))
             };
-            // `·` before the key, so the key hint is its own segment and a button (R90.33).
+            // `·` before the key, so the key hint is its own segment and a button.
             let said = format!(
                 "{} PUT AWAY: \"{}\"{clock}{more} · alt-a brings it back · alt-h hides",
                 if question { "QUESTION" } else { "PERMISSION" },
@@ -170,7 +170,7 @@ impl App {
         } else {
             None
         };
-        // **The row whose card is on the screen is not waiting to be opened** (R90.26): the line
+        // The row whose card is on the screen is not waiting to be opened: the line
         // said "alt-a to answer" about the card already up, and alt-a then did nothing.
         let front = self
             .open
@@ -190,7 +190,7 @@ impl App {
                     1 => String::new(),
                     n => format!(" (+{} more)", n - 1),
                 };
-                // `·` before the key, so the key hint is its own segment and a button (R90.33).
+                // `·` before the key, so the key hint is its own segment and a button.
                 format!(
                     "WAITING ON YOU: \"{}\" on `{}`{more} · alt-a to answer · alt-h hides",
                     first.question.trim(),
@@ -221,40 +221,22 @@ impl App {
         )
     }
 
-    /// The alarm line for the **unboxed** composer - the degenerate short-screen
-    /// path, where there is no border to pin a triangle to. The boxed path says
-    /// it with a `⚠` in the bottom edge's right corner and leaves the numbers to
-    /// `/status`; this names them, because on a screen this small the triangle
-    /// alone would be a fact with no way to read it.
+    /// The alarm line for the unboxed composer, the short-screen path with no border to pin a triangle to. The boxed path says it with
+    /// a `⚠` in the bottom edge's corner and leaves the numbers to `/status`; here the triangle alone would be unreadable.
     ///
-    /// It used to be all of them, plus the sequence numbers, plus the verbosity,
-    /// plus the twenty-one-character session id and the head id, on every frame:
+    /// Not all of them: no sequence numbers, verbosity,
+    /// twenty-one-character session id or head id, on every frame:
     ///
     /// ```text
     /// ╰─ seq 907 · rendered 900 · filtered 1 (normal) · dropped 0 · scrubbed 0 ·
     ///    resync 0 · s-1789023464202470853 h3 ─╯
     /// ```
     ///
-    /// Every one of those was added because something was measured going wrong,
-    /// and none of that is an argument for keeping them resident. §13.2b's rule is
-    /// that *an absent field and a zero field must not look the same when the
-    /// field is the disclosure* - which is a rule about the moment the field is
-    /// **read**, not about where it lives the rest of the time. `/status` is where
-    /// it is read, it says `dropped 0` explicitly, and it says what the counter
-    /// means, which the border never had room to.
-    ///
-    /// What stays here is the case a person must not have to go looking for: a
-    /// counter that has moved. In [`Role::Attention`], not the border's grey,
-    /// because a second colour inside a border reads as damage and this *is*
-    /// damage - that was the argument for painting it grey and it was the wrong
-    /// way round.
-    /// The disclosure line: the read mark, what this head suppressed, what the
-    /// daemon will never send, and what it stripped on the way.
-    ///
-    /// Ordered by how likely it is to matter, and truncated from the right, because
-    /// on an 80-column terminal the old line lost `dropped`, `scrubbed` and
-    /// `resync` to the ellipsis - the three numbers whose whole purpose is to be
-    /// impossible to miss. Anything nonzero is promoted to the front.
+    /// Each was added because something was measured going wrong, which does not argue for keeping them resident. §13.2b's rule is that
+    /// *an absent field and a zero field must not look the same when the field is the disclosure* is about when the field is read:
+    /// `/status` reads it, says `dropped 0` explicitly and says what the counter means. What stays here is a counter that has moved,
+    /// in [`Role::Attention`], not the border's grey: a second colour inside a border reads as damage and this is damage. The
+    /// disclosure line is ordered by how likely it is to matter and truncated from the right, with anything nonzero promoted to the front.
     pub(crate) fn status_line(&self, w: usize) -> String {
         if !self.alarmed() {
             return String::new();
@@ -263,7 +245,7 @@ impl App {
             "⚠ dropped {} · scrubbed {} · resync {}",
             self.dropped, self.scrubbed, self.resyncs
         );
-        // **Named, not only counted.** The other three are facts about what this head
+        // Named, not only counted. The other three are facts about what this head
         // did with what it was given; this one is a fact about the wire, and it is
         // the only one that means "you are running two different builds".
         if self.unreadable > 0 {
@@ -329,7 +311,7 @@ impl App {
         if let Some(said) = &self.auto_compact_off {
             row("auto-compact", "off".into(), said);
         }
-        // **A paused plan-check is the same kind of state**, and the same place: the fact a
+        // A paused plan-check is the same kind of state, and the same place: the fact a
         // person diagnosing *why has nothing asked about my plan* needs first.
         if let Some(until) = &self.nags_paused {
             row(
@@ -365,10 +347,9 @@ impl App {
                 "{} · {} retired{}",
                 self.notes.len(),
                 self.retired_notes(),
-                // A third number, because there is a third reason a note is not on the screen: the
-                // reader retired it, or it is not a row's news at all - a snapshot from before this
-                // window, or a diagnostic the edge carries. The zero case says nothing rather than
-                // "0 not drawn" on every attach.
+                // A third number, because a note may be off the screen for a third reason: the reader retired it, or it is not
+                // a row's news at all (a snapshot from before this window, or an edge diagnostic). The zero case says nothing,
+                // not "0 not drawn" on every attach.
                 match self.notes_before() {
                     0 => String::new(),
                     n => format!(" · {n} not drawn"),
@@ -423,7 +404,7 @@ impl App {
              the two apart, from the seq the daemon states on an `Accepted` or a \
              `Rejected`.",
         );
-        // **Present and zero, like every counter here.**
+        // Present and zero, like every counter here.
         row(
             "orphan",
             self.orphan_bodies.to_string(),
@@ -444,7 +425,7 @@ impl App {
              conversation is not different because of it.",
         );
 
-        // **What the last turn's ending measured.** §18.2's trap is that zero reuse is one number for
+        // What the last turn's ending measured. §18.2's trap is that zero reuse is one number for
         // a slot that did not hold the history and for a prompt of ours that diverged; the check is
         // the daemon's verdict on which, and the dialect names the template it was judged under.
         row(
@@ -598,7 +579,7 @@ impl App {
     }
 }
 
-/// **Time left on a question's clock, in whole seconds** - `45s`, `4m12s`, `1h05m`. Whole seconds
+/// Time left on a question's clock, in whole seconds - `45s`, `4m12s`, `1h05m`. Whole seconds
 /// rather than [`dur_human`]'s tenths, because this is a countdown a person reads at a glance and
 /// a figure that changes ten times a second is one nobody can read.
 pub(crate) fn time_left(ms: u64) -> String {

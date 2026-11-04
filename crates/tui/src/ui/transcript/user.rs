@@ -114,9 +114,9 @@ fn session_row(
                 .join("\n");
             (session_block(&folded, ts, cfg), children)
         }
-        // And anything else is ONE line a notice: a row no card and no fold accounts for used to be
+        // And anything else is ONE line a notice: a row no card and no fold accounts for would be
         // drawn as it arrived, a plan check or a parent's brief at six thousand lines. Each notice in
-        // it is now a line (`notice_card`), the whole row a click away.
+        // it is a line (`notice_card`), the whole row a click away.
         None => {
             let parts = notice_parts(text, subagents, job_tails, cols);
             let children = parts.iter().map(|(_, c)| c.clone()).collect();

@@ -1,4 +1,4 @@
-//! **The turn's status row**: what the model is doing - green while it goes, yellow when slow.
+//! The turn's status row: what the model is doing - green while it goes, yellow when slow.
 
 use crate::app::*;
 use crate::ui::render::{row, trim_to, visible_width};
@@ -6,7 +6,7 @@ use letibot_sessionlog::activity::Waiting;
 use rano::agent::turn_status::{Prefill, SLOW_AFTER_MS, TurnStatus};
 use rano::render::{Line, Role};
 
-/// **The fewest columns a transient is cut to** before the status row drops it instead: below
+/// The fewest columns a transient is cut to before the status row drops it instead: below
 /// this a cut sentence is an ellipsis with a word in front of it, which says nothing.
 pub(crate) const TRANSIENT_MIN: usize = 12;
 
@@ -43,7 +43,7 @@ impl App {
             slow: self.turn_slow(),
         };
         let mut line = status.line(w);
-        // **What this turn is holding, and a switch waiting for it to end** - the two facts
+        // What this turn is holding, and a switch waiting for it to end - the two facts
         // about NOW that are neither the phase nor the progress. Joined into ONE faint span so
         // a narrow row cuts the last word rather than losing a whole segment's separator.
         let mut extra: Vec<String> = Vec::new();
@@ -63,35 +63,21 @@ impl App {
         line
     }
 
-    /// **What this session is waiting on, one muted line** - `waiting on: job j8032 · monitor ci`.
+    /// What this session is waiting on, one muted line - `waiting on: job j8032 · monitor ci`.
     ///
-    /// The daemon's own list (`PROTOCOL_VERSION` 52), drawn where a turn's state is drawn because it
-    /// answers the same question: *is this session doing anything, and what*. The case it exists for
-    /// is the one no row of the transcript can say - a session whose turn has ended and which is
-    /// nonetheless going to act again on its own, because a job the plan depends on is still running.
+    /// The daemon's own list (`PROTOCOL_VERSION` 52), drawn where a turn's state is drawn. It exists for the case no transcript row can say:
+    /// a session whose turn has ended but which will act again on its own, because a job the plan depends on is still running.
     ///
-    /// **Only when no turn is running**, and that is not a layout detail: a turn's own row owns the
-    /// slot while it generates, and `Responding · 2m30s · …` plus a list of what is running is a row
-    /// that says the same thing twice. What a running turn is waiting on is legible in the jobs and
-    /// monitors panes; what an IDLE session is waiting on had nowhere to be said at all.
+    /// Only when no turn is running: a running turn's own row owns the slot, and listing what is running beside `Responding · 2m30s · …`
+    /// says the same thing twice. Empty for a quiet session and for a daemon older than 52, which keeps it invisible to a head talking to one.
     ///
-    /// **Empty for a quiet session**, and empty for a daemon older than 52 - which is what makes
-    /// this invisible to a head talking to one.
-    ///
-    /// # The words are the operator's report, measured 2026-10-27
-    ///
-    /// The line was [`letibot_sessionlog::activity::Activity::line`]'s - the daemon's labels,
-    /// joined - and the operator's screen said:
-    ///
+    /// The daemon's [`letibot_sessionlog::activity::Activity::line`] read, on the operator's screen:
     /// ```text
     /// waiting on: monitor letibot-gate-after-wired · child s-1793010881933039000-sub-1793225939092557000 · child s-1793010881933039000-sub-1793225939285082000 · child s-1793010881933039000-sub-1793225939482158000
     /// ```
     ///
-    /// Every fact in it is right and the line is useless: a session id is not a name a person can
-    /// use - the subagents pane calls that child `fix-login · …14688401` - and the three of them
-    /// push the monitor, the one thing the row was drawn for, off the end of a narrow screen. So
-    /// [`App::waiting_words`] names a child the way the pane names it and counts a kind that
-    /// repeats, and the singular forms (`job j8032`, `monitor ci`, `child …`) are unchanged.
+    /// A session id is not a name a person can use, and three of them push the monitor off a narrow screen.
+    /// [`App::waiting_words`] names a child the way the subagents pane does and counts a kind that repeats.
     fn activity_line(&self, w: usize) -> Line {
         let mut text = self.waiting_words();
         // A switch waiting for a turn reads here too, for the one idle case: a head that
@@ -274,7 +260,7 @@ impl App {
         out
     }
 
-    /// **The link is down and has been for less than [`LINK_IMPATIENT_MS`]**: the reason, for the
+    /// The link is down and has been for less than [`LINK_IMPATIENT_MS`]: the reason, for the
     /// status row. `None` while attached, and `None` once the head is impatient - from then on
     /// [`App::link_line`] says it, with how long and what to do.
     pub(crate) fn link_blip(&self) -> Option<&str> {

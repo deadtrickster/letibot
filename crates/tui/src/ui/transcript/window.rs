@@ -1,4 +1,4 @@
-//! **The conversation's window**: which rows of the transcript are on the screen, from the
+//! The conversation's window: which rows of the transcript are on the screen, from the
 //! anchor the reader holds or the bottom they follow.
 
 use crate::app::*;
@@ -86,7 +86,7 @@ impl App {
                     .iter()
                     .all(|c| matches!(c.state, CallState::Finished { .. }))
         });
-        // **Following the tail means showing its end.** A buffer that stopped short of the session is
+        // Following the tail means showing its end. A buffer that stopped short of the session is
         // a window the reader left behind, and drawn as if it followed it would put a row from
         // however long ago at the foot of the screen as the newest one.
         if self.anchor.is_none() && self.hist_ceiling.is_some() {
@@ -96,8 +96,8 @@ impl App {
         // frame's half of [`App::render_held`], which is where the bootstrap lives now so a scroll key between
         // frames can run the same two steps.
         self.render_held(room);
-        // **The one row `ctrl-t` can act on**, read once here rather than per row inside
-        // the walk below — and before the walk's own borrow of `self`, which is why it is
+        // The one row `ctrl-t` can act on, read once here rather than per row inside
+        // the walk below - and before the walk's own borrow of `self`, which is why it is
         // not beside the rest of the tail's inputs. See [`ItemCtx::payload_newest`].
         let newest_payload = self.newest_payload_row();
         // The rows the live pane is still drawing. An assistant row in this set does not draw its own unsettled
@@ -135,7 +135,7 @@ impl App {
                 .map(|t| t.appended.iter().cloned().collect())
                 .unwrap_or_default()
         };
-        // And the turn's rows — see the sibling set in `fill_backward_until`, and
+        // And the turn's rows - see the sibling set in `fill_backward_until`, and
         // [`TurnPane::turn_rows`] for the defect this distinction is.
         let turn_rows: std::collections::HashSet<String> = self
             .turn
@@ -203,11 +203,9 @@ impl App {
                     .unwrap_or_default(),
             );
         }
-        // **A window that stops short of the session draws nothing of its tail.** The live pane and the
-        // queued echo belong to the newest rows, and drawn under the last row this head has they would
-        // claim the working is at a row it is not at. See `below`, which is counted after the trims.
-        // And not when the walk has already carried the counts, the same guard the standalone push below carries:
-        // the two paths are two ways of drawing one marker, so a guard on one is a guard on neither.
+        // A window that stops short of the session draws nothing of its tail: the live pane and queued echo belong to the
+        // newest rows and would claim the working is where it is not. See `below`, counted after the trims. Nor when the
+        // walk already carried the counts: two paths drawing one marker need one guard between them.
         let live_joins = live.work() > 0
             && !superseded
             && !walk_carried_live
@@ -231,7 +229,7 @@ impl App {
             let painted = Marker::new(
                 live.calls,
                 live.think_lines,
-                // **No events: this marker stands for work with no row yet**, and an event is
+                // No events: this marker stands for work with no row yet, and an event is
                 // a row the rung DID hide. See [`COUNT_RUNGS`].
                 0,
                 true,
@@ -251,21 +249,20 @@ impl App {
         }
 
         // Scrolling up back-fills: a belt to `scroll_up`'s braces, catching anything that moved the scroll
-        // without a key — a click, a restore, a test setting `scroll` directly. It asks for a screen beyond
+        // without a key - a click, a restore, a test setting `scroll` directly. It asks for a screen beyond
         // `scroll`, as that key does.
         if self.scroll > 0 && self.hist_floor > 0 {
             self.fill_backward(self.scroll + room + TAIL_SLACK);
         }
-        // **The window has a budget, and everything this frame drew is in it.** Run after the walks
+        // The window has a budget, and everything this frame drew is in it. Run after the walks
         // and the fill above, so what is measured is what the head would go on holding.
         self.trim_held(room);
         // And the lines those rows were drawn as are a window too: the second bound, run last so it
         // measures everything the frame put in the buffer.
         self.trim_history(room);
-        // And when the reader has scrolled up past the oldest row this head holds, the rows above it
-        // are somebody else's: the daemon answers them, in pages. `hist_floor == 0` alone is
-        // *everything I hold is rendered*, which is also true at the tail of a short session, so
-        // the ask needs the reader to have left the tail as well.
+        // And when the reader has scrolled up past the oldest row this head holds, the daemon answers the rows above in
+        // pages. `hist_floor == 0` alone means *everything I hold is rendered*, also true at the tail of a short session,
+        // so the ask needs the reader to have left the tail as well.
         if self.hist_floor == 0 && (self.scroll > 0 || !self.following()) {
             self.ask_for_rows_above();
         }
@@ -280,7 +277,7 @@ impl App {
         // high-water mark and reported `97 of 4 rows`.
         let arrived = self.items.iter().filter(|i| i.item.is_some()).count();
         let outstanding = self.items.len() - arrived;
-        // **Nothing missing means the bulk announcement is complete**, so the trigger
+        // Nothing missing means the bulk announcement is complete, so the trigger
         // clears itself rather than leaving a line to be aged out by a clock.
         if outstanding == 0 {
             self.bulk = None;
@@ -299,16 +296,16 @@ impl App {
         // Read before the disjoint borrow below, for the same reason: it asks the rows
         // which announcements are already drawing an echo. See `App::bound_prompts`.
         let echoes_on_screen = self.echoes_on_screen();
-        // **What a click lifted, read before the frame borrows the history.** It is one field
-        // (`App::lift`) read against the run `payload_sel` names — see `App::lifted`, which is
-        // the one reader — and it is taken here because `hist_lines` is lent to the frame below.
+        // What a click lifted, read before the frame borrows the history. It is one field
+        // (`App::lift`) read against the run `payload_sel` names - see `App::lifted`, which is
+        // the one reader - and it is taken here because `hist_lines` is lent to the frame below.
         let lifted = self.lifted();
         // Disjoint field borrows, so the history can be lent to the frame while the
         // block caches are still being written to.
         let App {
             hist_lines,
             turn,
-            // **The anchor's own inputs** (R36), and the rung (R37). Taken apart here rather
+            // The anchor's own inputs, and the rung. Taken apart here rather
             // than read through `self` further down, because `hist_lines` is lent to the
             // frame below and a `&self` method would need the whole of it back.
             items,
@@ -332,10 +329,9 @@ impl App {
             segs.push(Seg::Borrowed(&gap));
         }
 
-        // **A window that stops short of the session draws nothing of its tail, and says where the
-        // tail is.** Two things put the tail below the window: rows let go of as lines (the ring) and
-        // rows let go of whole (the byte window a parked reader kept a screen of). Counted here, after
-        // the walks and the trims, so the seam and the pane are this frame's facts.
+        // A window that stops short of the session draws nothing of its tail, and says where the tail is. Rows let go of
+        // as lines (the ring) and whole (the byte window a parked reader kept a screen of) put the tail below the window.
+        // Counted here, after the walks and trims, so the seam and the pane are this frame's facts.
         let unheld = items.len().saturating_sub(self.hist_upto);
         let below = self.hist_ceiling.map_or(0, |_| unheld) + self.items_below;
         let parked = below > 0;
@@ -399,12 +395,12 @@ impl App {
                 // named, the line says so.
                 let mark = match claimed_by {
                     Some(_) => mark.to_string(),
-                    // **A prompt typed while the daemon boots runs once it has started**
-                    // (R92.2): nothing takes it before the worker runs.
+                    // A prompt typed while the daemon boots runs once it has started
+                    //: nothing takes it before the worker runs.
                     None if booting && mark == QUEUED => QUEUED_UNTIL_STARTED.to_string(),
                     None => queued_behind(mark, filling_now.as_deref()),
                 };
-                // **The split, at the one place the fact is known.** A remainder has a row
+                // The split, at the one place the fact is known. A remainder has a row
                 // drawing its head, so the rest of it belongs under that row; an entry nothing has
                 // taken waits at the tail until the daemon does.
                 let lines = queued_lines(&drawn, &cfg, &mark, open);
@@ -422,7 +418,7 @@ impl App {
             }
         }
 
-        // **The call cards this frame draws, and the call each row belongs to** — recorded here
+        // The call cards this frame draws, and the call each row belongs to - recorded here
         // and turned into window rows below, with every other `*_rows` record.
         let mut cards: Vec<(usize, String)> = Vec::new();
         if let Some(t) = turn
@@ -463,7 +459,7 @@ impl App {
         let waiting;
         if self.attaching {
             let elapsed = self.now_ms.saturating_sub(self.attach_started_ms);
-            // The cat, its trail, the sentence, the clock — and the way out once it is late
+            // The cat, its trail, the sentence, the clock - and the way out once it is late
             // (`ATTACH_IMPATIENT`): `rano::agent::screens::attaching`, which keeps the reasons
             // for each (the cat padded to its widest frame, alone on its row).
             let rows = row_strings(
@@ -522,8 +518,8 @@ impl App {
                     // held row near the end, and clearing the hold there would return the reader to following on a
                     // frame nobody asked for.
                 }
-                // **The row is not on the screen.** Its handling is above, before the frame
-                // borrowed the history — see `App::repair_anchor` — because saying so is a
+                // The row is not on the screen. Its handling is above, before the frame
+                // borrowed the history - see `App::repair_anchor` - because saying so is a
                 // note and a note is `&mut self`.
                 None => {
                     // A carry in flight, and the count must not be asked: the reader's row is named but has no body
@@ -543,27 +539,27 @@ impl App {
         let scrolled = *scroll;
         let end = total.saturating_sub(scrolled);
         let start = end.saturating_sub(room);
-        // **What the last frame drew**, for the key handler between frames — the same rule
-        // `dec_content_room` follows for the decision card. R36's key handler has to answer
+        // What the last frame drew, for the key handler between frames - the same rule
+        // `dec_content_room` follows for the decision card. The key handler has to answer
         // *where is the reader looking* and the only honest source is the glass.
         self.view_top = start;
         self.view_room = room;
-        // The borrow is over — nothing below reads `segs` — so what follows is the head's
+        // The borrow is over - nothing below reads `segs` - so what follows is the head's
         // own state rather than the frame's.
         let mut out = take_window(&segs, start, end);
-        // **Which of these rows are about a file**, for a click to open (see `file_rows`). Only
-        // the history's own lines are rows of the conversation with a span behind them — the
-        // live pane and the tail below them are not — so the map stops where `hist_lines` does.
+        // Which of these rows are about a file, for a click to open (see `file_rows`). Only
+        // the history's own lines are rows of the conversation with a span behind them - the
+        // live pane and the tail below them are not - so the map stops where `hist_lines` does.
         self.file_rows = self.file_rows_in(start, end);
-        // **And which of them are lines of the open payload window**, for a click to take the
-        // reader there (see `payload_rows`) — the same walk over the same spans, so the line a
+        // And which of them are lines of the open payload window, for a click to take the
+        // reader there (see `payload_rows`) - the same walk over the same spans, so the line a
         // click names is the line the frame drew.
         self.payload_rows = self.payload_rows_in(start, end);
-        // **And which are a job's completion notice**, for a click to open whole (see
-        // `notice_rows`) — the same walk, the same window.
+        // And which are a job's completion notice, for a click to open whole (see
+        // `notice_rows`) - the same walk, the same window.
         self.notice_rows = self.notice_rows_in(start, end);
-        // **And which of them are a finished subagent's line**, for a click to go to that child
-        // (`task_rows`) — the same walk, and the ids it carries are the drawing's own.
+        // And which of them are a finished subagent's line, for a click to go to that child
+        // (`task_rows`) - the same walk, and the ids it carries are the drawing's own.
         let tasks = self.task_rows_in(start, end);
         self.task_switches = tasks.iter().map(|(_, s)| s.clone()).collect();
         self.task_rows = tasks
@@ -571,7 +567,7 @@ impl App {
             .enumerate()
             .map(|(k, (y, _))| (*y, k))
             .collect();
-        // **And which are a red target's warning, drawn as one line** (`red_card`).
+        // And which are a red target's warning, drawn as one line (`red_card`).
         self.card_rows = self.card_rows_in(start, end);
         // And which of them are rows of a call the turn is still drawing: the live pane's cards, keyed by the
         // CALL and not by their text, which changes as the call goes from `Running` to `Finished`. See
@@ -581,9 +577,9 @@ impl App {
             .filter(|(line, _)| *line >= start && *line < end)
             .map(|(line, id)| (line - start, id))
             .collect();
-        // **And the clauses of the run markers**, for a click to open that kind (`runclick`).
+        // And the clauses of the run markers, for a click to open that kind (`runclick`).
         self.marker_rows = self.marker_rows_in(start, end);
-        // **And which of them are a picture's thumbnail rows**, for a click — or Enter — to open
+        // And which of them are a picture's thumbnail rows, for a click - or Enter - to open
         // the picture larger (`app::pictures`). Read off the same window and the same spans, so the
         // row a click lands on is the row the frame drew the picture in.
         let pictures = self.picture_rows_in(start, end);
@@ -593,7 +589,7 @@ impl App {
             .enumerate()
             .map(|(k, (y, _))| (*y, k))
             .collect();
-        // **And the live pane's own marker** — the turn in flight is drawn below the history, so
+        // And the live pane's own marker - the turn in flight is drawn below the history, so
         // its clauses are read off this frame's rows (`live_marker_rows`).
         let live = self.live_marker_rows(start, &out);
         self.marker_rows.extend(live);
@@ -617,8 +613,8 @@ impl App {
         if !self.following() {
             let behind = total - end;
             let last = out.len().saturating_sub(1);
-            // **The state, and the act that undoes it** — R29's rule for a disclosure, and
-            // R36's for the reader who cannot tell pinned from following.
+            // The state, and the act that undoes it - the rule for a disclosure, and
+            // for the reader who cannot tell pinned from following.
             out[last] = row(&rano::agent::screens::holding(behind), self.cfg.palette());
             // The banner took that row, so it is no longer a row of any file.
             self.file_rows.retain(|(r, _)| *r != last);
@@ -636,7 +632,7 @@ impl App {
 
 impl App {
     /// The prompt of the turn at line `top` of the history, as one pinned row, or `None` when the prompt's own
-    /// first line is still on screen. The turn is found from the row at the window's top by R36's span map,
+    /// first line is still on screen. The turn is found from the row at the window's top by the span map,
     /// walking back to the nearest row the person wrote.
     pub(crate) fn pinned_prompt(&self, top: usize) -> Option<String> {
         let at_top = self.spans.iter().rev().find(|sp| sp.at <= top)?;
@@ -661,7 +657,7 @@ impl App {
             }
         })?;
         // Still on screen: its first line is at or below the window's top. A prompt with no
-        // span at all is above the rows a tail frame rendered — off screen by definition.
+        // span at all is above the rows a tail frame rendered - off screen by definition.
         if self
             .spans
             .iter()
@@ -683,7 +679,7 @@ impl App {
     }
 }
 
-/// A run of body lines: history is **borrowed** from the head's own buffer, the
+/// A run of body lines: history is borrowed from the head's own buffer, the
 /// live tail is owned and rebuilt. See [`App::screen`] for why this is not one
 /// `Vec<String>`.
 pub(crate) enum Seg<'a> {
@@ -784,7 +780,7 @@ impl App {
         // The run `ctrl-t` opens, computed once per frame: the seam names the chord only on the run it acts on,
         // and asking per row would be a scan of the transcript for every row drawn.
         let newest_run = newest_unseen_run(items, *visibility, bound_prompts, live);
-        // **Where the window ends.** The ring's own end while it has rows let go, and the session's
+        // Where the window ends. The ring's own end while it has rows let go, and the session's
         // end once the budget `release_below` set is buying the reader the next screen of them: a
         // walk to `items.len()` with nothing stopped it would be the whole session.
         let stop = if *walk_ahead == usize::MAX {
@@ -826,8 +822,8 @@ impl App {
                             let n = &notes[*note_upto].1;
                             let lines = note_lines(cfg, n);
                             let popup = note_card(n).map(|(card, text, _)| {
-                                // R89: the session rows this card stands for, under its own
-                                // text — and the event said once
+                                // The session rows this card stands for, under its own
+                                // text - and the event said once
                                 // (`one_event::card_popup_text`).
                                 let text = crate::app::one_event::card_popup_text(
                                     &text,
@@ -957,7 +953,7 @@ impl App {
                 // [`hidden_run_marker`].
                 let joinable = unseen.is_some_and(|(start, _)| run_continues_prose(items, start));
                 let tight = unseen.is_some() && joinable;
-                // **A row of an OPEN run draws itself under that header**, and a row the click's
+                // A row of an OPEN run draws itself under that header, and a row the click's
                 // kind skips draws nothing (that is what `run_skips` is for). A CLOSED run's rows
                 // are not lexed at all, which is the whole point of the marker.
                 let absorbed_here = crate::app::one_event::is_absorbed(
@@ -1093,7 +1089,7 @@ impl App {
                             }
                         }
                     }
-                    // A row of an open run — its header was drawn at the run's first row — and
+                    // A row of an open run - its header was drawn at the run's first row - and
                     // a row of a closed one, which draws nothing.
                     Some(_) => (body_class, body),
                     None => (body_class, body),
@@ -1114,7 +1110,7 @@ impl App {
                     if hist_first_class.is_none() {
                         *hist_first_class = Some(class);
                     }
-                    // **And where this row's lines begin** (R36). Recorded here rather
+                    // And where this row's lines begin. Recorded here rather
                     // than derived later, because a separator's blank line belongs to no
                     // row and only this walk knows it pushed one.
                     spans.push(Span {
@@ -1129,7 +1125,7 @@ impl App {
                 *hist_upto += 1;
                 added += hist_lines.len() - before;
                 if added >= *walk_ahead && *hist_upto < items.len() {
-                    // **The window ends here.** The rows below are held and not drawn until the reader
+                    // The window ends here. The rows below are held and not drawn until the reader
                     // comes down to them: this frame's budget is a screen, not the session.
                     *hist_ceiling = Some(*hist_upto);
                     break;

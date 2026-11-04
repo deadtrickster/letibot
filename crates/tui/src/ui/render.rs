@@ -20,7 +20,7 @@ pub mod sgr {
     pub const ITALIC: &str = "\x1b[3m";
     /// Bold and italic in one sequence. `1;3` rather than two escapes because a
     /// second `SGR` for the same attribute pair is two transitions where one will do,
-    /// and a wrapped `***word***` pays that on every line.
+    /// and a wrapped `*word*` pays that on every line.
     pub const BOLD_ITALIC: &str = "\x1b[1;3m";
     pub const CYAN: &str = "\x1b[36m";
     pub const GREEN: &str = "\x1b[32m";
@@ -62,7 +62,7 @@ pub struct RenderConfig {
     /// closes with a plain reset. `Some(..)` is the whole reason the field exists: a reset is not a
     /// restore, so a heading or a code span in a themed block would close to the terminal default.
     pub base: Option<Role>,
-    /// **Hyperlinks (OSC 8) are on, and relative paths resolve against this** - the session's
+    /// Hyperlinks (OSC 8) are on, and relative paths resolve against this - the session's
     /// workspace. `None` is a terminal that does not speak them, and every pipe, replay and
     /// test: the output is then byte-for-byte what it always was.
     pub links: Option<String>,
@@ -87,7 +87,7 @@ impl Default for RenderConfig {
     }
 }
 
-/// **The images a reply's markdown names** - `![alt](target)` - as `(alt, target)`, in order,
+/// The images a reply's markdown names - `![alt](target)` - as `(alt, target)`, in order,
 /// local targets only: a URL is a picture this head would have to fetch, and it does not reach
 /// the network.
 pub fn markdown_images(text: &str) -> Vec<(String, String)> {
@@ -162,7 +162,7 @@ pub fn user_image(item_id: &str, part: usize) -> Option<(u32, Option<u32>, Optio
         .copied()
 }
 
-/// **A picture placed in cells**: its image id, the box it occupies, and the pixels it was cut
+/// A picture placed in cells: its image id, the box it occupies, and the pixels it was cut
 /// from, absent when the upload pass could not measure them.
 pub(crate) type PlacedPicture = (u32, u32, u32, (Option<u32>, Option<u32>));
 
@@ -207,7 +207,7 @@ pub fn picture_anchor(lines: &[String], from: usize, alt: &str, target: &str) ->
                 .flatten()
         })
         .map(|(i, _)| {
-            // **Out of the block it is in**: a reference drawn inside a code block's frame
+            // Out of the block it is in: a reference drawn inside a code block's frame
             // (`│` rows, closed by `└`) puts the picture under the frame, not inside it.
             let mut at = i + 1;
             while at < lines.len() && plain(&lines[at]).trim_start().starts_with('│') {
@@ -253,7 +253,7 @@ pub fn md_options(cfg: &RenderConfig, limit: usize) -> RenderOptions {
     }
 }
 
-/// **rano's markdown lines as the head's rows**: each one ANSI under the config's palette  -
+/// rano's markdown lines as the head's rows: each one ANSI under the config's palette  -
 /// the plain text and nothing else, byte for byte, under [`Palette::None`], which is what
 /// `--replay`, a pipe and CI compare.
 pub fn rows(lines: &[Line], p: Palette) -> Vec<String> {
@@ -408,7 +408,7 @@ impl BlockCache {
         limit: usize,
     ) -> (&[String], &[String]) {
         let p = cfg.palette();
-        // **Whether a link may be written** - a markdown link's label carries its URL (rano's
+        // Whether a link may be written - a markdown link's label carries its URL (rano's
         // `Run::link`), and a terminal that does not speak OSC 8 is given the label alone.
         let links = cfg.links.is_some();
         let key = Some((cfg.width, p, cfg.base, limit, links));
@@ -585,7 +585,7 @@ mod tests {
             !joined.contains("fn one"),
             "a row of a document nobody wrote survived:\n{joined}"
         );
-        // **And a document that only GREW keeps its rows** - the restart is for another
+        // And a document that only GREW keeps its rows - the restart is for another
         // document, not for growth. One more paragraph, the same cache: the text above it is
         // still on the frame and the new paragraph is drawn under it.
         let before = cache.lines(&other, &cfg, 40);
@@ -603,7 +603,7 @@ mod tests {
         );
     }
 
-    /// **A printed path becomes a span the terminal can open** (OSC 8) - and a span that is
+    /// A printed path becomes a span the terminal can open (OSC 8) - and a span that is
     /// not a path is left exactly as it was.
     #[test]
     fn a_paths_span_carries_the_link_the_terminal_opens() {

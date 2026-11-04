@@ -7,7 +7,7 @@ use crate::ui::render::row_strings;
 use letibot_sessionlog::event::QueueSnapshot;
 use rano::agent::pane::{self, PaneLines};
 
-/// **How long a heartbeat may be silent before the pane calls the owner STALE** - the daemon's
+/// How long a heartbeat may be silent before the pane calls the owner STALE - the daemon's
 /// lease lifetime (`mergequeue::lease::LEASE_TTL_MS`), so the pane's word and the daemon's
 /// takeover agree.
 pub(crate) const LEASE_STALE_MS: u64 = 90_000;
@@ -18,7 +18,7 @@ pub(crate) const REFRESH_MS: u64 = 5_000;
 /// How long a finished row counts as today's work - the window the edge's `landed` column reads.
 pub(crate) const RECENT_MS: u64 = 24 * 60 * 60 * 1000;
 
-/// **Is the review queue working on this row?** The daemon's own rule, in one place: the feed a
+/// Is the review queue working on this row? The daemon's own rule, in one place: the feed a
 /// plugin reads carries the answer (`live`), so a layer never has to guess *in flight* from a state
 /// word - a second copy of this predicate is a copy that drifts.
 pub(crate) fn review_open(state: &str) -> bool {
@@ -30,7 +30,7 @@ pub(crate) fn merge_open(state: &str) -> bool {
 }
 
 impl App {
-    /// **The snapshot's own "now", carried forward by this head's clock since it arrived.**
+    /// The snapshot's own "now", carried forward by this head's clock since it arrived.
     fn queue_now(&self) -> u64 {
         let since = self.now_ms.saturating_sub(self.queues_got_ms);
         self.queues.at_ms.saturating_add(since)
@@ -93,10 +93,9 @@ impl App {
         }
     }
 
-    /// **The edge's snapshot ages even when nothing moves** - a gate's step, a target turning red,
-    /// a landing falling out of the day's column - and the daemon only answers. Asked on the head's
-    /// own clock, open pane or not, so a standing nobody opened anything to see is not the one from
-    /// an hour ago.
+    /// The edge's snapshot ages even when nothing moves (a gate's step, a target turning red, a landing leaving the
+    /// day's column) and the daemon only answers. Asked on the head's own clock, open pane or not, so a standing
+    /// nobody opened is not an hour old.
     pub(crate) fn refresh_queues_on_the_clock(&mut self) {
         if self.queues_got_ms == 0 || self.skew_locked() {
             return;
@@ -181,7 +180,7 @@ impl App {
         row_strings(&lines.lines, self.cfg.palette())
     }
 
-    /// **Into the session of the reviewer working the row** - the row opened whole, else the one
+    /// Into the session of the reviewer working the row - the row opened whole, else the one
     /// under the cursor. A row nobody is reviewing says so and goes nowhere.
     pub(crate) fn go_to_reviewer(&mut self) -> Option<Action> {
         let review = match &self.queue_open {
@@ -208,7 +207,7 @@ impl App {
         self.switch_to(id)
     }
 
-    /// **How many stops the pane on the screen has** - the plugin view's, which is the only pane
+    /// How many stops the pane on the screen has - the plugin view's, which is the only pane
     /// there is. Zero is a pane the arrows have nothing to walk.
     pub(crate) fn queue_stop_count(&self) -> usize {
         self.queue_plugin_stops
@@ -221,7 +220,7 @@ impl App {
         self.queue_plugin_entry()
     }
 
-    /// **`scope`, resolved** against the snapshot's word about this session's repository.
+    /// `scope`, resolved against the snapshot's word about this session's repository.
     pub(crate) fn queue_filter(&self, scope: &QueueScope) -> Filter {
         match scope {
             QueueScope::All => Filter::Every,
@@ -239,13 +238,13 @@ impl App {
         }
     }
 
-    /// **The pane's copy, cut again** - after a snapshot lands or the scope changes.
+    /// The pane's copy, cut again - after a snapshot lands or the scope changes.
     pub(crate) fn rescope_queues(&mut self) {
         let f = self.queue_filter(&self.queue_scope);
         self.queues = scoped(&self.queues_all, &f);
     }
 
-    /// **`/queue all` and `/queue /PATH`** - the pane, on that scope. Opening it asks for a
+    /// `/queue all` and `/queue /PATH` - the pane, on that scope. Opening it asks for a
     /// fresh snapshot; switching an open pane's scope only re-cuts the one it has.
     pub(crate) fn queue_in(&mut self, scope: QueueScope) -> Option<Action> {
         self.queue_scope = scope;
@@ -300,13 +299,13 @@ pub(crate) fn mark_of(state: &str) -> (&'static str, rano::style::Role) {
     }
 }
 
-/// **`gate running on <sha> for Nm`** - the words for a gate in flight, from when it started.
+/// `gate running on <sha> for Nm` - the words for a gate in flight, from when it started.
 pub(crate) fn gate_running_words(sha: &str, for_ms: u64) -> String {
     let short: String = sha.chars().take(10).collect();
     format!("gate running on {short} for {}m", for_ms / 60_000)
 }
 
-/// **The gate each repository is running** (one at a time) - what its queued landings wait for.
+/// The gate each repository is running (one at a time) - what its queued landings wait for.
 /// The store has it: a `gating` target since its `checked_ms`, or a `gating` landing since its
 /// `state_ms`, rebased.
 pub(crate) fn gates_running(
@@ -338,30 +337,24 @@ pub(crate) fn gates_running(
 pub(crate) struct Standings {
     pub(crate) review: usize,
     pub(crate) merging: usize,
-    /// **Open and stopped** - the rows a person has to move (see [`standings_where`]).
+    /// Open and stopped - the rows a person has to move (see [`standings_where`]).
     pub(crate) stuck: usize,
-    /// **Landed inside the last day** - not for ever.
+    /// Landed inside the last day - not for ever.
     pub(crate) landed: usize,
     /// Target branches that are red - the emergency.
     pub(crate) red: usize,
-    /// **Target branches nobody could judge** - timed out or blocked. Nothing lands on them
+    /// Target branches nobody could judge - timed out or blocked. Nothing lands on them
     /// either, so they are an alarm too, not a quiet edge.
     pub(crate) unjudged: usize,
-    /// **The step the target's own gate is on**, when this repository's target is `gating` -
+    /// The step the target's own gate is on, when this repository's target is `gating` -
     /// `(step, of)`. The edge is one line that must still fit at eighty columns, so two numbers.
     pub(crate) gate: Option<(usize, usize)>,
 }
 
 impl Standings {
-    /// The words, and a count of nothing is not a word: a repository whose only live fact is a red
-    /// target reads `1 red` and not four zeros. The order is the pane's and `red` leads it, because
-    /// the edge is cut from its right end. The gate's step rides in the merge column, and the edge
-    /// drops it rather than the counts when the whole does not fit ([`App::box_bottom`]).
-    ///
-    /// **What the numbers are about is the first thing said**, because the edge is a person's only
-    /// sight of the queue until they open the pane: `queue:` and then one noun per count, and the
-    /// longest stand of six still fits inside an eighty-column edge (see
-    /// `the_longest_standings_fit_on_an_eighty_column_edge`).
+    /// The words: a count of nothing is not a word, so a repository whose only live fact is a red target reads `1 red`,
+    /// not four zeros. `red` leads, as the edge is cut from its right end; the gate's step is dropped before the counts
+    /// when the whole does not fit ([`App::box_bottom`]). See `the_longest_standings_fit_on_an_eighty_column_edge`.
     pub(crate) fn words(&self) -> Option<String> {
         let mut words: Vec<String> = Vec::new();
         if self.red > 0 {
@@ -373,9 +366,9 @@ impl Standings {
         for (n, word) in [
             (self.review, "in review"),
             (self.merging, "to land"),
-            // **Rows a person has to move** - the store's `stuck`, said as what it wants.
+            // Rows a person has to move - the store's `stuck`, said as what it wants.
             (self.stuck, "stuck"),
-            // **`done`, not `landed`**: the edge's whole line has to fit eighty columns (see
+            // `done`, not `landed`: the edge's whole line has to fit eighty columns (see
             // `the_longest_standings_fit_on_an_eighty_column_edge`), and the day's successes are
             // the one column that asks nothing of the reader.
             (self.landed, "done"),
@@ -425,7 +418,7 @@ pub(crate) fn standings_where(
         }
         match r.state.as_str() {
             "waiting" | "reviewing" => s.review += 1,
-            // **`cannot_decide` is here and not in the live columns**: the store calls it
+            // `cannot_decide` is here and not in the live columns: the store calls it
             // terminal *until a person rules*, and a row waiting on a person is what this column
             // is for.
             "blocked" | "cannot_decide" => s.stuck += 1,
@@ -455,7 +448,7 @@ pub(crate) fn standings_where(
     s
 }
 
-/// **Whose queues the pane shows** - `/queue` is this session's repository; `/queue all` every
+/// Whose queues the pane shows - `/queue` is this session's repository; `/queue all` every
 /// repository's; `/queue /PATH` the one at that path.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) enum QueueScope {
@@ -476,14 +469,14 @@ impl QueueScope {
     }
 }
 
-/// **A scope, resolved against what the daemon said about this session.**
+/// A scope, resolved against what the daemon said about this session.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Filter {
     /// Every repository - asked for, or a daemon too old to say which is this session's.
     Every,
     /// The queues' key of this session's repository.
     Repo(String),
-    /// **The repositories of a folder that is one project of several** - the edge shows each.
+    /// The repositories of a folder that is one project of several - the edge shows each.
     Repos(Vec<String>),
     /// A path the operator named: a row's repository is it, or holds it.
     Path(std::path::PathBuf),
@@ -503,7 +496,7 @@ impl Filter {
     }
 }
 
-/// **The snapshot cut to the repositories `f` keeps** - every list, so the pane's feed and the
+/// The snapshot cut to the repositories `f` keeps - every list, so the pane's feed and the
 /// edge read one scoped copy.
 pub(crate) fn scoped(q: &QueueSnapshot, f: &Filter) -> QueueSnapshot {
     if *f == Filter::Every {
@@ -553,7 +546,7 @@ pub(crate) fn scoped(q: &QueueSnapshot, f: &Filter) -> QueueSnapshot {
     }
 }
 
-/// **Which queue the pane is showing** - the operator's *"separate views for review and merge
+/// Which queue the pane is showing - the operator's *"separate views for review and merge
 /// queues"*. `tab` switches; the feed carries the word so the layer draws the right half first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum QueueView {
@@ -590,7 +583,7 @@ pub(crate) enum Verb {
     Veto,
     Restart,
     Rm,
-    /// **The row's TARGET gated again** - `/queue regate /REPO TARGET`, about the
+    /// The row's TARGET gated again - `/queue regate /REPO TARGET`, about the
     /// target the row lands on rather than the row itself.
     Regate,
 }
@@ -607,7 +600,7 @@ impl Verb {
     }
 }
 
-/// **Whether a verb moves this row - the daemon's own rule** (`mergequeue::verbs`), so a verb it
+/// Whether a verb moves this row - the daemon's own rule (`mergequeue::verbs`), so a verb it
 /// would refuse is said here and not sent. `Err` is why not.
 pub(crate) fn verb_moves(verb: Verb, row: &Selected) -> Result<(), String> {
     let ok = match (verb, row) {
@@ -633,7 +626,7 @@ pub(crate) fn verb_moves(verb: Verb, row: &Selected) -> Result<(), String> {
             "waiting" | "reviewing" | "blocked" | "rejected" | "cannot_decide"
         ),
         (Verb::Regate, _) => true,
-        // **`rm` is the way out of a row that is going nowhere, `gating` included**. The daemon's
+        // `rm` is the way out of a row that is going nowhere, `gating` included. The daemon's
         // `withdraw_merge` takes a `gating` landing too, and a landing whose row has left
         // `gating` does not land whatever its gate said, so the offer is not a lie.
         (Verb::Rm, Selected::Merge(m)) => matches!(

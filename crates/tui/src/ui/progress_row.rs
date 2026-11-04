@@ -14,7 +14,7 @@ use rano::render::{Line, Role, Span};
 /// carry, narrow enough to leave the label and the numbers room on an 80-column terminal.
 pub(crate) const PROGRESS_BAR_COLS: usize = 12;
 
-/// **One progress, in pieces the row can give up one at a time**: the advice first, then the
+/// One progress, in pieces the row can give up one at a time: the advice first, then the
 /// clock, then the counts, then the bar and its percentage - and never the label.
 #[derive(Debug, Clone)]
 pub(crate) struct Progress {
@@ -31,7 +31,7 @@ pub(crate) struct Progress {
     pub(crate) advice: Option<String>,
     /// When it started, on this head's clock - the row's clock, and the order between two.
     pub(crate) since_ms: u64,
-    /// Everything the block used to say, for the click.
+    /// Everything the block says, for the click.
     pub(crate) detail: String,
     /// The block carried prose the row form never shows, so the row is a click target even when
     /// every piece fits.
@@ -125,7 +125,7 @@ impl App {
                 role: Role::Pending,
                 bar: Some(Prefill {
                     total: *total,
-                    // **Settled, not computed**: a landed row is `█`, never the prefill's `▓`
+                    // Settled, not computed: a landed row is `█`, never the prefill's `▓`
                     // being-worked-on glyph - nothing here is being computed.
                     cache: *done,
                     processed: *done,
@@ -140,7 +140,7 @@ impl App {
         }
         if let Some(c) = &self.compacting {
             let label = format!("Compacting half {} of {}", c.half, c.halves);
-            // **Reading, then writing** - the two phases of a fold, minutes apart. While the half's
+            // Reading, then writing - the two phases of a fold, minutes apart. While the half's
             // prompt is read the bar measures it; once the model writes, the count of what it has
             // written is the only number there is.
             let (bar, counts) = if c.processed > 0 && c.processed < c.prompt_tokens {
@@ -184,7 +184,7 @@ impl App {
             let total = b.announced.max(missing) as u64;
             let arrived = total - missing as u64;
             if now_ms.saturating_sub(b.at_ms) >= BODY_PATIENCE {
-                // **What this head OBSERVED, and no cause it cannot see** - it was told these rows
+                // What this head OBSERVED, and no cause it cannot see - it was told these rows
                 // exist and the bodies never arrived. The ids first, because the row is cut from
                 // the right; all of them in the click and on `/status`.
                 let mut ids: Vec<&str> = b.ids.iter().map(String::as_str).collect();
@@ -235,7 +235,7 @@ impl App {
         out
     }
 
-    /// **The progress the status row shows, and what a click on it would open** - `None` when
+    /// The progress the status row shows, and what a click on it would open - `None` when
     /// nothing is in progress. The last one to start, its forms fullest first, and the detail of
     /// every one that is live.
     pub(crate) fn progress_shown(&self) -> Option<(Vec<Line>, String, bool)> {

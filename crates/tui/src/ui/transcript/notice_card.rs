@@ -12,9 +12,8 @@
 //! ! ledger_chain_mismatch · row 41's head is not the one that was stored · click for details
 //! ```
 //!
-//! A shape it has not been taught falls back to a lead, the first clause and `click for details`.
-//! Nothing is lost: the popup is the text verbatim, and a reader that does not recognise a shape
-//! answers `None` rather than guessing which half of a text is the fact.
+//! A shape it has not been taught falls back to a lead, the first clause and `click for details`. The popup is the text verbatim, and a
+//! reader that does not recognise a shape answers `None` rather than guessing which half is the fact.
 
 use rano::style::Role;
 
@@ -59,7 +58,7 @@ fn tokens(n: u64) -> String {
     }
 }
 
-/// **A line from its parts**: the lead (drawn in `role`), the facts, and the hint last.
+/// A line from its parts: the lead (drawn in `role`), the facts, and the hint last.
 fn card(lead: &str, role: Role, parts: Vec<String>, title: String) -> Card {
     let mut all = vec![lead.to_string()];
     all.extend(parts.into_iter().filter(|p| !p.is_empty()));
@@ -75,7 +74,7 @@ fn gist(text: &str) -> String {
     first_clause(first)
 }
 
-/// **The one line for a session row no card reader and no fold accounts for** - never `None`.
+/// The one line for a session row no card reader and no fold accounts for - never `None`.
 pub(crate) fn session_notice(text: &str) -> Card {
     const READERS: &[fn(&str) -> Option<Card>] = &[
         length_cap,
@@ -100,12 +99,12 @@ pub(crate) fn session_notice(text: &str) -> Card {
         .unwrap_or_else(|| generic(text))
 }
 
-/// **Whether a `\n\n` group opens a notice of its own** - where [`notices`] splits a row.
+/// Whether a `\n\n` group opens a notice of its own - where [`notices`] splits a row.
 fn opens_notice(group: &str) -> bool {
     const OPENINGS: &[&str] = &[
         "Tool call ",
         "message from your parent session `",
-        // **And the other direction** - a child answering, a peer, the session hosting a review.
+        // And the other direction - a child answering, a peer, the session hosting a review.
         // Without it the row still drew (as the generic notice card) but its words were clipped
         // and its sender was not named.
         "message from session `",
@@ -126,7 +125,7 @@ fn opens_notice(group: &str) -> bool {
         || crate::ui::transcript::line_cards::opens_card(group)
 }
 
-/// **A row's notices**: split at each blank line that a notice opens after. A group that does
+/// A row's notices: split at each blank line that a notice opens after. A group that does
 /// not open one belongs to the notice above it - its paragraph, which the popup shows.
 pub(crate) fn notices(text: &str) -> Vec<&str> {
     let mut out = Vec::new();
@@ -151,7 +150,7 @@ fn tagged(text: &str) -> Option<(&str, &str)> {
         .then_some((tag, rest))
 }
 
-/// **The fallback**: the tag (or `notice`), and the first clause of what follows.
+/// The fallback: the tag (or `notice`), and the first clause of what follows.
 pub(crate) fn generic(text: &str) -> Card {
     let (lead, body) = match tagged(text) {
         Some((tag, rest)) => (tag.to_string(), rest),
@@ -166,7 +165,7 @@ pub(crate) fn generic(text: &str) -> Card {
     )
 }
 
-/// **A lead and a whole short text** - a note this head wrote as one sentence for one line
+/// A lead and a whole short text - a note this head wrote as one sentence for one line
 /// already (`not run`, an answer): flattened, not cut at a clause, and cut to the width by
 /// [`Card::cut`].
 pub(crate) fn whole_parts(lead: &str, role: Role, text: &str) -> Card {
@@ -175,7 +174,7 @@ pub(crate) fn whole_parts(lead: &str, role: Role, text: &str) -> Card {
 }
 
 /// `Tool call X was cut off and not run. …`, once a call - the length cap's salvage. The words
-/// before `R93.D3` opened with `was not executed` and are still in every stored transcript.
+/// once opened with `was not executed` and are still in every stored transcript.
 fn length_cap(text: &str) -> Option<Card> {
     const AFTER: &[&str] = &[" was cut off and not run", " was not executed"];
     let mut by: Vec<(String, usize)> = Vec::new();
@@ -232,8 +231,8 @@ fn todo_check(text: &str) -> Option<Card> {
         }
     } else {
         let bullet = items.first()?;
-        // **Whose row it is is the bullet's own tail**, ` — yours` / ` — the operator's` / ` —
-        // Parent <id>` / ` — the merge queue's`; the advice under it is prose, and prose is
+        // Whose row it is is the bullet's own tail, ` - yours` / ` - the operator's` / ` -
+        // Parent <id>` / ` - the merge queue's`; the advice under it is prose, and prose is
         // reworded.
         let (item, owner, in_progress) = owner_of(bullet);
         parts.push(short(&first_clause(&flat(item)), PART));
@@ -259,7 +258,7 @@ fn todo_check(text: &str) -> Option<Card> {
         if in_progress {
             parts.push("in progress".to_string());
         }
-        // A notice written before R93.B1 carries the count in its head and still says it. The
+        // An older notice carries the count in its head and still says it. The
         // daemon writes none now, so a later one is counted by the rows it names - which is what
         // the card is drawn from, and the only count that notice really has.
         match head.rsplit_once('(').and_then(|(_, m)| {
@@ -275,7 +274,7 @@ fn todo_check(text: &str) -> Option<Card> {
     Some(card("todo", Role::Attention, parts, title))
 }
 
-/// `T2 · the launcher — yours` → the item, whose row it is, and whether it is in progress. The
+/// `T2 · the launcher - yours` → the item, whose row it is, and whether it is in progress. The
 /// tail is the daemon's own word for the author, so it is read and not guessed at.
 fn owner_of(bullet: &str) -> (&str, Option<&'static str>, bool) {
     let b = bullet.trim();
@@ -296,7 +295,7 @@ fn owner_of(bullet: &str) -> (&str, Option<&'static str>, bool) {
     (item.trim_end(), whose, in_progress)
 }
 
-/// `[parent] ...` - what the parent session said to this child, from after `R93.C11`. The relation
+/// `[parent] ...` - what the parent session said to this child. The relation
 /// is the tag and the id is gone, so the card names the edge and not a session to act on.
 fn from_the_parent(text: &str) -> Option<Card> {
     let said = text.strip_prefix("[parent] ")?;
@@ -438,8 +437,8 @@ pub(crate) fn monitor_said(bullet: &str) -> Option<(String, String)> {
     Some((name.to_string(), said.trim().to_string()))
 }
 
-/// `[monitor] N watch(es) fired:` and its bullets, when the fold did not take it - or, since
-/// R93.C8, one `[monitor] \`name\` fired: why.` / `… expired without firing.` line per watch.
+/// `[monitor] N watch(es) fired:` and its bullets, when the fold did not take it - or
+/// one `[monitor] \`name\` fired: why.` / `… expired without firing.` line per watch.
 fn monitor(text: &str) -> Option<Card> {
     let rest = text.strip_prefix("[monitor] ")?;
     let mut bullets: Vec<(String, String)> = rest
@@ -472,7 +471,7 @@ fn monitor(text: &str) -> Option<Card> {
 }
 
 /// `Your last 4 rounds returned nothing new. …` - the progress nudge. The sentence before
-/// `R93.D4` opened `The harness is watching what your tool calls return` and is still in every
+/// once opened `The harness is watching what your tool calls return` and is still in every
 /// stored transcript.
 fn progress(text: &str) -> Option<Card> {
     let said = match text.strip_prefix("Your last ") {
@@ -576,7 +575,7 @@ fn overthinking(text: &str) -> Option<Card> {
     ))
 }
 
-/// **A System row's one line** - `system · compacted summary (18.7k chars)`, or its first clause.
+/// A System row's one line - `system · compacted summary (18.7k chars)`, or its first clause.
 pub(crate) fn system_notice(text: &str, bootstrap: bool) -> Card {
     let n = text.chars().count();
     let said = if bootstrap {
@@ -604,7 +603,7 @@ pub(crate) fn system_notice(text: &str, bootstrap: bool) -> Card {
 /// the code in the code's register - rano's marks survive a pipe and a light theme where colour
 /// does not - and a compaction's figures read rather than its sentence repeated.
 pub(crate) fn warning_notice(code: &str, detail: &str, mark: &str, role: Role) -> Card {
-    // **The code once.** A detail that opens with its own code (`compacted: 958397 → …`) would
+    // The code once. A detail that opens with its own code (`compacted: 958397 → …`) would
     // say it twice on a line that leads with it.
     let body = detail
         .trim()
@@ -653,7 +652,7 @@ struct Compaction {
     cut_off: bool,
 }
 
-/// **The facts in a compaction's sentence**, or `None` when the text is not that shape.
+/// The facts in a compaction's sentence, or `None` when the text is not that shape.
 fn compaction_of(body: &str) -> Option<Compaction> {
     let (before, rest) = body.split_once(" → ")?;
     let before: u64 = before.trim().parse().ok()?;
@@ -787,8 +786,8 @@ mod tests {
         let nothing = "[todo check] this turn is finished and NOTHING can start — every item left \
                        waits on another:\n  - `review-main` waits on the child `s-x`\nunblock one \
                        of these rather than starting something new: finish a row.";
-        // **And a notice from the daemon as it writes them now** - no count in the head, because
-        // R93.B1 took it out - is counted by the rows it names, which is all it has.
+        // And a notice from the daemon as it writes them now - no count in the head, because
+        // the daemon writes none - is counted by the rows it names, which is all it has.
         let current = "[todo check] this turn is finished and one item is not done:\n  \
                        - review-agent/a-pass (entry s-1): Your branch is cut from x\n  \
                        - review-agent/b-pass (entry s-2): and this one\n  \
@@ -807,7 +806,7 @@ mod tests {
         );
     }
 
-    /// R93.C8: the one-line-per-watch shape draws one card, the first watch named.
+    /// The one-line-per-watch shape draws one card, the first watch named.
     #[test]
     fn a_monitor_line_per_watch_is_one_card() {
         let text =
@@ -887,16 +886,14 @@ mod tests {
         }
     }
 
-    /// **One honest line per compaction** (R73): the size before and after in the daemon's own
-    /// unit, what the summary stands in for, what was kept verbatim and what was dropped at the
-    /// seam - the four facts a reader needs from a compaction, and the hint last. The bodies here
-    /// are the shapes `compaction_said` (`crates/harnessd/src/sessions.rs`) writes; that sentence
-    /// is the contract, and its own tests hold the other end of it.
+    /// One honest line per compaction: the size before and after in the daemon's unit, what the summary stands in
+    /// for, what was kept verbatim and what was dropped at the seam, then the hint. The bodies are the shapes
+    /// `compaction_said` (`crates/harnessd/src/sessions.rs`) writes; that sentence is the contract.
     #[test]
     fn a_compaction_draws_the_size_the_unit_and_what_it_kept_and_dropped() {
         let ones = |detail: &str| warning_notice("compacted", detail, "·", Role::Faint).line;
         // The unit is the daemon's word and it is carried whole: `deepseek tokens`, never the
-        // bare `tokens` the line used to print beside a provider's number.
+        // bare `tokens` printed beside a provider's number.
         assert_eq!(
             ones(
                 "compacted: 958397 → 100005 deepseek tokens, kept 12 item(s) verbatim plus a \
@@ -936,7 +933,7 @@ mod tests {
             "compacted · 958k → 100k tokens · kept 12 items + a 13.5k-char summary · nothing \
              dropped · summary CUT OFF · click for details"
         );
-        // **A sentence this head cannot read is not guessed at**: an old log's figures still
+        // A sentence this head cannot read is not guessed at: an old log's figures still
         // draw, and one with no figures at all falls back to the words it has.
         assert_eq!(
             ones("compacted: 940188 → 9181 tokens, on transcript s#t25."),
@@ -948,10 +945,9 @@ mod tests {
         );
     }
 
-    /// **The facts a compaction's line draws are read from its own sentence, never from the summary
-    /// under it.** The detail ends with the summary body, which is model prose, and the reader's
-    /// `contains` tests read the whole thing: a summary that said "nothing dropped" or "CUT OFF"
-    /// rewrote what the daemon reported about the fold.
+    /// The facts a compaction's line draws are read from its own sentence, never from the summary under it. The detail
+    /// ends with the summary body, which is model prose, and a summary saying "nothing dropped" or "CUT OFF" must not
+    /// rewrite what the daemon reported about the fold.
     #[test]
     fn the_summary_body_under_a_compaction_cannot_rewrite_its_counts() {
         let detail = "compacted: 958397 → 100005 tokens, kept 12 item(s) verbatim plus a \

@@ -1,10 +1,8 @@
-//! **A red merge target, drawn as ONE line** - and the whole of what the daemon said one click
+//! A red merge target, drawn as ONE line - and the whole of what the daemon said one click
 //! away, in the popup the job card opens.
 //!
-//! The operator, pasting what one red `main` drew - a `target_red` warning that wrapped into a
-//! paragraph with the gate's output under it, and then the session's own `EMERGENCY - ` notice to
-//! the model with the same output again in a fenced block: *"please make all this: … a one-line
-//! similar to job - with a popup"*. Two big blocks for one event.
+//! A `target_red` warning wrapped into a paragraph with the gate's output, then the session's `EMERGENCY - ` notice repeated that output: two
+//! big blocks for one event; the ask was a one-line card like the job's, with a popup.
 //!
 //! # The lines
 //!
@@ -13,38 +11,23 @@
 //! ‼ main RED at 60bf819c · firecode · bin/firecode test failed (step 1/1) · review red-main-60bf819c3342 · click for details
 //! ```
 //!
-//! The first is the hub warning (`target_red`, raised by the queue's `target_went_red`); the
-//! second is the notice the project's root session reads (`mergequeue::notices::health`), which
-//! also numbers the failing step and names the red tip's review. Both are cut to the width with
-//! the head's `…`, and both are drawn in the failure register, the queue pane's `‼ EMERGENCY`.
-//! The two siblings of the session notice - the gate TIMED OUT, and the gate CANNOT JUDGE the tip
-//! because its own setup failed - get the same line with their own word, and so do the
-//! `target_red` warnings the red tip's reviewer raises (`finds `main` broken at …`, with or
-//! without a fix branch). A gate whose step was KILLED before it judged the code - at the gate's
-//! memory cap, or by a signal - is unjudged, not red, and gets its own line, from the session
-//! notice and from the `gate_killed` hub warning alike (`gate_setup_failed`'s warning is read the
-//! same way):
+//! The first is the hub warning (`target_red`, from the queue's `target_went_red`); the second is the notice the project's root session reads
+//! (`mergequeue::notices::health`), which also numbers the failing step and names the red tip's review. Both are cut to the width and drawn
+//! in the failure register. The gate TIMED OUT and CANNOT JUDGE siblings, and the reviewer's `target_red` warnings, get the same line with
+//! their own word; a step KILLED before it judged (memory cap or signal) is unjudged, not red, and gets its own line, also from `gate_killed`:
 //!
 //! ```text
 //! ‼ main UNJUDGED at 9562d70c · letibot · gate killed at its memory cap · click for details
 //! ```
 //!
-//! The daemon raises nothing when the target turns green again (it only
-//! withdraws the stale reviews), so there is no recovery line to pair with these.
+//! The daemon raises nothing when the target turns green again, so there is no recovery line to pair with these.
 //!
 //! # Only what this head can read is folded
 //!
-//! The card mechanism is `line_cards`' - this module is the red target's reader in its registry
-//! ([`SESSION`], [`WARNING`]). `folded_notice`'s rule and `compact_notice`'s: the head of the text must be exactly one of
-//! the daemon's openings, with a target, a sha and a repository in it. Anything else is `None`
-//! and the row is drawn as it was before this existed. **But the parser keys on the stable
-//! parts only** - the opening, the target, the sha, the repository, the failing step - and
-//! tolerates sentences it does not know after them: the daemon is expected to grow a sentence
-//! about what the landing tree lacks, and a new sentence must not cost the operator the one
-//! line. Nothing is lost by tolerating it: the line is a summary, and the popup is the text
-//! verbatim.
-//!
-//! The record is untouched: the model reads the daemon's words, every one of them.
+//! The card mechanism is `line_cards`'; this module is the red target's reader in its registry ([`SESSION`], [`WARNING`]). The head of the text
+//! must be exactly one of the daemon's openings, with a target, a sha and a repository; anything else is `None`. The parser keys on the
+//! stable parts only and tolerates sentences after them, so a new daemon sentence does not cost the operator the line. The record is
+//! untouched: the model reads the daemon's words.
 
 use rano::style::Role;
 
@@ -53,7 +36,7 @@ use crate::ui::transcript::line_cards::{CLICK, Card, SessionKind, WarningKind, f
 /// The mark the line opens with - the queue pane's own for an emergency.
 pub(crate) const ALARM: &str = "‼";
 
-/// **The last words of a session notice** - `TOOL_WAYS`' closing clause in
+/// The last words of a session notice - `TOOL_WAYS`' closing clause in
 /// `mergequeue::notices`, which every `health` notice ends with. A row of several notices is
 /// split after it.
 const NOTICE_END: &str = "the operator, whose decision it is.";
@@ -72,10 +55,10 @@ pub(crate) enum Trouble {
     Killed,
 }
 
-/// **The words a killed gate's evidence opens with** - `mergequeue::gate::GATE_KILLED`.
+/// The words a killed gate's evidence opens with - `mergequeue::gate::GATE_KILLED`.
 const GATE_KILLED: &str = "the gate's step was killed before it could judge the code";
 
-/// **What killed the gate, as the line says it** - read from the evidence's first sentence:
+/// What killed the gate, as the line says it - read from the evidence's first sentence:
 /// the gate's memory cap (`killed_at_cap_words`), or anything else (a signal from outside).
 fn killed_by(evidence: &str) -> String {
     if evidence.contains("KILLED at the gate's memory cap") {
@@ -85,7 +68,7 @@ fn killed_by(evidence: &str) -> String {
     }
 }
 
-/// **One red (or unjudged) target, as the daemon's text says it.**
+/// One red (or unjudged) target, as the daemon's text says it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RedTip {
     pub(crate) trouble: Trouble,
@@ -142,7 +125,7 @@ impl RedTip {
         format!("{ALARM} {} {word} at {short}", self.target)
     }
 
-    /// **The whole line, uncut**: the head, the repository's name, the failing step, the review
+    /// The whole line, uncut: the head, the repository's name, the failing step, the review
     /// or the verdict, and where the rest is.
     pub(crate) fn line(&self) -> String {
         let mut parts = vec![self.head()];
@@ -181,7 +164,7 @@ impl RedTip {
         parts.join(" · ")
     }
 
-    /// **The card this tip is drawn as**: the head in the failure register.
+    /// The card this tip is drawn as: the head in the failure register.
     pub(crate) fn card(&self) -> Card {
         Card::new(self.line(), 0, &self.head(), Role::Failure, self.title())
     }
@@ -253,7 +236,7 @@ pub(crate) fn warning_tip(detail: &str) -> Option<RedTip> {
     Some(tip)
 }
 
-/// **The opening paragraph of a session notice**, read: `mergequeue::notices::health`'s three
+/// The opening paragraph of a session notice, read: `mergequeue::notices::health`'s three
 /// openings. Only the first paragraph is read for the target, the sha and the repository, so a
 /// sentence added after it changes nothing.
 fn session_head(text: &str) -> Option<RedTip> {
@@ -289,7 +272,7 @@ fn session_head(text: &str) -> Option<RedTip> {
     Some(tip)
 }
 
-/// **An unjudged target's hub warning, read** - `gate_killed` and `gate_setup_failed`, both
+/// An unjudged target's hub warning, read - `gate_killed` and `gate_setup_failed`, both
 /// `mergequeue::notices`' shape: `` `main` at SHA in REPO is UNJUDGED, not red: EVIDENCE. ``
 pub(crate) fn unjudged_warning_tip(detail: &str) -> Option<RedTip> {
     let r = detail.strip_prefix('`')?;
@@ -310,7 +293,7 @@ pub(crate) fn unjudged_warning_tip(detail: &str) -> Option<RedTip> {
     Some(tip)
 }
 
-/// **A session notice, read** - the opening, and from anywhere in it the failing step
+/// A session notice, read - the opening, and from anywhere in it the failing step
 /// (`The failing step is 1 of 1, `bin/firecode test`.`) and the red tip's review
 /// (`` first in the review queue (`red-main-…`) ``).
 pub(crate) fn notice_tip(text: &str) -> Option<RedTip> {
@@ -340,7 +323,7 @@ pub(crate) fn notice_tip(text: &str) -> Option<RedTip> {
     Some(tip)
 }
 
-/// **The red target in the card registry** (`line_cards`): a session notice opens with one of
+/// The red target in the card registry (`line_cards`): a session notice opens with one of
 /// `health`'s three openings and ends with [`NOTICE_END`].
 pub(crate) const SESSION: SessionKind = SessionKind {
     opens: opens_notice,
@@ -349,13 +332,13 @@ pub(crate) const SESSION: SessionKind = SessionKind {
     carries: &[],
 };
 
-/// **And its hub warning**, `target_red`.
+/// And its hub warning, `target_red`.
 pub(crate) const WARNING: WarningKind = WarningKind {
     codes: &["target_red"],
     read: warning_card,
 };
 
-/// **An unjudged target's hub warnings**, `gate_killed` and `gate_setup_failed`.
+/// An unjudged target's hub warnings, `gate_killed` and `gate_setup_failed`.
 pub(crate) const UNJUDGED_WARNING: WarningKind = WarningKind {
     codes: &["gate_killed", "gate_setup_failed"],
     read: unjudged_warning_card,

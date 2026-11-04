@@ -1,4 +1,4 @@
-//! **The turn in flight, drawn**: what the model is thinking and writing right now, the calls it
+//! The turn in flight, drawn: what the model is thinking and writing right now, the calls it
 //! has proposed, and the turn's footer once it ends.
 
 use crate::app::*;
@@ -27,7 +27,7 @@ pub(crate) fn push_turn_pane<'a>(
     // is answered from (`App::call_rows`). A card is drawn here and nowhere else, so this is the one
     // place that knows where it landed; `before` counts the `Seg`s already pushed.
     let mut cards: Vec<(usize, String)> = Vec::new();
-    // **What a click on the live marker lifted** (`App::live_open`): that kind is drawn open while
+    // What a click on the live marker lifted (`App::live_open`): that kind is drawn open while
     // the turn runs, whatever the rung hides.
     let show_thinking = lifted == Some(Show::Thinking);
     let show_calls = lifted == Some(Show::Tools);
@@ -139,7 +139,7 @@ pub(crate) fn push_turn_pane<'a>(
             // only when the turn ends, so the screen grows by a line at the moment the reader looks.
             segs.push(Seg::Owned(vec![String::new()]));
         }
-        // **The rung's own count of the work in flight, after the reply it follows.**
+        // The rung's own count of the work in flight, after the reply it follows.
         if !superseded
             && vis.hides_the_working()
             && live.work() > 0
@@ -149,7 +149,7 @@ pub(crate) fn push_turn_pane<'a>(
             let painted = Marker::new(
                 live.calls,
                 live.think_lines,
-                // No events — see the sibling call above.
+                // No events - see the sibling call above.
                 0,
                 true,
                 marker_carries_live(live),

@@ -1,4 +1,4 @@
-//! **What the head draws**, one file per widget. Every function here reads the app
+//! What the head draws, one file per widget. Every function here reads the app
 //! (`crate::app`) and returns rows of text; none of it changes the app's state or talks to
 //! the terminal (`rano::term`).
 

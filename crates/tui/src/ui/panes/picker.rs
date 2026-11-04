@@ -1,4 +1,4 @@
-//! **The pickers**: sessions, and a setting's values - drawn by `rano::agent::picker` from
+//! The pickers: sessions, and a setting's values - drawn by `rano::agent::picker` from
 //! the daemon's session list and the setting's choices this head holds.
 
 use crate::app::*;
@@ -17,7 +17,7 @@ impl App {
     /// [`App::session_rows`], the order `picker_sel` counts in) was drawn on. rano draws two
     /// lines per session, so a click maps through its stop rows rather than counting rows.
     pub(crate) fn picker_layout(&self, w: usize) -> (Vec<String>, Vec<std::ops::Range<usize>>) {
-        // **The list is the plugin's when there is one** (`app::sessions_pane`, the built-in
+        // The list is the plugin's when there is one (`app::sessions_pane`, the built-in
         // `sessions` layer); the head's own tree is the way out, and it draws through the same
         // primitive with the same frame - one door, `App::picker_list`.
         let content = self.picker_list(w).content;
@@ -78,7 +78,7 @@ impl App {
                 "green: this box holds a key for it; the others ask for one when you take them"
                     .to_string()
             }),
-            // **Why the card is up, first, when the head opened it** - the model a message was
+            // Why the card is up, first, when the head opened it - the model a message was
             // about to go to could not be reached (`app::reach`). Under the list with the other
             // lines, not in the title: the click arithmetic counts the title as one row.
             consequence: self

@@ -6,7 +6,7 @@ use rano::render::Line;
 use rano::style::Palette;
 use rano::width::text::RESET;
 
-/// **One rano line as the head's row string.** See the module header.
+/// One rano line as the head's row string. See the module header.
 pub fn row(l: &Line, p: Palette) -> String {
     let open = l.style.look(p).sgr();
     if open.is_empty() {
@@ -57,7 +57,7 @@ mod tests {
         );
     }
 
-    /// A register line closes each coloured span back to its register — the composer's edge
+    /// A register line closes each coloured span back to its register - the composer's edge
     /// included, whose legend separators stay faint.
     #[test]
     fn a_register_restores_after_every_coloured_span() {

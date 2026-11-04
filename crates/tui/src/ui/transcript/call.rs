@@ -1,4 +1,4 @@
-//! **A tool call's card**: the verb and subject, how it ended, and its body - drawn by
+//! A tool call's card: the verb and subject, how it ended, and its body - drawn by
 //! `rano::agent::card` from this head's call state.
 
 use crate::app::*;
@@ -46,7 +46,7 @@ pub(crate) fn display_outcome(o: &letibot_transcript::ToolOutcome) -> Outcome {
     }
 }
 
-/// **How a call ended, in one word** - and there is no longer a second spelling of this in the
+/// How a call ended, in one word - and there is no longer a second spelling of this in the
 /// head. See [`Outcome::word`] for the two that agreed on nothing but the word `failed`, and
 /// for why the card is the side that moved.
 pub(crate) fn outcome_word(o: &letibot_transcript::ToolOutcome) -> &'static str {
@@ -184,7 +184,7 @@ pub(crate) fn detected_diff_rows(
     out
 }
 
-/// **A settled decision, in rano's words** - who decided, how, and the two reasons a decision
+/// A settled decision, in rano's words - who decided, how, and the two reasons a decision
 /// carries (the decider's basis, and the guard model's advice when one was asked).
 pub(crate) fn settled_decision(d: &letibot_sessionlog::view::SettledDecision) -> SettledDecision {
     use letibot_sessionlog::event::DecisionOutcome as O;
@@ -202,9 +202,9 @@ pub(crate) fn settled_decision(d: &letibot_sessionlog::view::SettledDecision) ->
     }
 }
 
-/// **What the guard model said**, in rano's words: whether it was consulted at all (R11 - an
+/// What the guard model said, in rano's words: whether it was consulted at all (an
 /// unconsulted verdict is nobody speaking), who, how fast, what it would do and why, what it
-/// cited, and the non-answer it gave when it gave one (R12).
+/// cited, and the non-answer it gave when it gave one.
 pub(crate) fn model_advice(a: &letibot_sessionlog::event::ModelAdvice) -> Advice {
     Advice {
         consulted: a.consulted,

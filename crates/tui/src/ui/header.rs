@@ -12,14 +12,11 @@ impl App {
     ///   ▌ the cache question  ~/Projects/letibot   2/4 · glm-5.3-flash · 41.2k ctx · 92% cached · 45 tok/s · 12.3s · 1.2k out
     /// ```
     ///
-    /// `cached` is cached over THIS prompt (`f_sim`, never `f_keep`, which needs the previous
-    /// turn's entry); the last three fields are the last turn's rate, wall time and output, and
-    /// this is their only home - a second copy of a number is where a reader stops to check they
-    /// agree. It degrades by deletion: the tail is built in priority order and the path is
-    /// shortened from its left first, because a path is recognisable from its end.
-    // A test's door, and `cfg(test)` says so: its only readers are two assertions in
-    // `app/tests/session.rs`. The drawing goes through `header_row`, which is where the click
-    // target is read off what was drawn.
+    /// `cached` is cached over THIS prompt (`f_sim`, never `f_keep`); the last three fields are the last turn's rate, wall time and
+    /// output, and this is their only home. It degrades by deletion: the tail is built in priority order and the path is shortened
+    /// from its left first, because a path is recognisable from its end.
+    // A test's door: `cfg(test)` says so, its only readers are two assertions in `app/tests/session.rs`. Drawing goes through
+    // `header_row`, which reads the click target off what was drawn.
     #[cfg(test)]
     pub(crate) fn header_line(&self, w: usize) -> String {
         self.header_row(w).0
@@ -52,7 +49,7 @@ impl App {
         (crate::ui::render::row(&line, self.cfg.palette()), path)
     }
 
-    /// **The header's facts, in rano's words** — `rano::agent::header` lays them out (most
+    /// The header's facts, in rano's words - `rano::agent::header` lays them out (most
     /// valuable first, dropped from the end until the name fits; the name, the parent and the
     /// workspace in one quiet register; the repository's segments in their own colours).
     pub(crate) fn header_view(&self) -> Header {
@@ -108,7 +105,7 @@ impl App {
                     .filter(|u| u.prompt_tokens > 0)
                     .map(|u| (u.prompt_tokens, u.cached_tokens, self.usage_cache_measured)),
             };
-        // **The meter.** Beside the token count, because that is where the
+        // The meter. Beside the token count, because that is where the
         // question "what is this costing me" is already being asked.
         let spent_micros = self.spent_seen.then_some(self.spent_micros);
         // A percentage nobody measured is refused, the rule the rate beside it is held to: a
@@ -131,14 +128,14 @@ impl App {
             // ROUND ends, and a round ends at every tool call, so its wall-ms restarts inside one
             // turn. The composer row is the one clock then; `tok/s` and the out-count stay as they are.
             duration_ms = (!self.turn_busy() && tm.wall_ms > 0).then_some(tm.wall_ms);
-            // And how much the answer was — the last of the turn's numbers, and
+            // And how much the answer was - the last of the turn's numbers, and
             // the reason an ordinary ending leaves the body with no footer line
             // at all.
             out_tokens = (u.predicted_tokens > 0).then_some(u.predicted_tokens);
         }
         use crate::gitfield::GitRole as R;
         Header {
-            // **One label, and only for a subagent: `subagent of <parent>`**, named from the
+            // One label, and only for a subagent: `subagent of <parent>`, named from the
             // daemon's own list (`parent_session_id`) and only then: a session whose brief this
             // head does not hold draws no label rather than a guess.
             subagent_of: self
@@ -209,7 +206,7 @@ impl App {
             .file_name()
             .map(|f| f.to_string_lossy().into_owned())
             .unwrap_or_default();
-        // A name leads; a short id does not — before the first message (which titles the
+        // A name leads; a short id does not - before the first message (which titles the
         // session) the folder is the more useful word to find a tab by.
         match (titled, folder.is_empty()) {
             (_, true) => label,

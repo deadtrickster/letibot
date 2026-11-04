@@ -16,7 +16,7 @@ use crate::ui::*;
 /// What every card's line ends with: the row is a summary, and the popup is the text.
 pub(crate) const CLICK: &str = "click for details";
 
-/// **One notice, read** - what a card draws for it.
+/// One notice, read - what a card draws for it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Card {
     /// The whole line, uncut: `review · agent/x · could not decide · BUT … · click for details`.
@@ -28,7 +28,7 @@ pub(crate) struct Card {
     pub(crate) title: String,
 }
 
-/// **A line of a compact row**, cut to its width: a card's (with its accent) or a job card's or
+/// A line of a compact row, cut to its width: a card's (with its accent) or a job card's or
 /// a fold's (with none).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CardLine {
@@ -91,7 +91,7 @@ impl Card {
     }
 }
 
-/// **A kind of session notice this head draws as a card.**
+/// A kind of session notice this head draws as a card.
 pub(crate) struct SessionKind {
     /// Whether `text` opens with one of this kind's notices - read from its first words only.
     pub(crate) opens: fn(&str) -> bool,
@@ -105,7 +105,7 @@ pub(crate) struct SessionKind {
     pub(crate) read: fn(&str) -> Option<Card>,
 }
 
-/// **A kind of hub warning this head draws as a card**: the codes it is raised under, and the
+/// A kind of hub warning this head draws as a card: the codes it is raised under, and the
 /// reader of its detail.
 pub(crate) struct WarningKind {
     pub(crate) codes: &'static [&'static str],
@@ -133,12 +133,12 @@ fn kind_of(text: &str) -> Option<&'static SessionKind> {
     SESSION_KINDS.iter().find(|k| (k.opens)(text))
 }
 
-/// **Whether a text opens with a notice a card reads** - where `notice_card` splits a row.
+/// Whether a text opens with a notice a card reads - where `notice_card` splits a row.
 pub(crate) fn opens_card(text: &str) -> bool {
     kind_of(text).is_some()
 }
 
-/// **Where a row's first notice ends**, when the row opens with a card: `(the notice, the rest,
+/// Where a row's first notice ends, when the row opens with a card: `(the notice, the rest,
 /// its kind)`. See the module docs for the rule.
 pub(crate) fn split_card(text: &str) -> Option<(&str, &str, &'static SessionKind)> {
     let kind = kind_of(text)?;
@@ -162,13 +162,13 @@ pub(crate) fn split_card(text: &str) -> Option<(&str, &str, &'static SessionKind
     })
 }
 
-/// **The card a session row opens with**, read.
+/// The card a session row opens with, read.
 pub(crate) fn session_card(text: &str) -> Option<Card> {
     let (notice, _, kind) = split_card(text)?;
     (kind.read)(notice)
 }
 
-/// **The card a hub warning is drawn as**, or `None` for a code or a detail no card reads (the
+/// The card a hub warning is drawn as, or `None` for a code or a detail no card reads (the
 /// note is then drawn as it always was).
 pub(crate) fn warning_card(code: &str, detail: &str) -> Option<Card> {
     WARNING_KINDS
@@ -177,7 +177,7 @@ pub(crate) fn warning_card(code: &str, detail: &str) -> Option<Card> {
         .find_map(|k| (k.read)(detail))
 }
 
-/// **The popup's top edge** for a card's text - a session row's or a warning's detail (whose
+/// The popup's top edge for a card's text - a session row's or a warning's detail (whose
 /// code the popup no longer has, so every warning reader is asked; each reads only its own
 /// shape) - and the role it is drawn in.
 pub(crate) fn popup_title(text: &str) -> Option<(String, Role)> {
@@ -217,7 +217,7 @@ pub(crate) fn flat(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// **The sentences of a flattened text**: ended by `. `, `; `, `! ` or `? `, trimmed.
+/// The sentences of a flattened text: ended by `. `, `; `, `! ` or `? `, trimmed.
 pub(crate) fn sentences(text: &str) -> Vec<&str> {
     let mut out = Vec::new();
     let mut start = 0;
@@ -240,7 +240,7 @@ pub(crate) fn sentences(text: &str) -> Vec<&str> {
     out
 }
 
-/// **A sentence's first clause** - cut at the first `, and` / `, so` / `, which` / `: ` / ` - `
+/// A sentence's first clause - cut at the first `, and` / `, so` / `, which` / `: ` / ` - `
 /// far enough in to be a clause, and a cut clause says so with `…`.
 pub(crate) fn first_clause(sentence: &str) -> String {
     /// A clause shorter than this is not the reason yet (`BUT, as`, `So: `).

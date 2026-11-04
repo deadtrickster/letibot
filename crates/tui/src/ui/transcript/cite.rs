@@ -1,4 +1,4 @@
-//! **A reply's citations, put into the fences that name them** - the head's half of
+//! A reply's citations, put into the fences that name them - the head's half of
 //! `letibot_harnessd::citations`.
 //!
 //! The model wrote an empty fence labelled `path:start-end`; the daemon read those lines when the
@@ -7,11 +7,8 @@
 //! label grows a note when there is something to say: the daemon could not read the lines, or
 //! the file on this machine no longer says what it said.
 //!
-//! **Which fences those are is [`letibot_transcript::citation`]'s rule, not a second copy of it
-//! here.** The daemon scans the same text with the same function, so a citation it recognised is
-//! a citation this fills - including the one-liner (` ```a/b.go:2-3``` `, opener and closer on one
-//! line), which this head used to read as a block whose label had the closer glued onto it and so
-//! left empty.
+//! Which fences those are is [`letibot_transcript::citation`]'s rule, not a second copy. The daemon scans the same text with the same
+//! function, so a citation it recognised is one this fills - including the one-liner (` ```a/b.go:2-3``` `).
 
 use std::borrow::Cow;
 use std::path::Path;
@@ -22,7 +19,7 @@ use letibot_transcript::citation;
 /// What a citation's label says when the file on disk no longer has the lines it cited.
 pub(crate) const DRIFTED: &str = "changed since the reply";
 
-/// **`text` with every cited fence filled**, or `text` itself when it cites nothing. Each empty
+/// `text` with every cited fence filled, or `text` itself when it cites nothing. Each empty
 /// fence whose label is a citation takes the next citation with that label; one the daemon sent
 /// nothing for is left as written, and so is every block with something in it.
 pub(crate) fn fill<'t>(text: &'t str, cits: &[Citation], workspace: &str) -> Cow<'t, str> {
@@ -87,7 +84,7 @@ fn block(fence: &str, c: &Citation, workspace: &str) -> String {
     s
 }
 
-/// **Whether the file on this machine no longer has the lines cited** - `false` when it cannot
+/// Whether the file on this machine no longer has the lines cited - `false` when it cannot
 /// be read here at all (a remote daemon, a VM's copy): no comparison is not a difference.
 pub(crate) fn drifted(c: &Citation, workspace: &str) -> bool {
     if c.lines.is_empty() || workspace.is_empty() && !Path::new(&c.path).is_absolute() {
@@ -165,7 +162,7 @@ mod tests {
         );
     }
 
-    /// **An unclosed fence does not take the closer of the block below it**, and the well-formed
+    /// An unclosed fence does not take the closer of the block below it, and the well-formed
     /// block is still filled - the head reads fences by the same rule the daemon does.
     #[test]
     fn an_unclosed_fence_does_not_swallow_the_citation_below_it() {
@@ -205,7 +202,7 @@ mod tests {
         );
     }
 
-    /// **The file on disk is compared, and a citation it no longer matches is marked.**
+    /// The file on disk is compared, and a citation it no longer matches is marked.
     #[test]
     fn a_citation_the_file_no_longer_matches_is_marked() {
         let dir = std::env::temp_dir().join(format!("letibot-drift-{}", std::process::id()));

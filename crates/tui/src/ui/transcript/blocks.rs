@@ -1,4 +1,4 @@
-//! **The person's own rows**: their prompts, the session's banner, a queued line not yet sent.
+//! The person's own rows: their prompts, the session's banner, a queued line not yet sent.
 
 use crate::app::*;
 use crate::ui::render::{RenderConfig, row_strings};
@@ -133,21 +133,21 @@ pub(crate) fn folded_notice_rows(
     /// the thing reported. One per opening, and named as phrases rather than by position, so a row
     /// whose shape changed stops folding instead of losing the half it did not recognise.
     const PROMISES: &[&str] = &[
-        // A completion's closing, `harnessd`'s `JOB_CLOSING` and `TASK_CLOSING` (R93.C1/C2: it
-        // used to be a paragraph promising "you do not need to wait for it").
+        // A completion's closing, `harnessd`'s `JOB_CLOSING` and `TASK_CLOSING`
+        // An older paragraph promised "you do not need to wait for it".
         "Output: `job_output` ",
         "Full answer: `task_result` ",
-        // The closing before R93.C1/C2, still in every stored transcript from before it.
+        // The older closing, still in stored transcripts.
         "you do not need to wait for it",
         // The plan's nudge, whose two closings are the operator's row and the model's own. One
         // phrase covers both because it is the phrase both closings contain, and a row left out of
         // `todo_write` stays on the board, so a model's own row is retired by marking it done.
         "mark it done with `todo_write`",
-        // **An orphan child's completion** (R89 item 13): told to this session because the one
+        // An orphan child's completion: told to this session because the one
         // that started it has stopped. `job_card::CLOSINGS` has the same sentence for `[job]`, so
         // the two folds agree about it.
         "This session is told because the one that started it cannot be:",
-        // R93.C5's closing, which names the starter that has stopped instead.
+        // The later closing, which names the starter that has stopped instead.
         "(Started by ",
     ];
     let mut out: Vec<(String, Option<String>)> = Vec::new();
@@ -168,11 +168,9 @@ pub(crate) fn folded_notice_rows(
             continue;
         }
         let (head, rest) = group.split_once('\n')?;
-        // The noun a folded line names itself with, and the separator between it and the fact: a
-        // job and a child are collected by an id, so their bullets are backticked handles.
-        //
-        // **A plan check folds to nothing** (R89 item 1): a line per item is a screenful for one
-        // plan, so it is `notice_card::todo_check`'s one line, and the whole check is its popup.
+        // The noun a folded line names itself with, and the separator: a job and a child are collected by an id, so
+        // their bullets are backticked handles. A plan check folds to nothing - a line per item is a screenful - so it
+        // is `notice_card::todo_check`'s one line, and the whole check is its popup.
         let (who, sep): (&str, Option<&str>) = if head.starts_with("[job] ") {
             ("Job ", Some(" "))
         } else if head.starts_with("[task] ") {
@@ -217,7 +215,7 @@ pub(crate) fn folded_notice_rows(
                                 Some(s) => format!("{} · {said}", subagent_asked(s)),
                                 None => said.to_string(),
                             };
-                            // **The handle is the session**, whatever the line is called: a named
+                            // The handle is the session, whatever the line is called: a named
                             // child is drawn by its name and its short id, and the id is what a
                             // click has to name.
                             (format!("{name}{sep}{said}"), Some(id.to_string()))
@@ -231,7 +229,7 @@ pub(crate) fn folded_notice_rows(
             } else if PROMISES.iter().any(|p| line.contains(p)) {
                 promised = true;
             } else if promised && super::job_card::is_waiting_line(line) {
-                // **The plan rows that wait on this completion**, which the daemon writes after
+                // The plan rows that wait on this completion, which the daemon writes after
                 // the promise: kept, without its instruction to the model.
                 out.push((super::job_card::folded_waiting(line), None));
             } else {
@@ -260,7 +258,7 @@ pub(crate) fn split_child_label(label: &str) -> (Option<&str>, &str) {
 }
 
 pub(crate) fn user_block(text: &str, ts: u64, cfg: &RenderConfig) -> Vec<String> {
-    // **The renderer sanitises its own input** (§3.1), so a caller cannot forget: rano's
+    // The renderer sanitises its own input (§3.1), so a caller cannot forget: rano's
     // block cleans the text before it is wrapped. The operator's own keystrokes cannot carry a
     // control byte - the decoder hands back `Key::Char` - but a *paste* can.
     let folded = fold_operator(text);
@@ -335,35 +333,20 @@ pub(crate) fn fold_cells(text: &str) -> Option<String> {
 ///   ▌ queued · also bump the retry budget
 /// ```
 ///
-/// The block sits at the tail of the body - the place its row will occupy the
-/// moment the step boundary appends it - so a message typed mid-turn never leaves
-/// the screen: it changes from `queued` to a timestamped row in place. Dim text
-/// rather than the raised block, because the raised block says "this is in the
-/// conversation" and until the boundary it is not; the tag is what says what is
-/// true instead, in [`Role::Pending`], the colour the spinner already uses for
-/// something in flight.
-/// **The mark on an echo: `queued` only while nothing is drawing it.**
+/// The block sits at the tail of the body, where its row will land at the step boundary, so a message typed mid-turn never leaves the
+/// screen. Dim text rather than the raised block, which says "this is in the conversation"; the tag says what is true, in [`Role::Pending`].
+/// The mark on an echo: `queued` only while nothing is drawing it.
 ///
-/// R2, and the operator's own order: *"my message | your line | and only then unqueued."* The reply
-/// streams (`Delta` carries its text) while the prompt's row is announced in a frame that carries
-/// **no** text, its body following later - so a surface that waits for the body to stop saying
-/// `queued` is showing the answer to a question it has not drawn yet.
+/// The operator's own order: *"my message | your line | and only then unqueued."* The reply streams while the prompt's row is announced
+/// in a frame with no text, so a surface that waits for the body to stop saying `queued` answers a question it has not drawn yet.
 ///
-/// **`unconfirmed` is the honest word for that window, and it is not a weakening.** The words are on
-/// the screen - a row is drawing them - and what the head still owes is the BODY: whether the row's
-/// own text will match what was bound. So the three states stay three: `queued` (nothing has it),
-/// `unconfirmed` (a row has it and the body is coming), unmarked (it landed).
+/// `unconfirmed` is the honest word for that window, not a weakening: the words are on the screen and the head still owes the BODY.
+/// Three states stay three: `queued` (nothing has it), `unconfirmed` (a row has it, the body is coming), unmarked (it landed).
 ///
-/// **One function because this was two spellings and they disagreed.** The tail asked
-/// `claimed_by.is_some() || unconfirmed` while the WALK drew every bound row as `QUEUED` outright,
-/// so fixing one left the other drawing the stale mark - and it was the row's own line the operator
-/// saw under a streaming reply. MEASURED in
-/// `a_prompt_stops_claiming_to_be_queued_when_its_row_is_announced`.
-///
-/// `drawn` is *is something on this screen drawing these words*: true for the walk, which is
-/// drawing the row itself, and `claimed_by.is_some()` for the tail, which is drawing a remainder of
-/// it. Free-standing rather than a method because the tail computes it inside the frame's borrow,
-/// where only the cloned `unconfirmed` is in hand.
+/// One function because the tail asked `claimed_by.is_some() || unconfirmed` while the WALK drew every bound row as `QUEUED`, so fixing
+/// one left the other drawing the stale mark (see `a_prompt_stops_claiming_to_be_queued_when_its_row_is_announced`). `drawn` is *is
+/// something on this screen drawing these words*: true for the walk, and `claimed_by.is_some()` for the tail. Free-standing, as the tail
+/// computes it inside the frame's borrow.
 pub(crate) fn echo_mark(unconfirmed: &[String], text: &str, drawn: bool) -> &'static str {
     // The snapshot's doubt outranks everything: the head cannot tell *still coming* from
     // *replaced*, so it keeps saying so.
@@ -379,7 +362,7 @@ pub(crate) fn echo_mark(unconfirmed: &[String], text: &str, drawn: bool) -> &'st
     QUEUED
 }
 
-/// **The mark on a prompt typed while the daemon is still starting** (R92.2): no worker takes it
+/// The mark on a prompt typed while the daemon is still starting: no worker takes it
 /// until the daemon has started, and a bare `queued` read like a daemon that stopped listening.
 pub(crate) const QUEUED_UNTIL_STARTED: &str = "queued — runs when the daemon has started";
 

@@ -1,7 +1,6 @@
-//! The skills this box has: the name, where it was found and its one line. Enter opens the
-//! skill's file in the editor, `s` hands its body to the session. The label is what lets a reader
-//! weigh a skill, and the prompt's index carries the same one, so the pane draws the daemon's rows
-//! unaltered.
+//! The skills this box has: name, where it was found, and its one line. Enter opens the skill's file in the
+//! editor, `s` hands its body to the session. The pane draws the daemon's rows unaltered, as the prompt's index
+//! carries the same label.
 
 use crate::app::*;
 use rano::agent::pane::{self, PaneLines};
@@ -11,7 +10,7 @@ use rano::style::Role;
 use std::ops::ControlFlow;
 
 impl App {
-    /// The skills pane's rows, and the record of where each stop landed — which is what the
+    /// The skills pane's rows, and the record of where each stop landed - which is what the
     /// arrows scroll by, never arithmetic over the list they drew from.
     pub(crate) fn skills_lines(&mut self, w: usize) -> Vec<String> {
         let (content, stops) = self.skills_view(w);
@@ -53,7 +52,7 @@ impl App {
         (out, stops)
     }
 
-    /// **The pane row the cursor is on**, read off the record of where each row was DRAWN —
+    /// The pane row the cursor is on, read off the record of where each row was DRAWN -
     /// the standing pane's rule, and for its reason: arithmetic over a list the pane may have
     /// wrapped differently is a scroll that lands somewhere else.
     pub(crate) fn skills_row_of(&self) -> usize {

@@ -1,4 +1,4 @@
-//! **Waiting, measured**: how long an unfilled announcement may wait and how big a fill must be
+//! Waiting, measured: how long an unfilled announcement may wait and how big a fill must be
 //! to be drawn. The fill, fold and announced-rows progress itself is one line of the status row
 //! now (`ui::progress_row`); the cat survives on the attach screen (`rano::agent::screens`).
 

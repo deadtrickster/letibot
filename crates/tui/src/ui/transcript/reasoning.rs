@@ -108,12 +108,11 @@ pub(crate) fn reasoning_row_lines(
     // markdown renderer with the head's own escapes around it - so a control byte in it is a control
     // byte on the glass. Sanitised BEFORE the lexer, so what is lexed and what is measured agree.
     let text = without_control_lines(text);
-    // A `Cow`, and the borrow is what the change bought: this used to force the
-    // allocation even when the sanitiser had nothing to do.
+    // A `Cow`: the borrow avoids an allocation when the sanitiser had nothing to do.
     let text: &str = &text;
     // A settled row: `Thought`, with no duration. The head can compute one
     // for a *live* turn from the delta timestamps, and a transcript row
-    // carries no timestamps at all — see `crates/ui/DESIGN.md` §4.4.
+    // carries no timestamps at all - see `crates/ui/DESIGN.md` §4.4.
     let mut out = step_in(
         vec![thinking_header(cfg, text, think.is_open(), false, None)],
         ind,

@@ -9,9 +9,7 @@
 //! session · restarted · down 4m12s · restored: 2 subagents, 1 monitor · reminded: 1 job · click for details
 //! ```
 //!
-//! The counts come from the hub warning or the session notice, whichever opened the row; a line
-//! this reader cannot recognise is `None`, so the row is drawn as before and the popup keeps the
-//! text.
+//! The counts come from the hub warning or the session notice, whichever opened the row; an unrecognised line is `None` and the popup keeps the text.
 
 use rano::style::Role;
 
@@ -19,13 +17,13 @@ use crate::ui::transcript::line_cards::{CLICK, Card, SessionKind, WarningKind};
 
 /// What every restart notice opens with.
 const OPENS: &str = "[restart] the daemon ";
-/// **The opening a notice after `R93.E12` carries**: what happened, then the clock in brackets.
+/// The opening a newer notice carries: what happened, then the clock in brackets.
 const RESTARTED: &str = "[restart] The daemon restarted";
 /// The empty restart's own end, which is a card with no list beneath it.
 const NOTHING_RUNNING: &str = "Nothing was running.";
 /// A known down time: `… was down for 4m12s (stopped at …; back at …) - …`.
 const DOWN_FOR: &str = "[restart] the daemon was down for ";
-/// **A restart with nothing to restore**: `… came back at 21:28:20 (down 1s, stopped at …):
+/// A restart with nothing to restore: `… came back at 21:28:20 (down 1s, stopped at …):
 /// nothing was running`. Its return time leads it, so the down time is a clause rather than the
 /// opening - see `restart::nothing_running`.
 const CAME_BACK: &str = "[restart] the daemon came back at ";
@@ -86,7 +84,7 @@ enum Kind {
     Job,
 }
 
-/// **One restart, as the daemon's text says it.**
+/// One restart, as the daemon's text says it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Restart {
     pub(crate) down: Down,
@@ -109,7 +107,7 @@ impl Restart {
         }
     }
 
-    /// **The whole line, uncut.**
+    /// The whole line, uncut.
     pub(crate) fn line(&self) -> String {
         let mut parts = vec![self.head()];
         if let Some(s) = self.restored.said() {
@@ -130,9 +128,9 @@ impl Restart {
     }
 }
 
-/// **The header line, read** - `None` for an opening this head does not know.
+/// The header line, read - `None` for an opening this head does not know.
 fn down_of(header: &str) -> Option<Down> {
-    // **The shape every notice carries now** (`R93.E12`): `(down 4m12s)`, `(down ~3h12m)` or
+    // The shape every notice carries now: `(down 4m12s)`, `(down ~3h12m)` or
     // `(stop time unknown)`.
     if let Some(r) = header.strip_prefix(RESTARTED) {
         let inside = r.strip_prefix(" (")?.split(')').next()?;
@@ -153,7 +151,7 @@ fn down_of(header: &str) -> Option<Down> {
             estimated,
         });
     }
-    // **The empty restart**, whose down time is a clause after the return time: `(down 1s,
+    // The empty restart, whose down time is a clause after the return time: `(down 1s,
     // stopped at …)` or `(down unknown, and no record says …)`.
     if let Some(r) = header.strip_prefix(CAME_BACK) {
         let down = r.split_once("(down ")?.1;
@@ -194,7 +192,7 @@ fn empty(down: Down) -> Restart {
     }
 }
 
-/// **A `restart_restored` / `restart_reminded` / `restart_nothing` warning's detail, read.**
+/// A `restart_restored` / `restart_reminded` / `restart_nothing` warning's detail, read.
 pub(crate) fn warning_restart(detail: &str) -> Option<Restart> {
     let mut lines = detail.lines();
     let head = lines.next()?;
@@ -227,17 +225,17 @@ pub(crate) fn warning_restart(detail: &str) -> Option<Restart> {
         }
         any = true;
     }
-    // **A header with nothing under it is a card only for the empty restart**, which has no list
+    // A header with nothing under it is a card only for the empty restart, which has no list
     // to have: every other opening is a list that came back empty, and a shape this head cannot
     // count is left to the popup rather than drawn as *"restarted"* and nothing else.
     (any || head.starts_with(CAME_BACK) || head.contains(NOTHING_RUNNING)).then_some(r)
 }
 
-/// **A session's `[restart] …` notice, read** - the model's words for the same counts.
+/// A session's `[restart] …` notice, read - the model's words for the same counts.
 pub(crate) fn notice_restart(text: &str) -> Option<Restart> {
     let mut lines = text.lines();
     let mut r = empty(down_of(lines.next()?)?);
-    // **Inside a `[task]` group the restart carries** (`SESSION.carries`): the children it handed
+    // Inside a `[task]` group the restart carries (`SESSION.carries`): the children it handed
     // over, one bullet each - what the warning says as `had finished … delivering it`.
     let mut handed_over = false;
     for l in lines {
@@ -252,7 +250,7 @@ pub(crate) fn notice_restart(text: &str) -> Option<Restart> {
             continue;
         }
         if let Some(s) = l.strip_prefix("- subagent ") {
-            // `R93.E13`: a bullet, not a second `[restart]` notice inside this one. The old
+            // A bullet, not a second `[restart]` notice inside this one. The old
             // spellings stay readable for every stored transcript.
             if s.contains(": resumed") || s.contains("has been resumed") {
                 r.restored.add(Kind::Subagent);
@@ -292,7 +290,7 @@ pub(crate) const SESSION: SessionKind = SessionKind {
     carries: &["[task] "],
 };
 
-/// **And its hub warnings.**
+/// And its hub warnings.
 pub(crate) const WARNING: WarningKind = WarningKind {
     codes: &["restart_restored", "restart_reminded", "restart_nothing"],
     read: warning_card,

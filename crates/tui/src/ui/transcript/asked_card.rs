@@ -1,11 +1,8 @@
-//! **A question the model asked a person, drawn as ONE line** — and named on the person's
+//! A question the model asked a person, drawn as ONE line - and named on the person's
 //! answer, so the reply says what it replies to.
 //!
-//! The operator, pasting what one `ask_user_question` left on the screen — the tool card with
-//! its `[note]` lines, the `session · asked:` row with three paragraphs of question and its
-//! options, and their own answer under it: *"again, too much on my screen, i saw the resulting
-//! selector anyway. but what is interesting - my reply doesnt have any hint on the question.
-//! lets mention the question i replied to"*.
+//! The reply must say what it replies to, and the question row must not flood the screen: the tool card, the `[note]` lines and the
+//! `session · asked:` row with its options were too much when the selector had already been seen.
 //!
 //! # The lines
 //!
@@ -15,17 +12,10 @@
 //! ▌ re: "Row 4: DuckDB's generated slt_good_* family is 605 files under test/random and test/index…"
 //! ```
 //!
-//! The question row (`Harness::question_row_text`, `asked: QUESTION` and, when it offered any,
-//! `\noptions offered: A | B | …`) is a card in `line_cards`' registry: its summary is the first
-//! clause of the question's first sentence ([`summary`]), backticks taken off, and a click opens
-//! the question whole, options included. The operator already answered it in the selector, so
-//! the transcript's copy only has to be findable.
-//!
-//! The answer row is the operator's verbatim words (`Harness::operator_answer_text`), which the
-//! trail cites, so its text is not touched: the head pairs it with the question row the session
-//! writes immediately before it (`asked_rows` writes the two together) and draws a faint `re:`
-//! line under it. Nothing on the wire changed for this — the pairing is the head's, read off two
-//! rows it already has.
+//! The question row (`Harness::question_row_text`) is a card in `line_cards`' registry: its summary is the first clause of the first
+//! sentence ([`summary`]), and a click opens the question whole. The answer row is the operator's verbatim words
+//! (`Harness::operator_answer_text`), so it is not touched: the head pairs it with the question row written just before it
+//! (`asked_rows`) and draws a faint `re:` line under it.
 
 use rano::style::Role;
 
@@ -33,8 +23,8 @@ use crate::ui::transcript::line_cards::{CLICK, Card, SessionKind, first_clause, 
 
 /// What the question row opens with.
 const ASKED: &str = "asked: ";
-/// Where its options start, when it offered any — the one-line shape of every row before
-/// R90.24, `A | B | C`.
+/// Where its options start, when it offered any - the one-line shape of every row before
+/// the one-line shape `A | B | C`.
 const OPTIONS: &str = "\noptions offered: ";
 /// …and the list shape since: `options offered:` and one `- OPTION` line each.
 const OPTIONS_LIST: &str = "\noptions offered:\n";
@@ -60,7 +50,7 @@ pub(crate) fn question_of(text: &str) -> Option<(&str, Vec<&str>)> {
     (!question.trim().is_empty()).then_some((question, options))
 }
 
-/// **What a line says of a question**: the first clause of its first sentence, flattened, its
+/// What a line says of a question: the first clause of its first sentence, flattened, its
 /// backticks taken off (a code span is a style the line cannot draw).
 pub(crate) fn summary(question: &str) -> Option<String> {
     let text = flat(&question.replace('`', ""));
@@ -68,8 +58,8 @@ pub(crate) fn summary(question: &str) -> Option<String> {
     Some(first_clause(first))
 }
 
-/// **The question in the card registry** (`line_cards`). It is a row of its own — the session
-/// writes it apart from every notice — so it has no last words to split at.
+/// The question in the card registry (`line_cards`). It is a row of its own - the session
+/// writes it apart from every notice - so it has no last words to split at.
 pub(crate) const SESSION: SessionKind = SessionKind {
     opens: opens_question,
     ends: &[],
@@ -100,14 +90,14 @@ fn question_card(text: &str) -> Option<Card> {
     ))
 }
 
-/// **The faint line under an answer**: `re: "<the question's summary>"`, or `None` when the row
+/// The faint line under an answer: `re: "<the question's summary>"`, or `None` when the row
 /// before the answer is not a question.
 pub(crate) fn replied_to(question_row: &str) -> Option<String> {
     let (question, _) = question_of(question_row)?;
     Some(format!("re: \"{}\"", summary(question)?))
 }
 
-/// **What the operator did with a question**, read off their answer row
+/// What the operator did with a question, read off their answer row
 /// (`Harness::operator_answer_text`) and the options the question row offered.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Answered {
@@ -119,7 +109,7 @@ pub(crate) enum Answered {
     Abstained,
 }
 
-/// **A question row and the answer under it, read together**: the question, its options (the
+/// A question row and the answer under it, read together: the question, its options (the
 /// ones an option's own ` | ` split apart put back together, where the answer shows how), and
 /// what the operator did.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -165,15 +155,14 @@ pub(crate) fn exchange(question_row: &str, answer: Option<&str>) -> Option<Excha
     })
 }
 
-/// The mark on the option the operator chose — the head's success mark (`✓`, as the queue
+/// The mark on the option the operator chose - the head's success mark (`✓`, as the queue
 /// pane's passed gate wears it).
 const CHOSEN: &str = "✓ ";
 
-/// **The question whole, its options one per line, the operator's choice marked** — the popup a
+/// The question whole, its options one per line, the operator's choice marked - the popup a
 /// click on the one-line card opens.
 ///
-/// The operator, pasting this popup with the options on one `options offered: A | B | C | D`
-/// line: *"here - lets render options offered vertically, and mark what i chose"*.
+/// The options render vertically with the chosen one marked, not on one `options offered: A | B | C | D` line:
 ///
 /// ```text
 /// asked: The klick-tick benchmark lives in a scratch copy. Where do you want it — …
@@ -185,10 +174,8 @@ const CHOSEN: &str = "✓ ";
 ///   4. Only send me the numbers; don't touch the repo
 /// ```
 ///
-/// Each option wraps under its own text (a hanging indent past its number). A note they added
-/// to the option they chose is drawn faint under it; a typed answer is `your answer: "…"` after
-/// the list, with no option marked; an abstention is `you abstained`. Before an answer exists,
-/// nothing is marked. `None` when `question_row` is not a question.
+/// Each option wraps under its own text (a hanging indent). A note on the chosen option is drawn faint under it; a typed answer is
+/// `your answer: "…"` after the list with no option marked; an abstention is `you abstained`. `None` when `question_row` is no question.
 pub(crate) fn full_lines(
     question_row: &str,
     answer: Option<&str>,
@@ -224,7 +211,7 @@ pub(crate) fn full_lines(
         rows.push(Line::default());
         rows.push(Line::raw("options:"));
         let digits = ex.options.len().to_string().len();
-        // `✓ 12. ` — the mark's two columns, the number, `. `.
+        // `✓ 12. ` - the mark's two columns, the number, `. `.
         let hang = CHOSEN.chars().count() + digits + 2;
         let room = width.saturating_sub(hang).max(4);
         for (i, option) in ex.options.iter().enumerate() {
@@ -269,7 +256,7 @@ pub(crate) fn full_lines(
 }
 
 /// **The operator's answer to the question at `k`**: the row right after it, when that row is
-/// theirs — the same pairing [`replied_to`] draws the other way (`item::question_before`).
+/// theirs - the same pairing [`replied_to`] draws the other way (`item::question_before`).
 pub(crate) fn answer_after(
     items: &[letibot_sessionlog::view::SnapshotItem],
     k: usize,

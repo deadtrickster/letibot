@@ -698,7 +698,7 @@ pub(crate) fn render_todo_md(body: &str) -> Vec<TodoRow> {
             && (line.starts_with(' ') || line.starts_with('\t'))
             && let Some(last) = items.last_mut()
         {
-            // An indented line under an item is that item's detail — which is
+            // An indented line under an item is that item's detail - which is
             // where a TODO.md puts the commit it pins and the `Deps:` that says
             // what blocks it.
             last.body.push(strip_markup(line.trim()));
@@ -713,14 +713,14 @@ pub(crate) fn render_todo_md(body: &str) -> Vec<TodoRow> {
 
 /// `**T1** git init` → `T1 git init`. The pane has one style for this text and
 /// markdown's emphasis markers are noise in it; the backticks go for the same
-/// reason. Nothing else is interpreted — this is a reader, not a renderer.
+/// reason. Nothing else is interpreted - this is a reader, not a renderer.
 pub(crate) fn strip_markup(text: &str) -> String {
     text.replace("**", "").replace('`', "")
 }
 
 #[cfg(test)]
 mod options_tests {
-    /// R90.24: an option holding a separator stays one option on the pane's line.
+    /// An option holding a separator stays one option on the pane's line.
     #[test]
     fn options_are_quoted_one_by_one() {
         let o = vec!["a / b".to_string(), "c | d".to_string()];

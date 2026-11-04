@@ -1,4 +1,4 @@
-//! **What the conversation is not showing**: the markers that stand for hidden runs of rows,
+//! What the conversation is not showing: the markers that stand for hidden runs of rows,
 //! and the live work under them.
 
 use crate::app::*;
@@ -31,7 +31,7 @@ pub(crate) fn row_hidden_at(vis: Visibility, it: Option<&SnapshotItem>) -> bool 
 /// from rows counted nothing while a `cargo test` ran.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct LiveWork {
-    /// Calls proposed or running with no settled result row yet - **the NUMBER the marker carries**.
+    /// Calls proposed or running with no settled result row yet - the NUMBER the marker carries.
     pub(crate) calls: usize,
     /// Calls still executing, the number the yellow is on: `calls` drops only when a result row's body lands, while
     /// `running` says whether a call is executing now, so a finished call whose row is a frame away keeps the number
@@ -61,7 +61,7 @@ pub(crate) fn row_drawn(
         .is_some_and(|it| row_drawn_at(vis, bound, it))
 }
 
-/// The same question for one row, or for **the live tail**: `None` there is the work in
+/// The same question for one row, or for the live tail: `None` there is the work in
 /// flight, which draws nothing as a row and is therefore invisible - the whole of why the
 /// counts must carry it.
 pub(crate) fn row_drawn_at(
@@ -162,7 +162,7 @@ pub(crate) fn newest_unseen_run(
     {
         return Some(r);
     }
-    // **And only when nothing has rows**: the work in flight is its own run, addressed by the one
+    // And only when nothing has rows: the work in flight is its own run, addressed by the one
     // index past the end and drawn by the live pane.
     (live.work() > 0).then_some(items.len())
 }
@@ -234,7 +234,7 @@ pub(crate) fn reserved_for_run(
     if start != row + 1 {
         return None;
     }
-    // **Only when the counts will actually be glued to this row.** A marker that stands on
+    // Only when the counts will actually be glued to this row. A marker that stands on
     // its own line needs no room left for it, and narrowing the prose for one would be a
     // sentence wrapped short for nothing.
     if !run_continues_prose(items, start) {
@@ -325,7 +325,7 @@ pub(crate) struct MarkerFacts {
     /// The live turn's work, exactly as [`live_work`] reports it - the numbers the marker
     /// prints and the `running` that lights them.
     pub(crate) live: LiveWork,
-    /// **The row of the run this work belongs to**, from `newest_unseen_run`, or `None` while
+    /// The row of the run this work belongs to, from `newest_unseen_run`, or `None` while
     /// the work has committed no row yet.
     pub(crate) run: Option<usize>,
 }
@@ -356,7 +356,7 @@ pub(crate) struct Counts {
 /// longest marker a realistic run writes, which is 54 columns plus the space in front.
 pub(crate) const MARKER_ROOM_MAX: usize = 56;
 
-/// **The least room a marker may claim**, however narrow the frame. Below about twenty columns the
+/// The least room a marker may claim, however narrow the frame. Below about twenty columns the
 /// two clauses stop being readable at all - `[100t, 246l]` and its separator are twelve - and a
 /// marker that cannot be read is a marker that did nothing. leticl's `+hidden-run-marker-floor+`.
 pub(crate) const MARKER_ROOM_FLOOR: usize = 22;
@@ -411,7 +411,7 @@ pub(crate) const MARKER_LADDER: [(usize, usize); 6] =
     [(0, 0), (1, 0), (2, 0), (3, 0), (3, 1), (3, 2)];
 
 impl Counts {
-    /// **The counts spelled at one rung of the ladder** - see [`COUNT_RUNGS`].
+    /// The counts spelled at one rung of the ladder - see [`COUNT_RUNGS`].
     pub(crate) fn at_rung(calls: usize, think_lines: usize, events: usize, rung: usize) -> Counts {
         let (c1, cn, t1, tn, e1, en) = COUNT_RUNGS[rung.min(COUNT_RUNGS.len() - 1)];
         // The number, then the suffix - which is where the space lives, and why the last rung has
@@ -427,7 +427,7 @@ impl Counts {
         }
     }
 
-    /// **The clauses this marker draws, in order** - the two counts, or the fallback when neither
+    /// The clauses this marker draws, in order - the two counts, or the fallback when neither
     /// of them can describe the run. See [`COUNT_RUNGS`]: leticl branches exactly here, drawing the
     /// events clause only when the other two are empty.
     pub(crate) fn clauses(&self) -> Vec<&(String, String)> {
@@ -441,7 +441,7 @@ impl Counts {
         }
     }
 
-    /// **The counts as PLAIN text** - for measuring, and for a test that wants the words rather
+    /// The counts as PLAIN text - for measuring, and for a test that wants the words rather
     /// than the registers. Never for drawing: a caller that painted this would be painting the
     /// brackets and the thinking count along with the number.
     pub(crate) fn plain(&self) -> String {
@@ -472,7 +472,7 @@ pub(crate) struct Marker {
     pub(crate) counts: Counts,
     /// ` · ctrl-v opens it` - an affordance, drawn faint. Dot included.
     pub(crate) seam: &'static str,
-    /// **Does this marker carry the work in flight** - [`marker_carries_live`], decided by the
+    /// Does this marker carry the work in flight - [`marker_carries_live`], decided by the
     /// caller because only the caller knows which row it is drawing.
     pub(crate) live: bool,
 }
@@ -505,7 +505,7 @@ impl Marker {
         }
     }
 
-    /// **Painted** - the counts plain (the calls count PENDING when this marker carries the live
+    /// Painted - the counts plain (the calls count PENDING when this marker carries the live
     /// work), the seam faint. See [`marker_painted`].
     pub(crate) fn painted(&self, cfg: &RenderConfig) -> String {
         marker_painted(cfg, &self.counts, self.seam, self.live)
@@ -562,8 +562,8 @@ pub(crate) fn hidden_run_marker(
             Some(letibot_transcript::TranscriptItem::Reasoning { text, .. }) => {
                 think_lines += reasoning_display_lines(text, cfg.width);
             }
-            // A hidden row of any other kind, a system update or a segment mark, is an event: it used to be counted
-            // by nothing, and that argument is what drew `[]` over a run of nothing but these.
+            // A hidden row of any other kind, a system update or a segment mark, is an event: it is counted
+            // by no other arm, so a run of nothing but these would draw `[]`.
             _ => events += 1,
         }
     }

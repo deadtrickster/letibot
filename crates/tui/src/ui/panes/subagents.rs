@@ -1,4 +1,4 @@
-//! **The subagents pane**: the tree of children this session spawned, and a child's output.
+//! The subagents pane: the tree of children this session spawned, and a child's output.
 
 use crate::app::*;
 use crate::ui::render::row_strings;
@@ -19,7 +19,7 @@ impl App {
         row_strings(&content.lines, self.cfg.palette())
     }
 
-    /// **The subagents pane's facts, in rano's words**: each child's state and what it was
+    /// The subagents pane's facts, in rano's words: each child's state and what it was
     /// asked ([`subagent_asked`], the words the folded notice uses too), its short id, role,
     /// model and answer, the fold of the finished ones, and the cursor.
     pub(crate) fn subagents_view(&self) -> SubagentsPane {
@@ -30,8 +30,8 @@ impl App {
                 .map(|s| SubagentRow {
                     state: s.state.clone(),
                     asked: subagent_asked(s),
-                    // **The child by its name**, `fix-login · …14688401`, where the pane drew the
-                    // bare short id — the operator's *"slugs for subagents too"*. A child nobody
+                    // The child by its name, `fix-login · …14688401`, where the pane drew the
+                    // bare short id - the operator's *"slugs for subagents too"*. A child nobody
                     // named still draws its short id alone.
                     session: s.name(),
                     role: s.role.clone(),
@@ -79,7 +79,7 @@ impl App {
                 targets: &targets,
                 answered: &answered,
                 subagents: &self.subagents,
-                // **No tails for a peeked child**: the jobs it names are its own, and this head
+                // No tails for a peeked child: the jobs it names are its own, and this head
                 // asks only for the output of the session it is attached to.
                 job_tails: &no_tails,
                 // No durations, no diffs and no approvals: this head did not watch these calls run,
@@ -95,7 +95,7 @@ impl App {
                 // Nothing here is this head's own echo, so the mark never appears.
                 echo_mark: QUEUED,
                 echo_open: false,
-                // **The lifted set**, because this pane exists to show a child's rows whole: it is
+                // The lifted set, because this pane exists to show a child's rows whole: it is
                 // the same "the rung lifted" the open run draws its own rows with, so a peeked
                 // session is not filtered by whatever profile the parent happens to be in.
                 vis: Visibility::lifted(),
@@ -120,7 +120,7 @@ impl App {
         out
     }
 
-    /// The output view: the session's own rows, as a terminal scrolls them — or, when the daemon
+    /// The output view: the session's own rows, as a terminal scrolls them - or, when the daemon
     /// answered with its event ring, the plain fallback sayings so on the screen.
     pub(crate) fn sub_out_lines(&mut self, room: usize) -> Vec<String> {
         let p = self.cfg.palette();
