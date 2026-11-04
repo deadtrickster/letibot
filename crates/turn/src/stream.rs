@@ -175,7 +175,7 @@ pub struct StreamOutcome {
     /// Every generated id, in order, from the partial frames.
     pub ids: Vec<TokenId>,
     /// The concatenated `content` deltas. Kept for the journal and for display
-    /// only - it is never tokenized back. §4.1: the Journal cannot change a prompt.
+    /// only - it is never tokenized back. The Journal cannot change a prompt.
     pub text: String,
     pub final_chunk: FinalChunk,
     /// The last progress frame seen, so `EXPLAIN` can report the prefill even when
@@ -192,9 +192,9 @@ pub struct StreamOutcome {
 pub enum AbortCause {
     /// A dialect stop token appeared in the generated ids.
     StopToken(TokenId),
-    /// §8.5's repetition-collapse guard fired.
+    /// The repetition-collapse guard fired.
     Guard(String),
-    /// An urgent steering message or an explicit ABORT (§5.8).
+    /// An urgent steering message or an explicit ABORT.
     Steering(String),
     /// A frame did not account for its own advance, so the stream stopped being a record of
     /// what the model produced. Carried as an abort so the ids that were accounted for
@@ -377,7 +377,7 @@ mod tests {
         assert_eq!(out.ids.len() as u64, out.final_chunk.n_decoded);
     }
 
-    /// The second trap, which only exists because §5.6 requires `return_progress`.
+    /// The second trap, which only exists because the request requires `return_progress`.
     #[test]
     fn a_progress_frames_fabricated_token_zero_never_reaches_the_ledger() {
         let out = run(FRAMES).unwrap();

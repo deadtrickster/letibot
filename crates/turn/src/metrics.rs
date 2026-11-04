@@ -11,12 +11,12 @@ use crate::prefix::PrefixCheck;
 pub struct TurnMetrics {
     pub turn_id: String,
     pub model: String,
-    /// The dialect's identity, which §4.4 makes the `template_sha` - so a model
+    /// The dialect's identity, which is the `template_sha` - so a model
     /// update that changes the template shows up as a different dialect rather
     /// than as an unexplained cache miss.
     pub dialect_template_sha: String,
     /// The ledger head that was submitted, hex. This is the `prefix_handle` of
-    /// §3.10-B, recorded even though the fallback path cannot assert it server-side.
+    /// Recorded even though the fallback path cannot assert it server-side.
     pub ledger_head_sent: String,
 
     pub prompt_tokens: u64,
@@ -42,11 +42,11 @@ pub struct TurnMetrics {
     /// divergence; recording it is what lets the two be told apart afterwards.
     pub id_slot: i64,
 
-    /// §18.2's trap: "a tok/s number without its concurrency is not a number".
+    /// The trap: "a tok/s number without its concurrency is not a number".
     /// `None` when the harness did not look - absent rather than an invented 1.
     pub n_busy_slots: Option<u32>,
 
-    /// §18.1-I1, computed for this turn against the previous one.
+    /// Computed for this turn against the previous one.
     pub prefix_check: PrefixCheck,
 
     pub cost: TurnCost,
@@ -101,7 +101,7 @@ impl TurnMetrics {
         }
     }
 
-    /// Tokens that had to be prefilled. §18.2's p99 re-prefill is a distribution
+    /// Tokens that had to be prefilled. The p99 re-prefill is a distribution
     /// over this.
     pub fn reprefill(&self) -> u64 {
         self.prompt_tokens.saturating_sub(self.cached_tokens)

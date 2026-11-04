@@ -25,7 +25,7 @@ pub enum Prompt {
     },
 }
 
-/// The body of a `/completion` call, exactly as §5.6 specifies it.
+/// The body of a `/completion` call, exactly as the spec says.
 #[derive(Debug, Clone, Serialize)]
 pub struct CompletionRequest {
     pub prompt: Prompt,
@@ -39,7 +39,7 @@ pub struct CompletionRequest {
 }
 
 impl CompletionRequest {
-    /// The one constructor: every §5.6 field is set here rather than defaulted. No `stop` field,
+    /// The one constructor: every spec field is set here rather than defaulted. No `stop` field,
     /// on purpose - `/completion` takes stop strings only, so stops are enforced by id against
     /// the set resolved at startup, and a one-entry boundary is never missed as text would be.
     pub fn new(prompt: Vec<TokenId>, sampling: Value) -> Self {
@@ -293,7 +293,7 @@ fn ids_of(v: &Value) -> Vec<TokenId> {
 mod tests {
     use super::*;
 
-    /// The request shape is a contract with §5.6, so it is checked as one.
+    /// The request shape is a contract with the spec, so it is checked as one.
     #[test]
     fn every_field_the_plan_names_is_on_the_wire() {
         let req = CompletionRequest::new(vec![1, 2, 3], serde_json::json!({"temperature": 0}));
@@ -320,7 +320,7 @@ mod tests {
         assert_eq!(ids_of(&v), vec![7, 9]);
     }
 
-    /// §5.7: there is no output wall. A cap is a truncation you chose, and this is
+    /// There is no output wall. A cap is a truncation you chose, and this is
     /// the line that stops one being added back as "just a safety default".
     #[test]
     fn there_is_no_n_predict_cap_anywhere_in_the_body() {

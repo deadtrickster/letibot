@@ -1,5 +1,5 @@
 //! What a record kept, and what it dropped: compaction's fidelity gate, checkable without a
-//! model. Facts are read from structure (`docs/compaction.md` §4) - tool names and arguments,
+//! model. Facts are read from structure (`docs/compaction.md`) - tool names and arguments,
 //! then plan rows compared by words. It claims what is missing, not whether the record is good.
 
 use letibot_transcript::{TranscriptItem, UserPart};

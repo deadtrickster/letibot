@@ -110,7 +110,7 @@ impl ChatMlRenderer {
     // Used by `engine_decisions`, not by `live_qwen`; both include this module as
     // source, so one target always reports it unused.
     #[allow(dead_code)]
-    /// A fixture with different declared guards, so §8.5's policy can be exercised
+    /// A fixture with different declared guards, so the policy can be exercised
     /// without waiting for a model to actually collapse.
     pub fn with_guards(guards: Vec<Guard>) -> Self {
         ChatMlRenderer {
@@ -235,7 +235,7 @@ fn render_items(items: &[TranscriptItem], st: &mut State, out: &mut Vec<RenderSp
     }
 }
 
-/// §8.2: the outcome class is carried structurally, not merely worded. Same shape
+/// The outcome class is carried structurally, not merely worded. Same shape
 /// as the GLM renderer's, because the rule is the harness's and not the model's.
 fn envelope(outcome: &ToolOutcome, payload: &str) -> String {
     match outcome {
@@ -411,7 +411,7 @@ fn tool_call_from(raw: &str, range: std::ops::Range<usize>) -> ParsedSpan {
             .get("arguments")
             .map(|a| a.to_string())
             // A tool call the model wrote that we cannot read is kept verbatim
-            // rather than replaced with `{}`: §5.7 has to be able to tell a
+            // rather than replaced with `{}`: the length policy has to be able to tell a
             // truncated argument from an empty one.
             .unwrap_or_else(|| raw.trim().to_string()),
         range,

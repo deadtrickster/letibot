@@ -89,7 +89,7 @@ fn vocab() -> std::sync::Arc<Vocab> {
 }
 
 /// A fresh session with a nonce in its system prompt, so no earlier run's cache
-/// entry can make a cold turn look warm. §18.2's "two conversations cannot test
+/// entry can make a cold turn look warm. The "two conversations cannot test
 /// residency" applies to prefixes too.
 fn fresh(engine: &TurnEngine, tag: &str) -> Session {
     let nonce = std::time::SystemTime::now()
@@ -177,7 +177,7 @@ fn a_turn_goes_render_tokenize_ledger_submit_stream_parse_commit() {
     assert!(kinds.contains(&"Delta"));
     assert_eq!(kinds.last(), Some(&"TurnFinished"));
 
-    // §18.1-I7: the terminal value reached `TurnFinished`.
+    // The terminal value reached `TurnFinished`.
     let finished = sink
         .events
         .iter()
@@ -193,7 +193,7 @@ fn a_turn_goes_render_tokenize_ledger_submit_stream_parse_commit() {
     assert_eq!(finished.0, ok.metrics.finish_reason);
     assert!(ok.metrics.predicted_tokens > 0);
     assert!(ok.metrics.prompt_tokens as usize >= submitted_before.len());
-    // §4.4 / the backend seam: wall clock, so no money figure.
+    // The backend seam: wall clock, so no money figure.
     assert!(ok.metrics.cost.micros_usd.is_none());
     assert!(ok.metrics.wall_ms > 0);
 

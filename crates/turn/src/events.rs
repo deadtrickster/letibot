@@ -32,7 +32,7 @@ pub enum TurnEvent {
         began_ms: Option<u64>,
     },
     /// Nothing surveyed reads this one. It is what makes a long prefill visible,
-    /// and §8.5 requires it to count as liveness.
+    /// and the guards require it to count as liveness.
     PromptProgress {
         turn_id: String,
         progress: PromptProgress,
@@ -80,7 +80,7 @@ pub enum TurnEvent {
         reason: String,
         partial_kept: bool,
     },
-    /// §18's post-flight assertions land here, and so do §8.5's guards.
+    /// The post-flight assertions land here, and so do the guards.
     Warning { code: &'static str, detail: String },
     /// A fold's long wait, named as the compaction's own: a scratch turn's `PromptProgress`
     /// lifted as itself lands in the head's `turn.progress`, which is the SESSION's, so the

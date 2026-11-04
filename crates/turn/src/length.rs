@@ -23,7 +23,7 @@ impl EmptyReason {
     }
 }
 
-/// What §5.7 says to do with this turn.
+/// What to do with this turn.
 #[derive(Debug, Clone, PartialEq)]
 pub enum LengthVerdict {
     /// The turn did not hit the limit. Nothing to decide.
@@ -62,7 +62,7 @@ pub struct TurnShape<'a> {
     pub tool_calls: &'a [ToolCall],
 }
 
-/// The policy of §5.7, in the order the plan states it.
+/// The length policy, in order.
 pub fn classify(hit_length: bool, shape: TurnShape<'_>) -> LengthVerdict {
     if !hit_length {
         return LengthVerdict::NotLength;
@@ -197,7 +197,7 @@ mod tests {
     #[test]
     fn the_same_empty_turn_is_fine_when_it_did_not_hit_the_limit() {
         // Not the policy's business: an empty assistant turn that ended on EOS is a
-        // §5.4 case (content: "", never null), not a §5.7 one.
+        // An empty-content case (content: "", never null), not a length one.
         assert_eq!(
             classify(false, shape("", "thought", &[])),
             LengthVerdict::NotLength

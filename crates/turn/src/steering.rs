@@ -355,7 +355,7 @@ mod tests {
         }
     }
 
-    /// §18.1-I11 as a unit: a message costs its own text and nothing else.
+    /// As a unit: a message costs its own text and nothing else.
     #[test]
     fn a_steering_message_becomes_a_plain_user_item_with_no_envelope() {
         let m = SteeringMessage::normal("the spec changed - RFC 2812 rather than 1459");

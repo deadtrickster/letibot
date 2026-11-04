@@ -153,7 +153,7 @@ fn a_thinking_turn(thought: &[u32], answer: &[u32]) -> Vec<Frame> {
 }
 
 // --------------------------------------------------------------------------
-// §5.7 - the nine unnoticed rows, end to end through the engine
+// Length policy - the nine unnoticed rows, end to end through the engine
 // --------------------------------------------------------------------------
 
 /// A turn that spends its whole budget thinking and hits the limit is a failed
@@ -211,7 +211,7 @@ fn a_reasoning_only_length_turn_fails_and_leaves_the_region_untouched() {
         TranscriptItem::Assistant { .. } | TranscriptItem::Reasoning { .. }
     )));
 
-    // §18.1-I7: the terminal value still reached `TurnFinished`, and it is a
+    // The terminal value still reached `TurnFinished`, and it is a
     // `length`, rendered distinctly rather than swallowed.
     let finished = sink
         .events
@@ -252,7 +252,7 @@ fn a_turn_that_stops_inside_its_own_reasoning_is_not_an_empty_success() {
     frames.extend(token_frames(&thought));
     // No `</think>` - and the stop is `eos`, not `limit`. That is the whole
     // difference from the test above, and it is what made the live finding
-    // invisible to §5.7: the classifier only speaks on `length`.
+    // invisible to the length policy: the classifier only speaks on `length`.
     frames.push(Frame::Final {
         stop_type: "eos",
         n_decoded: 1 + thought.len() as u64,
@@ -447,7 +447,7 @@ fn a_truncated_tool_argument_refuses_the_entire_batch() {
 }
 
 /// The same generation, without the limit, is an ordinary successful turn. The
-/// difference is `finish_reason` and nothing else, which is the point of §5.7.
+/// difference is `finish_reason` and nothing else, which is the point of the length policy.
 #[test]
 fn the_same_content_succeeds_when_it_was_not_truncated() {
     let _lock = serial();
@@ -572,7 +572,7 @@ fn the_two_prompt_counts_are_the_server_s_frame_numbers() {
 }
 
 // --------------------------------------------------------------------------
-// §8.5 - the guards
+// The guards
 // --------------------------------------------------------------------------
 
 /// GLM's `@@@@…` failure mode: the turn is aborted, named, and not committed.
@@ -643,7 +643,7 @@ fn repetition_collapse_aborts_the_turn_and_raises_a_named_warning() {
 }
 
 // --------------------------------------------------------------------------
-// §5.8 - steering
+// Steering
 // --------------------------------------------------------------------------
 
 struct Once(Vec<SteeringMessage>);
@@ -887,7 +887,7 @@ fn an_ordinary_steering_message_is_injected_after_the_generation_completes() {
         ok.steering_before
     );
     assert_eq!(ok.steering_applied.len(), 1);
-    // It is a plain user item carrying exactly its own text - §18.1-I11.
+    // It is a plain user item carrying exactly its own text.
     let TranscriptItem::User { parts, .. } = session.items.last().unwrap() else {
         panic!("the steering message must be the last item")
     };
@@ -1024,8 +1024,8 @@ fn an_urgent_message_interrupts_the_generation_rather_than_waiting_for_it() {
     // got; what must be true is that it did not run to the end of the script.
     let predicted = match &result {
         Ok(ok) => {
-            // A kept partial that reports as a complete turn is §5.7's failure
-            // arriving through §5.8's door.
+            // A kept partial that reports as a complete turn is the failure
+            // arriving through the door.
             assert!(
                 ok.truncated,
                 "an interrupted turn must be marked truncated even though it did not \
@@ -1044,7 +1044,7 @@ fn an_urgent_message_interrupts_the_generation_rather_than_waiting_for_it() {
 }
 
 // --------------------------------------------------------------------------
-// §18.1-I1 - the check catches a violation rather than only reporting one
+// Prefix check - the check catches a violation rather than only reporting one
 // --------------------------------------------------------------------------
 
 /// Two turns whose second prompt genuinely extends the first: the invariant holds

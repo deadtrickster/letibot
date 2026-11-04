@@ -65,13 +65,13 @@ impl std::error::Error for EngineError {}
 /// Why a turn did not produce a recordable result.
 #[derive(Debug)]
 pub enum TurnFailure {
-    /// §5.7's two hard-fail cases. Never a success, under any policy value.
+    /// The two hard-fail cases. Never a success, under any policy value.
     EmptyLength {
         turn_id: String,
         reason: EmptyReason,
         metrics: Box<TurnMetrics>,
     },
-    /// §5.7: any truncated argument fails the whole batch. The notices are what
+    /// Any truncated argument fails the whole batch. The notices are what
     /// the model must be told, in tool results, not in a log.
     BatchTruncated {
         turn_id: String,
@@ -85,12 +85,12 @@ pub enum TurnFailure {
         turn_id: String,
         metrics: Box<TurnMetrics>,
     },
-    /// The salvage cap is spent (§5.7's bounded retry).
+    /// The salvage cap is spent (the bounded retry).
     SalvageExhausted {
         turn_id: String,
         streak: u32,
     },
-    /// §8.5's guard fired.
+    /// The guard fired.
     Guard {
         turn_id: String,
         trip: Trip,
@@ -160,11 +160,11 @@ pub struct TurnOk {
     pub items: Vec<TranscriptItem>,
     pub metrics: TurnMetrics,
     pub verdict: LengthVerdict,
-    /// The output was cut short but is usable. Surfaced, never swallowed: §5.7's
+    /// The output was cut short but is usable. Surfaced, never swallowed:
     /// "a truncated turn is never reported as a completed one" is this field plus
     /// the `TurnFinished` event's `finish_reason`.
     pub truncated: bool,
-    /// Steering messages injected at this turn's step boundary (§5.8).
+    /// Steering messages injected at this turn's step boundary.
     pub steering_applied: Vec<TranscriptItem>,
     /// Steering waiting when this generation began, appended before the prompt was built.
     ///
@@ -188,7 +188,7 @@ impl TurnOk {
              constructing it as a success is the defect this type exists to prevent."
         );
         TurnOk {
-            // Two ways to be cut short and both must show: §5.7's `length`, and an
+            // Two ways to be cut short and both must show: the `length`, and an
             // urgent steering message that stopped generation. A kept partial reported
             // as a complete turn is the same defect as a swallowed `finish_reason`.
             truncated: interrupted || matches!(verdict, LengthVerdict::TruncatedText),
@@ -509,7 +509,7 @@ impl TurnEngine {
         self.run_turn_steered(session, sink, &mut NoSteering)
     }
 
-    /// Run one turn, injecting steering at the step boundary (§5.8).
+    /// Run one turn, injecting steering at the step boundary.
     pub fn run_turn_steered(
         &mut self,
         session: &mut Session,
@@ -628,7 +628,7 @@ impl TurnEngine {
         ) {
             Ok(x) => x,
             Err(e) => {
-                // §5.7 fails the turn and commits nothing; the operator's words are
+                // A failed turn commits nothing; the operator's words are
                 // input, not output, and `absorb` already took them out of the source,
                 // so they go back rather than being appended.
                 pending.give_back(steering);
@@ -670,7 +670,7 @@ impl TurnEngine {
                     ),
                 ),
             });
-            // §5.7 fails the turn and commits nothing; the operator's words are input,
+            // A failed turn commits nothing; the operator's words are input,
             // not output, and `absorb` already took them out of the source, so they go
             // back rather than being appended.
             pending.give_back(steering);
@@ -699,7 +699,7 @@ impl TurnEngine {
                 code: "row_coverage_gap",
                 detail: gap.clone(),
             });
-            // §5.7 fails the turn and commits nothing; the operator's words are input,
+            // A failed turn commits nothing; the operator's words are input,
             // not output, and `absorb` already took them out of the source, so they go
             // back rather than being appended.
             pending.give_back(steering);
@@ -715,7 +715,7 @@ impl TurnEngine {
                 call_id: call.id.clone(),
                 name: call.name.clone(),
                 args_digest: args_digest(&call.arguments),
-                // §4.1. The digest is a correlation key, useless on a screen; these are what a
+                // The digest is a correlation key, useless on a screen; these are what a
                 // person reads while the call runs. They go no further than the in-process
                 // sink, which cuts them to a bounded label.
                 arguments: call.arguments.clone(),
@@ -733,7 +733,7 @@ impl TurnEngine {
         );
 
         if !verdict.may_record_as_success() {
-            // Nothing is committed. §5.7 is explicit that this is a failed turn,
+            // Nothing is committed. This is a failed turn,
             // and the region must not carry a turn that failed.
             let metrics = self.metrics_for(
                 &turn_id,
@@ -755,7 +755,7 @@ impl TurnEngine {
                 proposed_calls: false,
                 metrics: Box::new(metrics.clone()),
             });
-            // §5.7 fails the turn and commits nothing; the operator's words are input, not
+            // A failed turn commits nothing; the operator's words are input, not
             // output, and `absorb` already took them out of the source, so they go back. One
             // call here covers every exit of the match below.
             pending.give_back(steering);
@@ -813,7 +813,7 @@ impl TurnEngine {
 
         // Turn-boundary check. The length gate only speaks on `finish_reason == length`;
         // on a normal `stop` nothing else looks, so an unterminated reasoning block would
-        // commit as an ordinary empty turn. The §5.4 fallback item does not count as content.
+        // commit as an ordinary empty turn. The fallback item does not count as content.
         let has_content =
             !produced.visible_text.trim().is_empty() || !produced.tool_calls().is_empty();
         if outcome.aborted.is_none() && produced.ended_in_reasoning && !has_content {
@@ -846,7 +846,7 @@ impl TurnEngine {
                 proposed_calls: false,
                 metrics: Box::new(metrics.clone()),
             });
-            // §5.7 fails the turn and commits nothing; the operator's words are input,
+            // A failed turn commits nothing; the operator's words are input,
             // not output, and `absorb` already took them out of the source, so they go
             // back rather than being appended. One call here covers both exits below.
             pending.give_back(steering);
@@ -863,7 +863,7 @@ impl TurnEngine {
         }
         self.salvage.cleared();
 
-        // §5.8's escape hatch fired: generation stopped at the next token and the partial
+        // The escape hatch fired: generation stopped at the next token and the partial
         // output was kept, announced as an interruption. A bad frame arrives through the same door:
         // the ids before the bad frame were checked, so the head is kept and the seam marked.
         let interrupt_reason = match &outcome.aborted {
@@ -899,8 +899,8 @@ impl TurnEngine {
             }),
             _ => None,
         };
-        // The same two ways `TurnOk::truncated` counts - §5.7's kept text and
-        // §5.8's kept partial. Stamped onto the rows before they are committed so
+        // The same two ways `TurnOk::truncated` counts - the kept text and
+        // The kept partial. Stamped onto the rows before they are committed so
         // the transcript and the turn record answer the question identically.
         produced.mark_truncated(
             interrupt_reason.is_some() || matches!(verdict, LengthVerdict::TruncatedText),
@@ -933,7 +933,7 @@ impl TurnEngine {
                 elided = match self.tokenize(&spans) {
                     Ok(x) => x,
                     Err(e) => {
-                        // §5.7 fails the turn and commits nothing; the operator's words
+                        // A failed turn commits nothing; the operator's words
                         // are input, not output, and `absorb` already took them out of
                         // the source, so they go back rather than being appended.
                         pending.give_back(steering);
@@ -989,7 +989,7 @@ impl TurnEngine {
                 sink.emit(TurnEvent::Warning { code, detail });
             }
         }
-        // Independently, §4.3 clause 5: the chain must still agree with the tokens.
+        // Independently, the chain must still agree with the tokens.
         // Cheap next to a prefill, and it is what turns "append-only by
         // construction" back into a measurement.
         if let Err(e) = session.ledger.verify_chain() {
@@ -1030,7 +1030,7 @@ impl TurnEngine {
             metrics: Box::new(metrics.clone()),
         });
 
-        // §5.8's step boundary: the generation is complete, so anything that arrived
+        // The step boundary: the generation is complete, so anything that arrived
         // during it goes in now as a plain user append. An urgent returned by `absorb`
         // is held for the next poll, never dropped - dropping it is silence.
         steering.at_a_step_boundary();
@@ -1158,7 +1158,7 @@ impl TurnEngine {
                 }),
                 Delta::ToolCall { .. } => {}
             }
-            // §5.8's escape hatch, checked once per delta: an urgent message
+            // The escape hatch, checked once per delta: an urgent message
             // closes the connection; the rest queue for the boundary.
             if let Some(u) = pending.absorb(steering) {
                 urgent = Some(u.text);
@@ -1189,7 +1189,7 @@ impl TurnEngine {
                         backend,
                     )),
                 });
-                // §5.7 fails the turn and commits nothing; the operator's words are
+                // A failed turn commits nothing; the operator's words are
                 // input, not output, and `absorb` already took them out of the source,
                 // so they go back rather than being appended.
                 pending.give_back(steering);
@@ -1209,7 +1209,7 @@ impl TurnEngine {
                 body,
                 retry_after,
             }) => {
-                // §5.7 fails the turn and commits nothing; the operator's words are
+                // A failed turn commits nothing; the operator's words are
                 // input, not output, and `absorb` already took them out of the source,
                 // so they go back rather than being appended.
                 pending.give_back(steering);
@@ -1223,7 +1223,7 @@ impl TurnEngine {
             // sends them to debug the wrong end. `HttpError::Io` is true of it - the transport
             // failed - and the retry policy takes the round again for it.
             Err(letibot_backend::BackendError::Unreachable(m)) => {
-                // §5.7 fails the turn and commits nothing; the operator's words are
+                // A failed turn commits nothing; the operator's words are
                 // input, not output, and `absorb` already took them out of the source,
                 // so they go back rather than being appended.
                 pending.give_back(steering);
@@ -1243,7 +1243,7 @@ impl TurnEngine {
                 ))));
             }
             Err(e) => {
-                // §5.7 fails the turn and commits nothing; the operator's words are
+                // A failed turn commits nothing; the operator's words are
                 // input, not output, and `absorb` already took them out of the source,
                 // so they go back rather than being appended.
                 pending.give_back(steering);
@@ -1294,7 +1294,7 @@ impl TurnEngine {
                 proposed_calls: false,
                 metrics: Box::new(metrics.clone()),
             });
-            // §5.7 fails the turn and commits nothing; the operator's words are input, not
+            // A failed turn commits nothing; the operator's words are input, not
             // output, and `absorb` already took them out of the source, so they go back. One
             // call here covers every exit of the match below.
             pending.give_back(steering);
@@ -1642,7 +1642,7 @@ impl TurnEngine {
                 return Ok(Flow::Stop);
             }
 
-            // §5.8's escape hatch, checked once per frame: an urgent message
+            // The escape hatch, checked once per frame: an urgent message
             // interrupts at the next token rather than at the step boundary.
             if let Some(urgent) = pending.absorb(steering) {
                 abort = Some(AbortCause::Steering(urgent.text));
@@ -1719,7 +1719,7 @@ impl TurnEngine {
             draft_n: t.draft_n,
             draft_n_accepted: t.draft_n_accepted,
             id_slot: outcome.final_chunk.id_slot,
-            // §18.2: "a tok/s number without its concurrency is not a number." The engine does
+            // "a tok/s number without its concurrency is not a number." The engine does
             // not read `/slots` on the turn path, so this is absent rather than an invented 1,
             // and a rate computed from these metrics must say so.
             n_busy_slots: None,

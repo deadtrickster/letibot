@@ -457,7 +457,7 @@ mod the_record_has_a_size {
     }
 
     /// A section is a question, and an absent section is a question nobody was asked
-    /// (`docs/compaction.md` §6) - so the budgeted instruction asks every one of them.
+    /// (`docs/compaction.md`) - so the budgeted instruction asks every one of them.
     #[test]
     fn the_budgeted_instruction_keeps_every_section() {
         let text = summary_instruction(&the_measured_session());

@@ -195,7 +195,7 @@ pub fn produce(
     }
 
     // Coverage that stops short means the turn ended inside an empty think block.
-    // Its tokens still need a row, and §5.4 says an assistant item with empty text
+    // Its tokens still need a row, and an assistant item with empty text
     // must exist and emit its boundary tokens anyway.
     if covered_to < tokens.len() {
         items.push(ProducedItem {
