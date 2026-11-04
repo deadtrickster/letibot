@@ -5,7 +5,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use letibot_harnessd::room::link::{SessionRoom, report_queue_move};
+use letibot_harnessd::room::link::{SessionRoom, report_queue_move_in};
 use letibot_harnessd::room::operator::OperatorSeat;
 use letibot_harnessd::room::wake;
 use letibot_room::server::Server;
@@ -132,7 +132,7 @@ fn sessions_the_operator_and_the_daemons_facts_share_the_rooms() {
         todo("write the doc", TodoStatus::Completed),
         todo("ship it", TodoStatus::Pending),
     ]);
-    report_queue_move("merge", "m-7", "landed", "fast-forwarded");
+    report_queue_move_in("merge", "m-7", "landed", "fast-forwarded", Some(A.into()));
     let lines = wait_for("the facts", || {
         let r = seat.ask("h1", json!({"type": "read", "room": project_room(A)}));
         let text: Vec<String> = r["rows"]
@@ -176,5 +176,16 @@ fn sessions_the_operator_and_the_daemons_facts_share_the_rooms() {
         SessionRoom::connect("operator", &path, A, None, bell.clone(), None).is_err(),
         "the operator's name is not a session's"
     );
+
+    // A move on B's repository lands in B's room even though A's link is first in line.
+    report_queue_move_in("review", "r-9", "approved", "", Some(B.into()));
+    let b_room = wait_for("b's queue line", || {
+        let r = seat.ask("h1", json!({"type": "read", "room": project_room(B)}));
+        let t = r["rows"].to_string();
+        t.contains("r-9").then_some(t)
+    });
+    assert!(b_room.contains("review queue: r-9"), "{b_room}");
+    let a_room = seat.ask("h1", json!({"type": "read", "room": project_room(A)}));
+    assert!(!a_room["rows"].to_string().contains("r-9"), "{a_room}");
     server.stop();
 }

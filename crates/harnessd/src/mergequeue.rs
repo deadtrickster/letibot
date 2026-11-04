@@ -41,6 +41,21 @@ pub const HANDED_TO_PROJECT: &str = "handed to the project's main session";
 
 /// The root of the session tree `session` is in: the project's main session, which a refusal
 /// falls back to and a blocked review is handed to.
+/// The repository of the review or merge row `id` in the store at `path`, `None` when no row
+/// has that id.
+pub fn repository_of_row(path: &Path, id: &str) -> Option<String> {
+    let store = Store::open(path).ok()?;
+    if let Some(r) = store.review_rows(None).ok()?.into_iter().find(|r| r.id == id) {
+        return Some(r.repository);
+    }
+    store
+        .merge_rows(None)
+        .ok()?
+        .into_iter()
+        .find(|m| m.id == id)
+        .map(|m| m.repository)
+}
+
 pub fn root_session(store: &Store, session: &str) -> String {
     let mut cur = session.to_string();
     for _ in 0..32 {

@@ -1178,9 +1178,13 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         registry.set_room_chat(crate::room::operator::OperatorSeat::new(socket).seat());
     }
     // A queue row that moved is a line in the project's room.
-    registry.set_broadcast_observer(std::sync::Arc::new(|event| {
+    let queue_store = cfg.store.clone();
+    registry.set_broadcast_observer(std::sync::Arc::new(move |event| {
         if let letibot_sessionlog::SessionEvent::QueueMoved { queue, id, to, why } = event {
-            crate::room::link::report_queue_move(queue, id, to, why);
+            let repository = queue_store
+                .as_deref()
+                .and_then(|p| crate::mergequeue::repository_of_row(p, id));
+            crate::room::link::report_queue_move(queue, id, to, why, repository.as_deref());
         }
     }));
     // The smart `!`'s model half, attached whenever there is a local model to ask. The

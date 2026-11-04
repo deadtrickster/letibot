@@ -94,25 +94,42 @@ fn links() -> &'static Mutex<std::collections::BTreeMap<String, Weak<SessionRoom
     LINKS.get_or_init(Default::default)
 }
 
-/// A merge-queue or review-queue row moved: say so in the room of this daemon's project. The
-/// move is broadcast to every session, so one live session reports it and the coordinator
-/// drops a repeat of the same request id.
-pub fn report_queue_move(queue: &str, id: &str, to: &str, why: &str) {
-    let link = links()
+/// A merge-queue or review-queue row moved: say so in the room of the row's repository, or the
+/// host room when no session of that project is here or the repository is unknown. The move is
+/// broadcast to every session, so one live link reports it and the coordinator drops a repeat of
+/// the same request id.
+pub fn report_queue_move(queue: &str, id: &str, to: &str, why: &str, repository: Option<&str>) {
+    let key = repository
+        .filter(|r| !r.trim().is_empty())
+        .map(letibot_room::project_key);
+    report_queue_move_in(queue, id, to, why, key);
+}
+
+/// [`report_queue_move`] for a project already named by its key.
+pub fn report_queue_move_in(queue: &str, id: &str, to: &str, why: &str, key: Option<String>) {
+    let plain: Vec<Arc<SessionRoom>> = links()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .values()
         .filter_map(Weak::upgrade)
-        .find(|l| l.plain);
-    let Some(link) = link else { return };
+        .filter(|l| l.plain)
+        .collect();
+    let (link, room) = match key.as_ref().and_then(|k| plain.iter().find(|l| &l.project == k)) {
+        Some(l) => (l.clone(), ""),
+        None => match plain.first() {
+            Some(l) => (l.clone(), "host"),
+            None => return,
+        },
+    };
     let text = if why.trim().is_empty() {
         format!("{queue} queue: {id} -> {to}")
     } else {
         format!("{queue} queue: {id} -> {to} ({})", why.trim())
     };
-    link.notify(
+    link.notify_in(
+        room,
         "queue",
-        format!("queue:{}:{queue}:{id}:{to}:{why}", link.project),
+        format!("queue:{}:{queue}:{id}:{to}:{why}", key.as_deref().unwrap_or("host")),
         text,
         vec![letibot_room::Ref {
             kind: "queue".into(),
@@ -295,6 +312,19 @@ impl SessionRoom {
     /// Report a fact into this session's project room (or the host's when it has none), off the
     /// caller's thread: a wedged coordinator must not stall a turn.
     fn notify(&self, source: &str, id: String, text: String, refs: Vec<letibot_room::Ref>) {
+        self.notify_in("", source, id, text, refs);
+    }
+
+    /// As [`SessionRoom::notify`], into `room` (`""` is this session's project room).
+    fn notify_in(
+        &self,
+        room: &str,
+        source: &str,
+        id: String,
+        text: String,
+        refs: Vec<letibot_room::Ref>,
+    ) {
+        let room = room.to_string();
         let client = self.client.clone();
         let source = source.to_string();
         let _ = std::thread::Builder::new()
@@ -302,7 +332,7 @@ impl SessionRoom {
             .spawn(move || {
                 let _ = client.request(&Request::Notify {
                     id,
-                    room: String::new(),
+                    room,
                     source,
                     text,
                     refs,
