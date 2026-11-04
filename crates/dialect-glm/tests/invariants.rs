@@ -337,9 +337,8 @@ fn a_string_argument_that_looks_like_json_does_not_round_trip() {
 }
 
 /// The inverse takes an argument back as structure only when the text is EXACTLY what the renderer
-/// would have written for it, which is the rule Qwen's parser already applies. The compact spelling
-/// of an object is not: `hf_tojson` writes `{"a": 1}`, so `{"a":1}` is somebody's text - and a
-/// `.json` body given to a text parameter is exactly that case.
+/// would have written for it, the rule Qwen's parser already applies: `hf_tojson` writes `{"a": 1}`,
+/// so the compact `{"a":1}` is somebody's text - and a `.json` body given to a text parameter is that.
 #[test]
 fn an_argument_is_json_only_when_the_spelling_is_the_renderers_own() {
     let args_of = |value: &str| -> String {
@@ -362,8 +361,8 @@ fn an_argument_is_json_only_when_the_spelling_is_the_renderers_own() {
     );
 }
 
-/// A call cut off mid-argument is still a call. Flushed as content it was drawn as the model's
-/// answer, and the half-written arguments looked like the turn's text.
+/// A call cut off mid-argument is still a call: flushed as content, the half-written arguments are
+/// drawn as the model's answer, and the tool never sees the call it was making.
 #[test]
 fn a_call_cut_off_mid_argument_is_a_call_and_not_content() {
     let call_open = tokens::TOOL_CALL_OPEN;

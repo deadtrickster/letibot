@@ -744,9 +744,9 @@ mod tests {
         url
     }
 
-    /// One caller's slow fill must not stop another caller's scoring. The box has one lock, and it
-    /// was held across the endpoint's request: a fill waiting out a request blocked every session's
-    /// cache-hit read for the whole of it.
+    /// One caller's slow fill must not stop another caller's scoring. The box has one cache lock;
+    /// held across the endpoint's request it makes a fill's wait every caller's, down to the HTTP
+    /// read's 180 s.
     #[test]
     fn a_slow_fill_does_not_hold_another_callers_cached_read() {
         let url = slow_endpoint();

@@ -571,9 +571,9 @@ mod tests {
         assert!(Policy::new(1).after(&status(503), 1).is_none());
     }
 
-    /// The provider's own instant wins when it is longer than the rung. Read and never slept on, a
-    /// `429` saying sixty seconds was answered by five calls inside 31 s, and the ladder reported a
-    /// total the daemon had not waited.
+    /// The provider's own instant wins when it is longer than the rung: five calls inside 31 s of a
+    /// sixty-second rate limit spend the whole ladder on a wait that would have lifted, and the
+    /// ending then reports a total nobody waited.
     #[test]
     fn a_retry_after_longer_than_the_rung_is_waited_out_and_counted() {
         let p = Policy::standard();

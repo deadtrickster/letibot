@@ -1006,8 +1006,8 @@ impl TurnEngine {
         }
 
         // Over the ledger the turn committed, which is what the next prompt begins with: the tail
-        // rode on this round and was committed nowhere, so hashing the prompt made every round that
-        // carried one end the NEXT turn as a divergence.
+        // rides on this round and is committed nowhere, so hashing the prompt makes every round that
+        // carries one end the NEXT turn as a divergence.
         let covered = session.ledger.tokens().to_vec();
         session.witness = Some(PrefixWitness::record_committed(
             prompt_tokens,

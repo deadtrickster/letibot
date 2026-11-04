@@ -812,8 +812,8 @@ fn a_provider_that_never_answers_times_out_at_the_deadline_it_was_given() {
     assert!(matches!(e, BackendError::Unreachable(_)), "{e:?}");
 }
 
-/// Half a stream is not an answer. A socket that closes cleanly after two chunks used to finish as
-/// `Stop` with zero usage: billed as nothing, and drawn as if the model had completed the thought.
+/// Half a stream is not an answer: a socket that closes cleanly is indistinguishable from a finished
+/// one, so `Stop` with zero usage bills the fragment as nothing and draws it as a completed thought.
 #[test]
 fn a_stream_that_closes_without_an_ending_is_a_fragment_and_not_an_answer() {
     const HALF: &str = "data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}\n\n\
@@ -847,8 +847,8 @@ fn a_finish_reason_is_an_ending_even_with_no_done_after_it() {
     assert_eq!(deltas, 1);
 }
 
-/// An `{\"error\":…}` chunk arrives after the 200, so it is the only place a mid-stream refusal can
-/// be said. It was dropped as a chunk with no choices, and the round went on to look truncated.
+/// An `{"error":…}` chunk arrives after the 200, so it is the only place a mid-stream refusal can
+/// be said: dropped as a chunk with no choices, the round ends looking like a truncated answer.
 #[test]
 fn an_error_chunk_inside_the_stream_is_the_providers_refusal() {
     const ERRORED: &str = "data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}\n\n\
