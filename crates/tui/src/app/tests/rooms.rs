@@ -88,6 +88,7 @@ fn opening_asks_for_the_rooms_and_the_host_room() {
         vec![
             json!({"type": "read", "room": "host", "since": 0}),
             json!({"type": "read", "room": "dm", "since": 0}),
+            json!({"type": "roster", "room": "host"}),
         ]
     );
     assert!(a.is_open(Surface::Rooms));
@@ -112,7 +113,7 @@ fn the_view_polls_only_while_it_is_open() {
     a.clock(11_500);
     assert!(ops(&mut a).is_empty(), "polled before the interval");
     a.clock(12_100);
-    assert_eq!(types(&ops(&mut a)), ["rooms", "read", "read"]);
+    assert_eq!(types(&ops(&mut a)), ["rooms", "read", "read", "roster"]);
     a.clock(12_200);
     assert!(ops(&mut a).is_empty(), "polled twice in one interval");
 
@@ -1016,7 +1017,7 @@ fn the_roster_column_shows_connected_members_with_markers_by_default() {
     );
     assert!(row_with(&rows, "gk").contains("● q gk"), "{all}");
     assert!(row_with(&rows, "+1 offline").contains("r lists"), "{all}");
-    assert!(!all.contains("the doc writer"), "offline is a count: {all}");
+    assert!(!all.contains('○'), "offline is a count: {all}");
     // Connected members come first, by name.
     let at = |n: &str| rows.iter().position(|r| r.contains(n)).unwrap();
     assert!(
@@ -1032,11 +1033,11 @@ fn r_lists_the_offline_members_and_again_hides_them() {
     a.key(Key::Char('r'));
     let rows = screen(&mut a, 120);
     assert!(
-        row_with(&rows, "the doc writer").contains("○ s "),
+        row_with(&rows, "○ s").contains("the doc writer"),
         "{rows:?}"
     );
     a.key(Key::Char('r'));
-    assert!(!screen(&mut a, 120).join("\n").contains("the doc writer"));
+    assert!(!screen(&mut a, 120).join("\n").contains('○'));
 }
 
 #[test]
