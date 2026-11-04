@@ -116,8 +116,12 @@ pub fn gather(
     let mut out = Vec::new();
     // 1. The operator's instructions for this project - its own file, then the seat's, whose
     // names and scopes are the config layer's answer.
-    let agents = workspace.join("AGENTS.md");
-    if let Some(text) = reader.read(&agents) {
+    // Any spelling the merge gate accepts: on a case-sensitive host `agents.md` is not `AGENTS.md`.
+    if let Some((agents, text)) = ["AGENTS.md", "agents.md", "Agents.md"]
+        .iter()
+        .map(|name| workspace.join(name))
+        .find_map(|path| reader.read(&path).map(|text| (path, text)))
+    {
         out.push((agents, text));
     }
     for path in leticode_config::instructions(workspace, box_dirs) {

@@ -317,6 +317,16 @@ fn a_missing_source_contributes_nothing() {
     let _ = std::fs::remove_dir_all(&empty);
 }
 
+/// A lowercase `agents.md` is the project's instructions too: Linux hosts are case-sensitive.
+#[test]
+fn a_lowercase_agents_md_is_read() {
+    let ws = dir("lower");
+    write(&ws.join("agents.md"), "lowercase rules\n");
+    let s = section(&ws, &dir("none"), &no_box(), &vocab()).expect("a section");
+    assert!(s.contains("lowercase rules"), "{s}");
+    let _ = std::fs::remove_dir_all(&ws);
+}
+
 /// The order is the one `gather` states: `AGENTS.md`, then the box-wide notes, then the project's
 /// each directory newest first and ties by name.
 #[test]
