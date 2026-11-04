@@ -864,7 +864,7 @@ impl Server {
         if collapsed != name && self.is_known(&collapsed) {
             return Ok(collapsed);
         }
-        let name = &collapsed;
+        let name: &str = &collapsed;
         match self.bridge_lookup(name) {
             Some(Lookup::One(full)) => return Ok(full),
             Some(Lookup::Many(c) | Lookup::Group(_, c)) => return Err(c),
