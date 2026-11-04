@@ -3062,6 +3062,8 @@ fn wrap(s: &str, width: usize) -> Vec<String> {
 /// The terminal width, when there is a terminal. Eighty when there is not - a log
 /// file has no width and eighty is the width a log file is read at.
 fn term_cols() -> usize {
+    // SAFETY: `winsize` is plain integers, so all-zero is valid, and TIOCGWINSZ writes only into
+    // the struct passed.
     let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
     if unsafe { libc::ioctl(2, libc::TIOCGWINSZ, &mut ws) } == 0 && ws.ws_col > 0 {
         ws.ws_col as usize

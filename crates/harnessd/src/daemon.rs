@@ -43,9 +43,8 @@ extern "C" fn on_signal(sig: libc::c_int) {
         // The NUMBER, not a bare byte: the thread below says which signal it was, and Ctrl-C
         // and a `--stop` read differently to a person looking at the log.
         let byte = [sig as u8];
-        // Async-signal-safe, and the return value is deliberately ignored: there is
-        // nothing a handler could do about a full pipe except make things worse
-        // and a full pipe already means a shutdown is pending.
+        // SAFETY: `write` is async-signal-safe and `byte` outlives the call. The result is ignored:
+        // a full pipe already means a shutdown is pending.
         unsafe {
             libc::write(fd, byte.as_ptr() as *const libc::c_void, 1);
         }
@@ -85,6 +84,7 @@ fn bring_guests_down() {
 fn stop_on_signal(registry: Arc<Registry>, fd: std::os::fd::RawFd, one_shot: bool) {
     let mut buf = [0u8; 1];
     // Blocks. No timer, no poll: the byte arrives or it does not.
+    // SAFETY: `buf` is one valid, writable byte and the length passed is 1.
     let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, 1) };
     if n <= 0 {
         return;
@@ -112,9 +112,11 @@ fn stop_on_signal(registry: Arc<Registry>, fd: std::os::fd::RawFd, one_shot: boo
         } else {
             -1
         };
+        // SAFETY: `pfd` is one initialised pollfd and the count passed is 1.
         let ready = unsafe { libc::poll(&mut pfd, 1, wait_ms) };
         if ready > 0 {
             let mut again = [0u8; 1];
+            // SAFETY: `again` is one valid, writable byte and the length passed is 1.
             let n = unsafe { libc::read(fd, again.as_mut_ptr() as *mut libc::c_void, 1) };
             if n > 0 {
                 eprintln!(
