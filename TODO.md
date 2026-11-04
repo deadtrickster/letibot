@@ -734,6 +734,14 @@ it and cannot see it: the only account of the view is the manifest the model is 
    code reaches main is the review queue and its gate. The main session keeps its credentials
    and can push directly: the operator's "manual" mode, kept on purpose as the fallback for when
    the queue itself is the thing that is broken.
+   Today the split is hardcoded: a top-level Mac seat gets `GH_TOKEN` injected at seat start
+   (the daemon runs `gh auth token` outside the sandbox) plus a github.com credential helper
+   through `GIT_CONFIG_COUNT/KEY/VALUE`, and a child gets `credential.helper` reset and no
+   token. Which secrets a perimeter may carry, how each env var is computed (a command run
+   outside the box, a file, a constant) and where it goes (which seats, which calls) belongs in
+   the same configurable perimeter as the paths, so roles can be expressed rather than coded:
+   e.g. a reviewer child that may comment on a PR but not push, a cleanup child with host
+   access, a coder child that commits only.
 8. The file tools obey the same perimeter as the shell. Today the default seat's shell cannot
    reach `~/.local/share/letibot` (DENY_UNDER_HOME), but its file tools are rooted at `/` and
    reach the daemon's store, other sessions' folders and their plugins; a session was seen
