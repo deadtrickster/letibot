@@ -2328,18 +2328,15 @@ impl Ssh {
     }
 
     /// End a master that stopped answering and remove its socket, so the next call dials a fresh
-    /// connection. `-O exit` is tried first; a master too wedged to hear it is signalled by the
-    /// socket path it was started with, which is unique to this daemon and host.
+    /// connection. Signalled by the socket path it was started with, which is unique to this daemon
+    /// and host: `-O exit` would wait out another bound on a master that cannot hear it.
     fn tear_down_master(&self) {
-        let exited = self.master("exit").is_some_and(|o| o.status.success());
-        if !exited {
-            let pattern = format!(
-                "ControlPath={}( |$)",
-                regex_escape(&self.control.display().to_string())
-            );
-            let args: Vec<String> = vec!["-KILL".into(), "-f".into(), "--".into(), pattern];
-            let _ = run_bounded(Path::new("pkill"), &args, MASTER_BOUND);
-        }
+        let pattern = format!(
+            "ControlPath={}( |$)",
+            regex_escape(&self.control.display().to_string())
+        );
+        let args: Vec<String> = vec!["-KILL".into(), "-f".into(), "--".into(), pattern];
+        let _ = run_bounded(Path::new("pkill"), &args, MASTER_BOUND);
         self.drop_socket();
     }
 
