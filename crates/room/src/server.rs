@@ -38,6 +38,12 @@ pub const WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10
 /// holding the room's memory, not a request, and the connection is closed.
 pub const MAX_FRAME_BYTES: usize = 1 << 20;
 
+/// How many principals one coordinator tracks per-principal state for - an inbox cursor and a
+/// count of what it missed. A cursor is eight bytes and a name, and a box has tens of sessions;
+/// the bound is here because a connection may name itself anything and a fresh name each time
+/// would otherwise grow two maps without end. Past it the room says so rather than growing.
+pub const MAX_PRINCIPALS: usize = 4_096;
+
 /// One connection's identity - what its `Hello` said, the room it is in, and the queue its writer
 /// thread drains. Nothing writes to a peer's socket from another thread: a reader that has stopped
 /// reading must not be able to stop the room.
@@ -127,6 +133,11 @@ struct Inner {
     chat: Mutex<Chat>,
     /// Names of externals that have connected, so a message to one that is away is not refused.
     externals: Mutex<BTreeSet<String>>,
+    /// The principals this room has armed an inbox cursor for - [`MAX_PRINCIPALS`], or what a test
+    /// set. A name here is one the chat log keeps a cursor for, and that map is chat's own.
+    armed: Mutex<BTreeSet<String>>,
+    /// The bound on both per-principal maps: [`MAX_PRINCIPALS`], or what a test set.
+    principals: AtomicUsize,
     /// The token a connection must present to be the operator, minted at [`Server::with_options`]
     /// and written beside the socket in mode 0600. The seat is a file, not a word in a frame.
     operator_token: String,
@@ -199,6 +210,8 @@ impl Server {
                 missed: Mutex::new(BTreeMap::new()),
                 chat: Mutex::new(Chat::new()),
                 externals: Mutex::new(BTreeSet::new()),
+                armed: Mutex::new(BTreeSet::new()),
+                principals: AtomicUsize::new(MAX_PRINCIPALS),
                 operator_token,
                 stop: AtomicBool::new(false),
                 served: AtomicU64::new(0),
@@ -340,6 +353,15 @@ impl Server {
         self
     }
 
+    /// Shrink the bound on the principals the room tracks state for - a test's door onto
+    /// [`MAX_PRINCIPALS`], which is four thousand because a box has tens of sessions.
+    pub fn with_principals(&self, principals: usize) -> &Self {
+        self.inner
+            .principals
+            .store(principals.max(1), Ordering::SeqCst);
+        self
+    }
+
     pub fn started_ms(&self) -> u64 {
         self.inner.started_ms
     }
@@ -435,6 +457,15 @@ impl Server {
             if let Some(refused) = self.hello_name_refusal(seat, who) {
                 return Answer {
                     response: refused,
+                    events: Vec::new(),
+                };
+            }
+            // The room keeps a cursor and a missed-count per principal, and a connection may name
+            // itself anything: a fresh name every time would grow both maps without end. Past the
+            // bound the connection is told so, with the number, rather than the maps growing.
+            if let Some(why) = self.principal_refusal(&who.session) {
+                return Answer {
+                    response: Response::Bye { why },
                     events: Vec::new(),
                 };
             }
@@ -663,6 +694,21 @@ impl Server {
     }
 
     // ===== Chat =====
+
+    /// Why this principal may not be tracked, when the room already tracks the most it will. A name
+    /// it has seen before is free: the cursor and the count are already there.
+    fn principal_refusal(&self, name: &str) -> Option<String> {
+        let max = self.inner.principals.load(Ordering::SeqCst);
+        let armed = self.inner.armed.lock().expect("the armed lock");
+        if armed.contains(name) || armed.len() < max {
+            return None;
+        }
+        Some(format!(
+            "the room is already tracking inbox state for {max} sessions, which is as many as it \
+             keeps, and `{name}` is not one of them - nothing was done; a coordinator restart \
+             begins with none of them"
+        ))
+    }
 
     /// Why this `Hello` may not be the operator's, when it asked to be. The comparison is over the
     /// whole token: one that stopped at the first wrong byte would answer a guesser byte by byte.
@@ -1233,6 +1279,13 @@ impl Server {
                     .lock()
                     .expect("the chat lock")
                     .arm(&speaker.session);
+                // What the bound in `principal_refusal` is counted over: the names this room has a
+                // cursor for. A name is added once and never twice, so the count is principals.
+                me.inner
+                    .armed
+                    .lock()
+                    .expect("the armed lock")
+                    .insert(speaker.session.clone());
                 if seat == Seat::External {
                     me.inner
                         .externals
@@ -1296,6 +1349,21 @@ impl Server {
                     .lock()
                     .expect("the connections lock")
                     .remove(&id);
+                // An external that has gone is not known any more: the set is what keeps `say to`
+                // from refusing a name that can answer, and a name with no connection and no tree
+                // row answers nothing. Its next `Hello` adds it back.
+                if seat == Seat::External
+                    && !me
+                        .conn_list()
+                        .iter()
+                        .any(|c| c.who.session == speaker.session)
+                {
+                    me.inner
+                        .externals
+                        .lock()
+                        .expect("the externals lock")
+                        .remove(&speaker.session);
+                }
                 if seat.is_wide() {
                     return;
                 }
@@ -1441,6 +1509,25 @@ impl Server {
     /// One event was addressed to a session that is not here - see [`Server::route`].
     fn count_missed(&self, session: &str, now: u64) {
         let mut missed = self.inner.missed.lock().expect("the missed lock");
+        if !missed.contains_key(session) {
+            let max = self.inner.principals.load(Ordering::SeqCst);
+            if missed.len() >= max
+                && let Some((gone, was)) = missed
+                    .iter()
+                    .min_by_key(|(_, m)| m.since_ms)
+                    .map(|(k, m)| (k.clone(), *m))
+            {
+                // The map is per session and a session may be named anything, so the oldest gap
+                // goes rather than the map growing: a count nobody came back for is worth less
+                // than the room's memory, and the number is said on the log, not dropped silently.
+                missed.remove(&gone);
+                eprintln!(
+                    "room: forgetting that `{gone}` missed {} event(s); the room tracks {max} \
+                     sessions",
+                    was.count
+                );
+            }
+        }
         let entry = missed.entry(session.to_string()).or_insert(Missed {
             count: 0,
             since_ms: now,

@@ -880,3 +880,81 @@ fn a_line_past_the_bound_is_refused_with_the_bound_in_the_sentence() {
     });
     server.stop();
 }
+
+/// An external is known while it can answer. The set exists so `say to` a name that has connected
+/// is not refused, and a name whose connection closed answers nothing - a name nobody answers to
+/// is exactly what `unknown_addressee` is for.
+#[test]
+fn an_external_that_has_gone_is_not_known_any_more() {
+    let scratch = Scratch::new("external");
+    let server = Server::serve(&scratch.socket(), Room::new()).expect("a socket");
+    let (me, _events) = client(&server, "s-a");
+    let external = Client::connect_as(
+        server.path(),
+        Speaker::top_level("claude-code"),
+        server.name(),
+        Seat::External,
+        Arc::new(|_: &Event| {}),
+    )
+    .expect("an external connects");
+    let say_to = |c: &Client, id: &str| {
+        c.request(&Request::Say {
+            id: id.into(),
+            room: HOST_ROOM.into(),
+            text: "over to you".into(),
+            to: Some("claude-code".into()),
+            thread: None,
+            refs: Vec::new(),
+        })
+        .expect("an answer")
+    };
+    assert!(matches!(say_to(&me, "1"), Response::Said { .. }));
+    drop(external);
+    until("the external's connection to close", || {
+        server.connections() == 1
+    });
+    match say_to(&me, "2") {
+        Response::Refused { why, .. } => {
+            assert!(
+                matches!(why, letibot_room::Refused::UnknownAddressee { .. }),
+                "{why}"
+            );
+        }
+        other => panic!("a name that has gone answers nothing: {other:?}"),
+    }
+    // And its next `hello` makes it known again, with no restart in between.
+    let back = Client::connect_as(
+        server.path(),
+        Speaker::top_level("claude-code"),
+        server.name(),
+        Seat::External,
+        Arc::new(|_: &Event| {}),
+    )
+    .expect("it comes back");
+    assert!(matches!(say_to(&me, "3"), Response::Said { .. }));
+    drop(back);
+    server.stop();
+}
+
+/// The per-principal maps are bounded: a connection may name itself anything, and a fresh name each
+/// time would grow a cursor and a missed-count per connection, for ever.
+#[test]
+fn a_fresh_name_each_time_does_not_grow_the_rooms_state() {
+    let scratch = Scratch::new("principals");
+    let server = Server::serve(&scratch.socket(), Room::new()).expect("a socket");
+    server.with_principals(2);
+    let (_a, _ea) = client(&server, "s-a");
+    let (_b, _eb) = client(&server, "s-b");
+    let refused = Client::connect(
+        server.path(),
+        Speaker::top_level("s-c"),
+        Arc::new(|_: &Event| {}),
+    )
+    .expect_err("a third name is past the bound");
+    let said = refused.to_string();
+    assert!(said.contains('2'), "the bound is named: {said}");
+    assert!(said.contains("tracking"), "and what it is about: {said}");
+    // A name the room already tracks is free: the bound is about principals, not connections.
+    let (_a2, _ea2) = client(&server, "s-a");
+    server.stop();
+}
