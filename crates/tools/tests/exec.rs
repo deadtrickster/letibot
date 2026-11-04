@@ -376,8 +376,8 @@ fn the_reap_log_reaches_the_model_through_job_list() {
     // a member still a forked `/bin/sh` records no program.
     let execd = |pids: &[u32]| {
         pids.iter().any(|p| {
-            std::fs::read(format!("/proc/{p}/cmdline"))
-                .map(|c| c.windows(5).any(|w| w == b"sleep"))
+            std::fs::read_to_string(format!("/proc/{p}/comm"))
+                .map(|c| c.trim() == "sleep")
                 .unwrap_or(false)
         })
     };
