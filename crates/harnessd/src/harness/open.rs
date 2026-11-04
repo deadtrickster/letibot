@@ -4428,7 +4428,7 @@ mod no_boundary_tests {
             Harness::place_the_tools(&mut cfg, &hub, &registry).expect("an unconfined session");
         let warned = match hub.next_batch(&head, 256) {
             letibot_sessionlog::hub::Delivery::Events(b) => b.events().iter().any(|e| {
-                matches!(&e.event, SessionEvent::Warning { code, .. } if code == BOUNDARY_ABSENT)
+                matches!(&e.event, SessionEvent::Warning { code, .. } if code == UNCONFINED_SESSION)
             }),
             _ => false,
         };
