@@ -3164,7 +3164,7 @@ mod tests {
         assert_eq!(
             judged[0]["path"],
             serde_json::json!("/tmp/the-rewritten-one"),
-            "the gate judged the model's arguments, not the layer's"
+            "the gate judged the layer's arguments, not the model's"
         );
         assert!(
             r.render().contains("the-rewritten-one"),
