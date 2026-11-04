@@ -672,3 +672,46 @@ fn log_lines(ws: &Path) -> Vec<serde_json::Value> {
         .map(|l| serde_json::from_str(l).expect("a JSON line"))
         .collect()
 }
+
+/// What a round of offers costs the box's embedder: three callers sharing it, three rounds. The
+/// first pays for the corpora and the subjects. A round whose inputs did not change pays for
+/// nothing, and a round with one new tool result pays for that subject only.
+#[test]
+fn a_round_embeds_only_what_changed() {
+    use crate::waits_offer::OpenRow;
+    use std::sync::Arc;
+
+    let f = Fixture::new("round-cost");
+    corpus(&f);
+    let (_m, _d, embedder) = crate::embeddings::fixture::model("round-cost");
+    let tier = || Some(letibot_embeddings::Tier::over(Arc::clone(&embedder)));
+    let mut notes = Offers::new().with_tier(tier());
+    let mut waits = crate::waits_offer::Offers::new().with_tier(tier());
+    let mut done = crate::done_offer::Offers::new().with_tier(tier());
+    let rows = vec![OpenRow {
+        owner: "w1".into(),
+        content: "alpha beta gamma delta".into(),
+    }];
+    let records = crate::done_offer::subjects_of("abc1234\tkappa lambda mu nu\n");
+    let brief = "alpha beta gamma";
+
+    let mut round = |items: &[TranscriptItem]| {
+        let before = embedder.spent();
+        notes.compose(&f.reader(), &f.global, &f.box_dirs, "", items);
+        waits.compose(&rows, brief);
+        done.compose(&records, brief);
+        let after = embedder.spent();
+        (
+            after.embedded - before.embedded,
+            after.lookups - before.lookups,
+        )
+    };
+    let mut items = prompt(ABOUT);
+    let first = round(&items);
+    let same = round(&items);
+    items.push(result(
+        "a new tool result about the floor and the take-up log",
+    ));
+    let moved = round(&items);
+    eprintln!("round cost (embedded, lookups): first {first:?} same {same:?} moved {moved:?}");
+}

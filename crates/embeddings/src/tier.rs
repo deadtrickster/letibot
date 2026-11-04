@@ -3,6 +3,7 @@
 //! corpus vectors are this module's, so a caller's second tier is one optional `&Tier` and one floor.
 
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 use crate::builtin::{self, DownloadError, Pin};
@@ -155,6 +156,18 @@ pub struct Embedder {
     fault: Mutex<Option<String>>,
     /// What the box said before it fetched the built-in model, handed out once.
     announcement: Mutex<Option<String>>,
+    /// Texts handed to the engine, and cache lookups made: what a round costs.
+    embedded: AtomicU64,
+    lookups: AtomicU64,
+}
+
+/// What an embedder has spent since it opened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Spent {
+    /// Texts the engine embedded.
+    pub embedded: u64,
+    /// Cache lookups, hit or miss.
+    pub lookups: u64,
 }
 
 /// The engine, and only the lock it actually needs. The in-process checkpoint is not thread-safe and
@@ -284,7 +297,17 @@ impl Embedder {
             cache: Mutex::new(cache),
             fault: Mutex::new(None),
             announcement: Mutex::new(announcement),
+            embedded: AtomicU64::new(0),
+            lookups: AtomicU64::new(0),
         })
+    }
+
+    /// What this embedder has spent so far, for a test or a log that wants a round's cost.
+    pub fn spent(&self) -> Spent {
+        Spent {
+            embedded: self.embedded.load(Ordering::Relaxed),
+            lookups: self.lookups.load(Ordering::Relaxed),
+        }
     }
 
     /// The engine's name, which is what a disclosure and a cache row are keyed by.
@@ -330,6 +353,7 @@ impl Embedder {
         let mut vectors: Vec<Option<Vec<f32>>> = Vec::with_capacity(docs.len());
         let mut misses: Vec<usize> = Vec::new();
         for (i, (_, text)) in docs.iter().enumerate() {
+            self.lookups.fetch_add(1, Ordering::Relaxed);
             match self.cache().get(&name, text, now_ms) {
                 Ok(Some(v)) => vectors.push(Some(v)),
                 Ok(None) => {
@@ -343,6 +367,8 @@ impl Embedder {
             let texts: Vec<&str> = chunk.iter().map(|&i| docs[i].1.as_str()).collect();
             // Asked with no lock held unless the engine is the in-process model: the one cache
             // connection is taken again for the writes below, and never across this call.
+            self.embedded
+                .fetch_add(texts.len() as u64, Ordering::Relaxed);
             let embedded = self
                 .engine
                 .embed_many(&texts)
@@ -379,11 +405,13 @@ impl Embedder {
         let name = self.engine.name();
         // Two visits to the cache with the embed between them rather than `Cache::embed_or_get`,
         // which would hold the box's one connection for the whole of a request to an endpoint.
+        self.lookups.fetch_add(1, Ordering::Relaxed);
         match self.cache().get(&name, text, now_ms) {
             Ok(Some(v)) => return Ok((v, Hit::Cached)),
             Ok(None) => {}
             Err(e) => return Err(self.fail(EmbedOrCacheError::Cache(e))),
         }
+        self.embedded.fetch_add(1, Ordering::Relaxed);
         let vector = self
             .engine
             .embed(text)
