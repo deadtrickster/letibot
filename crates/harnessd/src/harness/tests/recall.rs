@@ -1,9 +1,5 @@
-//! The map a compaction leaves, end to end: the evicted bodies go to the store under ids, the new
-//! base carries one line per unit, and `recall` opens the body that line names.
-//!
-//! The join is what this file is about. Each half is tested where it lives - the census in
-//! `letibot-turn`'s `evict`, the tool in `letibot-tools`' `recall` - and neither would notice a
-//! harness that evicted a body nothing could open.
+//! The map a compaction leaves, end to end: evicted bodies go to the store under ids, the new base carries one line per unit, and `recall` opens the body a line names.
+//! The join is the point. Each half is tested where it lives (`letibot-turn` `evict`, `letibot-tools` `recall`) and neither would catch a harness evicting a body nothing can open.
 
 use super::*;
 use crate::harness::wall::Spilled;

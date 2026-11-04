@@ -895,10 +895,8 @@ fn a_want_is_forgotten_when_its_result_is_delivered_in_a_batch_or_already_was() 
     );
 }
 
-/// **A batch put back is results the model was never told, and nothing rings for it again.** The
-/// ring the batch arrived with was spent by the turn that could not say it, and a turn that ends
-/// stopped or failed takes its own wake back - so putting the batch back has to ring, or the session
-/// reads `waiting on: delivery` and sits there until an unrelated prompt.
+/// A batch put back is results the model was never told, and nothing rings for it again: its ring was spent by the turn that could not say it, and a stopped or failed turn takes its wake back.
+/// Putting it back must ring, or the session sits on `waiting on: delivery`.
 #[test]
 fn a_batch_put_back_rings_the_session_that_owes_it() {
     use letibot_sessionlog::registry::{Registry, SessionWiring, Work, WorkOrIdle};

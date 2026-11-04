@@ -616,10 +616,7 @@ fn a_tier_that_cannot_answer_leaves_the_offer_as_the_words_scored_it() {
     assert!(said.contains("127.0.0.1:1"), "{said}");
 }
 
-/// **A paraphrase that shares no word with the note it is about.** The words alone score it
-/// zero against every note, which is a floor nobody can tune; the second tier's cosine, over
-/// words planted as synonyms, carries it over [`OFFER_FLOOR`] - and with no tier the offer is
-/// the one it was before.
+/// A paraphrase sharing no word with its note. Words alone score it zero against every note; the second tier's cosine, over words planted as synonyms, carries it over [`OFFER_FLOOR`]. With no tier the offer is unchanged.
 #[test]
 fn a_paraphrase_with_no_shared_word_is_offered_by_the_second_tier() {
     let f = Fixture::new("paraphrase");

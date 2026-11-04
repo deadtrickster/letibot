@@ -1,8 +1,5 @@
-//! **A background job's output, as a window**: the numbers a pane needs beside the bytes, the fate a
-//! row's condition turns on, and what a job that is no longer in this daemon's table can still say.
-//!
-//! Every decision here is apart from the harness that feeds it, so the wording and the arithmetic are
-//! asserted without a backend, a registry, a gate or a store.
+//! A background job's output as a window: the numbers a pane needs beside the bytes, the fate a row's condition turns on, and what a job gone from the daemon's table can still say.
+//! Apart from the harness, so wording and arithmetic are tested without a backend, registry, gate or store.
 
 use super::*;
 

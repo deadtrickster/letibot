@@ -1,9 +1,6 @@
-//! Where each live session's own watcher set and child slots are, by session id.
+//! Where each live session's watcher set and child slots are, by session id.
 //!
-//! A parked child is a session the daemon's WORKER runs later turns for, while the slot and the
-//! queue that must move are its parent's - and the parent is on its own thread, with its harness
-//! in no map the worker can read. This is the one table both sides reach: a harness registers
-//! itself as it opens, and the worker asks it for the parent of the child it just ran a turn for.
+//! A parked child's later turns run on the daemon's worker, but its slot and queue are the parent's, on its own thread. This is the one table both sides reach: a harness registers on open, the worker asks for the parent of the child it ran.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

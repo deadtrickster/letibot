@@ -1,8 +1,5 @@
-//! **What the daemon holds once and every session borrows**: the vocabulary, the wiring, the mode
-//! store, the journals and the review desk.
-//!
-//! Held apart from [`Harness`](crate::harness::Harness) because `TurnEngine` borrows the vocabulary and
-//! the renderer, so a struct owning both the borrow and the borrowed would be self-referential.
+//! What the daemon holds once and every session borrows: vocabulary, wiring, mode store, journals and review desk.
+//! Apart from [`Harness`](crate::harness::Harness) because `TurnEngine` borrows the vocabulary and renderer, and one struct owning both would be self-referential.
 
 use super::*;
 

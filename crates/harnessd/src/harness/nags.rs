@@ -156,10 +156,8 @@ impl Harness {
             Some((text, named)) => (Some(text), Some(named)),
             None => (None, None),
         };
-        // And the prompt this session is speaking, when it is not this daemon's: the sentence is composed once at open
-        // for the attach path, and the model cannot see it either, so a session can spend an evening speaking a prompt
-        // its daemon would not compose. Told once, as information: the sentence is the model's
-        // own and the person has the choice on their screen (R93.E9).
+        // And the prompt this session speaks when it is not this daemon's: the sentence is composed once at open for the attach path and the model cannot see it, so a session can run long on a prompt its daemon would not compose.
+        // Told once, as information; the person has the choice on screen.
         let stale = self.stale_untold();
         let text = match (plan, stale) {
             (None, None) => None,

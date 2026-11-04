@@ -1,8 +1,6 @@
-//! **A session's estate**: what it was still holding when it ended, and what became of it.
+//! A session's estate: what it still held when it ended, and what became of it.
 //!
-//! The substrate reaps a session's own scopes and retires its watchers. It cannot answer *what a
-//! subagent left*, because a child's heir is a session: so `settle_estate` reads the facts, hands
-//! what outlives the child to the heir, ends the rest, and says which was which.
+//! The substrate reaps a session's own scopes and watchers but cannot say what a subagent left, since a child's heir is a session. `settle_estate` hands what outlives the child to the heir, ends the rest, and says which was which.
 
 use super::*;
 

@@ -28,10 +28,7 @@ impl Drop for Scratch {
     }
 }
 
-/// **The same two tool results one round produced are ONE user turn in an imported session.** The
-/// importers hand the writer one row per event, and a batch boundary between two results is a
-/// `<|im_end|>` the re-render of those rows does not have: the model reads a prompt it was never
-/// trained on, and the ledger disagrees with itself.
+/// The same two tool results one round produced are one user turn in an imported session. Importers write one row per event, and a batch boundary between results is a `<|im_end|>` the re-render lacks: the model reads an untrained prompt and the ledger disagrees with itself.
 #[test]
 fn a_run_of_tool_results_read_from_a_foreign_conversation_is_one_user_turn() {
     let dir = Scratch::new("import-batch");

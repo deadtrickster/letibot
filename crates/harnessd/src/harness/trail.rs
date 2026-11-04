@@ -1,8 +1,5 @@
-//! **The authorisation trail**, as a mirror of what was said rather than a walk over the transcript:
-//! every `User` row looks alike, so the speaker is recorded where it is known and read from here.
-//!
-//! Also the two rows a question and its answer become, which is the same provenance question asked of
-//! the head's own door.
+//! The authorisation trail, a mirror of what was said rather than a walk over the transcript: every `User` row looks alike, so the speaker is recorded where known.
+//! Also the two rows a question and its answer become, the same provenance question for the head's own door.
 
 use super::*;
 

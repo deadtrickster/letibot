@@ -1,8 +1,5 @@
-//! **The gate's two sinks and the steering source**: what a denial and an admission say on the
-//! session's own log, and what a running turn is handed between deltas.
-//!
-//! All three are hub-shaped and none of them is the harness: they are built at open, handed to the
-//! gate and the engine, and forgotten until they fire.
+//! The gate's two sinks and the steering source: what a denial and an admission say on the session's log, and what a running turn is handed between deltas.
+//! Hub-shaped, not the harness: built at open, handed to the gate and engine.
 
 use super::*;
 
