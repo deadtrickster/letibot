@@ -2420,7 +2420,9 @@ fn pieces_of(
                 arg(&mut a, p.display().to_string());
             }
             (false, true) => {
-                arg(&mut a, "--ro-bind");
+                // `--dev-bind`: a `--ro-bind` mount is nodev, so reading the stand-in is a
+                // permission error instead of an empty file.
+                arg(&mut a, "--dev-bind");
                 arg(&mut a, "/dev/null");
                 arg(&mut a, p.display().to_string());
             }
@@ -2919,7 +2921,7 @@ mod tests {
         );
         let npmrc = home.join(".npmrc").display().to_string();
         assert!(
-            joined.contains(&format!("--ro-bind /dev/null {npmrc}")),
+            joined.contains(&format!("--dev-bind /dev/null {npmrc}")),
             "a store that is a file is the unreadable empty one: {joined}"
         );
         assert!(
@@ -3106,7 +3108,7 @@ mod tests {
         );
         let store = cargo.join("credentials.toml").display().to_string();
         assert!(
-            joined.contains(&format!("--ro-bind /dev/null {store}")),
+            joined.contains(&format!("--dev-bind /dev/null {store}")),
             "the store inside the grant is masked: {joined}"
         );
         assert!(
