@@ -1,9 +1,6 @@
-//! A provider's four troubles reach the wire as types, measured against a real daemon and a scripted provider on loopback: a 429 with and without `Retry-After`, a quota refusal, a model API that never answers, and a round stalling past the first-byte threshold.
-//!
-//! The subject is `SessionEvent::ProviderTrouble`, so assertions are on the frames a head receives: kind, model, the named reset instant, and the count that makes *the second timeout* a different fact from *a timeout*.
-//!
-//! One test, five scenarios: `XDG_CONFIG_HOME` is process-global and libtest runs tests in parallel, so the single test owning this process runs the scenarios in sequence (as `model_switch_at_turn_end.rs` does).
-//! The timeout and the stall cannot share a daemon: a short give-up would fail the round meant to stall and then answer.
+//! A provider's four troubles reach the wire as types, against a real daemon and a scripted loopback provider.
+//! Subject is `SessionEvent::ProviderTrouble`: kind, model, reset instant, and the count that makes a second timeout differ from a first.
+//! One test, five scenarios in sequence: `XDG_CONFIG_HOME` is process-global. Timeout and stall cannot share a daemon.
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};

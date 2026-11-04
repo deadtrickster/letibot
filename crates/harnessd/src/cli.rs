@@ -13,7 +13,7 @@
 //!          [--slash VERB ...]         a head's slash verb, in order with --prompt:
 //!                                     `--prompt hi --slash "models deepseek" --prompt again`
 //!
-//! store queries — no socket, no vocabulary, no model:
+//! store queries - no socket, no vocabulary, no model:
 //! harnessd --store PATH --list-sessions [--workspace DIR] [--tsv]
 //! harnessd --store PATH --latest-session [--workspace DIR]
 //! harnessd --store PATH --rename ID TITLE

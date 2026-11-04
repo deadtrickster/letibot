@@ -35,9 +35,9 @@
 //! ```text
 //!   ! sudo apt install mc
 //!     bash -ic …        the operator's uid, /proc readable, blocked in wait4
-//!       sudo            ROOT — /proc/<pid>/fd/0 is EACCES for the daemon
+//!       sudo            ROOT - /proc/<pid>/fd/0 is EACCES for the daemon
 //!         letibot-askpass   the operator's uid again, blocked on the socket
-//!         apt           ROOT — waiting at `Continue? [Y/n]` on the terminal the daemon holds
+//!         apt           ROOT - waiting at `Continue? [Y/n]` on the terminal the daemon holds
 //! ```
 //!
 //! `letibot_tools::exec::ask` reads `/proc/<pid>/fd/0` and `/proc/<pid>/wchan`, so the two

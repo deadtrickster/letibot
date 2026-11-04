@@ -5,7 +5,7 @@
 //! [queue]
 //! target = "feat/memory-engine"   # decision 12: the branch this project lands on
 //! merge_via_session = false       # decision 4: a review that cannot run is handed to the
-//!                                 #   project's main session to gate and merge (default: no —
+//!                                 #   project's main session to gate and merge (default: no -
 //!                                 #   raise only)
 //! red_target = "fix"              # decision 11: when the target goes red, the reviewer of the
 //!                                 #   red tip opens a fix branch through the queue ("fix",
@@ -13,16 +13,16 @@
 //! gate_carry = ["images", "vendor"] # gitignored inputs the gate needs, COPIED from the
 //!                                 #   operator's checkout into the landing tree before every
 //!                                 #   gate run (default: none)
-//! reviewers = "host"              # where this project's reviewers run: `host` (the default —
+//! reviewers = "host"              # where this project's reviewers run: `host` (the default -
 //!                                 #   on this machine, as the children that author the
 //!                                 #   branches do) or `vm` (each reviewer in a firecode
 //!                                 #   microVM)
 //! gate_host = "lab2x1"             # decision 9's machine, when it is not this one: the gate's
 //!                                 #   steps run on a host the operator declared in
-//!                                 #   `hosts.toml` (default: empty — this machine)
+//!                                 #   `hosts.toml` (default: empty - this machine)
 //! gate_train = 3                  # how many approved branches one gate may judge together:
 //!                                 #   they are rebased one onto the last, gated ONCE, and
-//!                                 #   landed one commit at a time (default: 1 — one branch,
+//!                                 #   landed one commit at a time (default: 1 - one branch,
 //!                                 #   one gate, exactly as before)
 //! ```
 //!

@@ -1,7 +1,7 @@
 //! The memory card above the ceiling, answered by a real head over the session socket.
 //!
-//! `AdjudicatedGate::grant_memory` poses the ask a `bash` call makes when it wants over half of free memory. The ask is posed on one thread and answered on another through `ClientFrame::Answer`.
-//! It is built from `/proc/meminfo`; `apparatus::applies` says so on a platform without it, and that is not a refusable skip.
+//! `AdjudicatedGate::grant_memory` poses the ask on one thread, answered on another through
+//! `ClientFrame::Answer`. It reads `/proc/meminfo`; `apparatus::applies` covers platforms without it.
 
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, channel};

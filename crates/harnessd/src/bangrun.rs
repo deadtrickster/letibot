@@ -12,7 +12,7 @@
 //! worker                          the run's own thread
 //!   │ prepare (mint bang-<n>)           │
 //!   ├────────── spawn ────────────────> │ invoke_operator (the wait lives HERE)
-//!   │ free: other sessions, turns,      │ cards, !send, promotion, deadline — unchanged,
+//!   │ free: other sessions, turns,      │ cards, !send, promotion, deadline - unchanged,
 //!   │ nags, sweeps, second `!` queued   │ because they all live in the tool's wait loop
 //!   │ <────────── submit_daemon ────────┤ OperatorShellResult (the run is over)
 //!   │ settle: note + two rows + turn    │

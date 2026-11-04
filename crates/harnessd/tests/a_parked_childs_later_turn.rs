@@ -1,7 +1,6 @@
 //! A parked child's later turn reaches its parent: the notice, and `task_result`.
-//!
-//! A parked child has no thread. The parent's `task_message` reopens its session and the daemon's worker runs the turn, so settling the parent's slot and queueing the settlement happen on the worker's side, or the parent is never told.
-//! The tree is the daemon's: a `Sessions` with the parent open, its real `task` call, and a child parked by a short park window.
+//! A parked child has no thread: `task_message` reopens it and the daemon's worker runs the turn, so the worker side must settle the parent's slot.
+//! The tree is the daemon's: a `Sessions` with the parent open, a real `task` call, a child parked by a short window.
 
 use std::net::TcpListener;
 use std::sync::Arc;

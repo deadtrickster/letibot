@@ -9,7 +9,7 @@
 //! model_endpoint_retry · the model changed to deepseek/deepseek-flash (metered) while this round was
 //!   failing at glm-coding/glm-5.3 (metered)…
 //! ! model_switch_refused · the first round on deepseek/deepseek-flash was refused by the provider (http 400)
-//! FAILED — http 400: The `reasoning_content` in the thinking mode must be passed back to the API.
+//! FAILED - http 400: The `reasoning_content` in the thinking mode must be passed back to the API.
 //! ```
 //!
 //! The daemon's request dump (`harnessd-2000f08acfaa.log`, request `9f2a5669…`) shows why: the round
