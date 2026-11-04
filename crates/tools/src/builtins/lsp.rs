@@ -106,9 +106,13 @@ fn spawn(language: &str, root: &str, config: &LspConfig) -> Result<Server, Strin
         .servers
         .get(language)
         .ok_or_else(|| format!("no LSP server configured for `{language}`"))?;
-    let program = &argv[0];
+    let Some((program, args)) = argv.split_first() else {
+        return Err(format!(
+            "the LSP server for `{language}` has an empty command"
+        ));
+    };
     let mut child = Command::new(program)
-        .args(&argv[1..])
+        .args(args)
         .current_dir(root)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -282,5 +286,13 @@ mod tests {
         let c = LspConfig::default();
         assert!(c.languages().contains(&"rust"));
         assert!(c.languages().contains(&"go"));
+    }
+
+    #[test]
+    fn an_empty_server_command_is_refused_not_indexed() {
+        let mut c = LspConfig::default();
+        c.servers.insert("rust".into(), Vec::new());
+        let err = spawn("rust", ".", &c).err().expect("refused");
+        assert!(err.contains("empty command"), "{err}");
     }
 }
