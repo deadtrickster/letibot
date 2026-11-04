@@ -207,7 +207,7 @@ fn a_row_the_view_trimmed_comes_from_the_store() {
     assert_eq!(ids, ["i2", "i3"]);
 }
 
-/// **A page is bounded in bytes as well as in rows.** `MAX_FETCH_ROWS` alone let four rows of a
+/// A page is bounded in bytes as well as in rows. `MAX_FETCH_ROWS` alone let four rows of a
 /// megabyte each into one frame, and the memory a frame is built in is the daemon's.
 #[test]
 fn a_page_is_bounded_in_bytes_and_keeps_the_rows_nearest_the_window() {
@@ -241,7 +241,7 @@ fn a_page_is_bounded_in_bytes_and_keeps_the_rows_nearest_the_window() {
     assert_eq!(rows[0].item_id, "i3");
 }
 
-/// **A page says the ordinal it really starts at.** A source that cannot hand over the first row it
+/// A page says the ordinal it really starts at. A source that cannot hand over the first row it
 /// was asked for answers from a later one, and echoing the request labels every row of the page one
 /// place to the left.
 #[test]

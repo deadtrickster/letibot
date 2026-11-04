@@ -1,7 +1,5 @@
-//! Stop one session's turn by name - the interrupt the head's `Esc-Esc` sends, aimed at a
-//! session you are not sitting in. `job_kill` cannot do it: `Hub::submit` refuses a head that is
-//! not seated in the session the command is for, so this moves its own seat first.
-//!
+//! Stop one session's turn by name, as the head's `Esc-Esc` does, from outside the session.
+//! `Hub::submit` refuses unseated heads, so this moves its own seat first.
 //!     cargo run -q --example interrupt -p letibot-sessionlog -- <socket> <session> [reason]
 
 use letibot_sessionlog::client::HeadClient;

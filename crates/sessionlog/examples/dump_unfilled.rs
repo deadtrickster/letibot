@@ -1,8 +1,5 @@
-//! Name the rows a snapshot announced and did not fill: every row whose `item` is `None`,
-//! with its id, kind, ledger head and ts. The head's own line prints a count and no ids, which
-//! is the least useful form of the fact, and a FRESH attach also says whether the daemon is
-//! still announcing them or the rows belong to a head's live session.
-//!
+//! Name the rows a snapshot announced and did not fill (`item` is `None`), with id, kind,
+//! ledger head and ts.
 //!     cargo run -q --example dump_unfilled -- /run/user/1000/letibot/<hash>.sock <session>
 
 use letibot_sessionlog::client::HeadClient;

@@ -1,7 +1,5 @@
-//! Read a live session's user rows and say what shape their text is: the line count, the
-//! character count and the first line of each, so the shape is read rather than assumed.
-//! Read-only - it attaches as a `remote` head called `dump-queued` and says nothing.
-//!
+//! Print each user row of a live session: line count, character count, first line.
+//! Read-only; attaches as a `remote` head called `dump-queued`.
 //!     cargo run -q --example dump_queued -- <socket> <session>
 
 use letibot_sessionlog::client::HeadClient;

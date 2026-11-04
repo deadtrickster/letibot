@@ -1,9 +1,6 @@
-//! The head server: a Unix socket per folder, mode 0600, with filesystem permissions as the
-//! whole of the auth and no password anywhere.
-//!
-//! One socket per workspace, one connection per head, and every frame either answers one
-//! connection or is fanned out by the hub. The protocol version is compared here, on this
-//! thread, before a head is seated.
+//! The head server: a Unix socket per folder, mode 0600, filesystem permissions as the whole
+//! auth. One connection per head; every frame answers one connection or is fanned out by the
+//! hub. The protocol version is compared here before a head is seated.
 
 use std::io;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -23,10 +20,9 @@ use crate::protocol::{
 use crate::registry::{Registry, SessionWiring};
 use crate::wire::{FrameReader, FrameWriter, WireError};
 
-/// Answer a `Settings` request: `rows` is called UNDER the lock that writes the frame. The rows have
-/// two writers - the pump draining a `set_settings` push and this answer - so a read taken outside
-/// the lock can be written after a newer row set and leave the head on the old rows until the next
-/// change, with nothing said.
+/// Answer a `Settings` request: `rows` is called under the lock that writes the frame. The
+/// pump and this answer both write rows, so a read outside the lock could land after a newer
+/// row set and leave the head on old rows.
 fn answer_settings<W: std::io::Write, F: FnOnce() -> Vec<crate::protocol::SettingRow>>(
     writer: &Mutex<FrameWriter<W>>,
     rows: F,
@@ -260,10 +256,9 @@ fn no_password_sentence(heads: usize) -> String {
 mod settings_answer_tests {
     use super::*;
 
-    /// **The rows are read under the lock that writes them.** Two writers reach one socket - the
-    /// pump draining a `set_settings` push, and this answer - so a read taken outside the lock can
-    /// be written AFTER a newer row set: the head applies the old rows last and draws them until
-    /// the next change. The seam is the closure, so the order is assertable without a race.
+    /// The rows are read under the lock that writes them. The pump and this answer both reach one
+    /// socket, so a read outside the lock could be written after a newer row set. The seam is the
+    /// closure, so the order is assertable without a race.
     #[test]
     fn a_settings_answer_reads_its_rows_under_the_lock_that_writes_them() {
         let writer = Mutex::new(FrameWriter::new(Vec::<u8>::new()));
@@ -596,10 +591,9 @@ pub fn serve_conn_rooted(
     // never abort: nothing below cancels a turn.
     let result = loop {
         match reader.read::<ClientFrame>() {
-            // **Who connected decides what it may reach.** A command this daemon started carries
-            // `LETIBOT_SOCKET` for `sudo`'s password, and it is not the operator: every door below
-            // is the operator's own ungated act, so the askpass question is the only one such a
-            // connection gets. First arm, so it sees every frame before a door does.
+            // Who connected decides what it may reach. A command this daemon started carries
+            // `LETIBOT_SOCKET` for `sudo` and is not the operator, so askpass is the only door it gets.
+            // First arm, so it sees every frame before a door does.
             Ok(frame) if peer.refuses(&frame).is_some() => {
                 let door = peer.refuses(&frame).expect("the guard said there is one");
                 let (client_request_id, expected_seq) = crate::peer::request_of(&frame);
@@ -1399,7 +1393,7 @@ pub fn serve_conn_rooted(
                     rows.push((row, item));
                     row += 1;
                 }
-                // **The page is bounded in BYTES as well as rows, and it gives up its OLDEST rows.**
+                // The page is bounded in BYTES as well as rows, and it gives up its OLDEST rows.
                 // The rows nearest the window are the ones the reader scrolling up is next to, and a
                 // page that kept its head would no longer join the window it was asked for.
                 let mut bytes = 0;

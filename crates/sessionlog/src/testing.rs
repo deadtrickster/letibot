@@ -1,10 +1,6 @@
 //! Event builders and a recorded session.
 //!
-//! Public rather than `#[cfg(test)]` on purpose. `docs/workstreams.md` W8→W6 says
-//! the TUI *"renders an event stream. Give it a recorded event log as a fixture and
-//! it is built and demoed before a turn engine exists."* [`recorded_session`] is
-//! that fixture, and a fixture that only exists inside this crate's test binary is
-//! a fixture the head cannot use.
+//! Public rather than `#[cfg(test)]` so the TUI can use [`recorded_session`] as a fixture.
 
 use letibot_transcript::{ToolOutcome, TranscriptItem, UserPart};
 
@@ -121,8 +117,8 @@ pub fn requested(req_id: &str, summary: &str) -> SessionEvent {
     }
 }
 
-/// A **question**, not a permission: model-provided choices in plain text, no
-/// adjudication ladder, and the one line saying what the model is stuck on (T25/D10).
+/// A question, not a permission: model-provided choices in plain text, no
+/// adjudication ladder, and the one line saying what the model is stuck on.
 pub fn asked(req_id: &str, text: &str, choices: &[&str], because: &str) -> SessionEvent {
     SessionEvent::DecisionRequested {
         write_targets: Vec::new(),
@@ -196,7 +192,7 @@ pub fn turn_finished(turn_id: &str) -> SessionEvent {
     }
 }
 
-/// **A round's ending, with the turn still running**: a call it proposed is unanswered, so the
+/// A round's ending, with the turn still running: a call it proposed is unanswered, so the
 /// prompt is not over and nothing a head writes about an ending may be written yet.
 pub fn turn_finished_round(turn_id: &str) -> SessionEvent {
     match turn_finished(turn_id) {
@@ -372,7 +368,7 @@ pub fn one_of_each() -> Vec<SessionEvent> {
             lines: vec!["building".into(), "done".into()],
             next: None,
         },
-        // **What the session is waiting on** (`PROTOCOL_VERSION` 52) - the value a caller reads
+        // What the session is waiting on (`PROTOCOL_VERSION` 52) - the value a caller reads
         // instead of inventing a settle window. One of each: the two turn entries, the delivery
         // window, a job and a child by name, a monitor and the card that needs a person.
         SessionEvent::ActivityChanged {
@@ -385,7 +381,7 @@ pub fn one_of_each() -> Vec<SessionEvent> {
                 crate::activity::Waiting::Ask("adj-s1-0001".into()),
             ]),
         },
-        // **A model call being retried**, as one row's whole value (`PROTOCOL_VERSION` 59): the
+        // A model call being retried, as one row's whole value (`PROTOCOL_VERSION` 59): the
         // line, the attempts behind the popup, and the line it settles to.
         SessionEvent::ModelRetry {
             host: "api.deepseek.com".into(),
@@ -559,7 +555,7 @@ behaviour on a hybrid model, which is a measurement of llama.cpp and not a
 violation of the invariant.
 ";
 
-/// **Where a test's scratch directory goes**: the system temp dir, reached through a short path
+/// Where a test's scratch directory goes: the system temp dir, reached through a short path
 /// when the temp dir's own is long. A Unix socket's path has to fit `sun_path` (104 bytes on
 /// macOS, 108 on Linux), and `TMPDIR` on a Mac is ~50 of those before a test has named anything.
 pub fn scratch_root() -> std::path::PathBuf {
@@ -607,7 +603,7 @@ fn short_alias_at(temp: std::path::PathBuf, link: &str) -> std::path::PathBuf {
     }
 }
 
-/// **Where a test binds `dir`'s socket**: `dir/<name>` when that fits `sun_path`, otherwise the
+/// Where a test binds `dir`'s socket: `dir/<name>` when that fits `sun_path`, otherwise the
 /// same file reached through a short symlink in `/tmp`. The limit is the kernel's, so the product
 /// refusing such a path is correct and the fix belongs here.
 pub fn socket_path(dir: &std::path::Path, name: &str) -> std::path::PathBuf {

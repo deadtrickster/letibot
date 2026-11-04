@@ -1,8 +1,5 @@
-//! Say something to a session you are not sitting in: attach as a `remote` head of the child's
-//! session, then `Prompt`. A mid-turn prompt is queued as a follow-up rather than rejected,
-//! which is what makes this useful instead of a race; the seq is learned from the refusal's
-//! `actual_seq` and resent once, never guessed.
-//!
+//! Say something to another session: attach as a `remote` head, then `Prompt`. A mid-turn
+//! prompt is queued; the seq is learned from the refusal's `actual_seq` and resent once.
 //!     cargo run -q --example say -p letibot-sessionlog -- <socket> <session> "text"
 
 use letibot_sessionlog::client::HeadClient;

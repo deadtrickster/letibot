@@ -36,10 +36,9 @@ struct BellInner {
     /// is arrival order across sessions and a create put in it makes a session's first command
     /// jump ahead of one submitted before it.
     opens: VecDeque<String>,
-    /// Sessions something inside the daemon woke, with no command behind it. A third queue for
-    /// `opens`' reason: `pending` is arrival order across heads, and a wake has no head and no
-    /// `client_request_id` to be fair to. Each entry carries what rung it, because one kind can be
-    /// taken back and the others cannot.
+    /// Sessions something inside the daemon woke, with no command behind it. A third queue because
+    /// a wake has no head and no `client_request_id` to be fair to. Each entry carries what rung it,
+    /// because one kind can be taken back and the others cannot.
     wakes: VecDeque<(String, Wake)>,
     /// Sessions something asked to be closed. A fourth queue because the session is already out of
     /// the registry by then, and the worker must still hear it.
@@ -522,11 +521,9 @@ pub trait RowSource: Send + Sync {
     /// Not an empty string for a row that exists and is empty - the two must not look alike.
     fn row_body(&self, session_id: &str, row: usize) -> Option<String>;
 
-    /// Whole rows from `from`, at most `count`, each with the ordinal it was read at, in ordinal
-    /// order, stopping at the first ordinal this source cannot answer. The ordinal travels with the
-    /// row because a source may skip one - a row it cannot read - and the page is placed by the
-    /// ordinal it starts at, not by the one it was asked for. A default of none, so a registry with
-    /// no store answers an empty page rather than pretending the conversation began there.
+    /// Whole rows from `from`, at most `count`, each with the ordinal it was read at, stopping at
+    /// the first ordinal this source cannot answer. The ordinal travels with the row because a
+    /// source may skip one. Default none, so a registry with no store answers an empty page.
     fn row_items(
         &self,
         _session_id: &str,
@@ -1422,9 +1419,8 @@ impl Registry {
     }
 
     /// Publish the settings a session runs under. See `Entry::settings`.
-    ///
-    /// A changed set is PUSHED to the heads attached to this session, because the rows are drawn
-    /// from; and a `model` row that MOVED is also a warning, which is history a later head reads.
+    /// A changed set is pushed to attached heads. A `model` row that moved is also a warning,
+    /// which is history a later head reads.
     pub fn set_settings(&self, session_id: &str, rows: Vec<crate::protocol::SettingRow>) {
         let now = model_row(&rows);
         let (hub, changed, moved) = {
@@ -2104,7 +2100,7 @@ mod tests {
         Registry::new()
     }
 
-    /// **A moved `model` row, said to the heads already attached.** The rows answer a request, so a
+    /// A moved `model` row, said to the heads already attached. The rows answer a request, so a
     /// switch made from another head (or by the daemon itself) left this one drawing the old name
     /// until its next turn.
     #[test]
@@ -3064,7 +3060,7 @@ mod tests {
         assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 
-    /// **A wake is not one queue entry.** A stopped or failed turn takes back the wake a settlement
+    /// A wake is not one queue entry. A stopped or failed turn takes back the wake a settlement
     /// rang, because the settlement is still queued for the next turn; a monitor's firing has no
     /// queue behind it, so a drop that takes that back is a firing the session never reads.
     #[test]

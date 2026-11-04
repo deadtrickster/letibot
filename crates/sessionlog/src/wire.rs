@@ -1,12 +1,6 @@
-//! Newline-delimited JSON over any `Read`/`Write`.
-//!
-//! The framing knows nothing about the transport, which is what makes the remote head speak the
-//! same frames as the socket: a Unix socket, a TCP stream and a WebSocket text channel are all a
-//! `Read` and a `Write` here.
-//!
-//! NDJSON rather than a length-prefixed binary encoding because a session log is what an operator
-//! reads when something went wrong, and `nc -U` plus `jq` beats a decoder you have to build first.
-//! The control channel is where the binary encoding belongs: that one is on the hot path.
+//! Newline-delimited JSON over any `Read`/`Write`, so a Unix socket, TCP stream and WebSocket
+//! channel speak the same frames. NDJSON because operators read session logs and `nc -U` plus
+//! `jq` beats a decoder. Binary belongs on the control channel.
 
 use std::io::{BufRead, BufReader, Read, Write};
 

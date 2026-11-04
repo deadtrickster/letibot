@@ -1,8 +1,6 @@
-//! The materialized view, and the snapshot cut from it.
-//!
-//! `since_seq = 0` gets a snapshot as of seq S and then the events after it, so a head that
-//! attaches late is given the state rather than a replay. The view holds what a head draws from
-//! and nothing the log already keeps: a row's body is here, a settled decision is not.
+//! The materialized view, and the snapshot cut from it. `since_seq = 0` gets a snapshot as of
+//! seq S, then the events after it. The view holds what a head draws from, not what the log
+//! already keeps.
 
 use serde::{Deserialize, Serialize};
 
@@ -234,10 +232,9 @@ pub struct Snapshot {
     pub dropped: u64,
     /// Transcript rows trimmed out of this snapshot. Present and zero, same rule.
     pub items_dropped: u64,
-    /// **How many of `items` are above the base and numbered by nothing.** A resume republishes
-    /// the ancestors of the transcript a compaction left behind, and they arrive in the same list:
-    /// ordinal 0 is the first row past this count. Defaulted, so a daemon that has no lead says
-    /// zero and an older head decodes the frame.
+    /// How many of `items` are above the base and numbered by nothing. A resume republishes the
+    /// ancestors of a compacted transcript in the same list; ordinal 0 is the first row past this
+    /// count. Defaulted, so an older head decodes the frame.
     #[serde(default)]
     pub items_lead: usize,
     pub items: Vec<SnapshotItem>,
@@ -679,10 +676,9 @@ impl SessionView {
                     row.citations = citations.clone();
                 }
             }
-            // **A fork numbers the conversation from zero.** The rows of the transcript it replaced
-            // are not ordinals of the new base, and the rows a resume republished above the base are
-            // history no ordinal names - so the view says which transcript it is speaking, and
-            // `items_dropped` is where the base's own window starts.
+            // A fork numbers the conversation from zero. Rows of the replaced transcript, and rows a
+            // resume republished above the base, have no ordinal, so the view says which transcript it
+            // speaks and `items_dropped` is where the base's own window starts.
             SessionEvent::TranscriptForked {
                 transcript_id,
                 parent_id,
@@ -836,7 +832,7 @@ impl SessionView {
             .find(|c| c.call_id == call_id)
     }
 
-    /// **How many of the rows this view holds are above the base.** A resume republishes the tail of
+    /// How many of the rows this view holds are above the base. A resume republishes the tail of
     /// the transcripts a compaction put behind the current one, and those rows are not ordinals of
     /// it: ordinal 0 is the base's first row, which is the first one past this count.
     fn lead(&self) -> usize {
@@ -1424,10 +1420,9 @@ mod tests {
         );
     }
 
-    /// **After a fork the view's ordinals are the new base's.** A fork numbers the conversation from
-    /// zero, and the view kept the rows of the transcripts behind it together with the old
-    /// `items_dropped`, so a page asked for from the head's window was answered out of the middle of
-    /// the transcript the fork replaced.
+    /// After a fork the view's ordinals are the new base's. The view kept rows of the earlier
+    /// transcripts with the old `items_dropped`, so a page asked for from the head's window was
+    /// answered from the transcript the fork replaced.
     #[test]
     fn a_fork_numbers_the_window_from_the_new_base() {
         let mut log = SessionLog::new("s", LogBounds::default());
@@ -1477,7 +1472,7 @@ mod tests {
         );
     }
 
-    /// **A fork drops the rows of the transcript it replaced and no others.** A resume republishes
+    /// A fork drops the rows of the transcript it replaced and no others. A resume republishes
     /// the tail of the transcripts a compaction put behind the current one, and the head draws those
     /// rows - they are not ordinals of the new base, and the base starts past them.
     #[test]
@@ -1526,7 +1521,7 @@ mod tests {
             5,
             "a fork took the rows of a transcript it did not replace: {ids:?}"
         );
-        // **And the ordinals are the new base's.** They start past the rows above it, so ordinal 0
+        // And the ordinals are the new base's. They start past the rows above it, so ordinal 0
         // is the fork's first row and not an ancestor's.
         let v = fold(&log);
         assert_eq!(
@@ -1535,7 +1530,7 @@ mod tests {
             "ordinal 0 names a row above the base"
         );
         assert_eq!(v.snapshot(100, 0).items_dropped, 0);
-        // **And the snapshot says how many of its rows sit above that base**, because a head cannot
+        // And the snapshot says how many of its rows sit above that base, because a head cannot
         // work it out: the daemon's own trim adds `n - lead`, and a head that guessed zero drifted
         // five rows on every page it asked for.
         assert_eq!(

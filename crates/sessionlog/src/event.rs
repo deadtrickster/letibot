@@ -603,7 +603,7 @@ pub struct ModelAdvice {
     #[serde(default)]
     pub unsure: Option<String>,
     /// How long it took, in milliseconds. A verdict that spent its whole budget is a different fact
-    /// from one that came back in 40 ms.
+    /// from a fast one.
     pub latency_ms: u64,
 }
 
@@ -867,7 +867,7 @@ pub struct CompactionReport {
     /// heading it did not find is absent - see [`CompactionSection`].
     pub sections: Vec<CompactionSection>,
     pub tail: CompactionTail,
-    /// **What the record kept, level by level** (R22), when the daemon measured it: absent on an
+    /// What the record kept, level by level, when the daemon measured it: absent on an
     /// overrun compaction and on any record written before the gate existed. `#[serde(default)]`
     /// so a row stored by an older daemon still reads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -927,9 +927,7 @@ pub struct CompactionBudget {
 }
 
 /// The template tag a compaction report carries: a date, bumped by hand when the summary
-/// instruction changes, so a report can be read against the template that produced it. Bumped
-/// 2026-11-02 for R22's sized record: the same eight sections, but the instruction now names the
-/// room and asks for a line per thing rather than for a *compact* record.
+/// instruction changes, so a report can be read against the template that produced it.
 pub const COMPACTION_TEMPLATE: &str = "compaction/2026-11-02";
 
 /// The sections a compaction's record has, from the daemon that asks for them: a settings row
@@ -1169,10 +1167,9 @@ pub enum SessionEvent {
         /// a partial cannot arrive looking like one that does not.
         partial_kept: bool,
     },
-    /// **The model's provider is in trouble, in the one word an automation branches on.** A
-    /// warning is prose a person reads; this is the same fact as a type, because a caller that
-    /// must sleep until a limit lifts, or move a session elsewhere, cannot match English.
-    /// Published where the daemon learns it, before the turn that met it ends.
+    /// The model's provider is in trouble, in the one word an automation branches on. A warning
+    /// is prose; this is the same fact as a type, for callers that must sleep until a limit lifts
+    /// or move a session. Published where the daemon learns it, before the turn ends.
     ProviderTrouble {
         /// `rate_limit`, `quota`, `timeout` or `stall`: *wait*, *the account cannot pay*, *the
         /// request never answered*, *nothing came back for a while*.
@@ -1197,10 +1194,8 @@ pub enum SessionEvent {
         item_id: String,
         kind: String,
         ledger_head: String,
-        /// **The row itself, when it fits [`ANNOUNCE_BYTES`].** A log whose appends carry no body
-        /// cannot be read back as a conversation, and a head had to wait for a second event
-        /// before it could draw a row it had been told about. `None` is a row too large to ride
-        /// one, and - for an event written before the field existed - every row.
+        /// The row itself, when it fits [`ANNOUNCE_BYTES`], so a log reads back as a conversation.
+        /// `None` is a row too large to ride one, and every row of an event written before the field.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         item: Option<Box<letibot_transcript::TranscriptItem>>,
         /// How many bytes the body is, whether or not it is here: a head told nothing can then
@@ -1518,13 +1513,9 @@ pub enum SessionEvent {
         /// of which entries mean *this session moves on its own* and which one means *a person must*.
         activity: crate::activity::Activity,
     },
-    /// **One model call being retried, as ONE row.** The daemon publishes this per failed attempt
-    /// and the value is the row's whole content, so a head that has the row rewrites it rather
-    /// than adding one: a flaky provider fills a transcript with a stack of rows otherwise.
-    ///
-    /// Ephemeral, and re-said to every head after its snapshot (`Inner::retry_now`), because a
-    /// head that attaches in the middle of a series is exactly the one that would otherwise draw
-    /// nothing and conclude the endpoint is fine.
+    /// One model call being retried, as one row. The value is the row's whole content, so a head
+    /// rewrites the row rather than adding one. Ephemeral, and re-said to every head after its
+    /// snapshot (`Inner::retry_now`) so a head attaching mid-series does not draw nothing.
     ModelRetry {
         /// The endpoint the call went to, as the daemon spells a host - what is being retried.
         host: String,
@@ -1536,10 +1527,9 @@ pub enum SessionEvent {
         said: String,
         /// Every failed attempt, oldest first, as the popup lists them: `<clock> · <reason>`.
         log: Vec<String>,
-        /// **The line the row settles to**, `None` while the series is still going: `answered
-        /// after 4 attempts, 52s` or `gave up after 6 attempts: <reason>`. It is the
-        /// same row's last value, and the durable warning beside it is the record for a head that
-        /// attaches after the series is over.
+        /// The line the row settles to, `None` while the series is going: `answered after 4 attempts,
+        /// 52s` or `gave up after 6 attempts: <reason>`. The durable warning beside it is the record
+        /// for a head that attaches later.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ended: Option<String>,
     },
@@ -1689,10 +1679,9 @@ mod tests {
         ));
     }
 
-    /// §18.2's question - a scheduling fact or a prefix divergence - is answered by the check and
-    /// not by the reuse number beside it, so the verdict travels on the ending with the dialect
-    /// that produced it. A frame from a daemon older than the two fields must read as *nothing
-    /// said*, which is not `Violated`.
+    /// A scheduling fact or a prefix divergence is answered by the check, not by the reuse number
+    /// beside it, so the verdict travels on the ending with its dialect. A frame from a daemon
+    /// older than the two fields must read as nothing said, not `Violated`.
     #[test]
     fn an_endings_prefix_check_and_dialect_sha_survive_the_wire() {
         for check in [

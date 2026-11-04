@@ -1,14 +1,6 @@
-//! A command this daemon started is not a head.
-//!
-//! Every command a model's `bash` call runs is handed `LETIBOT_SOCKET` and `LETIBOT_SESSION`, so
-//! `sudo`'s helper can put a password card in front of the operator. The socket's mode cannot tell
-//! that process from a head - both are the operator's user - so the daemon asks the kernel which
-//! process connected, and serves a connection from inside its own tree nothing but the askpass
-//! door.
-//!
-//! The child here is a real process the daemon process spawned, which is the shape of a tool call.
-//! The head is this test process, which is also the process `serve` runs in: a process is not
-//! inside its own tree, and that is why it keeps every door.
+//! A command this daemon started is not a head. The kernel is asked which process connected,
+//! and a connection from inside the daemon's own tree gets only the askpass door. This test
+//! process is outside that tree, so it keeps every door.
 
 use std::io::{BufRead, Write};
 use std::sync::mpsc::channel;
@@ -159,7 +151,7 @@ fn ask(client: &mut HeadClient, which: usize) {
     r.expect("the frame is written");
 }
 
-/// **The child.** Re-executed as this, it attaches like a head and then asks for every operator
+/// The child. Re-executed as this, it attaches like a head and then asks for every operator
 /// door, printing what each answered. It is a process this daemon started, which is the whole of
 /// the fact the daemon is meant to read.
 #[test]
@@ -185,7 +177,7 @@ fn the_tool_trees_child() {
     println!("ASKED {secret:?} why={why:?}");
 }
 
-/// **The child.** Re-executed as this, it attaches asking for a head's caps and prints what the
+/// The child. Re-executed as this, it attaches asking for a head's caps and prints what the
 /// seat it was given holds, then blocks until the parent says a head has arrived.
 #[test]
 fn the_seat_a_tool_call_is_given() {
@@ -232,7 +224,7 @@ fn the_seat_a_tool_call_is_given() {
     }
 }
 
-/// **The seat.** A connection from a tool call is given none of a head's estate - no snapshot, no
+/// The seat. A connection from a tool call is given none of a head's estate - no snapshot, no
 /// session list, no wiring, no vote and no events - because the askpass door needs none of them.
 #[test]
 fn a_tool_calls_seat_holds_none_of_a_heads_estate() {
@@ -283,7 +275,7 @@ fn a_tool_calls_seat_holds_none_of_a_heads_estate() {
     );
 }
 
-/// **The rule.** A connection from inside this daemon's tree is refused every operator door, by
+/// The rule. A connection from inside this daemon's tree is refused every operator door, by
 /// name, and the password card still works.
 #[test]
 fn a_connection_from_inside_the_tool_tree_is_refused_every_operator_door() {
@@ -356,7 +348,7 @@ fn a_connection_from_inside_the_tool_tree_is_refused_every_operator_door() {
     assert_eq!(answered, 1, "one card was raised for the tool tree's ask");
 }
 
-/// **The other half.** A process that is not inside the daemon keeps every door: the `!` line runs
+/// The other half. A process that is not inside the daemon keeps every door: the `!` line runs
 /// and the session list is answered.
 #[test]
 fn a_head_that_is_not_inside_the_tree_keeps_every_door() {
@@ -416,7 +408,7 @@ fn the_launcher_child() {
     }
 }
 
-/// **A daemon rooted elsewhere.** An in-process server that names a tree root the child does not
+/// A daemon rooted elsewhere. An in-process server that names a tree root the child does not
 /// descend from serves that child every door, and the default `serve_registry` (the other tests)
 /// still refuses a descendant.
 #[test]

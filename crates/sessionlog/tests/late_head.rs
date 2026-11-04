@@ -650,8 +650,7 @@ fn a_peek_at_an_unknown_session_is_rejected_by_name() {
 }
 
 /// A head asks for the settings its session runs under and gets what the harness last
-/// published - and nothing, honestly, for a session whose harness has not published yet. A
-/// publish after that is pushed to it too, so the answer is not the only arrival. The
+/// published, or nothing if it has not published. A later publish is pushed too. The
 /// connection does not move either way.
 #[test]
 fn settings_are_answered_from_what_the_harness_published() {

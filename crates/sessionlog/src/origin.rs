@@ -1,20 +1,15 @@
-//! **Who a session is for** - the operator's own conversation, or one of the kinds of
-//! session a harness makes for itself - and the one rule every session list groups by.
-//!
-//! Three marks, in order: `session.origin` (written once, when the session is made),
-//! `parent_session_id` (a `task` child is somebody's subagent at any depth), and the
-//! review queue's id as a fallback for rows older than the column. The title is
-//! deliberately not read: a `/rename` must not move a session between groups. A queue
-//! root decides for its whole chain, so a reviewer is the queue's work, not a subagent.
+//! Who a session is for, and the one rule every session list groups by. Marks in order:
+//! `session.origin`, `parent_session_id`, the review queue's id. The title is not read, so
+//! `/rename` cannot move a session between groups.
 
 use crate::is_gatekeeper_session;
 
-/// **The identity the MCP bridge attaches under** - `letibot-mcp`, the only head on this
+/// The identity the MCP bridge attaches under - `letibot-mcp`, the only head on this
 /// box that is a program holding a session rather than a person's terminal. Here rather
 /// than in the bridge because two crates must agree on it.
 pub const MCP_IDENTITY: &str = "letibot-mcp";
 
-/// **How a session came to exist**, as the daemon wrote it down. A closed vocabulary
+/// How a session came to exist, as the daemon wrote it down. A closed vocabulary
 /// rather than a free string: a picker groups by it, and a value nobody knows would be a
 /// row in no group at all.
 #[derive(
@@ -22,19 +17,19 @@ pub const MCP_IDENTITY: &str = "letibot-mcp";
 )]
 #[serde(rename_all = "snake_case")]
 pub enum SessionOrigin {
-    /// **The operator's own** - a `leticode` start, `/new`, a `--continue`, a head that asked
+    /// The operator's own - a `leticode` start, `/new`, a `--continue`, a head that asked
     /// over the socket. The default, and the answer for every row written before this column
-    /// existed that nothing else claims: before it, every row was one of these.
+    /// existed that nothing else claims.
     #[default]
     Operator,
-    /// **A package started it** - a head that is not a terminal, today `letim`'s bridge
+    /// A package started it - a head that is not a terminal, today `letim`'s bridge
     /// ([`MCP_IDENTITY`]). Still a conversation, grouped apart because *they* did not open
     /// it.
     Package,
-    /// **The review queue's own session** - started by the daemon at startup
+    /// The review queue's own session - started by the daemon at startup
     /// (`harnessd`'s `sessions::gatekeeper`), one per workspace, whose board is the queue.
     Queue,
-    /// **A one-shot's** - `harnessd --prompt …`, which opens a session, runs the steps, prints
+    /// A one-shot's - `harnessd --prompt …`, which opens a session, runs the steps, prints
     /// the answers and exits. The session's rows stay, and a run a day for a month is thirty
     /// rows in a list nobody asked for.
     OneShot,
@@ -67,7 +62,7 @@ impl SessionOrigin {
         }
     }
 
-    /// **What a head that asked for a session is**, from the `ATTACH` it opened with. Keyed
+    /// What a head that asked for a session is, from the `ATTACH` it opened with. Keyed
     /// on the identity and not the kind: `remote` is every non-terminal head, the bridge's
     /// and the throwaway `stop-force` connection alike.
     pub fn of_opener(_kind: &str, identity: &str) -> Self {
@@ -79,7 +74,7 @@ impl SessionOrigin {
     }
 }
 
-/// **The groups a session list is drawn in** - *mine* first, then one per automatic kind.
+/// The groups a session list is drawn in - *mine* first, then one per automatic kind.
 /// The order is the point: the operator scrolls to find their own conversations, so those
 /// are above every fold and are never folded themselves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -118,7 +113,7 @@ impl SessionGroup {
         }
     }
 
-    /// **One line saying what the group is**, drawn under its row - a fold whose contents a
+    /// One line saying what the group is, drawn under its row - a fold whose contents a
     /// reader has to guess at is a fold they will not open.
     pub fn legend(self) -> &'static str {
         match self {
@@ -130,20 +125,20 @@ impl SessionGroup {
         }
     }
 
-    /// **Whether this group is the operator's own** - the one group that is not a fold.
+    /// Whether this group is the operator's own - the one group that is not a fold.
     pub fn is_mine(self) -> bool {
         self == SessionGroup::Mine
     }
 }
 
-/// **One session, as the grouping rule reads it** - the facts a row carries that say what it is.
+/// One session, as the grouping rule reads it - the facts a row carries that say what it is.
 #[derive(Debug, Clone, Copy)]
 pub struct GroupRow<'a> {
     pub id: &'a str,
     /// `Some` for a subagent: the session that spawned it.
     pub parent: Option<&'a str>,
     pub origin: SessionOrigin,
-    /// **The seat the row recorded**, when the reader has it - `gatekeeper` for a review.
+    /// The seat the row recorded, when the reader has it - `gatekeeper` for a review.
     /// `None` where the list carries no role, and then the title's mark is used instead.
     pub role: Option<&'a str>,
     /// The session's title, for the brief cut that a reviewer's row is recognised by. Empty for an
@@ -155,7 +150,7 @@ pub struct GroupRow<'a> {
 /// always created after its parent, so a real chain is short; this is a store somebody edited.
 const MAX_DEPTH: usize = 64;
 
-/// **Which group `id` is drawn in**, from every row in the list: *is this the review
+/// Which group `id` is drawn in, from every row in the list: *is this the review
 /// queue's work* is a question about the ROOT of the chain, and for a reviewer parented
 /// straight on the operator's conversation, about the row itself.
 pub fn group_of(rows: &[GroupRow<'_>], id: &str) -> SessionGroup {
@@ -176,7 +171,7 @@ pub fn group_of(rows: &[GroupRow<'_>], id: &str) -> SessionGroup {
     let Some(row) = rows.iter().find(|r| r.id == id) else {
         return SessionGroup::Mine;
     };
-    // **The parent edge before the origin**: a child a package spawned is still a
+    // The parent edge before the origin: a child a package spawned is still a
     // subagent. The queue test above has already taken the reviewers, so what is left
     // here is the operator's own children.
     if row.parent.is_some() {
@@ -190,7 +185,7 @@ pub fn group_of(rows: &[GroupRow<'_>], id: &str) -> SessionGroup {
     }
 }
 
-/// **Is this row the review queue's work?** - three marks, and a row needs one: the
+/// Is this row the review queue's work? - three marks, and a row needs one: the
 /// recorded origin, the id (the fallback for rows older than the column), and the seat or
 /// the title of a reviewer parented elsewhere.
 fn is_queue_work(row: &GroupRow<'_>) -> bool {
@@ -289,7 +284,7 @@ mod tests {
         assert_eq!(group_of(&rows, "s-a"), SessionGroup::Mine);
     }
 
-    /// **A reviewer parented straight on the operator's conversation** - the layout a daemon
+    /// A reviewer parented straight on the operator's conversation - the layout a daemon
     /// from before the queue had a session of its own wrote. Its id is `s-gk-0` and its
     /// parent is `mine`, so the only marks are on its own row: the seat and the title.
     #[test]
@@ -332,7 +327,7 @@ mod tests {
         assert_eq!(group_of(&rows, "s-mine"), SessionGroup::Mine);
     }
 
-    /// **The fallback, for rows written before the column.** The queue's id is derived from the
+    /// The fallback, for rows written before the column. The queue's id is derived from the
     /// workspace and is stable, so a row with no `origin` is still recognised - which is what
     /// makes this an upgrade rather than a flag day.
     #[test]

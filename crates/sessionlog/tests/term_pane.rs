@@ -1,11 +1,6 @@
-//! `!term` - the pane's byte stream, through the frames, with no daemon and no pty.
-//!
-//! The pty has its own tests in `letibot-tools` and the screen its own in `letibot-ui`;
-//! what cannot be seen from either half is the wire between them, and that is this file:
-//! the six frames survive the wire byte for byte (including a `Vec<u8>` a JSON round trip
-//! could quietly change), the command and the rectangle reach the driver, keys go down
-//! verbatim, a pane is not a command, a detach is the absence of a frame, a bare `!term`
-//! attaches, and the status read answers what is running or nothing.
+//! `!term` - the pane's byte stream through the frames, with no daemon and no pty.
+//! The pty and the screen have their own tests. This file covers the wire between them:
+//! frames survive byte for byte, keys go down verbatim, detach is the absence of a frame.
 
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
@@ -17,17 +12,17 @@ use letibot_sessionlog::server::serve_conn;
 use letibot_sessionlog::term_command;
 use letibot_sessionlog::wire::{FrameReader, FrameWriter};
 
-/// **A driver that runs nothing and remembers everything.** A `TerminalDriver` and not
+/// A driver that runs nothing and remembers everything. A `TerminalDriver` and not
 /// `harnessd`'s `Terminals` on purpose: the pty has its own tests over a real child, and
 /// this file is about the seam between the daemon and whoever owns one.
 #[derive(Default)]
 struct Canned {
     opened: Mutex<Vec<(String, String, usize, usize)>>,
-    /// **What `attach` was told**, in order: (session, cols, rows) — the sibling of `opened`,
+    /// What `attach` was told, in order: (session, cols, rows) - the sibling of `opened`,
     /// and separate from it so a test can assert which of the two a line reached.
     attached: Mutex<Vec<(String, usize, usize)>>,
-    /// **What the pane this session has is running.** `None` is *this session has no pane*,
-    /// which a real driver reports as an `Err` — the same sentence a pane that could not start
+    /// What the pane this session has is running. `None` is *this session has no pane*,
+    /// which a real driver reports as an `Err` - the same sentence a pane that could not start
     /// uses, because the head's act is the same either way.
     running: Mutex<Option<String>>,
     input: Mutex<Vec<Vec<u8>>>,
@@ -67,7 +62,7 @@ impl Canned {
         self.closed.lock().unwrap().clone()
     }
 
-    /// **What the pty's reader thread would do**: a frame that is not the record, straight to
+    /// What the pty's reader thread would do: a frame that is not the record, straight to
     /// the session's heads.
     fn say(&self, bytes: &[u8]) {
         let hub = self.hub.lock().unwrap().clone().expect("a pane was opened");
@@ -126,7 +121,7 @@ impl TerminalDriver for Canned {
             );
         };
         *self.hub.lock().unwrap() = Some(hub.clone());
-        // **What a real driver does, in the order it does it**: what is running, and then the
+        // What a real driver does, in the order it does it: what is running, and then the
         // screen it has kept. Both are `push_frame`s, so this is the same door the pty's reader
         // thread uses and the ordering is the one a head sees.
         hub.push_frame(ServerFrame::TermAttached {
@@ -141,7 +136,7 @@ impl TerminalDriver for Canned {
         Ok(1)
     }
 
-    /// **What a real driver answers**: the command it is holding, or nothing. The canned half
+    /// What a real driver answers: the command it is holding, or nothing. The canned half
     /// keeps the same field `attach` reads, so a test cannot make the two disagree.
     fn status(&self, _session_id: &str) -> Vec<PaneBrief> {
         self.running
@@ -220,7 +215,7 @@ fn attach(registry: &Arc<Registry>) -> (FrameWriter<UnixStream>, FrameReader<Uni
     (w, r)
 }
 
-/// Read until a pane frame, skipping the session's own traffic. **Every pane frame counts**,
+/// Read until a pane frame, skipping the session's own traffic. Every pane frame counts,
 /// so a helper that skipped one would make a sequence test flaky in the direction that reads
 /// as a wrong assertion.
 fn until_term(r: &mut FrameReader<UnixStream>) -> ServerFrame {
@@ -236,8 +231,8 @@ fn until_term(r: &mut FrameReader<UnixStream>) -> ServerFrame {
     }
 }
 
-/// **The pane's frames survive the wire, byte for byte.** The one thing a JSON round trip
-/// can quietly change is a byte vector, so the assertion is on the **bytes**, including the
+/// The pane's frames survive the wire, byte for byte. The one thing a JSON round trip
+/// can quietly change is a byte vector, so the assertion is on the bytes, including the
 /// ones a text-shaped codec would eat: `ESC`, a NUL, and half of a UTF-8 character.
 #[test]
 fn the_pane_frames_survive_the_wire_byte_for_byte() {
@@ -279,7 +274,7 @@ fn the_pane_frames_survive_the_wire_byte_for_byte() {
             pane: Some(1),
             reason: "the program exited with 0".into(),
         },
-        // **The read's answer in both of its states**, because `None` is the one a codec is
+        // The read's answer in both of its states, because `None` is the one a codec is
         // most likely to eat: an `Option` that came back as `""` would make *no pane* look
         // like *a pane running the empty command*.
         ServerFrame::TermStatus {
@@ -313,7 +308,7 @@ fn the_pane_frames_survive_the_wire_byte_for_byte() {
     }
 }
 
-/// **`!term` reaches the driver with the command and the conversation's rectangle**, and the
+/// `!term` reaches the driver with the command and the conversation's rectangle, and the
 /// program's bytes come back as `TermOutput` - the whole path, through a canned driver.
 /// `97x23` in, `97x23` at the driver, which becomes the pty's `winsize`.
 #[test]
@@ -354,7 +349,7 @@ fn the_verb_the_command_and_the_rectangle_reach_the_driver() {
     );
 }
 
-/// **Keys go down verbatim, as bytes.** `ESC O A` is the application-cursor spelling of
+/// Keys go down verbatim, as bytes. `ESC O A` is the application-cursor spelling of
 /// *up*, and a head that decoded and re-encoded it would send `ESC [ A` - a different byte
 /// string to a program that asked for the first.
 #[test]
@@ -370,7 +365,7 @@ fn keys_are_forwarded_as_bytes_and_are_not_decoded() {
     .expect("open");
 
     // An application-cursor arrow, a control byte, a plain letter, and half a UTF-8
-    // character — every shape a keystroke read can have.
+    // character - every shape a keystroke read can have.
     let keys: Vec<u8> = vec![0x1b, b'O', b'A', 0x03, b'x', 0xe2];
     w.write(&ClientFrame::TermInput {
         pane: 1,
@@ -399,7 +394,7 @@ fn keys_are_forwarded_as_bytes_and_are_not_decoded() {
     assert_eq!(driver.resized(), vec![(120, 40)]);
 }
 
-/// **A pane is not a command.** No row, no seq, nothing on the queue: a keystroke that
+/// A pane is not a command. No row, no seq, nothing on the queue: a keystroke that
 /// queued behind a running turn would be a key that arrives after the thing it was answering.
 #[test]
 fn a_pane_writes_no_row_and_moves_no_seq() {
@@ -445,7 +440,7 @@ fn a_pane_writes_no_row_and_moves_no_seq() {
     );
 }
 
-/// **Ending the pane is the deliberate act, and it is the daemon's.** `TermClose` is sent
+/// Ending the pane is the deliberate act, and it is the daemon's. `TermClose` is sent
 /// only after the operator confirmed `!term close` (`ctrl-\` detaches and sends nothing), and
 /// the ending arrives as `TermEnded`. The program never sees a byte of it.
 #[test]
@@ -484,8 +479,8 @@ fn the_deliberate_close_ends_the_pane_and_never_reaches_the_program() {
     );
 }
 
-/// **A detach is the ABSENCE of a frame, and the pane is still live afterwards.** Leaving
-/// sends **nothing at all**, so the positive half is the status read: the driver was never
+/// A detach is the ABSENCE of a frame, and the pane is still live afterwards. Leaving
+/// sends nothing at all, so the positive half is the status read: the driver was never
 /// told to close, and `TermStatus` still answers with the same command.
 #[test]
 fn a_detach_sends_nothing_and_leaves_the_pane_live() {
@@ -508,7 +503,7 @@ fn a_detach_sends_nothing_and_leaves_the_pane_live() {
     }
 
     // The operator pressed `ctrl-\`: the head hides the rectangle and writes nothing. What the
-    // head does next — a moment or an hour later — is ask whether the program is still there.
+    // head does next - a moment or an hour later - is ask whether the program is still there.
     w.write(&ClientFrame::TermStatus).expect("status");
     match until_term(&mut r) {
         ServerFrame::TermStatus { panes } => assert_eq!(
@@ -531,9 +526,9 @@ fn a_detach_sends_nothing_and_leaves_the_pane_live() {
     );
 }
 
-/// **`!term close` is not a command to run** - the daemon refuses it by name, and the
+/// `!term close` is not a command to run - the daemon refuses it by name, and the
 /// sentence names the spelling that does run a program called `close`. The bare word is the
-/// **head's** act, so a `TermOpen` carrying it is a head that did not ask the operator.
+/// head's act, so a `TermOpen` carrying it is a head that did not ask the operator.
 #[test]
 fn a_term_close_line_is_refused_by_name_and_starts_nothing() {
     let driver = Canned::new();
@@ -570,7 +565,7 @@ fn a_term_close_line_is_refused_by_name_and_starts_nothing() {
     );
 }
 
-/// **The status read answers what is running, or nothing.** **`None` is not an error**: it is
+/// The status read answers what is running, or nothing. `None` is not an error: it is
 /// the ordinary state of a session nobody has run `!term` in, and it is what makes a head
 /// draw nothing at all rather than a row.
 #[test]
@@ -602,7 +597,7 @@ fn the_status_read_answers_what_is_running_or_nothing() {
     );
 }
 
-/// **A pane that never started is the same frame as one that ended**, and the sentence is
+/// A pane that never started is the same frame as one that ended, and the sentence is
 /// the whole of the difference - so a refusal is never silence. Three refusals: a line that
 /// is not the verb, a session with no pane, and a daemon with no driver.
 #[test]
@@ -624,7 +619,7 @@ fn a_pane_that_cannot_start_says_so_in_one_sentence() {
         other => panic!("expected TermEnded, got {other:?}"),
     }
 
-    // A line that is not the verb at all, and — now — the verb with nothing after it, which is
+    // A line that is not the verb at all, and - now - the verb with nothing after it, which is
     // an ATTACH and refuses only because this canned driver has no pane.
     let driver = Canned::new();
     let registry = start(Some(driver.clone()));
@@ -654,8 +649,8 @@ fn a_pane_that_cannot_start_says_so_in_one_sentence() {
          for a bare `!term` — that one attaches"
     );
 
-    // And a driver that refuses — a pty that would not open, a scope that would not be joined
-    // — reaches the head as the driver's own sentence rather than as a silence.
+    // And a driver that refuses - a pty that would not open, a scope that would not be joined
+    // - reaches the head as the driver's own sentence rather than as a silence.
     *driver.refuse.lock().unwrap() = Some("no pty: /dev/ptmx is not there".into());
     w.write(&ClientFrame::TermOpen {
         line: "!term mc".into(),
@@ -671,7 +666,7 @@ fn a_pane_that_cannot_start_says_so_in_one_sentence() {
     }
 }
 
-/// **A bare `!term` reaches `attach` and not `open`, and what comes back is the pane.** It is
+/// A bare `!term` reaches `attach` and not `open`, and what comes back is the pane. It is
 /// the way back to a running program, because the screen is the daemon's; `open` is never
 /// called, and the head is told what is running before it is shown the screen.
 #[test]
@@ -717,7 +712,7 @@ fn a_bare_term_line_attaches_to_the_pane_the_session_has() {
     );
 }
 
-/// **The verb is a whole word, and the parse is the one both halves share.** `!term` is an
+/// The verb is a whole word, and the parse is the one both halves share. `!term` is an
 /// attach, `!term close` is the ending, and anything else is a command - `close` only as a
 /// whole word, so `!term closed` and `!term close-it` are programs like any other.
 #[test]
@@ -757,7 +752,7 @@ fn the_verb_is_a_whole_word_and_the_parse_is_shared() {
          is why the head has to check the verb first"
     );
 
-    // **The three readings.** A `close` that fell through to `Run` would start a program
+    // The three readings. A `close` that fell through to `Run` would start a program
     // where a pane was meant to end, and the reverse would end a pane where a program was
     // meant to run.
     assert_eq!(term_line("!term"), Some(Attach(None)));
@@ -773,14 +768,14 @@ fn the_verb_is_a_whole_word_and_the_parse_is_shared() {
     assert_eq!(term_line("!term closed"), Some(Run("closed")));
     assert_eq!(term_line("!term close-it"), Some(Run("close-it")));
     assert_eq!(term_line("!term closing"), Some(Run("closing")));
-    // **A program called `close` is still reachable**, which is the cost of the bare word paid
+    // A program called `close` is still reachable, which is the cost of the bare word paid
     // in the open: the command is a shell line, so anything that makes it a line and not the
     // bare word runs it.
     assert_eq!(term_line("!term command close"), Some(Run("command close")));
     assert_eq!(term_line("!term ./close"), Some(Run("./close")));
     assert_eq!(term_line("!term close foo"), Some(Run("close foo")));
-    // **A number names a pane** (protocol 44): `!term 2` attaches to pane 2 and `!term close 2`
-    // ends it. A bare number is never a command — no program is called `2` — and zero is no
+    // A number names a pane (protocol 44): `!term 2` attaches to pane 2 and `!term close 2`
+    // ends it. A bare number is never a command - no program is called `2` - and zero is no
     // pane's number, so it is left to the shell.
     assert_eq!(term_line("!term 2"), Some(Attach(Some(2))));
     assert_eq!(term_line("!term close 12"), Some(Close(Some(12))));

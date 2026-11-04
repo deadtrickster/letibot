@@ -1,10 +1,6 @@
-//! The head frame format: ATTACH, RESYNC, snapshot, event envelope, `expected_seq` and
-//! `client_request_id`.
-//!
-//! The frames are plain serde types and the framing is one newline-delimited JSON codec over any
-//! `Read`/`Write`, so a remote head is a different transport and not a different protocol. An
-//! `Ack` carries the batch's `seq` and never a "last kept" one, and a command with a stale
-//! `expected_seq` is rejected with both numbers so the head can say what it was looking at.
+//! The head frame format: ATTACH, RESYNC, snapshot, event envelope, `expected_seq`,
+//! `client_request_id`. Plain serde types over one NDJSON codec, so a remote head is a
+//! different transport, not a protocol. A stale `expected_seq` is rejected with both numbers.
 
 use serde::{Deserialize, Serialize};
 
@@ -301,7 +297,7 @@ pub struct Caps {
     /// Free-form feature names, for forward compatibility.
     #[serde(default)]
     pub features: Vec<String>,
-    /// **This head draws a row from its own `TranscriptAppended`**, so a body that rode one need
+    /// This head draws a row from its own `TranscriptAppended`, so a body that rode one need
     /// not be sent again as `TranscriptContent`. Absent is a head built before the field: it reads
     /// nothing off an announcement, and the daemon keeps sending it the second event.
     #[serde(default)]
@@ -715,9 +711,8 @@ pub enum ClientFrame {
     /// bootstrap read, so a head never draws a queue it has not been told about.
     ListMergeQueue,
     /// A chat request as the operator, through the daemon's operator seat on the host coordinator.
-    /// `op` is a room `Request` (rooms, say, dm, read, roster, inbox, ack) as JSON; the answer is
-    /// [`ServerFrame::RoomChat`]. The daemon refuses it on a connection that came out of a tool
-    /// call (`peer::door`), so a model cannot speak as the operator.
+    /// `op` is a room `Request` as JSON; the answer is [`ServerFrame::RoomChat`]. Refused on a
+    /// connection from a tool call (`peer::door`), so a model cannot speak as the operator.
     RoomChat {
         client_request_id: String,
         op: serde_json::Value,

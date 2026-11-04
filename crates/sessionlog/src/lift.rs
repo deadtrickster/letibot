@@ -1,14 +1,6 @@
 //! The engine-to-log seam: `letibot_turn::TurnEvent` lifted into [`SessionEvent`].
-//!
-//! Neither side reaches into the other. The engine does not know a log exists - it takes a
-//! `&mut dyn EventSink`, and [`LogSink`] is one - which is what lets the TUI depend on the log
-//! without linking `libllama`.
-//!
-//! A turn's ending carries what the engine measured and a head reads: `usage` (with the slot and
-//! the load), `timings`, the §18.1-I1 `prefix_check`, and the `dialect_template_sha` the prompt was
-//! rendered under. Without the check, zero reuse is one number for a slot that did not hold the
-//! history and for a prompt that diverged. The server's own prompt counters -
-//! `prompt_tokens_server`, `prompt_processed` - stay in the `turn_metrics` row.
+//! The engine takes a `&mut dyn EventSink` and [`LogSink`] is one, so the TUI avoids `libllama`.
+//! A turn ending carries the `prefix_check`, without which zero reuse is ambiguous.
 
 use letibot_turn::{DeltaTarget as TurnDelta, EventSink, TurnEvent};
 

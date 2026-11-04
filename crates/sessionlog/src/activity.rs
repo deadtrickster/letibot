@@ -1,20 +1,15 @@
-//! **What a session is waiting on** - the daemon's own answer to *will this act
-//! again by itself?*
-//!
-//! The engine publishes `TurnStarted`/`TurnFinished` once per ROUND, so a reader
-//! outside the daemon cannot tell *done* from *between rounds*, and every guess was
-//! a timer. This is the published answer: [`Activity`], computed by
-//! `letibot_harnessd` and published as [`crate::SessionEvent::ActivityChanged`]
-//! only when the value changes.
+//! What a session is waiting on: the daemon's answer to "will this act again by itself?"
+//! [`Activity`] is computed by `letibot_harnessd` and published as
+//! [`crate::SessionEvent::ActivityChanged`] on change, since per-round turn events cannot say.
 
 use serde::{Deserialize, Serialize};
 
-/// **The kind and the id of one thing a busy session waits on** - see the module header for which
+/// The kind and the id of one thing a busy session waits on - see the module header for which
 /// of them mean *this session acts again on its own* and which one means *a person must*.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(tag = "on", content = "id", rename_all = "snake_case")]
 pub enum Waiting {
-    /// **A prompt is in flight** - the whole turn, however many rounds it takes, from
+    /// A prompt is in flight - the whole turn, however many rounds it takes, from
     /// the daemon taking it to its loop returning. Read from the daemon's per-prompt
     /// span, never from the round-level `TurnStarted`/`TurnFinished` pair.
     Turn,
@@ -22,7 +17,7 @@ pub enum Waiting {
     /// their results. The finer detail inside [`Waiting::Turn`] - a head draws it, and nothing about
     /// *will this session act again* depends on it.
     Calls,
-    /// **The model is owed something and the turn that says it has not started yet** - a
+    /// The model is owed something and the turn that says it has not started yet - a
     /// settlement queued or held, a monitor that has fired, a message or a prompt waiting for the
     /// worker. This is the window every timer in `crates/bridge` was invented for.
     Delivery,
@@ -34,7 +29,7 @@ pub enum Waiting {
     Monitor(String),
     /// A subagent of this session's. It settles through the same queue a background job does.
     Child(String),
-    /// **A card is open and nobody has answered it.** The one entry that does not end by itself.
+    /// A card is open and nobody has answered it. The one entry that does not end by itself.
     Ask(String),
 }
 
@@ -53,7 +48,7 @@ impl Waiting {
         }
     }
 
-    /// **The id this entry names**, empty for the three that name no thing.
+    /// The id this entry names, empty for the three that name no thing.
     pub fn id(&self) -> &str {
         match self {
             Waiting::Turn | Waiting::Calls | Waiting::Delivery => "",
@@ -61,7 +56,7 @@ impl Waiting {
         }
     }
 
-    /// **`job j8032`, `monitor ci`, `ask adj-s1-0001`** - how a line that shows the list says one
+    /// `job j8032`, `monitor ci`, `ask adj-s1-0001` - how a line that shows the list says one
     /// entry, and how `leticode_status` names it as data. One function rather than one per reader,
     /// because two spellings of the same fact is the drift this file exists to stop.
     pub fn label(&self) -> String {
@@ -71,7 +66,7 @@ impl Waiting {
         }
     }
 
-    /// **Does this session move only when a person moves it?** True for [`Waiting::Ask`] and
+    /// Does this session move only when a person moves it? True for [`Waiting::Ask`] and
     /// nothing else - the whole of why `Activity` is not a boolean.
     pub fn needs_a_person(&self) -> bool {
         matches!(self, Waiting::Ask(_))
@@ -93,7 +88,7 @@ impl Waiting {
     }
 }
 
-/// **What a session is waiting on, as the daemon computed it** - [`Activity::Quiet`] or
+/// What a session is waiting on, as the daemon computed it - [`Activity::Quiet`] or
 /// the list. `Quiet` is *nothing running and nothing owed*, not *idle*, which
 /// [`crate::hub::SessionStatus::running`] already means.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -131,7 +126,7 @@ impl Activity {
         }
     }
 
-    /// **The card this session is stopped on**, when it is - the one entry a caller has to do
+    /// The card this session is stopped on, when it is - the one entry a caller has to do
     /// something about. A session can in principle hold more than one; the oldest is the answer,
     /// because it is the one that has waited longest.
     pub fn ask(&self) -> Option<&str> {
@@ -141,14 +136,14 @@ impl Activity {
         })
     }
 
-    /// **Whether the session will move without a person** - true when the list holds anything but
+    /// Whether the session will move without a person - true when the list holds anything but
     /// a card. A `Busy` made only of an ask is the *stopped* state, which is why this is not
     /// `!is_quiet()`.
     pub fn moves_by_itself(&self) -> bool {
         self.waiting_on().iter().any(|w| !w.needs_a_person())
     }
 
-    /// **`waiting on: job j8032 · monitor ci`**, or empty for a quiet session - the one muted line
+    /// `waiting on: job j8032 · monitor ci`, or empty for a quiet session - the one muted line
     /// a head draws (the TUI's status row) and a caller reads in `leticode_status`.
     pub fn line(&self) -> String {
         let labels: Vec<String> = self.waiting_on().iter().map(Waiting::label).collect();
@@ -211,7 +206,7 @@ mod tests {
         assert_eq!(Activity::Quiet.ask(), None);
     }
 
-    /// **An ask is the only entry that waits for a person**, and a session stopped on one moves by
+    /// An ask is the only entry that waits for a person, and a session stopped on one moves by
     /// itself for nothing - which is the difference `wait`'s exit code 10 is about.
     #[test]
     fn only_a_card_waits_for_a_person() {

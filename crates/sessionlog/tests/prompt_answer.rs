@@ -1,11 +1,6 @@
-//! **The operator's own run can be ANSWERED** - the two frames that write to a command's
-//! stdin, and the verb that is the floor under the card.
-//!
-//! What is pinned HERE is the wire half: that a `PromptAnswer` and a `!send` reach the
-//! session's [`PromptDriver`] with the right fields, that neither goes through the command
-//! queue, that a late answer is said rather than refused, and that a secret cannot be
-//! routed through the prompt card. The driver is a recorder rather than a pipe, because
-//! this file is about what the server hands over.
+//! The operator's own run can be answered: `PromptAnswer` and `!send` reach the session's
+//! [`PromptDriver`] with the right fields, skip the command queue, and a secret cannot be routed
+//! through the prompt card. The driver is a recorder, not a pipe.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -27,7 +22,7 @@ fn socket_path(tag: &str) -> std::path::PathBuf {
     ))
 }
 
-/// **What the daemon was asked to write, in order.** `req` is `None` for a `!send` and
+/// What the daemon was asked to write, in order. `req` is `None` for a `!send` and
 /// `Some(req_id)` for a card's own answer, which is the whole of the stale-card rule.
 #[derive(Default)]
 struct Recorder {
@@ -70,7 +65,7 @@ fn start(tag: &str) -> (Arc<Registry>, ServerHandle, Arc<Recorder>) {
     (r, h, driver)
 }
 
-/// **Every warning the session published, by code.**
+/// Every warning the session published, by code.
 fn warnings(hub: &Arc<letibot_sessionlog::hub::Hub>) -> Vec<(String, String)> {
     hub.retained()
         .into_iter()
@@ -81,7 +76,7 @@ fn warnings(hub: &Arc<letibot_sessionlog::hub::Hub>) -> Vec<(String, String)> {
         .collect()
 }
 
-/// **A card's answer reaches the command, addressed to the card.** The `req_id` travels
+/// A card's answer reaches the command, addressed to the card. The `req_id` travels
 /// because it is what stops a stale card answering a later command, so the driver is
 /// handed it and not a job id.
 #[test]
@@ -101,7 +96,7 @@ fn an_answer_to_a_card_reaches_the_runs_stdin_addressed_to_the_card() {
         .prompt_answer("prompt-a-1", "Y")
         .expect("the answer is written");
 
-    // The driver got the line, with the request id — and NOTHING was queued: this frame is
+    // The driver got the line, with the request id - and NOTHING was queued: this frame is
     // never a command, because the run's own thread is blocked inside the very command that asked.
     let sent = wait_for_sent(&driver, 1);
     assert_eq!(
@@ -131,7 +126,7 @@ fn an_answer_to_a_card_reaches_the_runs_stdin_addressed_to_the_card() {
     handle.shutdown();
 }
 
-/// **The manual way in needs no card and no request id.** `!send` is the floor under the
+/// The manual way in needs no card and no request id. `!send` is the floor under the
 /// heuristic: the frame addresses *whatever this session's operator run is*, which the
 /// daemon knows and the head does not - so the driver is handed `None`.
 #[test]
@@ -144,8 +139,8 @@ fn the_manual_send_addresses_whatever_is_running() {
     let (tx, rx) = std::sync::mpsc::channel();
     let _t = std::thread::spawn(move || pump(reader, tx));
 
-    // A bare `!send` is a bare Enter, which is a real answer — `Continue? [Y/n]` takes it as
-    // its default — and `!send yes please` is one line and not three words.
+    // A bare `!send` is a bare Enter, which is a real answer - `Continue? [Y/n]` takes it as
+    // its default - and `!send yes please` is one line and not three words.
     client.send_line("").expect("write");
     client.send_line("yes please").expect("write");
 
@@ -163,7 +158,7 @@ fn the_manual_send_addresses_whatever_is_running() {
     handle.shutdown();
 }
 
-/// **A card that is no longer open is SAID, not silently dropped.** What lands is a
+/// A card that is no longer open is SAID, not silently dropped. What lands is a
 /// `prompt_late` warning rather than a `Rejected`: a late answer is not a refused one.
 #[test]
 fn an_answer_with_nothing_waiting_is_a_warning_and_not_a_refusal() {
@@ -204,7 +199,7 @@ fn an_answer_with_nothing_waiting_is_a_warning_and_not_a_refusal() {
     handle.shutdown();
 }
 
-/// **`!send` with nothing of yours running is a sentence, not silence.** The act is well
+/// `!send` with nothing of yours running is a sentence, not silence. The act is well
 /// formed and the thing it names is not there, so it is a `Refused` and not a red line.
 #[test]
 fn a_send_with_nothing_running_says_so() {
@@ -236,7 +231,7 @@ fn a_send_with_nothing_running_says_so() {
     handle.shutdown();
 }
 
-/// **A SECRET CANNOT BE ROUTED THROUGH THE PROMPT CARD.** A password has its own path
+/// A SECRET CANNOT BE ROUTED THROUGH THE PROMPT CARD. A password has its own path
 /// (`SUDO_ASKPASS`, an `askpass` head, the one [`ServerFrame::Secret`] written back on that
 /// connection); the card's field is drawn in the open and its line is a program's stdin.
 #[test]
@@ -248,7 +243,7 @@ fn a_secret_cannot_be_routed_through_the_prompt_card() {
         HeadClient::attach(handle.path(), "a", 0, "tui", "dead", Caps::default()).expect("attach");
     let (tx, rx) = std::sync::mpsc::channel();
     let _t = std::thread::spawn(move || pump(reader, tx));
-    // The helper's own connection, attached and waiting — the only socket a password may
+    // The helper's own connection, attached and waiting - the only socket a password may
     // ever be written to.
     let (mut helper, _hhello, hreader) =
         HeadClient::attach(handle.path(), "a", 0, "askpass", "sudo", Caps::default())
@@ -262,14 +257,14 @@ fn a_secret_cannot_be_routed_through_the_prompt_card() {
         .prompt_answer("prompt-a-1", "hunter2")
         .expect("write");
 
-    // It reached the command's stdin — which is what the prompt card is for.
+    // It reached the command's stdin - which is what the prompt card is for.
     let sent = wait_for_sent(&driver, 1);
     assert_eq!(
         sent,
         vec![(Some("prompt-a-1".to_string()), "hunter2".to_string())],
         "the card's line goes to the run, and the card is the channel it went down"
     );
-    // **And it is not a secret on the wire.** No `Secret` frame was produced for the
+    // And it is not a secret on the wire. No `Secret` frame was produced for the
     // helper, and none can be: the prompt answer is not an `Askpass` and the daemon has no
     // path from one to the other.
     let mut saw_a_secret = false;
@@ -310,7 +305,7 @@ fn a_secret_cannot_be_routed_through_the_prompt_card() {
             }
         }
     };
-    // **The answer comes from the HEAD and not from the helper**: the helper's own
+    // The answer comes from the HEAD and not from the helper: the helper's own
     // connection is the one blocked inside the `Askpass` arm, so the other end sends the
     // `Secret`.
     client
@@ -339,7 +334,7 @@ fn a_secret_cannot_be_routed_through_the_prompt_card() {
 // The verb
 // ---------------------------------------------------------------------------
 
-/// **`!send` is a whole word, and the parse is the one both halves share.** The head
+/// `!send` is a whole word, and the parse is the one both halves share. The head
 /// recognises the verb at the composer and the daemon re-checks it at the socket, and the
 /// two cannot disagree because there is one function.
 #[test]
@@ -347,7 +342,7 @@ fn the_verb_is_a_whole_word_and_the_bare_verb_is_an_enter() {
     assert_eq!(send_line("!send Y"), Some("Y"));
     assert_eq!(send_line("!send   yes please"), Some("yes please"));
     assert_eq!(send_line("!send\tY"), Some("Y"));
-    // **The verb with nothing after it is a bare Enter**, and that is a real answer rather
+    // The verb with nothing after it is a bare Enter, and that is a real answer rather
     // than an empty mistake: `Continue? [Y/n]` takes Enter as its default.
     assert_eq!(send_line("!send"), Some(""));
     assert_eq!(send_line("!send   "), Some(""));
@@ -358,7 +353,7 @@ fn the_verb_is_a_whole_word_and_the_bare_verb_is_an_enter() {
     assert_eq!(send_line("send Y"), None);
     assert_eq!(send_line(" !send Y"), None);
     assert_eq!(send_line(""), None);
-    // And the text is one line, whole and unsplit — the program decides what to do with the
+    // And the text is one line, whole and unsplit - the program decides what to do with the
     // spaces in it, exactly as the shell decides what to do with a `!` line's.
     assert_eq!(send_line("!send one  two\tthree"), Some("one  two\tthree"));
 }

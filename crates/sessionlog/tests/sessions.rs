@@ -1,7 +1,6 @@
-//! Many sessions on one socket, driven the way a head drives them. What is asserted is that
-//! two sessions share nothing, that a head joining a session mid-turn is handed its text with
-//! no gap and no duplicate, and that a session nobody is watching keeps going - all of which
-//! lives in the connection, where a switch can go wrong without any frame saying so.
+//! Many sessions on one socket, driven the way a head drives them: two sessions share nothing,
+//! a head joining mid-turn gets its text with no gap or duplicate, and an unwatched session
+//! keeps going.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};

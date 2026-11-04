@@ -41,7 +41,7 @@ const SAID: &str = "session s was seated 10-08 21:14 with a prompt this daemon w
                     this conversation across as it is; a new session gets the seated one \
                     from the start.";
 
-/// The same finding in the model's own voice (`R93.E9`): no session id and no clock, because a
+/// The same finding in the model's own voice: no session id and no clock, because a
 /// model can act on neither.
 const FOR_MODEL: &str = "[stale prompt] Your tool list is out of date: bash exist but you cannot \
                         call them. Updating it is the person's call: don't ask. Mention a missing \

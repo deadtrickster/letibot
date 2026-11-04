@@ -1,9 +1,5 @@
-//! Dump the notes a session's log holds, with the key `/notes dismiss` would store.
-//! Read-only and one shot: attach as a `remote` head, take the snapshot, and print every
-//! warning as `code | ts | fnv1a(detail) | the composed key` - the `ts` that joins a code to a
-//! retired key is on neither the screen nor `head.toml`, and it is what decides whether a key
-//! identifies a delivery or an incident.
-//!
+//! Dump the notes a session's log holds as `code | ts | fnv1a(detail) | the composed key`,
+//! the key `/notes dismiss` would store. Read-only, one shot.
 //!     cargo run -q --example dump_notes -- /run/user/1000/letibot/<hash>.sock
 
 use letibot_sessionlog::client::HeadClient;

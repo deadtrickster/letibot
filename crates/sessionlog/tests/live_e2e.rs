@@ -1,7 +1,6 @@
-//! Drives a real engine turn against the model server on this box, so the wire sees real
-//! delta sizes and progress frames: a head attaching mid-generation must reconstruct, byte
-//! for byte, what an early head saw. One short generation, once - the server is in
-//! production use - and `LETIBOT_COMPLETION_URL`/`LETIBOT_VOCAB_GGUF` name another box.
+//! Drives a real engine turn against the local model server so the wire sees real delta sizes:
+//! a head attaching mid-generation must reconstruct what an early head saw, byte for byte.
+//! One short generation. `LETIBOT_COMPLETION_URL`/`LETIBOT_VOCAB_GGUF` name another box.
 
 #[path = "../../turn/tests/support/chatml.rs"]
 mod chatml;

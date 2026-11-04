@@ -1,7 +1,6 @@
-//! **The body on the announcement.** `TranscriptAppended` named a row and carried nothing, so a head
-//! waited for a second event before it could draw a row it had been told about, and a log of those
-//! events could not be read back as a conversation. A row that fits now rides its own announcement;
-//! a row too large for one still arrives whole, as `TranscriptContent`.
+//! The body on the announcement. A row that fits rides its own `TranscriptAppended`, so a log
+//! of events reads back as a conversation. A row too large still arrives whole, as
+//! `TranscriptContent`.
 
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
@@ -75,7 +74,7 @@ fn reading_bodies() -> Caps {
     }
 }
 
-/// **A marker says when the events of interest are over**: the daemon answers in order, so the frame
+/// A marker says when the events of interest are over: the daemon answers in order, so the frame
 /// after the marker's is the next thing that happened, and nothing sent after the marker can hide
 /// in front of it. An absence assertion that stopped anywhere else would have no teeth.
 fn marker(registry: &Arc<Registry>, said: &str) {

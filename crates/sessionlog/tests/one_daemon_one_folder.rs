@@ -130,10 +130,9 @@ fn once_the_daemon_is_gone_the_folder_can_be_served_again() {
     cleanup(&p);
 }
 
-/// A daemon going away must not unlink a newer daemon's socket. The path is shared state, so
-/// an older daemon's `Drop` removing it makes the live daemon the one no liveness test on the
-/// box can see, and the next start invites a third.
-/// The state driven here needs the claim FILE removed by hand, which no code path does.
+/// A daemon going away must not unlink a newer daemon's socket. The path is shared state,
+/// so an older `Drop` removing it hides the live daemon from every liveness test.
+/// The state driven here needs the claim file removed by hand, which no code path does.
 #[test]
 fn a_daemon_going_away_does_not_unlink_a_newer_daemons_socket() {
     let p = socket_path("newer");

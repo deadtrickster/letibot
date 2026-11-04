@@ -1,9 +1,6 @@
-//! Who is on the other end of the head socket, and whether that is a head or a model's command.
-//!
-//! The socket's permission is the auth and it says *the operator's user*, not *the operator*: a
-//! command this daemon started on a model's behalf runs as that same user and is handed
-//! `LETIBOT_SOCKET` for `sudo`'s password prompt. So the kernel is asked which process connected,
-//! and a connection from inside this daemon's own tree is a tool call, never a head.
+//! Who is on the other end of the head socket: a head or a model's command. A command this
+//! daemon started runs as the operator's user, so the kernel is asked which process connected;
+//! a connection from inside this daemon's tree is a tool call, never a head.
 
 use std::os::unix::net::UnixStream;
 
@@ -15,7 +12,7 @@ pub struct Peer {
     /// The pid on the other end, as the kernel filled it in at `connect`. `None` when it would not
     /// say - another platform, or a process that exited before the question could be asked.
     pub pid: Option<i32>,
-    /// **True when this connection came out of a tool call.** It is a descendant of this daemon,
+    /// True when this connection came out of a tool call. It is a descendant of this daemon,
     /// or inside a cgroup this daemon opened, so it is a command on the model's behalf.
     pub inside: bool,
 }

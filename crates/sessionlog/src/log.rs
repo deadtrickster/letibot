@@ -1,9 +1,5 @@
-//! The append-only event log: monotonic `seq`, bounded scrollback, and a `dropped`
-//! count that is **present and zero** rather than absent.
-//!
-//! An absent field and a zero field must not look the same when the field is the
-//! disclosure, so `dropped` is a `u64` on every `Hello` and the serialiser is
-//! forbidden from eliding it - there is a test.
+//! The append-only event log: monotonic `seq`, bounded scrollback, and a `dropped` count.
+//! `dropped` is a `u64` on every `Hello` and never elided, so absent and zero differ (tested).
 
 use std::collections::VecDeque;
 
@@ -60,7 +56,7 @@ pub struct SessionLog {
     head_seq: u64,
     /// How many events have fallen off the back. Present and zero, always.
     dropped: u64,
-    /// **A scratch buffer for measuring an event's serialised size.** `append` needs the
+    /// A scratch buffer for measuring an event's serialised size. `append` needs the
     /// encoded length, and a `Vec<u8>` on the log keeps its capacity from event to event:
     /// `to_writer` into it and take `.len()`, rather than building a `String` and dropping it.
     size_scratch: Vec<u8>,
@@ -100,7 +96,7 @@ impl SessionLog {
             .unwrap_or(self.head_seq + 1)
     }
 
-    /// **What this log holds right now**: retained events and their serialised bytes — the
+    /// What this log holds right now: retained events and their serialised bytes - the
     /// two numbers [`LogBounds`] bounds, read for the daemon's memory census.
     pub fn held(&self) -> (usize, usize) {
         (self.ring.len(), self.bytes)
@@ -154,8 +150,8 @@ impl SessionLog {
     }
 
     /// Events with `seq > since`, and whether the whole gap could be served. `None` when
-    /// the gap runs off the scrollback or exceeds the bound: **resync is a normal
-    /// outcome**, so the caller takes a fresh snapshot rather than reporting a failure.
+    /// the gap runs off the scrollback or exceeds the bound: resync is a normal
+    /// outcome, so the caller takes a fresh snapshot rather than reporting a failure.
     pub fn since(&self, since: u64) -> Option<Vec<Envelope>> {
         if since > self.head_seq {
             // A head ahead of the log. Only reachable across a daemon restart that

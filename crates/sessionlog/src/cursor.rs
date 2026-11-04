@@ -1,11 +1,6 @@
-//! The read mark, shaped so the reusable bug cannot be written.
-//!
-//! **The mark advances over everything READ, not everything delivered or kept** - a
-//! filtering consumer that advances only over what it kept rereads its own output
-//! forever. [`Batch`] is the only thing that produces a mark, it exposes
-//! [`Batch::last_seq`] and no accessor for "the last seq I kept", so a head cannot
-//! write the bug. And the ack goes out **after** the batch is rendered, not on
-//! receipt, so a crash costs a duplicate rather than a silence.
+//! The read mark, shaped so the reusable bug cannot be written. It advances over everything
+//! read, not only what was kept, or a filtering consumer rereads its own output forever.
+//! [`Batch`] is the only producer; the ack goes out after render, so a crash costs a duplicate.
 
 use crate::event::Envelope;
 use crate::protocol::Ack;
@@ -34,14 +29,14 @@ impl Batch {
         self.events.len()
     }
 
-    /// The last seq in the batch — everything the head has now read.
+    /// The last seq in the batch - everything the head has now read.
     ///
     /// There is no `last_kept_seq`, and adding one would be adding the bug.
     pub fn last_seq(&self) -> Option<u64> {
         self.events.last().map(|e| e.seq)
     }
 
-    /// Build the ack, **after** the rendered events are on the screen or on the wire.
+    /// Build the ack, after the rendered events are on the screen or on the wire.
     /// `rendered + filtered` must equal the batch length, or a filter lost an event.
     pub fn ack_after_render(&self, rendered: u64, filtered: u64) -> Option<Ack> {
         let seq = self.last_seq()?;

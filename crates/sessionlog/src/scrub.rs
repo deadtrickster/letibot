@@ -1,11 +1,6 @@
-//! The scrub, as a **projection** rather than an afterthought.
-//!
-//! §13.2b: anything interactive must be stripped from the stored copy, or it is answered or
-//! acted on twice. An event is interactive if replaying it could cause an action that has
-//! already happened or show a state that is no longer true: [`is_interactive`] is that
-//! predicate and the only place the rule lives, and the match is exhaustive.
-//!
-//! What was stripped travels with the result ([`ScrubReport`]): busy is not quiet.
+//! The scrub, as a projection. Anything interactive is stripped from the stored copy, or it
+//! is acted on twice. [`is_interactive`] is the only place the rule lives; what was stripped
+//! travels in [`ScrubReport`].
 
 use std::collections::{HashMap, HashSet};
 
@@ -17,7 +12,7 @@ pub enum Projection {
     /// Fan-out to an attached head, as it happens. Nothing is stripped: an open
     /// question *should* reach the head that is there to answer it.
     Live,
-    /// Anything replayed — a late head's snapshot, a resume gap, a stored session.
+    /// Anything replayed - a late head's snapshot, a resume gap, a stored session.
     /// Interactive frames are stripped.
     Stored,
 }
@@ -41,7 +36,7 @@ pub fn is_interactive(event: &SessionEvent) -> bool {
         // its deadline; replayed, it would show a masked field for a sudo that
         // has long since failed. Its settlement is a record and stays.
         SessionEvent::SecretRequested { .. } => true,
-        // **A card for the operator's own run, and the same rule as the password's.** It names a
+        // A card for the operator's own run, and the same rule as the password's. It names a
         // live `req_id` for a run that is blocked right now, so it is raised on the live fan-out;
         // every other head's way in is `!send`. Its settlement is a record and stays.
         SessionEvent::PromptRequested { .. } => true,
@@ -60,15 +55,15 @@ pub fn is_interactive(event: &SessionEvent) -> bool {
         // Ephemeral, for `Filling`'s reason: a held count is true NOW, and the delivery that ends
         // the hold is a durable row of its own.
         SessionEvent::HeldResults { .. } => true,
-        // **Ephemeral, and what replaces it is the hub's own republish**: what a session is
+        // Ephemeral, and what replaces it is the hub's own republish: what a session is
         // waiting on is true NOW, and the hub says the current one to every head that attaches or
         // resyncs (`Inner::activity_now`), exactly as it does the held counts.
         SessionEvent::ActivityChanged { .. } => true,
-        // **Ephemeral, and the republish is the whole point of the event**: a series of retries is
+        // Ephemeral, and the republish is the whole point of the event: a series of retries is
         // one row whose value moves, and a replay would draw every value it had. The hub says the
         // current one to every head that attaches or resyncs (`Inner::retry_now`).
         SessionEvent::ModelRetry { .. } => true,
-        // **Ephemeral, and it is the same reason one turn on**: a pane's view is the answer to a
+        // Ephemeral, and it is the same reason one turn on: a pane's view is the answer to a
         // look, and a look from four minutes ago describes four minutes ago. A head asks again
         // when the operator opens the pane.
         SessionEvent::PluginPane { .. } => true,
@@ -95,9 +90,9 @@ pub fn is_interactive(event: &SessionEvent) -> bool {
         | SessionEvent::TranscriptContent { .. }
         // Durable for the same reason: it fills a row, and the row is.
         | SessionEvent::Citations { .. }
-        // **Durable, and it has to be.** A reconnecting head replays the gap it missed rather
+        // Durable, and it has to be. A reconnecting head replays the gap it missed rather
         // than taking a snapshot, and a fork it does not see replayed is the conversation drawn
-        // twice — the defect this event exists to end.
+        // twice - the defect this event exists to end.
         | SessionEvent::TranscriptForked { .. }
         | SessionEvent::HeadAttached { .. }
         | SessionEvent::HeadDetached { .. }
@@ -114,7 +109,7 @@ pub fn is_interactive(event: &SessionEvent) -> bool {
         // Durable: the list is what it is as of this seq, and a head replaying
         // the backlog keeps the last one it saw.
         | SessionEvent::TodosUpdated { .. }
-        // **Durable, and deliberately so.** A denial is a decision taken on the operator's behalf
+        // Durable, and deliberately so. A denial is a decision taken on the operator's behalf
         // that only they can lift, and the grant path is still live for a late head. It is not a
         // `DecisionRequested`: nothing is waiting on an answer.
         | SessionEvent::DenialRaised { .. } => false,
@@ -153,7 +148,7 @@ pub struct ScrubReport {
     /// about to be asked something twice.
     pub settled_decisions: u64,
     /// Job-output windows dropped as stale. A window is what the job had written
-    /// when a head asked, so a replayed one is a lie about now — the same shape as
+    /// when a head asked, so a replayed one is a lie about now - the same shape as
     /// the progress frames above, and the pane re-reads rather than replaying.
     #[serde(default)]
     pub job_output: u64,

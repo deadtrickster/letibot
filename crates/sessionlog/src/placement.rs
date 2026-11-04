@@ -1,11 +1,6 @@
-//! **Where a daemon's tools run, written down beside its socket.**
-//!
-//! `--host lab2x1` places a session's TOOLS on another machine while its model, store and gate stay
-//! here. That is a fact of the DAEMON, one per process, and the wire carries nothing about it, so the
-//! daemon writes it beside the claim that already says *this folder's daemon is me*.
-//!
-//! A record names the socket's `(dev, ino)` and its `ctime`, so a record that outlived its daemon is
-//! never read as the present one's: either half different answers `None` - nothing is known.
+//! Where a daemon's tools run, written beside its socket. A record names the socket's
+//! `(dev, ino)` and `ctime`; if either differs it is stale and answers `None`. It is a fact
+//! of the daemon, not the wire.
 
 use std::path::{Path, PathBuf};
 
@@ -14,7 +9,7 @@ pub fn path(socket: &Path) -> PathBuf {
     socket.with_extension("placement")
 }
 
-/// **Record where this daemon's tools run**, as the spelling `Placement::parse` reads back. Called
+/// Record where this daemon's tools run, as the spelling `Placement::parse` reads back. Called
 /// after the bind, so only the serving daemon writes here; written to a sibling and renamed so a
 /// reader never sees half a record.
 pub fn write(socket: &Path, spelling: &str) -> std::io::Result<()> {
@@ -32,7 +27,7 @@ pub fn write(socket: &Path, spelling: &str) -> std::io::Result<()> {
     std::fs::rename(&tmp, &target)
 }
 
-/// **Where the daemon holding this socket says its tools run**, or `None` when there is no record or
+/// Where the daemon holding this socket says its tools run, or `None` when there is no record or
 /// the record is not this socket's. `None` is *nothing is known*, never *local*: a caller that has to
 /// decide something from this must fail closed on it.
 pub fn read(socket: &Path) -> Option<String> {
@@ -108,7 +103,7 @@ mod tests {
         (path, l)
     }
 
-    /// **The round trip**: what the daemon wrote is what a head reads, at the same spelling.
+    /// The round trip: what the daemon wrote is what a head reads, at the same spelling.
     #[test]
     fn what_the_daemon_recorded_is_what_a_reader_gets() {
         let (socket, _l) = a_socket("round-trip");
@@ -121,7 +116,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(socket.parent().expect("a parent"));
     }
 
-    /// **A record from a daemon that is gone is not this daemon's answer**: the socket at the path is
+    /// A record from a daemon that is gone is not this daemon's answer: the socket at the path is
     /// a new file and the record still names the old one. The successor takes the name by a rename,
     /// because a rebind at the path can be handed the same inode back on ext4.
     #[test]
@@ -160,7 +155,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(socket.parent().expect("a parent"));
     }
 
-    /// **A rebind that takes the recorded inode back is still not this daemon's answer**: only the
+    /// A rebind that takes the recorded inode back is still not this daemon's answer: only the
     /// ctime tells the two apart, and a `chmod` stages exactly that state without betting on the
     /// allocator.
     #[test]
@@ -189,7 +184,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(socket.parent().expect("a parent"));
     }
 
-    /// **A record from a build that wrote no stamp is not this socket's answer**: it cannot prove
+    /// A record from a build that wrote no stamp is not this socket's answer: it cannot prove
     /// which binding it names, so a reader that accepted it would take the inode as the whole check.
     #[test]
     fn a_record_from_a_build_without_the_stamp_is_not_an_answer() {

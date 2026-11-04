@@ -1,21 +1,7 @@
-//! The hub tap: what a session's event stream says about itself, as metrics rows, and the one place
-//! that knows which turn a mark lands on.
-//!
-//! One line in the hub's fan-out hands each event to [`Tap::observe`], which does two jobs. It keeps
-//! the session's "now" - the turn running, its round, what it is doing, and which turn each
-//! transcript row belongs to - so the connection thread can place an operator's mark
-//! ([`crate::protocol::ClientFrame::Feedback`]) without asking the worker, which may be pinned for
-//! tens of seconds. And it emits the rows the hub already carries: warnings by code, operator
-//! commands, subagent state, job settlements, decisions answered, queue moves, heads attaching. The
-//! high-rate events (`Delta`, `TokensGenerated`, `PromptProgress`, `JobOutput`) only move the "now".
-//!
-//! A turn, for metrics, is a prompt - every round the harness runs for one door - and its id is the
-//! engine id of its FIRST round. Every round of one prompt carries the same `began_ms`, so a
-//! `TurnStarted` with the `began_ms` in hand is its next round and any other begins a new turn; the
-//! harness keys its own rows by the same rule, so a mark and the turn it marks join on `turn_id`.
-//!
-//! The mapping runs on the publishing thread and costs nothing when metrics are off:
-//! [`letibot_metrics::enabled`] is the first branch.
+//! The hub tap: turns a session's event stream into metrics rows and knows which turn a mark
+//! lands on. [`Tap::observe`] keeps the session's "now" so the connection thread can place an
+//! operator's mark ([`crate::protocol::ClientFrame::Feedback`]) without asking the worker.
+//! A turn is a prompt, id'd by its first round. Free when [`letibot_metrics::enabled`] is off.
 
 use std::collections::VecDeque;
 

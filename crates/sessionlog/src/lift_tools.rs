@@ -1,13 +1,6 @@
-//! The tool runtime's events, lifted into [`SessionEvent`].
-//!
-//! The same shape as [`crate::lift`] and for the same reason: `letibot-tools` defines the three
-//! lifecycle events it emits, this crate defines what a head sees, and exactly one object knows
-//! both. Keeping the runtime free of the log is what lets `cargo build -p letibot-tools` prove that
-//! a tool cannot reach a head, a socket or a model.
-//!
-//! The mapping is total and lossless: where a field was needed the event grew one, rather than
-//! dropping it here, because a lift that silently discards a field leaves a head unable to show
-//! something the runtime knew.
+//! The tool runtime's events, lifted into [`SessionEvent`], like [`crate::lift`]. Keeping the
+//! runtime free of the log proves a tool cannot reach a head, a socket or a model. Lossless:
+//! a needed field is added to the event, never dropped here.
 
 use letibot_tools::events::{ToolEvent, ToolEventSink};
 

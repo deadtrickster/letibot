@@ -1,15 +1,10 @@
-//! The answer vocabulary a head sends back when a **person** was asked (D10).
-//!
-//! Four fields, and none collapses into another: `option` (an index into the
-//! options offered), `note` (a qualification on that choice, so it needs an
-//! `option`), `free` (a typed answer) and `abstain` (a deliberate no-answer, which
-//! stands alone). A bad answer is a refusal, never a repair, and the same shape
-//! exists in `letibot-tools` on purpose: that crate is an optional dependency
-//! here, so a tool cannot reach the wire.
+//! The answer vocabulary a head sends back when a person was asked: `option`, `note` (needs
+//! an `option`), `free` and `abstain` (stands alone). A bad answer is a refusal, never a
+//! repair. `letibot-tools` has the same shape, as an optional dependency here.
 
 use serde::{Deserialize, Serialize};
 
-/// What a person said. **Not who** - see [`crate::hub::Reply`]: the answerer is what
+/// What a person said. Not who - see [`crate::hub::Reply`]: the answerer is what
 /// the daemon knows about the connection the answer arrived on, never a field the
 /// answer carries.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -23,7 +18,7 @@ pub struct QuestionAnswer {
     /// A typed answer, and a first-class one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub free: Option<String>,
-    /// **A deliberate no-answer**, and not permission to proceed: a model that gets one
+    /// A deliberate no-answer, and not permission to proceed: a model that gets one
     /// must state the assumption it would make and stop. `default` so an older head's
     /// frame parses, and elided when `false` like the three fields above it.
     #[serde(default, skip_serializing_if = "is_false")]
@@ -37,7 +32,7 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
-/// Why an answer was not accepted. Every one of these means **nobody has answered**,
+/// Why an answer was not accepted. Every one of these means nobody has answered,
 /// and none is something the harness may interpret: a malformed answer leaves the
 /// question open, and the head is told so it can ask the person again.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,7 +43,7 @@ pub enum AnswerDefect {
     NoteQualifiesNothing,
     /// An option index the question never offered.
     OptionNotOffered { chose: usize, offered: usize },
-    /// An abstention that also carried an answer — a choice, a note, or words.
+    /// An abstention that also carried an answer - a choice, a note, or words.
     AbstainedAndAnswered,
 }
 
@@ -105,8 +100,7 @@ impl QuestionAnswer {
         }
     }
 
-    /// **A deliberate no-answer.** The only way to spell it, and it stands alone —
-    /// see this module's header for why an empty [`Self::free`] is not it.
+    /// A deliberate no-answer. The only way to spell it, and it stands alone -     /// see this module's header for why an empty [`Self::free`] is not it.
     pub fn abstaining() -> Self {
         QuestionAnswer {
             abstain: true,
@@ -118,7 +112,7 @@ impl QuestionAnswer {
     pub fn validate(&self, offered: usize) -> Result<(), AnswerDefect> {
         let has_free = self.free.as_deref().is_some_and(|f| !f.trim().is_empty());
         let has_note = self.note.as_deref().is_some_and(|n| !n.trim().is_empty());
-        // **An abstention is checked first, and it has to be alone.** A frame that says
+        // An abstention is checked first, and it has to be alone. A frame that says
         // "I am not answering" and also carries a choice has two claims in it, and a
         // validator that let either win would be the harness deciding what a person meant.
         if self.abstain {
@@ -162,7 +156,7 @@ mod tests {
                 .validate(2)
                 .is_ok()
         );
-        // **And the fourth, which is an answer too.** It validates against a
+        // And the fourth, which is an answer too. It validates against a
         // question that offered no choices at all, because an abstention is not
         // about the ladder.
         assert!(QuestionAnswer::abstaining().validate(0).is_ok());
@@ -242,7 +236,7 @@ mod tests {
         }
     }
 
-    /// **The three things that must not look alike**, in the bytes a head sends: an
+    /// The three things that must not look alike, in the bytes a head sends: an
     /// abstention is `{"abstain":true}`, an empty answer is `{}` (refused), and silence
     /// is no frame at all.
     #[test]

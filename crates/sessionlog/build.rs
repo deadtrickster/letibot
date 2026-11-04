@@ -1,7 +1,5 @@
-//! Emits the rpath `letibot-tokencore` emits: `cargo:rustc-link-arg` reaches only the targets
-//! of the package that emitted it, so without it this crate's test binaries link and then fail
-//! at exec. The directory is the shared `build-support.rs`; emitted unconditionally, because an
-//! unused rpath costs nothing.
+//! Emits the rpath `letibot-tokencore` emits. `cargo:rustc-link-arg` reaches only the package
+//! that emitted it, so without this the test binaries link and fail at exec.
 
 include!("../llama/build-support.rs");
 

@@ -1,9 +1,6 @@
-//! Fan-out, attach, resync, and the serialized command queue: the daemon is the only reader of
-//! the model stream, and every head reads what the log already holds.
-//!
-//! A publish goes to the log and to the heads that asked for the record; the pane's byte stream
-//! is a head's alone and never enters the log. One command queue per session, so the thread that
-//! runs its turns is the only writer to its transcript.
+//! Fan-out, attach, resync, and the serialized command queue. The daemon alone reads the model
+//! stream; heads read the log. The pane's byte stream never enters the log. One queue per
+//! session, so its turn thread is the only writer to its transcript.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Condvar, Mutex};
@@ -404,10 +401,9 @@ struct Inner {
     /// The last `Filling` this hub published, republished when a head attaches: the fill is the
     /// longest wait of the three, and a head that arrives late must still show it.
     filling_now: Option<SessionEvent>,
-    /// **The retry series a model call is in**, republished to a head that attaches or takes a
-    /// resync. It is the one row the series draws, so a head that arrives mid-series and is not
-    /// told draws nothing at all and reads an endpoint that is failing as fine. `None` once the
-    /// series has its ending, which the same event carries.
+    /// The retry series a model call is in, republished to a head that attaches or resyncs.
+    /// Without it a head arriving mid-series draws nothing and reads a failing endpoint as fine.
+    /// `None` once the series has its ending.
     retry_now: Option<SessionEvent>,
     closed: bool,
     /// Rung when this hub takes a command, so a reader can wait on its own session without a
@@ -762,7 +758,7 @@ impl Hub {
         self.lock().log.dropped()
     }
 
-    /// **The one door for a warning**: `(code, detail)` and nothing else, so every site says the same
+    /// The one door for a warning: `(code, detail)` and nothing else, so every site says the same
     /// shape and a head's card, the store's line and the daemon's log cannot be told two ways.
     /// `warn_with` is the same door for the few that carry a compaction report.
     pub fn warn(&self, code: impl Into<String>, detail: impl Into<String>) -> Envelope {
@@ -929,10 +925,9 @@ impl Hub {
             .collect()
     }
 
-    /// Attach content to an already-appended transcript row, for the rows an announcement could not
-    /// carry. A row that rode its announcement is whole in the log and is not stored again: a head
-    /// that reads no body off an announcement is given `TranscriptContent` at send time instead
-    /// (see [`for_head`]).
+    /// Attach content to an already-appended row the announcement could not carry. A row that
+    /// rode its announcement is not stored again; a head that read no body is given
+    /// `TranscriptContent` at send time (see [`for_head`]).
     pub fn record_item(&self, item_id: &str, item: TranscriptItem) {
         if self.lock().view.row_has_body(item_id) {
             return;
@@ -943,7 +938,7 @@ impl Hub {
         });
     }
 
-    /// **One row, announced and readable**: the announcement carries the body when it fits, and
+    /// One row, announced and readable: the announcement carries the body when it fits, and
     /// [`Hub::record_item`] supplies it for a row that does not. Every door that publishes a row it
     /// already holds goes through here, so the bound cannot be applied twice and differently.
     pub fn append_row(&self, item_id: &str, kind: &str, ledger_head: &str, item: &TranscriptItem) {
@@ -1918,7 +1913,7 @@ impl Inner {
         if let SessionEvent::Filling { done, total, .. } = &event {
             self.filling_now = (*done < *total).then(|| event.clone());
         }
-        // **And the retry series, which is `Filling`'s rule with the ending as the zero**: the same
+        // And the retry series, which is `Filling`'s rule with the ending as the zero: the same
         // event carries the row's last value, so a series that has one is no longer in flight.
         if let SessionEvent::ModelRetry { ended, .. } = &event {
             self.retry_now = ended.is_none().then(|| event.clone());
@@ -2004,7 +1999,7 @@ mod tests {
         )
     }
 
-    /// **One door for a warning**: `(code, detail)` is the whole of it, so a site cannot fill the
+    /// One door for a warning: `(code, detail)` is the whole of it, so a site cannot fill the
     /// variant's fields a second way and two doors cannot word one fact differently.
     #[test]
     fn a_warning_goes_through_the_one_door() {
@@ -2209,7 +2204,7 @@ mod tests {
         );
     }
 
-    /// **A head that attaches inside a retry series is told the series**; one that attaches after it
+    /// A head that attaches inside a retry series is told the series; one that attaches after it
     /// is not. The event is the row's whole value, so a replay would draw it at a count the series
     /// has already passed - the `HeldResults` rule, and a live row depends on it.
     #[test]

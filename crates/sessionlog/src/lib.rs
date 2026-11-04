@@ -2,8 +2,8 @@
 //!
 //! # What this crate is
 //!
-//! The authoritative state of a session is an **append-only event log with a
-//! monotonic `seq`** (§13.2). Everything else - the snapshot, a head's screen, a
+//! The authoritative state of a session is an append-only event log with a
+//! monotonic `seq` (§13.2). Everything else - the snapshot, a head's screen, a
 //! stored transcript - is a projection of it. This crate is the log, the
 //! projections, the fan-out and the frames; it is not a daemon and it holds no
 //! model.
@@ -32,15 +32,15 @@
 //!
 //! # What this crate deliberately does not do
 //!
-//! - **No async runtime.** The turn engine is a synchronous state machine over
+//! - No async runtime. The turn engine is a synchronous state machine over
 //!   token ids and the whole workspace is testable with no executor; putting a
 //!   runtime under the log to serve at most a handful of heads would be paying a
 //!   dependency for a problem we do not have. Threads and a condvar are the whole
 //!   concurrency story.
-//! - **No transport but Unix sockets.** §13.4's remote head is WebSocket + TLS
+//! - No transport but Unix sockets. §13.4's remote head is WebSocket + TLS
 //!   over *the same frames*; [`wire`] is deliberately generic over `Read`/`Write`
 //!   so that head is a transport and not a protocol. It is not built here.
-//! - **No ACP adapter.** §13.4 calls it an adapter over the same vocabulary; the
+//! - No ACP adapter. §13.4 calls it an adapter over the same vocabulary; the
 //!   vocabulary is in [`event`] (`DecisionOption`, `option_id`, the four
 //!   `OptionKind`s) so the adapter is a mapping when somebody writes it.
 
@@ -51,14 +51,14 @@ pub mod event;
 pub mod hub;
 pub mod log;
 pub mod metrics_tap;
-/// **Who a session is for** - the rule every list of sessions is grouped by. See [`origin`].
+/// Who a session is for - the rule every list of sessions is grouped by. See [`origin`].
 pub mod origin;
-// **The pane contract's document** (`docs/plugins-slice1.md`, C3): the shapes a `pane_<name>`
+// The pane contract's document (`docs/plugins-slice1.md`, C3): the shapes a `pane_<name>`
 pub mod pane;
-// **Which process connected**, from the kernel: a head and a tool call run as the same user, so
+// Which process connected, from the kernel: a head and a tool call run as the same user, so
 // the socket's mode decides nothing and the peer's own pid is the fact. See [`peer`].
 pub mod peer;
-// **Where a daemon's tools run, written beside its socket** (`docs/remote-hosts.md`): the one
+// Where a daemon's tools run, written beside its socket (`docs/remote-hosts.md`): the one
 // process fact the protocol does not carry, so a head about to reuse a daemon can tell where its
 // caller's tools would run.
 pub mod placement;
@@ -115,7 +115,7 @@ pub use view::{
     TurnState,
     TurnView,
     ViewBounds,
-    // **The one definition of a row's `body`** (R19.2b), re-exported because the daemon's
+    // The one definition of a row's `body`, re-exported because the daemon's
     // store-backed reader answers the same question and must not answer it differently.
     body_of,
 };
@@ -127,22 +127,22 @@ pub use lift::{LogSink, from_turn_event};
 #[cfg(feature = "tools")]
 pub use lift_tools::{ToolLogSink, from_tool_event};
 
-/// **How a merge-queue gatekeeper's session title begins** - the first words of its brief, which a
+/// How a merge-queue gatekeeper's session title begins - the first words of its brief, which a
 /// child's title is cut from. A head reads it to keep the reviewer out of the subagents it counts;
 /// a row rebuilt from the session list has only the title.
 pub const GATEKEEPER_TITLE_PREFIX: &str = "You are the gatekeeper.";
 
-/// **How the notes keeper's session title begins** - its brief's first words, on
+/// How the notes keeper's session title begins - its brief's first words, on
 /// [`GATEKEEPER_TITLE_PREFIX`]'s rule. Here because the session list reads it, and the spelling is
 /// held together by a test in the one crate that sees both (`letibot-tui`).
 pub const NOTES_KEEPER_TITLE_PREFIX: &str = "You are the notes keeper.";
 
-/// **The seat a review is recorded under** - `Seat::Gatekeeper`'s store spelling. Here because a
+/// The seat a review is recorded under - `Seat::Gatekeeper`'s store spelling. Here because a
 /// crate below the daemon groups sessions too, and the mark that says *this row is a review* has to
 /// be one string: `is_conversation` and `crate::origin` both read it.
 pub const GATEKEEPER_SEAT: &str = "gatekeeper";
 
-/// **How every daemon's review-queue session id begins** - one workspace's daemon per key
+/// How every daemon's review-queue session id begins - one workspace's daemon per key
 /// ([`gatekeeper_session`]), and nothing else in the tree starts with this.
 pub const GATEKEEPER_SESSION_PREFIX: &str = "s-gatekeeper";
 
@@ -150,9 +150,8 @@ pub const GATEKEEPER_SESSION_PREFIX: &str = "s-gatekeeper";
 /// [`is_gatekeeper_session`] reads to tell a review-queue session from a reviewer child of one.
 const WORKSPACE_KEY_LEN: usize = 12;
 
-/// **The review-queue session id of the daemon serving `workspace`** - `s-gatekeeper-<key>`. It
-/// used to be one constant in every daemon, and two of them appending to one transcript is silent
-/// corruption; it is derived from the workspace key and spelled here so a head can name it.
+/// The review-queue session id of the daemon serving `workspace` - `s-gatekeeper-<key>`. It is derived
+/// from the workspace key, so two daemons never append to one transcript, and a head can name it.
 pub fn gatekeeper_session(workspace: &std::path::Path) -> String {
     gatekeeper_session_for_key(&workspace_key(workspace))
 }
@@ -164,7 +163,7 @@ pub fn gatekeeper_session_for_key(key: &str) -> String {
     format!("{GATEKEEPER_SESSION_PREFIX}-{key}")
 }
 
-/// **The key a folder's daemon is named by**: the first twelve hex characters of the SHA-256 of its
+/// The key a folder's daemon is named by: the first twelve hex characters of the SHA-256 of its
 /// canonical path, which is what `scripts/letibot` computes. Canonicalised first, because
 /// `/var/folders` and `/private/var/folders` are one directory and two strings.
 pub fn workspace_key(workspace: &std::path::Path) -> String {
@@ -176,7 +175,7 @@ pub fn workspace_key(workspace: &std::path::Path) -> String {
     digest.iter().take(6).map(|b| format!("{b:02x}")).collect()
 }
 
-/// **Whether `id` is any daemon's review-queue session.** Two shapes: the per-daemon id, and the
+/// Whether `id` is any daemon's review-queue session. Two shapes: the per-daemon id, and the
 /// constant `s-gatekeeper` that a store still holds. A reviewer child's suffix is longer than a key,
 /// so this reads the suffix exactly rather than by prefix.
 pub fn is_gatekeeper_session(id: &str) -> bool {

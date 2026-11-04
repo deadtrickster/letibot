@@ -1,28 +1,23 @@
-//! **The pane contract's document** (`docs/plugins-slice1.md`, C3): what a `pane_<name>` hook
-//! answers - an overview of panels, every panel a summary with a full view behind its own key,
-//! every row through one grid, findings collected in one list, a legend for every label.
-//!
-//! The types live here because the daemon validates a plugin's answer into them (`View::validate`)
-//! and the head draws them; a second copy on either side is a copy that drifts. Unknown fields are
-//! ignored, and an unknown BLOCK kind is kept and names itself ([`Block::Unknown`]) rather than
-//! vanishing from the pane. Nothing here draws and nothing here reads a file.
+//! The pane contract (`docs/plugins-slice1.md`): what a `pane_<name>` hook answers. The daemon
+//! validates a plugin's answer into these types (`View::validate`) and the head draws them.
+//! Unknown fields are ignored; an unknown block kind is kept ([`Block::Unknown`]).
 
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
-// **The three words a row shares with the plugin that answered it** - a cell, a fold and the act a
+// The three words a row shares with the plugin that answered it - a cell, a fold and the act a
 // key performs. They live in the SDK because the guest compiles that crate too; re-exported here
 // so a reader of the pane contract has one import for its whole vocabulary.
 pub use letibot_plugin::pane::{Act, Cell, Fold, Role};
 
-/// **The keys the host owns on every pane, whatever a plugin says** - C3's list. A view that
+/// The keys the host owns on every pane, whatever a plugin says - C3's list. A view that
 /// binds one is refused (see [`View::validate`]): a plugin that could take `q` would own a key
 /// the operator expects to leave with.
 pub const HOST_KEYS: [char; 5] = ['q', 'j', 'k', 'f', 'l'];
 
-/// **The shortest the host will re-run a look for** - `every_s` is 0 (never) or at least this
+/// The shortest the host will re-run a look for - `every_s` is 0 (never) or at least this
 /// many seconds. Anything faster is a pane that spends more time asking than drawing.
 pub const MIN_EVERY_S: u64 = 5;
 
@@ -90,7 +85,7 @@ pub struct Panel {
     pub key: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub title: String,
-    /// **What every bar in this panel is a share of** - `rows in the tier`, `hosts in the
+    /// What every bar in this panel is a share of - `rows in the tier`, `hosts in the
     /// fleet`. Drawn beside the title, dim, because a bar with no denominator is a number
     /// with no meaning.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -101,7 +96,7 @@ pub struct Panel {
     /// Drawn when the panel's key is pressed. Absent means the summary is the view.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub view: Vec<Block>,
-    /// **Why this panel has nothing to draw, and how to fix it.** A panel that cannot get its
+    /// Why this panel has nothing to draw, and how to fix it. A panel that cannot get its
     /// data says so instead of drawing an empty result: an empty list and a broken look look
     /// identical on a screen and mean opposite things.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -128,7 +123,7 @@ pub struct Unavailable {
     pub fix: String,
 }
 
-/// **One block of a panel.** Five kinds the host draws, and every other kind kept by name.
+/// One block of a panel. Five kinds the host draws, and every other kind kept by name.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Block {
     /// `{"lines":[…]}` - the one grid.
@@ -141,14 +136,14 @@ pub enum Block {
     Markdown(String),
     /// `{"kv":{"rows":[["label","value"],…]}}` - rows that carry no id, so no stop either.
     Kv(Vec<(String, String)>),
-    /// **A kind this host does not draw, by the name the plugin gave it.** Drawn as one muted
+    /// A kind this host does not draw, by the name the plugin gave it. Drawn as one muted
     /// line naming the kind, which is the honest thing: the plugin's answer is not wrong, this
     /// host is old.
     Unknown(String),
 }
 
 impl Block {
-    /// **One block out of the JSON a plugin answered.** A known kind whose body does not parse
+    /// One block out of the JSON a plugin answered. A known kind whose body does not parse
     /// is kept as an unknown of that name - a block this host cannot read is drawn as a line
     /// saying which kind it was, never silently dropped.
     pub fn of(v: Value) -> Block {
@@ -231,7 +226,7 @@ pub struct Table {
 pub struct Tree {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rows: Vec<Row>,
-    /// **What to draw when there are no rows** - the plugin's own sentence, because *the daemon
+    /// What to draw when there are no rows - the plugin's own sentence, because *the daemon
     /// has not answered yet* and *this project keeps no such rows* are two different facts and
     /// only the layer knows which one its list is. Empty draws nothing.
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -245,7 +240,7 @@ struct KvBody {
     rows: Vec<(String, String)>,
 }
 
-/// **One row of the grid** - the one shape every number goes through, so the columns line up
+/// One row of the grid - the one shape every number goes through, so the columns line up
 /// down the frame and across panels.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Line {
@@ -264,7 +259,7 @@ pub struct Line {
     /// One of the palette's roles. Absent is `plain`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<Role>,
-    /// **An id makes the line a stop**: the cursor can rest on it, Enter reads its `detail`,
+    /// An id makes the line a stop: the cursor can rest on it, Enter reads its `detail`,
     /// and its `actions` name it. A line with no id is a number and nothing else.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
@@ -288,21 +283,21 @@ pub struct Bar {
     pub frac: f64,
 }
 
-/// **One row of a table or a tree.** A row with an `id` is a stop, like a line.
+/// One row of a table or a tree. A row with an `id` is a stop, like a line.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Row {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
-    /// **The cells on the left.** A plain string takes the row's role; `{"text", "role"}` says
+    /// The cells on the left. A plain string takes the row's role; `{"text", "role"}` says
     /// what one run is regardless of it (`plugin_sdk::pane::Cell`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cells: Vec<Cell>,
-    /// **The facts on the right**, drawn faint and flush right - `generating · 412 rows · 2 heads`.
+    /// The facts on the right, drawn faint and flush right - `generating · 412 rows · 2 heads`.
     /// C3's first draft had none, and a list without a right column is a list whose numbers sit in
     /// the name's way. A cell here may carry a role like any other.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub facts: Vec<Cell>,
-    /// **The faint line(s) UNDER the row** - an id, a path, a legend sentence. Not `detail`: that
+    /// The faint line(s) UNDER the row - an id, a path, a legend sentence. Not `detail`: that
     /// is prose read whole on Enter, and a row whose whole detail is drawn beneath it is a row
     /// that reads itself.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -310,12 +305,12 @@ pub struct Row {
     /// The number drawn in the list's left field, or nothing for a row that cannot be typed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub number: Option<usize>,
-    /// **How deep in a FLAT list this row sits** - a plugin that answers the rows already walked
+    /// How deep in a FLAT list this row sits - a plugin that answers the rows already walked
     /// (the session list does) says so here, because there are no `children` to walk. A nested
     /// tree leaves it at 0 and the host counts the nesting instead.
     #[serde(default, skip_serializing_if = "crate::pane::is_zero_usize")]
     pub depth: usize,
-    /// **Whether this row folds, and which way** (`plugin_sdk::pane::Fold`). Absent is a row that
+    /// Whether this row folds, and which way (`plugin_sdk::pane::Fold`). Absent is a row that
     /// said nothing about folding; the host's own fold state (keyed by `id`) wins over whatever
     /// the plugin said, so a fold is instant and survives the next answer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -326,7 +321,7 @@ pub struct Row {
     pub detail: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub actions: Vec<Action>,
-    /// **What Enter does on this row**, performed by the host - `switch`, `fold`, `event`. An act
+    /// What Enter does on this row, performed by the host - `switch`, `fold`, `event`. An act
     /// is declared in the layer's `plugin.toml`, so a view that reaches a verb nobody reviewed is
     /// refused by [`View::validate_for`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -343,7 +338,7 @@ impl Row {
     }
 }
 
-/// **One finding**: what tripped (or is missing, or passed), the numbers behind it, what to do
+/// One finding: what tripped (or is missing, or passed), the numbers behind it, what to do
 /// and how to check that it worked.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Finding {
@@ -355,12 +350,12 @@ pub struct Finding {
     /// The panel this belongs to, by the panel's id - so a reader knows where to look.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub panel: String,
-    /// **Required, and deliberately not defaulted**: a finding that did not say how bad it is
+    /// Required, and deliberately not defaulted: a finding that did not say how bad it is
     /// must not be counted as one that passed.
     pub severity: Severity,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub detail: String,
-    /// **The numbers the finding rests on**, drawn as label/value rows on Enter. Free-form
+    /// The numbers the finding rests on, drawn as label/value rows on Enter. Free-form
     /// JSON on purpose: a finding about an age carries an age, one about a port carries a
     /// port, and the host renders what it is given.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -395,7 +390,7 @@ impl Severity {
     }
 }
 
-/// **What a key of a stop does.** Four, and no more: `look` and `event` call back into the
+/// What a key of a stop does. Four, and no more: `look` and `event` call back into the
 /// plugin, `say` hands the operator's line to the model, and `verb` asks the HOST to perform one
 /// of its own verbs - which is what keeps a pane's actions inside the plugin's capabilities.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -406,7 +401,7 @@ pub enum ActionKind {
     Look,
     /// Call the pane again with `{"item": <the stop's id>, "action": <this word>}`.
     Event(String),
-    /// **One of the host's own verbs, on the entry this row names** - the same word
+    /// One of the host's own verbs, on the entry this row names - the same word
     /// [`crate::pane::Act::Verb`] carries on Enter, on a letter instead. The manifest gates it
     /// exactly as it gates `enter` ([`View::validate_for`]).
     Verb(String),
@@ -426,7 +421,7 @@ pub struct Action {
     pub look: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event: Option<String>,
-    /// **The host's verb, on the entry the row names** - the letter a row binds for a verb that is
+    /// The host's verb, on the entry the row names - the letter a row binds for a verb that is
     /// not the row's `enter`, so one row can offer two of the person's verbs. Gated by the manifest
     /// like `enter` is: [`View::validate_for`] refuses a verb the layer did not declare.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -434,7 +429,7 @@ pub struct Action {
 }
 
 impl Action {
-    /// **What this key does, or nothing.** Exactly one of `say`, `look`, `event` and `verb` is a
+    /// What this key does, or nothing. Exactly one of `say`, `look`, `event` and `verb` is a
     /// question with one answer; two of them is a key whose meaning nobody can say, and
     /// [`View::validate`] refuses it rather than letting the host pick.
     pub fn kind(&self) -> Option<ActionKind> {
@@ -457,7 +452,7 @@ impl Action {
         }
     }
 
-    /// **The act as the WIRE spells it** - C4's `PaneAction.action`: the key's `event` word, the
+    /// The act as the WIRE spells it - C4's `PaneAction.action`: the key's `event` word, the
     /// host's `verb` word, or `look`. `Say` is not a pane action (the line goes to the session's
     /// model), so it has none.
     pub fn word(&self) -> Option<&str> {
@@ -475,7 +470,7 @@ impl Action {
     }
 }
 
-/// **One lowercase letter**, or nothing - the shape every key a pane binds must have.
+/// One lowercase letter, or nothing - the shape every key a pane binds must have.
 pub fn one_letter(s: &str) -> Option<char> {
     let mut it = s.chars();
     match (it.next(), it.next()) {
@@ -495,7 +490,7 @@ pub enum LookSpec {
 }
 
 impl View {
-    /// **Refuse a view the host's keys cannot drive.** The pane's keys are the host's and are
+    /// Refuse a view the host's keys cannot drive. The pane's keys are the host's and are
     /// templated, so a panel's key, an action's key, an action that does two things, an `every_s`
     /// under [`MIN_EVERY_S`] and a finding nobody can name are all refused here.
     pub fn validate_for(&self, declared: &[String]) -> Result<(), String> {
@@ -504,7 +499,7 @@ impl View {
             for block in p.summary.iter().chain(p.view.iter()) {
                 let Block::Tree(t) = block else { continue };
                 for (_, row) in rows_deep(&t.rows) {
-                    // **The row's `enter`, and then its letters.** Both reach the host's own verbs
+                    // The row's `enter`, and then its letters. Both reach the host's own verbs
                     // and both are gated here: a letter is not a lesser door.
                     let mut asked: Vec<&str> = row
                         .enter
@@ -596,7 +591,7 @@ impl View {
         Ok(())
     }
 
-    /// **Every set of actions one stop carries**, with the stop named the way a refusal has to say
+    /// Every set of actions one stop carries, with the stop named the way a refusal has to say
     /// it - the panel and the block, or the finding. This is the walk [`View::validate`] reads.
     pub fn action_sets(&self) -> Vec<(String, &[Action])> {
         let mut out = Vec::new();
@@ -660,7 +655,7 @@ impl View {
     }
 }
 
-/// **A tree's rows in the order they are drawn**: each row, then its children, depth first  -
+/// A tree's rows in the order they are drawn: each row, then its children, depth first  -
 /// with its depth. One walk, so the drawing and the stop the cursor lands on cannot disagree
 /// about which row is the fifth.
 pub fn rows_deep(rows: &[Row]) -> Vec<(usize, &Row)> {
@@ -683,7 +678,7 @@ mod tests {
         serde_json::from_str(json).expect("the fixture parses")
     }
 
-    /// **The whole document, field for field** - every piece of C3 in one view, parsed and
+    /// The whole document, field for field - every piece of C3 in one view, parsed and
     /// written back out to the same JSON. A round trip is the cheapest proof that the types
     /// carry what the contract says and nothing else.
     #[test]
@@ -741,7 +736,7 @@ mod tests {
         assert_eq!(serde_json::from_value::<View>(out).unwrap(), v);
     }
 
-    /// **Each piece on its own**, from the smallest JSON that carries it - so a field that
+    /// Each piece on its own, from the smallest JSON that carries it - so a field that
     /// only round-trips inside a whole panel is caught.
     #[test]
     fn each_piece_round_trips_from_c3s_json() {
@@ -810,7 +805,7 @@ mod tests {
         );
     }
 
-    /// **A block kind this host does not draw is kept by name** - the plugin's answer is not
+    /// A block kind this host does not draw is kept by name - the plugin's answer is not
     /// wrong and the pane is not empty: the line it draws says which kind is missing. And an
     /// unknown FIELD anywhere is ignored, by every type.
     #[test]
@@ -825,7 +820,7 @@ mod tests {
         assert_eq!(v.title, "t");
     }
 
-    /// **Every refusal, one test each** - these are the host's keys and the operator's
+    /// Every refusal, one test each - these are the host's keys and the operator's
     /// expectations, and a view that breaks one is a pane whose keys do something nobody chose.
     #[test]
     fn validate_refuses_the_keys_the_host_owns() {
@@ -894,7 +889,7 @@ mod tests {
         assert!(v.validate().is_ok(), "{:?}", v.validate());
     }
 
-    /// **The manifest gates both doors to the host's verbs** - the row's `enter` and its letters.
+    /// The manifest gates both doors to the host's verbs - the row's `enter` and its letters.
     /// A layer could otherwise reach a verb no reviewer read by writing it one key further along.
     #[test]
     fn validate_for_gates_the_rows_enter_and_its_letters_alike() {
@@ -953,7 +948,7 @@ mod tests {
         assert!(event.validate_for(&[]).is_ok());
     }
 
-    /// **A look faster than [`MIN_EVERY_S`] is refused**, and 0 is the ordinary "never".
+    /// A look faster than [`MIN_EVERY_S`] is refused, and 0 is the ordinary "never".
     #[test]
     fn validate_refuses_a_look_that_never_stops_asking() {
         assert!(parsed(r#"{"every_s":0}"#).validate().is_ok());
