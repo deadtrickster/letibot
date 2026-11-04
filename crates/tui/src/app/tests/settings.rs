@@ -1323,3 +1323,27 @@ fn a_settings_frame_nobody_asked_for_is_drawn() {
         "the head asked again for rows it was just handed"
     );
 }
+
+/// The same walk over `Surface::ALL`, so a surface added later is held to it without anybody
+/// adding it to the list above.
+#[test]
+fn no_surface_lets_the_wheel_through_to_the_conversation() {
+    for s in Surface::ALL {
+        let mut a = app();
+        for i in 0..40u64 {
+            a.apply(ServerFrame::Event(env(
+                i * 2 + 1,
+                testing::appended(&format!("u.{i}"), "user"),
+            )));
+            a.apply(ServerFrame::Event(env(
+                i * 2 + 2,
+                testing::content(&format!("u.{i}"), &format!("line {i}")),
+            )));
+        }
+        let _ = a.screen(80, 24);
+        a.push_surface(s);
+        a.key(Key::WheelUp);
+        a.key(Key::PageUp);
+        assert_eq!(a.scroll, 0, "{s:?} let the wheel reach the conversation");
+    }
+}
