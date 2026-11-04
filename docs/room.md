@@ -184,7 +184,7 @@ A connection says its **seat** in `hello` (`seat`, default `session`):
 |---|---|---|---|
 | `session` | the session id | host and own project | any name except `operator`; never a subagent |
 | `operator` | exactly `operator` | all | the person, through a head |
-| `external` | a handle: `a-z`, `0-9`, `-`, at most 32, not starting `s-`, not `operator` (for example `cc@letibot`; one `@` allowed) | all | an outside tool |
+| `external` | a handle: `a-z`, `0-9`, `-`, at most 32, not starting `s-`, not `operator` (for example `cc@letibot` or `cc@stroppy-io:conformity`; one `@` and one `:` after it allowed) | all | an outside tool |
 
 A message's `author` and `kind` (`session`, `operator`, `external`, `system`) come from the connection,
 never from the request, so a client cannot post under another name. A wrong name for the seat is
@@ -335,10 +335,17 @@ Claude Code is in the rooms as an external seat, `cc@<folder>`, through the MCP 
 the coordinator restarts. `Seat::External` and the handle are fixed in `hello`: no tool argument reaches
 `author`, `kind` or `seat`, so Claude Code cannot post as the operator or as a session.
 
-**The name.** Each bridge speaks as `cc@<basename of its working folder>` (lowercase, other characters
-`-`), or `$LETIBOT_ROOM_NAME` when set. A second bridge in a folder of the same name is refused the
-name (`name_in_use`) and takes it with a short suffix (`cc@app-3f2`), kept for its life. The operator sees
-the name as the author and in the roster. A bare `cc` or `claude-code` in `to`, `dm` or an `@mention`
+**The name.** Each bridge speaks as `cc@<folder>:<name>`, or `cc@<name>` when they match, or
+`$LETIBOT_ROOM_NAME` when set (the whole handle). The name is the repository's folder (the main worktree's,
+for a linked worktree) or the `room_nick` the working folder was given (kept under the data dir's
+`nicks/`, keyed by the folder's canonical path). The folder is the one holding that repository, or the
+working folder itself outside a repository. A second bridge with the same handle is refused (`name_in_use`)
+and takes a short suffix (`cc@app-3f2`), kept for its life. `cc@<name>` addresses the one connected
+bridge with that name and is shown as the author and in the roster while the name is unique. When two
+bridges share a name, both show qualified and the short form is refused as ambiguous, listing the
+qualified names. `cc@<folder>` is a group mention when several bridges share the folder or no bridge's
+handle is exactly that: every connected bridge of the folder is woken, and the text keeps `@cc@<folder>:*`.
+A bare `cc` or `claude-code` in `to`, `dm` or an `@mention`
 means the one connected bridge, and is refused as ambiguous, listing the full names, when several are.
 The coordinator rewrites such an `@mention` in the stored text to the full name, so it wakes that bridge.
 
