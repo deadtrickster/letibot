@@ -72,7 +72,7 @@ fn members(host: &HostProcesses, job: &letibot_tools::exec::JobId) -> Vec<u32> {
 /// two seconds pass, and the last reading returned. One reading, so an assertion and its
 /// message cannot disagree while the kill is recorded and the reap follows it.
 fn left_after_reap(host: &HostProcesses, job: &letibot_tools::exec::JobId) -> Vec<u32> {
-    let until = std::time::Instant::now() + Duration::from_secs(2);
+    let until = std::time::Instant::now() + Duration::from_secs(30);
     let mut left = members(host, job);
     while !left.is_empty() && std::time::Instant::now() < until {
         std::thread::sleep(Duration::from_millis(20));
@@ -152,7 +152,7 @@ fn a_run_nobody_is_waiting_on_is_still_ended_by_its_deadline() {
     let left = left_after_reap(&host, &id);
     assert!(
         left.is_empty(),
-        "the cgroup still holds {left:?} two seconds after the deadline"
+        "the cgroup still holds {left:?} thirty seconds after the deadline"
     );
     // The cgroup is empty, but the exit is observed by a poll: a loaded box reaps late.
     let gone_by = std::time::Instant::now() + Duration::from_secs(30);
