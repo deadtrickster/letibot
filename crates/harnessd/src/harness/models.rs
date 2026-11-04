@@ -375,20 +375,10 @@ impl Harness {
         match now {
             Some(w) if Some(w) == was => String::new(),
             Some(w) => {
-                let resident = self.session.ledger.len() as u64;
-                let mut said = match was {
-                    Some(old) => format!(". Context window {old} → {w}"),
-                    None => format!(". Context window now {w}"),
-                };
-                // The consequence, not just the number: being told after the turn that it had to compact is too late.
-                // A move to a SMALLER box is where this bites, and that is the ordinary direction for a fleet switch.
-                if resident + self.cfg.headroom() >= w {
-                    said.push_str(&format!(
-                        "; this conversation is {resident} token(s), so the next turn \
-                         compacts first"
-                    ));
-                }
-                said
+                // A local endpoint counts with the ledger's own vocabulary, so no conversion
+                // applies and `window_moved` leaves the figure alone.
+                self.cfg.context_window = Some(w);
+                window_moved(&self.cfg, was, w, self.session.ledger.len() as u64)
             }
             None => format!(
                 ". {} did not report an n_ctx, so there is no wall to plan against — \
@@ -882,21 +872,9 @@ impl Harness {
             Some(w) if Some(w) == was => String::new(),
             Some(w) => {
                 self.cfg.context_window = Some(w);
-                let resident = self.session.ledger.len() as u64;
-                let mut said = match was {
-                    Some(old) => format!(". Context window {old} → {w}"),
-                    None => format!(". Context window now {w}"),
-                };
-                // The consequence, not just the number: a switch that puts the
-                // conversation over the new model's wall compacts on the next
-                // turn, and being told afterwards is being told too late.
-                if resident + self.cfg.headroom() >= w {
-                    said.push_str(&format!(
-                        "; this conversation is {resident} token(s), so the next turn \
-                         compacts first"
-                    ));
-                }
-                said
+                // `window_moved` converts, because a metered model counts with the provider's
+                // units and the ledger's count over-counts by the rows it is never sent.
+                window_moved(&self.cfg, was, w, self.session.ledger.len() as u64)
             }
             None => format!(
                 ". The catalogue has no window for {}/{}, so compaction still plans \
@@ -1413,6 +1391,79 @@ pub(crate) const NO_VOCAB_FOR_LOCAL: &str = "this daemon has no model vocabulary
 pub(crate) const NO_MODEL_CHOSEN: &str = "no model is chosen for this session: this box has no local \
      model's vocabulary (GGUF) and no cloud provider. `/models` picks one — a cloud model asks \
      for its key once, and becomes this box's default.";
+
+/// The sentence a window move appends to the switch's report, with the conversation's size in the
+/// units of the window it is compared against: a metered model counts with the provider's, whose
+/// figure is smaller than the ledger's by the reasoning rows it is never sent - `wall.rs`'s rule.
+fn window_moved(
+    cfg: &crate::config::Config,
+    was: Option<u64>,
+    now: u64,
+    ledger_tokens: u64,
+) -> String {
+    let resident = match cfg.provider.is_some() {
+        true => cfg.shown_tokens(ledger_tokens),
+        false => ledger_tokens,
+    };
+    let mut said = match was {
+        Some(old) => format!(". Context window {old} → {now}"),
+        None => format!(". Context window now {now}"),
+    };
+    // The consequence, not just the number: being told after the turn that it had to
+    // compact is too late, and a move to a SMALLER box is where it bites.
+    if resident + cfg.headroom() >= now {
+        said.push_str(&format!(
+            "; this conversation is {resident} token(s), so the next turn compacts first"
+        ));
+    }
+    said
+}
+
+#[cfg(test)]
+mod window_moved_tests {
+    use super::window_moved;
+    use crate::config::Config;
+
+    /// The number in the sentence is the window's own unit. The ledger over-counts a cloud
+    /// conversation by the reasoning rows the provider is never sent, so a raw count claimed a
+    /// compaction the next turn would not need.
+    #[test]
+    fn the_conversations_size_is_measured_in_the_windows_own_units() {
+        let mut cfg = Config::for_this_box("/nonexistent-workspace");
+        cfg.provider = Some(crate::config::ProviderConfig {
+            name: "deepseek".into(),
+            model: Some("deepseek-chat".into()),
+            api_key: None,
+            thinking: false,
+        });
+        // The ratio this tree measures on this box: the ledger over-counts by 49%.
+        cfg.ledger_scale = Some((100, 51));
+        cfg.context_window = Some(60_000);
+
+        let ledger = 60_000u64;
+        let quiet = window_moved(&cfg, None, 60_000, ledger);
+        assert!(
+            !quiet.contains("compacts first"),
+            "30600 tokens plus the headroom is under the window: {quiet}"
+        );
+        // The control: the same conversation counted in the ledger's units does claim it.
+        let mut raw = cfg.clone();
+        raw.ledger_scale = None;
+        let loud = window_moved(&raw, None, 60_000, ledger);
+        assert!(
+            loud.contains("this conversation is 60000 token(s)"),
+            "an unmeasured count is the ledger's own figure, and that is what over-counted: {loud}"
+        );
+
+        // And when it does claim, the sentence names the window's unit too.
+        let over = window_moved(&cfg, Some(120_000), 30_000, ledger);
+        assert!(over.contains("Context window 120000 → 30000"), "{over}");
+        assert!(
+            over.contains("this conversation is 30600 token(s)"),
+            "{over}"
+        );
+    }
+}
 
 #[cfg(test)]
 mod vocab_differs_tests {
