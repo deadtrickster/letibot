@@ -106,7 +106,7 @@ impl VocabBackend for Gguf {
             )
         };
         if n < 0 {
-            out.resize((-n) as usize, 0);
+            out.resize(n.unsigned_abs() as usize, 0);
             n = unsafe {
                 ffi::llama_tokenize(
                     self.vocab,
@@ -174,7 +174,7 @@ impl VocabBackend for Gguf {
             )
         };
         if n < 0 {
-            buf.resize((-n) as usize, 0);
+            buf.resize(n.unsigned_abs() as usize, 0);
             n = unsafe {
                 ffi::llama_token_to_piece(
                     self.vocab,

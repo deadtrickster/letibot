@@ -143,9 +143,11 @@ impl TokenRegion {
     }
 
     fn bytes_for(capacity_tokens: usize) -> usize {
-        let want = HEADER_BYTES + capacity_tokens * size_of::<TokenId>();
+        let want = capacity_tokens
+            .saturating_mul(size_of::<TokenId>())
+            .saturating_add(HEADER_BYTES);
         let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
-        want.div_ceil(page) * page
+        want.div_ceil(page).saturating_mul(page)
     }
 
     fn header(&self) -> &Header {
@@ -187,7 +189,9 @@ impl TokenRegion {
     /// Append tokens and publish the new chain head: the only mutation this type has. Appending zero
     /// tokens is legal and meaningful, because a `SegmentMark` renders to nothing.
     pub fn append(&mut self, tokens: &[TokenId], head_hash: &[u8; 32]) -> io::Result<()> {
-        let needed = self.len + tokens.len();
+        let needed = self.len.checked_add(tokens.len()).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::OutOfMemory, "token region overflow")
+        })?;
         if needed > self.capacity {
             self.grow_to(needed)?;
         }

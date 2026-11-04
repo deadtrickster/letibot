@@ -24,8 +24,17 @@ pub struct LedgerRow {
 
 impl LedgerRow {
     pub fn end(&self) -> u32 {
-        self.tok_offset + self.tok_len
+        self.tok_offset.saturating_add(self.tok_len)
     }
+}
+
+fn fit_u32(n: usize) -> Result<u32, LedgerError> {
+    u32::try_from(n).map_err(|_| {
+        LedgerError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "token count exceeds u32",
+        ))
+    })
 }
 
 /// What a request addresses: the whole region, from the start, to here.
@@ -189,13 +198,14 @@ impl TokenLedger {
     /// `name` becomes part of the memfd's name; pass the transcript id.
     pub fn new(name: &str, prefix_tokens: &[TokenId]) -> Result<Self, LedgerError> {
         let h_init = hash_tokens(prefix_tokens);
+        let prefix_len = fit_u32(prefix_tokens.len())?;
         let mut region = TokenRegion::create(name)?;
         region.append(prefix_tokens, &h_init)?;
         Ok(TokenLedger {
             region,
             rows: Vec::new(),
             h_init,
-            prefix_len: prefix_tokens.len() as u32,
+            prefix_len,
         })
     }
 
@@ -204,12 +214,15 @@ impl TokenLedger {
     pub fn append(&mut self, item_id: &str, tokens: &[TokenId]) -> Result<&LedgerRow, LedgerError> {
         let h_prev = self.head();
         let h_k = chain(&h_prev, tokens);
-        let tok_offset = self.region.len() as u32;
+        let tok_offset = fit_u32(self.region.len())?;
+        let tok_len = fit_u32(tokens.len())?;
+        // Row offsets are u32: refuse an append whose end would not fit.
+        fit_u32(self.region.len().saturating_add(tokens.len()))?;
         self.region.append(tokens, &h_k)?;
         self.rows.push(LedgerRow {
             item_id: item_id.to_string(),
             tok_offset,
-            tok_len: tokens.len() as u32,
+            tok_len,
             h_k,
         });
         Ok(self.rows.last().expect("just pushed"))
@@ -329,12 +342,13 @@ impl TokenLedger {
                 recomputed,
             });
         }
+        let prefix_len = fit_u32(prefix_tokens.len())?;
         let mut region = TokenRegion::create(name)?;
         region.append(prefix_tokens, &h_init)?;
 
         let mut out_rows = Vec::with_capacity(rows.len());
         let mut h = h_init;
-        let mut cursor = prefix_tokens.len() as u32;
+        let mut cursor = prefix_len;
         for (i, (row, tokens)) in rows.iter().enumerate() {
             if row.tok_len as usize != tokens.len() {
                 return Err(LedgerError::LengthMismatch {
@@ -370,7 +384,7 @@ impl TokenLedger {
             region,
             rows: out_rows,
             h_init,
-            prefix_len: prefix_tokens.len() as u32,
+            prefix_len,
         })
     }
 

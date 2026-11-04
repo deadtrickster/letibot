@@ -283,7 +283,7 @@ fn ids_of(v: &Value) -> Vec<TokenId> {
         .map(|a| {
             a.iter()
                 .filter_map(Value::as_u64)
-                .map(|n| n as u32)
+                .filter_map(|n| u32::try_from(n).ok())
                 .collect()
         })
         .unwrap_or_default()
@@ -312,6 +312,12 @@ mod tests {
         // Stops are enforced by token id on our side; a stop *string* would be
         // matched against decoded text, which is the boundary-missing failure.
         assert!(v.get("stop").is_none(), "no stop strings on the wire");
+    }
+
+    #[test]
+    fn a_token_id_past_u32_is_dropped_not_wrapped() {
+        let v = serde_json::json!({"tokens": [7, 4_294_967_297u64, 9]});
+        assert_eq!(ids_of(&v), vec![7, 9]);
     }
 
     /// §5.7: there is no output wall. A cap is a truncation you chose, and this is

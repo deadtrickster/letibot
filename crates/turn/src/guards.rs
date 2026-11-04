@@ -31,7 +31,7 @@ impl GuardSet {
         let max_window = guards
             .iter()
             .filter_map(|g| match g {
-                Guard::RepetitionNgram { window, times } => Some((*window * *times) as usize),
+                Guard::RepetitionNgram { window, times } => Some((*window as usize).saturating_mul(*times as usize)),
                 _ => None,
             })
             .max()
@@ -39,9 +39,9 @@ impl GuardSet {
         GuardSet {
             guards: guards.to_vec(),
             // The bound is known here, so reserve it once rather than reallocating up to it
-            // through every doubling from the first token of every turn. `max_window` is 0
-            // with no repetition guard, and `with_capacity(0)` does not allocate.
-            recent: Vec::with_capacity(max_window),
+            // through every doubling from the first token of every turn. Capped, since the
+            // window comes from config and an absurd one must not allocate up front.
+            recent: Vec::with_capacity(max_window.min(4096)),
             run_token: None,
             run_len: 0,
             reasoning_tokens: 0,
@@ -126,7 +126,7 @@ fn ngram_repeats(recent: &[TokenId], window: usize, times: usize) -> bool {
     if window == 0 || times < 2 {
         return false;
     }
-    let need = window * times;
+    let need = window.saturating_mul(times);
     if recent.len() < need {
         return false;
     }
@@ -138,6 +138,15 @@ fn ngram_repeats(recent: &[TokenId], window: usize, times: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_window_times_product_past_u32_does_not_overflow() {
+        let mut g = GuardSet::new(&[Guard::RepetitionNgram {
+            window: u32::MAX,
+            times: u32::MAX,
+        }]);
+        assert!(g.observe(1, None).is_none());
+    }
 
     #[test]
     fn the_at_sign_collapse_is_caught_by_the_run_guard() {
