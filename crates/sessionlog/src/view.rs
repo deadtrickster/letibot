@@ -1534,7 +1534,10 @@ mod tests {
             Some("s#t3.0".to_string()),
             "ordinal 0 names a row above the base"
         );
-        assert!(v.row_at(usize::MAX).is_none(), "an ordinal past the end is absent");
+        assert!(
+            v.row_at(usize::MAX).is_none(),
+            "an ordinal past the end is absent"
+        );
         assert!(v.row_body_at(usize::MAX).is_none());
         assert_eq!(v.snapshot(100, 0).items_dropped, 0);
         // And the snapshot says how many of its rows sit above that base, because a head cannot

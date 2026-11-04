@@ -292,7 +292,11 @@ mod tests {
         assert_eq!(duration("15m").unwrap(), Duration::from_secs(900));
         assert_eq!(duration("2h").unwrap(), Duration::from_secs(7200));
         assert_eq!(duration("45").unwrap(), Duration::from_secs(45));
-        assert!(Instant::now().checked_add(duration("18446744073709551615h").unwrap()).is_some());
+        assert!(
+            Instant::now()
+                .checked_add(duration("18446744073709551615h").unwrap())
+                .is_some()
+        );
         let e = duration("2d").expect_err("not a unit");
         assert!(e.contains('d'), "{e}");
         let e = duration("soon").expect_err("not a number");
