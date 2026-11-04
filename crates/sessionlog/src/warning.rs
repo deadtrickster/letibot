@@ -61,6 +61,8 @@ pub const TABLE: &[(&str, Class)] = &[
     // head keeps it as the state behind the progress line, so one compaction leaves one row;
     // a head that does not know the code draws the sentence, as it did before.
     ("compacting", Class::Routine),
+    // The built-in embedding model is being fetched for the first time; said once at start.
+    ("embedder_fetching", Class::Routine),
     // A plugin or a model misbehaved and the harness handled it: a layer that failed while
     // the one below answered, a candidate the shadow gate refused, a pane whose view the host
     // refused, a model that refused an image. Hiccups handled, nothing at risk.
@@ -373,6 +375,9 @@ pub const TABLE: &[(&str, Class)] = &[
     //
     // At risk here is the session, not the line. Grouped by where the code COMES FROM.
     ("turn_failed", Class::Failure),
+    // A written `[embeddings]` section produced no embedder (fetch failed, bad key): scores
+    // are lexical until the operator fixes it.
+    ("embedder_unavailable", Class::Failure),
     ("context_wall", Class::Failure),
     // *At* the wall, and nothing was compacted because automatic compaction is off for
     // this session. Exactly the sentence an operator has to read: `/compact` does it by
@@ -760,10 +765,10 @@ mod the_register_census {
         // The census, kept where it cannot drift. Each assert below is a register's count;
         // a code moved or added without a thought fails here rather than silently changing what
         // a reader is taught by the colour of the screen.
-        assert_eq!(TABLE.len(), 179, "the table's size");
-        assert_eq!(count(Class::Routine), 72);
+        assert_eq!(TABLE.len(), 181, "the table's size");
+        assert_eq!(count(Class::Routine), 73);
         assert_eq!(count(Class::Refused), 15, "the fifteen in READER_INPUT");
-        assert_eq!(count(Class::Failure), 92);
+        assert_eq!(count(Class::Failure), 93);
         // A code with an id is read by its family.
         assert_eq!(class("denied:req-7"), Class::Failure);
         assert_eq!(class("memory_high"), Class::Failure);

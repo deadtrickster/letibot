@@ -1574,6 +1574,20 @@ impl Harness {
         })
     }
 
+    /// The embedder's start-up facts on the session's hub, which a head draws: the launcher
+    /// sends daemon stderr nowhere, and the model-facing note alone leaves the operator blind.
+    fn say_the_embedder(hub: &Hub, cfg: &Config) {
+        if let Some(said) = &cfg.embedder_fetch_note {
+            hub.warn("embedder_fetching", said.clone());
+        }
+        if let Some(why) = &cfg.embedder_fault {
+            hub.warn(
+                "embedder_unavailable",
+                format!("no embedder, so every score is the words alone: {why}"),
+            );
+        }
+    }
+
     pub fn open_with_registry(
         parts: &Parts,
         mut cfg: Config,
@@ -1592,6 +1606,7 @@ impl Harness {
             stored,
             writer,
         } = Self::open_the_stored(&mut cfg, &mut notes)?;
+        Self::say_the_embedder(&hub, &cfg);
 
         let mut mode_source = Self::resolve_the_point(
             parts,
@@ -4231,5 +4246,43 @@ mod mac_default_seat_tests {
     fn the_default_seat_without_bash_asks_for_no_boundary() {
         let (p, _) = placed(false);
         assert!(!p.confined);
+    }
+}
+
+#[cfg(test)]
+mod embedder_warning_tests {
+    use super::*;
+    use letibot_sessionlog::event::SessionEvent;
+
+    fn codes(hub: &Hub) -> Vec<(String, String)> {
+        hub.retained()
+            .iter()
+            .filter_map(|e| match &e.event {
+                SessionEvent::Warning { code, detail, .. } => Some((code.clone(), detail.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_failed_embedder_and_a_first_fetch_are_warnings_on_the_hub() {
+        let base = std::env::temp_dir().join(format!("embedder-warn-{}", std::process::id()));
+        std::fs::create_dir_all(&base).expect("a scratch dir");
+        let mut cfg = Config::for_this_box(&base);
+
+        let quiet = Hub::new("s-quiet");
+        Harness::say_the_embedder(&quiet, &cfg);
+        assert!(codes(&quiet).is_empty(), "no section, nothing to say");
+
+        cfg.embedder_fault = Some("fetching model.safetensors: boom".into());
+        cfg.embedder_fetch_note = Some("fetching the embeddings model (87 MiB)".into());
+        let hub = Hub::new("s-fault");
+        Harness::say_the_embedder(&hub, &cfg);
+        let got = codes(&hub);
+        assert_eq!(got.len(), 2, "{got:?}");
+        assert_eq!(got[0].0, "embedder_fetching");
+        assert_eq!(got[1].0, "embedder_unavailable");
+        assert!(got[1].1.contains("boom"), "{got:?}");
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

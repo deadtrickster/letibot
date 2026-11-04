@@ -192,8 +192,7 @@ impl std::fmt::Display for DownloadError {
             ),
             DownloadError::Url(url) => write!(
                 f,
-                "the built-in model is at {url}, and this build's HTTP client cannot fetch it: \
-                 the client speaks http:// only, with no TLS"
+                "the built-in model is at {url}, which is not an http:// or https:// URL"
             ),
             DownloadError::Http { file, url, why } => {
                 write!(f, "fetching {file} from {url}: {why}")
@@ -282,11 +281,11 @@ fn fetch(
     dir: &Path,
     policy: letibot_http::retry::Policy,
 ) -> Result<(), DownloadError> {
-    let (endpoint, path) = split(url)?;
+    let route = Route::of(url)?;
     let temp = dir.join(format!("{}.part", source.file));
     let mut ladder = letibot_http::retry::Ladder::new(policy);
     loop {
-        match attempt(&endpoint, &path, &temp, source, url) {
+        match attempt(&route, &temp, source, url) {
             Ok(()) => return Ok(()),
             Err(Attempt::Http(e)) => {
                 let Some(wait) = ladder.failed(&e) else {
@@ -313,25 +312,33 @@ enum Attempt {
     Done(DownloadError),
 }
 
-/// One request, into the temp name, hashed on the way in. The rename is the only way a file
-/// reaches its real name, and it happens only for bytes that matched the pin.
-fn attempt(
-    endpoint: &letibot_http::Endpoint,
-    path: &str,
-    temp: &Path,
-    source: &Source,
-    url: &str,
-) -> Result<(), Attempt> {
-    let body =
-        letibot_http::send(endpoint, letibot_http::Request::get(path)).map_err(Attempt::Http)?;
-    let file = std::fs::File::create(temp).map_err(|e| io(temp, e))?;
-    let mut sink = Hashing {
-        out: file,
-        hash: Sha256::new(),
-    };
-    body.read_to_writer(&mut sink).map_err(Attempt::Http)?;
-    let (got, file) = sink.finish();
-    drop(file);
+/// One request, into the temp name, hashed once it is complete. The rename is the only way a
+/// file reaches its real name, and it happens only for bytes that matched the pin.
+fn attempt(route: &Route, temp: &Path, source: &Source, url: &str) -> Result<(), Attempt> {
+    match route {
+        Route::Plain(endpoint, path) => {
+            let body = letibot_http::send(endpoint, letibot_http::Request::get(path))
+                .map_err(Attempt::Http)?;
+            let file = std::fs::File::create(temp).map_err(|e| io(temp, e))?;
+            let mut sink = Hashing {
+                out: file,
+                hash: Sha256::new(),
+            };
+            body.read_to_writer(&mut sink).map_err(Attempt::Http)?;
+            let (got, file) = sink.finish();
+            drop(file);
+            settle(got, temp, source, url)
+        }
+        Route::Curl => {
+            curl(url, temp)?;
+            let got = hash_file(temp).map_err(|e| io(temp, e))?;
+            settle(got, temp, source, url)
+        }
+    }
+}
+
+/// Compare against the pin and rename into place.
+fn settle(got: String, temp: &Path, source: &Source, url: &str) -> Result<(), Attempt> {
     if got != source.sha256 {
         return Err(Attempt::Done(DownloadError::Hash {
             file: source.file,
@@ -344,6 +351,87 @@ fn attempt(
     std::fs::rename(temp, &into).map_err(|e| io(&into, e))
 }
 
+fn hash_file(path: &Path) -> std::io::Result<String> {
+    let mut file = std::fs::File::open(path)?;
+    let mut sink = Hashing {
+        out: std::io::sink(),
+        hash: Sha256::new(),
+    };
+    std::io::copy(&mut file, &mut sink)?;
+    Ok(sink.finish().0)
+}
+
+/// Redirects curl may follow: Hugging Face `resolve` is one hop to a CDN, and a loop ends here.
+const MAX_REDIRS: u32 = 5;
+
+/// A whole-transfer ceiling, so a stalled CDN is a failed attempt the ladder retries.
+const CURL_MAX_TIME_SECS: u32 = 1800;
+
+/// The curl argv for one pinned file. https only, so a redirect cannot downgrade to http; no
+/// shell is involved, and `--globoff` keeps a URL's brackets literal.
+fn curl_args(url: &str, temp: &Path) -> Vec<std::ffi::OsString> {
+    let mut args: Vec<std::ffi::OsString> = [
+        "--silent",
+        "--show-error",
+        "--location",
+        "--globoff",
+        "--proto",
+        "=https",
+        "--proto-redir",
+        "=https",
+        "--max-redirs",
+    ]
+    .iter()
+    .map(Into::into)
+    .collect();
+    args.push(MAX_REDIRS.to_string().into());
+    args.push("--max-time".into());
+    args.push(CURL_MAX_TIME_SECS.to_string().into());
+    // The status is read from stdout rather than `--fail`, so the ladder can tell a 503 from a
+    // 404.
+    args.push("--write-out".into());
+    args.push("%{http_code}".into());
+    args.push("--output".into());
+    args.push(temp.into());
+    args.push("--".into());
+    args.push(url.into());
+    args
+}
+
+/// Fetch over https with curl into `temp`. A non-2xx or a transport failure is an
+/// [`Attempt::Http`], so the same ladder decides whether to try again.
+fn curl(url: &str, temp: &Path) -> Result<(), Attempt> {
+    let out = std::process::Command::new("curl")
+        .args(curl_args(url, temp))
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| {
+            Attempt::Http(letibot_http::HttpError::Io(std::io::Error::new(
+                e.kind(),
+                format!("curl could not start (is it on PATH?): {e}"),
+            )))
+        })?;
+    let code: u16 = String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .parse()
+        .unwrap_or(0);
+    if out.status.success() && (200..300).contains(&code) {
+        return Ok(());
+    }
+    let _ = std::fs::remove_file(temp);
+    if code >= 300 {
+        return Err(Attempt::Http(letibot_http::HttpError::Status {
+            code,
+            body: String::new(),
+            retry_after: None,
+        }));
+    }
+    let said = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    Err(Attempt::Http(letibot_http::HttpError::Io(
+        std::io::Error::other(format!("curl {}: {said}", out.status)),
+    )))
+}
+
 fn io(path: &Path, e: std::io::Error) -> Attempt {
     Attempt::Done(DownloadError::Io {
         path: path.to_path_buf(),
@@ -351,8 +439,25 @@ fn io(path: &Path, e: std::io::Error) -> Attempt {
     })
 }
 
+/// How one URL is fetched: https through curl, which has TLS and redirects, and plain
+/// `http://` through the tree's client, which has neither and stays that way on purpose.
+enum Route {
+    Plain(letibot_http::Endpoint, String),
+    Curl,
+}
+
+impl Route {
+    fn of(url: &str) -> Result<Route, DownloadError> {
+        if url.starts_with("https://") && url.len() > "https://".len() {
+            return Ok(Route::Curl);
+        }
+        let (endpoint, path) = split(url)?;
+        Ok(Route::Plain(endpoint, path))
+    }
+}
+
 /// `http://HOST[:PORT][/path]` into the two halves this client takes. A scheme it cannot
-/// speak is refused by name rather than attempted: it is HTTP/1.1 with no TLS.
+/// speak is refused by name rather than attempted.
 fn split(url: &str) -> Result<(letibot_http::Endpoint, String), DownloadError> {
     let rest = url
         .strip_prefix("http://")
@@ -668,5 +773,49 @@ mod tests {
         .expect_err("an unfilled pin is a refusal");
         assert!(matches!(err, DownloadError::Unpinned), "{err}");
         assert_eq!(fake.requests(), 0);
+    }
+
+    #[test]
+    fn an_https_url_goes_to_curl_and_an_http_one_stays_on_the_plain_client() {
+        assert!(matches!(
+            Route::of("https://huggingface.co/x/resolve/abc/f"),
+            Ok(Route::Curl)
+        ));
+        assert!(matches!(
+            Route::of("http://127.0.0.1:9/f"),
+            Ok(Route::Plain(..))
+        ));
+        assert!(matches!(Route::of("https://"), Err(DownloadError::Url(_))));
+        assert!(matches!(Route::of("ftp://h/f"), Err(DownloadError::Url(_))));
+    }
+
+    #[test]
+    fn the_curl_argv_is_https_only_bounded_and_ends_at_the_url() {
+        let args: Vec<String> = curl_args("https://h/f", Path::new("/d/f.part"))
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let at = |flag: &str| args.iter().position(|a| a == flag).expect(flag);
+        assert_eq!(args[at("--proto") + 1], "=https");
+        assert_eq!(args[at("--proto-redir") + 1], "=https");
+        assert_eq!(args[at("--max-redirs") + 1], "5");
+        assert_eq!(args[at("--output") + 1], "/d/f.part");
+        assert!(args.contains(&"--location".to_string()));
+        // Verification stays on with the system CA store: no way to turn it off or swap it.
+        for banned in [
+            "-k",
+            "--insecure",
+            "--cacert",
+            "--capath",
+            "--proxy-insecure",
+        ] {
+            assert!(!args.contains(&banned.to_string()), "{banned}");
+        }
+        assert!(
+            !args
+                .iter()
+                .any(|a| a.starts_with("-k") || a.contains("insecure"))
+        );
+        assert_eq!(&args[args.len() - 2..], ["--", "https://h/f"]);
     }
 }

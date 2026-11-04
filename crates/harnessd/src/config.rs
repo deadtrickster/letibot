@@ -465,6 +465,8 @@ pub struct Config {
     /// Why a section the box DID write produced no embedder. Said once, at the next session's
     /// open, because a tier that is silently absent is a tier nobody can fix.
     pub embedder_fault: Option<String>,
+    /// The first-use fetch sentence, kept for the session's hub: stderr is `/dev/null` under the launcher.
+    pub embedder_fetch_note: Option<String>,
     /// Which role this session seats. [`Seat::Orchestrator`] by default, which
     /// is what every invocation gets today. See [`Seat`].
     pub seat: Seat,
@@ -1454,6 +1456,7 @@ impl Config {
             // alone, and a daemon that never wrote the section scores exactly what it did before.
             embedder: None,
             embedder_fault: None,
+            embedder_fetch_note: None,
             mode: letibot_tools::mode::UNSEEN_PROJECT,
             permission: parse_permission(),
             flowy: None,
@@ -1622,6 +1625,7 @@ impl Config {
                             // only once.
                             if let Some(said) = found.as_ref().and_then(|e| e.take_announcement()) {
                                 eprintln!("  embeddings: {said}");
+                                self.embedder_fetch_note = Some(said);
                             }
                             self.embedder = found;
                         }
