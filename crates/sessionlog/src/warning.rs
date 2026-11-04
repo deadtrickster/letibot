@@ -364,6 +364,10 @@ pub const TABLE: &[(&str, Class)] = &[
     // The operator's steering prompt arrived, so the turn was aborted to take it. Their
     // own act, and the interruption itself is drawn where interruptions go.
     ("steering_urgent", Class::Routine),
+    // The prefix check did not run, so nothing was found and nothing is wrong: the reason travels
+    // in the detail and the metrics row keeps the verdict. Drawn red it taught a reader to skim the
+    // register that holds our actual defects.
+    ("prefix_check_skipped", Class::Routine),
     // A diagnostic of the server's prefix cache: the prompts are proven identical over
     // the span, so this is llama.cpp resuming from a checkpoint and snapping `n_past`
     // back. Off the screen unless the debug channel is on.
@@ -401,10 +405,10 @@ pub const TABLE: &[(&str, Class)] = &[
     // nobody wrote* - and both of these are a turn that was going nowhere, stopped.
     ("repetition_collapse", Class::Failure),
     ("reasoning_stall", Class::Failure),
-    // The prompt this box rebuilt diverged from what the server was sent - the code's own
-    // comment calls it *our defect* - or the check that would catch it was skipped.
+    // The prompt this box rebuilt diverged from what the server was sent - the code's own comment
+    // calls it *our defect*. A check that did not run found nothing and is no defect: see
+    // `prefix_check_skipped` in the routine half.
     ("prefix_divergence", Class::Failure),
-    ("prefix_check_skipped", Class::Failure),
     // The token chain does not agree with the ledger, or rows are missing from the
     // store's coverage, or N row events arrived for M items.
     ("ledger_chain_mismatch", Class::Failure),
@@ -770,15 +774,28 @@ mod the_register_census {
         // a code moved or added without a thought fails here rather than silently changing what
         // a reader is taught by the colour of the screen.
         assert_eq!(TABLE.len(), 182, "the table's size");
-        assert_eq!(count(Class::Routine), 73);
+        assert_eq!(count(Class::Routine), 74);
         assert_eq!(count(Class::Refused), 15, "the fifteen in READER_INPUT");
-        assert_eq!(count(Class::Failure), 94);
+        assert_eq!(count(Class::Failure), 93);
         // A code with an id is read by its family.
         assert_eq!(class("denied:req-7"), Class::Failure);
         assert_eq!(class("memory_high"), Class::Failure);
         // The ratio the ruling turned on: the red register is most of the table and the middle
         // is a correction rather than a redefinition - most failures were already the right
         // kind of thing.
+    }
+
+    /// A check that did not run has found nothing, so it is not a failure. The skip rode the red
+    /// register beside the divergence it cannot rule out, and a backend that can never assert the
+    /// invariant raised it every turn - which is what teaches a reader to skim that register.
+    #[test]
+    fn a_check_that_did_not_run_is_not_a_failure() {
+        assert_eq!(class("prefix_check_skipped"), Class::Routine);
+        assert_eq!(
+            class("prefix_divergence"),
+            Class::Failure,
+            "and the defect the check exists to catch stays red"
+        );
     }
 
     /// Every code in `READER_INPUT` is `Refused`, and every `Refused` code is in it. Both
