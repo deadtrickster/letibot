@@ -462,9 +462,10 @@ fn monitor(text: &str) -> Option<Card> {
     if bullets.len() > 1 {
         parts.push(format!("{} more", bullets.len() - 1));
     }
+    // A watch firing or expiring is routine news; the yellow register is for what needs the operator.
     Some(card(
         "monitor",
-        Role::Attention,
+        Role::Faint,
         parts,
         format!("monitor · {name}"),
     ))
