@@ -416,7 +416,7 @@ fn git_inside_the_profile_reads_the_operators_gitconfig_read_only() {
     .expect("a fixture gitconfig");
     let s = Seatbelt::probe_as(f.view(), Egress::Denied, vec![f.denied()], op.clone())
         .unwrap_or_else(|e| panic!("the macOS boundary did not measure on this box: {e}"));
-    let (_, out) = run_in(&s, &f.project(), "git config user.email");
+    let (_, out) = run_in(&s, &f.project(), "git config user.email 2>/dev/null");
     assert_eq!(out.trim(), "fixture@example.test", "{out}");
     let (rc, out) = run_in(
         &s,
@@ -438,7 +438,7 @@ fn the_xdg_git_config_is_the_identity_when_there_is_no_dotfile() {
     .expect("a fixture gitconfig");
     let s = Seatbelt::probe_as(f.view(), Egress::Denied, vec![f.denied()], op)
         .unwrap_or_else(|e| panic!("the macOS boundary did not measure on this box: {e}"));
-    let (_, out) = run_in(&s, &f.project(), "git config user.email");
+    let (_, out) = run_in(&s, &f.project(), "git config user.email 2>/dev/null");
     assert_eq!(out.trim(), "xdg@example.test", "{out}");
 }
 
@@ -619,9 +619,17 @@ fn a_tight_seat_cannot_ask_the_keychain_its_parent_uses() {
         .unwrap_or_else(|e| panic!("the macOS boundary did not measure on this box: {e}"));
     let (tight_rc, tight_out) = run_in(&tight, &f.project(), &ask);
     assert_ne!(tight_rc, 0, "a child asked the keychain: {tight_out}");
-    let refused = ["not permitted", "denied", "Sandbox", "sandbox"]
-        .iter()
-        .any(|w| tight_out.contains(w));
+    // Without SecurityServer the search cannot be built (errSecParam): the keychain was never
+    // reached, which is the refusal on this OS, as opposed to the wide seat's plain not-found.
+    let refused = [
+        "not permitted",
+        "denied",
+        "Sandbox",
+        "sandbox",
+        "were not valid",
+    ]
+    .iter()
+    .any(|w| tight_out.contains(w));
     assert!(
         refused,
         "a child's refusal has to be the boundary's, not the keychain's own answer about a \
@@ -633,7 +641,9 @@ fn a_tight_seat_cannot_ask_the_keychain_its_parent_uses() {
     let (wide_seat, op) = wide(&f);
     let (wide_rc, wide_out) = run_in(&wide_seat, &f.project(), &ask);
     assert!(
-        wide_rc != tight_rc && !wide_out.contains("not permitted"),
+        (wide_rc != tight_rc || tight_out.contains("were not valid"))
+            && !wide_out.contains("were not valid")
+            && !wide_out.contains("not permitted"),
         "the top-level seat asks the keychain, so the two answers differ: tight {tight_rc} \
          {tight_out}; wide {wide_rc} {wide_out} (home {})",
         op.display()
@@ -732,7 +742,7 @@ fn certificate_trust_evaluates_in_both_seats_and_the_tight_seat_still_has_no_key
         return;
     };
     let f = Fixture::new("trust");
-    let cert = f.root.join("root.pem");
+    let cert = f.project().join("root.pem");
     // A bundled public root, exported out of the system store outside any seat.
     let out = std::process::Command::new(security)
         .args([
@@ -775,9 +785,15 @@ fn certificate_trust_evaluates_in_both_seats_and_the_tight_seat_still_has_no_key
     let (rc, out) = run_in(&tight, &f.project(), &ask);
     assert_ne!(rc, 0, "the tight seat reached the keychain: {out}");
     assert!(
-        ["not permitted", "denied", "Sandbox", "sandbox"]
-            .iter()
-            .any(|w| out.contains(w)),
+        [
+            "not permitted",
+            "denied",
+            "Sandbox",
+            "sandbox",
+            "were not valid"
+        ]
+        .iter()
+        .any(|w| out.contains(w)),
         "the refusal has to be the boundary's: {out}"
     );
 }
