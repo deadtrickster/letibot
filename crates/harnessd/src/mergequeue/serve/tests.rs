@@ -2507,6 +2507,13 @@ fn a_reviewer_that_is_still_opening_is_not_re_seated_and_one_that_ends_is() {
         why.contains(&reviewer),
         "the transition names the reviewer that ended: {why}"
     );
+    // The row can turn before the child's thread has dropped its registry entry.
+    let gone_by = std::time::Instant::now() + Duration::from_secs(30);
+    while (registry.opening(&reviewer) || registry.get(&reviewer).is_some())
+        && std::time::Instant::now() < gone_by
+    {
+        std::thread::sleep(Duration::from_millis(25));
+    }
     assert!(
         !registry.opening(&reviewer) && registry.get(&reviewer).is_none(),
         "and the ended child is no longer alive: {reviewer}"
