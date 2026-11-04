@@ -44,6 +44,7 @@ fn libc_getuid() -> u32 {
     // No `libc` dependency in a crate that otherwise has none: `getuid` is in the C library
     // every target links, and declaring it works on Linux and macOS alike. The uid only
     // keeps two users' `/tmp` fallback sockets apart.
+    // SAFETY: the declaration matches the C library's `uid_t getuid(void)`.
     unsafe extern "C" {
         fn getuid() -> u32;
     }

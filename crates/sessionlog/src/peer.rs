@@ -139,6 +139,7 @@ fn peer_pid(stream: &UnixStream) -> Option<i32> {
     let mut len = std::mem::size_of::<libc::pid_t>() as libc::socklen_t;
     // `LOCAL_PEERPID`, not `getpeereid`: the uid is already known to be the operator's, and it is
     // the process that decides between a head and a command.
+    // SAFETY: `pid` and `len` outlive the call and `len` is the size of `pid`.
     let rc = unsafe {
         libc::getsockopt(
             stream.as_raw_fd(),
@@ -154,8 +155,10 @@ fn peer_pid(stream: &UnixStream) -> Option<i32> {
 #[cfg(all(unix, not(target_os = "macos")))]
 fn peer_pid(stream: &UnixStream) -> Option<i32> {
     use std::os::unix::io::AsRawFd;
+    // SAFETY: `ucred` is plain data, zero is a valid value.
     let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
     let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    // SAFETY: `cred` and `len` outlive the call and `len` is the size of `cred`.
     let rc = unsafe {
         libc::getsockopt(
             stream.as_raw_fd(),
@@ -173,8 +176,10 @@ fn peer_pid(stream: &UnixStream) -> Option<i32> {
 /// ancestor such as `login`, where `PROC_PIDTBSDINFO` refuses and every head would read as inside.
 #[cfg(target_os = "macos")]
 fn parent_of(pid: i32) -> Option<i32> {
+    // SAFETY: `proc_bsdshortinfo` is plain data, zero is a valid value.
     let mut bi: libc::proc_bsdshortinfo = unsafe { std::mem::zeroed() };
     let size = std::mem::size_of::<libc::proc_bsdshortinfo>() as libc::c_int;
+    // SAFETY: `bi` is `size` bytes and outlives the call.
     let got = unsafe {
         libc::proc_pidinfo(
             pid,
