@@ -373,6 +373,12 @@ fn coerce_types(o: &mut Map<String, Value>, schema: &ToolSchema, repairs: &mut V
                 _ => None,
             },
             ("string", Value::Number(n)) => Some(Value::String(n.to_string())),
+            // A string parameter given structure: a `.json` file's body arrives as an object and the
+            // tool answered that a parameter the model had sent was missing. A null is left alone -
+            // it names no value, and the tool's own "missing" is truer than the word for it.
+            ("string", Value::Object(_) | Value::Array(_) | Value::Bool(_)) => {
+                Some(Value::String(have.to_string()))
+            }
             ("array", v) if !v.is_array() && !v.is_null() => Some(Value::Array(vec![v.clone()])),
             _ => None,
         };
@@ -755,6 +761,25 @@ mod tests {
         let s = salvage(r#"{"path": "a.rs", "limit": "40"}"#, &read_schema()).unwrap();
         assert_eq!(s.value["limit"], 40);
         assert!(s.repairs.iter().any(|r| r.code == "type.coerced"));
+    }
+
+    /// A string parameter given structure. A model writing a `.json` file sends an object where the
+    /// schema wants text, and the tool answered that a parameter the model had sent was missing.
+    #[test]
+    fn structure_given_to_a_string_parameter_is_read_as_its_json() {
+        let s = salvage(r#"{"path": {"a": 1}}"#, &read_schema()).unwrap();
+        assert_eq!(s.value["path"], r#"{"a":1}"#);
+        assert!(s.repairs.iter().any(|r| r.code == "type.coerced"));
+
+        let s = salvage(r#"{"path": [1, 2]}"#, &read_schema()).unwrap();
+        assert_eq!(s.value["path"], "[1,2]");
+
+        let s = salvage(r#"{"path": true}"#, &read_schema()).unwrap();
+        assert_eq!(s.value["path"], "true");
+
+        // A null names no value: the tool's own *missing* is truer than the word for it.
+        let s = salvage(r#"{"path": null}"#, &read_schema()).unwrap();
+        assert_eq!(s.value["path"], Value::Null);
     }
 
     #[test]

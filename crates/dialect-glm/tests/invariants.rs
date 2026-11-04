@@ -4,7 +4,7 @@
 use letibot_dialect::{ParsedSpan, Parser, RenderSpan, StablePrefix, spans_to_string};
 use letibot_dialect_glm::{
     Anomaly, GlmParser, GlmRenderer, TableDecoder, check_transcript, generation_prompt,
-    glm_tool_json,
+    glm_tool_json, tokens,
 };
 use letibot_transcript::{
     ReasoningField, SegmentEdge, SystemOrigin, ToolCall, ToolOutcome, TranscriptItem, UserPart,
@@ -334,6 +334,94 @@ fn a_string_argument_that_looks_like_json_does_not_round_trip() {
         arguments, r#"{"n":3}"#,
         "the string became a number, as documented"
     );
+}
+
+/// The inverse takes an argument back as structure only when the text is EXACTLY what the renderer
+/// would have written for it, which is the rule Qwen's parser already applies. The compact spelling
+/// of an object is not: `hf_tojson` writes `{"a": 1}`, so `{"a":1}` is somebody's text - and a
+/// `.json` body given to a text parameter is exactly that case.
+#[test]
+fn an_argument_is_json_only_when_the_spelling_is_the_renderers_own() {
+    let args_of = |value: &str| -> String {
+        let (ids, decoder) = one_arg(value);
+        let parsed = GlmParser::new().parse(&ids, &decoder, false);
+        match parsed.last() {
+            Some(ParsedSpan::ToolCall { arguments, .. }) => arguments.clone(),
+            other => panic!("expected the call, got {other:?}"),
+        }
+    };
+    assert_eq!(
+        args_of(r#"{"a": 1}"#),
+        r#"{"k":{"a":1}}"#,
+        "the renderer's own spelling is the structure it was"
+    );
+    assert_eq!(
+        args_of(r#"{"a":1}"#),
+        r#"{"k":"{\"a\":1}"}"#,
+        "a spelling the renderer never writes is a string, not an object"
+    );
+}
+
+/// A call cut off mid-argument is still a call. Flushed as content it was drawn as the model's
+/// answer, and the half-written arguments looked like the turn's text.
+#[test]
+fn a_call_cut_off_mid_argument_is_a_call_and_not_content() {
+    let call_open = tokens::TOOL_CALL_OPEN;
+    let key_open = tokens::ARG_KEY_OPEN;
+    let key_close = tokens::ARG_KEY_CLOSE;
+    let value_open = tokens::ARG_VALUE_OPEN;
+    // No `</arg_value>` and no `</tool_call>`: the turn ended inside the value.
+    let (ids, decoder) = tokenize(&[
+        RenderSpan::Control(call_open),
+        RenderSpan::Text("write".into()),
+        RenderSpan::Control(key_open),
+        RenderSpan::Text("path".into()),
+        RenderSpan::Control(key_close),
+        RenderSpan::Control(value_open),
+        RenderSpan::Text("a.tx".into()),
+    ]);
+    let parsed = GlmParser::new().parse(&ids, &decoder, false);
+    let last = parsed.last().expect("a span");
+    match last {
+        ParsedSpan::ToolCall {
+            name, arguments, ..
+        } => {
+            assert_eq!(name, "write");
+            assert_eq!(
+                arguments, "a.tx",
+                "the fragment does not parse, so the length policy fails the batch"
+            );
+        }
+        other => panic!("a call cut off mid-argument was flushed as {other:?}"),
+    }
+    assert!(
+        !parsed
+            .iter()
+            .any(|s| matches!(s, ParsedSpan::Content { text, .. } if text.contains("a.tx"))),
+        "the half-written argument was drawn as the answer"
+    );
+}
+
+/// One `<tool_call>f<arg_key>k</arg_key><arg_value>V</arg_value></tool_call>` stream, built by the
+/// tokenizer rather than the renderer so a test can put exactly the bytes it wants in the value.
+fn one_arg(value: &str) -> (Vec<u32>, TableDecoder) {
+    let call_open = tokens::TOOL_CALL_OPEN;
+    let key_open = tokens::ARG_KEY_OPEN;
+    let key_close = tokens::ARG_KEY_CLOSE;
+    let value_open = tokens::ARG_VALUE_OPEN;
+    let value_close = tokens::ARG_VALUE_CLOSE;
+    let call_close = tokens::TOOL_CALL_CLOSE;
+    tokenize(&[
+        RenderSpan::Control(call_open),
+        RenderSpan::Text("f".into()),
+        RenderSpan::Control(key_open),
+        RenderSpan::Text("k".into()),
+        RenderSpan::Control(key_close),
+        RenderSpan::Control(value_open),
+        RenderSpan::Text(value.into()),
+        RenderSpan::Control(value_close),
+        RenderSpan::Control(call_close),
+    ])
 }
 
 /// A vocab-shaped tokenizer for the tests: one id per control literal, one per

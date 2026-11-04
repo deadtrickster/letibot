@@ -151,6 +151,23 @@ impl Parser for GlmParser {
         if !run.is_empty() {
             buf.push_str(&decoder.decode(&run));
         }
+        // A call cut off inside itself is still a CALL. Flushed as content, the half-written
+        // arguments were drawn as the model's answer; the fragment does not parse, so the length
+        // policy fails the batch rather than running a call on half its arguments.
+        if matches!(mode, Mode::ToolName | Mode::ArgKey | Mode::ArgValue) {
+            let fragment = std::mem::take(&mut buf);
+            out.push(ParsedSpan::ToolCall {
+                id: None,
+                name: if call_name.is_empty() {
+                    fragment.clone()
+                } else {
+                    call_name
+                },
+                arguments: fragment,
+                range: call_start..end,
+            });
+            return out;
+        }
         // The final flush honours the mode: a turn cut inside its reasoning would otherwise be
         // flushed as content, promoting the deliberation to visible output.
         if mode == Mode::Reasoning {
@@ -167,13 +184,13 @@ impl Parser for GlmParser {
     }
 }
 
-/// The render side emits strings raw and everything else as JSON, so the inverse tries JSON
-/// first. Lossy in one corner - a string whose text is itself valid JSON comes back as a
-/// number - which a test pins, because the shipped format does not carry the type.
+/// The render side emits strings raw and everything else through `hf_tojson`, so the inverse takes
+/// the text back only when it is EXACTLY the rendering that produced it. Anything else stays a
+/// string: a `.json` body given to a text parameter must not come back as an object.
 fn reconstruct_arg(text: String) -> Value {
     match serde_json::from_str::<Value>(&text) {
-        Ok(Value::String(_)) | Err(_) => Value::String(text),
-        Ok(v) => v,
+        Ok(v) if !v.is_string() && crate::hf_tojson(&v) == text => v,
+        _ => Value::String(text),
     }
 }
 
