@@ -1,9 +1,6 @@
-//! A session's survivors, handed to its heir: the half of T24 that is not reaping.
-//!
-//! A job in an `explicit` scope outlives the session that started it, which is right for a
-//! long-lived checkout on a box that stays up and is an orphan the moment that session is a
-//! subagent's. So it moves, and these tests are about the move being real: listed by the heir,
-//! killable by the heir, and gone from the giver's table.
+//! A session's survivors, handed to its heir. A job in an `explicit` scope outlives its session,
+//! and is an orphan once that session is a subagent's, so it moves: listed by the heir, killable by
+//! the heir, gone from the giver's table.
 
 use letibot_tools::exec::{HostProcesses, ProcessHost, ScopeKind, SpawnRequest};
 

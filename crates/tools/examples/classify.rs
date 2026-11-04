@@ -1,9 +1,6 @@
 //! What layer A thinks of a command line, one command per argument.
-//!
 //! `cargo run --example classify -p letibot-tools -- 'head -c 200 src/app.rs'`
-//!
-//! The gate judges a call by this reading, so `$HOME`, `$WS`, `$CWD` and
-//! `$READ_SCRIPTS` exist to stand in for the session a corpus row does not record.
+//! `$HOME`, `$WS`, `$CWD` and `$READ_SCRIPTS` stand in for the session a corpus row does not record.
 use std::io::Read;
 
 fn main() {

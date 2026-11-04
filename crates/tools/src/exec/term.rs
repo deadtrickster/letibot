@@ -1,9 +1,6 @@
-//! A full-screen program on a pty the daemon owns, its bytes streamed both ways: the
-//! mechanism behind `!term mc`, `!term nano`, `!term top`.
-//!
-//! The command line goes to `/bin/sh -c` whole, the child gets a new session and this pty as
-//! its controlling terminal, and the pane lives in a session cgroup so the scope tree ends it.
-//! [`TermSink`] is the only coupling to the head: raw bytes out, one ending in.
+//! A full-screen program on a pty the daemon owns, bytes streamed both ways: `!term mc`, `!term top`.
+//! The command goes to `/bin/sh -c` whole; the child gets a new session with this pty as controlling
+//! terminal, in a session cgroup. [`TermSink`] is the only coupling to the head.
 
 use std::io::{Read, Write};
 use std::path::PathBuf;

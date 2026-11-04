@@ -353,10 +353,8 @@ const SSH_WHY: &str = "an ssh_config option can be set on the command line with 
 /// git clone <a repository that brings its own configuration back with it>
 /// ```
 ///
-/// Additive only: an entry may add an intent, never remove one, and absence from this
-/// table is not permission. `env`, `xargs`, `timeout` and the interpreters are absent
-/// on purpose - [`program_intents`] already answers for them, and two mechanisms for
-/// one fact drift apart.
+/// Additive only: an entry may add an intent, never remove one, and absence is not permission. `env`, `xargs`,
+/// `timeout` and the interpreters are absent on purpose - [`program_intents`] already answers for them.
 pub const EXECUTION_VEHICLES: &[ExecutionVehicle] = &[
     ExecutionVehicle {
         program: "git",
@@ -2670,7 +2668,7 @@ impl Baseline {
             };
         } else if !n.is_resolved() {
             // Recorded, and it is what a reader gets instead of a refusal: the same report
-            // the refusal used to carry - byte offsets, the construct, the known prefix -
+            // the refusal would carry - byte offsets, the construct, the known prefix -
             // because that is what makes the row auditable.
             b.findings.push(format!(
                 "the grammar read {} bytes and {} stage(s) and could not resolve {} \

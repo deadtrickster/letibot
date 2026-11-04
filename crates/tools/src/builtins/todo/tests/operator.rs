@@ -25,7 +25,7 @@ fn invoke(rt: &mut ToolRuntime, args: &str) -> crate::result::ToolResult {
     rt.invoke("t1", &call(args), &mut sink)
 }
 
-/// **The model sets the edge on its OWN row through `needs`.** *"todo can be dependend on ME"*  -
+/// The model sets the edge on its OWN row through `needs`. *"todo can be dependend on ME"*  -
 /// the tagged form carries the question and the options, and the reply shows the row waiting on
 /// the operator with the question quoted.
 #[test]
@@ -47,7 +47,7 @@ fn the_model_can_make_its_own_row_wait_on_the_operator() {
     );
 }
 
-/// **And on the OPERATOR's row through `wait_on`** - a row already on the board, either half,
+/// And on the OPERATOR's row through `wait_on` - a row already on the board, either half,
 /// without restating it.
 #[test]
 fn wait_on_puts_an_operator_question_on_the_operators_own_row() {
@@ -70,7 +70,7 @@ fn wait_on_puts_an_operator_question_on_the_operators_own_row() {
     );
 }
 
-/// **Fewer than two options is refused, and so is an empty question** - *"we will force models to
+/// Fewer than two options is refused, and so is an empty question - *"we will force models to
 /// do choice"*. Through both doors, with a sentence that says why, and nothing is written.
 #[test]
 fn an_operator_question_with_fewer_than_two_options_or_no_words_is_refused() {
@@ -103,7 +103,7 @@ fn an_operator_question_with_fewer_than_two_options_or_no_words_is_refused() {
     let said = format!("{:?} {}", r.outcome, r.payload);
     assert!(said.contains("at least two"), "{said}");
     assert!(board.snapshot()[0].needs.is_empty());
-    // **And a model cannot write itself an answer.**
+    // And a model cannot write itself an answer.
     let (mut rt, board) = runtime();
     let r = invoke(
         &mut rt,
@@ -113,7 +113,7 @@ fn an_operator_question_with_fewer_than_two_options_or_no_words_is_refused() {
     assert!(board.snapshot().is_empty());
 }
 
-/// **The check skips the row and keeps asking about the others** - *"the other heads of the todo
+/// The check skips the row and keeps asking about the others - *"the other heads of the todo
 /// DAG keep firing"* - and its blocked line quotes the question and tells the model to keep going
 /// and to try to figure it out - *"model told to try to figure it out anyways"*.
 #[test]
@@ -141,7 +141,7 @@ fn the_check_asks_about_the_other_rows_and_tells_the_model_to_keep_going() {
     assert!(said.contains("\"detach\": true"), "{said}");
 }
 
-/// **A plan whose only open work waits on the operator is SILENT** - directly, or through a row
+/// A plan whose only open work waits on the operator is SILENT - directly, or through a row
 /// that waits on one that does. Nothing is the model's to unblock; the heads are the loud half.
 #[test]
 fn a_plan_waiting_only_on_the_operator_is_not_nagged() {
@@ -153,7 +153,7 @@ fn a_plan_waiting_only_on_the_operator_is_not_nagged() {
     assert!(nag_for(&[waiting(DEPLOY), broken]).is_some());
 }
 
-/// **The answer unblocks the row and keeps the reply on it** - *"when i submit todo becomes
+/// The answer unblocks the row and keeps the reply on it - *"when i submit todo becomes
 /// unblocked with reply attached"*. The title is untouched (it is the row's key), the edge becomes
 /// `answered`, the check asks about the row again, and the reply prints it.
 #[test]
@@ -195,7 +195,7 @@ fn an_answer_unblocks_the_row_and_attaches_the_reply() {
     );
 }
 
-/// **A restatement keeps the answer and does not re-ask it.** The model restating its plan from an
+/// A restatement keeps the answer and does not re-ask it. The model restating its plan from an
 /// older copy (the operator edge still on it) must not put the card back in front of somebody who
 /// answered it; and `wait_on` asking the same question again is refused with the answer quoted.
 #[test]
@@ -226,7 +226,7 @@ fn a_restated_row_keeps_its_answer_and_is_not_asked_again() {
     assert!(said.contains("already answered"), "{said}");
 }
 
-/// **The model that worked it out takes the wait off with `detach`**, and the row is ready again  -
+/// The model that worked it out takes the wait off with `detach`, and the row is ready again  -
 /// the door the blocked line names.
 #[test]
 fn detach_takes_the_operator_question_off() {
@@ -238,7 +238,7 @@ fn detach_takes_the_operator_question_off() {
     assert!(board.operator_ask(DEPLOY, QUESTION).is_err());
 }
 
-/// **The call an expired question offers is one `todo_write` takes** - the offer is the way an
+/// The call an expired question offers is one `todo_write` takes - the offer is the way an
 /// unanswered `ask_user_question` unblocks the model, so it is fed back here exactly as written.
 #[test]
 fn the_call_an_expired_question_offers_is_one_todo_write_takes() {

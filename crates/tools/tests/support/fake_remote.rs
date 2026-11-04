@@ -1,9 +1,6 @@
-//! A fake ssh, so a test can drive the fleet with no network: it accepts every flag the client
-//! passes and runs the last argument locally, with `HOME` set to a temporary home so `~` expands
-//! on the far side as it would over a real connection. The command text, the base64 channel, the
-//! `setsid` launch, the job files and the group kill are therefore the production ones; only ssh
-//! itself is not under test. A dead host is declared on request, because the circuit breaker is
-//! process-wide and keyed by name.
+//! A fake ssh so a test can drive the fleet with no network: it accepts every client flag and runs
+//! the last argument locally with `HOME` in a temporary home. A dead host is declared on request,
+//! as the circuit breaker is process-wide and keyed by name.
 
 #![allow(dead_code)]
 
@@ -193,10 +190,8 @@ fn jobs_dirs(root: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// Is this port accepting on this box right now? Asked of the kernel rather than of the tool's own
-/// row, which is what makes it a measurement of the teardown. A connect rather than a shell: this
-/// box's `/bin/sh` is dash, whose `exec 3<>/dev/tcp` is an error, and an absence that cannot be
-/// false is not evidence.
+/// Is this port accepting on this box now? Asked of the kernel, not the tool's own row. A connect,
+/// not a shell: `/bin/sh` here is dash, whose `exec 3<>/dev/tcp` is an error.
 pub fn listening(port: u16) -> bool {
     let at = std::net::SocketAddr::from(([127, 0, 0, 1], port));
     std::net::TcpStream::connect_timeout(&at, Duration::from_millis(500)).is_ok()

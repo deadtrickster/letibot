@@ -1,7 +1,6 @@
 //! `notes` - read and write the standing notes the harness injects.
-//! Writes go to the workspace's `.letibot/notes/` only, through a [`NotesScope`] the daemon
-//! supplies and through the session's [`ExecBackend`], so a note lands where `write` lands; the
-//! index's derivation and sort live here so both sides agree.
+//! Writes go to the workspace's `.letibot/notes/` only, through a [`NotesScope`] and the session's
+//! [`ExecBackend`], so a note lands where `write` lands. Index derivation and sort live here.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -407,7 +406,7 @@ fn note_stem(raw: &str) -> Result<String, String> {
         return Err(format!("`{raw}` has a control character in it."));
     }
     if s.chars().count() > 100 {
-        // R93.F42: this was a plain literal, so `{raw}` reached the model as written.
+        // This was a plain literal, so `{raw}` reached the model as written.
         return Err(format!(
             "that name is {} characters long; a note name is at most 100. Give a shorter one.",
             s.chars().count()
@@ -458,9 +457,8 @@ const WHEN_READ: &str = "The harness reads notes into the prompt at session open
 /// the note's own text follows
 /// ```
 ///
-/// An HTML comment rather than a heading or front matter: the file is injected
-/// verbatim when it is under the budget, so a marker that rendered as markdown would
-/// put a line the author did not write into the text the model reads.
+/// An HTML comment, since the file is injected verbatim under budget and a rendered marker would add a
+/// line the author did not write.
 pub const ABSTRACT_MARKER: &str = "<!-- abstract:";
 
 /// How long an abstract may be in the index, in characters: one line of a block that

@@ -1,9 +1,6 @@
-//! Two rulings, one question: may a standing answer settle a command, or must somebody be asked
-//! about this one? Inside a measured boundary a per-command ruling protects nothing the mode's own
-//! writes could not do, so at `writes-allowed` a command there is admitted without a card; on a
-//! host with no boundary, a command that runs the project's own code asks every time.
-//!
-//! The fixtures are boundaries built by hand, because a real `bwrap` cannot nest in this box's.
+//! May a standing answer settle a command, or must somebody be asked? Inside a measured boundary
+//! `writes-allowed` admits without a card; on a host with no boundary, a command that runs the
+//! project's own code asks every time. Fixtures are hand-built boundaries, as `bwrap` cannot nest.
 
 use super::*;
 
@@ -616,7 +613,7 @@ fn a_host_with_no_measured_boundary_asks_with_nothing_switched_on() {
     assert!(g.grants().is_empty(), "nothing was remembered for later");
 
     // The other side of the same injected fact: the same command, the same seeded shape, and a
-    // boundary that was measured, where D16 admits it with nobody asked.
+    // boundary that was measured, where the ruling admits it with nobody asked.
     let mut g = gate_at(
         Box::new(Nobody),
         crate::mode::Mode::WRITES_ALLOWED,

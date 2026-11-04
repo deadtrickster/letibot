@@ -1,7 +1,5 @@
-//! `host_config` through the whole runtime, the half the unit tests cannot see.
-//!
-//! Only here does a session exist: the seat holds the tool, `set` reaches the gate as an exec,
-//! and a backend opened read-only refuses before anything runs. Every platform is the fixture's.
+//! `host_config` through the whole runtime, the half the unit tests cannot see: the seat holds the
+//! tool, `set` reaches the gate as an exec, and a read-only backend refuses before anything runs.
 
 use letibot_tools::testing::{harness, writable_harness};
 

@@ -1,10 +1,6 @@
 //! Work on many hosts at once: the engine under `fanout` and `scenario`.
-//!
-//! A hand-rolled loop over `ssh` has one failure it cannot see, since a host that never answered is a
-//! `for`-body that did not execute. So every leg is a job of a [`ProcessHost`], every planned cell ends
-//! with a [`Cell`], and every started process is written down so the daemon's supervisor owns its
-//! deadline and its teardown. The three fates never collapse, because a fanout that answers nothing when
-//! one of five machines is off has thrown away four results.
+//! Every leg is a job of a [`ProcessHost`] and every planned cell ends with a [`Cell`], so a host
+//! that never answered is a row, not a loop body that did not run. The three fates never collapse.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;

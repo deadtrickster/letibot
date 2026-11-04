@@ -1,11 +1,6 @@
-//! Does this command run code the agent wrote?
-//!
-//! On a host with no boundary, running the project's test file is running the agent's code, and a grant
-//! answered once is not consent to the next script, since the file can change between the answer and the
-//! run. So a runner, a build that executes project code, or a script in the checkout asks every time.
-//!
-//! It changes no tier, so this can only make the gate ask more, and the rows are programs and sub-verbs
-//! rather than a regex, because `cargo test` and `cargo tree` are nothing alike.
+//! Does this command run code the agent wrote? On a host with no boundary, a runner, a build that
+//! executes project code, or a script in the checkout asks every time: a grant is not consent to
+//! the next script. Rows are programs and sub-verbs. It changes no tier, so it only adds asking.
 
 use crate::intent::Baseline;
 use letibot_code::shell::Word;

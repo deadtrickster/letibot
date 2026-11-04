@@ -20,14 +20,14 @@ pub const INTENT_TOOLS: &[&str] = &[
     "ask_user_question",
 ];
 
-/// How a completion was checked. **Not a boolean**, because the third case is the
+/// How a completion was checked. Not a boolean, because the third case is the
 /// harness's fault and must not be reported as the model's.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verification {
     /// At least one tool call returned `Ok` while this item was in progress, and
     /// these are their call ids.
     ByEffect { calls: Vec<String> },
-    /// The item was marked complete and nothing ran. **This is not complete.**
+    /// The item was marked complete and nothing ran. This is not complete.
     NoEffect,
     /// No effect log is attached to this session, so completion could not be
     /// checked either way. Also not complete - and the reason is ours.
@@ -120,7 +120,7 @@ pub struct Effect {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Goal {
     pub text: String,
-    /// **Required.** A goal with no acceptance criterion cannot be checked, and a
+    /// Required. A goal with no acceptance criterion cannot be checked, and a
     /// goal that cannot be checked is a wish. [`IntentLedger::set_goal`] refuses
     /// without one.
     pub acceptance: String,
@@ -190,12 +190,12 @@ impl std::fmt::Display for Board {
     }
 }
 
-/// One thing the diff found. Never a failure - T21.3 asks for steering, and a
+/// One thing the diff found. Never a failure - steering is wanted, and a
 /// wrong steer costs a few tokens where a wrong failure costs the turn.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Finding {
     /// Declared or started in this turn, and the turn ran no tool at all. This is
-    /// T21.3 verbatim.
+    /// The announced-but-unstarted case, verbatim.
     AnnouncedNotStarted { id: u32, text: String },
     /// Marked complete with nothing measured behind it.
     CompletedWithoutEffect { id: u32, text: String },
@@ -206,7 +206,7 @@ pub enum Finding {
         since_turn: String,
     },
     /// A future-tense first-person sentence in the assistant's own text with no
-    /// matching tool call. **A heuristic**, and labelled as one wherever it is
+    /// matching tool call. A heuristic, and labelled as one wherever it is
     /// printed - see [`commitments`].
     ProseCommitment { sentence: String },
     /// The encoder is not wired. A finding about the harness, emitted first so it
@@ -602,7 +602,7 @@ impl IntentLedger {
             .count();
 
         for i in &g.items {
-            // T21.3: declared or started here, and the turn ran nothing at all.
+            // Declared or started here, and the turn ran nothing at all.
             let touched_here =
                 i.declared_turn == turn_id || i.started_turn.as_deref() == Some(turn_id);
             if touched_here
@@ -792,7 +792,7 @@ const MAX_COMMITMENTS: usize = 3;
 /// The longest a quoted sentence gets before it is cut.
 const MAX_SENTENCE_BYTES: usize = 160;
 
-/// First-person future-tense openings. Deliberately short: T21 says detecting
+/// First-person future-tense openings. Deliberately short: detecting
 /// intent is a judgement rather than a parse, and a list that fires on "this will
 /// need" produces noise that teaches the reader to skip the whole block.
 const OPENERS: &[&str] = &[
@@ -973,7 +973,7 @@ mod tests {
         assert_eq!(r.findings.first(), Some(&Finding::NoEncoder));
     }
 
-    /// **R93.F30: on a `todo_write` seat the check reads that board**, not the ledger's empty
+    /// On a `todo_write` seat the check reads that board, not the ledger's empty
     /// one, and names no `todo` call.
     #[test]
     fn a_todo_write_seat_is_told_its_own_board() {

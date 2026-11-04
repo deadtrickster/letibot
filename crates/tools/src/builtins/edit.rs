@@ -1,6 +1,5 @@
-//! `edit`: replace exact text in a file, and answer a miss with what is actually there.
-//! The first tool in this harness that can change the operator's tree, so the order of its checks
-//! is the design:
+//! `edit`: replace exact text in a file, and answer a miss with what is actually there. The first tool
+//! that can change the operator's tree, so the order of its checks is the design:
 //! ```text
 //!   arguments (clause 2, in the runtime)
 //!     → the GATE (clause 4, in the runtime) — refuses with no adjudicator
@@ -11,11 +10,8 @@
 //!               → apply, atomically
 //! ```
 //!
-//! Every `no` on that ladder produces more output than the `yes` does, because the
-//! alternative to a good miss report is a model guessing at a file it is about to write to.
-//! What guards a write is [`crate::files`]: one fingerprint per line the model was shown, and the
-//! gate asks it about the lines the match located. An unseen region, or one whose bytes moved, is
-//! refused with the range to read; a change elsewhere in the file refuses nothing.
+//! Every `no` says more than the `yes`: a good miss report beats a model guessing at a file it is about
+//! to write. [`crate::files`] holds one fingerprint per shown line; an unseen or moved region is refused.
 
 use serde_json::Value;
 

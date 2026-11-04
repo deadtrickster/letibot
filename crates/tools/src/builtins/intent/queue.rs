@@ -9,15 +9,15 @@ use letibot_transcript::ToolOutcome;
 pub struct Row {
     pub id: String,
     pub title: String,
-    /// Who is carrying it. `None` is the unowned pile — a different fact from
+    /// Who is carrying it. `None` is the unowned pile - a different fact from
     /// "somebody, but I do not know who", which is why it is an `Option` and not
     /// an empty string.
     pub holder: Option<String>,
-    /// `todo`, `active`, `done` — the node's word, passed through.
+    /// `todo`, `active`, `done` - the node's word, passed through.
     pub status: String,
     pub category: Option<String>,
     /// Who owes the next move, from `flowy todo waiting-on`. Note that this does
-    /// **not** change who carries the row, which is the whole point of the verb.
+    /// not change who carries the row, which is the whole point of the verb.
     pub waiting_on: Option<String>,
 }
 
@@ -40,7 +40,7 @@ impl Row {
 pub struct NewRow {
     pub title: String,
     pub body: String,
-    /// `bug`, `feature`, `chore`, `question` — the closed set the node counts.
+    /// `bug`, `feature`, `chore`, `question` - the closed set the node counts.
     pub category: Option<String>,
     /// File it into a room, so the row arrives where the work was agreed.
     pub room: Option<String>,
@@ -49,10 +49,10 @@ pub struct NewRow {
 /// The four ways this can fail, and none of them is "we wrote it somewhere else".
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QueueError {
-    /// No board is mounted. **A configuration, not a fault** — but also not a
+    /// No board is mounted. A configuration, not a fault - but also not a
     /// silent local write: the verb that needed a board did not happen.
     NotMounted(String),
-    /// The board is wired and could not be reached. **Nothing was filed**, and the
+    /// The board is wired and could not be reached. Nothing was filed, and the
     /// session's own plan is unaffected.
     Unreachable(String),
     /// The compare-and-swap lost: the row moved between the read and the write.
@@ -128,13 +128,13 @@ pub trait Queue: Send + Sync {
 
     fn note(&self, id: &str, text: &str) -> Result<Row, QueueError>;
 
-    /// Take a row. **No `expect` argument, by construction** — see the module
+    /// Take a row. No `expect` argument, by construction - see the module
     /// docs. The implementation reads the current holder and swaps against what it
     /// read; a row that moved in between comes back as [`QueueError::HeldBy`].
     fn claim(&self, id: &str) -> Result<Row, QueueError>;
 
-    /// Put a row back on the unowned pile — `flowy todo claim --as ""`. How work
-    /// is handed **back** rather than handed to somebody.
+    /// Put a row back on the unowned pile - `flowy todo claim --as ""`. How work
+    /// is handed back rather than handed to somebody.
     fn hand_back(&self, id: &str) -> Result<Row, QueueError>;
 
     /// Record who owes the next move. Does not change who carries the row.
@@ -248,7 +248,7 @@ mod fake {
             }
         }
 
-        /// Put a row on the board that somebody else already holds — the case the
+        /// Put a row on the board that somebody else already holds - the case the
         /// compare-and-swap exists for.
         pub fn seed(&self, id: &str, title: &str, holder: Option<&str>) {
             self.rows.lock().unwrap().push(Row {

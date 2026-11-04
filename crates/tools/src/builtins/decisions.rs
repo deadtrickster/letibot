@@ -1,6 +1,4 @@
-//! `decisions`: what the gate decided, and what the oracle said about it. The third tool of the
-//! `transcript`/`digest` family: a model asks by the names a person would use, and never has to
-//! derive the storage, its format, or the path it sits at.
+//! `decisions`: what the gate decided and what the oracle said, third of the `transcript`/`digest` family.
 //!
 //! ```text
 //! bash {"command": "cd letibot; sqlite3 -line
@@ -9,23 +7,10 @@
 //!   WHERE request_id='adj-s-1789639478142928813-0225';\" …"}
 //! ```
 //!
-//! The model should not derive the storage, its format, or the path it sits at: a hardcoded
-//! `~/.local/share` path, a table name and column names written from memory get one wrong and
-//! sqlite answers `no such column`, which reads to a model as the fact not being recorded.
-//!
-//! So every argument is a name a person would use, and none of them is a column:
-//!
-//! `request` is one decision in full, `tool` every decision about `bash` or `write`, `verdict`
-//! one of `allow`/`deny`/`ask`/`unavailable`, `by` who decided, `asked` whether a person was put
-//! in front of it, `last` the newest N (the window the warm start reads), `session` by id or title.
-//!
-//! `verdict_basis` is the oracle's own sentence, the reasoning it gave for admitting or refusing,
-//! and the one thing that exists nowhere else once the decision settles: `SettledDecision` carries
-//! the DECIDER's basis, so a head drawing an `oracle:` line from it draws the operator's words.
-//!
-//! Nothing here rules on anything: labelling a decision is the operator's, through `/gate
-//! ok|grant|revoke`. A miss answers with the counts and the values that ARE present in each field
-//! it filtered on, because a bare "no rows" sends a model back to sqlite.
+//! The model should not derive the storage: a hardcoded path and column names written from memory
+//! get one wrong, and `no such column` reads as the fact not being recorded. Every argument is a name
+//! a person would use. `verdict_basis` is the oracle's own sentence, kept nowhere else. A miss answers
+//! with the values present in each filtered field. Nothing here rules; labelling is `/gate ok|grant|revoke`.
 
 use std::sync::Arc;
 
@@ -55,7 +40,7 @@ pub struct DecisionRow {
     pub verdict: String,
     /// Who decided: `operator`, `oracle`, `boundary:…`, `gate:…`.
     pub verdict_by: String,
-    /// **The decider's own sentence.** For an oracle row this is the guard
+    /// The decider's own sentence. For an oracle row this is the guard
     /// model's reasoning, and it exists nowhere else after the decision settles.
     pub verdict_basis: String,
     /// Calibrated P(allow) where the oracle returned logprobs.

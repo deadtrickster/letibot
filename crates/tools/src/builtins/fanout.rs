@@ -18,16 +18,16 @@ use crate::schema::{Access, ToolSchema};
 /// The name this tool is registered and seated by.
 pub const TOOL: &str = "fanout";
 
-/// **How long a fanout may run when nobody says.** Ten minutes: long enough for a test suite on
+/// How long a fanout may run when nobody says. Ten minutes: long enough for a test suite on
 /// four machines, short enough that a forgotten call does not hold a fleet for an hour.
 pub const DEFAULT_DEADLINE: Duration = Duration::from_secs(600);
 
-/// **The longest deadline this tool accepts.** An hour. A caller that wants longer wants
+/// The longest deadline this tool accepts. An hour. A caller that wants longer wants
 /// `background`-shaped work it can come back to, and a tool that would hold a turn for a day is a
 /// tool whose answer nobody is waiting for.
 pub const MAX_DEADLINE: Duration = Duration::from_secs(3600);
 
-/// **The most ports one branch may ask its block for.** A branch's services listen on a handful;
+/// The most ports one branch may ask its block for. A branch's services listen on a handful;
 /// a number past this is a typo that would empty the host's upper range for everybody else.
 pub const MAX_LEASE_PORTS: u16 = 256;
 
@@ -40,7 +40,7 @@ pub struct Fanout {
     ssh: Option<PathBuf>,
     bound: Option<Duration>,
     book: Arc<dyn ProcessBook>,
-    /// **The session's leases** (RH9) - what a `lease` argument takes its blocks from.
+    /// The session's leases - what a `lease` argument takes its blocks from.
     blocks: Option<Arc<Blocks>>,
 }
 
@@ -84,7 +84,7 @@ impl Fanout {
         self
     }
 
-    /// **Where the started processes are written down** - the daemon binds this to its own session
+    /// Where the started processes are written down - the daemon binds this to its own session
     /// ([`crate::fleet::ProcessBook`]). Everywhere else nothing is written, which is the truth for
     /// a run with no store.
     pub fn with_book(mut self, book: Arc<dyn ProcessBook>) -> Fanout {
@@ -92,7 +92,7 @@ impl Fanout {
         self
     }
 
-    /// **The session's leases** (RH9) - what `lease: true` takes a block from, one per branch.
+    /// The session's leases - what `lease: true` takes a block from, one per branch.
     pub fn with_leases(mut self, blocks: Arc<Blocks>) -> Fanout {
         self.blocks = Some(blocks);
         self
@@ -175,7 +175,7 @@ impl Fanout {
             Ok(p) => p,
             Err(why) => return Invocation::failed(why.reason, why.body),
         };
-        // **A block per branch, when the call asked for one** (RH9). A fanout's branches usually
+        // A block per branch, when the call asked for one. A fanout's branches usually
         // land on DIFFERENT machines and often several on one, so the block is taken per leg and
         // per host - and every block goes back when the call answers, whether it worked or not.
         let ports = match lease_ports(args) {
@@ -210,7 +210,7 @@ impl Fanout {
             }
         }
         let fleet = self.fleet(work.to_string()).with_local(local.clone());
-        // **The blocking form is the default and its answer does not change** - `background` is
+        // The blocking form is the default and its answer does not change - `background` is
         // the caller saying it will take the table as a settlement instead of as a result.
         if args.get("background").and_then(Value::as_bool) == Some(true) {
             return super::fanout_bg::start(fleet, plan, held, self.blocks.clone(), local, work);
@@ -233,7 +233,7 @@ fn refuse(reason: impl Into<String>, body: impl Into<String>) -> Refusal {
 }
 
 impl Fanout {
-    /// **The plan**: one leg per host, in the order the caller wrote them, with the reasons a
+    /// The plan: one leg per host, in the order the caller wrote them, with the reasons a
     /// malformed call is refused before anything is started.
     fn plan(&self, args: &Value) -> Result<Vec<Leg>, Refusal> {
         let deadline = match args.get("deadline_s") {
@@ -288,7 +288,7 @@ impl Fanout {
                  `hosts: {\"lab2x1\": \"cargo test\", \"lab3\": \"go test ./...\"}`.",
             ));
         };
-        // **What the caller asked for, as pairs**, before any of it becomes a leg: the list form
+        // What the caller asked for, as pairs, before any of it becomes a leg: the list form
         // takes the default command, the object form carries its own.
         let asked: Vec<(String, Option<String>)> = match hosts {
             Value::Array(items) => {
@@ -371,7 +371,7 @@ impl Fanout {
         Ok(plan)
     }
 
-    /// **Run the plan**, and answer one row per planned cell.
+    /// Run the plan, and answer one row per planned cell.
     fn run(
         &self,
         fleet: &Fleet,
@@ -388,7 +388,7 @@ impl Fanout {
                 Err(why) => done.push(Cell::never(leg, why)),
             }
         }
-        // **One pass over the unsettled legs, then a breath.** Each pass asks every host that has
+        // One pass over the unsettled legs, then a breath. Each pass asks every host that has
         // not answered yet, so one slow machine costs its own round trip and not the whole
         // fanout's - and the loop is bounded by the plan's own deadline, which every leg carries.
         let mut fates: Vec<(String, Fate)> = Vec::new();
@@ -432,7 +432,7 @@ impl Fanout {
         for run in &running {
             let fate = match fates.iter().find(|(l, _)| l == &run.leg.label) {
                 Some((_, f)) => f.clone(),
-                // **Unreachable by the loop above, and written as a kill anyway**: a row that says
+                // Unreachable by the loop above, and written as a kill anyway: a row that says
                 // `stopped` must be about a process something stopped, so the leg is ended here
                 // before it is described. A claim-versus-fact guard, not a branch anybody expects.
                 None => {
@@ -447,7 +447,7 @@ impl Fanout {
             done.push(fleet.cell(run, None, fate));
         }
         let rows = fleet::cells(&plan, &done);
-        // **Every block the call took goes back**, after the branches have settled: a branch's
+        // Every block the call took goes back, after the branches have settled: a branch's
         // containers are the reason the block existed, and a release that came first would leave
         // them up under a block the next session is about to be given.
         let mut released = Vec::new();
@@ -511,7 +511,7 @@ pub(super) fn table(
         }
         s.push('\n');
     }
-    // **What went back, and what could not be touched** - a block held for ever is a block the
+    // What went back, and what could not be touched - a block held for ever is a block the
     // next session on that machine cannot have, so the answer says what it released.
     for line in released {
         s.push_str(&format!("  lease: {line}\n"));
@@ -570,7 +570,7 @@ mod tests {
         Fanout::new().plan(&args).map_err(|r| (r.reason, r.body))
     }
 
-    /// **A call with nothing to do is refused, in the same call.** An empty `hosts` list would
+    /// A call with nothing to do is refused, in the same call. An empty `hosts` list would
     /// answer with no rows, and a fanout with no rows is the silent omission this tool exists to
     /// prevent.
     #[test]
@@ -580,7 +580,7 @@ mod tests {
         assert!(body.contains("Name at least one host"), "{body}");
     }
 
-    /// **A host listed twice** is one row and two commands - refused, with the reason.
+    /// A host listed twice is one row and two commands - refused, with the reason.
     #[test]
     fn a_host_listed_twice_is_refused() {
         let (reason, _) =
@@ -588,7 +588,7 @@ mod tests {
         assert!(reason.contains("twice"), "{reason}");
     }
 
-    /// **A list with no command** says what to add.
+    /// A list with no command says what to add.
     #[test]
     fn a_list_of_hosts_with_no_command_is_refused() {
         let (reason, body) = plan(serde_json::json!({"hosts": ["a"]})).unwrap_err();
@@ -596,7 +596,7 @@ mod tests {
         assert!(body.contains("needs a `command`"), "{body}");
     }
 
-    /// **A deadline past the ceiling is refused rather than clamped**: a call that would hold a
+    /// A deadline past the ceiling is refused rather than clamped: a call that would hold a
     /// turn for a day is a call whose answer nobody is waiting for.
     #[test]
     fn a_deadline_past_the_ceiling_is_refused() {
@@ -607,7 +607,7 @@ mod tests {
         assert!(reason.contains("ceiling"), "{reason}");
     }
 
-    /// **Both spellings produce one leg per host**, each carrying the command it will run and the
+    /// Both spellings produce one leg per host, each carrying the command it will run and the
     /// deadline the call decided - which is what the record's `deadline_ms` is computed from.
     #[test]
     fn both_spellings_name_a_host_and_a_command_for_every_leg() {
@@ -632,7 +632,7 @@ mod tests {
         );
     }
 
-    /// **Every planned cell has a row, by construction** - including the one whose leg never
+    /// Every planned cell has a row, by construction - including the one whose leg never
     /// produced a result. This is the audit the Stroppy fleet runner lacked, as a type.
     #[test]
     fn every_planned_cell_has_a_row() {
@@ -662,7 +662,7 @@ mod tests {
         }
     }
 
-    /// **The description is prompt, and the lint is the rule.** A path, an endpoint, a content
+    /// The description is prompt, and the lint is the rule. A path, an endpoint, a content
     /// claim or a version in it is a claim the model acts on after it stops being true - and
     /// `Registry::register` REFUSES such a tool, so this is also the test that a session can open.
     #[test]

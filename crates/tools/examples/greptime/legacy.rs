@@ -1,8 +1,5 @@
-//! The hand-rolled matcher that `builtins/pattern.rs` replaced, kept as the before half of
-//! the measurement that justified replacing it: a change argued from a number has to keep
-//! the number reproducible.
-//!
-//! If it stops compiling, delete it rather than repair it: the comparison is then history.
+//! The hand-rolled matcher that `builtins/pattern.rs` replaced, kept as the baseline of the
+//! grep timing comparison. If it stops compiling, delete it rather than repair it.
 #![allow(dead_code)]
 
 /// A compiled search pattern.

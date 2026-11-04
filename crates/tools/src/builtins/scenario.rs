@@ -19,16 +19,16 @@ use crate::schema::{Access, ToolSchema};
 /// The name this tool is registered and seated by.
 pub const TOOL: &str = "scenario";
 
-/// **How long a role may take to become ready when it does not say.** Thirty seconds: long enough
+/// How long a role may take to become ready when it does not say. Thirty seconds: long enough
 /// for a database's first initialisation on a cold box, short enough that a typo in a readiness
 /// check is a sentence and not a turn.
 pub const DEFAULT_READY: Duration = Duration::from_secs(30);
 
-/// **How long the whole scenario may run when nobody says.** Five minutes - the roles' own
+/// How long the whole scenario may run when nobody says. Five minutes - the roles' own
 /// deadlines and the run's bound everything inside it anyway; this is the outer wall.
 pub const DEFAULT_DEADLINE: Duration = Duration::from_secs(300);
 
-/// **The longest wall this tool accepts**, for `fanout`'s reason: the model waits for this call.
+/// The longest wall this tool accepts, for `fanout`'s reason: the model waits for this call.
 pub const MAX_DEADLINE: Duration = Duration::from_secs(3600);
 
 /// The label a run's row carries, refused as a role name so two cells cannot share a row.
@@ -48,7 +48,7 @@ struct Role {
     ready_deadline: Duration,
 }
 
-/// The call as a plan: roles in **start order**, and the run that uses them.
+/// The call as a plan: roles in start order, and the run that uses them.
 #[derive(Debug, Clone)]
 struct Planned {
     roles: Vec<Role>,
@@ -64,7 +64,7 @@ pub struct Scenario {
     ssh: Option<PathBuf>,
     bound: Option<Duration>,
     book: Arc<dyn ProcessBook>,
-    /// **The session's leases** (RH9), when it has any. `None` is a run with no store behind it:
+    /// The session's leases, when it has any. `None` is a run with no store behind it:
     /// an explicit `ready: {"port": N}` still works, and `ready: {"port": "lease"}` is refused
     /// with a sentence rather than started against port 0.
     blocks: Option<Arc<Blocks>>,
@@ -109,13 +109,13 @@ impl Scenario {
         self
     }
 
-    /// **Where the started processes are written down** - the daemon binds this to its session.
+    /// Where the started processes are written down - the daemon binds this to its session.
     pub fn with_book(mut self, book: Arc<dyn ProcessBook>) -> Scenario {
         self.book = book;
         self
     }
 
-    /// **The session's leases** (RH9) - what a role's `ready: {"port": "lease"}` takes its port
+    /// The session's leases - what a role's `ready: {"port": "lease"}` takes its port
     /// from, and what the roles' containers are named under so the teardown can find them.
     pub fn with_leases(mut self, blocks: Arc<Blocks>) -> Scenario {
         self.blocks = Some(blocks);
@@ -219,7 +219,7 @@ impl Tool for Scenario {
 }
 
 impl Scenario {
-    /// **The whole tool, without a call context** - the daemon's path is [`Tool::invoke`], and this
+    /// The whole tool, without a call context - the daemon's path is [`Tool::invoke`], and this
     /// is the same thing with the two facts a `ctx` would have supplied: this session's own backend
     /// (for a `local` role) and the work directory name. It is what a test drives.
     pub fn answer(
@@ -275,7 +275,7 @@ impl Scenario {
     }
 }
 
-/// **The call as a plan**, or the refusal that names what to fix. Everything a malformed call can
+/// The call as a plan, or the refusal that names what to fix. Everything a malformed call can
 /// get wrong is refused here, before a single process is started: that is the difference between a
 /// refusal and a teardown.
 fn plan(args: &Value) -> Result<Planned, (String, String)> {
@@ -452,7 +452,7 @@ fn plan(args: &Value) -> Result<Planned, (String, String)> {
         declared.push(name);
     }
 
-    // **`after` is checked against the roles that exist**, before ordering: a name that is not a
+    // `after` is checked against the roles that exist, before ordering: a name that is not a
     // role would otherwise be an order that silently does not exist.
     for role in named.values() {
         for dep in &role.after {
@@ -737,7 +737,7 @@ fn substitute(
     Ok(out)
 }
 
-/// **Run the plan.** One exit: every path tears down what it started, every planned cell has a
+/// Run the plan. One exit: every path tears down what it started, every planned cell has a
 /// row, and a block of ports taken for this call goes back with it.
 fn run(
     fleet: &Fleet,
@@ -812,7 +812,7 @@ fn run(
                 break;
             }
         };
-        // **Readiness, on the role's own host, with the role's own deadline** - and never past the
+        // Readiness, on the role's own host, with the role's own deadline - and never past the
         // whole scenario's, because the outer wall is what the caller is waiting for.
         let ready_after = match &role.ready {
             None => Some(Duration::ZERO),
@@ -853,7 +853,7 @@ fn run(
         started.push((run, ready_after));
     }
 
-    // **The run**, only when every role came up. A client started against a fixture that failed is
+    // The run, only when every role came up. A client started against a fixture that failed is
     // a second failure dressed as the first.
     if failed.is_none()
         && let Some(run_role) = &plan.run
@@ -912,7 +912,7 @@ fn run(
         }
     }
 
-    // **The teardown: every role, reversed, on its own host.** Reversed because the roles that were
+    // The teardown: every role, reversed, on its own host. Reversed because the roles that were
     // after others were started last, and a fixture comes down in the order a person would stop it.
     let by = match &failed {
         Some(why) => format!("the scenario failed: {}", fleet::one_line(why, 120)),
@@ -937,7 +937,7 @@ fn run(
             },
         };
         fleet.record_end(&running, &fate);
-        // **One row per cell**, and a role that already has one (the readiness check that failed)
+        // One row per cell, and a role that already has one (the readiness check that failed)
         // keeps it: that row is the explanation, and a second one saying `the scenario ended` would
         // replace a reason with a shrug.
         if !done.iter().any(|c| c.label == running.leg.label) {
@@ -945,7 +945,7 @@ fn run(
         }
     }
 
-    // **The blocks go back, and exactly what they created comes down first** (RH9). After the
+    // The blocks go back, and exactly what they created comes down first. After the
     // roles, because a role's own processes are what made the containers: ending a process tells
     // nothing on the far side that its `docker run` should stop.
     let mut released: Vec<String> = Vec::new();
@@ -969,7 +969,7 @@ fn run(
     }
 }
 
-/// **The block's facts, as the environment of a leg on `host`** - empty when this call took no
+/// The block's facts, as the environment of a leg on `host` - empty when this call took no
 /// block there.
 fn env_for(held: &[letibot_tokencore::store::Lease], host: &str) -> Vec<(String, String)> {
     let place = if host == LOCAL { None } else { Some(host) };
@@ -1015,7 +1015,7 @@ fn answer(
             }
         }
     }
-    // **What went back, and what could not be touched** - a refusal here is the operator's list
+    // What went back, and what could not be touched - a refusal here is the operator's list
     // doing its job, and a release nobody mentions is a block held for ever.
     for line in released {
         s.push_str(&format!("  lease: {line}\n"));
@@ -1035,7 +1035,7 @@ mod tests {
         f
     }
 
-    /// **Both facts, spliced where they are written**, and the rest of the text untouched.
+    /// Both facts, spliced where they are written, and the rest of the text untouched.
     #[test]
     fn a_fact_resolves_in_the_middle_of_a_command() {
         let out = substitute("pg -h ${db.host} -p ${db.port} --tag=${db.host}", &facts())
@@ -1043,7 +1043,7 @@ mod tests {
         assert_eq!(out, "pg -h lab2x1 -p 5432 --tag=lab2x1");
     }
 
-    /// **A role that is not there is named, with the roles that are** - the refusal a miss needs.
+    /// A role that is not there is named, with the roles that are - the refusal a miss needs.
     #[test]
     fn an_unknown_role_is_refused_with_the_roles_that_exist() {
         let e = substitute("x ${nope.host}", &facts()).unwrap_err();
@@ -1051,7 +1051,7 @@ mod tests {
         assert!(e.contains("cache, db"), "the roles it does have: {e}");
     }
 
-    /// **A port that no role declares is refused rather than left empty**: a client pointed at
+    /// A port that no role declares is refused rather than left empty: a client pointed at
     /// `host:` fails thirty seconds later with no breadcrumb.
     #[test]
     fn a_port_a_role_does_not_declare_is_refused() {
@@ -1060,7 +1060,7 @@ mod tests {
         assert!(e.contains("ready: {\"port\": N}"), "{e}");
     }
 
-    /// **A fact this build does not have** - not everything about a role is a fact, and saying
+    /// A fact this build does not have - not everything about a role is a fact, and saying
     /// which two are is the whole of the refusal.
     #[test]
     fn a_fact_this_build_does_not_resolve_is_named() {
@@ -1076,7 +1076,7 @@ mod tests {
         );
     }
 
-    /// **The plan's order is the graph's, and the ties are the caller's.** `client` is declared
+    /// The plan's order is the graph's, and the ties are the caller's. `client` is declared
     /// first and starts second; `b` and `a` do not wait on anything, so they keep their order.
     #[test]
     fn after_orders_the_starts_and_ties_follow_the_caller() {
@@ -1100,7 +1100,7 @@ mod tests {
         );
     }
 
-    /// **A cycle is refused by the names in it**, before any process exists.
+    /// A cycle is refused by the names in it, before any process exists.
     #[test]
     fn a_cycle_is_refused_by_the_names_in_it() {
         let text = r#"{
@@ -1115,7 +1115,7 @@ mod tests {
         assert!(reason.contains('a') && reason.contains('b'), "{reason}");
     }
 
-    /// **A role may not be called `run`** - one row, one cell, and `run` is already the client's.
+    /// A role may not be called `run` - one row, one cell, and `run` is already the client's.
     #[test]
     fn a_role_called_run_is_refused() {
         let args = serde_json::json!({
@@ -1126,7 +1126,7 @@ mod tests {
         assert!(body.contains("Rename the role"), "{body}");
     }
 
-    /// **`after` naming a role that is not there** is refused, with the roles that are - an order
+    /// `after` naming a role that is not there is refused, with the roles that are - an order
     /// that silently does not exist is a scenario that starts in the wrong order and passes.
     #[test]
     fn after_naming_no_role_is_refused_with_the_roles_there_are() {
@@ -1141,7 +1141,7 @@ mod tests {
         assert!(body.contains('a') && body.contains('b'), "{body}");
     }
 
-    /// **A readiness check is exactly one of the three**, and the refusal says so - a check that
+    /// A readiness check is exactly one of the three, and the refusal says so - a check that
     /// is three checks cannot say which one passed.
     #[test]
     fn a_readiness_check_names_one_thing() {

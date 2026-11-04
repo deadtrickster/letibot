@@ -1,8 +1,6 @@
-//! `scenario` against a fake ssh: a service that comes up, a client that uses its port, and a
-//! teardown that always happens.
-//!
-//! Every service is a real process on a real port, started through the fake ssh's job directory,
-//! so readiness, `${server.port}` substitution and the group kill are the production ones.
+//! `scenario` against a fake ssh: a service that comes up, a client that uses its port, and an
+//! always-happening teardown. Services are real processes on real ports started through the fake
+//! ssh's job directory.
 
 #[path = "support/fake_remote.rs"]
 mod fake_remote;

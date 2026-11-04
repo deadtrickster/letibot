@@ -4,7 +4,7 @@ use super::*;
 
 use crate::exec::{JobId, JobState, JobView, MemoryCap, ScopeId, ScopeKind};
 
-/// **A job, as this session's table holds it** - the fields `wait_on` reads (the handle, the name,
+/// A job, as this session's table holds it - the fields `wait_on` reads (the handle, the name,
 /// the state) and the rest filled with something obvious.
 fn job(id: &str, slug: Option<&str>, state: JobState) -> JobView {
     let scope = || ScopeId {
@@ -94,7 +94,7 @@ fn a_wait_on_the_models_own_row_quiets_it_while_the_job_runs_and_not_after() {
         waits_on_a_running_job(row, &running),
         "while the job runs the row is one the check may not speak about"
     );
-    // **The job ends**, and the row is the check's to name again.
+    // The job ends, and the row is the check's to name again.
     let said = nag_with(
         &board.snapshot(),
         &ChildSessions::none(),
@@ -148,7 +148,7 @@ fn a_wait_on_the_operators_row_leaves_their_words_and_status_alone() {
     .expect("named again once the job is over");
     assert!(said.contains(CRITERION), "{said}");
 
-    // **A child of this session is a wait too**, by the id `task` handed back.
+    // A child of this session is a wait too, by the id `task` handed back.
     let (board, fake) = {
         let board = Arc::new(TodoBoard::new(vec![operator_row(
             "collect the answer",
@@ -180,7 +180,7 @@ fn a_wait_on_the_operators_row_leaves_their_words_and_status_alone() {
     assert!(refusal(&r).contains("s-9-sub-9"), "{}", refusal(&r));
 }
 
-/// **A handle this session does not hold is refused by name, and nothing is written** - and so is
+/// A handle this session does not hold is refused by name, and nothing is written - and so is
 /// one that has already ended, which nothing would quiet anyway.
 #[test]
 fn an_unknown_or_ended_job_is_refused_by_name() {
@@ -228,7 +228,7 @@ fn an_unknown_or_ended_job_is_refused_by_name() {
     assert!(board.snapshot()[0].needs.is_empty());
 }
 
-/// **Detach takes the job and subagent waits off and leaves the plan's own order.**
+/// Detach takes the job and subagent waits off and leaves the plan's own order.
 #[test]
 fn detach_restores_the_row() {
     let row = TodoItem {
@@ -259,7 +259,7 @@ fn detach_restores_the_row() {
     );
 }
 
-/// **The shape is refused by name**: two waits in one entry, an unknown field, and `wait_on` beside
+/// The shape is refused by name: two waits in one entry, an unknown field, and `wait_on` beside
 /// `todos` - through the real runtime, so the top-level door is the one under test.
 #[test]
 fn a_malformed_wait_on_is_refused_and_writes_nothing() {
@@ -295,7 +295,7 @@ fn a_malformed_wait_on_is_refused_and_writes_nothing() {
     assert!(board.snapshot()[0].needs.is_empty());
 }
 
-/// **The check offers the door when there is something to wait on, and only then.**
+/// The check offers the door when there is something to wait on, and only then.
 #[test]
 fn the_check_offers_wait_on_when_a_job_or_a_subagent_is_running() {
     let plan = vec![operator_row(CRITERION, TodoStatus::InProgress)];
@@ -319,7 +319,7 @@ fn the_check_offers_wait_on_when_a_job_or_a_subagent_is_running() {
         busy.contains("this check stays quiet until it ends"),
         "{busy}"
     );
-    // **On the advice's own line**, so the head's notice fold still folds it: the notice keeps
+    // On the advice's own line, so the head's notice fold still folds it: the notice keeps
     // its three lines - head, bullet, advice.
     assert_eq!(busy.lines().count(), 3, "{busy}");
 
@@ -331,7 +331,7 @@ fn the_check_offers_wait_on_when_a_job_or_a_subagent_is_running() {
     .unwrap();
     assert!(child.contains(r#""child": "s-1-sub-2""#), "{child}");
 
-    // **And not for a row `wait_on` cannot reach**: a parent's row is its author's.
+    // And not for a row `wait_on` cannot reach: a parent's row is its author's.
     let parents = vec![TodoItem {
         by: TodoBy::parent_of("s-1"),
         ..item("the parent's row", TodoStatus::Pending)
@@ -345,10 +345,8 @@ fn the_check_offers_wait_on_when_a_job_or_a_subagent_is_running() {
     assert!(!said.contains("wait_on"), "{said}");
 }
 
-/// **R93.B4: a row whose own words are a running job's description is work in flight, and the
-/// check says nothing about it.** It used to offer the wait instead - 120 offers against replies
-/// that already said *running, the completion arrives on its own* - so the row was nagged about
-/// while the very thing it asked for was running.
+/// A row whose own words are a running job's description is work in flight, and the check says
+/// nothing about it. It must not offer the wait: the completion arrives on its own.
 #[test]
 fn a_row_a_running_job_reads_like_is_not_nagged() {
     let plan = vec![operator_row(
@@ -417,7 +415,7 @@ fn an_ending_the_model_has_not_digested_keeps_the_row_quiet() {
         "{said}"
     );
 
-    // **Digested** - the harness stops reporting it - and the row is the check's to name again.
+    // Digested - the harness stops reporting it - and the row is the check's to name again.
     assert!(!waits_on_an_undigested_ending(&row, &RunningJobs::none()));
     assert_eq!(
         when_an_ending_is_digested(std::slice::from_ref(&row), &RunningJobs::none()),
@@ -432,9 +430,9 @@ fn an_ending_the_model_has_not_digested_keeps_the_row_quiet() {
     assert!(said.contains(&format!("  - {CRITERION}")), "{said}");
 }
 
-/// **The same grace for a SUBAGENT a row waits on** - a child that has finished is absent from
-/// `ChildSessions`, which used to make its row askable at once; its undigested completion now keeps
-/// the row quiet the way a job's does. pg-noop, 2026-10-11, the subagent half of the same ask.
+/// The same grace for a SUBAGENT a row waits on - a child that has finished is absent from
+/// `ChildSessions`; its undigested completion keeps
+/// the row quiet the way a job's does.
 #[test]
 fn a_finished_childs_undigested_completion_keeps_the_row_quiet() {
     let mut row = operator_row("make tier 1 green", TodoStatus::InProgress);
@@ -502,7 +500,7 @@ fn a_job_named_in_needs_is_stored_as_its_handle() {
     );
 }
 
-/// **A name no job has is refused, and so is one two jobs share** - a wait on a name nothing will
+/// A name no job has is refused, and so is one two jobs share - a wait on a name nothing will
 /// ever end is a wait that reads as already over.
 #[test]
 fn a_job_need_naming_no_job_or_two_is_refused_and_nothing_is_written() {
@@ -548,7 +546,7 @@ fn a_job_need_naming_no_job_or_two_is_refused_and_nothing_is_written() {
     assert!(ok(&r), "{}", refusal(&r));
 }
 
-/// **A row waits on ALL of what it names** - the operator: *"i think we can allow waiting on
+/// A row waits on ALL of what it names - the operator: *"i think we can allow waiting on
 /// multiple things - so AND"*. Two entries for one row put two edges on it, and the row stays
 /// quiet until both jobs have ended; one ending is not enough.
 #[test]

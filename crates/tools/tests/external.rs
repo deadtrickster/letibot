@@ -1,9 +1,6 @@
-//! The tools whose infrastructure this box does not run, and the seam each one attaches
-//! through.
-//!
-//! The seam is what is under test, not the stub: every case runs twice, once with nothing
-//! behind the tool and once with a scripted backend, because a stub nothing ever attaches to is
-//! the way this goes wrong. A refusal is `NotRun`, never `Abstained`: nothing here looked.
+//! The tools whose infrastructure this box does not run, and the seam each attaches through.
+//! Every case runs twice, with nothing behind the tool and with a scripted backend. A refusal is
+//! `NotRun`, never `Abstained`: nothing here looked.
 
 use letibot_tools::adjudicate::{AdjudicatedGate, EffectScope, Reversibility};
 use letibot_tools::builtins::external::scripted;

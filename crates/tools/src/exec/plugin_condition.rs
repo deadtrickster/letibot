@@ -42,7 +42,7 @@ pub enum Look {
 
 /// A look that is a live process, as the poller sees it.
 pub trait LookChild: Send {
-    /// `Some` once it has ended — its exit status and what it wrote.
+    /// `Some` once it has ended - its exit status and what it wrote.
     fn poll(&mut self) -> Option<LookResult>;
 }
 
@@ -56,7 +56,7 @@ pub trait PluginConditions: Send + Sync {
 /// A condition that was armed, and anything the `monitor` call should be told about it.
 pub struct Armed {
     pub condition: Arc<dyn Condition>,
-    /// A line for the call's answer — what this watch is looking at, when that is not obvious
+    /// A line for the call's answer - what this watch is looking at, when that is not obvious
     /// from the call itself.
     pub note: Option<String>,
 }
@@ -66,7 +66,7 @@ pub struct PluginCondition {
     stack: Arc<dyn PluginStack>,
     /// The export name: `condition_<name>`.
     hook: String,
-    /// What the `monitor` call said, handed back on every call — the plugin's own vocabulary.
+    /// What the `monitor` call said, handed back on every call - the plugin's own vocabulary.
     args: Value,
     /// The longest this watch may live, from the arming answer.
     max_ttl: Duration,
@@ -89,7 +89,7 @@ struct State {
     next_at: Option<Instant>,
     /// A firing the arming call already produced, said on the first poll rather than lost.
     pending: Option<String>,
-    /// The pull request this watch is on, when it is on one — so the coalescing rule sees a
+    /// The pull request this watch is on, when it is on one - so the coalescing rule sees a
     /// plugin condition the way it sees a `github` watch.
     github: Option<(String, Vec<String>)>,
 }
@@ -300,7 +300,7 @@ impl Condition for PluginCondition {
         self.advance(None)
     }
 
-    /// The monitors' own `Wait` — a poll — is the default, and this condition has nothing
+    /// The monitors' own `Wait` - a poll - is the default, and this condition has nothing
     /// finer to wait for than the poller's tick.
     fn describe(&self) -> String {
         format!(
@@ -451,7 +451,7 @@ mod tests {
             move || PluginCondition::arm(stack, "shell", json!({})).expect("armed")
         });
         // Arming started the first look and it was deferred: nothing is ready, nothing is running,
-        // and — the half that matters — no result was handed over to be read as one.
+        // and - the half that matters - no result was handed over to be read as one.
         assert_eq!(condition.met(), None, "a deferral is not a result");
         assert_eq!(*stack.looks.lock().unwrap(), 1, "the look was asked once");
         assert!(

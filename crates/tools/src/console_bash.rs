@@ -1,16 +1,12 @@
-//! Which bash an operator's `!` line is handed to: a bash 4+ from `$SHELL` or
-//! `PATH`, else `/bin/bash`. The `-ic` flags stay [`crate::exec::console`]'s.
+//! Which bash an operator's `!` line is handed to: a bash 4+ from `$SHELL` or `PATH`, else `/bin/bash`.
 //!
 //! ```text
 //! bash: declare: -A: invalid option
 //! declare: usage: declare [-afFirtx] [-p] [name[=value] ...]
 //! ```
 //!
-//! `-i` is what reads `~/.bashrc`, and the operator's rc is written for bash 4+, so a
-//! 3.2 refuses it before their command. A 3.2 last word is still deliberate - it runs
-//! `cp` - and `$SHELL` is skipped unless it is a bash 4+, since the line typed is a bash
-//! line. A confined backend keeps `/bin/bash`: its `$HOME` is a tmpfs with no operator
-//! rc, and a bash found here is outside the view it may exec from.
+//! `-i` reads `~/.bashrc`, written for bash 4+, which a 3.2 refuses before the command. A confined backend keeps
+//! `/bin/bash`: its `$HOME` is a tmpfs with no rc.
 
 use std::path::Path;
 use std::sync::OnceLock;

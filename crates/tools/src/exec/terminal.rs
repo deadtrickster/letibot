@@ -1,9 +1,6 @@
-//! A command that wants the terminal, refused by name with the reason and the remedy,
-//! because an operator's `!` run is a pty whose output is folded into one transcript row
-//! and whose input is `/dev/null`.
-//!
-//! The rule reads the command text, never the program: three classes, each with the
-//! condition that separates it from the batch form of the same binary.
+//! A command that wants the terminal, refused by name with reason and remedy: an operator's `!` run
+//! is a pty folded into one transcript row with `/dev/null` input. The rule reads the command text,
+//! never the program: three classes, each with the condition that separates it from batch form.
 
 use letibot_code::shell::{self, Context, Stage, Word};
 

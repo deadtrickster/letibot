@@ -1,8 +1,6 @@
-//! The map a compaction leaves, seen from the tool that reads it back: which units were evicted,
-//! and the window a read of one is bounded by.
-//!
-//! The map's text is written once, into the new base, by the harness. This is the other half of
-//! it: the ids that text names, kept where `recall` can find them without a model in the loop.
+//! The map a compaction leaves, as the `recall` tool reads it back: which units were evicted and the
+//! window a read of one is bounded by. The map's text is written once by the harness; the ids it
+//! names are kept here, findable without a model.
 
 use std::sync::Mutex;
 

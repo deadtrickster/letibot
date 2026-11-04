@@ -1,8 +1,6 @@
 //! `cargo run -p letibot-tools --features testing --example exec_transcript`
-//!
-//! Prints, verbatim, the refusal a kill-by-pattern gets, the refusal a wait-by-pattern gets,
-//! and the record a reap leaves behind. These are prose the model reads, and prose only ever
-//! asserted on in a test drifts into something nobody would want to receive.
+//! Prints verbatim the refusals a kill-by-pattern and a wait-by-pattern get, and the record a reap
+//! leaves. The model reads this prose, so it is looked at rather than only asserted on.
 use letibot_tools::testing::runner_harness;
 
 fn main() {

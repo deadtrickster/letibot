@@ -1,14 +1,6 @@
-//! **The gate runs here and on the operator's declared hosts, never on GitHub Actions** (R62).
-//!
-//! The operator's words, 2026-10-11: *"this is mostly local concern - i've been rate limited on
-//! github recently with actions, so _act_ is our friend. we can use other machines like lubuntu2 to
-//! run tests"*. So the jobs that judged a branch moved to the merge queue - which runs the
-//! `## Merge gate` steps in a landing worktree here or on the machine `[queue] gate_host` names -
-//! and a workflow that runs them again is a second, weaker gate: it judges a push rather than a
-//! rebased branch, nobody reads its red, and it spends the rate limit the operator was rationing.
-//!
-//! What a workflow may still do is RELEASE: build the assets for a tag and publish them, which is
-//! what `install.sh` downloads and nothing about the gate. `release.yml` is that file.
+//! The gate runs here and on the operator's declared hosts, never on GitHub Actions: the merge
+//! queue runs the `## Merge gate` steps in a landing worktree (or on `[queue] gate_host`), and a
+//! workflow repeating them is a second, weaker gate. A workflow may still RELEASE (`release.yml`).
 
 use std::path::{Path, PathBuf};
 
@@ -54,7 +46,7 @@ fn judges_a_pull_request(text: &str) -> bool {
         .any(|(event, _)| event.starts_with("pull_request"))
 }
 
-/// **No workflow judges a branch.** `pull_request` is the trigger whose red would be a second
+/// No workflow judges a branch. `pull_request` is the trigger whose red would be a second
 /// verdict on the same commit the queue is rebasing - and the one that spends the rate limit.
 #[test]
 fn no_workflow_runs_on_a_pull_request() {
@@ -69,7 +61,7 @@ fn no_workflow_runs_on_a_pull_request() {
     }
 }
 
-/// **And the trigger is found wherever YAML puts it.** A guard that reads a line's prefix is a
+/// And the trigger is found wherever YAML puts it. A guard that reads a line's prefix is a
 /// guard a new file walks around: `on: [push, pull_request]` and `on: {pull_request: ~}` each
 /// judge every PR and each pass a prefix check.
 #[test]
@@ -106,7 +98,7 @@ fn a_pull_request_trigger_is_refused_in_every_spelling() {
     }
 }
 
-/// **No workflow runs the gate's own steps.** The `## Merge gate` section of AGENTS.md is the one
+/// No workflow runs the gate's own steps. The `## Merge gate` section of AGENTS.md is the one
 /// definition, read from `main` by the queue; a workflow holding a copy of it can be deleted, can
 /// drift, and can go green while the queue is red.
 #[test]
@@ -134,7 +126,7 @@ fn no_workflow_runs_the_gate() {
     }
 }
 
-/// **And the repository still has a gate to run**, because the queue holds every branch of a
+/// And the repository still has a gate to run, because the queue holds every branch of a
 /// repository whose `AGENTS.md` has no `## Merge gate` section. Deleting the workflow must not have
 /// deleted the definition with it.
 #[test]

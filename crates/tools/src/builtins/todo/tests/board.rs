@@ -45,7 +45,7 @@ fn a_whole_file_migration_would_wipe_the_state_the_model_set() {
     // `[ ]` for T1 because the model's work was never written back to it.
     b.set_operator(from_file());
 
-    // **The assertion is that the wipe HAPPENED** - this test holds the hazard still while the
+    // The assertion is that the wipe HAPPENED - this test holds the hazard still while the
     // design answers it, so it fails the day `set_operator` learns to preserve state, and that
     // failure is the signal to rewrite it as the positive.
     assert_eq!(
@@ -276,13 +276,13 @@ fn the_board_returns_the_operators_rows_alongside_the_models() {
         all.iter().any(|t| t.by == TodoBy::Operator),
         "and says who wrote each"
     );
-    // **`unfinished_plan` - what the nag asks - sees the operator's row with no change at all**
+    // `unfinished_plan` - what the nag asks - sees the operator's row with no change at all
     assert!(
         nag_for(&all).is_some(),
         "so the reminder can fire for work the OPERATOR queued"
     );
 
-    // **AND THE MODEL'S OWN WRITE DOES NOT DELETE THEM.** `upsert_model` is the `todo` tool's
+    // AND THE MODEL'S OWN WRITE DOES NOT DELETE THEM. `upsert_model` is the `todo` tool's
     // own write, and it is why the two halves are kept apart rather than concatenated.
     b.upsert_model(&[("the model's".into(), TodoStatus::Completed, Vec::new())]);
     let after = b.snapshot();
@@ -293,7 +293,7 @@ fn the_board_returns_the_operators_rows_alongside_the_models() {
         "and the model's own row moved"
     );
     assert!(after.iter().any(|t| t.content == "the operator's"));
-    // **A RE-WORDED ROW IS A NEW ROW** - the text is the name - so the old row stays as well:
+    // A RE-WORDED ROW IS A NEW ROW - the text is the name - so the old row stays as well:
     // there is no write on this board that removes one.
     b.upsert_model(&[(
         "the model's, revised".into(),
@@ -405,7 +405,7 @@ fn an_operator_block_inside_a_todos_entry_is_refused_by_name() {
         "**the call is refused, not half-obeyed**: {:?}",
         r.outcome
     );
-    // **THE REFUSAL NAMES THE FIELD AND SAYS WHERE IT BELONGS** - a message that only said
+    // THE REFUSAL NAMES THE FIELD AND SAYS WHERE IT BELONGS - a message that only said
     // "unknown field" would leave the model to guess, and it already guessed once.
     let said = format!("{} {:?}", r.payload, r.outcome);
     assert!(
@@ -416,7 +416,7 @@ fn an_operator_block_inside_a_todos_entry_is_refused_by_name() {
         said.contains("TOP-LEVEL"),
         "**and says where it belongs**, because one level too deep is exactly the mistake: {said}"
     );
-    // **AND NOTHING MOVED** - not their row, and not the model's list either, which is the
+    // AND NOTHING MOVED - not their row, and not the model's list either, which is the
     // half-applied call the operator-rows-before-todos ordering exists to prevent.
     assert!(
         board
@@ -493,7 +493,7 @@ fn a_row_the_operator_wrote_is_moved_by_its_own_words() {
     ]);
     let mut sink = RecordingToolSink::new();
 
-    // **the model names it by its exact words**, alongside its own list
+    // the model names it by its exact words, alongside its own list
     let r = rt.invoke(
         "t1",
         &call(
@@ -530,7 +530,7 @@ fn a_row_the_operator_wrote_is_moved_by_its_own_words() {
     );
     assert!(told.contains("— yours"), "{told}");
 
-    // **A NAME THAT FITS NOTHING IS REFUSED AND WRITES NOTHING** - not their row, and not the
+    // A NAME THAT FITS NOTHING IS REFUSED AND WRITES NOTHING - not their row, and not the
     // model's own list either, which is the half-applied call this ordering exists to prevent.
     let before = board.snapshot();
     let r = rt.invoke(
@@ -559,7 +559,7 @@ fn a_row_the_operator_wrote_is_moved_by_its_own_words() {
         "**AND NOTHING WAS WRITTEN** — the model's plan is untouched too"
     );
 
-    // **TWO ROWS WITH THE SAME WORDS IS REFUSED RATHER THAN GUESSED.** The row that changes
+    // TWO ROWS WITH THE SAME WORDS IS REFUSED RATHER THAN GUESSED. The row that changes
     // state must not be the one the tool happened to find first.
     board.set_operator(vec![
         TodoItem {
@@ -597,7 +597,7 @@ fn a_row_the_operator_wrote_is_moved_by_its_own_words() {
     );
 }
 
-/// **The version is what the harness watches**, so it decides whether the wire and the store
+/// The version is what the harness watches, so it decides whether the wire and the store
 /// hear about a move at all: a real change announces, and a no-op does not - otherwise every
 /// call that re-states a status already set would publish the whole list again.
 #[test]
@@ -634,7 +634,7 @@ fn moving_a_row_bumps_the_version_once_and_a_no_op_does_not() {
     );
 }
 
-/// **AND THE NAG SAYS WHOSE ROW IT IS, because that is what chooses the mechanism.** A model
+/// AND THE NAG SAYS WHOSE ROW IT IS, because that is what chooses the mechanism. A model
 /// told only *one item is not done* has to guess whether to rewrite its own list or quote the
 /// operator's row, and the guess it makes is the one it always makes - its own list.
 #[test]
@@ -667,7 +667,7 @@ fn the_nag_says_whose_row_it_is_and_how_to_dispose_of_it() {
         !theirs.contains("drop it"),
         "while *drop* is not offered for a row that is not the model's to remove: {theirs}"
     );
-    // R93.B3: the advice is one line now, and *"say why in your reply"* went with the rest.
+    // The advice is one line now, and *"say why in your reply"* went with the rest.
     assert!(theirs.contains("(quote it exactly)"), "{theirs}");
 }
 
@@ -696,7 +696,7 @@ fn a_fired_condition_is_cleared_from_the_row_and_nothing_else_moves() {
         },
     ]);
     let v = b.version();
-    // **A handle nobody is waiting on consumes nothing, and must not announce anything.** A
+    // A handle nobody is waiting on consumes nothing, and must not announce anything. A
     // version bump is a store write and a publish to every head, so a no-op that bumped would
     // republish the board on every wake.
     assert_eq!(b.consume_conditions(&["j999".to_string()]), 0);
@@ -819,7 +819,7 @@ fn the_whole_list_upserts_and_a_row_left_out_stays_on_the_board() {
         r.payload
     );
 
-    // **THREE ENTRIES IN, ONE ENTRY SENT, THREE STILL ON THE BOARD.** The named row moves; the
+    // THREE ENTRIES IN, ONE ENTRY SENT, THREE STILL ON THE BOARD. The named row moves; the
     // two it does not name are untouched.
     let r2 = rt.invoke(
         "t1",

@@ -5,12 +5,8 @@
 //!     --workspace /home/dead/Projects/letibot ~/letibot-corpus/mac.json
 //! ```
 //!
-//! The corpus is read-only and lives outside the tree; nothing here writes anything,
-//! asks a model, or runs a command. A row records the call, the mode and who decided,
-//! never the confinement it ran in, so the boundary half is assumed: the gate's own
-//! rule is asked as if the session had been inside a measured boundary.
-//!
-//! Numbers only. Not one command is printed: the corpus holds real sessions.
+//! Read-only; numbers only, as the corpus holds real sessions and no command is printed. A row lacks
+//! the confinement it ran in, so the boundary half is assumed.
 use std::path::Path;
 
 use letibot_tools::corpus_replay::{Unasked, unasked};

@@ -47,7 +47,7 @@ impl From<Refusal> for Invocation {
     }
 }
 
-/// **One setting, as one platform spells it.** `unit` is the platform's own unit and is printed
+/// One setting, as one platform spells it. `unit` is the platform's own unit and is printed
 /// with every value, because macOS's `KeyRepeat` is in 1/60 s and X11's rate is in hertz - two
 /// numbers that would look interchangeable and are not.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,7 +95,7 @@ pub struct Applied {
     pub ran: Vec<String>,
 }
 
-/// **One command's answer.** `exit` is the status; bytes are read as text, because every setting
+/// One command's answer. `exit` is the status; bytes are read as text, because every setting
 /// here is a word or a number.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ran {
@@ -196,7 +196,7 @@ impl Channel {
     }
 }
 
-/// **How a setting that needs root can be asked for**, decided before anything runs.
+/// How a setting that needs root can be asked for, decided before anything runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Privilege {
     /// This process is already root: no helper, no question.
@@ -224,7 +224,7 @@ impl Privilege {
         Privilege::of(helper(), channel)
     }
 
-    /// **The decision, from the two facts it rests on.** [`Privilege::detect`] is what reads the
+    /// The decision, from the two facts it rests on. [`Privilege::detect`] is what reads the
     /// process's environment; this takes the answers, so a test can drive every arm without
     /// racing the environment of the test binary.
     pub fn of(helper: Option<PathBuf>, channel: Option<&Channel>) -> Privilege {
@@ -250,7 +250,7 @@ impl Privilege {
                 helper.display()
             ));
         };
-        // **The two facts that make the channel an address rather than a path.** A helper pointed
+        // The two facts that make the channel an address rather than a path. A helper pointed
         // at a socket nobody listens on fails the same way an unset one does, one layer later.
         let not_an_address = match (channel.session.trim().is_empty(), channel.socket.exists()) {
             (false, true) => {
@@ -305,7 +305,7 @@ impl Privilege {
     }
 }
 
-/// **The helper `sudo` would run**, if this box has one: `$SUDO_ASKPASS`, then beside this binary
+/// The helper `sudo` would run, if this box has one: `$SUDO_ASKPASS`, then beside this binary
 /// (`harnessd`'s `sudo::install` writes it there), then `PATH`.
 fn helper() -> Option<PathBuf> {
     let named = std::env::var_os("SUDO_ASKPASS").map(PathBuf::from);
@@ -349,7 +349,7 @@ pub trait Platform: Send + Sync {
     /// [`Platform::apply`] asks it again, because `apply` is public and a caller is still a caller.
     fn check(&self, setting: &str, value: &str) -> Result<(), Refusal>;
 
-    /// **Set it.** Refuses a value [`Platform::check`] would, and runs nothing before it has.
+    /// Set it. Refuses a value [`Platform::check`] would, and runs nothing before it has.
     fn apply(&self, setting: &str, value: &str, privilege: &Privilege) -> Result<Applied, Refusal>;
 }
 
@@ -685,7 +685,7 @@ impl Linux {
         })
     }
 
-    /// **X11's auto-repeat, which is one knob with two numbers.** `xset r rate <delay> <rate>`
+    /// X11's auto-repeat, which is one knob with two numbers. `xset r rate <delay> <rate>`
     /// sets both at once, so a `set` of either one has to carry the other's current value - a
     /// `set` that wrote only its own half would zero the other.
     fn repeat(&self) -> Result<(String, String, String), Refusal> {
@@ -799,7 +799,7 @@ impl Platform for Linux {
         match setting {
             "cpu-governor" => {
                 let v = word(setting, value)?;
-                // **Checked against what this box offers before anything runs**, so a word from
+                // Checked against what this box offers before anything runs, so a word from
                 // another kernel is refused here rather than by a tool that half-changed a CPU.
                 let ran = self.run(&["cat", GOVERNORS], &[])?;
                 let offered: Vec<&str> = ran.stdout.split_whitespace().collect();
@@ -883,7 +883,7 @@ impl Platform for Linux {
 
 // --- any other platform ----------------------------------------------------
 
-/// **A platform this tool has no arm for.** Every setting is refused by name, with the two
+/// A platform this tool has no arm for. Every setting is refused by name, with the two
 /// vocabularies it does know, rather than the tool being absent from the seat: a seat that names
 /// a tool which does not exist refuses to open at all.
 pub struct Other {
@@ -948,7 +948,7 @@ fn elsewhere(asked: &str) -> Option<&'static str> {
     }
 }
 
-/// **This box's platform**, chosen from `std::env::consts::OS`.
+/// This box's platform, chosen from `std::env::consts::OS`.
 ///
 /// A function and not a `const`, so a test can hold the arms it is not running on.
 pub fn this_box() -> Arc<dyn Platform> {
@@ -997,7 +997,7 @@ impl HostConfigTool {
         }
     }
 
-    /// **No changelog behind this tool.** `read` and `settings` still answer - they change
+    /// No changelog behind this tool. `read` and `settings` still answer - they change
     /// nothing - and `set` refuses before it runs anything.
     pub fn nowhere() -> HostConfigTool {
         HostConfigTool {
@@ -1008,7 +1008,7 @@ impl HostConfigTool {
         }
     }
 
-    /// **The way back to the daemon**, handed over by the harness when the registry is built:
+    /// The way back to the daemon, handed over by the harness when the registry is built:
     /// the socket it listens on and the session this seat belongs to. Without it a helper found
     /// on `PATH` is a helper with nobody to ask, so `set` refuses by name.
     pub fn with_channel(mut self, channel: Channel) -> HostConfigTool {
@@ -1141,7 +1141,7 @@ pub fn dispatch(
     }
 }
 
-/// **What this platform has**, with each value read now - the answer to *which knob is it here*.
+/// What this platform has, with each value read now - the answer to *which knob is it here*.
 #[allow(clippy::result_large_err)] // Invocation is the failed row the caller shows; boxing it reshapes the tool API
 fn settings(platform: &dyn Platform) -> Result<String, Invocation> {
     let settings = platform.settings();
@@ -1218,7 +1218,7 @@ fn read(platform: &dyn Platform, args: &Value) -> Result<String, Invocation> {
     ))
 }
 
-/// **The three acts**: read, apply, record - and the checks that come before any of them.
+/// The three acts: read, apply, record - and the checks that come before any of them.
 #[allow(clippy::result_large_err)] // Invocation is the failed row the caller shows; boxing it reshapes the tool API
 fn set(
     scope: Option<&dyn ChangelogScope>,
@@ -1244,11 +1244,11 @@ fn set(
     let words = text(args, "words").unwrap_or_default();
     let s = find(platform, &asked)?;
 
-    // 2. **The value, before the read and before the record's door.** A value this setting would
+    // 2. The value, before the read and before the record's door. A value this setting would
     //    never take costs no command at all - not even the read that would become the `before`.
     platform.check(s.name, &value).map_err(Invocation::from)?;
 
-    // 3. **No changelog behind this session is a refusal before the first command** - it is a fact
+    // 3. No changelog behind this session is a refusal before the first command - it is a fact
     //    about the registry, not about the box, so nothing needs measuring to find it out.
     let Some(scope) = scope else {
         return Err(Invocation::failed(

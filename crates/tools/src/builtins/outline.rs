@@ -1,15 +1,10 @@
-//! `outline`: the definitions in a file or a tree, from a parse rather than a pattern.
-//! The question it answers, what is the structure of this file, cannot be asked with a regex:
+//! `outline`: the definitions in a file or tree, from a parse rather than a pattern, as in:
 //! ```text
 //! ^(pub )?(mod|fn|struct|enum|impl|const|static)\s
 //! ^\s*(pub )?fn |^mod |^#\[cfg\(test\)\]|^impl
 //! ```
-//! Relaxing a structural query lexically can only ever miss. Keep the `^` and a method indented
-//! under an `impl` is invisible; drop it and `fn` matches inside comments, strings, and the word
-//! "define". There is no third pattern.
-//! A miss answers itself: a missing path returns the nearest listing, a language with no grammar
-//! says which extension, and a `kind` filter selecting nothing reports the kinds present. An outline
-//! of a file that did not parse cleanly is marked partial, a different fact from a small file.
+//! A regex relaxed lexically can only miss: keep the `^` and indented methods vanish, drop it and `fn` matches
+//! in comments. A miss answers itself; a file that did not parse cleanly is marked partial.
 
 use letibot_code::{Language, Outline, Symbol};
 use serde_json::Value;
@@ -235,7 +230,7 @@ impl OutlineTool {
             }
             let paths: Vec<&str> = page.iter().map(|(k, _)| files[*k].path.as_str()).collect();
             // One call for the page where the backend can do it, and one file at a time
-            // for a page whose batch call failed — a failed page loses no definition.
+            // for a page whose batch call failed - a failed page loses no definition.
             let got = match ctx.backend.read_many(&paths) {
                 Ok(v) if v.len() == paths.len() => v,
                 _ => paths.iter().map(|p| ctx.backend.read(p)).collect(),
@@ -659,7 +654,7 @@ mod paging_tests {
     use crate::events::RecordingToolSink;
     use crate::runtime::ToolRuntime;
 
-    /// Files that HAVE a grammar — the candidates a tree outline actually reads.
+    /// Files that HAVE a grammar - the candidates a tree outline actually reads.
     const PARSABLE: usize = 140;
     /// Files that do not, so the `skipped` tally and the "no grammar" note are in the
     /// answer being compared.

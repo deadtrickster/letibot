@@ -1,8 +1,5 @@
-//! The deadline is enforced by the host, not by the thread that runs the command.
-//!
-//! A deadline enforced at the top of `bash`'s wait loop is enforced inside the thing it guards: if
-//! that thread does not come back round the loop, nothing ends the run and the daemon's one worker is
-//! held for as long as the command lives. So each test spawns a run and never waits on it.
+//! The deadline is enforced by the host, not by the thread that runs the command: a deadline inside
+//! `bash`'s wait loop is inside the thing it guards. Each test spawns a run and never waits on it.
 
 use std::time::{Duration, Instant};
 

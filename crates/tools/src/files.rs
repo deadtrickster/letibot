@@ -1,9 +1,6 @@
 //! The lines this session was shown of each file, and what it may therefore change.
-//!
-//! An `edit` may only replace lines a tool displayed: a `read` window, a search hit with its context, or
-//! the region of this session's own earlier edit, and never their neighbours. One fingerprint per shown
-//! line, not an mtime and not a whole-file digest: an mtime moves on a `touch`, and the question is "did
-//! these lines change".
+//! An `edit` may only replace lines a tool displayed, never their neighbours. One fingerprint per
+//! shown line, not an mtime (a `touch` moves it) and not a whole-file digest.
 
 use std::collections::BTreeMap;
 use std::collections::hash_map::DefaultHasher;

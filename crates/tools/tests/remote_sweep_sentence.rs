@@ -1,11 +1,6 @@
-//! The sweep's failure sentence, and the retry it must not claim.
-//!
-//! `Ssh::no_answer` was written for the calls that ARE asked again on a fresh connection. The
-//! sweep runs through `Ssh::raw`, which asks exactly once, so a host that stopped answering was
-//! told *"the call was asked once more with a fresh connection"* about a call that was asked once.
-//!
-//! A binary of its own: nothing here places a session, and a fake ssh that never answers is the
-//! whole fixture.
+//! The sweep's failure sentence, and the retry it must not claim. The sweep runs through
+//! `Ssh::raw`, which asks once, so it must not say "asked once more with a fresh connection".
+//! Own binary: a fake ssh that never answers is the whole fixture.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;

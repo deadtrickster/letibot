@@ -1,9 +1,6 @@
-//! Acceptance tests for layer 1's namespace half: the boundary that was measured, the
-//! refusals when there is none, and the two properties the mount view exists for.
-//!
-//! Every test that needs a real boundary asserts on both branches: either the property, or
-//! that the refusal names what was missing and that nothing ran unconfined. A skip would be
-//! a green suite that measured nothing about the boundary it is named after.
+//! Acceptance tests for the namespace half of layer 1: the measured boundary, the refusals when
+//! there is none, and the two properties the mount view exists for. Each asserts both branches, as a
+//! skip would be green having measured nothing.
 
 use std::path::{Path, PathBuf};
 
@@ -77,7 +74,7 @@ fn no_boundary(e: &ExecError, test: &str) {
 
 // --------------------------------------- the require switch reaches every skip
 
-/// **A missing boundary is a SKIP, and a run that demands the apparatus fails instead** - pinned by
+/// A missing boundary is a SKIP, and a run that demands the apparatus fails instead - pinned by
 /// running this binary once more with the helper pointed at nothing and the switch set, because no
 /// run can set either variable under its own tests.
 #[test]

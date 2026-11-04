@@ -151,20 +151,13 @@ pub(crate) fn text_of(bytes: &[u8]) -> (String, bool) {
 pub const DELIVERED: &str = "Its completion reaches you automatically — when your current turn \
      ends, or at once if a todo row needs it or wake is \"now\".";
 
-/// Where a command sends its own output instead of letting the job capture it.
-/// The redirect is in the command text, so this is knowable before anything runs:
+/// Where a command sends its own output instead of letting the job capture it, knowable from the text:
 /// ```text
 /// cargo build --release … > /tmp/release-build.log 2>&1
 /// ```
-/// That command's captured output is empty by construction, and `job_output` then has nothing to
-/// return. Returns the first file written to, or `None` for a command that writes to the captured
-/// descriptors normally.
-/// A write to a file on stdout or stderr counts. `2>&1` does not: it merges stderr into stdout,
-/// which is what makes the capture complete. Neither do `<`, a here-document or a here-string, which
-/// are stdin.
-///
-/// Public because the daemon puts it on the wire, not only in a payload: a head that
-/// says which of its running jobs is unwatchable must not parse shell itself.
+/// That command's captured output is empty by construction. Returns the first file written to, or `None`.
+/// A write to a file on stdout or stderr counts; `2>&1` and stdin forms do not. Public because the daemon
+/// puts it on the wire, so a head need not parse shell.
 pub fn output_redirect_path(command: &str) -> Option<String> {
     output_redirect_paths(command).into_iter().next()
 }

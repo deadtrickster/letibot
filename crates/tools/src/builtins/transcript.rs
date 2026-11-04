@@ -1,14 +1,8 @@
-//! `transcript`: read this session's own conversation out of the store. It is not a way to
-//! re-read what is on screen, but the door to what is not on screen any more: after a compaction
-//! the rows are no longer context the model has, and the store is the only place they still exist.
+//! `transcript`: read this session's own conversation out of the store, the door to what compaction removed.
 //!
-//! `harness` refused this tool because re-reading a conversation spends context to recover
-//! context, and the rows a model cannot see are the ones compaction replaced. True until a session
-//! compacts, so `history` is on by default and the search walks the fork chain.
+//! `history` is on by default and the search walks the fork chain.
 //!
-//! The shape is find's, not SQL's: `match` is the text to look for and the rest narrow it, so a
-//! model never spells a store path, a table name, or a `transcript_id` it had to find first. What
-//! a session does without it:
+//! The shape is find's: `match` is the text, the rest narrow it, so a model never spells a store path or table. Without it:
 //!
 //! ```text
 //! bash {"command": "sqlite3 /home/dead/.local/share/letibot/sessions.db \"SELECT
@@ -16,27 +10,9 @@
 //!   transcript_id='s-1789639478142928813#t7' ORDER BY seq DESC LIMIT 15\""}
 //! ```
 //!
-//! The call hardcodes the store path, returns 120 bytes of JSON tag and field names where the
-//! row's text was wanted, names one generation of a fork chain where the answer is usually an
-//! older one, and reads backwards. It also needs `bash`, and with it the gate.
-//!
-//! Every argument is a predicate, and predicates AND together the way find's do. `match` is the
-//! one positional idea; the rest narrow it: `kind` (`user`, `assistant`, `reasoning`,
-//! `tool_result`, `system`, `mark`), `tool`, `last`, `from`/`to` (a `seq` range), `session`.
-//!
-//! And `limit`, which is find's `| head` made explicit: the alternative is a tool that can return a
-//! 200k-token conversation into a context that has room for none of it.
-//!
-//! A search is the one read here whose matches are routinely larger than the window they are read
-//! into, so the rows go through the spiller like any oversized output, and the notice names two
-//! outs: `read_spill` for the bytes, and `digest` for an answer.
-//!
-//! That offer is not decoration: a model told "412 rows matched, 18 shown" will otherwise page
-//! through them with `offset`, which is the exact cost this tool exists to avoid.
-//!
-//! Naming another session is allowed, one session looking at another's history, and nothing here
-//! can write: a transcript is append-only at the store level (no-UPDATE, no-DELETE triggers), so
-//! there is no write surface to expose even if one were wanted.
+//! Arguments are predicates ANDed like find's (`kind`, `tool`, `last`, `from`/`to`, `session`), with `limit` explicit.
+//! Big matches go through the spiller, with `read_spill` for bytes and `digest` for an answer. Another session may
+//! be named. Nothing here can write: transcripts are append-only in the store.
 
 use std::sync::Arc;
 

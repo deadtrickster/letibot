@@ -1481,10 +1481,9 @@ impl AdjudicatedGate {
         self
     }
 
-    /// Where this session's commands actually run: the boundary that was measured, or `None` for a
-    /// host that has none. **The one fact the gate may read about the platform**, and it is handed
-    /// in rather than probed, so the Mac's case (`confine::probe` answers nothing there) is a Linux
-    /// test's to construct. `refusal` is the words the probe refused in, which a card repeats.
+    /// Where this session's commands actually run: the measured boundary, or `None` for a host with
+    /// none. The one platform fact the gate may read; handed in, not probed, so the Mac case is
+    /// constructible in a Linux test. `refusal` is the words the probe refused in.
     pub fn with_boundary(
         mut self,
         boundary: Option<crate::exec::Boundary>,
@@ -1677,10 +1676,8 @@ impl AdjudicatedGate {
                  before any adjudicator and overridable by none."
                     .to_string()
             } else if decision.by.starts_with("model") {
-                // The guard decided this one, and there is no pending decision: an oracle's
-                // refusal is a decision in its own right, so no card was raised and the remedy
-                // that exists is the operator's grant by name. Where the row lives is the
-                // refusal's own sentence, built where the store is known.
+                // The guard decided this one and no decision is pending: an oracle's refusal is a decision in
+                // its own right, so no card was raised and the remedy is the operator's grant by name.
                 format!(
                     "the guard refused this one — no card was raised for it, and nothing is \
                      waiting for an answer. Nothing was executed and nothing changed. The \

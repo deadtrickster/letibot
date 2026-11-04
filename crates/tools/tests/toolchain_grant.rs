@@ -1,8 +1,6 @@
-//! The grant that makes a confined shell able to build.
-//!
-//! The confined view is hermetic: `$HOME` inside is a fresh tmpfs, so `~/.cargo` and `~/.rustup`
-//! are ABSENT rather than denied and a shell with no grant cannot compile. `Grant::ReadOnly` is
-//! readable into the transcript, so the grant is also a decision about what a model may read.
+//! The grant that makes a confined shell able to build. The confined `$HOME` is a fresh tmpfs, so
+//! `~/.cargo` and `~/.rustup` are absent, not denied. `Grant::ReadOnly` is readable into the
+//! transcript, so it is also a decision about what a model may read.
 
 use std::path::PathBuf;
 

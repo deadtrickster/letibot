@@ -1,10 +1,6 @@
-//! One ssh master per daemon, a refused session that is transport, and a write that is one call, against
-//! a fake ssh that can be told to behave like a busy one.
-//!
-//! Every `ssh` here ignores its flags and runs the last argument locally with `HOME` in a temporary
-//! directory, so the commands, the base64 channel, the far side's size and hash check and the `mv` are
-//! the production ones and only the transport is faked. The ledger is files rather than counters, because
-//! a counter under a `mkdir` lock lost increments.
+//! One ssh master per daemon, a refused session that is transport, and a write that is one call,
+//! against a fake ssh that can act busy. Every `ssh` runs the last argument locally; only transport
+//! is faked. The ledger is files, as a counter under a `mkdir` lock lost increments.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -1068,10 +1064,9 @@ fn six_sessions_at_once_on_one_host_all_place_over_one_connection() {
     );
 }
 
-/// A host whose own `MaxSessions` is LOWER than the bound cannot be kept under by a client that
-/// counts to eight: a server configured with one refuses the second session on a connection. What
-/// must hold then is that the refusal is reported by name - never as the command's exit, and never
-/// as *it may be running there*.
+/// A host whose own `MaxSessions` is lower than the bound refuses the second session on a
+/// connection. The refusal must be reported by name - never as the command's exit, never as
+/// "it may be running there".
 #[test]
 fn a_cap_below_the_bound_is_reported_by_name() {
     let fake = Fake::new(
@@ -1144,10 +1139,9 @@ fn a_cap_below_the_bound_is_reported_by_name() {
     }
 }
 
-/// The entry's own *Done when*, on a real machine: six sessions placed on one host at once all
-/// place, work and come back, and no call of theirs is refused, dropped or timed out. Nothing is
-/// faked here - this is the one test in the tree that needs a real sshd - so it runs only when
-/// asked, and `LETIBOT_R99_HOST` names a host from the operator's `hosts.toml`:
+/// The entry's own *Done when*, on a real machine: six sessions placed on one host at once all place, work and
+/// come back, with no call refused, dropped or timed out. It needs a real sshd, so it runs only when asked, with
+/// `LETIBOT_R99_HOST` naming a host from `hosts.toml`:
 ///
 /// ```sh
 /// LETIBOT_R99_HOST=lab2x1 cargo test --offline -p letibot-tools --test remote_sessions \

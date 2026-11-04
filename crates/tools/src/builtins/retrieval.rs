@@ -11,9 +11,9 @@ use crate::schema::{Access, ToolSchema};
 /// Which of the operator's retrieval tools is being asked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RetrievalKind {
-    /// `ask_code` — a question about a code base.
+    /// `ask_code` - a question about a code base.
     Code,
-    /// `ask_corpus` — a question about a document corpus.
+    /// `ask_corpus` - a question about a document corpus.
     Corpus,
 }
 

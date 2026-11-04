@@ -1,9 +1,6 @@
 //! A monitor on a GitHub pull request or issue, through the operator's own `gh`.
-//!
-//! Closed or merged, checks finished, a review, a new comment and a CodeRabbit pass are each
-//! a [`Condition`], so a GitHub watch is a monitor like any other. `gh` is the one door, so a
-//! watch sees what the operator can see and no token lives in the daemon; what it saw first is
-//! the baseline, except a state that is already the answer, which fires at once.
+//! Closed or merged, checks, a review, a comment and a CodeRabbit pass are each a [`Condition`]. `gh`
+//! is the one door, so no token lives in the daemon. The first reading is the baseline.
 
 use std::io::Read;
 use std::process::{Child, Command, Stdio};

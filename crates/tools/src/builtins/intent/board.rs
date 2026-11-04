@@ -19,7 +19,7 @@ pub struct Todo {
 }
 
 impl Todo {
-    /// A session with no board. **The default, and not an error state.**
+    /// A session with no board. The default, and not an error state.
     pub fn local(ledger: std::sync::Arc<IntentLedger>) -> Self {
         Todo {
             ledger,
@@ -41,7 +41,7 @@ impl Todo {
 
     /// The line every result ends with. A mount that silently changed semantics
     /// would be the silent-degradation failure with better manners, so the backing
-    /// is a **receipt on every call** rather than a rule in a description.
+    /// is a receipt on every call rather than a rule in a description.
     fn backing(&self) -> String {
         if self.mounted {
             format!(
@@ -369,7 +369,7 @@ impl Tool for Todo {
             }
             "list" => {
                 // With a board mounted the board is the record, so rows this
-                // session has never seen are adopted here — which is what puts
+                // session has never seen are adopted here - which is what puts
                 // another seat's row under the same intent/effect check as ours.
                 if self.mounted {
                     match self.queue.list() {
@@ -575,7 +575,7 @@ mod tests {
     }
 
     /// A mounted `todo` declares `Network`, so the fixture needs a gate that
-    /// admits — which is itself the point being made in `Todo::mounted`'s docs.
+    /// admits - which is itself the point being made in `Todo::mounted`'s docs.
     fn mounted_fix(q: Arc<dyn Queue>) -> Fix {
         let ledger = Arc::new(IntentLedger::new());
         let sink = IntentSink::new(ledger.clone(), NullToolSink);

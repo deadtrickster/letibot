@@ -1519,7 +1519,7 @@ fn a_name_reassigned_from_itself_is_the_whole_word() {
     ] {
         assert_eq!(arg(cmd).as_deref(), Some(want), "{cmd}");
     }
-    // And a name overwritten by something this round cannot read is NOT the value it used to
+    // And a name overwritten by something this round cannot read is NOT its previous value:
     // hold: the old one is stale the moment the second assignment runs.
     assert!(!b("X=/a; X=$UNSET; cat $X").resolved);
 }

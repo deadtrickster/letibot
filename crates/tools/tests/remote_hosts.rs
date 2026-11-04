@@ -1,9 +1,6 @@
-//! Remote placement against a fake ssh: the commands, the base64 channel, the `setsid` launch, the job
-//! files and the `git bundle` round trip are the production ones, and no network is touched because the
-//! fake runs the last argument locally against a temporary home.
-//!
-//! `setsid` does not exist on Darwin, so the fake remote gets a perl shim: a job there must lead its own
-//! process group, which is what the group signal depends on.
+//! Remote placement against a fake ssh: commands, base64 channel, `setsid` launch, job files and
+//! `git bundle` round trip are production ones; the fake runs the last argument locally. Darwin has
+//! no `setsid`, so a perl shim makes a job lead its own process group.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -2182,10 +2179,9 @@ fn mise_false_is_no_wrapper_and_mise_at_a_path_is_that_path() {
     let _ = std::fs::remove_dir_all(&fake.dir);
 }
 
-/// The `notes` tool writes where the session's other tools write: a note added in a placed
-/// session lands in the remote checkout, and the daemon's own workspace gets no `.letibot/notes`
-/// at all. The note is read back with `std::fs` from the far path - the fake remote is a real
-/// local path, and a test that asked the tool whether it wrote is a test of the tool's opinion.
+/// The `notes` tool writes where the session's other tools write: a note in a placed session
+/// lands in the remote checkout, not the daemon's workspace. Read back with `std::fs` from the far
+/// path rather than asking the tool.
 #[test]
 fn a_note_written_in_a_placed_session_lands_in_the_remote_checkout() {
     let mut rig = Rig::new("notes");
@@ -2230,7 +2226,7 @@ fn a_note_written_in_a_placed_session_lands_in_the_remote_checkout() {
     let _ = std::fs::remove_dir_all(&local);
 }
 
-/// **The note corpus is one round trip per page, not one per note.** Over a placed session every
+/// The note corpus is one round trip per page, not one per note. Over a placed session every
 /// read is an ssh call: a `search` over twelve notes was fourteen of them, which is the cost the
 /// same commit's stat-in-the-listing change was made to avoid.
 #[test]
@@ -2271,10 +2267,8 @@ fn a_placed_session_reads_its_note_corpus_in_pages() {
     let _ = std::fs::remove_dir_all(&local);
 }
 
-/// **A session that is already stopped can still be collected.** The branch came home only while
-/// the backend that made the placement was still reachable, so a package whose daemon was stopped
-/// left its work on the host with nothing here to fetch it. A collect needs nothing of the daemon:
-/// the host, the repository and the session id are the names the placement was made by.
+/// A session that is already stopped can still be collected. A collect needs nothing of the
+/// daemon: host, repository and session id are the names the placement was made by.
 #[test]
 fn a_stopped_session_is_collected_by_the_names_its_placement_used() {
     let mut rig = Rig::new("collect");

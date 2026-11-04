@@ -316,7 +316,7 @@ fn timeline(n: &shell::Normalised, env: &Surroundings) -> Vec<Binding> {
                 }
             }
             // A name that is unset has no value, and a stale binding would let the next
-            // round resolve `$X` to what it used to hold.
+            // round resolve `$X` to its old value.
             "unset" => {
                 for w in &stage.argv {
                     if let Some(t) = w.literal() {

@@ -1,9 +1,6 @@
 //! `fanout` against a fake ssh: one command on many hosts, one row per host.
-//!
-//! The rig's fake ssh runs the command locally against a temporary remote home, so the job files,
-//! the exit file and the process group are the production ones. What is measured is that every
-//! host has a row: all succeed, one fails and the rest still report, an unknown or unreachable
-//! host is a row, and a deadline stops a slow one.
+//! The fake runs the command locally against a temporary remote home. Measured: all succeed, one
+//! fails and the rest report, an unknown or unreachable host is a row, a deadline stops a slow one.
 
 #[path = "support/fake_remote.rs"]
 mod fake_remote;

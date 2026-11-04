@@ -35,7 +35,7 @@ pub struct SearchHit {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchResults {
     pub hits: Vec<SearchHit>,
-    /// How many the provider had **before** the tool's cap. The denominator
+    /// How many the provider had before the tool's cap. The denominator
     /// (§8.1 clause 2): `showing 5` and `showing 5 of 43` are different facts.
     pub considered: usize,
     /// Who answered. Named in the result, so an answer's provenance does not
@@ -241,7 +241,7 @@ fn render_results(call_id: &str, q: &SearchQuery, r: SearchResults) -> Invocatio
     };
 
     if r.hits.is_empty() {
-        // It ran and looked. That is an abstention — a claim about the world — and
+        // It ran and looked. That is an abstention - a claim about the world - and
         // it is a different fact from having no provider, which never gets here.
         let mut inv = Invocation::abstained(
             format!("{} returned no results for this query", r.provider),
@@ -328,14 +328,14 @@ impl PageFormat {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FetchRequest {
     /// Already checked by the tool: an http or https address with no credentials
-    /// in it. A fetcher still does its own checks — see [`Fetcher`].
+    /// in it. A fetcher still does its own checks - see [`Fetcher`].
     pub url: String,
     pub format: PageFormat,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FetchedPage {
-    /// Where the bytes actually came from. **Not** the requested url: a redirect
+    /// Where the bytes actually came from. Not the requested url: a redirect
     /// chain that ends somewhere else is the single most useful fact about a fetch
     /// and the easiest one to drop.
     pub final_url: String,
@@ -357,7 +357,7 @@ pub struct FetchedPage {
 pub enum FetchError {
     NotAttached(NotAttached),
     /// The fetcher's own policy said no: a private address, a bad scheme, a host
-    /// that is not on an allow-list. **A decision, and it is reported as one.**
+    /// that is not on an allow-list. A decision, and it is reported as one.
     Refused(String),
     /// The server answered, and not with a page.
     Status {
@@ -622,7 +622,7 @@ fn render_page(ctx: &mut InvokeCtx<'_>, req: &FetchRequest, page: FetchedPage) -
             page.bytes
         ));
     }
-    // What the fetcher itself did to the body — extraction, fallback —
+    // What the fetcher itself did to the body - extraction, fallback -
     // travels as notes beside the provenance ones.
     notes.extend(page.notes.iter().cloned());
 
@@ -705,8 +705,8 @@ fn render_page(ctx: &mut InvokeCtx<'_>, req: &FetchRequest, page: FetchedPage) -
             }
         }
     } else {
-        // No scratchpad to write to — the backend is read-only, or the session has
-        // no scratch directory — so the page comes back whole and inline, as it did
+        // No scratchpad to write to - the backend is read-only, or the session has
+        // no scratch directory - so the page comes back whole and inline, as it did
         // before the scratchpad existed.
         body.push_str(&quarantined);
     }

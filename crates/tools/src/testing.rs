@@ -430,10 +430,9 @@ pub fn writable_external_harness(backends: crate::ExternalBackends) -> Harness {
     )
 }
 
-/// A session over a chosen backend, with the coder tool set and a gate that allows: the fixture
-/// for a tool whose files are somewhere the daemon's own box is not. The `notes` tool is scoped to
-/// `(workspace, global)`, which is the point - a scope that disagrees with the backend is what a
-/// placed session's daemon-side scope looks like.
+/// A session over a chosen backend with the coder tool set and an allowing gate. `notes` is scoped
+/// to `(workspace, global)` on purpose: a scope that disagrees with the backend is what a placed
+/// session's daemon-side scope looks like.
 pub fn harness_over(
     backend: Box<dyn crate::backend::ExecBackend>,
     workspace: std::path::PathBuf,
@@ -868,12 +867,9 @@ impl Retrieval for Scripted {
     }
 }
 
-/// A fixture's `git`, with none of this box's configuration in it. A box whose global config sets
-/// `commit.gpgsign` signs every fixture commit and refuses it with no key, so global and system
-/// config are dropped, the identity is supplied here, and nothing may prompt.
-///
-/// This covers the commands a TEST runs. The commands the code under test runs (the queue's landing
-/// rebases) inherit the daemon's environment, which is what [`repo_config`] is for.
+/// A fixture's `git` with none of this box's configuration: global and system config are dropped,
+/// identity is supplied, nothing may prompt (a global `commit.gpgsign` would refuse every commit).
+/// Covers commands a TEST runs; code under test inherits the daemon's env, see [`repo_config`].
 pub fn git(dir: &std::path::Path) -> std::process::Command {
     let mut cmd = std::process::Command::new("git");
     cmd.current_dir(dir)
@@ -889,10 +885,9 @@ pub fn git(dir: &std::path::Path) -> std::process::Command {
     cmd
 }
 
-/// The identity and the signing policy a fixture repository states in its own config, where git
-/// reads it after the box's. Necessary on top of [`git`] because the commands the code under test
-/// runs inherit the daemon's environment: with `commit.gpgsign` set globally, every landing's
-/// `git rebase` asks for a key no host has and the landing fails as a rebase conflict.
+/// The identity and signing policy a fixture repository states in its own config. Needed on top of
+/// [`git`] because code under test inherits the daemon's environment, and a global
+/// `commit.gpgsign` would fail every landing rebase.
 pub fn repo_config(repo: &std::path::Path) {
     for (key, value) in [
         ("user.name", "letibot fixture"),

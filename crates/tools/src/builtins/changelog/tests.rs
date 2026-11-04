@@ -29,7 +29,7 @@ impl Fixture {
         }
     }
 
-    /// A second writer over the **same file** - the shape two sessions on one box have.
+    /// A second writer over the same file - the shape two sessions on one box have.
     fn sibling(&self, who: &str) -> Self {
         Fixture {
             dir: self.dir.clone(),
@@ -96,7 +96,7 @@ const NOW: u64 = 1_700_000_000_000;
 // record
 // ---------------------------------------------------------------------------
 
-/// **A record round-trips: five fields into the file, five fields and an age back out.**
+/// A record round-trips: five fields into the file, five fields and an age back out.
 #[test]
 fn a_record_round_trips_with_all_five_fields_and_an_age() {
     let f = Fixture::new("s-1");
@@ -153,7 +153,7 @@ fn a_record_round_trips_with_all_five_fields_and_an_age() {
     }
 }
 
-/// **A record without `why` is refused by name, and nothing is written.** This is the feature: a
+/// A record without `why` is refused by name, and nothing is written. This is the feature: a
 /// record of *what* with no reason is the complaint, written down.
 #[test]
 fn a_record_without_why_is_refused_by_name() {
@@ -170,7 +170,7 @@ fn a_record_without_why_is_refused_by_name() {
     );
 }
 
-/// **And so is one without `words`** - whose words a change rests on is the half that makes it
+/// And so is one without `words` - whose words a change rests on is the half that makes it
 /// answerable.
 #[test]
 fn a_record_without_words_is_refused_by_name() {
@@ -206,7 +206,7 @@ fn a_record_missing_two_fields_names_both() {
 // revert
 // ---------------------------------------------------------------------------
 
-/// **A revert hands back the recorded `before`, marks the line, and applies nothing.**
+/// A revert hands back the recorded `before`, marks the line, and applies nothing.
 #[test]
 fn a_revert_returns_the_before_and_marks_the_line() {
     let f = Fixture::new("s-1");
@@ -258,7 +258,7 @@ fn a_revert_returns_the_before_and_marks_the_line() {
     assert_eq!(log.entries[0].reverted.as_ref().map(|r| r.change), Some(1));
 }
 
-/// **A second revert of the same change is refused**, naming the first one.
+/// A second revert of the same change is refused, naming the first one.
 #[test]
 fn a_second_revert_of_the_same_change_is_refused() {
     let f = Fixture::new("s-1");
@@ -276,7 +276,7 @@ fn a_second_revert_of_the_same_change_is_refused() {
     assert_eq!(f.lines().len(), 2, "nothing was appended: {:?}", f.lines());
 }
 
-/// **A reverted change still lists** - with the revert's age and who asked for it.
+/// A reverted change still lists - with the revert's age and who asked for it.
 #[test]
 fn a_reverted_change_still_lists() {
     let f = Fixture::new("s-1");
@@ -340,7 +340,7 @@ fn a_revert_of_a_change_the_file_does_not_have_lists_the_ones_it_does() {
     assert_eq!(f.lines().len(), 1, "nothing was appended");
 }
 
-/// **A revert that names a different setting is not applied to the number it lands on.** The
+/// A revert that names a different setting is not applied to the number it lands on. The
 /// number is a position, and a file somebody truncated would otherwise make an old revert undo
 /// whatever now sits there.
 #[test]
@@ -495,7 +495,7 @@ fn an_unknown_verb_names_the_verbs_there_are() {
 // through the runtime: the second gate, and a file nobody had to trust the tool about
 // ---------------------------------------------------------------------------
 
-/// **A record reaches the disk through the whole runtime** - the gate, the tool, the scope - and
+/// A record reaches the disk through the whole runtime - the gate, the tool, the scope - and
 /// the assertion reads the file itself rather than asking the tool what it did.
 #[test]
 fn a_record_reaches_the_file_through_the_runtime() {
@@ -516,7 +516,7 @@ fn a_record_reaches_the_file_through_the_runtime() {
     );
 }
 
-/// **A read-only session cannot record, and can still read.** The write verbs are refused by the
+/// A read-only session cannot record, and can still read. The write verbs are refused by the
 /// backend - the second, independent gate - and `list`, which narrows to `Read`, answers. That is
 /// what makes seating the tool on the read-only default seat worth its entry.
 #[test]

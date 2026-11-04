@@ -1,10 +1,6 @@
-// Where does grep's time actually go: walking, reading, or matching?
-//
+// Where does grep's time go: walking, reading, or matching?
 //   cargo run --release -p letibot-tools --example greptime -- [ROOT] [PATTERN]
-//
-// Three matchers over the same bytes - `legacy` (one call per line, hand-rolled), and
-// `regex/line` and `regex/buf` (the whole file, which is what `grep` does) - so the two
-// changes are not credited to each other: the engine first, then the scan.
+// Three matchers over the same bytes (`legacy`, `regex/line`, `regex/buf`) separate engine from scan.
 mod legacy;
 
 use letibot_tools::backend::{ExecBackend, HostBackend, default_skip, walk};

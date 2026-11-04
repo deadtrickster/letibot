@@ -1,9 +1,6 @@
-//! A remote is an RPC, so this follows the practices: a host that is down is not dialled, every call
-//! is recorded in a bounded ring, a host takes a bounded number of sessions, and [`run_bounded`] is
-//! the one place a local process gets a wall clock.
-//!
-//! The state is process-wide because every caller reaches the same machine over the same
-//! `ControlMaster`, so private breakers would cost a down host one timeout each.
+//! A remote is an RPC: a down host is not dialled, calls are recorded in a bounded ring, a host takes
+//! a bounded number of sessions, and [`run_bounded`] is the one place a local process gets a clock.
+//! State is process-wide because every caller shares one `ControlMaster`.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::Path;

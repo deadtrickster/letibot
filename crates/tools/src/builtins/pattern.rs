@@ -1,14 +1,12 @@
-//! The two pattern languages the search tools use, and the relaxation a miss needs.
-//! A too-strict anchor relaxes to the bare identifier, a property of the pattern's syntax tree
-//! rather than of matching, so the engine is `regex-syntax`.
+//! The two pattern languages the search tools use, and the relaxation a miss needs: a too-strict anchor
+//! relaxes to the bare identifier, a property of the syntax tree, so the engine is `regex-syntax`.
 //! ```text
 //! walk     0.4 ms
 //! read     0.9 ms
 //! match   23.7 ms   <- 95% of the total
 //! ```
-//! A construct the engine cannot compile is REPORTED, never silently approximated: an approximation
-//! with a note beside it is still a search for something else. [`Pattern::compile`] returns the
-//! engine's error with its position, and [`SIZE_LIMIT`]/[`DFA_SIZE_LIMIT`] are stated on purpose.
+//! An uncompilable construct is reported with its position, never approximated;
+//! [`SIZE_LIMIT`]/[`DFA_SIZE_LIMIT`] are stated on purpose.
 
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
@@ -559,7 +557,7 @@ mod tests {
         assert_eq!(got, vec![1, 2]);
     }
 
-    /// Reads the process-wide [`CACHE`] by identity — safe beside the other tests in this binary
+    /// Reads the process-wide [`CACHE`] by identity - safe beside the other tests in this binary
     /// for the reason written on [`CacheKey`]: only a cap-clear between the two compiles could
     /// part them, and this binary compiles 44 distinct keys against a cap of 256.
     #[test]

@@ -12,10 +12,10 @@ use crate::schema::{Access, ToolSchema};
 /// The tool's name, in one place.
 pub const TOOL: &str = "queue";
 
-/// **The daemon's half** - the store and the repository the session is in. Every method answers
+/// The daemon's half - the store and the repository the session is in. Every method answers
 /// the sentence the model reads, or a refusal in words.
 pub trait QueueDesk: Send + Sync {
-    /// **The queues, scoped and said so**: this session's repository unless `all` widens it to
+    /// The queues, scoped and said so: this session's repository unless `all` widens it to
     /// every one, or `repository` names one (a path, a path's tail or a directory name) - which is
     /// also what asks for it in full. The first line of every answer says what it printed.
     fn status(&self, all: bool, repository: Option<&str>) -> Result<String, String>;
@@ -29,7 +29,7 @@ pub trait QueueDesk: Send + Sync {
     fn propose_target(&self, target: &str, why: &str) -> Result<String, String>;
 }
 
-/// **No queue behind the tool** - a daemon with no `--store`, or a test registry. Every verb says
+/// No queue behind the tool - a daemon with no `--store`, or a test registry. Every verb says
 /// so by name rather than the tool being absent, which would read as a capability this build
 /// lacks.
 pub struct NoQueue;
@@ -56,7 +56,7 @@ impl NoQueue {
     const WHY: &'static str = "this session's daemon has no store, so it serves no merge queue";
 }
 
-/// **The tool.**
+/// The tool.
 pub struct QueueTool {
     desk: Arc<dyn QueueDesk>,
 }
@@ -222,7 +222,7 @@ mod tests {
         }
     }
 
-    /// **Only `withdraw` reaches the gate as a write**; a read is a read and the queue's own
+    /// Only `withdraw` reaches the gate as a write; a read is a read and the queue's own
     /// state is the session's.
     #[test]
     fn only_withdraw_is_a_write_and_status_is_a_read() {

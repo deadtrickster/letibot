@@ -28,7 +28,7 @@ pub const DEFAULT_LIMIT: usize = 20;
 pub trait ChangelogScope: Send + Sync {
     /// The file: `<config dir>/host-changelog.jsonl`.
     fn path(&self) -> PathBuf;
-    /// **This box's name**, which is the default `host` of a record. A change made on a declared
+    /// This box's name, which is the default `host` of a record. A change made on a declared
     /// machine passes `host` explicitly; one made here names this box, so a reader a month later
     /// does not have to infer which machine a line is about.
     fn host(&self) -> String;
@@ -37,7 +37,7 @@ pub trait ChangelogScope: Send + Sync {
     fn who(&self) -> String;
 }
 
-/// **One change, as it was recorded.** The five facts the operator asked for, plus the two that
+/// One change, as it was recorded. The five facts the operator asked for, plus the two that
 /// make them checkable: when, and by which session.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -60,7 +60,7 @@ pub struct Change {
     pub who: String,
 }
 
-/// **A change marked undone.** A second line, never an edit: the change keeps its own line, and
+/// A change marked undone. A second line, never an edit: the change keeps its own line, and
 /// the pair is what a reader a month later needs - *this was changed, and then put back*.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -95,7 +95,7 @@ pub struct Entry {
     pub reverted: Option<Revert>,
 }
 
-/// **The whole file, folded.** Every change in the order it was made, with its revert.
+/// The whole file, folded. Every change in the order it was made, with its revert.
 #[derive(Debug, Clone, Default)]
 pub struct Log {
     pub entries: Vec<Entry>,
@@ -105,7 +105,7 @@ pub struct Log {
     pub unreadable: Vec<(usize, String)>,
 }
 
-/// **Read the file and fold it.** A missing file is an empty log, not an error: a box nobody has
+/// Read the file and fold it. A missing file is an empty log, not an error: a box nobody has
 /// recorded a change on has no changelog, which is an answer.
 pub fn read(path: &Path) -> Log {
     let mut log = Log::default();
@@ -205,7 +205,7 @@ impl HostChangelogTool {
         Self { scope: Some(scope) }
     }
 
-    /// **No config dir behind this tool.** A test registry, or a run with no daemon: the tool
+    /// No config dir behind this tool. A test registry, or a run with no daemon: the tool
     /// says so in words at every verb rather than guessing a path and writing to the operator's
     /// real config, which is the failure a default here would produce.
     pub fn nowhere() -> Self {
@@ -338,7 +338,7 @@ pub fn dispatch(
 
 #[allow(clippy::result_large_err)] // Invocation is the failed row the caller shows; boxing it reshapes the tool API
 fn record(scope: &dyn ChangelogScope, args: &Value, now_ms: u64) -> Result<String, Invocation> {
-    // **The five facts, and two of them are the whole feature.** `before` may be empty - *it was
+    // The five facts, and two of them are the whole feature. `before` may be empty - *it was
     // not set* is a fact and the one a revert needs - but the field itself is not optional.
     let mut missing = Vec::new();
     for field in ["what", "after", "why", "words"] {
@@ -384,7 +384,7 @@ fn record(scope: &dyn ChangelogScope, args: &Value, now_ms: u64) -> Result<Strin
             ),
         )
     })?;
-    // **The number is read back, not guessed.** It is the line's position among the change
+    // The number is read back, not guessed. It is the line's position among the change
     // lines, so the only way to know it is to fold the file after the append - and a second
     // writer's line landing in between must not make this reply name the wrong number.
     let log = read(&path);
@@ -676,7 +676,7 @@ fn quote(v: &str) -> String {
     }
 }
 
-/// **How long ago**, in the register `ps` and the standing-notes pane use: a reader asking *is
+/// How long ago, in the register `ps` and the standing-notes pane use: a reader asking *is
 /// this from this week* wants a word, not an epoch.
 fn age_of(now_ms: u64, at_ms: u64) -> String {
     let secs = now_ms.saturating_sub(at_ms) / 1000;

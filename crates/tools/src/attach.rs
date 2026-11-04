@@ -1,9 +1,6 @@
 //! The one shape for "the infrastructure this tool needs is not attached".
-//!
-//! A tool with no backend behind it answers [`ToolOutcome::NotRun`]: `ok` would
-//! claim the emptiness is the answer, `abstained` that the thing is not out
-//! there, `failed` that something broke - and nothing ran. The refusal carries
-//! how to attach the thing and what still works, never a way around the guard.
+//! Such a tool answers [`ToolOutcome::NotRun`], not `ok`, `abstained` or `failed`: nothing ran. The
+//! refusal says how to attach and what still works, never a way around the guard.
 
 use letibot_transcript::ToolOutcome;
 

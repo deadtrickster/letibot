@@ -149,7 +149,7 @@ pub fn candidates(read: &dyn Fn(&str) -> Option<String>, workflows: &[String]) -
 }
 
 /// Whether a workflow file judges a BRANCH - a `pull_request` trigger, or a `push` that is not
-/// narrowed to tags. R62 took this repository's gate off GitHub Actions, and what is left there is
+/// narrowed to tags. This repository's gate is off GitHub Actions, and what is left there is
 /// the release, which only a tag starts and which is nobody's merge gate. Pure.
 pub fn judges_a_branch(text: &str) -> bool {
     triggers(text).iter().any(|(event, tags_only)| {
@@ -401,7 +401,7 @@ impl Tool for MergeGate {
         };
         let (wf, _) = walk(ctx.backend, &at(".github/workflows"), 64, &default_skip);
         // Only a workflow that judges a BRANCH is a candidate gate: a tag's release is not one, and
-        // this repository's gate runs in the queue rather than on GitHub (R62).
+        // this repository's gate runs in the queue rather than on GitHub.
         let workflows: Vec<String> = wf
             .iter()
             .filter(|e| !e.is_dir && (e.name.ends_with(".yml") || e.name.ends_with(".yaml")))
@@ -477,7 +477,7 @@ mod tests {
             .collect()
     }
 
-    /// **R93.F31: the AGENTS.md bootstrap is a named exception to the queue rule**, and the
+    /// The AGENTS.md bootstrap is a named exception to the queue rule, and the
     /// choice goes to the operator through `ask_user_question`.
     #[test]
     fn the_bootstrap_is_a_named_exception_to_the_queue_rule() {
@@ -507,7 +507,7 @@ mod tests {
         assert_eq!(got.last().unwrap(), "act", "{got:?}");
     }
 
-    /// **R62: a workflow that judges a branch is a candidate gate, and a tag's release is not.**
+    /// A workflow that judges a branch is a candidate gate, and a tag's release is not.
     /// `act` rehearses a workflow, so what it can rehearse is a branch - and this repository's own
     /// gate lives in the queue now, not in `.github/workflows`.
     #[test]

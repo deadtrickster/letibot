@@ -54,7 +54,7 @@ fn a_quote_marks_exactly_one_row() {
         &mut sink,
     );
     let before = render(&board.snapshot());
-    // **NO `todos` AT ALL.** One row, named by its own words — which is why `todos` is no longer
+    // NO `todos` AT ALL. One row, named by its own words - which is why `todos` is no longer
     // a required argument of this tool.
     let r = rt.invoke(
         "t1",

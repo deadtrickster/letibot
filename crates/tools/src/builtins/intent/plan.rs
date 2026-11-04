@@ -223,7 +223,7 @@ mod tests {
     }
 
     /// A notes scope for the fixture: the plan-mode tests never call the tool,
-    /// so it points nowhere real — it only has to let the schema exist.
+    /// so it points nowhere real - it only has to let the schema exist.
     struct PlanNotes;
 
     impl crate::builtins::notes::NotesScope for PlanNotes {
@@ -329,7 +329,7 @@ mod tests {
             target_exists: None,
         };
         // It reaches the inner gate, which in this session is NoBoundary and
-        // refuses with NotRun — nobody decided. That is the honest answer and it
+        // refuses with NotRun - nobody decided. That is the honest answer and it
         // is a different answer from plan mode's.
         match gate.admit(&call) {
             GateDecision::Refuse { outcome, .. } => {

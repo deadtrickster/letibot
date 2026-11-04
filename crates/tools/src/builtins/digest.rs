@@ -1,10 +1,7 @@
-//! `digest`: send a large finding to a subagent and get back the answer. The second half of
-//! `transcript`, and the reason `transcript` can afford to search everything: what comes back
-//! here is the answer, and the answer is the size of an answer.
+//! `digest`: send a large finding to a subagent and get back the answer, which is the size of an answer.
 //!
-//! A sweep routinely matches more than the window it is read into, and paging a conversation into
-//! a context to find one fact spends the whole conversation on one sentence. So `digest` re-runs
-//! the search and folds its chunks through a subagent, and the bytes never cross this context:
+//! A sweep routinely matches more than the window it is read into, so `digest` re-runs the search
+//! and folds its chunks through a subagent; the bytes never cross this context.
 //!
 //! ```text
 //!   transcript(match: "compaction")  ->  412 matched, 12 shown, and an offer
@@ -12,13 +9,10 @@
 //!                                    ->  one paragraph, 412 rows read by someone else
 //! ```
 //!
-//! Folding, not map-reduce: each chunk is answered with what the previous chunks concluded already
-//! in hand, so a fact from chunk 1 is available when chunk 7 contradicts it. Oldest-first for the
-//! same reason: a conversation read backwards reports conclusions before their causes.
+//! Folding, not map-reduce, oldest-first: each chunk is answered with the previous conclusions in hand.
 //!
-//! It does not answer from its own knowledge: a subagent that read the rows and found nothing says
-//! so, and this tool passes that through rather than smoothing it into a summary. A digest that
-//! invents continuity is worse than no digest, because it reads exactly like one that found it.
+//! It does not answer from its own knowledge: a subagent that found nothing says so, and this tool
+//! passes that through.
 
 use std::sync::Arc;
 
@@ -45,7 +39,7 @@ pub trait DigestRunner: Send + Sync {
     ) -> Result<String, String>;
 }
 
-/// **What every part reader's brief says of itself**, after its part number - the words
+/// What every part reader's brief says of itself, after its part number - the words
 /// [`is_part_reader_brief`] knows a reader by.
 const PART_READER_SAYS: &str = "of a longer body of text on somebody else's behalf.";
 
@@ -119,11 +113,11 @@ impl DigestRunner for SubagentDigest {
         let spec = TaskSpec {
             role: "researcher".into(),
             downgrade: crate::schema::Downgrade::parse("read-only").unwrap_or_default(),
-            // **This tool's helper, not the model's child**: its answer is read right here and
+            // This tool's helper, not the model's child: its answer is read right here and
             // nowhere else, so a daemon restart must neither resume it nor hand its answer to the
             // model as news (see [`TaskSpec::helper`]).
             helper: true,
-            // **Named for what it is**, and made unique among the session's children by the
+            // Named for what it is, and made unique among the session's children by the
             // runner (`-2` for a second digest's part 1). Every part read under the prompt's own
             // derivation, `you-are-reading-part`, so twelve parts answered to one name.
             slug: Some(format!("read-part-{n}-of-{of}")),
@@ -730,7 +724,7 @@ mod tests {
             said.contains("nobody to read"),
             "the refusal names what is missing: {said}"
         );
-        // **And it does not price the door it offers** (R93.A7): *"it costs this context the
+        // And it does not price the door it offers: *"it costs this context the
         // rows"* was the model being told to size its work by its own context.
         for priced in ["costs this context", "costs you"] {
             assert!(
@@ -792,7 +786,7 @@ mod tests {
         );
     }
 
-    /// **A reader's brief is known by its words**, so a record from before helpers were marked
+    /// A reader's brief is known by its words, so a record from before helpers were marked
     /// is still known for one - and the words are the ones `fold` writes.
     #[test]
     fn a_part_readers_brief_is_known_by_its_words() {

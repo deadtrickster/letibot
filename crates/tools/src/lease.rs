@@ -1,11 +1,6 @@
 //! Resource leases on shared hosts, and the teardown that removes exactly what a session made.
-//!
-//! Ports come from a block nobody else has: taken inside the store's `BEGIN IMMEDIATE` so two daemons
-//! cannot pick the same one, and outside the host's ephemeral range. A teardown removes only names under
-//! the lease's prefix, and the never-touch list wins, because the operator's own workloads live beside
-//! every agent's.
-//!
-//! A lease is a record, not a reservation: nothing is stopped if a program binds one of those ports.
+//! Ports come from a block taken inside the store's `BEGIN IMMEDIATE`. Teardown removes only names
+//! under the lease's prefix; the never-touch list wins. A lease is a record, not a reservation.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;

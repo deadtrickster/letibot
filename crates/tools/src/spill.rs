@@ -533,7 +533,7 @@ mod tests {
 
     #[test]
     fn the_predictor_is_the_same_interface() {
-        // D6's point: plugging a model in later is writing this closure, not
+        // Plugging a model in later is writing this closure, not
         // touching a tool.
         let budget = PredictedBudget {
             predict: |c: &SpillContext<'_>| {

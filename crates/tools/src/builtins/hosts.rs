@@ -127,7 +127,7 @@ impl HostsTool {
     /// there, so there is nothing a backend, a gate or a session could add to the answer.
     pub fn answer(&self, args: &Value) -> Invocation {
         let file = self.file();
-        // **Read at the call, never cached.** The file is the operator's and they edit it while a
+        // Read at the call, never cached. The file is the operator's and they edit it while a
         // session is running: a cache would be a wrong answer with no symptom, and a prompt would
         // be the same thing with a slower refresh.
         let hosts = match std::fs::read_to_string(&file) {
@@ -150,7 +150,7 @@ impl HostsTool {
         };
         let paths = self.paths();
 
-        // **The names asked for**, or all of them. A name that is not in the file is refused with
+        // The names asked for, or all of them. A name that is not in the file is refused with
         // the ones that are, the same sentence a `where: "host:…"` gives - one refusal, in one
         // shape, so a model reads one thing twice rather than two things once.
         let wanted: Option<Vec<String>> = args
@@ -248,7 +248,7 @@ fn listing(file: &std::path::Path, hosts: &[Host], paths: &Paths) -> String {
                 )
             },
         ));
-        // **What the operator said about this machine's sharing** (RH9) - the three keys that are
+        // What the operator said about this machine's sharing - the three keys that are
         // not about reaching it. Reported with no connection, because they are facts of the FILE
         // and a session deciding where to put work should not pay four ssh calls to read them.
         out.push_str(&format!(
@@ -336,7 +336,7 @@ impl HostsTool {
                     host.destination(),
                     why
                 )),
-                // **The total passed with this one still out.** Said as a timeout of the whole
+                // The total passed with this one still out. Said as a timeout of the whole
                 // probe rather than of the host, because that is what this side knows.
                 None => out.push_str(&format!(
                     "\n`{}` ({})  TIMED OUT\n  no answer within {} s, so this call stopped \
@@ -444,7 +444,7 @@ fn format_facts(host: &Host, f: &Facts) -> String {
         tools,
         spare_line(host, f),
         extra,
-        // **Rule 7, where a person reads it**: what this host's calls have been doing lately.
+        // Rule 7, where a person reads it: what this host's calls have been doing lately.
         f.calls,
     )
 }
@@ -518,7 +518,7 @@ mod tests {
         (hosts, paths)
     }
 
-    /// **The listing names every host, and says which are ready without connecting.**
+    /// The listing names every host, and says which are ready without connecting.
     #[test]
     fn the_listing_names_each_host_and_what_is_missing() {
         let (file, paths) = fixture(
@@ -557,7 +557,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(file.parent().expect("a directory"));
     }
 
-    /// **The tool reads the file at the call**, which is the whole reason it is a tool: an edit
+    /// The tool reads the file at the call, which is the whole reason it is a tool: an edit
     /// between two calls is seen by the second.
     #[test]
     fn an_edit_between_two_calls_is_seen_by_the_second() {
@@ -586,7 +586,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(file.parent().expect("a directory"));
     }
 
-    /// **No host declared is an answer, not a failure** - and it names the shape that would fix it.
+    /// No host declared is an answer, not a failure - and it names the shape that would fix it.
     #[test]
     fn an_empty_file_says_the_file_is_the_place_a_host_is_declared() {
         let (file, paths) = fixture("empty", "", &[], &[]);
@@ -598,7 +598,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(file.parent().expect("a directory"));
     }
 
-    /// **A file that does not parse is refused with the line**, not reported as no hosts: a typo in
+    /// A file that does not parse is refused with the line, not reported as no hosts: a typo in
     /// this file is what would place a session on a machine nobody named.
     #[test]
     fn a_broken_file_names_the_line() {
@@ -624,7 +624,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(file.parent().expect("a directory"));
     }
 
-    /// **A name that is not declared is refused with the ones that are** - the same sentence a
+    /// A name that is not declared is refused with the ones that are - the same sentence a
     /// `where: "host:…"` gives.
     #[test]
     fn a_name_that_is_not_declared_is_refused_with_the_ones_that_are() {
@@ -667,7 +667,7 @@ mod tests {
         );
     }
 
-    /// **A host with mise reports the version and what it pins**, and a host without falls back
+    /// A host with mise reports the version and what it pins, and a host without falls back
     /// to `PATH` - because on that machine `PATH` is the only door there is.
     #[test]
     fn the_toolchain_line_is_mise_when_there_is_mise() {

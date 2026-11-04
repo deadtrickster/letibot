@@ -144,7 +144,7 @@ pub trait ExecBackend: Send + Sync {
     /// run unwatched.
     fn processes_arc(&self) -> Option<std::sync::Arc<dyn crate::exec::ProcessHost>>;
 
-    /// A tool's `cwd` argument — relative to where the session sits — in the form
+    /// A tool's `cwd` argument - relative to where the session sits - in the form
     /// [`crate::exec::ProcessHost::spawn`] wants it: relative to the root. The
     /// identity by default; a backend whose root and workspace differ maps it.
     fn workdir(&self, cwd: &str) -> Result<String, BackendError> {
@@ -318,7 +318,7 @@ impl HostBackend {
         Ok(self)
     }
 
-    /// Where relative paths start — see [`HostBackend::with_cwd`].
+    /// Where relative paths start - see [`HostBackend::with_cwd`].
     pub fn cwd(&self) -> &Path {
         &self.cwd
     }
@@ -420,10 +420,9 @@ impl HostBackend {
         Self::confined_over(root.as_ref(), root.as_ref(), grants, seat)
     }
 
-    /// Commands confined to `project`'s view while the file tools keep their reach from
-    /// `files_root`. For a seat whose file tools are the whole host by design and whose
-    /// commands still get the boundary. `seat` is the view every platform is threaded with:
-    /// its grants join the caller's, its egress is the network rule, its env points tools at them.
+    /// Commands confined to `project`'s view while the file tools keep their reach from `files_root`.
+    /// `seat` is the view every platform is threaded with: its grants join the caller's, its egress is
+    /// the network rule, its env points tools at them.
     pub fn confined_over(
         files_root: impl AsRef<Path>,
         project: impl AsRef<Path>,
@@ -473,7 +472,7 @@ impl HostBackend {
 
     /// An executable backend over a chosen process host. The seam tests reach
     /// through, and the one a daemon uses when it wants to declare what it manages
-    /// — [`crate::exec::HostProcesses::protect_listener`] — before any tool runs.
+    /// - [`crate::exec::HostProcesses::protect_listener`] - before any tool runs.
     pub fn executable_with(
         root: impl AsRef<Path>,
         host: std::sync::Arc<crate::exec::HostProcesses>,
@@ -529,7 +528,7 @@ impl HostBackend {
     }
 
     /// The process host, concretely, for a caller that needs to end a scope or
-    /// read the reap log — neither of which is a tool call.
+    /// read the reap log - neither of which is a tool call.
     pub fn host_processes(&self) -> Option<&std::sync::Arc<crate::exec::HostProcesses>> {
         self.processes.as_ref()
     }
@@ -579,7 +578,7 @@ impl HostBackend {
     /// clause 6 refuses in a description.
     pub fn display(&self, p: &Path) -> String {
         // Under the workspace, relative to it; elsewhere under a `/` root, the
-        // absolute path — `home/dead/x` with the slash stripped is a path that
+        // absolute path - `home/dead/x` with the slash stripped is a path that
         // resolves to nothing when the model hands it back.
         let shown = match p.strip_prefix(&self.cwd) {
             Ok(r) => r,
@@ -657,7 +656,7 @@ impl ExecBackend for HostBackend {
                 state: Some(crate::exec::JobState::Exited { code }),
                 ..
             } => code,
-            // A deadline is NOT an exit code and is not dressed as one (F5).
+            // A deadline is NOT an exit code and is not dressed as one.
             Waited::Deadline { .. } => {
                 return Err(BackendError::Io(format!(
                     "`{id}` did not finish inside 600s and is still running; \
@@ -972,7 +971,7 @@ fn resolve_under(root: &Path, rel: &Path) -> Option<PathBuf> {
         let cand = out.join(&name);
         // `symlink_metadata` and not `metadata`: the question is whether THIS component is a
         // link, not whether its target exists. A dangling link answers `Ok` here and `Err` to
-        // `metadata`, and it is the dangling one that used to get through.
+        // `metadata`, and the dangling one is the one to refuse.
         let Ok(meta) = std::fs::symlink_metadata(&cand) else {
             // Does not exist. Everything left is new; append it literally.
             out = cand;
@@ -1186,7 +1185,7 @@ mod tests {
     }
 
     /// A leading `~` expands to the backend's home, the way opencode's
-    /// `os.homedir()` does — not to a literal directory named `~` under the root.
+    /// `os.homedir()` does - not to a literal directory named `~` under the root.
     #[test]
     fn a_leading_tilde_expands_to_the_backends_home() {
         let d = tempdir::TempDir::new();
@@ -1199,7 +1198,7 @@ mod tests {
             .with_home(d.path().to_path_buf());
 
         let p = b.resolve("~/sub/f.txt").unwrap();
-        // Canonical, because the walk from `/` follows every link on the way — on macOS
+        // Canonical, because the walk from `/` follows every link on the way - on macOS
         // the temp dir is under `/var`, which is `/private/var`.
         assert_eq!(p, d.path().canonicalize().unwrap().join("sub/f.txt"));
         assert_eq!(b.read("~/sub/f.txt").unwrap(), b"tilta\n");
@@ -1515,7 +1514,7 @@ mod tests {
         );
     }
 
-    /// The default is still the loop, one call per directory, in its own order — and
+    /// The default is still the loop, one call per directory, in its own order - and
     /// none at all for a directory `skip` removed before descent.
     #[test]
     fn the_default_list_tree_is_the_per_directory_loop() {

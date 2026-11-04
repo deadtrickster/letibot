@@ -1,13 +1,11 @@
-//! `ask_user_question` - the one tool whose result is a claim about what a person said.
-//! If nobody answered, nobody answered: [`ToolOutcome::NotRun`], never a default and never
-//! a best guess. The only default is the model's own, and only once it has been written down.
+//! `ask_user_question` - the only tool whose result is a claim about what a person said. If nobody
+//! answered, the outcome is [`ToolOutcome::NotRun`], never a default or a guess.
 //! ```text
 //!   QuestionAnswer { option: Option<usize>, note: Option<String>, free: Option<String>,
 //!                    abstain: bool }
 //! ```
-//! Four separate fields, because folding one into another loses which option a note
-//! qualifies; [`QuestionAnswer::validate`] is the only door into an `Ok`, and an
-//! abstention is the one answer with its own outcome class: `Abstained`, not `not_run`.
+//! Separate fields keep a note with the option it qualifies; [`QuestionAnswer::validate`] is the only
+//! door into an `Ok`. An abstention has its own class, `Abstained`, not `not_run`.
 
 use letibot_transcript::ToolOutcome;
 use serde_json::Value;
@@ -46,7 +44,7 @@ pub struct QuestionAnswer {
     /// harness deciding what a person meant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
-    /// A typed answer, and **a first-class one**. Named explicitly against Claude
+    /// A typed answer, and a first-class one. Named explicitly against Claude
     /// Code's *"chat later"*, which turns a question into a suspended turn rather
     /// than an answered one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -83,7 +81,7 @@ impl QuestionAnswer {
         }
     }
 
-    /// **A deliberate no-answer.** The only way to spell one, and it stands alone.
+    /// A deliberate no-answer. The only way to spell one, and it stands alone.
     pub fn abstaining() -> Self {
         QuestionAnswer {
             abstain: true,
@@ -91,12 +89,12 @@ impl QuestionAnswer {
         }
     }
 
-    /// **The only door into an `Ok`.** Every rule D10 states is here, and each
+    /// The only door into an `Ok`. Every rule of the ask is here, and each
     /// failure is a `not_run` rather than a repair.
     pub fn validate(&self, offered: usize) -> Result<(), AskError> {
         let has_free = self.free.as_deref().is_some_and(|f| !f.trim().is_empty());
         let has_note = self.note.as_deref().is_some_and(|n| !n.trim().is_empty());
-        // **First, and alone.** An abstention is a whole answer; one that also
+        // First, and alone. An abstention is a whole answer; one that also
         // carries a choice is two claims in one frame, and choosing between them
         // would be the harness deciding what a person meant.
         if self.abstain {
@@ -457,7 +455,7 @@ pub(crate) fn todo_offer(q: &Question) -> String {
     )
 }
 
-/// **The model's own default, taken** - said to be the model's, never the person's.
+/// The model's own default, taken - said to be the model's, never the person's.
 fn defaulted(q: &Question, d: usize, why: &AskError, logged: &str) -> Invocation {
     let chosen = &q.options[d];
     let when = match why {
@@ -537,7 +535,7 @@ pub use scripted::ScriptedQuestioner;
 mod scripted {
     use super::*;
 
-    /// A questioner that answers from a script. Every case D10 names is a
+    /// A questioner that answers from a script. Every case is a
     /// constructor, and none of them needs a head, a socket or a person.
     pub struct ScriptedQuestioner(pub Result<(QuestionAnswer, String), AskError>);
 
@@ -552,7 +550,7 @@ mod scripted {
             ScriptedQuestioner(Ok((QuestionAnswer::choosing(option), by.into())))
         }
 
-        /// D10's third thing: a choice **and** a qualification on it.
+        /// The third kind of answer: a choice and a qualification on it.
         pub fn choosing_with_note(by: &str, option: usize, note: &str) -> Self {
             ScriptedQuestioner(Ok((
                 QuestionAnswer::choosing(option).with_note(note),
@@ -560,7 +558,7 @@ mod scripted {
             )))
         }
 
-        /// **The fourth thing, and an answer.** The person was reached and said they
+        /// The fourth thing, and an answer. The person was reached and said they
         /// are not answering this one.
         pub fn abstaining(by: &str) -> Self {
             ScriptedQuestioner(Ok((QuestionAnswer::abstaining(), by.into())))
@@ -660,7 +658,7 @@ mod tests {
     const QD: &str =
         r#"{"question":"which approach?","options":["a","b"],"default":"b","timeout_s":45}"#;
 
-    /// **A default is taken on silence, and said to be the model's** - the operator: *"for
+    /// A default is taken on silence, and said to be the model's - the operator: *"for
     /// select tool allow model to give default and timeout so if im away it can proceed"*.
     #[test]
     fn a_default_is_taken_on_silence_and_is_nobodys_answer() {
@@ -688,7 +686,7 @@ mod tests {
         assert!(r.render().contains("nobody is attached"), "{}", r.render());
     }
 
-    /// **Unlogged, it is not taken**: a decision nobody can review is not one to make.
+    /// Unlogged, it is not taken: a decision nobody can review is not one to make.
     #[test]
     fn a_default_with_nowhere_to_be_logged_is_not_taken() {
         let r = ask(Arc::new(ScriptedQuestioner::silent()), QD);
@@ -810,7 +808,7 @@ mod tests {
         assert!(out.contains("only 2 option"), "{out}");
     }
 
-    // ---- D10: the four things, together -------------------------------
+    // ---- the four things, together -------------------------------
 
     #[test]
     fn d10_one_keystroke_is_an_answer() {
@@ -893,7 +891,7 @@ mod tests {
         let out = r.render();
         assert!(out.contains("deadtrickster"), "{out}");
         assert!(out.contains("abstained"), "{out}");
-        // R93.B11: the same rule as an operator wait on a `todo_write` row - an abstention
+        // The same rule as an operator wait on a `todo_write` row - an abstention
         // is an answer, and the model proceeds on an assumption it states.
         assert!(
             out.contains("proceed and state the assumption you proceed on"),
@@ -910,7 +908,7 @@ mod tests {
         ));
     }
 
-    /// **The distinction this half exists for**, in one test: three ways a question
+    /// The distinction this half exists for, in one test: three ways a question
     /// ends without an answer, and no two of them read alike.
     #[test]
     fn an_abstention_is_told_apart_from_silence_and_from_an_empty_answer() {
@@ -922,20 +920,20 @@ mod tests {
             Q,
         );
 
-        // **Silence is nobody answering, and it says so.**
+        // Silence is nobody answering, and it says so.
         assert!(matches!(silence.outcome, ToolOutcome::NotRun { .. }));
         assert!(
             silence.render().contains("nobody answered"),
             "{}",
             silence.render()
         );
-        // **An empty answer is somebody saying nothing**, which is not a decision
+        // An empty answer is somebody saying nothing, which is not a decision
         // either - and it is refused rather than promoted to a shrug.
         assert!(matches!(empty.outcome, ToolOutcome::NotRun { .. }));
         assert!(empty.render().contains("not a shrug"), "{}", empty.render());
-        // **An abstention is a decision**, so it is the one that is not `not_run`.
+        // An abstention is a decision, so it is the one that is not `not_run`.
         assert!(matches!(abstained.outcome, ToolOutcome::Abstained { .. }));
-        // **And the free answer is an answer**, `Ok`, with words in it.
+        // And the free answer is an answer, `Ok`, with words in it.
         assert_eq!(free.outcome, ToolOutcome::Ok);
 
         // Pairwise: the four outcomes are four classes, and the four bodies are four
@@ -1118,7 +1116,7 @@ mod tests {
         assert!(s.description.len() < 800, "{} bytes", s.description.len());
     }
 
-    /// **The model reads this text and nothing else**, so every shape a person can
+    /// The model reads this text and nothing else, so every shape a person can
     /// answer in has to be in it - including the one that is not permission.
     #[test]
     fn the_description_names_every_way_a_person_can_answer() {
@@ -1132,7 +1130,7 @@ mod tests {
         ] {
             assert!(d.contains(needle), "the description omits {what}: {d}");
         }
-        // R93.B11: the one rule for an abstention, the same one `todo_write`'s operator
+        // The one rule for an abstention, the same one `todo_write`'s operator
         // wait states - an answer that unblocks, with the assumption said.
         assert!(
             d.contains(

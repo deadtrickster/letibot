@@ -513,10 +513,9 @@ impl SkillRegistry {
         (rows, said)
     }
 
-    /// The index the prompt carries: the PINNED skills, one line each, and a count of everything
-    /// else - `None` when the box holds nothing at all. Never a source in full: a box with two
-    /// hundred installed skills would spend the prompt's first screen on names nobody pinned, and
-    /// the model reaches the rest with `skill list` and `skill find`.
+    /// The index the prompt carries: the pinned skills one line each, and a count of the rest, or
+    /// `None` when the box holds nothing. Never a source in full - the model reaches the rest with
+    /// `skill list` and `skill find`.
     pub fn index(&self, vocab: &Vocab) -> Option<String> {
         let (rows, said) = self.index_rows();
         if rows.is_empty() && said.is_none() {
@@ -1401,7 +1400,7 @@ mod tests {
         assert!(e.contains("nothing on the shelf is called `nope`"), "{e}");
     }
 
-    /// **A pin is spelled the way `skill list` prints it.** A shelf row is listed by its id, and the
+    /// A pin is spelled the way `skill list` prints it. A shelf row is listed by its id, and the
     /// check compared the pin with the title: the operator's own spelling was reported as naming
     /// nothing on this box and was not listed.
     #[test]

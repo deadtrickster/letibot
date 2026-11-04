@@ -26,7 +26,7 @@ pub enum Placement {
     /// Another machine, over ssh (`where: "host:lab2x1"`). The name is one the operator
     /// declared in the hosts file, checked against it at the call.
     Remote(String),
-    /// **A firecode VM on that machine** (`--host NAME --vm`, `where: "host:NAME:vm"`): the
+    /// A firecode VM on that machine (`--host NAME --vm`, `where: "host:NAME:vm"`): the
     /// tools run in a guest booted by the host's own `firecode`, so the boundary is a VM.
     RemoteVm(String),
 }
@@ -35,7 +35,7 @@ pub enum Placement {
 /// comes back. Empty for the host, whose work is the worktree itself.
 fn placement_seam(placement: &Placement) -> String {
     match placement {
-        // **No branch on this path.** The VM works on a copy, and firecode delivers the copy's
+        // No branch on this path. The VM works on a copy, and firecode delivers the copy's
         // final state as a directory beside it when the VM comes down - the old line promised a
         // branch, which a reader then went looking for (FIRECODE-NOTES).
         Placement::Firecode => {
@@ -195,7 +195,7 @@ impl Placement {
         }
     }
 
-    /// **Is this placement a firecode VM**, on this box or on a host, so the question is
+    /// Is this placement a firecode VM, on this box or on a host, so the question is
     /// answered once rather than spelled as a `match` in each caller.
     pub fn is_vm(&self) -> bool {
         matches!(self, Placement::Firecode | Placement::RemoteVm(_))
@@ -257,7 +257,7 @@ pub struct WorktreeSpec {
     /// The base ref the branch is cut from. `None` is the repo's current HEAD, which is
     /// the default and the one a caller that did not look at the branch gets.
     pub base: Option<String>,
-    /// **The exception**: work in the main checkout rather than a fresh worktree.
+    /// The exception: work in the main checkout rather than a fresh worktree.
     /// `false` is the default - a `task_start` that did not name the main tree creates
     /// a worktree, and the main tree is the thing it exists to keep the child out of.
     pub main_tree: bool,
@@ -392,11 +392,11 @@ pub struct ChildName {
 /// judgement is the runner's, since the tools crate cannot see a store.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LostChild {
-    /// **Its last row is an answer** - an `Assistant` with no call after it. The text a reader
+    /// Its last row is an answer - an `Assistant` with no call after it. The text a reader
     /// gets IS that row, and nothing recorded a settlement, so it is
     /// [`NOT_A_FINISHED_ANSWER`].
     Answered,
-    /// **It stopped before an answer**, and the words say where - `before it wrote a single row`,
+    /// It stopped before an answer, and the words say where - `before it wrote a single row`,
     /// `mid-bash, on a call it never got an answer to`, `after bash's result`. They are
     /// `subagent_record::EndedIn::brief`'s, and they read on from *"it stopped "*.
     Stopped(String),
@@ -506,7 +506,7 @@ pub fn ambiguous_child(asked: &str, many: &[ChildName]) -> Invocation {
     )
 }
 
-/// **The name a plain `task` child gets**: the `slug` it was given, or the one
+/// The name a plain `task` child gets: the `slug` it was given, or the one
 /// [`slug_from_prompt`] derives, made unique among the names `taken` already holds (`-2`, `-3`,
 /// …) - a child's name is a handle, and a name two children answer to resolves to neither.
 pub fn child_slug(given: Option<&str>, prompt: &str, taken: impl Fn(&str) -> bool) -> String {
@@ -567,10 +567,9 @@ pub fn worktree_branch(slug: &str) -> String {
     format!("agent/{slug}")
 }
 
-/// The rule a worktree child is given with its task: the branch is the deliverable, so the work
-/// goes onto it and the finished child's tree is clean. The daemon checks the same fact when the
-/// turn ends, so this sentence is the rule and that check its enforcement. A cargo config the tree
-/// inherits from above it rides along: see [`cargo_patch_note`].
+/// The rule a worktree child is given: the branch is the deliverable, so the work goes onto it and
+/// the finished tree is clean. The daemon checks the same at turn end. An inherited cargo config
+/// rides along: see [`cargo_patch_note`].
 pub fn worktree_brief(path: &str, branch: &str) -> String {
     let mut said = format!(
         "[the deliverable] You work in the worktree `{path}` on branch `{branch}`, and the \
@@ -585,11 +584,9 @@ pub fn worktree_brief(path: &str, branch: &str) -> String {
     said
 }
 
-/// **A cargo config above the tree that patches a crate.** Cargo reads `.cargo/config.toml` from a
-/// command's directory upwards, so a tree inside a checkout inherits that checkout's `[patch]` - and
-/// the merge queue's landing tree is made outside the repository, so it does not: the gate builds
-/// what `Cargo.toml` says, and a build that passes here can fail there. `None` when nothing above
-/// the tree patches anything.
+/// A cargo config above the tree that patches a crate. Cargo reads `.cargo/config.toml` upwards,
+/// but the merge queue's landing tree lies outside the repository, so a build that passes here can
+/// fail there. `None` when nothing above the tree patches anything.
 pub fn cargo_patch_note(worktree: &std::path::Path) -> Option<String> {
     let start = std::fs::canonicalize(worktree).unwrap_or_else(|_| worktree.to_path_buf());
     for dir in start.ancestors().skip(1) {
@@ -659,7 +656,7 @@ pub enum TaskStatus {
     /// Its turn ended, with this answer.
     Done {
         answer: String,
-        /// **The child's present, which the answer is not.** `Some` with `working == false` is a
+        /// The child's present, which the answer is not. `Some` with `working == false` is a
         /// child that is still HERE and between turns - the state whose only door is a message, and
         /// the one a parent could not see before this field.
         child: Option<RunningChild>,
@@ -671,7 +668,7 @@ pub enum TaskStatus {
 }
 
 impl TaskStatus {
-    /// **Which of the states the child is in**, or `None` when this runner keeps no reading - the
+    /// Which of the states the child is in, or `None` when this runner keeps no reading - the
     /// one word a listing row and the full sentence both start from.
     pub fn doing(&self) -> Option<ChildDoing> {
         match self {
@@ -695,7 +692,7 @@ impl TaskStatus {
             // Nothing to do but let it work: this is the sentence that was printed about every
             // child, and it is only true of this one.
             ChildDoing::Working => "it is alive and working, and its answer reaches you on its own",
-            // **The idle fix.** A parked child is not stuck and not working; the one door that
+            // The idle fix. A parked child is not stuck and not working; the one door that
             // reaches it is the parent's own message, and before this the parent had to guess that
             // by sending one.
             ChildDoing::BetweenTurns => {
@@ -741,7 +738,7 @@ pub enum Finished {
 /// which reads as a hang. A subagent is minutes of work, so starting one returns a handle.
 pub trait TaskRunner: Send + Sync {
     /// Start the subtask and return the handle it can be collected by. Returns
-    /// when the child is **spawned**, not when it is finished.
+    /// when the child is spawned, not when it is finished.
     fn start(&self, prompt: &str, spec: &TaskSpec) -> Result<String, String>;
 
     /// Arrange the tree, then start the child: the `task_start` door. The order is the difference
@@ -880,7 +877,7 @@ pub trait TaskRunner: Send + Sync {
         0
     }
 
-    /// **How many of this session's children have not answered yet** - still on their task, as
+    /// How many of this session's children have not answered yet - still on their task, as
     /// opposed to answered and idle. A child with any is not done (the operator's ruling): its
     /// answer is held until they have. Zero for a runner that keeps no slots.
     fn unsettled_children(&self) -> usize {
@@ -894,7 +891,7 @@ pub trait TaskRunner: Send + Sync {
         Vec::new()
     }
 
-    /// **Bring back ONE child a daemon that is gone left unfinished** - the `task_resume` door,
+    /// Bring back ONE child a daemon that is gone left unfinished - the `task_resume` door,
     /// and the same door the automatic restore goes through. `Ok` is the sentence for the model;
     /// `Err` is why it was not brought back, with nothing spawned.
     fn resume(&self, handle: &str) -> Result<String, String> {
@@ -905,7 +902,7 @@ pub trait TaskRunner: Send + Sync {
     }
 }
 
-/// **Whether a restart brings children back, or only says what they were doing.**
+/// Whether a restart brings children back, or only says what they were doing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RestoreMode {
     /// The daemon was down a short while: bring each mid-task child back.
@@ -915,7 +912,7 @@ pub enum RestoreMode {
     Remind,
 }
 
-/// **What a parent's open did with one child a previous daemon left behind** - see
+/// What a parent's open did with one child a previous daemon left behind - see
 /// [`TaskRunner::resume_recorded`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RestartedChild {
@@ -1001,7 +998,7 @@ impl TaskTool {
     }
 }
 
-/// The `wake` argument's description, the same for `task` and `task_start` (R93.F22: `task_start`
+/// The `wake` argument's description, the same for `task` and `task_start` (`task_start`
 /// had none, while its result promised a delivery `wake` decides).
 const WAKE_ARG: &str = "`later` says you do not need waking for it: the answer is shown at your \
      next turn and a `wait` does not hold on it. `now`: the moment it finishes, even mid-turn. \
@@ -1085,7 +1082,7 @@ impl Tool for TaskTool {
             Ok(v) => v,
             Err(refused) => return refused,
         };
-        // **The repository a VM copies**, when the model names one - only for a VM.
+        // The repository a VM copies, when the model names one - only for a VM.
         let vm_repo = args
             .get("repo")
             .and_then(|v| v.as_str())
@@ -1099,13 +1096,13 @@ impl Tool for TaskTool {
                  tree, and `task_start` takes `repo` for a worktree.",
             );
         }
-        // R79: when the child's answer reaches the model - refused by name before anything
+        // When the child's answer reaches the model - refused by name before anything
         // spawns, as `bash` does.
         let wake = match super::bash::wake_arg(args) {
             Ok(w) => w,
             Err(refused) => return refused,
         };
-        // **The child's name**, when the caller gave one: held to `task_start`'s rule for a slug,
+        // The child's name, when the caller gave one: held to `task_start`'s rule for a slug,
         // so one name is spelled one way whichever tool started the child. Absent, the runner
         // derives it from the prompt as `task_start` does.
         let slug = args
@@ -1121,7 +1118,7 @@ impl Tool for TaskTool {
                 format!("{why} Nothing was spawned."),
             );
         }
-        // **The skills, checked before anything is spawned.** A name nothing answers to would
+        // The skills, checked before anything is spawned. A name nothing answers to would
         // otherwise be a child that boots without the instructions its parent named, which is
         // the silent-provenance defect this file refuses everywhere else.
         let skills = match args.get("skills").and_then(|v| v.as_array()) {
@@ -1192,7 +1189,7 @@ impl Tool for TaskTool {
             Ok(h) => h,
             Err(e) => return Invocation::failed(e, "the subagent did not start."),
         };
-        // **The name the runner gave it**, for every sentence below: `slug · handle`.
+        // The name the runner gave it, for every sentence below: `slug · handle`.
         let label = self.runner.label_of(&handle);
         ctx.progress(format!("subagent {label} started"));
         if let Some(w) = wake {
@@ -1213,7 +1210,7 @@ impl Tool for TaskTool {
                  now, and this call did not wait for it. {} `task_result` with \
                  task=\"{handle}\" shows where it has got to.",
                 match &spec.model {
-                    // **The model is named when the child was given one** - a spawn that
+                    // The model is named when the child was given one - a spawn that
                     // prints only the role would leave the reader to guess which model is
                     // answering, and the whole point of the argument is that they chose.
                     Some(m) => format!("{m} (as a {})", spec.role),
@@ -1369,7 +1366,7 @@ impl Tool for TaskStartTool {
             Ok(v) => v,
             Err(refused) => return refused,
         };
-        // R93.F22: `task_start` takes `wake` as `task` does, refused by name before anything is
+        // `task_start` takes `wake` as `task` does, refused by name before anything is
         // arranged.
         let wake = match super::bash::wake_arg(args) {
             Ok(w) => w,
@@ -1490,7 +1487,7 @@ impl Tool for TaskStartTool {
             }
         }
 
-        // **The skills, checked before anything is spawned.** A name nothing answers to would
+        // The skills, checked before anything is spawned. A name nothing answers to would
         // otherwise be a child that boots without the instructions its parent named, which is
         // the silent-provenance defect this file refuses everywhere else.
         let skills = match args.get("skills").and_then(|v| v.as_array()) {
@@ -1548,7 +1545,7 @@ impl Tool for TaskStartTool {
             // that - the child's own workspace, which is what `None` means.
             vm_source: None,
             vm_verify,
-            // **The child is named after its worktree** - the slug its branch `agent/<slug>` is
+            // The child is named after its worktree - the slug its branch `agent/<slug>` is
             // cut from, already made unique against the repository above. A main-tree child has
             // no branch of its own and is still named by the same slug.
             slug: Some(slug.clone()),
@@ -1588,7 +1585,7 @@ impl Tool for TaskStartTool {
             true => String::new(),
             false => placement_seam(&spec.placement),
         };
-        // **The build here is not the gate's build**, when a cargo config above the tree says so:
+        // The build here is not the gate's build, when a cargo config above the tree says so:
         // said in the answer as well as in the brief, because it is the parent who reads this.
         let build_line = match handle.placement.main_tree {
             true => String::new(),
@@ -1597,7 +1594,7 @@ impl Tool for TaskStartTool {
                 None => String::new(),
             },
         };
-        // **`Backgrounded`, not `Ok`** - the same reason `task` gives: the outcome
+        // `Backgrounded`, not `Ok` - the same reason `task` gives: the outcome
         // names a fact about the world, *this is running and has not answered yet*.
         Invocation::backgrounded(
             handle.handle.clone(),
@@ -1691,7 +1688,7 @@ impl Tool for TaskResultTool {
                 // is the sentence this stops printing, and the word is the one the single-handle
                 // answer uses. A child with no record is marked as one and says how far it got.
                 let state = match (&c.lost, &status) {
-                    // **Answered, and it is NOT a finished answer** - nothing recorded a
+                    // Answered, and it is NOT a finished answer - nothing recorded a
                     // settlement, so the text is whatever the child had written when it stopped.
                     (Some(LostChild::Answered), _) => format!(
                         "answered, read from its own session — {NOT_A_FINISHED_ANSWER}; no record \
@@ -1715,14 +1712,14 @@ impl Tool for TaskResultTool {
             }
             return Invocation::ok(out);
         };
-        // **The handle, or the child's name** - the job rule: the id wins, a name two children
+        // The handle, or the child's name - the job rule: the id wins, a name two children
         // carry is refused naming them, and anything else goes on as it was written.
         let handle = match resolve_child(self.runner.as_ref(), handle) {
             Ok(h) => h,
             Err(refused) => return refused,
         };
         let handle = handle.as_str();
-        // **Asked BY HANDLE, not looked up in the list.** The list carries only the children a
+        // Asked BY HANDLE, not looked up in the list. The list carries only the children a
         // record was due for; a child from before the store recorded any is one a model may still
         // name, and its answer needs the same caveat.
         let lost = self.runner.lost(handle);
@@ -1739,14 +1736,14 @@ impl Tool for TaskResultTool {
         // a turn of its own, so a wait would hold the floor while the answer is already on its way.
         // Unwatched handles keep the blocking wait they asked for.
         let timeout = if !timeout.is_zero() && ctx.completion_delivered(handle) {
-            // **And the wait is the model saying it wants this one** (R79): the answer is
+            // And the wait is the model saying it wants this one: the answer is
             // delivered the moment it lands rather than held for the next break, which is the
             // promise the sentence below makes.
             ctx.want_completion(handle, crate::runtime::WantedNow::Awaited);
             let status = self.runner.look(handle, std::time::Duration::ZERO);
             match &status {
                 TaskStatus::Running { note, .. } => {
-                    // **The steering clause, in a value rather than inside the `format!`**: the
+                    // The steering clause, in a value rather than inside the `format!`: the
                     // reading's own sentence when the daemon has one, and the pair of tools that
                     // have always been named when it has none (every fake, and `NoTaskRunner`).
                     let next = status.child_now().unwrap_or_else(|| {
@@ -1773,7 +1770,7 @@ impl Tool for TaskResultTool {
             timeout
         };
         let status = self.runner.look(handle, timeout);
-        // **An answer or a failure read here has been handed to the model** - the delivery the
+        // An answer or a failure read here has been handed to the model - the delivery the
         // watcher would otherwise make - so the runner marks it read, and a daemon restart does
         // not announce it again as news.
         if matches!(status, TaskStatus::Done { .. } | TaskStatus::Failed { .. }) {
@@ -1807,7 +1804,7 @@ impl Tool for TaskResultTool {
                     Ok(Finished::NoBranch { .. }) => {
                         Invocation::ok(format!("{answer}{}", now.unwrap_or_default()))
                     }
-                    // **A failure is said, not swallowed.** The branch is not pushed and nobody
+                    // A failure is said, not swallowed. The branch is not pushed and nobody
                     // else carries it, so a parent told nothing would believe the work was on
                     // its way to main when it is sitting on a branch in a worktree.
                     Err(why) => Invocation::ok(format!(
@@ -1875,7 +1872,7 @@ fn doing_word(status: &TaskStatus) -> String {
     }
 }
 
-/// **`task_result`'s half of the child's state, with the name attached** - the state word and the
+/// `task_result`'s half of the child's state, with the name attached - the state word and the
 /// child's handle, for a sentence that has to say which child it is about.
 fn running_said(label: &str, status: &TaskStatus) -> String {
     format!("`{label}` is {}", doing_word(status))
@@ -2028,7 +2025,7 @@ impl Tool for TaskResumeTool {
         };
         let handle = handle.as_str();
         match self.runner.resume(handle) {
-            // **`Backgrounded`, as `task`'s is** - the child is working again and has not
+            // `Backgrounded`, as `task`'s is - the child is working again and has not
             // answered, and the outcome is what arms this session's watcher for its result.
             Ok(said) => Invocation::backgrounded(
                 handle.to_string(),

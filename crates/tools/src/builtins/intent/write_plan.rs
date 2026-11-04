@@ -1,15 +1,13 @@
-//! `write_plan` - the scoped write plan mode keeps: plan mode is no writes to the work, and
-//! writing the plan is one of the two things a plan is. The boundary is the target, not the
-//! verb: this tool takes a `name`, not a `path`.
+//! `write_plan` - the scoped write plan mode keeps. The boundary is the target, not the verb: this tool
+//! takes a `name`, not a `path`.
 //! ```text
 //!   write      path: "src/main.rs"        →  not seated in plan mode at all
 //!   write_plan name: "rewrite-the-parser" →  plans/rewrite-the-parser.md
 //!   write_plan name: "../src/main.rs"     →  refused: that is not a name
 //! ```
 //!
-//! There is no argument in which a path to `src/` can be spelled: the tool composes the path
-//! from [`PLAN_DIR`] and one filename segment, and a `name` with `/`, `..`, a leading `.` or a
-//! NUL is refused as not a name. It is still [`Access::Write`], so the gate decides it.
+//! No argument can spell a path to `src/`: the tool composes the path from [`PLAN_DIR`] and one segment,
+//! refusing `/`, `..`, a leading `.` or NUL. Still [`Access::Write`], so the gate decides it.
 
 use serde_json::Value;
 
@@ -226,7 +224,7 @@ mod tests {
     fn a_write_to_the_work_is_not_expressible_here() {
         // Not "refused because it is not allowed" - refused because it is not a
         // name. There is no argument on this tool that names a file outside the
-        // plan directory, which is the whole of D9's mechanism.
+        // plan directory, which is the whole of the mechanism.
         let mut h = harness();
         for attempt in [
             r#"{"name":"../src/main.rs","content":"x"}"#,

@@ -1,13 +1,6 @@
-//! R115: what a placed session STARTED on its host is ended when the session stops.
-//!
-//! Shells from a stopped package were still running on lab2x1 two hours later, in placement
-//! directories that had already been removed, because nothing on a host belongs to a cgroup:
-//! `letibot --stop` ends the daemon's cgroups, and a host's processes are the host's. The handle is
-//! the mark every command of a session carries in its environment - so it is on everything the
-//! command forked, at any depth - and the sweep is the one act that reads it.
-//!
-//! Every `ssh` here runs the last argument locally, so the commands, the job launcher, the sweep
-//! script and the `kill` are the production ones and only the transport is faked.
+//! What a placed session started on its host is ended when the session stops. Hosts have no
+//! cgroup, so the handle is the mark in every command's environment. Every `ssh` runs the last
+//! argument locally; the sweep script and the `kill` are production ones.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -191,11 +184,8 @@ impl Drop for Neighbour {
     }
 }
 
-/// Both doors that end a session: its own close, and the daemon's last act.
-///
-/// One test and not two, because the last act's list is per PROCESS: two tests in one binary run
-/// in parallel threads of that process, so a second test's placement would be swept by the first
-/// one's `placements_down` - a test of the sweeper that races itself.
+/// Both doors that end a session: its own close, and the daemon's last act. One test, because the
+/// last act's list is per process and a parallel test's placement would be swept by it.
 #[test]
 fn a_stopped_session_leaves_no_process_of_its_own_running_on_the_host() {
     // --- the session's own close -------------------------------------------------------------
@@ -356,10 +346,8 @@ fn ended(child: &mut std::process::Child) -> bool {
     false
 }
 
-/// The sweep ends the processes carrying ITS mark and none whose mark merely STARTS with it. A
-/// placement's id is `{session}-{pid}-{n}` and `n` is a decimal counter, so `-1` is a prefix of
-/// `-12`: a sweep that matched a prefix ended another placement's work on the same machine, and the
-/// call it killed came back as `exit 143` having done nothing.
+/// The sweep ends processes carrying its mark and none whose mark merely starts with it: `-1` is a
+/// prefix of `-12`, and a prefix match kills another placement's work (`exit 143`).
 #[test]
 fn a_sweep_ends_the_processes_with_its_own_mark_and_not_one_whose_mark_starts_with_it() {
     let fake = Fake::new("prefix");

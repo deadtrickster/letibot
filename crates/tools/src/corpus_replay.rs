@@ -1,8 +1,6 @@
 //! Replays recorded gate decisions through today's parser and gate.
-//!
-//! A change to the reading changes every decision already taken, so this is the instrument that makes
-//! "better" a number: [`sweep`] for the reading, [`unasked`] for what a boundary rule or a standing-answer
-//! rule would save. Nothing here writes, asks a model, or opens a file the corpus does not name.
+//! [`sweep`] measures a change to the reading; [`unasked`] what a boundary or standing-answer rule
+//! would save. Nothing here writes, asks a model, or opens a file the corpus does not name.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::BufReader;

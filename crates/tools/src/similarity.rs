@@ -6,17 +6,12 @@
 //! idf(t)           = ln(N / df(t))
 //! ```
 //!
-//! The document side is a note's title, abstract and headings ([`index_text`]), the same
-//! three fields the injected index leads with, so what is scored is what a reader is shown;
-//! the subject is the person's prompt and the turn's tool results, never the whole
-//! conversation, which is what decides whether a hint fires on what is happening now.
+//! The document side is a note's title, abstract and headings ([`index_text`]), what the injected index leads with.
+//! The subject is the prompt and the turn's tool results, never the whole conversation.
 //!
-//! Cosine and not a containment ratio, because dividing by the note's own weight punishes
-//! it for having more headings. `ln(N/df)` and not `ln(1 + N/df)`, because a term every note
-//! uses must count at exactly nothing - derived from the corpus rather than from a stopword
-//! list - which leaves a one-note corpus scoring everything at zero, the honest reading of
-//! "similar to what". The same limit runs the other way through the write gate, where a
-//! gate that cannot discriminate admits.
+//! Cosine, not a containment ratio, which punishes a note for having more headings. `ln(N/df)` makes a term every
+//! note uses count at exactly nothing, without a stopword list; a one-note corpus scores zero, the honest reading
+//! of "similar to what" and the safe one for a write gate that cannot discriminate.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -160,7 +155,7 @@ impl Corpus {
         weigh(&tf, &self.idf, self.unseen)
     }
 
-    /// **Put this corpus into a caller's tier**, keyed as the `*_with` doors read it. A caller
+    /// Put this corpus into a caller's tier, keyed as the `*_with` doors read it. A caller
     /// that filled a tier by hand would key it by the text it happened to have rather than the
     /// text this scored, and every cosine would be `None`.
     pub fn fill(&self, tier: Option<&Tier>) -> Result<Filled, TierError> {
@@ -289,11 +284,9 @@ fn weigh(tf: &BTreeMap<String, f64>, idf: &BTreeMap<String, f64>, unseen: f64) -
 /// whispered would move no floor a caller had tuned.
 pub const SEMANTIC_WEIGHT: f64 = 0.5;
 
-/// **The one blend, for every caller.** A lexical score and, when the second tier
-/// answered, the cosine of the two vectors - `None` when the mode is off, when the text
-/// was never embedded, or when the tier could not answer, and then the lexical score
-/// stands alone. What a caller adds is its own floor: offering a note and refusing a
-/// duplicate want different thresholds and tune them from their own logs.
+/// The one blend, for every caller: a lexical score and, when the second tier answered, the cosine
+/// of the vectors. `None` when the mode is off or the tier could not answer. Each caller adds its
+/// own floor.
 pub fn blended(lexical: f64, semantic: Option<f32>) -> f64 {
     let lexical = lexical.clamp(0.0, 1.0);
     match semantic {
@@ -398,7 +391,7 @@ mod tests {
         Corpus::new(corpus).fill(Some(tier)).expect("fill");
     }
 
-    /// **Off is the lexical score, exactly.** A box that never wrote `[embeddings]` scores
+    /// Off is the lexical score, exactly. A box that never wrote `[embeddings]` scores
     /// what it scored before the tier existed.
     #[test]
     fn mode_off_hands_back_the_lexical_score() {
@@ -419,7 +412,7 @@ mod tests {
         );
     }
 
-    /// **The case the entry was filed for.** Lexically a paraphrase scores 0.126 under an
+    /// The case the entry was filed for. Lexically a paraphrase scores 0.126 under an
     /// unrelated note's 0.133, so no floor separates them; with the second tier's cosine
     /// the paraphrase leads.
     #[test]
@@ -524,10 +517,8 @@ mod tests {
         assert_eq!(broken.take_fault(), None);
     }
 
-    /// **A paraphrase that shares no word with its note.** The words alone score it zero against
-    /// both notes - a floor no one can tune - and the tier's cosine, over words planted as
-    /// synonyms, carries it over the offer's floor. Filled through [`Corpus::fill`], so the keys
-    /// are the ones the door reads.
+    /// A paraphrase that shares no word with its note. Words alone score zero; the tier's cosine over
+    /// planted synonyms carries it over the offer's floor. Filled through [`Corpus::fill`].
     #[test]
     fn a_corpus_in_a_tier_lifts_a_paraphrase_with_no_shared_word() {
         let docs = vec![

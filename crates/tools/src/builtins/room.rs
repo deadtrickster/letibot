@@ -24,7 +24,7 @@ pub trait RoomLink: Send + Sync {
     }
 }
 
-/// **No room behind this tool** - a registry built without a daemon, and the sentence it says.
+/// No room behind this tool - a registry built without a daemon, and the sentence it says.
 pub struct NoRoom;
 
 impl RoomLink for NoRoom {
@@ -189,7 +189,7 @@ fn dispatch(link: &dyn RoomLink, args: &Value) -> Result<String, Invocation> {
              or holding (see the schema).",
         ));
     }
-    // **The required field of each verb, checked here** so a model that forgot one is told
+    // The required field of each verb, checked here so a model that forgot one is told
     // which, in the room's own words, rather than by a refusal from three layers down.
     let missing = match verb.as_str() {
         "post" if !nonempty(args, "tag") => Some("tag"),

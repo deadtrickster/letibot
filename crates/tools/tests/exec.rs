@@ -262,10 +262,8 @@ fn a_scope_that_ends_records_what_it_killed_and_the_processes_are_actually_gone(
         .expect("spawn");
     }
 
-    // PRESENCE FIRST. `only count absence after presence`: without this loop, a
-    // later empty read would be a boot window and the test would pass on a
-    // substrate that never started anything. The window is a hang detector and not
-    // a bet on the box: five forks on a loaded machine are not five seconds.
+    // Presence first: without this loop a later empty read would be a boot window and the test would
+    // pass on a substrate that never started anything. The window detects hangs, not box speed.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     let mut seen = 0;
     while std::time::Instant::now() < deadline {

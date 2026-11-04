@@ -1,8 +1,5 @@
-//! What `/proc` answers on Linux, asked of the Darwin kernel instead.
-//!
-//! macOS has no `/proc`; the same facts come from `libproc` and
-//! `sysctl(KERN_PROCARGS2)`. Every such call lives here, so callers ask a function
-//! instead of a file.
+//! What `/proc` answers on Linux, asked of the Darwin kernel via `libproc` and
+//! `sysctl(KERN_PROCARGS2)`. Every such call lives here, so callers ask a function, not a file.
 
 /// One process, as `PROC_PIDTBSDINFO` describes it.
 #[derive(Debug, Clone, PartialEq, Eq)]

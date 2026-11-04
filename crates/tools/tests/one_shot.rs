@@ -1,9 +1,6 @@
-//! A one-shot run refuses `background: true` and says what to do instead.
-//!
-//! The daemon a one-shot starts exits with the run, so a job it left behind would never have
-//! its result read; waiting for one instead would be a second lifetime rule for the one mode
-//! that has none. The rule is decided from the REQUEST, before the backend, so a fixture that
-//! starts no processes can still reach it.
+//! A one-shot run refuses `background: true` and says what to do instead: its daemon exits with the
+//! run, so a left-behind job's result would never be read. Decided from the request, before the
+//! backend, so a fixture that starts no processes can reach it.
 
 use letibot_tools::testing::{Harness, text_only_runner_harness};
 use letibot_transcript::ToolOutcome;

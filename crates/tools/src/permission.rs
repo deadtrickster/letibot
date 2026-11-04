@@ -1,8 +1,6 @@
-//! opencode's permission model: a rule is `{ permission, pattern, action }`, a call is tested against
-//! every rule of every ruleset, and the LAST match wins, with `ask` when nothing matches.
-//!
-//! The config is the nested form, flattened into a ruleset with the user's key order preserved,
-//! because that order is what decides precedence.
+//! opencode's permission model: a rule is `{ permission, pattern, action }`, the LAST match wins,
+//! `ask` when nothing matches. The config is flattened with the user's key order preserved, since
+//! that order decides precedence.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {

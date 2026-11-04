@@ -1,8 +1,6 @@
 //! `recall`: the body of one unit a compaction evicted, by the id its map printed.
-//!
-//! The map is what a reader can see; a body can be megabytes, so it is read back one window at a
-//! time. A read is bounded by the window the session has, because what comes back is part of the
-//! conversation from then on, and one line of a map must not fill the room the next turn needs.
+//! A body can be megabytes, so it is read back a window at a time, bounded by the session's window:
+//! what comes back joins the conversation and must not fill the next turn's room.
 
 use serde_json::Value;
 

@@ -429,7 +429,7 @@ mod tests {
         assert_eq!(ledger.board().total, 3);
         assert!(r.render().contains("0 of 3 complete"), "{}", r.render());
         // And they are diffable: a turn that committed to three things and ran
-        // nothing is exactly T21.3.
+        // nothing is exactly the announced-not-started case.
         let rec = ledger.reconcile("turn_1", "");
         assert_eq!(rec.declared, 3);
         assert!(rec.steering().unwrap().contains("read the parser"));

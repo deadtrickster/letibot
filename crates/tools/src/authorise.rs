@@ -969,9 +969,7 @@ mod named_tools {
 pub enum BriefVariant {
     /// `DID THE OPERATOR ASK FOR THIS?`, answered only from their words.
     ///
-    /// What ships. [`BriefVariant::Follows`] was plausible - the narrower question
-    /// seemed to be what sent obvious follow-ups to the person - and a replay across
-    /// four arms said the rewording is worse alone and worse in company:
+    /// What ships. The narrower "follows-from" wording was worse alone and in company (replay of four arms):
     ///
     /// ```text
     /// asked-for-it, no examples                 47 agreed  16 asks  3 false
@@ -980,8 +978,7 @@ pub enum BriefVariant {
     /// asked-for-it + operator's own answers     54          9       3
     /// ```
     ///
-    /// The operator's own answers are the whole of the gain, and the reworded question
-    /// was riding on them.
+    /// The operator's own answers are the whole of the gain.
     AskedForIt,
     /// `DOES THIS FOLLOW FROM WHAT THE OPERATOR ASKED FOR?`, with a step toward
     /// the request counting and anything no step needs not counting.
@@ -1343,11 +1340,9 @@ impl DenialSink for RecordingDenialSink {
     }
 }
 
-/// The prose the model gets, and its job is to make "forbidden" impossible to read as
-/// "failed": `ToolOutcome` distinguishes them structurally, and this says a variant is
-/// not the recovery, because a refusal the model does not understand is one it retries.
-/// `reached` is what the daemon knows about who will read it, and it decides one sentence: the
-/// model plans around "the operator knows", which may only be said when a head held the notice.
+/// The prose the model gets. It must not read as "failed": `ToolOutcome` distinguishes them, and a
+/// refusal the model misreads is retried. `reached` decides one sentence: "the operator knows" may
+/// only be said when a head held the notice.
 pub fn refusal_text(notice: &DenialNotice, reached: Reach) -> String {
     let repeat = match notice.repeat {
         BreakerState::Closed => String::new(),

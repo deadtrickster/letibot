@@ -37,8 +37,8 @@ pub struct McpServer {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpCallResult {
     pub text: String,
-    /// MCP's own `isError`. **Never widened**: a server saying it did not do the
-    /// thing must not reach the model as a success (F5).
+    /// MCP's own `isError`. Never widened: a server saying it did not do the
+    /// thing must not reach the model as a success.
     pub is_error: bool,
 }
 
@@ -376,7 +376,7 @@ mod tests {
 
     #[test]
     fn a_stale_description_is_mounted_and_the_finding_is_kept() {
-        // Somebody else's prose is not ours to refuse — but it is ours to report.
+        // Somebody else's prose is not ours to refuse - but it is ours to report.
         let mut reg = Registry::new();
         let cat: Arc<dyn McpCatalog> = Arc::new(Fake {
             servers: vec![McpServer {

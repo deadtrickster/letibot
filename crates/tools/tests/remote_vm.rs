@@ -1,9 +1,6 @@
-//! A session whose tools run in a firecode VM on another machine, against a fake `firecode` and a fake
-//! `ssh`.
-//!
-//! The `ssh` runs the last argument locally with `HOME` in a temporary directory and a login `PATH`
-//! written by that home's own `.bash_profile`, so nothing installed on this box can answer a question
-//! the fixture asks. What that proves is the placement's shape, not firecode itself.
+//! A session whose tools run in a firecode VM on another machine, against a fake `firecode` and
+//! `ssh`. The `ssh` runs locally with a login `PATH` from the home's own `.bash_profile`, so nothing
+//! installed here can answer. This proves the placement's shape, not firecode.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};

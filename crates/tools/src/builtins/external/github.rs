@@ -115,7 +115,7 @@ impl ForgeOp {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForgeCall {
     pub op: ForgeOp,
-    /// `owner/name`, or `None` to mean *the repository this checkout came from* —
+    /// `owner/name`, or `None` to mean *the repository this checkout came from* -
     /// which only a backend can resolve, because only a backend knows the remote.
     pub repo: Option<String>,
     pub number: Option<u64>,
@@ -134,7 +134,7 @@ pub struct ForgeResponse {
     pub text: String,
     /// Items returned by a listing op. `Some(0)` is an abstention, not an `Ok`.
     pub count: Option<usize>,
-    /// Items available before any cap — the denominator (§8.1 clause 2).
+    /// Items available before any cap - the denominator (§8.1 clause 2).
     pub total: Option<usize>,
     /// What was created or changed, when something was.
     pub url: Option<String>,
@@ -143,7 +143,7 @@ pub struct ForgeResponse {
 #[derive(Debug)]
 pub enum ForgeError {
     NotAttached(NotAttached),
-    /// The forge answered and there is no such thing. It looked — so this becomes
+    /// The forge answered and there is no such thing. It looked - so this becomes
     /// an abstention, which is a claim about the world, and not a `NotRun`.
     NoSuchThing(String),
     /// A decision on the far side: no permission, a protected branch, a rate limit.
@@ -390,7 +390,7 @@ impl Tool for Github {
 fn render(call_id: &str, op: ForgeOp, r: ForgeResponse) -> Invocation {
     if r.count == Some(0) {
         // It asked and looked. An abstention, and the denominator is the repo it
-        // looked in — `0` on its own would be indistinguishable from a failed
+        // looked in - `0` on its own would be indistinguishable from a failed
         // scope.
         return Invocation::abstained(
             format!("`{}` matched nothing in {}", op.as_str(), r.repo),

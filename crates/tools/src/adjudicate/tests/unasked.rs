@@ -1,9 +1,6 @@
-//! `Gate::admit_unasked`: the ladder without the card, which is how a look a plugin layer
-//! declared meets the gate. A look runs on the session's monitor thread, where a card would park
-//! the watch until somebody answered.
-//!
-//! The three classes are held apart because a caller must not confuse them: a call the ladder
-//! settles, one that would have been put to a person (`NotRun`), and one a rule refuses.
+//! `Gate::admit_unasked`: the ladder without the card, for a look a plugin layer declared on the
+//! monitor thread, where a card would park the watch. The three classes stay apart: settled by the
+//! ladder, `NotRun` (would have been asked), and refused by a rule.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};

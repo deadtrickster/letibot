@@ -218,7 +218,7 @@ fn a_near_duplicate_note_is_refused_and_a_new_one_is_not() {
         "the refused note is not on disk"
     );
 
-    // **And a genuinely new note is admitted**, in the same corpus, through
+    // And a genuinely new note is admitted, in the same corpus, through
     // the same gate - the half that a floor set too low would break.
     let r = h.call(
         "notes",
@@ -269,7 +269,7 @@ fn an_edit_that_would_make_a_note_a_near_copy_is_caught() {
         "the refusal is before the write, so the note is byte-identical"
     );
 
-    // **An edit that grows a note away from the other one is admitted**, and
+    // An edit that grows a note away from the other one is admitted, and
     // an `append` of a note's own words to itself is not a self-duplicate.
     let r = h.call(
         "notes",
@@ -284,10 +284,9 @@ fn an_edit_that_would_make_a_note_a_near_copy_is_caught() {
     assert!(grown.contains("configurable"), "the append landed: {grown}");
 }
 
-/// **A paraphrase of a note, in words the note does not use.** The words alone score it zero
-/// against every note, so the gate cannot see it; the second tier's cosine, over words planted
-/// as synonyms, puts it over [`DUPLICATE_FLOOR`] - and with no tier the note lands, which is
-/// the gap the tier is for.
+/// A paraphrase of a note, in words the note does not use. Lexically it scores zero; the second
+/// tier's cosine over planted synonyms puts it over [`DUPLICATE_FLOOR`]. With no tier the note
+/// lands, which is the gap the tier is for.
 #[test]
 fn a_paraphrase_with_no_shared_word_is_refused_by_the_second_tier() {
     // The words alone, over a session with no tier: nothing to score, so the write lands.
@@ -408,7 +407,7 @@ fn the_gate_floor_sits_between_the_measured_shapes() {
     assert!(score < DUPLICATE_FLOOR, "{score:.3}");
 }
 
-/// **A name too long for a file says how long it was, not a literal `{raw}`** (R93.F42).
+/// A name too long for a file says how long it was, not a literal `{raw}`.
 #[test]
 fn a_name_too_long_says_its_length() {
     let mut h = writable_harness();
@@ -499,7 +498,7 @@ fn the_other_doors_into_the_notes_dir_are_refused_and_the_tool_still_writes() {
         );
     }
 
-    // **`edit`, in both of its shapes.** The check is before the `edits`
+    // `edit`, in both of its shapes. The check is before the `edits`
     // dispatch, so a batch is not a way round it.
     std::fs::write(ws.join(NOTES_DIR).join("existing.md"), "a note\n").expect("fixture");
     for args in [
@@ -528,7 +527,7 @@ fn the_other_doors_into_the_notes_dir_are_refused_and_the_tool_still_writes() {
         "and none of the four `write` spellings landed a file"
     );
 
-    // **And the door that owns the directory still opens.** A rule that caught
+    // And the door that owns the directory still opens. A rule that caught
     // the wrong door would show up here and nowhere else.
     let r = h.call(
         "notes",
@@ -659,7 +658,7 @@ fn the_access_class_is_write_and_the_read_verbs_narrow() {
     );
 }
 
-/// **A read-only backend refuses the write verbs, naming the gate.**
+/// A read-only backend refuses the write verbs, naming the gate.
 #[test]
 fn a_read_only_backend_refuses_the_write_verbs() {
     let mut h = crate::testing::read_only_harness_with_gate(Some(crate::testing::allow_all()));
@@ -859,7 +858,7 @@ fn an_abstract_is_the_authors_line_or_the_notes_first_sentence() {
     );
 }
 
-/// **The derivation, spelled out**: a period ends a sentence only when
+/// The derivation, spelled out: a period ends a sentence only when
 /// whitespace or the end of the text follows it, so `2.7 s`, a path and a
 /// numbered list are not sentence ends.
 #[test]
@@ -920,7 +919,7 @@ fn search_narrows_to_a_read_like_the_other_read_verbs() {
     );
 }
 
-/// A file's mtime, **stated rather than waited for**: "newest first" is a
+/// A file's mtime, stated rather than waited for: "newest first" is a
 /// rule these tests assert, and a sleep would make the assertion depend on
 /// the clock's resolution instead.
 fn set_mtime(path: &Path, secs: i64) {
@@ -940,7 +939,7 @@ fn set_mtime(path: &Path, secs: i64) {
     assert_eq!(rc, 0, "utimensat on {}", path.display());
 }
 
-/// **A note lands where the session's other tools land.** The scope's workspace is the path the
+/// A note lands where the session's other tools land. The scope's workspace is the path the
 /// DAEMON sees; a placed session's files are on the host, and a note written against the scope
 /// was the one write that did not follow the session.
 #[test]
@@ -1018,7 +1017,7 @@ impl crate::backend::ExecBackend for Unreachable {
     }
 }
 
-/// **A corpus that could not be read is not an empty corpus.** The three read verbs answered a
+/// A corpus that could not be read is not an empty corpus. The three read verbs answered a
 /// host that had stopped answering with "none", "no note matches" and "is in no note" - a claim
 /// about the notes, made by a reader that had read nothing.
 #[test]

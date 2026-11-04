@@ -30,7 +30,7 @@ fn the_check_keeps_asking_about_the_row_it_named() {
     assert_eq!(named, "first", "the queue's head is named first");
     assert!(text.contains("first"), "{text}");
 
-    // **A row arrives AHEAD of it**, which is the ordinary case: the operator's half of the
+    // A row arrives AHEAD of it, which is the ordinary case: the operator's half of the
     // board is theirs to rewrite, and the model rewrites its own list at any time.
     let grown = vec![
         item("something else", TodoStatus::Pending),
@@ -53,12 +53,12 @@ fn the_check_keeps_asking_about_the_row_it_named() {
         text.contains("first") && !text.contains("something else"),
         "the question did not wander: {text}"
     );
-    // R93.B1: no count - it was in the text the idle clock compares, and a row moving elsewhere
+    // No count - it was in the text the idle clock compares, and a row moving elsewhere
     // on the plan made the same question a new notice.
     assert!(!text.contains("more open"), "{text}");
 }
 
-/// **The choice moves on when the named row leaves the queue** - done, or set aside by the
+/// The choice moves on when the named row leaves the queue - done, or set aside by the
 /// operator - and then the head of the queue is the new choice. That is the difference between
 /// a sticky choice and a sticky QUESTION: the row is held only while it is still askable.
 #[test]
@@ -191,7 +191,7 @@ fn the_open_work_is_queued_in_progress_first_then_not_done() {
     assert!(!msg.contains("more open"), "no count (R93.B1): {msg}");
 }
 
-/// **Every serve takes the next one**, which is what *one-by-one* means: deal with the head and
+/// Every serve takes the next one, which is what *one-by-one* means: deal with the head and
 /// the queue's head moves on. This is the whole interaction the operator is describing, walked
 /// one step at a time rather than asserted as a formula.
 #[test]
@@ -228,7 +228,7 @@ fn an_open_plan_names_one_item_and_what_to_do_about_it() {
         item("test it", TodoStatus::Pending),
     ])
     .expect("one in progress and one pending is work left open");
-    // **the item it was WORKING ON**, not the first open row in the list
+    // the item it was WORKING ON, not the first open row in the list
     assert!(
         msg.contains("wire the check"),
         "the in-progress item is the one named: {msg}"
@@ -237,7 +237,7 @@ fn an_open_plan_names_one_item_and_what_to_do_about_it() {
         msg.contains("yours (in progress)"),
         "and the message says why this one, AND whose it is: {msg}"
     );
-    // **and NOT the other open row** - that is the defocusing the operator asked me to stop
+    // and NOT the other open row - that is the defocusing the operator asked me to stop
     assert!(
         !msg.contains("test it"),
         "the second open item is not named, because one is a directive and five is homework: {msg}"
@@ -246,7 +246,7 @@ fn an_open_plan_names_one_item_and_what_to_do_about_it() {
         !msg.contains("write it up"),
         "a completed item is not part of what is open: {msg}"
     );
-    // R93.B1/B3: no count, and the advice is one line - do it, or mark it done (the phrase the
+    // No count, and the advice is one line - do it, or mark it done (the phrase the
     // head's fold matches).
     assert!(!msg.contains("more open"), "{msg}");
     assert!(msg.contains("Do it"), "{msg}");
@@ -254,7 +254,7 @@ fn an_open_plan_names_one_item_and_what_to_do_about_it() {
     assert!(msg.starts_with("[todo check]"), "the house prefix: {msg}");
 }
 
-/// **With nothing started, it names the first open row** - the model has told the board nothing,
+/// With nothing started, it names the first open row - the model has told the board nothing,
 /// so the list's own order is the only thing to go on, and singling one out is still the rule.
 #[test]
 fn with_nothing_in_progress_it_names_the_first_open_row() {
@@ -273,7 +273,7 @@ fn with_nothing_in_progress_it_names_the_first_open_row() {
     );
 }
 
-/// **A long plan is the same message as a short one.** Ten open items produce ONE named row and a
+/// A long plan is the same message as a short one. Ten open items produce ONE named row and a
 /// count - the rule `intent`'s steering follows, and the reason `MAX_PLAN_LINES` is gone: there is
 /// no longer a length of list to cap.
 #[test]
@@ -287,7 +287,7 @@ fn a_long_plan_is_one_item_and_a_count() {
     assert!(!msg.contains("more open"), "no count (R93.B1): {msg}");
 }
 
-/// **A list written and finished inside the turn says nothing**, which is what taking a
+/// A list written and finished inside the turn says nothing, which is what taking a
 /// SNAPSHOT at the boundary buys: the check asks the state of the plan at the moment the
 /// turn stopped, not what the model did with it on the way.
 #[test]
@@ -337,7 +337,7 @@ fn the_operators_row_added_last_is_named_ahead_of_the_models() {
     assert!(text.contains("the operator's"), "{text}");
 }
 
-/// **The first check after an add says who added it, and the next one names it plainly** - still
+/// The first check after an add says who added it, and the next one names it plainly - still
 /// first. A blocked operator row is not named at all: it is said on the waiting line.
 #[test]
 fn the_first_check_after_an_operator_add_says_the_operator_added_it() {

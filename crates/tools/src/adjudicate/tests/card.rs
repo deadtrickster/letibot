@@ -1,8 +1,5 @@
-//! The card's three failures, which are one rule: an operator is never shown a button whose
-//! effect the gate would then decline to honour, and a rung that disappears says so.
-//!
-//! The tests: the rung is gone, the card says why, and what names it is the program doing the
-//! work.
+//! The card never shows a button whose effect the gate would decline, and a rung that disappears
+//! says why and names the program doing the work.
 
 use super::*;
 

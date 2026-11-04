@@ -21,10 +21,9 @@ pub const DEFAULT_TTL: Duration = Duration::from_secs(300);
 /// How often the poller looks. Unhurried on purpose: a monitor exists because nobody is waiting
 /// on it this instant.
 const TICK: Duration = Duration::from_millis(250);
-/// **The pace a monitor may speak at**, besides its TTL: one ring a window. A condition that holds
-/// every tick records a firing every tick, and a ring is a turn - so a watch somebody left on a
-/// busy file would spend a generation a tick until its TTL ran out. Thirty seconds is above the
-/// 15 s `promote` threshold, so no routine turn is held back by it, and far below any watch's TTL.
+/// The pace a monitor may speak at besides its TTL: one ring a window. A condition that holds every
+/// tick would otherwise spend a turn a tick. Thirty seconds is above the 15 s `promote` threshold
+/// and far below any TTL.
 pub const FIRING_RATE: Duration = Duration::from_secs(30);
 
 /// What a monitor watches. The built-in conditions are the first-class, listable
@@ -191,7 +190,7 @@ pub enum Fired {
     /// Somebody retired it by name.
     Cancelled { by: String, after: Duration },
     /// Its owning scope ended, so it went with it. This is the reaping half
-    /// of T24 applied to watchers: a monitor whose owner is gone is not something
+    /// of the reaping rule applied to watchers: a monitor whose owner is gone is not something
     /// anybody is coming back for.
     OwnerEnded { scope: ScopeId, after: Duration },
 }
@@ -226,11 +225,11 @@ impl Fired {
 /// One declared watch.
 #[derive(Debug)]
 pub struct Monitor {
-    /// The name is the caller's, and it is the identity T24 requirement 4
-    /// enforces one waiter per.
+    /// The name is the caller's, and it is the identity that enforces one waiter per
+    /// name.
     pub name: String,
-    /// Who owns its lifetime. There is no constructor without one: T24
-    /// requirement 1, *"no monitor without an owner"*, as a type rather than as a
+    /// Who owns its lifetime. There is no constructor without one:
+    /// *no monitor without an owner*, as a type rather than as a
     /// convention.
     pub owner: ScopeId,
     pub watch: Watch,
@@ -370,7 +369,7 @@ impl Monitor {
         self.repeat
     }
 
-    /// T24 requirement 5's other half: an explicit renewal. Nothing renews a
+    /// The other half: an explicit renewal. Nothing renews a
     /// monitor by looking at it, because a monitor that lives as long as somebody
     /// keeps listing it is a monitor with no bound.
     fn renew(&self, ttl: Duration) {
@@ -519,7 +518,7 @@ impl Monitor {
 /// Why a monitor was not declared. Every variant hands over what the retry needs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MonitorError {
-    /// One waiter per name. T24 requirement 4, and the fleet's own words:
+    /// One waiter per name, and the fleet's own words:
     /// *two processes under one reader means the roster shows a seat attached
     /// while the real one hears nothing.*
     NameTaken {
@@ -757,7 +756,7 @@ impl Monitors {
         Ok(m)
     }
 
-    /// Extend a monitor's TTL. T24 requirement 5's explicit renewal.
+    /// Extend a monitor's TTL: the explicit renewal.
     pub fn renew(&self, name: &str, ttl: Duration) -> Result<Arc<Monitor>, Box<MonitorError>> {
         let reg = self.inner.lock().expect("monitors");
         let Some(m) = reg.live.get(name).cloned() else {
@@ -1400,7 +1399,7 @@ mod tests {
 
     #[test]
     fn a_second_monitor_under_one_name_is_refused_with_what_holds_it() {
-        // T24 requirement 4. The fleet's most expensive lesson, as a refusal:
+        // The fleet's most expensive lesson, as a refusal:
         // two watchers under one name means a listing shows the name attached
         // while one of them hears nothing.
         let dir = tmp();
@@ -1440,7 +1439,6 @@ mod tests {
 
     #[test]
     fn a_monitor_says_what_changed_and_not_merely_that_something_did() {
-        // T24 requirement 3.
         let dir = tmp();
         let ms = Arc::new(Monitors::new());
         let p = dir.join("out.log");
@@ -1520,7 +1518,7 @@ mod tests {
 
     #[test]
     fn a_monitor_dies_with_the_scope_that_owns_it_and_the_record_says_which() {
-        // T24 requirement 1, from the other end: an owner is only an owner if its
+        // An owner is only an owner if its
         // end actually takes the thing it owns.
         let dir = tmp();
         let ms = Arc::new(Monitors::new());
@@ -1551,10 +1549,8 @@ mod tests {
 
     #[test]
     fn a_monitor_handed_to_an_heir_watches_there_and_leaves_the_giver() {
-        // T24's other half: a watcher a session cannot take with it is handed to the session
-        // that outlives it, and it must be WATCHING there - a monitor in a registry whose
-        // poller never started is a row nobody evaluates, which reads exactly like a
-        // condition that never happened.
+        // A watcher a session cannot take with it is handed to the session that outlives it, and must be
+        // watching there: a registry row whose poller never started reads like a condition that never held.
         let dir = tmp();
         let giver = Arc::new(Monitors::new());
         let heir = Arc::new(Monitors::new());

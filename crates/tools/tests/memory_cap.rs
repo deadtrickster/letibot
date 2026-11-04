@@ -1,9 +1,6 @@
-//! A job that outgrows its memory cap dies alone, and says so, measured in a real delegated
-//! scope rather than asserted about one.
-//!
-//! The cap needs a systemd scope started with `Delegate=yes`, which a test binary is not, so
-//! the test re-runs itself inside one and the inner half measures. A Linux box with no user
-//! manager fails under `LETIBOT_REQUIRE_APPARATUS=1`; macOS can never have one at all.
+//! A job that outgrows its memory cap dies alone and says so, measured in a real delegated scope.
+//! The test re-runs itself inside a `Delegate=yes` systemd scope and the inner half measures. A
+//! Linux box with no user manager fails under `LETIBOT_REQUIRE_APPARATUS=1`.
 
 use std::process::Command;
 use std::time::Duration;

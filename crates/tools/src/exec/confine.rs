@@ -1,8 +1,6 @@
-//! The view half of the boundary: what a confined process can see, measured rather than
-//! asserted. [`super::scope`] owns how long a process lives; this module owns what it
-//! reaches, and an absent file beats a denied one because absence needs no path list.
-//! [`Bwrap`] enters namespaces through bubblewrap and [`super::seatbelt::Seatbelt`] applies
-//! a policy; both answer through [`Confinement`], and [`Boundary`] is what a probe measured.
+//! The view half of the boundary: what a confined process can see, measured not asserted. An
+//! absent file beats a denied one. [`Bwrap`] and [`super::seatbelt::Seatbelt`] answer through
+//! [`Confinement`]; [`Boundary`] is what a probe measured. [`super::scope`] owns lifetime.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -528,10 +526,9 @@ pub struct ViewSpec {
     pub protected: Vec<PathBuf>,
 }
 
-/// The host room coordinator's files (`room-<host key>.sock`, `.lease`, `.restart`) in
-/// letibot's data directory, plus `$LETIBOT_ROOM_SOCKET` and its lease when set. Found by
-/// scanning, so the boundary needs no host key and sees a coordinator that started after the
-/// session did. A tool call that could open the socket could post as anyone in the rooms.
+/// The host room coordinator's files (`room-<host key>.sock`, `.lease`, `.restart`) in letibot's
+/// data directory, plus `$LETIBOT_ROOM_SOCKET` and its lease. Found by scanning, so no host key is
+/// needed. A tool call that could open the socket could post as anyone in the rooms.
 pub fn room_files() -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
     let data = std::env::var_os("XDG_DATA_HOME")
@@ -2670,7 +2667,7 @@ mod tests {
 
     #[test]
     fn the_model_is_told_what_its_view_holds_before_anything_fails() {
-        // The failure note used to be the only disclosure, so a hermetic view read as a broken
+        // The failure note alone would leave a hermetic view reading as a broken
         // toolchain. The brief is what the prompt carries at open: the paths, and what `~` is.
         let b = boundary_with(vec![]);
         let t = b.model_brief();

@@ -1,8 +1,5 @@
-//! The refusal when there is no helper to apply a profile with, on this platform.
-//!
-//! Its own test binary because the seam is the process environment, which every test thread
-//! shares: setting it in `tests/seatbelt.rs` would make that file's concurrent probes read a
-//! helper that is not there.
+//! The refusal when there is no helper to apply a profile with. Own binary: the seam is the process
+//! environment, which every test thread shares.
 
 #![cfg(target_os = "macos")]
 

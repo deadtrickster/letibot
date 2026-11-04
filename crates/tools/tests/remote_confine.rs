@@ -1,9 +1,6 @@
-//! A command on a remote host, inside a boundary.
-//!
-//! The local half of the boundary has its own suite; this is the same properties one machine over,
-//! against a fake `ssh` that runs the command locally, because a test that contacted a real host is one
-//! nobody can run. The fake remote gets a `bwrap` shim, so the probe's answer is a fact of the test
-//! rather than of the kernel.
+//! A command on a remote host, inside a boundary: the local suite's properties one machine over,
+//! against a fake `ssh` that runs locally. The fake remote gets a `bwrap` shim, so the probe's answer
+//! is a fact of the test, not the kernel.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};

@@ -1,15 +1,6 @@
-//! The last act's sweep, when the host's connection queue is full.
-//!
-//! `placements_down` runs at `harnessd`'s stop BEFORE `daemon.shutdown()` interrupts the calls the
-//! session has in flight, so a placement's sweep can find all eight of that host's slots held by the
-//! session's own `bash` calls. A sweep that got no slot never ran - and it must not go with the list
-//! it came from, or nothing ever asks that host again.
-//!
-//! A binary of its own: the last act's list is per PROCESS, so a second test in another file's
-//! binary would be swept by that file's `placements_down`.
-//!
-//! Every `ssh` here runs the last argument locally, so the commands, the sweep script and the `kill`
-//! are the production ones and only the transport is faked.
+//! The last act's sweep when the host's connection queue is full. `placements_down` runs before
+//! `daemon.shutdown()`, so all slots may be held by the session's own `bash` calls. A sweep that got
+//! no slot never ran and must stay on the list. Own binary: the list is per process.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};

@@ -1,9 +1,6 @@
-//! The six clauses, as acceptance tests over the whole runtime.
-//!
-//! The unit tests inside the crate check the pieces; these check what the plan promises, which is
-//! what the model sees. Every assertion is against `ToolResult::render()`, the exact bytes that
-//! become a `TranscriptItem::ToolResult`, because a clause that holds in a struct and not in the
-//! prompt has not held.
+//! The six clauses, as acceptance tests over the whole runtime. Every assertion is against
+//! `ToolResult::render()`, the bytes the model sees, because a clause that holds in a struct and
+//! not in the prompt has not held.
 
 use letibot_tools::builtins::retrieval::{Retrieval, Unavailable};
 use letibot_tools::events::ToolEvent;

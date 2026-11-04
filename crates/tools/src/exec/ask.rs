@@ -1,11 +1,6 @@
-//! Is this run waiting for an answer? A question about the process, not about its text.
-//!
-//! [`waiting_for_an_answer`] is the signal: a process of the run has this daemon's device
-//! on fd 0 and is blocked reading it. [`last_line`] is the display half and decides
-//! nothing, and [`Waiting::Unreadable`] is a third answer rather than a `No`.
-//!
-//! The wchan names are kernel-specific, so they are matched by suffix and the descriptor
-//! carries the distinguishing - see [`blocked_reading_fd0`].
+//! Is this run waiting for an answer? A question about the process, not its text.
+//! [`waiting_for_an_answer`]: a process of the run has this daemon's device on fd 0, blocked reading.
+//! [`last_line`] only displays; [`Waiting::Unreadable`] is a third answer. See [`blocked_reading_fd0`].
 
 use letibot_transcript::text::clip_front_chars;
 use std::os::fd::RawFd;

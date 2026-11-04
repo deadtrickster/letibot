@@ -1,16 +1,14 @@
 //! What the operator's console gives a command: their interactive shell, so their rc
 //! and its aliases apply, and the environment their terminal is described by.
 //!
-//! [`shell`] is `/bin/bash -ic` because a rc is read only by an interactive shell, and
-//! [`env`] forces every pager to [`PAGER`] so nothing waits for a keystroke that cannot
-//! arrive.
+//! [`shell`] is `/bin/bash -ic` because only an interactive shell reads the rc; [`env`] forces every pager
+//! to [`PAGER`] so nothing waits for a keystroke that cannot arrive.
 //!
 //! ```text
 //! alias ls='ls --color=auto'
 //! ```
 //!
-//! A model's `bash` call gets none of this: it has no terminal, and the flag that
-//! gives the console one is false for a model's call.
+//! A model's `bash` call gets none of this: it has no terminal.
 
 /// The console's shell, interactive. `-i` is the whole of it: bash reads `~/.bashrc`
 /// for an interactive shell and no other, and a rc that guards itself returns

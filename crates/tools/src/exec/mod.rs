@@ -1,8 +1,6 @@
 //! The exec substrate: a lifetime mechanism, not an isolation one.
-//!
-//! Every process a turn starts is a member of a cgroup owned by a scope, so a
-//! scope that ends kills its cgroup and records what it killed. Confinement is
-//! here too; the transcript edge and the adjudicator are not.
+//! Every process a turn starts is in a cgroup owned by a scope; ending the scope kills the cgroup
+//! and records what it killed. Confinement is here; the transcript edge and adjudicator are not.
 
 pub mod ask;
 pub mod confine;

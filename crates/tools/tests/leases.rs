@@ -1,8 +1,6 @@
-//! Resource leases on a shared host, against a fake ssh and a fake docker.
-//!
-//! The fake ssh runs the command locally against a temporary remote home and the fake docker sits first
-//! on that home's `PATH`, because a teardown's job is what it removed. The ephemeral range and the ports
-//! are this box's real ones and the store is a real file, so a restart is a second connection.
+//! Resource leases on a shared host, against a fake ssh and a fake docker first on the remote
+//! home's `PATH`, because a teardown's job is what it removed. The ephemeral range and ports are
+//! this box's real ones and the store is a real file, so a restart is a second connection.
 
 #[path = "support/fake_remote.rs"]
 mod fake_remote;

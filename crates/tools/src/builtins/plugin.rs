@@ -1,22 +1,12 @@
-//! `plugin`: a session's model builds and loads a plugin pane while the session runs, in a handful
-//! of calls and no restart. Until this, a session could use a plugin whose source already existed;
-//! it could not write one.
+//! `plugin`: a session's model builds and loads a plugin pane while the session runs, no restart.
 //!
 //! ```text
 //! scaffold → edit the view → build → test → load → (edit → build → load again, hot)
 //! ```
 //!
-//! `scaffold` writes a source, `build` compiles it to wasm, `test` calls one hook and reports the
-//! view, the layer, the fuel and any trap, `load` proves the layer on a shadow stack before
-//! applying it hot, and `stack`/`disable`/`enable` say what is in force and bisect a break.
-//!
-//! Everything above needs the session's live `Stack`, and a second stack would be a second answer
-//! to what is in force: the tool asks [`PluginDesk`], the daemon answers from the stack the panes
-//! are drawn from, and this crate keeps no plugins of its own.
-//!
-//! A session plugin's scope is the session: `scaffold` writes under the session's own plugin
-//! directory, never the operator's tree, and a capability is the manifest's to declare and the
-//! host's to enforce. `read` is the only one granted; an `exec` look is refused with a sentence.
+//! `scaffold` writes a source, `build` compiles it, `test` calls one hook, `load` proves the layer on a shadow stack
+//! before applying it hot. The live `Stack` is the daemon's, reached through [`PluginDesk`]. Scope is the session;
+//! only `read` is granted.
 
 use std::sync::Arc;
 
@@ -60,7 +50,7 @@ impl Refusal {
     }
 }
 
-/// **The daemon's half.** Every method answers the sentence the model reads, or a [`Refusal`].
+/// The daemon's half. Every method answers the sentence the model reads, or a [`Refusal`].
 pub trait PluginDesk: Send + Sync {
     /// A new pane plugin in this session's own plugin directory, from the template.
     fn scaffold(&self, name: &str, purpose: &str, hook: &str) -> Result<String, Refusal>;
@@ -86,7 +76,7 @@ pub trait PluginDesk: Send + Sync {
     fn hooks(&self, hook: Option<&str>) -> Result<String, Refusal>;
 }
 
-/// **No plugin host behind the tool** - a session the daemon does not serve (a subagent), or a
+/// No plugin host behind the tool - a session the daemon does not serve (a subagent), or a
 /// test registry. Every verb says so by name rather than the tool being absent, which would read
 /// as a capability this build lacks.
 pub struct NoPlugins;
@@ -120,7 +110,7 @@ impl PluginDesk for NoPlugins {
     }
 }
 
-/// **The tool.**
+/// The tool.
 pub struct PluginTool {
     desk: Arc<dyn PluginDesk>,
 }
@@ -149,7 +139,7 @@ pub fn synthetic_input() -> Value {
         "state": null,
         "look": null,
         "event": null,
-        // **The feeds are the layer's, by declaration** (`plugin.toml`'s `feeds`): this is a pane
+        // The feeds are the layer's, by declaration (`plugin.toml`'s `feeds`): this is a pane
         // that asked for the session list, which is the one a project's first layer usually wants.
         "feeds": {"sessions": {"sessions": [], "here": "", "home": ""}},
         "folded": {},
@@ -431,7 +421,7 @@ mod tests {
         }
     }
 
-    /// **A runtime over one tool, with a gate that admits** - so a refusal in a test is the tool's
+    /// A runtime over one tool, with a gate that admits - so a refusal in a test is the tool's
     /// own and never the boundary's. The temp dir comes back with it: the backend holds a path
     /// into it, so the caller keeps it alive for the length of the test.
     fn runtime(tool: Box<dyn Tool>) -> (ToolRuntime, crate::backend::tempdir::TempDir) {
@@ -510,7 +500,7 @@ mod tests {
         );
     }
 
-    /// **The two verbs that run a build reach the gate as commands**, and the read-only ones
+    /// The two verbs that run a build reach the gate as commands, and the read-only ones
     /// narrow themselves back down: a `load` compiles a plugin, which runs its build script, so
     /// the schema's class is `Exec` and only the verbs that are not builds say otherwise.
     #[test]
@@ -554,7 +544,7 @@ mod tests {
         assert!(matches!(outcome, ToolOutcome::Ok), "{rendered}");
     }
 
-    /// **A build's refusal is the compiler's own words**, verbatim, in the part of the result a
+    /// A build's refusal is the compiler's own words, verbatim, in the part of the result a
     /// model edits - not a summary of them.
     #[test]
     fn a_failed_build_carries_the_compiler_output_verbatim() {
@@ -632,7 +622,7 @@ mod tests {
         }
         assert_eq!(input["size"]["w"], 100);
         assert_eq!(input["size"]["h"], 30);
-        // **And the one feed a pane may count on being explained**: a first frame names the map
+        // And the one feed a pane may count on being explained: a first frame names the map
         // and its shape, so a plugin reading `feeds.sessions` is not guessing.
         assert!(input["feeds"]["sessions"]["sessions"].is_array(), "{input}");
         assert_eq!(input["folded"], serde_json::json!({}));
@@ -648,7 +638,7 @@ mod tests {
         assert_eq!(*rec.said.lock().unwrap(), vec!["hooks ", "hooks pane"]);
     }
 
-    /// **A session with no daemon behind the tool says which** - never an absence that reads as a
+    /// A session with no daemon behind the tool says which - never an absence that reads as a
     /// missing capability of the build.
     #[test]
     fn no_plugin_host_behind_the_tool_refuses_by_name() {

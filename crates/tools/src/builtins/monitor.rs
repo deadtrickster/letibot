@@ -118,7 +118,7 @@ impl Tool for Monitor {
                 let Some(f) = monitors.retire(name, "the model") else {
                     return unknown_monitor(host, name);
                 };
-                // R93.F29: this rendered "it had retired by the model after 30s left",
+                // This rendered "it had retired by the model after 30s left",
                 // and "It never fired" was false of a repeat monitor that had.
                 let age = match &f.fired {
                     Fired::Cancelled { after, .. } => format!(" after {:.0}s", after.as_secs_f32()),
@@ -165,7 +165,7 @@ impl Tool for Monitor {
 
         // --- declare -------------------------------------------------------
 
-        // **The ttl is settled AFTER the watch**, because a plugin condition's cap comes out of
+        // The ttl is settled AFTER the watch, because a plugin condition's cap comes out of
         // the answer that arms it (§4.4's `max_ttl_s`): a watch for a review that takes days is
         // capped by the plugin's own word, inside the tree's own week.
         let asked: Vec<&str> = [
@@ -197,7 +197,7 @@ impl Tool for Monitor {
 
         let mut notes: Vec<String> = Vec::new();
         let mut job_handle = None;
-        // **What a plugin condition said its own cap is**, when the watch is one.
+        // What a plugin condition said its own cap is, when the watch is one.
         let mut plugin_cap: Option<Duration> = None;
         let watch = if let Some(id) = args.get("job").and_then(|v| v.as_str()) {
             let jid = JobId(id.to_string());
@@ -379,7 +379,7 @@ impl Tool for Monitor {
             }
         };
 
-        // T24 requirement 1: an owner, and the default is the session.
+        // An owner, and the default is the session.
         let owner_arg = args.get("owner").and_then(|v| v.as_str());
         let owner = match owner_arg {
             None => match host.scope_for(ScopeKind::Session, None) {
@@ -421,7 +421,7 @@ impl Tool for Monitor {
         }
 
         let declared_by = format!("turn {}", ctx.turn_id());
-        // **The ttl, now that the watch is known.** A plugin condition's own cap (`max_ttl_s` in
+        // The ttl, now that the watch is known. A plugin condition's own cap (`max_ttl_s` in
         // the answer that armed it) governs its watch, and a `github` watch keeps its days; every
         // other condition keeps the monitors' ordinary hour.
         let ttl = match if let Some(cap) = plugin_cap {
@@ -502,7 +502,7 @@ fn inside(path: &str) -> bool {
     depth > 0
 }
 
-/// **The refusal of a second watch on a pull request already watched** - naming the watch that
+/// The refusal of a second watch on a pull request already watched - naming the watch that
 /// has it, and the one `monitor` call that covers both its conditions and these.
 fn already_watched(
     monitors: &crate::exec::monitor::Monitors,
@@ -539,7 +539,7 @@ fn already_watched(
     ))
 }
 
-/// **A `github` watch, read** - `{"url": "https://github.com/o/r/pull/12", "until": "checks"}`, or
+/// A `github` watch, read - `{"url": "https://github.com/o/r/pull/12", "until": "checks"}`, or
 /// `repo` with `pr` or `issue` in place of the URL; `every_s` how often to look. See
 /// `exec::github`.
 fn github_watch(g: &Value) -> Result<Watch, Box<Invocation>> {
@@ -583,7 +583,7 @@ fn github_watch(g: &Value) -> Result<Watch, Box<Invocation>> {
             pr,
         }
     };
-    // **One `until`, or several**: one look at a pull request answers all of them, so a
+    // One `until`, or several: one look at a pull request answers all of them, so a
     // `["checks", "review", "closed"]` is one watch and one `gh` call rather than three.
     let words: Vec<&str> = match g.get("until") {
         Some(Value::String(s)) => vec![s.as_str()],
@@ -744,7 +744,7 @@ mod tests {
         assert_eq!(crate::schema::lint_description(&s.description), vec![]);
     }
 
-    /// **The description names every condition the schema takes** (R93.F28): it listed
+    /// The description names every condition the schema takes: it listed
     /// six, and said there was "deliberately no way to watch a shell command" beside a
     /// `command` property.
     #[test]
@@ -772,7 +772,7 @@ mod tests {
         assert_eq!(ttl_of(&serde_json::json!({})).unwrap(), DEFAULT_TTL);
     }
 
-    /// **A `github` watch is read from a URL or a repo and number**, refuses what an issue cannot
+    /// A `github` watch is read from a URL or a repo and number, refuses what an issue cannot
     /// have, and lives within its own week rather than the ordinary hour.
     #[test]
     fn a_github_watch_is_read_and_bounded_by_its_own_cap() {
@@ -808,7 +808,7 @@ mod tests {
         );
     }
 
-    /// **A pull request already watched gets no second watch** - the refusal names the one that
+    /// A pull request already watched gets no second watch - the refusal names the one that
     /// has it and gives the single call for both: stroppy armed nine watches for three pull
     /// requests, three conditions apiece.
     #[test]

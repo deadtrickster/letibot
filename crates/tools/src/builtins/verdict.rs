@@ -10,7 +10,7 @@ use crate::gatekeeper::{Decision, LookedAt, ReviewRequest, Submission, Verdict};
 use crate::runtime::{Invocation, InvokeCtx, Tool};
 use crate::schema::{Access, ToolSchema};
 
-/// **The name of the tool, in one place** - the seat lists it, the schema answers it, and the
+/// The name of the tool, in one place - the seat lists it, the schema answers it, and the
 /// tests spell it. A tool whose name is written twice is a tool one of the two can rename.
 pub const TOOL: &str = "review_verdict";
 
@@ -24,7 +24,7 @@ struct Open {
     child: String,
     entry_id: String,
     req: ReviewRequest,
-    /// **What the reviewer handed in**, once it has. `None` while it is still making up its
+    /// What the reviewer handed in, once it has. `None` while it is still making up its
     /// mind; `Some` from the moment of the call, and the pass takes it to write the row.
     handed: Option<Submission>,
 }
@@ -42,7 +42,7 @@ impl ReviewDesk {
         Self::default()
     }
 
-    /// **The queue's act: this child is reviewing this entry.** Called once, by the session that
+    /// The queue's act: this child is reviewing this entry. Called once, by the session that
     /// started the child, with the handle it started it under. `host` is that session, and it is
     /// what makes the review the opener's to close ([`ReviewDesk::keep`]).
     pub fn opened(&self, host: &str, child: &str, entry_id: &str, req: ReviewRequest) {
@@ -149,7 +149,7 @@ impl ReviewDesk {
     }
 }
 
-/// **One review as it stands**, for the pass that owns it - see [`ReviewDesk::open`].
+/// One review as it stands, for the pass that owns it - see [`ReviewDesk::open`].
 pub struct Review {
     /// The reviewer's session id, which is the handle `task_result` collects by.
     pub child: String,
@@ -164,7 +164,7 @@ pub struct Review {
 /// question, whether this session is a reviewer of an entry this daemon is waiting on.
 pub struct ReviewVerdictTool {
     desk: Arc<ReviewDesk>,
-    /// **This session's own id, bound at open.** The author of a submission is a fact about the
+    /// This session's own id, bound at open. The author of a submission is a fact about the
     /// harness the tool was seated in, never a field of the call - so a model cannot hand a
     /// verdict in as somebody else.
     who: String,
@@ -190,7 +190,7 @@ fn list(args: &Value, field: &str) -> Result<Vec<String>, Invocation> {
     let one = |s: &str| -> Vec<String> {
         let t = s.trim();
         if t.is_empty() || t.eq_ignore_ascii_case("none") {
-            // **`none` is not a file called `none`**, on the rule the old closing block kept: it
+            // `none` is not a file called `none`, on the rule the old closing block kept: it
             // is how a reviewer says *I looked at nothing*, which is recorded as nothing.
             Vec::new()
         } else {
@@ -398,7 +398,7 @@ mod tests {
         }
     }
 
-    /// **A refusal read as a whole**: the sentence the tool named as the reason, then the body it
+    /// A refusal read as a whole: the sentence the tool named as the reason, then the body it
     /// handed back. A refusal is two halves by construction - `Invocation::failed(what, advice)`  -
     /// and a test that read only one of them would miss half of what the model is told.
     fn refusal(r: &crate::result::ToolResult) -> String {
@@ -408,7 +408,7 @@ mod tests {
         }
     }
 
-    /// **The child's verdict is the child's act, and it is recorded as one.** The call is made
+    /// The child's verdict is the child's act, and it is recorded as one. The call is made
     /// by the session the review was opened for, and what comes back is the verdict it just
     /// handed in - the same rendering a person reads - so the reviewer can see the queue has it.
     #[test]
@@ -437,7 +437,7 @@ mod tests {
             r.payload
         );
 
-        // **And it is on the desk, waiting for the daemon's own write** - not written by the
+        // And it is on the desk, waiting for the daemon's own write - not written by the
         // tool, and not written by the child either: the queue's pass takes it.
         let taken = desk
             .take_verdict("sub-1")
@@ -458,7 +458,7 @@ mod tests {
         );
     }
 
-    /// **A verdict that is waiting can be SEEN without being taken** - the queue's worker asks
+    /// A verdict that is waiting can be SEEN without being taken - the queue's worker asks
     /// this before it calls a finished reviewer gone, and the pass that writes the row must still
     /// find its submission where it was.
     #[test]
@@ -594,7 +594,7 @@ mod tests {
         assert_eq!(desk.len(), 1, "no refused call closed or added a review");
     }
 
-    /// **A single string where a list belongs is read as one item**, and `none` is recorded as
+    /// A single string where a list belongs is read as one item, and `none` is recorded as
     /// nothing looked at rather than as a file called `none` - the rule the old closing block
     /// kept, kept here because the words mean the same thing to a reviewer.
     #[test]
@@ -617,7 +617,7 @@ mod tests {
         assert!(taken.looked_at.commands.is_empty());
     }
 
-    /// **The tool is session state and never a card.** A verdict that needed a person to approve
+    /// The tool is session state and never a card. A verdict that needed a person to approve
     /// it would be a review that can never finish unattended, and the child that hands one in is
     /// a child with no head of its own.
     #[test]
@@ -642,7 +642,7 @@ mod tests {
         assert!(desk.is_open_for("m-1") && desk.is_open_for("m-2"));
         assert!(!desk.is_open_for("m-4"));
 
-        // **The pass sees its own and nobody else's.**
+        // The pass sees its own and nobody else's.
         let open = desk.open("s-gatekeeper");
         assert_eq!(open.len(), 2, "oldest first, and only this host's");
         assert_eq!(open[0].child, "sub-1");
@@ -650,7 +650,7 @@ mod tests {
         assert_eq!(open[0].req.branch, "agent/reader");
         assert_eq!(desk.open("s-nobody").len(), 0);
 
-        // **And a pass that hosts nothing closes nothing.** The daemon's own session is this
+        // And a pass that hosts nothing closes nothing. The daemon's own session is this
         // shape exactly, and an unscoped `keep` here is the defect that was measured.
         desk.keep("s-other", &[]);
         assert_eq!(

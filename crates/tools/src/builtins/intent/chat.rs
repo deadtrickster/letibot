@@ -29,7 +29,7 @@ pub struct Posted {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChatError {
-    /// No fabric is attached. **A configuration, not a fault** - and not a message
+    /// No fabric is attached. A configuration, not a fault - and not a message
     /// written somewhere else either.
     NotAttached(String),
     /// Attached and unreachable. Nothing was said.
@@ -94,7 +94,7 @@ pub trait Chat: Send + Sync {
     fn describe(&self) -> String;
 }
 
-/// **The default, and it is not an error state.**
+/// The default, and it is not an error state.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct NoFabric;
 

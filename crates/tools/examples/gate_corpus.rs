@@ -1,16 +1,13 @@
 //! `gate_corpus`: replay a gate-decision corpus through today's parser and gate.
 //!
-//! The command line for `letibot_tools::corpus_replay`. Corpus files are named as
-//! arguments, because they hold real commands and nothing in the tree points at them.
+//! The command line for `letibot_tools::corpus_replay`; corpus files are named as arguments.
 //!
 //! ```sh
 //! cargo run --offline -p letibot-tools --example gate_corpus -- \
 //!     --home /home/someone --workspace /home/someone/project \
 //!     ~/letibot-corpus/box.json
 //! ```
-//!
-//! `--home` and `--workspace` are the sweep's assumption: the export records the command
-//! and not the directory it ran in, and the region half of the reading needs one.
+//! `--home` and `--workspace` are assumed: the export records the command, not its directory.
 
 use std::path::PathBuf;
 use std::process::ExitCode;

@@ -303,13 +303,9 @@ pub trait ProcessHost: Send + Sync {
     /// End a scope: kill everything under it, and record it.
     fn end_scope(&self, scope: &ScopeId) -> Result<Reaping, ExecError>;
 
-    /// Move a running job into a scope that outlives the turn, and record what moved: the
-    /// one verb behind the runtime's threshold and a person promoting from a head. A
-    /// [`Promotion`] and never a bool, because a process that did not move makes that false.
-    ///
-    /// The frame that would let a head ask for this is not on the wire: a new `ClientFrame`
-    /// variant is a `PROTOCOL_VERSION` bump that costs the running daemon its live session,
-    /// and nothing in production can send it today.
+    /// Move a running job into a scope that outlives the turn, and record what moved: the one verb behind
+    /// the runtime's threshold and a person promoting from a head. A [`Promotion`], never a bool. The frame
+    /// that would let a head ask is not on the wire: a new `ClientFrame` variant bumps `PROTOCOL_VERSION`:
     ///
     /// ```text
     /// ClientFrame::PromoteJob {
@@ -716,7 +712,7 @@ pub const DEFAULT_CAPTURE_BYTES: usize = 8 * 1024 * 1024;
 /// ([`super::jobs::Capture::release`]) and the row and its counts stay. A running job keeps its.
 pub const SETTLED_CAPTURE_BUDGET: usize = 64 * 1024 * 1024;
 
-/// **How many records of what a host did one host keeps**: every reaping, every promotion and every
+/// How many records of what a host did one host keeps: every reaping, every promotion and every
 /// deadline it fired are a small record a caller reads back, not a history, and a daemon that has
 /// been up for a month must not carry every kill it ever made.
 pub const RECORD_LIMIT: usize = 512;
@@ -827,10 +823,9 @@ fn scope_kind_of(scope: &str) -> (super::scope::ScopeKind, String) {
     }
 }
 
-/// Release a job's own scope once its leader has gone, and say whether it went. Only an EMPTY one
-/// goes: a scope still holding a process is one the command left behind and somebody's live work,
-/// and `end` would kill it. Left alone, each of these is a cgroup directory per command a session
-/// ever ran - which is why the caller remembers the ones that stayed.
+/// Release a job's own scope once its leader has gone, and say whether it went. Only an empty one
+/// goes: a scope still holding a process is live work and `end` would kill it. The caller remembers
+/// the ones that stayed.
 fn release_settled_scope(tree: &dyn ScopeTree, scope: &ScopeId) -> bool {
     if !tree.members(scope).is_ok_and(|m| m.is_empty()) {
         return false;
@@ -1704,12 +1699,9 @@ impl ProcessHost for HostProcesses {
         Ok(id)
     }
 
-    /// Take a job the daemon did not start, and make it one of this host's. Everything above
-    /// reads the host's own job table, so the record becomes a [`Job`]. When the record carries
-    /// the directories the job really occupies they are used verbatim - the alternative is a
-    /// fresh cgroup on this host's root, which would be an empty directory named after a
-    /// process that is somewhere else. Failing that the cgroup name is derivable and the
-    /// re-open is exact; a vanished process settles as [`JobState::Dead`], never `Exited`.
+    /// Take a job the daemon did not start and make it this host's. Recorded directories are used
+    /// verbatim, else the cgroup name is derived and the re-open is exact. A vanished process settles
+    /// as [`JobState::Dead`], never `Exited`.
     fn adopt(&self, a: &Adopted) -> Result<JobId, ExecError> {
         let id = JobId(a.handle.clone());
         if self.find(&id).is_some() {
@@ -2584,7 +2576,7 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
         assert!(format!("{e}").contains("nothing would reap it"), "{e}");
     }
 
-    /// **A scope a settled job left a process in is looked at again.** The waiter thread returns
+    /// A scope a settled job left a process in is looked at again. The waiter thread returns
     /// after its one look, and nothing else in the tree revisits a job's scope - so without this a
     /// session that started a background server per checkout keeps one cgroup directory each.
     #[test]
@@ -2726,7 +2718,7 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
         }
     }
 
-    /// **The record of what a host did is bounded, and the oldest go first**: a reaping, a promotion
+    /// The record of what a host did is bounded, and the oldest go first: a reaping, a promotion
     /// and a deadline fired are read back by a caller, so they cannot keep the pids of every kill the
     /// daemon ever made.
     #[test]
@@ -2850,7 +2842,7 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// **A row is about 1.1 KB and nothing ever removed one.** What is kept is the running jobs and
+    /// A row is about 1.1 KB and nothing ever removed one. What is kept is the running jobs and
     /// the newest window of finished ones, and a finish younger than the grace whatever the window
     /// says: a watcher polls every five seconds and would lose the news of a row that went.
     #[test]
@@ -3392,7 +3384,7 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
         }
     }
 
-    /// **A job is found by its id, at every door it comes in by.** The host adopted a record
+    /// A job is found by its id, at every door it comes in by. The host adopted a record
     /// another daemon left, and its row has to be where a read looks: a handle the table does not
     /// hold is one every wait and kill fails to find.
     #[test]

@@ -1,4 +1,4 @@
-//! **The todo tool's tests**, one file per theme, and the fixtures they share. Each theme file
+//! The todo tool's tests, one file per theme, and the fixtures they share. Each theme file
 //! reaches the fixtures, the tool and the imports below through `use super::*`.
 
 use super::*;
@@ -57,13 +57,13 @@ fn nag_with(todos: &[TodoItem], children: &ChildSessions, jobs: &RunningJobs) ->
     unfinished_plan(todos, todos, children, jobs)
 }
 
-/// **Nothing running outside the board** - no job this session holds, which is the reading every
+/// Nothing running outside the board - no job this session holds, which is the reading every
 /// test here that is not about a job passes, and the one a daemon with no process host hands in.
 fn no_jobs() -> RunningJobs {
     RunningJobs::none()
 }
 
-/// **A child this daemon is running**, as a test states one: an age, and what it last showed.
+/// A child this daemon is running, as a test states one: an age, and what it last showed.
 fn child(age_secs: u64, quiet_secs: Option<u64>, working: bool) -> RunningChild {
     RunningChild {
         age: Duration::from_secs(age_secs),
@@ -72,7 +72,7 @@ fn child(age_secs: u64, quiet_secs: Option<u64>, working: bool) -> RunningChild 
     }
 }
 
-/// **A row that waits on a CHILD** - the dispatch case, as these tests write one.
+/// A row that waits on a CHILD - the dispatch case, as these tests write one.
 fn waiting_on_a_child(content: &str, id: &str) -> TodoItem {
     TodoItem {
         needs: vec![TodoNeed::Child { id: id.to_string() }],
@@ -80,7 +80,7 @@ fn waiting_on_a_child(content: &str, id: &str) -> TodoItem {
     }
 }
 
-/// **A row that waits on a JOB** - the case this feature was asked for: work that cannot start
+/// A row that waits on a JOB - the case this feature was asked for: work that cannot start
 /// until something the daemon is running has ended.
 fn waiting_on_a_job(content: &str, handle: &str) -> TodoItem {
     TodoItem {
@@ -101,7 +101,7 @@ fn item(content: &str, status: TodoStatus) -> TodoItem {
     }
 }
 
-/// **A row that waits on the rows it names** - the DAG's edge, as these tests write one.
+/// A row that waits on the rows it names - the DAG's edge, as these tests write one.
 fn needs(content: &str, status: TodoStatus, on: &[&str]) -> TodoItem {
     TodoItem {
         needs: on

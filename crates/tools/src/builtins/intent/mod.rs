@@ -1,5 +1,4 @@
-//! Intent: the list, the goal, plan mode, and asking a person - the tools about what the
-//! turn means to do. [`ledger::IntentSink`] measures the effect and
+//! Intent: the list, the goal, plan mode, and asking a person. [`ledger::IntentSink`] measures the effect and
 //! [`ledger::IntentLedger::reconcile`] diffs it against intent at the turn boundary.
 //! ```text
 //!   let rec = ledger.reconcile(&turn.turn_id, assistant_text_of(&turn.items));
@@ -8,9 +7,8 @@
 //!   }
 //! ```
 //!
-//! `letibot_turn::steering::SteeringSource` and `ChannelSteering` already inject at a step
-//! boundary; what is missing is only the call site. An unwired encoder is a declared state
-//! ([`ledger::Verification::NoEncoder`]) rather than a silent zero.
+//! `letibot_turn::steering` already injects at a step boundary; only the call site is missing.
+//! An unwired encoder is a declared state ([`ledger::Verification::NoEncoder`]), not a silent zero.
 
 pub mod ask;
 pub mod board;
@@ -35,8 +33,7 @@ pub use write_plan::{PLAN_DIR, PLAN_EXT, WritePlan};
 
 use crate::runtime::{RegisterError, Registry};
 
-/// The turn-boundary hook, in one call: give it the turn that just finished and it returns
-/// the steering text, or `None` when there is nothing to say - the common case and meant to be.
+/// /// The turn-boundary hook: given the finished turn, returns the steering text, or `None` (the common case).
 ///
 /// ```ignore
 /// if let Some(text) = intent::close_the_turn(&ledger, &turn.turn_id, &turn.items) {
@@ -44,9 +41,7 @@ use crate::runtime::{RegisterError, Registry};
 /// }
 /// ```
 ///
-/// `letibot_turn::steering` already injects at the next step boundary, so what is missing is
-/// only the call site. It reads the assistant's text for the prose heuristic and nothing
-/// else: the tool calls are already in the ledger, put there by the encoder as they ran.
+/// /// It reads only the assistant's text; tool calls are already in the ledger, put there by the encoder.
 pub fn close_the_turn(
     ledger: &IntentLedger,
     turn_id: &str,
@@ -64,7 +59,7 @@ pub fn close_the_turn(
 }
 
 /// [`close_the_turn`] for a seat whose plan tool is `todo_write` - the board line reads `plan`
-/// (R93.F30; see [`ledger::Reconciliation::steering_over`]).
+///.
 pub fn close_the_turn_over(
     ledger: &IntentLedger,
     turn_id: &str,
@@ -204,7 +199,7 @@ mod tests {
         assert_eq!(by("ask_user_question"), Access::Session);
         // Leaving plan mode restores the ability to write.
         assert_eq!(by("exit_plan_mode"), Access::Write);
-        // D9's two: a scoped write is still a write, and a room is off the box.
+        // The two scoped writes: a scoped write is still a write, and a room is off the box.
         // Scope is what makes them cheap to approve, not a smaller class.
         assert_eq!(by("write_plan"), Access::Write);
         assert_eq!(by("say"), Access::Network);
@@ -212,7 +207,7 @@ mod tests {
 
     #[test]
     fn plan_mode_keeps_the_plan_and_drops_the_work() {
-        // D9: plan mode is no writes to the WORK.
+        // Plan mode is no writes to the WORK.
         let r = reg(false);
         let base = crate::runtime::Role::new(
             "coder",
@@ -314,7 +309,7 @@ mod tests {
         let s = seating(&r, &base, true);
         // `todo` is Network here because a board is mounted, so plan mode drops it too. That is the
         // boundary doing its job rather than a special case: filing a row on the shared queue
-        // changes the world outside the session. What is left is the read tools plus D9's three.
+        // changes the world outside the session. What is left is the read tools plus the plan three.
         assert_eq!(
             s.tools,
             vec!["read", "exit_plan_mode", "write_plan", "say"],

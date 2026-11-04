@@ -92,7 +92,7 @@ pub struct ExternalWiring {
 }
 
 impl ExternalWiring {
-    /// The wiring of a session that attached nothing — this box, today.
+    /// The wiring of a session that attached nothing - this box, today.
     pub fn none() -> ExternalWiring {
         ExternalWiring {
             retrieval: "none attached".into(),
@@ -305,7 +305,7 @@ impl ExternalWiring {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExternalDisclosure {
     pub subject: &'static str,
-    /// `INERT`, `NONE`, `N/A`, `UNUSED` — or empty when the thing is on.
+    /// `INERT`, `NONE`, `N/A`, `UNUSED` - or empty when the thing is on.
     pub state: &'static str,
     pub detail: String,
     pub active: bool,

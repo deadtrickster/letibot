@@ -1,9 +1,6 @@
-//! How much memory a tool call may hold: the policy, the box's numbers, and the
-//! decision.
-//!
-//! [`super::scope`] puts `memory.max` on a job's cgroup, so a job that reaches it
-//! dies alone; this module decides the number, purely, so the rule is testable.
-//! Three outcomes and no fourth: the default, a grant up to the ceiling, a question.
+//! How much memory a tool call may hold: policy, the box's numbers, and the decision.
+//! [`super::scope`] puts `memory.max` on a job's cgroup; this module decides the number, purely.
+//! Three outcomes: the default, a grant up to the ceiling, a question.
 
 use std::fmt;
 

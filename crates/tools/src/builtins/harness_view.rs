@@ -39,7 +39,7 @@ impl HarnessView {
 
 const MAX_WARNINGS: usize = 20;
 
-/// **The warnings whose detail is written for the operator and withheld from the model** - a line
+/// The warnings whose detail is written for the operator and withheld from the model - a line
 /// that quotes the model's own words or its numbers back. Spelled here because this crate sits
 /// below the daemon that names them.
 const WITHHELD: &[&str] = &["context_claim_repeated"];
@@ -340,7 +340,7 @@ mod tests {
 
         // The rows verbatim, escape codes and all. A view that rendered the text
         // and dropped the SGR would pass a test that looked for the words, and
-        // the words are not what was asked for — the colour is.
+        // the words are not what was asked for - the colour is.
         let s = ask(f.clone(), r#"{"what":"screen"}"#);
         assert!(s.payload.contains("80x2"), "the head's size: {}", s.payload);
         assert!(
@@ -382,7 +382,7 @@ mod tests {
         assert!(said.contains("heads"), "{}", s.payload);
     }
 
-    /// **R93.A2: the operator's repeated-claim warning is not read out to the model.** Its detail
+    /// The operator's repeated-claim warning is not read out to the model. Its detail
     /// quotes the model's own sentence and its fill back, which is the habit the check exists to
     /// stop, so the view says the code, the age and that the detail was withheld.
     #[test]

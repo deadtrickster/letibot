@@ -1,7 +1,6 @@
-//! One running command: its state, its captured output, and the denominator that travels with
-//! every slice of it. A foreground `bash` call is the same job the tool waited on, so its whole
-//! output stays reachable through `job_output` and a timeout is a job still running. The capture
-//! keeps the tail, and [`OutputSlice`] says what it dropped and of what total.
+//! One running command: state, captured output, and the denominator that travels with every slice.
+//! A foreground `bash` call is the same job, so its output stays reachable through `job_output`.
+//! The capture keeps the tail; [`OutputSlice`] says what it dropped.
 
 use std::collections::VecDeque;
 use std::io::Write;

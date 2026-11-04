@@ -1,8 +1,5 @@
-//! The sweep's own tests, over a corpus small enough to reason about by hand.
-//!
-//! The fixture is `crates/tools/tests/data/gate-corpus-tiny.json`, beside this test the
-//! way a build's fixture belongs in the tree: every command in it is written for the
-//! fixture and none is copied from a store.
+//! The sweep's tests, over the fixture `crates/tools/tests/data/gate-corpus-tiny.json`, small enough
+//! to reason about by hand. Every command in it is written for the fixture.
 
 use super::*;
 

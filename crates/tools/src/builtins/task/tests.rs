@@ -124,7 +124,7 @@ fn a_message_reaches_the_runner_and_a_refusal_is_not_an_ok() {
         )]
     );
 
-    // **A child that has already answered is a failure, not a quiet success.** This is
+    // A child that has already answered is a failure, not a quiet success. This is
     // the defect class the kill already paid for: a tool reporting a state change that
     // nothing made.
     let missed = call(
@@ -233,15 +233,15 @@ fn a_watched_subagent_is_not_waited_on() {
         (r, started.elapsed(), asked, wanted)
     };
 
-    // **The watched child was asked for no wait at all** - the cause, rather than
-    // `elapsed() < 200ms`, which a loaded box trips with the code right (R67 item 19).
+    // The watched child was asked for no wait at all - the cause, rather than
+    // `elapsed() < 200ms`, which a loaded box trips with the code right.
     let (r, _, asked, wanted) = run(true, false);
     assert_eq!(
         asked,
         std::time::Duration::ZERO,
         "a watched child was waited on for {asked:?}"
     );
-    // **And the wait told the daemon it wants this one now** (R79), so the answer is not held
+    // And the wait told the daemon it wants this one now, so the answer is not held
     // for the next break - which is what "reaches you on its own" promises a waiter.
     assert_eq!(
         wanted,
@@ -319,7 +319,7 @@ fn task_result_tells_a_working_child_from_an_idle_one_and_a_wedged_one() {
         other => panic!("a child whose turn has not ended abstains: {other:?}"),
     };
 
-    // **1. WORKING** - a turn in flight and the child's own log moved eight seconds ago.
+    // 1. WORKING - a turn in flight and the child's own log moved eight seconds ago.
     let working = ask(Some(at(8, true)));
     assert_eq!(summary(&working), "subagent `sub-r` is working");
     assert!(
@@ -333,7 +333,7 @@ fn task_result_tells_a_working_child_from_an_idle_one_and_a_wedged_one() {
         working.payload
     );
 
-    // **2. IDLE, which is the case that had no sentence.** No turn is in flight and the child
+    // 2. IDLE, which is the case that had no sentence. No turn is in flight and the child
     // is still there: the one door that reaches it is its parent's message, and the answer must
     // say so instead of the sentence that was printed about every child.
     let idle = ask(Some(at(12 * 60, false)));
@@ -358,7 +358,7 @@ fn task_result_tells_a_working_child_from_an_idle_one_and_a_wedged_one() {
         idle.payload
     );
 
-    // **3. WEDGED** - a turn in flight and nothing out of it for twelve minutes. The same
+    // 3. WEDGED - a turn in flight and nothing out of it for twelve minutes. The same
     // silence as the idle child, and the opposite move: this is the one `job_kill` answers.
     let wedged = ask(Some(at(12 * 60, true)));
     assert_eq!(summary(&wedged), "subagent `sub-r` is quiet");
@@ -374,7 +374,7 @@ fn task_result_tells_a_working_child_from_an_idle_one_and_a_wedged_one() {
              about"
     );
 
-    // **And a runner that keeps no reading reads exactly as it did before.** This is the tree's
+    // And a runner that keeps no reading reads exactly as it did before. This is the tree's
     // rule for a defaulted field: every existing fake, and `NoTaskRunner`, is this case.
     let none = ask(None);
     assert_eq!(summary(&none), "subagent `sub-r` is still working");
@@ -596,7 +596,7 @@ fn a_child_finishing_enqueues_its_branch() {
         )
     };
 
-    // **A `task_start` child's finish is reported.** The child answered, the runner was
+    // A `task_start` child's finish is reported. The child answered, the runner was
     // asked to enqueue its branch, and the answer says where the branch is going.
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
     let r = call(
@@ -618,7 +618,7 @@ fn a_child_finishing_enqueues_its_branch() {
     assert!(r.payload.contains("agent/do-the-work"), "{}", r.payload);
     assert!(r.payload.contains("merge queue"), "{}", r.payload);
 
-    // **A runner with no branch to land says nothing extra.** The ordinary case for a plain
+    // A runner with no branch to land says nothing extra. The ordinary case for a plain
     // `task` child, and the reason every existing `task_result` answer reads as it did.
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
     let r = call(
@@ -631,7 +631,7 @@ fn a_child_finishing_enqueues_its_branch() {
     assert_eq!(*seen.lock().unwrap(), vec!["sub-1"]);
     assert_eq!(r.payload, "the child answered");
 
-    // **A refusal is SAID, not swallowed.** The branch is not pushed and nobody else carries
+    // A refusal is SAID, not swallowed. The branch is not pushed and nobody else carries
     // it, so a parent told nothing would believe the work was on its way to main.
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
     let r = call(
@@ -819,7 +819,7 @@ fn the_tool_parses_access_and_where_and_refuses_the_unknown() {
         r#"{"prompt": "run the suite", "where": "firecode", "verify": "make e2e"}"#,
     );
     assert!(gated.contains("started subagent"), "{gated}");
-    // **`repo` names a VM's copy**, and is refused for a child on the host - the operator: *"VMs
+    // `repo` names a VM's copy, and is refused for a child on the host - the operator: *"VMs
     // are per repo"*. With `where: firecode` the spec carries it, resolved by the spawn.
     let refused = run(
         &mut rt,
@@ -837,8 +837,8 @@ fn the_tool_parses_access_and_where_and_refuses_the_unknown() {
     assert!(p.contains("not a downgrade"), "{p}");
     let p = run(&mut rt, &mut sink, r#"{"prompt": "x", "where": "moon"}"#);
     assert!(p.contains("not a placement"), "{p}");
-    // **A host with no firecode refuses the VM at the call**, with nothing spawned and
-    // `host` named - not a child that dies at its start. The operator's Mac, 2026-10-08.
+    // A host with no firecode refuses the VM at the call, with nothing spawned and
+    // `host` named - not a child that dies at its start.
     let mut rt = runtime(std::path::Path::new("/nonexistent/firecode"));
     let p = run(&mut rt, &mut sink, r#"{"prompt": "x", "where": "vm"}"#);
     let _ = std::fs::remove_file(&stub);
@@ -901,7 +901,7 @@ fn the_slug_is_short_kebab_and_deterministic() {
     assert_eq!(slug_from_prompt("   "), "task");
 }
 
-/// **The worktree path and branch are pure functions of the workspace and slug.**
+/// The worktree path and branch are pure functions of the workspace and slug.
 #[test]
 fn the_worktree_path_and_branch_are_pure() {
     assert_eq!(
@@ -911,8 +911,8 @@ fn the_worktree_path_and_branch_are_pure() {
     assert_eq!(worktree_branch("task-start"), "agent/task-start");
 }
 
-/// **The brief names the tree, the branch, and the rule** - the report of 2026-10-12: *"the
-/// pattern is now so routine that it belongs in the brief rather than in the salvage."*
+/// The brief names the tree, the branch, and the rule: the pattern is routine enough that
+/// it belongs in the brief rather than in the salvage.
 #[test]
 fn the_worktree_brief_says_the_branch_is_the_deliverable() {
     let b = worktree_brief("/repo/.claude/worktrees/agent-x", "agent/x");
@@ -927,10 +927,8 @@ fn the_worktree_brief_says_the_branch_is_the_deliverable() {
     assert!(b.contains("names the commit(s)"), "{b}");
 }
 
-/// **A cargo config above the tree makes the gate's build a different build.** Cargo reads
-/// `.cargo/config.toml` from a tree's parents, so a worktree inside a checkout that carries a
-/// `[patch]` inherits it - and the queue's landing tree, made outside the repository, does not.
-/// The brief says so, because a child that passes a build here can still fail the gate.
+/// A cargo config above the tree makes the gate's build a different build: the queue's landing
+/// tree lies outside the repository and inherits no `[patch]`. The brief says so.
 #[test]
 fn the_brief_names_a_cargo_patch_the_tree_inherits() {
     let d = crate::backend::tempdir::TempDir::new();
@@ -1059,7 +1057,7 @@ fn an_existing_path_is_refused_by_name_and_nothing_is_spawned() {
     );
 }
 
-/// **The placement is in the answer**: the handle names the path, the branch and
+/// The placement is in the answer: the handle names the path, the branch and
 /// the base SHA, so the caller and the operator see where the child is working
 /// without re-reading the brief.
 #[test]
@@ -1135,7 +1133,7 @@ fn the_placement_is_in_the_answer() {
     assert!(r.payload.contains("task_message"), "{}", r.payload);
 }
 
-/// **The answer says the tree's build is not the gate's**, when a cargo config above it patches a
+/// The answer says the tree's build is not the gate's, when a cargo config above it patches a
 /// crate: the parent reads this answer, and the disagreement is otherwise found by a red gate.
 #[test]
 fn the_answer_names_a_cargo_patch_the_childs_tree_inherits() {
@@ -1203,7 +1201,7 @@ fn the_answer_names_a_cargo_patch_the_childs_tree_inherits() {
     assert!(r.payload.contains("rano"), "{}", r.payload);
 }
 
-/// **The main tree is the exception, and it is named as such in the answer.**
+/// The main tree is the exception, and it is named as such in the answer.
 #[test]
 fn the_main_tree_is_named_as_the_exception() {
     use crate::runtime::{Registry, ToolRuntime};
@@ -1411,7 +1409,7 @@ fn a_task_start_in_a_vm_is_refused_before_anything_is_arranged() {
     assert_eq!(arranged.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
-/// **R93.F21/F22: the schemas take what the tools read.** `task` read `model` with no property
+/// The schemas take what the tools read. `task` read `model` with no property
 /// for it, and `task_start` promised a delivery `wake` decides with no `wake` to pass.
 #[test]
 fn task_and_task_start_schemas_name_model_and_wake() {
@@ -1432,7 +1430,7 @@ fn task_and_task_start_schemas_name_model_and_wake() {
     }
 }
 
-/// **A named slug that cannot name a directory and a branch is refused** (TODO R92.17): `/`,
+/// A named slug that cannot name a directory and a branch is refused: `/`,
 /// `..` and whitespace were only trimmed.
 #[test]
 fn a_slug_with_a_slash_dots_or_spaces_is_refused() {
@@ -1454,7 +1452,7 @@ fn a_slug_with_a_slash_dots_or_spaces_is_refused() {
     assert!(why.contains("`..`"), "{why}");
 }
 
-/// **A derived slug that is taken becomes the next free one** (TODO R92.17) - `-2`, `-3`.
+/// A derived slug that is taken becomes the next free one - `-2`, `-3`.
 #[test]
 fn a_taken_derived_slug_gets_the_next_free_suffix() {
     let taken = ["fix-the-gate", "fix-the-gate-2"];
@@ -1603,7 +1601,7 @@ fn a_child_resolves_by_id_or_slug_and_an_ambiguous_name_is_refused() {
     assert_eq!(resolve_child_in(&kids, "s-peer").unwrap(), "s-peer");
 }
 
-/// **A child's label is the job's spelling, and it reads back.** `slug · handle`, the bare handle
+/// A child's label is the job's spelling, and it reads back. `slug · handle`, the bare handle
 /// for a child nobody named, and the split recovers both - and refuses to read a `·` that has no
 /// child's handle after it.
 #[test]
@@ -1627,7 +1625,7 @@ fn a_childs_label_is_its_slug_and_handle_and_splits_back() {
     assert_eq!(Echo::default().label_of("sub-1"), "sub-1");
 }
 
-/// **A plain `task` child's name**: the one given, else the prompt's, unique among its siblings.
+/// A plain `task` child's name: the one given, else the prompt's, unique among its siblings.
 #[test]
 fn a_task_childs_slug_is_given_or_derived_and_made_unique() {
     let taken = ["fix-the-login".to_string(), "bench".to_string()];
@@ -1768,7 +1766,7 @@ fn the_task_tools_take_a_slug_and_name_the_child_by_it() {
     );
 }
 
-/// **A worktree lives beside its repository when the layout says where** - the operator's rule:
+/// A worktree lives beside its repository when the layout says where - the operator's rule:
 /// `~/Projects/<name>/<name>` keeps them in `~/Projects/<name>/worktrees`, an org folder of several
 /// repositories in its own `worktrees/<repo>`, anything else in `.claude/worktrees` as before.
 #[test]
@@ -2066,7 +2064,7 @@ fn a_lost_childs_row_says_how_far_it_got() {
             .to_string()
     };
 
-    // **Two children of the same class read differently**, which is the whole defect: the one that
+    // Two children of the same class read differently, which is the whole defect: the one that
     // died after `bash`'s result says so, and the one that never opened says that instead.
     let mid = row("s-1-sub-midcall");
     let never = row("s-1-sub-never");
@@ -2081,14 +2079,14 @@ fn a_lost_childs_row_says_how_far_it_got() {
         "neither answered: {mid} / {never}"
     );
 
-    // **The one that answered is not drawn as one that did not** - and its text is named for what
+    // The one that answered is not drawn as one that did not - and its text is named for what
     // it is, because nothing recorded a settlement.
     let answered = row("s-1-sub-answered");
     assert!(answered.contains("answered"), "{answered}");
     assert!(answered.contains(NOT_A_FINISHED_ANSWER), "{answered}");
     assert!(!answered.contains("gone with no answer"), "{answered}");
 
-    // **No row claims a cause it was not given.** The list knows the row is missing; why is the
+    // No row claims a cause it was not given. The list knows the row is missing; why is the
     // store's to say, and it said nothing to this door.
     for r in [&mid, &never, &answered] {
         assert!(!r.contains("refused"), "a cause nobody measured: {r}");
@@ -2168,7 +2166,7 @@ fn a_lost_childs_answer_says_it_is_not_a_finished_answer() {
         "and the text is still there, under it: {}",
         lost.payload
     );
-    // **Where the rest of it is** - a parent that wants the whole turn is told the door, in the
+    // Where the rest of it is - a parent that wants the whole turn is told the door, in the
     // same sentence that says the answer is not one.
     assert!(
         lost.payload
@@ -2179,7 +2177,7 @@ fn a_lost_childs_answer_says_it_is_not_a_finished_answer() {
     // Nothing claims the child finished, and nothing claims a cause nobody measured.
     assert!(!lost.payload.contains("refused"), "{}", lost.payload);
 
-    // **A recorded child's answer is untouched** - this is a caveat about a missing record, and a
+    // A recorded child's answer is untouched - this is a caveat about a missing record, and a
     // child whose settlement was written down has none of it.
     let kept = ask("s-1-sub-kept");
     assert_eq!(

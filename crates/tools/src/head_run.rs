@@ -1,12 +1,6 @@
-//! What a head needs to offer a tool to the operator without holding a schema.
-//!
-//! Three facts per tool, all derived from its own declared `parameters`, so a schema change moves the
-//! head's behaviour with no head rebuilt: which field a bare line goes into, what kind that field is,
-//! and which other fields carry defaults.
-//!
-//! The kind cannot come from `type`, since every door tool declares a bare string, so a declared
-//! `format` answers first and the field's name second. A tool needing two fields or none gets no bare
-//! form: [`BareForm::None`] carries the sentence a head says instead of guessing.
+//! What a head needs to offer a tool to the operator without holding a schema: which field a bare
+//! line goes into, its kind, and which fields carry defaults, all derived from `parameters`.
+//! Kind comes from a declared `format`, then the name. [`BareForm::None`] carries the head's sentence.
 
 use serde_json::Value;
 

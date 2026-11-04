@@ -53,7 +53,7 @@ pub(crate) fn unknown_job(jobs: &[JobView], asked: &str) -> Invocation {
         }
         s
     };
-    // **Both handles, because both are accepted.** A model that wrote a name it nearly
+    // Both handles, because both are accepted. A model that wrote a name it nearly
     // remembered should be told the name, and a model that wrote an id should be told the
     // id; the nearest is the nearest of either.
     let names: Vec<String> = jobs
@@ -84,7 +84,7 @@ fn pick_job(jobs: &[JobView], asked: &str) -> Picked {
     if asked.trim().is_empty() {
         return Picked::Unknown;
     }
-    // **The id first, and it always wins.** It is the handle the daemon mints, and a job
+    // The id first, and it always wins. It is the handle the daemon mints, and a job
     // whose *name* happens to be another job's id must not steal the call.
     if let Some(i) = jobs.iter().position(|j| j.id.0 == asked) {
         return Picked::One(i);
@@ -364,7 +364,7 @@ impl Tool for JobList {
                 ));
             }
             for f in &done {
-                // **Why it fired, not that it did.** A firing whose record said only
+                // Why it fired, not that it did. A firing whose record said only
                 // "done" would have thrown away the answer it was declared to get.
                 body.push_str(&format!(
                     "  {} — was watching {} — {}\n",
@@ -441,7 +441,7 @@ impl Tool for JobOutput {
                  them.",
             );
         };
-        // **The id or the name the agent stated.** See [`resolve_job`]: the id wins, and a
+        // The id or the name the agent stated. See [`resolve_job`]: the id wins, and a
         // name that fits two jobs is refused rather than guessed at.
         let view = match resolve_job(host, id) {
             Ok(v) => v,
@@ -636,8 +636,8 @@ fn wait_on_job(
     id: &str,
     timeout: Duration,
 ) -> Invocation {
-    // What an ended job's memory did, as one more line of its result - TODO.md R65's *"every
-    // result reports its peak"*, which a wait is the result of.
+    // What an ended job's memory did, as one more line of its result: every
+    // result reports its peak, which a wait is the result of.
     fn memory_line(v: Option<&JobView>) -> String {
         v.and_then(JobView::memory_clause)
             .map(|m| format!("\n  memory:  {m}"))
@@ -669,7 +669,7 @@ fn wait_on_job(
     // on one blocks the floor for an answer already in flight; the verb stays for jobs
     // nothing delivers. The watch is keyed by id, so a name resolves before it is asked.
     if ctx.completion_delivered(&jid.0) {
-        // **And asking is wanting** (R79): a result nothing in the plan waits on is held for the
+        // And asking is wanting: a result nothing in the plan waits on is held for the
         // next break, and a wait is the model saying this one is not that. So the daemon is told
         // to hand it over the moment it ends - which is what the sentence below promises.
         ctx.want_completion(&jid.0, crate::runtime::WantedNow::Awaited);
@@ -997,7 +997,7 @@ impl Tool for JobKill {
         let mut killed: Option<String> = None;
         let reaping = match (job, scope) {
             (Some(id), _) => {
-                // **The id or the name the agent stated** - see [`resolve_job`].
+                // The id or the name the agent stated - see [`resolve_job`].
                 let view = match resolve_job(host, id) {
                     Ok(v) => v,
                     Err(inv) => return inv,
@@ -1220,7 +1220,7 @@ mod tests {
 
     #[test]
     fn no_tool_here_takes_a_pattern() {
-        // T21 made blocked rather than guarded: if this ever fails, somebody
+        // Blocked rather than guarded: if this ever fails, somebody
         // added the argument that brings the whole failure mode back.
         for s in [
             JobList.schema(),
@@ -1240,7 +1240,7 @@ mod tests {
         }
     }
 
-    /// **A job, as the table holds it** - every field a resolver does not read filled with
+    /// A job, as the table holds it - every field a resolver does not read filled with
     /// something obvious, so a test says which facts it is about.
     fn view(id: &str, slug: Option<&str>) -> JobView {
         let scope = || ScopeId {
@@ -1275,7 +1275,7 @@ mod tests {
         let table = vec![
             view("j1", Some("release-build")),
             view("j2", None),
-            // **A name that collides with another job's id.** The id is the handle the daemon
+            // A name that collides with another job's id. The id is the handle the daemon
             // mints, so it wins: a job whose name happens to be `j1` must not steal a call
             // for `j1`.
             view("j3", Some("j1")),
@@ -1425,7 +1425,7 @@ mod tests {
             "`all` must not claim a hidden count or offer a way back: {every}"
         );
 
-        // **Nothing running is an answer**, not an empty listing - and it leads, because the live
+        // Nothing running is an answer, not an empty listing - and it leads, because the live
         // run of this default printed the same fact twice, one line apart (see the function).
         let idle = job_list_summary(None, false, 44, 44, 0);
         assert!(
@@ -1617,7 +1617,7 @@ mod tests {
         );
     }
 
-    /// **`job_kill` takes a subagent's slug as it takes a job's name**, and refuses a name two
+    /// `job_kill` takes a subagent's slug as it takes a job's name, and refuses a name two
     /// children share - or a child and a job share - without stopping anything. The runner must
     /// be asked about the HANDLE the name stands for.
     #[test]
@@ -1693,8 +1693,8 @@ mod tests {
         );
         // A name no child carries goes on to the host's jobs.
         assert!(kill.route_subagent("release-build", &[]).is_none());
-        // **A handle this runner knows, refused, is the refusal** - not the host's job table.
-        // MEASURED 2026-11-01: `job_kill` on a child whose record was never written answered
+        // A handle this runner knows, refused, is the refusal - not the host's job table.
+        // `job_kill` on a child whose record was never written answered
         // *"this session has started 0 jobs"*, about a child `task_result` was listing.
         let refused_handle = kill
             .route_subagent("s-1-sub-4", &[])

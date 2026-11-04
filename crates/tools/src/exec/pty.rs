@@ -32,7 +32,7 @@ impl Pty {
             return Err(io::Error::last_os_error());
         }
         let master = unsafe { File::from_raw_fd(master_fd) };
-        // The same marking on the master, for the same reason — see the note on the slave
+        // The same marking on the master, for the same reason - see the note on the slave
         // below, which is the end that actually bit.
         if unsafe { libc::fcntl(master_fd, libc::F_SETFD, libc::FD_CLOEXEC) } != 0 {
             return Err(io::Error::last_os_error());
@@ -163,7 +163,7 @@ pub struct TailGuard {
 
 #[cfg(target_os = "macos")]
 impl TailGuard {
-    /// Wait — bounded — until the master has nothing pending (`FIONREAD` is 0, so the
+    /// Wait - bounded - until the master has nothing pending (`FIONREAD` is 0, so the
     /// drain has taken every byte), then let the slave go.
     pub fn release(self) {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
@@ -197,7 +197,7 @@ pub fn controlling_terminal(cmd: &mut std::process::Command, fd: std::os::fd::Ra
     unsafe {
         cmd.pre_exec(move || {
             if libc::setsid() < 0 {
-                // Already a group leader, which a forked child is not — so this is a
+                // Already a group leader, which a forked child is not - so this is a
                 // failure we do not understand, and the command still runs.
             }
             let _ = libc::ioctl(fd, libc::TIOCSCTTY as _, 0);
@@ -303,7 +303,7 @@ mod tests {
                 "the {what} would be inherited by every process this one forks"
             );
         }
-        // And the child that IS meant to have it still does — the flag must not have
+        // And the child that IS meant to have it still does - the flag must not have
         // closed the terminal on the one descriptor the command runs on.
         let mut child = std::process::Command::new("/bin/sh")
             .arg("-c")
@@ -383,7 +383,7 @@ mod tests {
     /// [`Pty::into_master`] dropping it is what lets `host`'s drain finish and the job settle.
     #[test]
     // macOS discards a pty's unread bytes when its last slave closes, so reading only after
-    // the exit cannot see them there — `Pty::tail_guard` is the mechanism, tested below.
+    // the exit cannot see them there - `Pty::tail_guard` is the mechanism, tested below.
     #[cfg(not(target_os = "macos"))]
     fn the_master_reports_the_child_leaving_once_the_parents_own_slave_is_dropped() {
         let p = Pty::open().expect("a pty on this box");
@@ -416,7 +416,7 @@ mod tests {
     }
 
     /// Spawn `script` with all three descriptors on the pty, and with
-    /// [`controlling_terminal`] called or not — the two halves of one question.
+    /// [`controlling_terminal`] called or not - the two halves of one question.
     fn run_three(pty: &Pty, script: &str, controlling: bool) -> std::process::Child {
         let mut cmd = std::process::Command::new("/bin/sh");
         cmd.arg("-c").arg(script);

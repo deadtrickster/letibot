@@ -1,7 +1,5 @@
-//! **Every shell script in this repository is executable**, because the docs tell a person to run
-//! some of them by name. Nothing else notices when the bit goes: the gate runs `sh scripts/...`,
-//! so a 644 `tests/acceptance/run.sh` is green everywhere except in the hands of whoever read
-//! `docs/tui-testing.md` and typed the path.
+//! Every shell script in this repository is executable, because the docs tell a person to run some
+//! by name. The gate runs `sh scripts/...`, so nothing else notices a lost mode bit.
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};

@@ -1,9 +1,6 @@
-//! Acceptance tests for the two ways into the background, the kill deadline, and
-//! monitors.
-//!
-//! Every test here asserts on both branches: the substrate needs a delegated cgroup v2
-//! subtree, and a box without one checks that the refusal names what was missing
-//! instead of going green having measured nothing.
+//! Acceptance tests for the two ways into the background, the kill deadline, and monitors.
+//! Each asserts both branches: without a delegated cgroup v2 subtree the refusal must name what is
+//! missing, not go green having measured nothing.
 
 use letibot_tools::exec::{Fired, JobId, ProcessHost, ScopeKind};
 use letibot_tools::testing::runner_harness;

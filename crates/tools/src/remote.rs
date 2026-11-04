@@ -1083,30 +1083,17 @@ fn grouped(script: &str, file: &str) -> String {
 /// bound is not made to spend a second one twice.
 const CANCEL_BOUND: Duration = Duration::from_secs(10);
 
-/// The variable every command a placed session runs carries, whose value names the placement.
-/// `LETIBOT_SESSION` is the whole of what a host with no cgroup can be asked later: *which of these
-/// processes did this session start*. Nothing else tells a build of this session's apart from the
-/// operator's own build on the same machine, so a sweep that did not read it would either kill their
-/// work or leave this session's running to the end of the box.
+/// Variable every command a placed session runs carries; its value names the placement.
+/// A host with no cgroup can only be asked which processes this session started.
 pub const SESSION_MARK: &str = "LETIBOT_SESSION";
 
 /// How long the sweep gets: its own TERM-and-wait is four seconds at the longest, and a host that has
 /// stopped answering must not hold the daemon's exit open past a fresh master's timeout.
 const END_SESSION_BOUND: Duration = Duration::from_secs(25);
 
-/// The sweep [`Ssh::end_session_processes`] runs on the far side. One script and not a `pkill`: the
-/// pids it finds are TERMed, waited for and then KILLed, so the answer is *what is left* rather than
-/// *what was signalled*. The id arrives as `$1` because a mark spelled inside this text would appear
-/// in the sweep's own command line, where it would find and kill itself.
-///
-/// Two readers, because the exact one is Linux's: `/proc/<pid>/environ` holds each process's
-/// environment as it was at exec, whole and in NUL-separated fields, so ONE `grep -l` answers for the
-/// whole machine; `ps eww` prints it as text after the command, which is all a Mac has. The two run in
-/// SEQUENCE, so the `grep` whose own argv holds the mark has exited before `ps` looks for it.
-///
-/// Both match the mark as a WHOLE FIELD, never as a prefix. A placement's id ends in a decimal
-/// counter, so `-1` is a prefix of `-12`: a prefix match ends another placement's work on the same
-/// machine, and a call that was TERMed comes back as `exit 143` with nothing said.
+/// The sweep [`Ssh::end_session_processes`] runs on the far side. A script, not `pkill`: pids are TERMed,
+/// waited for, then KILLed, so the answer is what is left. The id arrives as `$1`; the mark matches
+/// as a whole field (`-1` is a prefix of `-12`). Linux greps `/proc/<pid>/environ`, a Mac uses `ps eww`.
 const SESSION_SWEEP: &str = r#"
 mark="LETIBOT_SESSION=$1"
 self=" "
@@ -1414,10 +1401,8 @@ impl Ssh {
                 quote(&self.host.with_path(&vm.guest_command(script)))
             );
         }
-        // The session's mark goes on the OUTERMOST command, never inside the script: an exported
-        // variable set by the script is not in the shell's own `environ`, and this one has to be -
-        // it is what `end_session_processes` reads to find the tree this command forked. Outside the
-        // wrapper, so a `mise exec -C <dir> --` line keeps the shape it always had.
+        // The mark goes on the outermost command, not inside the script: a variable exported by the
+        // script is not in the shell's own `environ`, which is what `end_session_processes` reads.
         let body = format!("bash -lc {}", quote(&self.host.with_path(script)));
         let body = match self.mise_program() {
             Some(program) => format!("{program} exec -C {} -- {body}", self.dir_arg()),
@@ -1677,12 +1662,9 @@ impl Ssh {
         let _ = self.raw("ending the remote process group", &command, CANCEL_BOUND);
     }
 
-    /// End every process this session started on that machine, and say what that was.
-    ///
-    /// A host has no cgroup to empty, so the mark ([`SESSION_MARK`]) is the only handle on the tree
-    /// the session forked - a stopped package used to leave its shells running for hours in a
-    /// placement directory that had already been removed. A process that cleared its own environment
-    /// is out of reach, so the answer says what is LEFT rather than claiming a clean machine.
+    /// End every process this session started on that machine, and say what is left. A host has no
+    /// cgroup, so the mark ([`SESSION_MARK`]) is the only handle; a process that cleared its environment
+    /// is out of reach.
     pub fn end_session_processes(&self) -> Option<String> {
         self.sweep().said
     }
@@ -3015,10 +2997,8 @@ impl SshBackend {
         if let Some(within) = spec.bound {
             ssh = ssh.with_bound(within);
         }
-        // From here on, every command this session runs on that machine carries a mark - including
-        // the arranging steps below, which fork `git` there like anything else. It names the PLACEMENT
-        // and not only the session: two daemons can place the same session id on one host, and a sweep
-        // must end only what it started.
+        // Every command from here carries the mark, arranging steps included. It names the placement,
+        // not only the session: two daemons can place one session id on a host.
         static MARKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         ssh = ssh.with_mark(&format!(
             "{}-{}-{}",
@@ -3428,11 +3408,8 @@ impl SshBackend {
     /// second call reports what the first found.
     fn settle(&self) -> String {
         let mut said: Vec<String> = Vec::new();
-        // First, before anything is fetched home: what the session STARTED on that machine goes with
-        // it. A host has no cgroup, so this is the mark sweep and not a scope - and it runs before the
-        // branch comes back, because a process still writing in the checkout when the fetch reads it
-        // is the one state nobody can describe. Said once, so a second close reports the first's
-        // finding rather than an empty machine it has already emptied.
+        // Sweep the session's processes before the branch is fetched home: a process still writing in the
+        // checkout would corrupt the fetch. Said once, so a second close repeats the first's finding.
         let swept = {
             let already = self.swept.lock().unwrap_or_else(|e| e.into_inner()).clone();
             match already {
@@ -3740,10 +3717,9 @@ fn ssh_program_default() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("ssh"))
 }
 
-/// The remote root, resolved ONCE on the host: `root = "~/letibot-remote"` is a fact about that
-/// machine's home, not this one's, so it is expanded there and every path below is absolute, which
-/// is what `git fetch` needs. A relative answer is refused rather than used, and `create` is a
-/// placement making the root against a collect that must not make one on a host that has neither.
+/// The remote root, resolved once on the host: `~/letibot-remote` is that machine's home, so every
+/// path below is absolute, as `git fetch` needs. A relative answer is refused. `create` makes the
+/// root; collect must not make one on a host that has neither.
 fn resolved_root(ssh: &Ssh, asked: &str, create: bool) -> Result<String, BackendError> {
     let root = ssh
         .must(
@@ -3820,10 +3796,9 @@ pub fn collect(spec: &CollectSpec) -> Result<String, BackendError> {
     let back_branch = back_branch_for(&host, &spec.session);
     let worktree = format!("{root}/{repo_name}/{short}");
     let mirror = format!("{root}/{repo_name}.git");
-    // A host with nothing there is a placement made somewhere else, and `git fetch` would refuse
-    // with words about a path this box cannot see; this names the path somebody can go and look at.
-    // The checkout is the witness and not the mirror: one mirror is shared by every session on the
-    // same repository, so its presence says nothing about whether THIS session was placed here.
+    // A host with nothing there is a placement made elsewhere, and `git fetch` would complain about a
+    // path this box cannot see. The checkout is the witness, not the mirror: one mirror is shared by
+    // every session on the repository.
     if ssh
         .must(
             "looking for the placement's checkout",
@@ -4046,17 +4021,9 @@ fn forget_placement(ssh: &Ssh) {
         .retain(|p| placement_key(&p.ssh) != key);
 }
 
-/// End what every placement this process made and no session closed left on its host: the processes
-/// it started, and the branch it committed. All at once and bounded by [`END_SESSION_BOUND`]: the
-/// daemon is on its way out, and a host that has stopped answering must not be able to hold the exit
-/// open. The branch is fetched here and not only at a close, because `--stop` reaches no close at all
-/// - which is why a stopped package's commits never came home.
-///
-/// A sweep that got no slot in the host's queue never ran - the stop reaches this before it
-/// interrupts the session's own calls, so a full queue is the ordinary case - and it goes back on
-/// the list rather than with it: the next door to ask is the only chance that work has. Nothing is
-/// fetched for it, because a process still writing in that checkout may be there when the fetch
-/// reads it.
+/// End what every placement this process made and no session closed left on its host: processes
+/// and the committed branch (`--stop` reaches no close). Bounded by [`END_SESSION_BOUND`]. A sweep
+/// that got no queue slot never ran and goes back on the list, with nothing fetched for it.
 pub fn placements_down() -> Vec<String> {
     let all: Vec<Placement> =
         std::mem::take(&mut *PLACEMENTS.lock().unwrap_or_else(|e| e.into_inner()));
@@ -4088,10 +4055,8 @@ pub fn placements_down() -> Vec<String> {
     said
 }
 
-/// What one sweep came to: the line it has to say, and whether the call was made at all.
-///
-/// The second half is what keeps a sweep alive: no slot in the connection queue means nothing was
-/// sent, so the placement is still owed a sweep and [`placements_down`] puts it back.
+/// What one sweep came to: its line, and whether the call was made at all. No queue slot means
+/// nothing was sent, so [`placements_down`] puts the placement back.
 struct Swept {
     said: Option<String>,
     asked: bool,
@@ -4208,10 +4173,8 @@ fn guest_line(host: &str, project: &str, out: &str, exit: i32) -> String {
     }
 }
 
-/// One page of reads, with the paths this box can reach over the wire and an answer for the rest. A
-/// path outside the view is that path's answer and never the page's: an `Err` for the page means the
-/// channel failed and says nothing about any file, which sends every path in it back to one round
-/// trip of its own.
+/// One page of reads. A path outside the view gets its own answer; an `Err` for the page means the
+/// channel failed, and every path goes back to a round trip of its own.
 fn batched_page(
     paths: &[&str],
     in_view: impl Fn(&str) -> Result<String, BackendError>,
@@ -4306,10 +4269,9 @@ impl ExecBackend for SshBackend {
         self.ssh.read_abs(&self.in_view(path)?)
     }
 
-    /// One round trip for a page of files, not one per file: a placed session's note corpus is
-    /// twelve reads, and at a call each that is the verb's whole cost. The stream is the VM
-    /// backend's own - each file behind a marker base64 cannot make - so a short answer is a
-    /// failure for the CALL and the caller falls back to [`Self::read`].
+    /// One round trip for a page of files, not one per file. The stream is the VM backend's own, with
+    /// a marker base64 cannot make; a short answer fails the call and the caller falls back to
+    /// [`Self::read`].
     fn read_many(
         &self,
         paths: &[&str],
@@ -6255,7 +6217,7 @@ user     = "root"
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// One path outside the view used to be the whole page's answer, which the trait reads as *the
+    /// One path outside the view must not be the whole page's answer, which the trait reads as *the
     /// channel failed and says nothing about any file* - so every path in a page of 64 went back to
     /// one round trip of its own, for a verb's whole budget.
     #[test]

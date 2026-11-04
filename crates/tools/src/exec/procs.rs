@@ -1,11 +1,6 @@
-//! Finding processes by what they look like, without ever finding yourself.
-//!
-//! A pattern matched against `ps` output matches the shell running the `ps`, because that
-//! shell's command line carries the pattern. There is no shell here: the finder reads `/proc`
-//! in-process and removes this process, its ancestors, pid 1 and everything declared protected
-//! before looking, so a self-match is unspellable rather than refused.
-//!
-//! What gets acted on is a (pid, start time) handle, and only this user's processes are listed.
+//! Finding processes by what they look like, without finding yourself: no shell, `/proc` read
+//! in-process, this process, ancestors, pid 1 and the protected set removed first. Handles are
+//! (pid, start time); only this user's processes are listed.
 
 #[cfg(not(target_os = "macos"))]
 use std::path::Path;
@@ -166,8 +161,8 @@ fn clock_ticks() -> u64 {
     if hz <= 0 { 100 } else { hz as u64 }
 }
 
-// `_SC_CLK_TCK` is 2 on Linux and 3 on macOS - the hard-coded 2 this used to pass
-// was `_SC_CHILD_MAX` there - so the constant comes from `libc`, which is now a
+// `_SC_CLK_TCK` is 2 on Linux and 3 on macOS - `_SC_CHILD_MAX` there is not it -
+// so the constant comes from `libc`, a
 // dependency of this crate (for the pty).
 unsafe fn libc_sysconf_clk_tck() -> i64 {
     unsafe { libc::sysconf(libc::_SC_CLK_TCK) as i64 }

@@ -1,7 +1,6 @@
-//! What a session's confinement is threaded with, decided once for every platform: the network
-//! rule, the read-only grants out of the operator's home, and the environment that points tools at
-//! them. Only the rendering (bwrap argv, SBPL) differs per OS, so a placement, a local confined
-//! role and the Mac default seat all take their view from here.
+//! What a session's confinement is threaded with, decided once for every platform: network rule,
+//! read-only grants out of the operator's home, and the env that points tools at them. Only the
+//! rendering (bwrap argv, SBPL) differs per OS.
 
 use std::path::{Path, PathBuf};
 

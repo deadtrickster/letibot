@@ -1,10 +1,6 @@
-//! macOS's boundary, measured on the machine that has it.
-//!
-//! The unit tests pin the profile text; this file asks a real `sandbox-exec` to do what the
-//! boundary exists to prevent. The operator's `~/.ssh` and profiles are never opened or printed:
-//! the deny list is measured against a fake home whose `.ssh` holds a known string, and every
-//! assertion is on an exit status or on whether that string came back. Linux has no
-//! `sandbox-exec` at all, which is what the `cfg` is for.
+//! macOS's boundary, measured on the machine that has it. Unit tests pin the profile text; this
+//! asks a real `sandbox-exec` to prevent things, against a fake home whose `.ssh` holds a known
+//! string. The operator's `~/.ssh` is never opened. Linux has no `sandbox-exec`.
 
 #![cfg(target_os = "macos")]
 

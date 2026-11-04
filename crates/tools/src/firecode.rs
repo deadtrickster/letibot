@@ -1085,7 +1085,7 @@ impl ExecBackend for FirecodeBackend {
     fn close(&self) -> Option<String> {
         self.down();
         // In a VM this session did not start: nothing is brought down, nothing is copied out.
-        // It used to fall through to "neither a result directory ... appeared", which is about
+        // Not the "neither a result directory ... appeared" wording, which is about
         // a copy-out this session was never going to see.
         if !self.owns {
             return Some(if self.mounted {
@@ -1128,7 +1128,7 @@ impl ExecBackend for FirecodeBackend {
                 self.source.display()
             ),
             None => match self.copy_out() {
-                // Each of these used to fall through to "nothing appeared within 10 s", which
+                // Not "nothing appeared within 10 s", which
                 // was false for both: a failed copy-out is the one case where the copy below is
                 // the ONLY place the work is, and a pending one is work still arriving.
                 Some(r) if r.starts_with("failed") => format!(
@@ -1469,11 +1469,9 @@ fn parent_of(path: &str) -> &str {
 /// so a file containing it (or NUL, or a newline) cannot be mistaken for a boundary.
 const READ_MARK: u8 = 0x1e;
 
-/// One guest command that prints N files, the shape [`parse_batched_reads`] reads back: per file,
-/// `0x1e`, a header, a newline, and the base64 on one line - or `d` for a directory, `-` for a path
-/// that is not there and `!` for one that is there and cannot be read. Portable on purpose, so a
-/// test's `/bin/sh` prints the bytes a Linux guest would; the length is trimmed, because BSD `wc`
-/// pads.
+/// One guest command that prints N files, the shape [`parse_batched_reads`] reads back: per file
+/// `0x1e`, a header, a newline, base64 on one line - or `d` directory, `-` missing, `!` unreadable.
+/// Portable so a test's `/bin/sh` matches a Linux guest; the length is trimmed as BSD `wc` pads.
 pub(crate) fn batched_read_command(paths: &[&str]) -> String {
     let list = paths
         .iter()
@@ -2194,7 +2192,7 @@ mod tests {
     }
 
     /// A failed copy-out is said as one, and points at the copy that is now the only place
-    /// the work is - it used to fall through to "nothing appeared within 10 s".
+    /// the work is, never "nothing appeared within 10 s".
     #[test]
     fn a_failed_copy_out_is_reported_as_a_failure_not_as_silence() {
         let root = tmp("copy-failed");
@@ -2255,7 +2253,7 @@ mod tests {
         assert!(!probe(&without).inherit, "{:?}", probe(&without));
     }
 
-    /// The 2026-09-16 shape: the workspace is the folder ABOVE the checkout, so
+    /// The workspace is the folder ABOVE the checkout, so
     /// the build output and the agent worktrees are one level down. Every one of
     /// them must be left behind, at that depth and deeper.
     #[test]

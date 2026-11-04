@@ -294,9 +294,7 @@ fn span_of_lines(hay: &str, starts: &[usize], a: usize, b: usize) -> (usize, usi
 
 /// Both sides of one file change, which is what a head needs to draw a diff.
 ///
-/// It rides the tool result and not a [`crate::events::ToolEvent`], because an event
-/// fans out to every attached head and carries no payload; the digests are there so it
-/// can be sent by reference instead.
+/// It rides the tool result, not a [`crate::events::ToolEvent`], which fans out to every head without a payload.
 ///
 /// ```text
 /// let before: Vec<&str> = edit.before.lines().collect();
@@ -304,11 +302,7 @@ fn span_of_lines(hay: &str, starts: &[usize], a: usize, b: usize) -> (usize, usi
 /// let rows = letibot_ui::diff::render(&before, &after, &DiffConfig { .. });
 /// ```
 ///
-/// Both sides are LF-normalised, so the diff shows no phantom change on a CRLF file and
-/// a created file simply has an empty `before`.
-///
-/// The model is not shown a rendered diff: it asked for the change, and what it does not
-/// know is where the change landed, which is what the tool's payload says.
+/// Both sides are LF-normalised; a created file has an empty `before`. The model is not shown the diff.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileEdit {
     /// Relative to the session root, as the head should label it.
