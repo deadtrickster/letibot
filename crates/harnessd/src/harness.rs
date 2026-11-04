@@ -44,9 +44,9 @@ use letibot_tools::{
 };
 use letibot_transcript::{SystemOrigin, ToolCall, TranscriptItem, UserPart};
 use letibot_turn::{
-    CompactionOutcome, Endpoint, EventSink, Harvest, OverrunPlan, Session, SteeringMessage,
-    SteeringSource, TailSplit, TurnEngine, TurnEvent, TurnFailure, TurnMetrics, TurnOk,
-    plan_compaction_tail, plan_cut, plan_fold, plan_overrun, plan_tail, run_compaction,
+    CompactionOutcome, Endpoint, EventSink, Harvest, OverrunPlan, PrefixWitness, Session,
+    SteeringMessage, SteeringSource, TailSplit, TurnEngine, TurnEvent, TurnFailure, TurnMetrics,
+    TurnOk, plan_compaction_tail, plan_cut, plan_fold, plan_overrun, plan_tail, run_compaction,
     summarise_first_half, summarise_overrun, tail_because, tail_budget, tail_split_of,
 };
 use sha2::{Digest, Sha256};

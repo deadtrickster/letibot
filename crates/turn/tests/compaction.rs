@@ -263,6 +263,93 @@ fn a_summary_turn_that_calls_tools_surfaces_them() {
     assert!(outcome.summary.is_empty(), "{:?}", outcome.summary);
 }
 
+/// A refused summary is taken back the same way a failed fold is, and the WITNESS with it: it names
+/// a prompt and a generation the ledger no longer holds, so a restored conversation that kept it
+/// reports the rollback as a divergence on its next turn.
+#[test]
+fn a_refused_summary_is_taken_back_with_the_witness_it_left() {
+    let Some(_) = letibot_llama::apparatus::present_gguf() else {
+        return;
+    };
+    let _lock = serial();
+
+    let mut call = vec![Frame::Progress {
+        total: 30,
+        processed: 30,
+    }];
+    call.extend(spoken_frames(&[THINK_CLOSE]));
+    call.push(Frame::Token {
+        id: TOOL_CALL_OPEN,
+        text: "",
+    });
+    let body = ids_of("\n{\"name\": \"read\", \"arguments\": {\"path\": \"/tmp/a\"}}\n");
+    call.extend(body.iter().map(|id| Frame::Token { id: *id, text: "" }));
+    call.push(Frame::Token {
+        id: TOOL_CALL_CLOSE,
+        text: "",
+    });
+    call.extend(spoken_frames(&[IM_END]));
+    call.push(Frame::Final {
+        stop_type: "eos",
+        n_decoded: (body.len() + 4) as u64,
+        n_prompt: 30,
+        cache_n: 0,
+    });
+
+    // One answer first, so there is a witness for the refusal to destroy and a conversation for it
+    // to leave in place.
+    let canned = Canned::serve_each(
+        vec![a_summary_turn(&[], &ids_of("the answer"), 20, 0), call],
+        2,
+    );
+    let mut engine = engine(canned.endpoint.clone());
+    let mut session = session(&engine, "compact-refused");
+    let mut sink = RecordingSink::new();
+    session
+        .append_items(&engine, &[user("do a thing")], &mut sink)
+        .unwrap();
+    engine
+        .run_turn(&mut session, &mut sink)
+        .expect("the first turn answers");
+
+    let mark = session.items.len();
+    let tokens = session.ledger.tokens().to_vec();
+    let witness = session.witness().cloned();
+    assert!(
+        witness.is_some(),
+        "a turn that ran leaves the prefix witness the next one is checked against"
+    );
+
+    let outcome = letibot_turn::run_compaction(
+        &mut engine,
+        &mut session,
+        &mut sink,
+        &letibot_turn::compaction::Answerer::Local,
+        &mut no_retries(),
+        None,
+    )
+    .expect("the summary turn itself answers");
+    assert_eq!(outcome.tool_calls, 1, "{outcome:?}");
+    assert!(
+        session.items.len() > mark,
+        "the turn it refuses is in the transcript until the caller takes it back"
+    );
+
+    letibot_turn::undo_refused_summary(&mut session, mark, witness.clone());
+    assert_eq!(session.items.len(), mark, "{:#?}", session.items);
+    assert_eq!(session.ledger.rows().len(), mark, "one row per item");
+    assert_eq!(
+        session.ledger.tokens(),
+        tokens.as_slice(),
+        "the region is where the refusal found it"
+    );
+    assert_eq!(
+        session.witness().cloned(),
+        witness,
+        "the witness still describes the prompt the ledger holds"
+    );
+}
+
 /// A summary turn that keeps saying nothing fails the compaction once the salvage budget is
 /// spent, and nothing is reduced: the whole failed fold is rolled back, so the next attempt starts
 /// where this one did. The fourth failure is `SalvageExhausted` and propagates.

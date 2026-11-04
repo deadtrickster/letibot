@@ -39,6 +39,7 @@ use crate::engine::{Session, TurnEngine, TurnFailure, TurnOk};
 use crate::events::{EventSink, NullSink, TurnEvent};
 use crate::fidelity::{Facts, Fidelity};
 use crate::length::EmptyReason;
+use crate::prefix::PrefixWitness;
 
 /// The compaction turn's instruction, on both the local and the remote path, because it is the
 /// record's own words and a provider must be asked the same thing a local model is.
@@ -652,22 +653,35 @@ pub fn run_compaction(
 /// Undo what a fold appended that did not become a record: the instruction, and the notices a
 /// salvage wrote. The ledger is FORKED rather than truncated, because the region is append-only and
 /// it must stay as long as the items: a longer ledger pairs later rows with the wrong item.
-fn undo_failed_fold(session: &mut Session, mark: usize) {
+fn undo_failed_fold(session: &mut Session, mark: usize) -> bool {
     if session.items.len() <= mark {
-        return;
+        return true;
     }
     match session.ledger.fork(&session.transcript_id, mark) {
         Ok(ledger) => {
             session.items.truncate(mark);
             session.ledger = ledger;
+            true
         }
-        // The failed turn's rows stay, and it is said: worse than the record, and still better
-        // than a transcript whose two halves have stopped being the same list.
-        Err(e) => eprintln!(
-            "letibot: a failed fold was not rolled back ({e}); its {} item(s) stay in the \
-             transcript",
-            session.items.len() - mark
-        ),
+        // The rows stay, and it is said: worse than the record, and still better than a
+        // transcript whose two halves have stopped being the same list.
+        Err(e) => {
+            eprintln!(
+                "letibot: a summary turn was not rolled back ({e}); its {} item(s) stay in the \
+                 transcript",
+                session.items.len() - mark
+            );
+            false
+        }
+    }
+}
+
+/// Take back a summary turn the caller REFUSED - it proposed tool calls, so it is not a record -
+/// and the witness that turn left, which names a prompt the ledger no longer holds. A refusal is
+/// not a failure the turn crate can see, so this is the caller's call, once, for both its doors.
+pub fn undo_refused_summary(session: &mut Session, mark: usize, witness: Option<PrefixWitness>) {
+    if undo_failed_fold(session, mark) {
+        session.restore_witness(witness);
     }
 }
 

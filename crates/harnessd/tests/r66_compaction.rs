@@ -463,21 +463,20 @@ fn a_refused_reseat_leaves_the_census_where_it_found_the_transcript() {
     );
 }
 
-/// The other failure: the summary turn ran and wrote its answer, and the compaction was refused for what the answer proposed. What stays is the instruction plus that answer, one turn's output per attempt, not the conversation.
-/// The hub pairs the refusal's warning with that instruction, and the error tells the model to retry on the transcript it can see.
+/// The other refusal: the summary turn RAN and proposed a tool call, so the compaction is refused
+/// for what the answer proposed. It leaves nothing either, and each refusal is said once, because
+/// the wall is where a retry that paid for its predecessor would spend the room it came to find.
 #[test]
-fn a_compaction_that_ran_and_was_refused_leaves_its_own_answer_too() {
+fn a_compaction_that_ran_and_was_refused_leaves_nothing_behind() {
     let _serial = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
     let fake = Fake::start();
     let dir = TempDir::new("harnessd-r66-compaction-ran");
-    let (mut h, _hub) = opened(&dir, &fake.url, "r66-compaction-ran");
+    let (mut h, hub) = opened(&dir, &fake.url, "r66-compaction-ran");
 
     history(&mut h, 8, "warm-up");
     let base = held(&h);
     fake.answer_with(PROPOSE_A_TOOL);
 
-    let mut per: Vec<Held> = Vec::new();
-    let mut prev = base;
     for i in 0..6 {
         let out = h.compact();
         let said = out.err().map(|e| format!("{e}"));
@@ -487,53 +486,72 @@ fn a_compaction_that_ran_and_was_refused_leaves_its_own_answer_too() {
         );
         let now = held(&h);
         println!(
-            "attempt {:>2}: +{} item(s), +{} byte(s) of text, +{} token(s), heap {:+}",
+            "attempt {:>2}: {:+} item(s), {:+} byte(s) of text, {:+} token(s), heap {:+}",
             i + 1,
-            now.items - prev.items,
-            now.text - prev.text,
-            now.tokens - prev.tokens,
-            now.heap as i64 - prev.heap as i64
+            now.items as i64 - base.items as i64,
+            now.text as i64 - base.text as i64,
+            now.tokens as i64 - base.tokens as i64,
+            now.heap as i64 - base.heap as i64
         );
-        per.push(now);
-        prev = now;
-    }
-    let end = *per.last().expect("six attempts");
-
-    // The instruction and the answer, two items per attempt, and the answer is one turn's output.
-    assert_eq!(
-        end.items - base.items,
-        12,
-        "instruction + answer, six times"
-    );
-    let said = instructions(&h);
-    assert_eq!(said.len(), 6, "one instruction row per attempt");
-    let asked_bytes: usize = said.iter().map(String::len).sum();
-    let answers = end.text - base.text - asked_bytes;
-    println!(
-        "per attempt: +2 item(s), +{} byte(s) of instruction and {answers} byte(s) of answers in all",
-        said[0].len()
-    );
-    assert!(
-        answers < 6 * 4096,
-        "six refused-but-ran attempts left {answers} byte(s) beside their instructions, which is \
-         more than a short answer apiece"
-    );
-    // And the residue does not grow from attempt to attempt: each attempt left its own instruction
-    // plus the same answer, so nothing in it is keyed by the attempt number.
-    let answer = answers / 6;
-    assert_eq!(answers, answer * 6, "six attempts, six short answers");
-    for (i, text) in said.iter().enumerate() {
-        let before = if i == 0 { base.text } else { per[i - 1].text };
         assert_eq!(
-            per[i].text - before,
-            text.len() + answer,
-            "attempt {} left its instruction and one answer",
-            i + 1
+            now.items,
+            base.items,
+            "attempt {i} left {} item(s) within",
+            now.items.saturating_sub(base.items)
+        );
+        assert_eq!(
+            now.tokens, base.tokens,
+            "attempt {i} left the token region somewhere else"
         );
     }
+
+    // Nothing of the six instructions or of the answers that proposed the calls stays: the prompt
+    // the model reads is the one the first attempt found, and the census knows it.
     assert_eq!(
-        end.census, end.text,
-        "the census must have walked the rows the attempts left"
+        instructions(&h).len(),
+        0,
+        "a refused attempt left the row that asks for a record"
+    );
+    let end = held(&h);
+    assert_eq!(
+        end.text,
+        base.text,
+        "six refused-but-ran attempts left {} byte(s) of text",
+        end.text.saturating_sub(base.text)
+    );
+    assert_eq!(
+        end.census,
+        end.text,
+        "the census is {} byte(s) behind the transcript a rollback left",
+        end.text.saturating_sub(end.census)
+    );
+
+    // And each refusal is one row, saying what was refused and that it was taken back: a person
+    // watching a session that refuses to compact can see it was tried.
+    let refused: Vec<String> = hub
+        .retained()
+        .iter()
+        .filter_map(|e| match &e.event {
+            letibot_sessionlog::event::SessionEvent::Warning { code, detail, .. }
+                if code == "summary_refused" =>
+            {
+                Some(detail.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(refused.len(), 6, "one row per attempt: {refused:#?}");
+    assert!(
+        refused[0].contains("tool call") && refused[0].contains("taken back"),
+        "the row says what was refused and that it was taken back: {}",
+        refused[0]
+    );
+    let flat = (end.heap - base.heap) as f64 / 6.0;
+    assert!(
+        end.heap - base.heap < 6 * 64 * 1024,
+        "6 refused attempts grew the heap by {} ({} each): something is retained per attempt",
+        mb((end.heap - base.heap) as f64),
+        mb(flat)
     );
 }
 

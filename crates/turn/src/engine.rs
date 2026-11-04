@@ -497,6 +497,12 @@ impl Session {
     pub fn witness(&self) -> Option<&PrefixWitness> {
         self.witness.as_ref()
     }
+
+    /// Put the witness back where a turn's rows are taken back: it describes a prompt and a
+    /// generation the ledger no longer holds, and the next turn reads that as a divergence.
+    pub fn restore_witness(&mut self, witness: Option<PrefixWitness>) {
+        self.witness = witness;
+    }
 }
 
 impl TurnEngine {

@@ -659,6 +659,23 @@ impl Harness {
         self.compact_with(crate::wall::Fold::Ordinary)
     }
 
+    /// A summary that proposed tool calls is not a record, so the turn is refused and what it
+    /// appended is taken back: at the wall the conversation is already short, and a retry that
+    /// still carried its predecessor would spend the room this one came to find.
+    fn refuse_the_summary(&mut self, mark: usize, witness: Option<PrefixWitness>, calls: usize) {
+        let spent = self.session.items.len().saturating_sub(mark);
+        letibot_turn::undo_refused_summary(&mut self.session, mark, witness);
+        self.restate_footprint();
+        self.hub.warn(
+            "summary_refused",
+            format!(
+                "the summary turn proposed {calls} tool call(s) instead of a record, so it was \
+                 refused and the {spent} row(s) it added were taken back. Nothing was compacted \
+                 and the conversation is as it was."
+            ),
+        );
+    }
+
     /// A compaction with the fold named: `compact` is the ordinary one `/compact` asks for, and the wall
     /// controller names a harder one when a measured count said the last did not make room. Every fold that lands
     /// is reported to the controller HERE, whoever asked, so a `/compact` on a stuck session restarts the ladder.
@@ -959,6 +976,8 @@ impl Harness {
                     ),
                     carried: "",
                 });
+            let mark = self.session.items.len();
+            let witness = self.session.witness().cloned();
             let ran = Self::run_summary_turn(
                 &self.hub,
                 &mut self.engine,
@@ -969,13 +988,14 @@ impl Harness {
                 ask.as_ref(),
             );
             // The summary turn appends through the engine, not through `reconcile`, so nothing
-            // walked the rows it left: a refused attempt keeps its instruction, and a census
-            // that never walked it under-reports what a session that cannot re-seat holds.
+            // walked the rows it left: the census is restated here, and again by a refusal, which
+            // takes those rows back.
             self.restate_footprint();
             let outcome = ran?;
             if outcome.tool_calls > 0 {
+                self.refuse_the_summary(mark, witness, outcome.tool_calls);
                 return Err(HarnessError::Setup(format!(
-                    "the summary turn proposed {} tool call(s); a summary is a record, not an action, so nothing was re-seated.",
+                    "the summary turn proposed {} tool call(s); a summary is a record, not an action, so nothing was re-seated. The conversation is as it was; try again.",
                     outcome.tool_calls
                 )));
             }
@@ -1237,6 +1257,8 @@ impl Harness {
                     budget,
                     carried: &carried,
                 };
+                let mark = self.session.items.len();
+                let witness = self.session.witness().cloned();
                 let ran = Self::run_summary_turn(
                     &self.hub,
                     &mut self.engine,
@@ -1247,16 +1269,16 @@ impl Harness {
                     Some(&ask),
                 );
                 // The summary turn appends through the engine, not through `reconcile`, so nothing
-                // walked the rows it left: a refused attempt keeps its instruction, and a census
-                // that never walked it under-reports what a session that cannot compact holds.
+                // walked the rows it left: the census is restated here, and again by a refusal,
+                // which takes those rows back.
                 self.restate_footprint();
                 let outcome = ran?;
                 if outcome.tool_calls > 0 {
+                    self.refuse_the_summary(mark, witness, outcome.tool_calls);
                     return Err(HarnessError::Setup(format!(
                         "the summary turn proposed {} tool call(s); a summary is a record, \
-                         not an action, so nothing was compacted. The transcript is \
-                         unchanged apart from the instruction and the turn themselves — \
-                         try again.",
+                         not an action, so nothing was compacted. The conversation is as it \
+                         was; try again.",
                         outcome.tool_calls
                     )));
                 }

@@ -14,7 +14,7 @@ use letibot_turn::CompactionOutcome;
 mod support;
 
 use support::canned;
-use support::qwen::{THINK_CLOSE, a_plain_answer_turn, ids, spoken};
+use support::qwen::{IM_END, THINK_CLOSE, a_plain_answer_turn, ids, spoken};
 
 const WANTED: Dialect = Dialect::Qwen;
 
@@ -1380,4 +1380,140 @@ fn a_fork_replaces_the_rows_the_hub_holds_rather_than_adding_to_them() {
             .map(|r| &r.item_id)
             .collect::<Vec<_>>()
     );
+}
+
+/// A turn that answers the summary instruction by proposing a tool call: the one shape a record
+/// may not have, and the one this file's subject is refused for.
+fn a_turn_that_proposes_a_call(
+    vocab: &letibot_tokencore::Vocab,
+    n_prompt: u64,
+) -> Vec<canned::Frame> {
+    let body = ids(
+        vocab,
+        "<function=read>\n<parameter=path>\n/tmp/a\n</parameter>\n</function>\n",
+    );
+    let mut frames = vec![canned::Frame::Progress {
+        total: n_prompt,
+        processed: n_prompt,
+    }];
+    frames.extend(spoken(vocab, &[THINK_CLOSE]));
+    frames.push(canned::Frame::Token {
+        id: TOOL_CALL_OPEN,
+        text: "",
+    });
+    frames.extend(
+        body.iter()
+            .map(|id| canned::Frame::Token { id: *id, text: "" }),
+    );
+    frames.push(canned::Frame::Token {
+        id: TOOL_CALL_CLOSE,
+        text: "",
+    });
+    frames.extend(spoken(vocab, &[IM_END]));
+    frames.push(canned::Frame::Final {
+        stop_type: "eos",
+        n_decoded: (body.len() + 4) as u64,
+        n_prompt,
+        cache_n: 0,
+    });
+    frames
+}
+
+/// A summary that proposes work instead of writing a record is refused, and the refusal may not
+/// cost the conversation anything: the wall is where the prompt is already short, so each retry
+/// that still carried its predecessor's instruction and answer would spend the room it is there to
+/// find. The operator is told, in one row, because a refusal that was taken back silently is
+/// indistinguishable from a compaction that never ran.
+#[test]
+fn a_refused_summary_is_taken_back_so_the_retry_starts_where_it_did() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    use letibot_sessionlog::event::SessionEvent;
+
+    let dir = TempDir::new("harnessd-compact-refused");
+    let path = dir.path().join("sessions.db");
+    let session_id = "compact-refused-test";
+    let mut cfg = config(&path, session_id);
+    let parts = load_parts(&cfg);
+    // One answered prompt, then refusals for as long as anybody asks: every request after the
+    // first is the same turn, so whatever the salvage spends the answer is one shape.
+    let mut scripts = vec![a_plain_answer_turn(
+        &parts.vocab,
+        "counting",
+        "the answer was forty-two",
+        20,
+    )];
+    scripts.extend((0..23).map(|_| a_turn_that_proposes_a_call(&parts.vocab, 30)));
+    let serv = canned::Canned::serve_each(scripts, 24);
+    cfg.endpoint = serv.endpoint.clone();
+
+    let hub = Hub::new(&cfg.session_id);
+    let mut h = Harness::open(&parts, cfg.clone(), hub.clone()).expect("the session opens");
+    h.submit("count the things")
+        .expect("the prompt turn answers");
+
+    let before = h.items().to_vec();
+    let tokens = h.ledger_len();
+    assert!(
+        before.len() >= 2,
+        "a conversation for the wall to be about: {before:?}"
+    );
+
+    let first = h.compact();
+    let said = first.err().map(|e| e.to_string());
+    assert!(
+        said.as_deref().is_some_and(|s| s.contains("tool call")),
+        "the first attempt is refused for what the summary proposed: {said:?}"
+    );
+    let warnings: Vec<(String, String)> = hub
+        .retained()
+        .iter()
+        .filter_map(|e| match &e.event {
+            SessionEvent::Warning { code, detail, .. } => Some((code.clone(), detail.clone())),
+            _ => None,
+        })
+        .collect();
+    let (_, detail) = warnings
+        .iter()
+        .find(|(code, _)| code == "summary_refused")
+        .unwrap_or_else(|| panic!("the refusal is one row on the session: {warnings:?}"));
+    assert!(
+        detail.contains("tool call") && detail.contains("taken back"),
+        "the row says what was refused and that it was taken back: {detail}"
+    );
+    assert_eq!(
+        h.items(),
+        before,
+        "the prompt the model reads is what it was before the attempt"
+    );
+    assert_eq!(h.ledger_len(), tokens, "and the ledger beside it agrees");
+
+    // And the retry starts from that same state: a second refusal adds its own attempt and takes
+    // it back again, so two refusals in a row are not the first one's cost plus the second's.
+    let second = h.compact();
+    let said = second.err().map(|e| e.to_string());
+    assert!(
+        said.as_deref().is_some_and(|s| s.contains("tool call")),
+        "the second attempt is refused for the same reason: {said:?}"
+    );
+    assert_eq!(
+        h.items(),
+        before,
+        "two refusals in a row do not grow the prompt"
+    );
+    assert_eq!(h.ledger_len(), tokens, "nor the ledger");
+    assert_eq!(
+        h.transcript_id(),
+        format!("{session_id}#t0"),
+        "a refused summary forks nothing"
+    );
+    let refusals = hub
+        .retained()
+        .iter()
+        .filter(
+            |e| matches!(&e.event, SessionEvent::Warning { code, .. } if code == "summary_refused"),
+        )
+        .count();
+    assert_eq!(refusals, 2, "one row per attempt, and one attempt each");
 }

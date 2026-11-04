@@ -388,6 +388,10 @@ pub const TABLE: &[(&str, Class)] = &[
     // session, or raise --context-window."*
     ("auto_compact_no_progress", Class::Failure),
     ("auto_compact_failed", Class::Failure),
+    // The summary turn proposed tool calls, so it was refused and its rows taken back: the session
+    // is still over budget and `/compact` is the move. A row and not a hint, because a refusal
+    // nobody saw reads as a compaction that never ran.
+    ("summary_refused", Class::Failure),
     // The turn was cut short at the length limit, or the batch of calls was truncated so
     // none of them ran, or it stopped with the reasoning block still open.
     ("length_empty_turn", Class::Failure),
@@ -765,10 +769,10 @@ mod the_register_census {
         // The census, kept where it cannot drift. Each assert below is a register's count;
         // a code moved or added without a thought fails here rather than silently changing what
         // a reader is taught by the colour of the screen.
-        assert_eq!(TABLE.len(), 181, "the table's size");
+        assert_eq!(TABLE.len(), 182, "the table's size");
         assert_eq!(count(Class::Routine), 73);
         assert_eq!(count(Class::Refused), 15, "the fifteen in READER_INPUT");
-        assert_eq!(count(Class::Failure), 93);
+        assert_eq!(count(Class::Failure), 94);
         // A code with an id is read by its family.
         assert_eq!(class("denied:req-7"), Class::Failure);
         assert_eq!(class("memory_high"), Class::Failure);
