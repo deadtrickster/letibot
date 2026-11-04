@@ -777,24 +777,23 @@ fn members_at(dir: &Path, out: &mut Vec<u32>) {
 /// Depth-first `rmdir`. A cgroup directory can only be removed when it is empty of processes and
 /// of child cgroups.
 fn remove_tree(dir: &Path) -> bool {
-    let mut ok = true;
-    if let Ok(rd) = std::fs::read_dir(dir) {
-        for e in rd.flatten() {
-            if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                ok &= remove_tree(&e.path());
-            }
-        }
-    }
-    // `rmdir` answers EBUSY for a moment after the last member is reaped on a loaded box, so
-    // it is retried for a bounded time rather than reported as debris.
+    // Retried for a bounded time: on a loaded box `rmdir` answers EBUSY for a moment after the
+    // last member is reaped, and a child cgroup can appear after the first listing.
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        match std::fs::remove_dir(dir) {
-            Ok(()) => return ok,
-            Err(e) if e.raw_os_error() == Some(16) && Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(10));
+        let mut ok = true;
+        if let Ok(rd) = std::fs::read_dir(dir) {
+            for e in rd.flatten() {
+                if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                    ok &= remove_tree(&e.path());
+                }
             }
-            Err(_) => return false,
+        }
+        match std::fs::remove_dir(dir) {
+            Ok(()) if ok => return true,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && ok => return true,
+            _ if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
+            _ => return false,
         }
     }
 }
