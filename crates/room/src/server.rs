@@ -816,14 +816,19 @@ impl Server {
                 .or_insert((Seat::Session, project.clone()));
         }
         let max_principals = self.inner.principals.load(Ordering::SeqCst);
+        // Who is actually kept for, decided BEFORE the inbox lock: `visible` reads the rooms, and a
+        // lock held across another lock is how two of these threads find each other.
+        let absent: Vec<String> = audience
+            .into_iter()
+            .filter(|(name, (kind, project))| {
+                name != &message.author
+                    && !here.contains(name)
+                    && self.visible(name, *kind, project, message)
+            })
+            .map(|(name, _)| name)
+            .collect();
         let mut pending = self.inner.pending.lock().expect("the pending lock");
-        for (name, (kind, project)) in audience {
-            if name == message.author
-                || here.contains(&name)
-                || !self.visible(&name, kind, &project, message)
-            {
-                continue;
-            }
+        for name in absent {
             if !pending.contains_key(&name)
                 && pending.len() >= max_principals
                 && let Some((gone, was)) = pending
