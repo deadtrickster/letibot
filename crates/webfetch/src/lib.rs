@@ -515,6 +515,7 @@ fn run_curl(url: &UrlParts, pin: Option<IpAddr>, cap: usize) -> Result<Hop, Fetc
     let (header_status, header_ct, header_loc) = parse_headers(&headers_text);
 
     if truncated {
+        let _ = child.wait();
         let status = header_status.ok_or_else(|| {
             FetchError::Transport("the fetch was cut off before any header arrived".into())
         })?;
