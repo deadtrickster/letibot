@@ -82,6 +82,7 @@ pub const READER_ARMS: &[(i64, Arm)] = &[
     (37, Arm::Breaks),   // the `notice` transcript row: a younger reader cannot deserialize it
     (38, Arm::Additive), // queued_prompt: a new table
     (39, Arm::Additive), // transcript_by_session, session_by_parent: new indexes
+    (40, Arm::Additive), // session_marks: a new table, which an older reader never names
 ];
 
 /// The floor a store at `version` carries: the newest arm at or below it that [`Arm::Breaks`],

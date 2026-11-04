@@ -371,6 +371,10 @@ pub struct Harness {
     /// the local server through the engine's own `/completion` path - unless
     /// [`Harness::key_wanted`] is set, which is a provider with no key yet.
     provider: Option<Box<dyn letibot_backend::MessagesBackend>>,
+    /// What this session's provider has learned about pictures: the bytes it refused, and the
+    /// models that take text only. The session's own, so a refusal here never re-renders another
+    /// session's history, and on its row so a restart keeps it.
+    pub(crate) picture_marks: std::sync::Arc<std::sync::Mutex<letibot_provider::marks::Marks>>,
     /// A provider chosen and not yet usable, because no key for it resolves. It is not a refusal at
     /// open, which would kill the daemon before a head could attach; the first turn asks for the key on
     /// the masked secret card, saves it to providers.toml (0600) and builds the provider.
@@ -1604,8 +1608,8 @@ pub(crate) use models::{
     leftover_hint, model_name_of, parse_local_url, superseded, told_once, vocab_differs,
 };
 pub(crate) use open::{
-    STORE_BUSY_PATIENCE, first_sentence, latest_box_stop, load_gguf, provider_notes,
-    render_sampling, tool_names, tool_schemas, vocab_basename, wire_turns,
+    STORE_BUSY_PATIENCE, first_sentence, latest_box_stop, load_gguf, persist_marks, provider_notes,
+    render_sampling, scoped_provider, tool_names, tool_schemas, vocab_basename, wire_turns,
 };
 pub use open::{
     VerbatimFit, build_provider, engine_for, instructions_of, mode_in_vm, prefix_fingerprint,

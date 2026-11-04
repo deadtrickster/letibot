@@ -728,7 +728,7 @@ Record: `docs/reviews/2026-11-04-release.md` (30 reports verbatim, synthesis and
 1. A wide bwrap seat for a Linux top-level session (the release only tells the model and the head that there is no boundary). Folds into R121.
 2. The refused compaction summary turn stays in the transcript and spends context at the wall; roll it back.
 3. The transcript walk is O(L^2) over a long hidden run (`crates/tui/src/app/scroll.rs:244-248`, `ui/transcript/markers.rs:99-161`).
-4. Picture and text-only marks are process-global (`crates/provider/src/messages.rs:123`, `:259`): scope them to the session and persist them.
+4. **DONE** — the picture and text-only marks belong to the SESSION: `crates/provider/src/marks.rs` is a bounded set (64, oldest out) entered around each provider call, and `session_marks` (schema 38) keeps it on the session's row across a restart. A refusal in one session leaves another's request untouched (`a_refusal_learned_in_one_session_leaves_another_sessions_request_alone`), the bound holds, and `crates/harnessd/src/harness/tests/marks.rs` reopens a session and finds its mark.
 5. Room claims a session holds are not restored after a coordinator restart.
 6. A head cannot see packages of another daemon (the fleet view).
 

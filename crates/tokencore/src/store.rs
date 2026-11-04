@@ -31,6 +31,7 @@ mod subagents;
 pub use subagents::*;
 mod citations;
 mod leases;
+mod marks;
 mod procs;
 mod prompts;
 mod told;
@@ -188,7 +189,7 @@ pub struct ShapelessAdmit {
 /// The schema version: what the FILE holds. [`floor`] says what a reader must know, and the
 /// two are separate on purpose: a migration that only adds leaves the floor alone, and one
 /// that rewrites what an older reader reads declares itself in [`READER_ARMS`].
-pub const SCHEMA_VERSION: i64 = 39;
+pub const SCHEMA_VERSION: i64 = 40;
 
 /// What this row's columns mean. Stamped on every corpus row, because a column can keep its
 /// name and its type while changing what it records, and a trainer that pools two meanings
@@ -1444,6 +1445,7 @@ impl Store {
         self.conn().execute_batch(subagents::SUBAGENTS_SQL)?;
         self.conn().execute_batch(modes::MODES_SQL)?;
         self.conn().execute_batch(told::TOLD_SQL)?;
+        self.conn().execute_batch(marks::MARKS_SQL)?;
         self.conn().execute_batch(citations::CITATIONS_SQL)?;
         self.conn().execute_batch(writers::WRITERS_SQL)?;
         self.conn().execute_batch(procs::PROCS_SQL)?;
@@ -2032,6 +2034,12 @@ impl Store {
                     );
                 }
             }
+        }
+        if from < 40 {
+            // v40: what a session's requests have learned about pictures. One new table,
+            // `IF NOT EXISTS`; a store from before it re-earns each refusal once, which is the
+            // honest state of a session nobody had taught yet.
+            self.conn().execute_batch(marks::MARKS_SQL)?;
         }
         Ok(())
     }

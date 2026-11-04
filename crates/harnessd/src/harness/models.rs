@@ -575,7 +575,16 @@ impl Harness {
                 self.note_the_way_back();
                 self.carry_the_scale();
                 self.cfg.ledger_scale = None;
-                self.provider = Some(p);
+                // The same session's marks and the same write: a model switched to mid-conversation
+                // learns for this session and no other.
+                self.provider = Some(scoped_provider(
+                    p,
+                    self.picture_marks.clone(),
+                    Some(persist_marks(
+                        self.cfg.store.clone(),
+                        self.cfg.session_id.clone(),
+                    )),
+                ));
                 self.cfg.provider = Some(pc);
                 // Say it, or the head goes on drawing the old name: the header reads the model
                 // from the daemon's word, and that word was sent once at attach.

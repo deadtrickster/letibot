@@ -265,13 +265,23 @@ fn picture_bytes(w: u32, h: u32) -> usize {
     letibot_transcript::testing::png(w, h).len()
 }
 
+/// One session's marks, in force for the length of the call - what the daemon does around every
+/// request. Two of these in one test are two sessions, and neither sees the other's refusals.
+fn a_session() -> (
+    Arc<Mutex<letibot_provider::marks::Marks>>,
+    letibot_provider::marks::Entered,
+) {
+    let marks = Arc::new(Mutex::new(letibot_provider::marks::Marks::new()));
+    let held = letibot_provider::marks::enter(marks.clone());
+    (marks, held)
+}
+
 /// A model that refuses the picture is LEARNED, and the same request goes again without it:
 /// mark the model text-only for the session, say so once, retry once with placeholders. The
 /// retry is the request that failed, so the compaction that would have made room succeeds too.
 #[test]
 fn a_refusal_of_the_picture_is_learned_and_the_request_retried_with_placeholders() {
-    // The model name is this test's own: the mark is process-wide, and a name another
-    // test uses would make the order the two run in matter.
+    let (_marks, _held) = a_session();
     const MODEL: &str = "glm-5.3-image-probe";
     const REFUSAL: &str =
         "{\"error\":{\"message\":\"messages.content.type is invalid, allowed values: ['text']\"}}";
@@ -373,6 +383,7 @@ fn a_refusal_of_the_picture_is_learned_and_the_request_retried_with_placeholders
 /// marked, the retry is ONE, and the next turn sends no `image_url` without earning the 400 again.
 #[test]
 fn a_provider_that_refuses_the_bytes_is_learned_against_the_picture_and_the_request_retried() {
+    let (_marks, _held) = a_session();
     const MODEL: &str = "glm-5.3-bytes-probe";
     const REFUSAL: &str = ".messages[1861].image[0]: You have uploaded an unsupported image. \
                            Please make sure your image is valid and has one of the following \
@@ -395,8 +406,7 @@ fn a_provider_that_refuses_the_bytes_is_learned_against_the_picture_and_the_requ
     let p = OpenAiProvider::new(&letibot_provider::presets::GLM, Some(MODEL), creds).with_notes(
         Arc::new(move |said: String| sink.lock().unwrap().push(said)),
     );
-    // These bytes are this test's own. The mark is process-wide and keyed by the picture, so
-    // a size another test uses would make the order the two run in matter.
+    // These bytes are this test's own, so the placeholder's own text can be asserted whole.
     let reference = picture_ref(3, 3);
     let items = vec![TranscriptItem::User {
         speaker: Default::default(),
@@ -480,10 +490,80 @@ fn a_provider_that_refuses_the_bytes_is_learned_against_the_picture_and_the_requ
     );
 }
 
+/// One session's refusal is not another session's lesson. The picture is in BOTH sessions'
+/// histories, and a mark that crossed would re-render one conversation's prompt from the other's
+/// 400 - which is what busted a session's cache, and what a restart then re-earned.
+#[test]
+fn a_refusal_learned_in_one_session_leaves_another_sessions_request_alone() {
+    const MODEL: &str = "glm-5.3-two-sessions";
+    const REFUSAL: &str = "{\"error\":{\"message\":\"You have uploaded an unsupported image\"}}";
+    let f = fake_answering(|body| match body.contains("image_url") {
+        true => (400, REFUSAL.to_string()),
+        false => (200, SCRIPT.to_string()),
+    });
+    let creds = Credentials {
+        key: "sk-test".into(),
+        from: "test".into(),
+        prices: Default::default(),
+        url: Some(f.url.clone()),
+    };
+    let p = OpenAiProvider::new(&letibot_provider::presets::GLM, Some(MODEL), creds);
+    let reference = picture_ref(6, 6);
+    let items = vec![TranscriptItem::User {
+        speaker: Default::default(),
+        parts: vec![UserPart::Image {
+            media_type: "image/png".into(),
+            data_ref: reference.clone(),
+        }],
+    }];
+    let req = TurnRequest {
+        system: "",
+        tools_json: &[],
+        items: &items,
+        tail: &[],
+        max_output_tokens: None,
+    };
+    let a = Arc::new(Mutex::new(letibot_provider::marks::Marks::new()));
+    let b = Arc::new(Mutex::new(letibot_provider::marks::Marks::new()));
+
+    // Session A earns the refusal and learns it: its own next request withholds the picture.
+    {
+        let _held = letibot_provider::marks::enter(a.clone());
+        p.complete(&req, &mut |_| StreamFlow::Continue)
+            .expect("the retry answered");
+        assert!(
+            letibot_provider::messages::known_bad_picture(&reference).is_some(),
+            "the refusal was not learned by the session that earned it"
+        );
+        let body = p.body(&req).unwrap().to_string();
+        assert!(!body.contains("image_url"), "A still sends it: {body}");
+    }
+
+    // Session B has learned nothing, so its request is the one it would have sent by itself - the
+    // same picture in the same history, and no trace of A's refusal in the prompt.
+    {
+        let _held = letibot_provider::marks::enter(b.clone());
+        assert!(
+            letibot_provider::messages::known_bad_picture(&reference).is_none(),
+            "one session's refusal was read as another's"
+        );
+        let body = p.body(&req).unwrap().to_string();
+        assert!(
+            body.contains("image_url"),
+            "B's picture was withheld: {body}"
+        );
+        assert!(
+            !body.contains("not sent"),
+            "B's prompt carries A's refusal: {body}"
+        );
+    }
+}
+
 /// A 400 that carries a picture but is not about it is NOT retried and marks nothing: the retry
 /// exists for one refusal, and a mark made here would withhold a good picture for ever.
 #[test]
 fn a_refusal_that_is_not_about_the_picture_is_answered_as_itself() {
+    let (_marks, _held) = a_session();
     const MODEL: &str = "glm-5.3-context-probe";
     const REFUSAL: &str = "maximum context length is 1048576 tokens";
     let f = fake_answering(move |_| {
@@ -529,6 +609,7 @@ fn a_refusal_that_is_not_about_the_picture_is_answered_as_itself() {
 /// refusal may be about something else, and the next turn tries the pictures again.
 #[test]
 fn a_retry_that_is_refused_too_records_nothing_and_says_what_the_provider_said() {
+    let (_marks, _held) = a_session();
     const MODEL: &str = "glm-5.3-twice-probe";
     let f = fake_answering(|body| match body.contains("image_url") {
         true => (

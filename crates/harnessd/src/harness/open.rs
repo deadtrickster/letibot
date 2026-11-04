@@ -2869,6 +2869,17 @@ impl Harness {
         // depend on a file outside its config, and every test inherited the operator's live choice - two `compact` tests
         // billed four turns to a real provider. A key that does not resolve is asked for; any other failure refuses.
         let mut key_wanted = None;
+        // What this session's provider has learned about pictures, restored from its own row: one
+        // session's refusal must not re-render another session's history, and a restart must not
+        // earn the same 400 again. Marks this build cannot parse are none, which costs one refusal.
+        let picture_marks = std::sync::Arc::new(std::sync::Mutex::new(
+            store
+                .as_ref()
+                .and_then(|s| s.session_marks(&cfg.session_id).ok().flatten())
+                .and_then(|json| letibot_provider::marks::Marks::from_json(&json))
+                .unwrap_or_default(),
+        ));
+        let marks_for_provider = picture_marks.clone();
         let provider: Option<Box<dyn letibot_backend::MessagesBackend>> = match &cfg.provider {
             None => None,
             Some(pc) => match build_provider(
@@ -2877,7 +2888,11 @@ impl Harness {
                 provider_notes(&hub),
                 cfg.provider_timeout,
             ) {
-                Ok(p) => Some(p),
+                Ok(p) => Some(scoped_provider(
+                    p,
+                    marks_for_provider,
+                    Some(persist_marks(cfg.store.clone(), cfg.session_id.clone())),
+                )),
                 Err(_) if key_is_missing(pc) => {
                     key_wanted = Some(pc.clone());
                     None
@@ -3007,6 +3022,7 @@ impl Harness {
             gate_told: Default::default(),
             outage: None,
             provider,
+            picture_marks,
             key_wanted,
             // Filled on the first switch away from local, never at open: a session
             // that started on a provider has no local window to go back to, and
@@ -3528,6 +3544,30 @@ pub fn build_provider(
     p.thinking = pc.thinking;
     p.sampling = provider_sampling(sampling);
     Ok(Box::new(p))
+}
+
+/// A provider as ONE session's backend: its requests are assembled under that session's marks, so
+/// what a refusal teaches is learned by this conversation - and `learned` writes the mark down.
+pub(crate) fn scoped_provider(
+    inner: Box<dyn letibot_backend::MessagesBackend>,
+    marks: std::sync::Arc<std::sync::Mutex<letibot_provider::marks::Marks>>,
+    learned: Option<std::sync::Arc<dyn Fn(&letibot_provider::marks::Marks) + Send + Sync>>,
+) -> Box<dyn letibot_backend::MessagesBackend> {
+    letibot_provider::marks::scoped(inner, marks, learned)
+}
+
+/// Where a learned mark goes: the session's own row, which is what makes it survive a restart. By
+/// path because the store hands one connection per file, and a refusal is rare.
+pub(crate) fn persist_marks(
+    store: Option<std::path::PathBuf>,
+    session_id: String,
+) -> std::sync::Arc<dyn Fn(&letibot_provider::marks::Marks) + Send + Sync> {
+    std::sync::Arc::new(move |marks: &letibot_provider::marks::Marks| {
+        let Some(path) = &store else { return };
+        if let Ok(s) = letibot_tokencore::store::Store::open(path) {
+            let _ = s.set_session_marks(&session_id, &marks.to_json());
+        }
+    })
 }
 
 /// Where a provider's own note reaches the operator: the session's hub, one crate up. One closure, so a fact the

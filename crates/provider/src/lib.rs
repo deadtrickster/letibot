@@ -4,6 +4,7 @@
 
 pub mod catalogue;
 pub mod keys;
+pub mod marks;
 pub mod messages;
 pub mod openai;
 pub mod presets;

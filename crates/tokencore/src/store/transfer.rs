@@ -35,6 +35,7 @@ const TABLES: &[(&str, &str, &str)] = &[
         "ORDER BY transcript_id, seq",
     ),
     ("todo", "session_id = ?1", ""),
+    ("session_marks", "session_id = ?1", ""),
     ("job", "session_id = ?1", "ORDER BY handle"),
     ("job_context", "session_id = ?1", "ORDER BY handle"),
     ("session_monitor", "session_id = ?1", "ORDER BY name"),

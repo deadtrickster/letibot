@@ -71,7 +71,7 @@ use serde_json::{Value, json};
 /// while a model given a placeholder has quietly turned a chart into a sentence about a
 /// chart. Exactly two things say not to: the catalogue's `modalities.input` naming text and
 /// not image, or a provider refusing an `image_url` with an error naming a content type and
-/// text, which [`mark_text_only`] records for the rest of the daemon's life. That refusal
+/// text, which [`mark_text_only`] records for the rest of that session's requests. That refusal
 /// outranks the table, because it is a measurement.
 ///
 /// ```text
@@ -110,20 +110,6 @@ impl Eyes<'_> {
     }
 }
 
-/// The pictures a provider has refused the BYTES of, keyed by the reference.
-///
-/// Deliberately not the same table as the text-only one: that is a fact about the MODEL, this
-/// is a fact about the PICTURE. A model may see perfectly well and refuse these bytes, and a
-/// mark against the model would withhold every other picture in the session for a fault none
-/// of them has. Keying on the bytes means a later turn recognises the picture without earning
-/// the 400 again, which matters because the picture stays in the history.
-///
-/// ```text
-/// http 400: .messages[1861].image[0]: You have uploaded an unsupported image. Please make sure
-/// your image is valid and has one of the following formats: webp, png, jpeg, and gif.
-/// ```
-static BAD_PICTURES: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
-
 /// The most of a provider's refusal a placeholder carries: a placeholder is prompt text, and a
 /// refusal a page long is truncated rather than pasted into every turn of the conversation.
 const REFUSAL_SAID_MAX: usize = 200;
@@ -140,33 +126,36 @@ pub fn picture_key(data_ref: &str) -> String {
     format!("{h:016x}:{}", data_ref.len())
 }
 
-/// Record that a provider refused these bytes, with the words it refused them in, and `true` when
+/// Record that a provider refused these BYTES, with the words it refused them in, and `true` when
 /// it is new. The words go in the placeholder a later request carries, so the model is told why it
 /// has no picture and the reason is the provider's rather than this tree's guess.
+///
+/// Not the same table as the text-only one, which is a fact about the MODEL: a model may see
+/// perfectly well and refuse these bytes, and a mark against the model would withhold every other
+/// picture for a fault none of them has.
+///
+/// ```text
+/// http 400: .messages[1861].image[0]: You have uploaded an unsupported image. Please make sure
+/// your image is valid and has one of the following formats: webp, png, jpeg, and gif.
+/// ```
+///
+/// The table belongs to the SESSION whose marks are in force on this thread (see
+/// [`crate::marks::enter`]), not to the process. With none in force nothing is remembered and the
+/// refusal is this call's alone.
 pub fn mark_bad_picture(data_ref: &str, why: &str) -> bool {
     let key = picture_key(data_ref);
     let mut said = why.trim().replace(['\n', '\r'], " ");
     if said.chars().count() > REFUSAL_SAID_MAX {
         said = said.chars().take(REFUSAL_SAID_MAX).collect::<String>() + "…";
     }
-    let mut known = BAD_PICTURES.lock().unwrap_or_else(|e| e.into_inner());
-    if known.iter().any(|(k, _)| *k == key) {
-        return false;
-    }
-    known.push((key, said));
-    true
+    crate::marks::update(|m| m.mark_picture(&key, &said)).unwrap_or(false)
 }
 
-/// Why this picture is not sent, when the daemon has already learned that it is not: the
+/// Why this picture is not sent, when this session has already learned that it is not: the
 /// provider's own words, or `None` when it goes.
 pub fn known_bad_picture(data_ref: &str) -> Option<String> {
     let key = picture_key(data_ref);
-    BAD_PICTURES
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .iter()
-        .find(|(k, _)| *k == key)
-        .map(|(_, why)| why.clone())
+    crate::marks::read(|m| m.picture_why(&key).map(String::from)).flatten()
 }
 
 /// Is this refusal about the PICTURE rather than about the model? It does not say this model takes
@@ -216,7 +205,7 @@ pub fn pictures<'a>(items: impl IntoIterator<Item = &'a TranscriptItem>) -> Vec<
     out
 }
 
-/// The pictures a request must not send, beyond what the daemon has already learned. A retry is
+/// The pictures a request must not send, beyond what this session has already learned. A retry is
 /// the only caller, and it is a parameter rather than a record because a retry that also fails
 /// proves nothing about the pictures; the caller commits the marks once it answers.
 #[derive(Debug, Clone, Copy, Default)]
@@ -226,7 +215,7 @@ pub struct Withheld<'a> {
 }
 
 impl<'a> Withheld<'a> {
-    /// Nothing beyond the marks the daemon already holds.
+    /// Nothing beyond the marks this session already holds.
     pub fn nothing() -> Self {
         Withheld { trying: &[] }
     }
@@ -255,34 +244,24 @@ fn refused_said(why: &str) -> String {
     format!("the provider refused these bytes: {why}")
 }
 
-/// The models a provider has refused a picture for, `provider/model`. Process-wide because the
-/// fact is about the model, and the same model takes text only whichever session asks. Its
-/// persistence is the daemon run; a schema column for it is not worth a version.
-static TEXT_ONLY: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
-
+/// The key a model's refusal is recorded against: `provider/model`, because one model name behind
+/// two doors is two models.
 fn text_only_key(provider: &str, model: &str) -> String {
     format!("{provider}/{model}")
 }
 
 /// Record that this model refused a picture. `true` when it is new, which is what makes the
-/// notice to the operator once, and `false` when it was already known.
+/// notice to the operator once, and `false` when it was already known - or when no session has
+/// entered its marks on this thread, where nothing is remembered at all.
 pub fn mark_text_only(provider: &str, model: &str) -> bool {
     let key = text_only_key(provider, model);
-    let mut known = TEXT_ONLY.lock().unwrap_or_else(|e| e.into_inner());
-    if known.contains(&key) {
-        return false;
-    }
-    known.push(key);
-    true
+    crate::marks::update(|m| m.mark_model(&key)).unwrap_or(false)
 }
 
-/// Whether a provider has already refused a picture for this model.
+/// Whether this session has already been refused a picture for this model.
 pub fn known_text_only(provider: &str, model: &str) -> bool {
     let key = text_only_key(provider, model);
-    TEXT_ONLY
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .contains(&key)
+    crate::marks::read(|m| m.has_model(&key)).unwrap_or(false)
 }
 
 /// Is this refusal the one that means "not this kind of content"? The wording differs by
