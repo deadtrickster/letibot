@@ -703,8 +703,11 @@ fn a_round_embeds_only_what_changed() {
         waits.share_round(shared.clone());
         done.share_round(shared);
         notes.compose(&f.reader(), &f.global, &f.box_dirs, "", items);
+        eprintln!("DBG notes {:?}", embedder.spent());
         waits.compose(&rows, &brief);
+        eprintln!("DBG waits {:?}", embedder.spent());
         done.compose(&records, &brief);
+        eprintln!("DBG done {:?}", embedder.spent());
         let after = embedder.spent();
         (
             after.embedded - before.embedded,
