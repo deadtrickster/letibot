@@ -218,7 +218,13 @@ mod tests {
         // Accepts and holds the connection open without a word.
         let socket = socket_in(&run, &key(Path::new("/w/hung")));
         let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
-        let holder = std::thread::spawn(move || listener.accept().map(|(c, _)| c));
+        // Every connection is kept open, the liveness probe's included.
+        let holder = std::thread::spawn(move || {
+            let mut held = Vec::new();
+            while let Ok((c, _)) = listener.accept() {
+                held.push(c);
+            }
+        });
         let later = now_ms() + 3 * STOPPED_WINDOW_MS;
         let t = std::time::Instant::now();
         let fleet = scan_in(
