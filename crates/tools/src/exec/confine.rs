@@ -970,8 +970,16 @@ impl Boundary {
         }
         let home = match &v.home {
             HomeView::Tmpfs => format!(
-                "`{TMPFS_HOME}`, a home this view makes for itself and not this machine's — \
-                 so a build cache kept under `~` is empty when a command starts"
+                "`{TMPFS_HOME}`, a home this view makes for itself and not this machine's, so a \
+                 build cache kept under `~` is empty when a command starts"
+            ),
+            // The wide seat's home IS the operator's: a brief calling it letibot's own would tell
+            // a model that `~` is scratch, which is a claim about somebody else's files.
+            HomeView::Dir(d) if is_the_operator_home(d) => format!(
+                "`{}`, THIS MACHINE'S OWN HOME: the operator's real home, writable, so its files \
+                 are theirs and not this session's to tidy, and the deny list below is the whole \
+                 of what is fenced off in it",
+                d.display()
             ),
             HomeView::Dir(d) => format!(
                 "`{}`, a directory letibot owns rather than this machine's home",
@@ -1209,6 +1217,21 @@ impl Boundary {
 
 /// At most this many paths in one absence note.
 const MAX_ABSENCE_PATHS: usize = 5;
+
+/// Is this path the operator's own home? Compared both ways, because a view's home is
+/// canonicalised by the probe and `$HOME` need not be: a symlinked home is one directory.
+fn is_the_operator_home(d: &Path) -> bool {
+    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+        return false;
+    };
+    if home == d {
+        return true;
+    }
+    match (home.canonicalize(), d.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
 
 /// Absolute-path-shaped tokens in a line of command output. Crude and bounded on purpose: it
 /// feeds a note, not a decision, so a false positive costs a sentence. Trailing punctuation a
@@ -2812,6 +2835,36 @@ mod tests {
         let t = granted.model_brief();
         assert!(t.contains("/home/dead/.cargo"), "{t}");
         assert!(t.contains("READABLE INTO CONTEXT"), "{t}");
+    }
+
+    /// The wide seat's `$HOME` is the operator's own, and the brief said letibot owned it: a model
+    /// reading that treats `~` as scratch and somebody else's files as its own to tidy.
+    #[test]
+    fn the_brief_says_when_the_home_is_the_operators_own() {
+        let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+            return;
+        };
+        let wide = Boundary {
+            view: ViewSpec::project_only("/proj").with_home(HomeView::Dir(home.clone())),
+            ..boundary_with(vec![])
+        };
+        let t = wide.model_brief();
+        assert!(
+            t.contains("THIS MACHINE'S OWN HOME"),
+            "the wide home must not read as this view's own: {t}"
+        );
+        assert!(!t.contains("a directory letibot owns"), "{t}");
+        assert!(t.contains("writable"), "{t}");
+
+        // And a home the daemon made for the session still says so.
+        let narrow = Boundary {
+            view: ViewSpec::project_only("/proj")
+                .with_home(HomeView::Dir(home.join("letibot-home"))),
+            ..boundary_with(vec![])
+        };
+        let t = narrow.model_brief();
+        assert!(t.contains("a directory letibot owns"), "{t}");
+        assert!(!t.contains("THIS MACHINE'S OWN HOME"), "{t}");
     }
 
     #[test]

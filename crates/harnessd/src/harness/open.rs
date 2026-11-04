@@ -381,6 +381,10 @@ struct Placed {
     monitors: Option<Arc<Monitors>>,
     surroundings: letibot_tools::Surroundings,
     confined: bool,
+    /// The tools run over the whole host: nothing was asked for that this platform can build,
+    /// or a boundary was asked for and failed. Not the same as `!confined`, which a file-tool-only
+    /// backend also is.
+    whole_host: bool,
 }
 
 impl Harness {
@@ -659,6 +663,25 @@ impl Harness {
         mode_source
     }
 
+    /// A session whose tools run over the whole host says so, on the hub the head draws and in
+    /// the daemon's log. Asked for on every platform, because the alternative is a session that
+    /// reads as confined because nobody said otherwise.
+    fn say_no_boundary(hub: &Arc<Hub>) {
+        let said = "this session runs UNCONFINED: a command here has this user's rights over \
+                    this whole host, and nothing hides a file from it. A `leticode` seat asks \
+                    for no boundary, and this platform has no wide one to put in front of it: \
+                    macOS has the Seatbelt one, Linux has none. What a command reads it can \
+                    copy into the transcript, so a call that runs code is decided per call by \
+                    the gate. `docs/boundary-and-adjudication.md` §4k has the long form."
+            .to_string();
+        eprintln!("letibot: {said}");
+        hub.publish(SessionEvent::Warning {
+            code: BOUNDARY_ABSENT.into(),
+            detail: said,
+            compaction: None,
+        });
+    }
+
     /// A Mac whose boundary could not be built is unconfined and says so, on the session's hub
     /// and in the daemon's log.
     #[cfg(target_os = "macos")]
@@ -772,6 +795,9 @@ impl Harness {
         use letibot_tools::schema::Access as Cls;
         let may_exec = !cfg.downgrade.denies(Cls::Exec);
         let may_write = !cfg.downgrade.denies(Cls::Write);
+        // Set by the arms that hand the session the whole host, so the prompt and the head both
+        // say it: silence here is how a session reads as confined when nothing bounds it.
+        let mut whole_host = false;
         // A VM on THIS box, which is the local firecode backend's door. A VM on a declared
         // host is booted by that host's own `firecode` over ssh, so it goes through the
         // placement below instead.
@@ -822,6 +848,11 @@ impl Harness {
         } else if let Some(b) = Self::seatbelt_for_unconfined_seat(cfg, hub, may_exec) {
             b
         } else if cfg.unconfined {
+            // A `leticode` seat asks for no boundary and this platform builds no wide one, so the
+            // session gets the whole host. Said on the hub and in the prompt; the mode is what
+            // decides each command, and it is not a boundary.
+            whole_host = true;
+            Self::say_no_boundary(hub);
             if cfg.allow_bash && may_exec {
                 HostBackend::executable("/")
             } else if may_write {
@@ -850,6 +881,7 @@ impl Harness {
                 #[cfg(target_os = "macos")]
                 Err(e) => {
                     Self::say_boundary_absent(hub, &e);
+                    whole_host = true;
                     let b = if cfg.allow_bash {
                         HostBackend::executable("/")
                     } else {
@@ -1129,6 +1161,7 @@ impl Harness {
             monitors,
             surroundings,
             confined: backend_confined,
+            whole_host,
         })
     }
 
@@ -1624,6 +1657,7 @@ impl Harness {
             monitors,
             surroundings,
             confined: backend_confined,
+            whole_host: backend_whole_host,
         } = Self::place_the_tools(&mut cfg, &hub, &session_registry)?;
         let backend_boundary = backend.boundary();
         let backend_boundary_refusal = backend.boundary_refusal();
@@ -2247,7 +2281,8 @@ impl Harness {
             worktree: cfg.workspace.join(".git").is_file(),
             // What a command here can reach, measured rather than assumed: `None` for a backend
             // with no view, so an unconfined session's prompt is the bytes it always was.
-            view: view_brief(backend_boundary.as_ref()),
+            view: view_brief(backend_boundary.as_ref())
+                .or_else(|| backend_whole_host.then(whole_host_brief)),
         };
 
         use letibot_tools::schema::Access;
@@ -3961,6 +3996,18 @@ pub(crate) fn view_brief(boundary: Option<&letibot_tools::exec::Boundary>) -> Op
     boundary.map(|b| b.model_brief())
 }
 
+/// What the prompt says when there is no boundary at all, which is a measured fact and not a
+/// silence: a session whose tools run on this host with nothing in front of them.
+pub(crate) fn whole_host_brief() -> String {
+    "There is NO boundary on this session: it is not confined to the workspace. A command here \
+     runs as this user over this whole host, so every file they can read (their home, their keys, \
+     other projects) is readable and their processes are reachable; a file tool reaches the same \
+     files. Nothing refuses a path outside the workspace and nothing hides one, so a path outside \
+     it is somebody's property and not absent. The gate decides each call on what it does, and \
+     that is not a boundary."
+        .to_string()
+}
+
 pub fn surroundings_for(cfg: &Config) -> letibot_tools::Surroundings {
     let mut env = letibot_tools::Surroundings::from_env(cfg.workspace.display().to_string())
         .with_known_hosts();
@@ -4346,5 +4393,58 @@ mod embedder_warning_tests {
         assert_eq!(got[1].0, "embedder_unavailable");
         assert!(got[1].1.contains("boom"), "{got:?}");
         let _ = std::fs::remove_dir_all(&base);
+    }
+}
+
+#[cfg(test)]
+mod no_boundary_tests {
+    use super::*;
+
+    /// A `leticode` seat asks for no boundary, and this platform has no wide one to put in front
+    /// of it. The session must not read as confined because nobody said otherwise: the head gets a
+    /// warning and the prompt gets the sentence a confined session's view would have had.
+    #[test]
+    fn a_session_with_no_boundary_says_so_on_the_hub_and_in_its_brief() {
+        let dir = std::env::temp_dir().join(format!("letibot-noboundary-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a fixture workspace");
+        let mut cfg = Config::for_this_box(&dir);
+        cfg.seat = Seat::Leticode;
+        // The whole-host arm a `leticode` seat takes: no shell, so the test needs no cgroup, and
+        // the file tools still reach every path this user can.
+        cfg.unconfined = true;
+        cfg.allow_bash = false;
+        cfg.session_id = "no-boundary-test".into();
+        let hub = Hub::new(&cfg.session_id);
+        let head = hub
+            .attach("h", "tui", letibot_sessionlog::protocol::Caps::default(), 0)
+            .head_id;
+        let registry = letibot_sessionlog::registry::Registry::new();
+        let placed =
+            Harness::place_the_tools(&mut cfg, &hub, &registry).expect("an unconfined session");
+        let warned = match hub.next_batch(&head, 256) {
+            letibot_sessionlog::hub::Delivery::Events(b) => b.events().iter().any(|e| {
+                matches!(&e.event, SessionEvent::Warning { code, .. } if code == BOUNDARY_ABSENT)
+            }),
+            _ => false,
+        };
+        hub.close();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(
+            placed.whole_host,
+            "the whole-host arm must say it is one: {}",
+            placed.described
+        );
+        assert!(
+            placed.backend.boundary().is_none(),
+            "nothing bounds a whole-host backend"
+        );
+        assert!(warned, "the head was told nothing about it");
+        let brief = whole_host_brief();
+        assert!(brief.contains("NO boundary"), "{brief}");
+        assert!(brief.contains("not confined"), "{brief}");
+        // And the view a confined session would state is still absent, so the two cannot read
+        // alike: `whole_host_brief` is chosen by the flag and not by a missing boundary.
+        assert_eq!(view_brief(None), None);
     }
 }

@@ -136,10 +136,10 @@ const WORKSPACE_GONE: &str = "workspace_gone";
 /// typo does not read as a pin that took effect.
 pub(crate) const SKILLS_PIN: &str = "skills_pin";
 
-/// The warning code for a session that asked for a boundary and got a whole-host shell, said once at
-/// open: the consequence is invisible from the inside, since a session with no boundary asks about
-/// every `cargo test`. macOS only, because on Linux an unbuildable boundary is a refusal.
-#[cfg(target_os = "macos")]
+/// The warning code for a session with no boundary at all, said once at open: the consequence is
+/// invisible from the inside, since a session with nothing in front of it asks about every
+/// `cargo test`. Every platform has this state: a `leticode` seat asks for no boundary, and Linux
+/// has no wide one to build.
 const BOUNDARY_ABSENT: &str = "boundary_absent";
 
 /// The warning code for a session whose tools run on another machine - where its tree is,
