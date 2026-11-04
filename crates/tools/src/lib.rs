@@ -58,6 +58,7 @@ pub mod result;
 pub mod rpc;
 pub mod runtime;
 pub mod schema;
+pub mod secrets;
 pub mod similarity;
 pub mod spill;
 
@@ -67,8 +68,8 @@ pub mod testing;
 pub use adjudicate::{
     ActionClass, Adjudicable, AdjudicatedGate, AdjudicationDecision, AdjudicationRequest,
     AdjudicationRow, Adjudicator, AskAdjudicator, ConsoleAdjudicator, Cost, DecisionOption,
-    DecisionOutcome, EffectScope, FlowRule, NEVER_WRITE, NoAdjudicator, OnTimeout, OptionKind,
-    RequestKind, Reversibility, Tier, always_ask_options, permission_options,
+    DecisionOutcome, EffectScope, FlowRule, NoAdjudicator, OnTimeout, OptionKind, RequestKind,
+    Reversibility, Tier, always_ask_options, never_write, permission_options,
 };
 pub use args::{Repair, SalvageError, Salvaged, salvage};
 pub use attach::NotAttached;

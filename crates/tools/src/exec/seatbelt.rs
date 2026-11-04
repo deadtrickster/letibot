@@ -68,19 +68,13 @@ pub const TOOLCHAIN_UNDER_HOME: &[&str] = &[
 /// Denied for read and write after every allow, whatever the view grants, and relative to the
 /// operator's home. A deny rather than an allow-list entry, because it has to win over a
 /// widened view: a grant of the whole home must not bring `~/.ssh` or this tool's store in.
-pub const DENY_UNDER_HOME: &[&str] = &[
-    ".ssh",
-    ".gnupg",
-    ".aws",
-    ".netrc",
-    ".docker/config.json",
-    ".cargo/credentials.toml",
-    "Library/Keychains",
+/// The credential stores are [`crate::secrets::STORES`], which the gate reads too; what is
+/// here is what only a policy can express - the shell's own startup files, which are not secrets
+/// but are how a command leaves itself behind, and the private data a Mac keeps beside them.
+pub const SEAT_UNDER_HOME: &[&str] = &[
     "Library/Cookies",
     "Library/Messages",
     "Library/Mail",
-    "Library/Safari",
-    "Library/Application Support/Google/Chrome",
     ".local/share/letibot",
     ".config/letibot",
     ".zshrc",
@@ -92,8 +86,14 @@ pub const DENY_UNDER_HOME: &[&str] = &[
     ".config/fish",
 ];
 
-/// Denied only in the tight (child) view, relative to the operator's home.
-pub const NARROW_DENY_UNDER_HOME: &str = ".config/gh";
+/// What a seat's profile denies, rel-to-home: the stores the gate knows, then this side's own.
+/// `wide` is the top-level seat, which keeps `gh`'s config readable because that is what the
+/// token it injects is for; a child has no token and no reason to read it.
+pub fn deny_under_home(wide: bool) -> Vec<&'static str> {
+    let mut out = crate::secrets::seat_denied(wide);
+    out.extend(SEAT_UNDER_HOME.iter().copied());
+    out
+}
 
 /// A file this module creates inside the session's `$HOME` so that the deny rule can be
 /// measured winning over an allow: the directory is read-write in the profile and the file is
@@ -194,15 +194,10 @@ impl Layout {
                 break;
             }
         }
-        let mut deny: Vec<PathBuf> = DENY_UNDER_HOME
-            .iter()
+        let mut deny: Vec<PathBuf> = deny_under_home(wide)
+            .into_iter()
             .map(|rel| operator_home.join(rel))
             .collect();
-        // A tight view cannot authenticate to GitHub, so a child session lands nothing itself;
-        // the wide one reads gh's config and reaches its token through the keychain service.
-        if !wide {
-            deny.push(operator_home.join(NARROW_DENY_UNDER_HOME));
-        }
         deny.sort();
         deny.dedup();
         let mut user_temp = std::env::temp_dir();
@@ -1236,7 +1231,7 @@ mod tests {
             p.find("(deny file-read* file-write*")
                 .expect("the deny block"),
         );
-        for rel in DENY_UNDER_HOME {
+        for rel in deny_under_home(false) {
             let abs = format!("/Users/x/{rel}");
             assert!(tail.contains(&abs), "{abs} is not denied:\n{p}");
         }

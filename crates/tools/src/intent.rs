@@ -1472,40 +1472,16 @@ pub fn unwrap_wrapper(program: &str, argv: &[Word]) -> Option<(String, usize)> {
 // Regions and secrets
 
 /// The directories whose bytes are secret. Not the decider (the flow rule is), but it has to know
-/// what a secret is; a superset of [`crate::adjudicate::NEVER_WRITE`], which is about writes.
-pub const SECRET_DIRS: &[&str] = &[
-    ".ssh",
-    ".gnupg",
-    ".aws",
-    ".kube",
-    ".config/gh",
-    ".password-store",
-    ".mozilla",
-    ".config/google-chrome",
-    ".config/chromium",
-    ".docker",
-    ".config/flowy",
-    "/etc/shadow",
-    "/etc/sudoers",
-    // Browser profiles are session-cookie stores: credential stores that happen to be
-    // shaped like a directory.
-    ".config/BraveSoftware",
-    ".config/microsoft-edge",
-    ".config/vivaldi",
-    ".config/opera",
-    ".thunderbird",
-    "Library/Application Support/Google/Chrome",
-    "Library/Application Support/Firefox",
-    "AppData/Local/Google/Chrome",
-    "AppData/Roaming/Mozilla",
-    // Credential stores that are not browsers.
-    ".local/share/keyrings",
-    ".gnome2/keyrings",
-    ".config/gcloud",
-    ".azure",
-    ".config/op",
-    ".config/Bitwarden",
-];
+/// what a secret is: the stores in [`crate::secrets::STORES`], which the gate's write list and the
+/// macOS seat's fence read too, plus the four this side adds because a read of them is a
+/// disclosure even where nothing writes one.
+pub fn secret_dirs() -> Vec<&'static str> {
+    let mut out = crate::secrets::stores();
+    // `.docker` and not only its config file: a whole directory of registries is a read-side
+    // secret, and the two `/etc` files are absolute, which the flow rule knows the difference of.
+    out.extend([".docker", ".config/flowy", "/etc/shadow", "/etc/sudoers"]);
+    out
+}
 
 /// Files that are secret wherever they sit, matched on the final path segment. Exact names and
 /// extensions only, because a substring test puts every path with "key" in it in the store.
@@ -2181,10 +2157,10 @@ fn touches_own_config(text: &str) -> bool {
 /// load-bearing: `~/.ssh/id_rsa` reports `.ssh`, because the store is what the circuit breaker keys
 /// on and a file name would make re-spelling the key reset the counter.
 fn secret_hit(path: &str, home: Option<&str>) -> Option<String> {
-    for dir in SECRET_DIRS {
+    for dir in secret_dirs() {
         if dir.starts_with('/') {
             if under(path, dir) {
-                return Some((*dir).to_string());
+                return Some(dir.to_string());
             }
             continue;
         }
@@ -2193,12 +2169,12 @@ fn secret_hit(path: &str, home: Option<&str>) -> Option<String> {
         // the segment test stands on its own.
         let needle = format!("/{dir}");
         if path.ends_with(&needle) || path.contains(&format!("{needle}/")) {
-            return Some((*dir).to_string());
+            return Some(dir.to_string());
         }
         if let Some(h) = home
             && under(path, &format!("{}/{dir}", h.trim_end_matches('/')))
         {
-            return Some((*dir).to_string());
+            return Some(dir.to_string());
         }
     }
     // Only then the file itself: a key or a credential file outside any known store.

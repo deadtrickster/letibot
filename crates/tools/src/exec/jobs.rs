@@ -960,16 +960,28 @@ mod tests {
         cap.close_spill();
 
         let window = String::from_utf8(cap.slice(0, 4096).bytes).expect("ascii");
-        assert!(!window.contains(head), "the window kept the token's head: {window}");
-        assert!(!window.contains(tail), "the window kept the token's tail: {window}");
-        assert!(window.contains("a=***"), "the mask is the token's own width: {window}");
+        assert!(
+            !window.contains(head),
+            "the window kept the token's head: {window}"
+        );
+        assert!(
+            !window.contains(tail),
+            "the window kept the token's tail: {window}"
+        );
+        assert!(
+            window.contains("a=***"),
+            "the mask is the token's own width: {window}"
+        );
         assert!(
             window.ends_with("**=b"),
             "and the bytes after it are untouched: {window}"
         );
 
         let on_disk = std::fs::read_to_string(&path).expect("the file is there");
-        assert!(!on_disk.contains(token), "the file holds the token: {on_disk}");
+        assert!(
+            !on_disk.contains(token),
+            "the file holds the token: {on_disk}"
+        );
         assert_eq!(
             on_disk.len(),
             window.len(),

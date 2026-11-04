@@ -3191,12 +3191,18 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
             token.into(),
         )]));
         let id = JobId("fanout-1".into());
-        h.hold(&id, Arc::new(OneLine(format!("branch 1: gh auth says {token}\n"))))
-            .expect("an empty host holds the handle");
+        h.hold(
+            &id,
+            Arc::new(OneLine(format!("branch 1: gh auth says {token}\n"))),
+        )
+        .expect("an empty host holds the handle");
 
         let slice = h.output(&id, 0, 4096).expect("the handle is a job");
         let text = slice.text();
-        assert!(!text.contains(token), "the journal carried the token out: {text}");
+        assert!(
+            !text.contains(token),
+            "the journal carried the token out: {text}"
+        );
         assert!(
             text.starts_with("branch 1: gh auth says ***"),
             "masked where it stood: {text}"

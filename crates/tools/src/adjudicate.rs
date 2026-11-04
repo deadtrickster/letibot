@@ -1253,37 +1253,14 @@ fn grant_program(baseline: &crate::intent::Baseline) -> String {
 
 /// The refuse-list, evaluated before any adjudicator and overridable by none of them: a
 /// `deny` row is checked before an adjudicator is consulted, so no listener can bypass it.
-/// `.git/` is ours, not the clause's: rewriting a ref is not something a tool can undo.
-pub const NEVER_WRITE: &[&str] = &[
-    ".ssh",
-    ".gnupg",
-    ".aws",
-    ".kube",
-    ".config/gh",
-    ".password-store",
-    ".mozilla",
-    ".config/google-chrome",
-    ".config/chromium",
-    ".git",
-    // The clause said "or a browser profile", and three of them is not the
-    // clause. Same reasoning as the read-side list in `intent::SECRET_DIRS`,
-    // which these are kept in step with.
-    ".config/BraveSoftware",
-    ".config/microsoft-edge",
-    ".config/vivaldi",
-    ".config/opera",
-    ".thunderbird",
-    "Library/Application Support/Google/Chrome",
-    "Library/Application Support/Firefox",
-    "AppData/Local/Google/Chrome",
-    "AppData/Roaming/Mozilla",
-    ".local/share/keyrings",
-    ".gnome2/keyrings",
-    ".config/gcloud",
-    ".azure",
-    ".config/op",
-    ".config/Bitwarden",
-];
+/// `.git/` is ours, not the clause's: rewriting a ref is not something a tool can undo. The
+/// stores themselves are [`crate::secrets::STORES`], which the read-side list and the macOS
+/// seat's fence read too, so no copy of them can drift.
+pub fn never_write() -> Vec<&'static str> {
+    let mut out = crate::secrets::stores();
+    out.push(".git");
+    out
+}
 
 /// Where an *Always allow* answer is written down; see
 /// [`AdjudicatedGate::with_permission_sink`].
@@ -3408,16 +3385,16 @@ fn never_hit(args: &Value) -> Option<String> {
             continue;
         }
         let Value::String(s) = v else { continue };
-        for seg in s.split(['/', '\\']) {
-            for never in NEVER_WRITE {
-                // `.config/gh` is two segments; compare against the whole string
-                // for those and against segments for the rest.
+        for never in never_write() {
+            for seg in s.split(['/', '\\']) {
+                // A two-segment entry is compared against the whole string, because its first
+                // segment alone is an ordinary directory name.
                 if never.contains('/') {
                     if s.contains(never) {
-                        return Some((*never).to_string());
+                        return Some(never.to_string());
                     }
-                } else if seg == *never {
-                    return Some((*never).to_string());
+                } else if seg == never {
+                    return Some(never.to_string());
                 }
             }
         }
