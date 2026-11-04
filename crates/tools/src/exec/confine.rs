@@ -2080,6 +2080,11 @@ impl Confinement for Bwrap {
         Some(&self.boundary)
     }
 
+    // The wide seat is the operator's own session: their `!` line runs outside it, as on a Mac.
+    fn spares_operator(&self) -> bool {
+        self.boundary.view.wide
+    }
+
     fn wrap(&self, plan: &ConfinePlan<'_>) -> Result<Vec<String>, ExecError> {
         self.wrap_with(plan, Session::Detached)
     }
