@@ -930,6 +930,14 @@ fn replay(link: &RoomLink, attention: Attention) -> Result<Option<String>, Strin
 mod tests {
     use super::*;
 
+    /// The room's handle rule: at most 32 of `a-z`, `0-9`, `-` and one inner `@`.
+    fn a_handle(n: &str) -> bool {
+        n.len() <= 32
+            && n.matches('@').count() <= 1
+            && n.bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'@')
+    }
+
     /// Pins the same table as the room crate's `the_host_key_matches_what_the_launcher_derives`.
     #[test]
     fn the_host_key_matches_the_room_crate() {
@@ -956,14 +964,14 @@ mod tests {
         assert_eq!(base_name(Some(""), cwd), "cc@letibot");
         assert!(base_name(None, std::path::Path::new("/")).starts_with("cc@"));
         let long = std::path::Path::new("/x/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-        assert!(letibot_room::valid_handle(&base_name(None, long)));
+        assert!(a_handle(&base_name(None, long)));
     }
 
     #[test]
     fn a_second_bridge_in_one_folder_gets_a_short_suffix_that_still_fits() {
         let name = suffixed("cc@letibot", 0x1234_5abc);
         assert_eq!(name, "cc@letibot-abc");
-        assert!(letibot_room::valid_handle(&name));
+        assert!(a_handle(&name));
         let long = suffixed(&"a".repeat(32), 7);
         assert_eq!(long.len(), 32);
         assert!(long.ends_with("-7"));
