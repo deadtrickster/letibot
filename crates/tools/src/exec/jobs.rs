@@ -317,15 +317,15 @@ impl Masker {
         }
     }
 
-    /// How far short of the end a match can start and still be decided: one byte less than the
-    /// longest needle, which is the most a later read could complete.
+    /// How many trailing bytes could still be the start of a needle: the longest suffix of the hold
+    /// that is a proper prefix of one. Anything before it is decided, so ordinary output (a prompt
+    /// of a few bytes) is published at once and only a real partial token waits.
     fn carry(&self) -> usize {
         self.needles
             .iter()
-            .map(|n| n.len())
+            .flat_map(|n| (1..n.len()).rev().find(|&k| self.held.ends_with(&n[..k])))
             .max()
             .unwrap_or(0)
-            .saturating_sub(1)
     }
 
     /// What may be published of `bytes` plus whatever was held, masked.
@@ -850,6 +850,17 @@ impl Job {
 
 #[cfg(test)]
 mod tests {
+    /// A prompt no secret begins with is published whole and at once, and a token split across two
+    /// reads is still held until it can be decided.
+    #[test]
+    fn a_masker_holds_only_a_partial_secret_and_not_a_fixed_tail() {
+        let mut m = Masker::new(vec![b"ghp_0123456789abcdef".to_vec()]);
+        assert_eq!(m.feed(b"Continue? [Y/n]\n"), b"Continue? [Y/n]\n");
+        assert_eq!(m.feed(b"token ghp_0123"), b"token ");
+        let mut want = vec![b'*'; 20];
+        want.push(b'!');
+        assert_eq!(m.feed(b"456789abcdef!"), want);
+    }
 
     /// A seeded counter never mints a handle at or below the seed, and a lower seed does not move
     /// it back. Process-wide, so this asserts bounds rather than exact values: other tests mint
