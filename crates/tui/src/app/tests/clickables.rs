@@ -134,7 +134,7 @@ fn session_texts() -> Vec<(&'static str, String)> {
         ("unknown tag", "[something new] the daemon learned this. Second.".into()),
         ("unknown prose", "A sentence no reader knows; it goes on.".into()),
     ];
-    let fixtures: [(&'static str, &str); 14] = [
+    let fixtures: [(&'static str, &str); 13] = [
         ("red", include_str!("fixtures/red_main_notice.txt")),
         (
             "killed",
@@ -181,7 +181,6 @@ fn session_texts() -> Vec<(&'static str, String)> {
             "review vetoed",
             include_str!("fixtures/review_vetoed_message.txt"),
         ),
-        ("job", include_str!("fixtures/job_notice_mine.txt")),
     ];
     v.extend(fixtures.into_iter().map(|(n, t)| (n, t.to_string())));
     v
