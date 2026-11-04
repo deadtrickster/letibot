@@ -35,8 +35,8 @@ fn a_parents_write_upserts_its_own_rows_and_nobody_elses_move() {
     assert_eq!(changed, 2, "both rows were added");
     assert_eq!(b.version(), 1);
 
-    // **The child's rows and the operator's are untouched, and the union orders them:
-    // what the model chose, then what it was told, then the operator's.**
+    // The child's rows and the operator's are untouched, and the union orders them:
+    // what the model chose, then what it was told, then the operator's.
     let all = b.snapshot();
     assert_eq!(
         all.iter().map(|t| t.content.as_str()).collect::<Vec<_>>(),

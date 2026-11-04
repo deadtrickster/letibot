@@ -182,7 +182,7 @@ fn the_description_is_one_short_paragraph_per_field() {
 
 /// One rule for an abstention. `ask_user_question` and an operator wait on a
 /// `todo_write` row say the same thing - an abstention is an answer, and the model proceeds on
-/// an assumption it states - where one used to call it "not permission to proceed".
+/// an assumption it states, never "not permission to proceed".
 #[test]
 fn an_abstention_means_the_same_in_ask_and_in_a_todo_wait() {
     let rule = "proceed and state the assumption you proceed on";

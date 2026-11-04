@@ -1,11 +1,11 @@
 //! Cgroup-scoped process lifetime, and the record that makes its zero falsifiable.
 //!
 //! ```text
-//!   letibot.<pid>.<n>/                  one tree's root — see `probe_under`
+//!   letibot.<pid>.<n>/                  one tree's root - see `probe_under`
 //!     session.<sid>/                    ScopeKind::Session
-//!       turn.<tid>/                     ScopeKind::Turn — a child DIRECTORY
+//!       turn.<tid>/                     ScopeKind::Turn - a child DIRECTORY
 //!         job.<n>/                      one command
-//!     explicit.<name>/                  ScopeKind::Explicit — a SIBLING of the session
+//!     explicit.<name>/                  ScopeKind::Explicit - a SIBLING of the session
 //! ```
 //!
 //! Three scopes and no fourth: `explicit` is a sibling so ending the session does not reap

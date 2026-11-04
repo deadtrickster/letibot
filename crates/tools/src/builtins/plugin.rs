@@ -130,7 +130,7 @@ fn text<'a>(args: &'a Value, field: &str) -> Option<&'a str> {
         .filter(|s| !s.is_empty())
 }
 
-/// **The pane's C3 input, handed to `test` when the caller gave none**: the first frame of any
+/// The pane's C3 input, handed to `test` when the caller gave none: the first frame of any
 /// pane - nothing looked at, nothing pressed, no state. A plugin that cannot answer this one traps
 /// on its own first frame, which is the cheapest defect to find.
 pub fn synthetic_input() -> Value {
@@ -296,7 +296,7 @@ impl Tool for PluginTool {
     }
 }
 
-/// **`plugin_hooks`** - the contracts, from the host that enforces them.
+/// `plugin_hooks` - the contracts, from the host that enforces them.
 pub struct PluginHooksTool {
     desk: Arc<dyn PluginDesk>,
 }
@@ -523,7 +523,7 @@ mod tests {
         }
     }
 
-    /// **`build` and `load` go to the gate like any command**: with no adjudicator they never
+    /// `build` and `load` go to the gate like any command: with no adjudicator they never
     /// reach the desk, which is the same treatment `bash` gets.
     #[test]
     fn a_build_reaches_the_gate_before_the_desk() {

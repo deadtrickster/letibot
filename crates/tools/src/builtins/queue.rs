@@ -236,8 +236,8 @@ mod tests {
         assert_eq!(a("withdraw"), None, "the schema's Write stands");
     }
 
-    /// **Each verb reaches the desk; a missing argument is refused by name; and `withdraw` goes
-    /// to the gate like any write** - here the default boundary, which decides nothing and so
+    /// Each verb reaches the desk; a missing argument is refused by name; and `withdraw` goes
+    /// to the gate like any write - here the default boundary, which decides nothing and so
     /// refuses: the desk never hears it.
     #[test]
     fn each_action_reaches_the_desk_and_withdraw_is_gated_like_any_write() {
@@ -301,8 +301,8 @@ mod tests {
         );
     }
 
-    /// **`status` carries the scope the caller asked for, and asks for none when it asked for
-    /// none** - `None` is what the desk reads as *this session's own repository*.
+    /// `status` carries the scope the caller asked for, and asks for none when it asked for
+    /// none - `None` is what the desk reads as *this session's own repository*.
     #[test]
     fn status_passes_the_scope_through_and_asks_for_none_by_default() {
         use crate::backend::HostBackend;

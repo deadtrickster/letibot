@@ -1,8 +1,8 @@
 use super::*;
 use crate::testing::writable_harness;
 
-/// **`read` carries the historical line and the age, above the body - the
-/// operator's ask verbatim.**
+/// `read` carries the historical line and the age, above the body - the
+/// operator's ask verbatim.
 #[test]
 fn read_carries_the_historical_line_with_the_age() {
     let mut h = writable_harness();
@@ -33,8 +33,8 @@ fn read_carries_the_historical_line_with_the_age() {
     assert!(caveat_at < body_at, "the caveat comes first: {said}");
 }
 
-/// **A note the tool writes lands where the reader reads it - and by
-/// name, by path, and with `.md` spelled or not, it is the same note.**
+/// A note the tool writes lands where the reader reads it - and by
+/// name, by path, and with `.md` spelled or not, it is the same note.
 #[test]
 fn add_writes_into_the_project_notes_dir_and_reads_back() {
     let mut h = writable_harness();
@@ -77,8 +77,8 @@ fn add_writes_into_the_project_notes_dir_and_reads_back() {
     assert!(r.edit.is_some(), "a write carries its before/after pair");
 }
 
-/// **`add` refuses to overwrite and says what is there; `append` and
-/// `replace` refuse to create and name the near misses.**
+/// `add` refuses to overwrite and says what is there; `append` and
+/// `replace` refuse to create and name the near misses.
 #[test]
 fn the_write_verbs_refuse_the_cases_they_must_not_do_silently() {
     let mut h = writable_harness();
@@ -420,8 +420,8 @@ fn a_name_too_long_says_its_length() {
     assert!(!said.contains("{raw}"), "{said}");
 }
 
-/// **There is no spelling of a write that leaves the project notes
-/// directory.**
+/// There is no spelling of a write that leaves the project notes
+/// directory.
 #[test]
 fn a_name_that_escapes_the_notes_dir_is_refused() {
     let mut h = writable_harness();
@@ -556,8 +556,8 @@ fn the_other_doors_into_the_notes_dir_are_refused_and_the_tool_still_writes() {
     assert!(r.render().contains("near-copy"), "{}", r.render());
 }
 
-/// **A read reaches the box-wide dir - outside every session's backend
-/// view - and an unknown name refuses with the notes that exist.**
+/// A read reaches the box-wide dir - outside every session's backend
+/// view - and an unknown name refuses with the notes that exist.
 #[test]
 fn read_reaches_the_box_wide_dir_and_a_miss_lists_what_exists() {
     let mut h = writable_harness();
@@ -595,8 +595,8 @@ fn read_reaches_the_box_wide_dir_and_a_miss_lists_what_exists() {
     );
 }
 
-/// **The tool is `Access::Write` in the schema and narrows to a read for
-/// `list`/`read` - and a write-denied downgrade drops it from the seat.**
+/// The tool is `Access::Write` in the schema and narrows to a read for
+/// `list`/`read` - and a write-denied downgrade drops it from the seat.
 #[test]
 fn the_access_class_is_write_and_the_read_verbs_narrow() {
     let scope: Arc<dyn NotesScope> = Arc::new(FixtureScope {
@@ -749,8 +749,8 @@ fn search_answers_with_paths_line_numbers_and_lines() {
     );
 }
 
-/// **A search that matches nothing abstains, and lists the notes there
-/// are** - clause 1 in the tool that most needs it, since a miss here is
+/// A search that matches nothing abstains, and lists the notes there
+/// are - clause 1 in the tool that most needs it, since a miss here is
 /// the caller's only evidence about a corpus it cannot see.
 #[test]
 fn a_search_that_matches_nothing_abstains_with_the_corpus() {
@@ -780,8 +780,8 @@ fn a_search_that_matches_nothing_abstains_with_the_corpus() {
     assert!(r.render().contains("needs a query"), "{}", r.render());
 }
 
-/// **The author's abstract is written into the note and leads the index;
-/// without one the harness derives the note's first sentence.**
+/// The author's abstract is written into the note and leads the index;
+/// without one the harness derives the note's first sentence.
 #[test]
 fn an_abstract_is_the_authors_line_or_the_notes_first_sentence() {
     let mut h = writable_harness();
@@ -899,8 +899,8 @@ fn the_derived_abstract_stops_at_a_proper_sentence_end() {
     assert!(cut.ends_with('…'), "{cut}");
 }
 
-/// **`search` is a read verb: it narrows below the gate like `list` and
-/// `read`, and a seat with no write keeps it.**
+/// `search` is a read verb: it narrows below the gate like `list` and
+/// `read`, and a seat with no write keeps it.
 #[test]
 fn search_narrows_to_a_read_like_the_other_read_verbs() {
     let scope: Arc<dyn NotesScope> = Arc::new(FixtureScope {

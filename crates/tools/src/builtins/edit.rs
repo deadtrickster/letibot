@@ -2,7 +2,7 @@
 //! that can change the operator's tree, so the order of its checks is the design:
 //! ```text
 //!   arguments (clause 2, in the runtime)
-//!     → the GATE (clause 4, in the runtime) — refuses with no adjudicator
+//!     → the GATE (clause 4, in the runtime) - refuses with no adjudicator
 //!       → the file exists?        no  → the nearest listing, and `write` named
 //!         → the backend writable? no  → which of the two gates stopped this
 //!           → exactly one match?  no  → what IS there (§8.1 clause 1)

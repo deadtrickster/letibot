@@ -882,7 +882,7 @@ mod tests {
     #[test]
     fn an_abstention_is_an_answer_and_is_not_permission_to_proceed() {
         let r = ask(Arc::new(ScriptedQuestioner::abstaining("deadtrickster")), Q);
-        // **Not `Ok`.** The person did not answer, so a caller that read `Ok` would
+        // Not `Ok`. The person did not answer, so a caller that read `Ok` would
         // be reading an answer nobody gave.
         assert!(
             matches!(r.outcome, ToolOutcome::Abstained { .. }),

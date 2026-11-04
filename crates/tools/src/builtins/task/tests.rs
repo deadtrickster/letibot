@@ -1265,8 +1265,8 @@ fn the_main_tree_is_named_as_the_exception() {
     );
 }
 
-/// **A VM child works on a COPY, so a worktree `task_start` arranged for it would be a branch
-/// nothing ever commits to.** Refused at the call, before a tree or a child exists; `main_tree`
+/// A VM child works on a COPY, so a worktree `task_start` arranged for it would be a branch
+/// nothing ever commits to. Refused at the call, before a tree or a child exists; `main_tree`
 /// stays allowed because it promises no branch.
 #[test]
 fn a_task_start_in_a_vm_is_refused_before_anything_is_arranged() {
@@ -2186,8 +2186,8 @@ fn a_lost_childs_answer_says_it_is_not_a_finished_answer() {
     );
 }
 
-/// **A `task` that names skills carries them to the spawn, and a name nothing answers to is a
-/// refusal before anything starts** - the brief's own rule: an unknown skill is refused by name,
+/// A `task` that names skills carries them to the spawn, and a name nothing answers to is a
+/// refusal before anything starts - the brief's own rule: an unknown skill is refused by name,
 /// never silently a child without the instructions its parent asked for.
 #[test]
 fn a_task_that_names_skills_carries_them_and_refuses_an_unknown_one() {

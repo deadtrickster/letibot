@@ -43,7 +43,7 @@ pub trait DigestRunner: Send + Sync {
 /// [`is_part_reader_brief`] knows a reader by.
 const PART_READER_SAYS: &str = "of a longer body of text on somebody else's behalf.";
 
-/// **Whether a subagent's brief is a `digest` part reader's** - how a record written before
+/// Whether a subagent's brief is a `digest` part reader's - how a record written before
 /// helpers were marked ([`TaskSpec::helper`]) is still known for one: *"You are reading part 3 of
 /// 12 of a longer body of text on somebody else's behalf."*
 pub fn is_part_reader_brief(prompt: &str) -> bool {

@@ -488,8 +488,8 @@ pub fn resolve_child_in(children: &[ChildName], asked: &str) -> Result<String, I
     }
 }
 
-/// The refusal for a name more than one child carries. **It names the child the way it was asked
-/// for** - the job rule - and lists the candidates by their labels, so the next call can use the
+/// The refusal for a name more than one child carries. It names the child the way it was asked
+/// for - the job rule - and lists the candidates by their labels, so the next call can use the
 /// handle.
 pub fn ambiguous_child(asked: &str, many: &[ChildName]) -> Invocation {
     let lines: String = many.iter().map(|c| format!("  {}\n", c.label())).collect();

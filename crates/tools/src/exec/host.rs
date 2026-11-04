@@ -312,7 +312,7 @@ pub trait ProcessHost: Send + Sync {
     ///     client_request_id: String,   // as every other acting frame carries
     ///     expected_seq: u64,           // as Prompt and Interrupt do
     ///     job: String,                 // the job id, from ToolEvent::Progress
-    ///     identity: String,            // WHO — this becomes Backgrounding::Operator
+    ///     identity: String,            // WHO - this becomes Backgrounding::Operator
     /// }
     /// ```
     fn promote(

@@ -250,8 +250,8 @@ impl Tool for Say {
 #[cfg(any(test, feature = "testing"))]
 pub use fake::FakeChat;
 
-/// An in-memory fabric, for tests. **No test in this repository says anything in a
-/// real room** - other seats read those.
+/// An in-memory fabric, for tests. No test in this repository says anything in a
+/// real room - other seats read those.
 #[cfg(any(test, feature = "testing"))]
 mod fake {
     use super::*;
