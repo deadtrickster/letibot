@@ -465,7 +465,27 @@ impl Bridge {
         // The daemon's own line carries the commit, and the head cannot read it - so it names the
         // branch the caller must look at, on the one rule the placement itself uses.
         if let Some(host) = h.placement.as_ref().and_then(Placement::host) {
-            answer["branch"] = json!(letibot_tools::remote::back_branch_for(host, session));
+            let branch = letibot_tools::remote::back_branch_for(host, session);
+            // The daemon's own fetch on close is not seen from here, so the repo is asked, and a
+            // branch that is not there is collected now. Either way the answer says which.
+            let vm = matches!(h.placement, Some(Placement::RemoteVm(_)));
+            let repo = h.worktree.clone();
+            let collect = || {
+                let hosts = Hosts::load();
+                let declared = hosts
+                    .get(host)
+                    .ok_or_else(|| hosts.refusal(host).to_string())?;
+                letibot_tools::remote::collect(&letibot_tools::remote::CollectSpec {
+                    host: declared.clone(),
+                    session: session.to_string(),
+                    repo: repo.clone(),
+                    ssh: None,
+                    paths: letibot_tools::remote::Paths::from_env(),
+                    vm,
+                })
+                .map_err(|e| e.to_string())
+            };
+            settle_branch(&mut answer, &h.worktree, &branch, collect);
         }
         Ok(answer)
     }
@@ -893,7 +913,7 @@ pub fn list() -> Value {
         tool(
             "leticode_collect",
             "Fetch what a session that is already stopped committed on its host, as the branch \
-            `remote/<host>/<short id>`. `leticode_stop` brings the branch home as it closes, \
+            `remote/<host>/<short id>`. `leticode_stop` brings the branch home as it closes and answers `branch_home` (true, or false with `branch_said`), \
             but a daemon stopped underneath the session - or one that died - reaches no close, \
             and then the work stays on that machine. Nothing of the daemon is needed: the \
             session id, the host and the repository are the names the placement was made from. \
@@ -1100,9 +1120,126 @@ pub fn wait(worktree: &str, session: &str, deadline: Instant) -> (i32, String) {
     }
 }
 
+/// Put `branch_home` (and why not) into a stop answer: true when `branch` is in `repo`, either
+/// already or after `collect` fetched it; false with the reason when neither holds.
+fn settle_branch(
+    answer: &mut Value,
+    repo: &Path,
+    branch: &str,
+    collect: impl FnOnce() -> Result<String, String>,
+) {
+    answer["branch"] = json!(branch);
+    if branch_exists(repo, branch) {
+        answer["branch_home"] = json!(true);
+        return;
+    }
+    match collect() {
+        Ok(said) if branch_exists(repo, branch) => {
+            answer["branch_home"] = json!(true);
+            answer["branch_said"] = json!(said);
+        }
+        Ok(said) => {
+            answer["branch_home"] = json!(false);
+            answer["branch_said"] = json!(format!(
+                "the collect said `{said}` but `{branch}` is not in {}",
+                repo.display()
+            ));
+        }
+        Err(why) => {
+            answer["branch_home"] = json!(false);
+            answer["branch_said"] = json!(format!(
+                "`{branch}` is not in {} and fetching it failed: {why}",
+                repo.display()
+            ));
+        }
+    }
+}
+
+fn branch_exists(repo: &Path, branch: &str) -> bool {
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["rev-parse", "--verify", "--quiet"])
+        .arg(format!("refs/heads/{branch}"))
+        .output()
+        .is_ok_and(|o| o.status.success())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn a_repo(tag: &str) -> std::path::PathBuf {
+        let dir = letibot_sessionlog::testing::scratch_root()
+            .join(format!("stop-branch-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for args in [
+            vec!["init", "-q"],
+            vec![
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "x",
+            ],
+        ] {
+            assert!(
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(&dir)
+                    .args(args)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        dir
+    }
+
+    #[test]
+    fn stop_fetches_a_branch_that_is_not_home_and_says_so_when_it_cannot() {
+        let repo = a_repo("settle");
+        let branch = "remote/lab/abc12345";
+        let make = |repo: std::path::PathBuf| {
+            move || {
+                let ok = std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(&repo)
+                    .args(["branch", "remote/lab/abc12345"])
+                    .status()
+                    .unwrap()
+                    .success();
+                assert!(ok);
+                Ok("fetched".to_string())
+            }
+        };
+        // Absent: the collect runs and the branch is then home.
+        let mut a = json!({});
+        settle_branch(&mut a, &repo, branch, make(repo.clone()));
+        assert_eq!(a["branch_home"], true, "{a}");
+        assert_eq!(a["branch_said"], "fetched", "{a}");
+        // Present: the collect is not run.
+        let mut b = json!({});
+        settle_branch(&mut b, &repo, branch, || panic!("already home"));
+        assert_eq!(b["branch_home"], true, "{b}");
+        // Absent and the fetch fails: said plainly.
+        let mut c = json!({});
+        settle_branch(&mut c, &repo, "remote/lab/none0000", || {
+            Err("ssh refused".into())
+        });
+        assert_eq!(c["branch_home"], false, "{c}");
+        let said = c["branch_said"].as_str().unwrap();
+        assert!(
+            said.contains("ssh refused") && said.contains("remote/lab/none0000"),
+            "{said}"
+        );
+        let _ = std::fs::remove_dir_all(&repo);
+    }
 
     /// Twenty tools (fourteen leticode, six room), each with a schema and a required list - the count and the names the
     /// design's table fixes. A tool added to `tools/list` and forgotten in `call` (or the other
