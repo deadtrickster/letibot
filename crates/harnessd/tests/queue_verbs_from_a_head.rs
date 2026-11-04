@@ -1,12 +1,6 @@
-//! **The queue's verbs as a PERSON runs them**: a head sends `/queue restart ID` over the socket,
-//! the daemon parses it, scopes it to the session's repository and answers on the log. The model's
-//! half of the same verbs is the `queue` tool, and it was the only half anything drove - a head
-//! could open the pane and nothing else, while the daemon's own warnings told the operator to type
-//! `/queue regate`, `/queue restart`, `/queue approve` and `/queue rm`.
+//! The queue's verbs as a person runs them: a head sends `/queue restart ID` over the socket, the daemon parses it, scopes it to the session's repository and answers on the log. The model's half is the `queue` tool; the daemon's warnings tell the operator to type `/queue regate`, `restart`, `approve` and `rm`.
 //!
-//! The fixture's workspace is a real repository with a store behind it, so every verb gets past the
-//! scope and the store and arrives at the row lookup: the answer a row that does not exist earns is
-//! the proof that the verb ran rather than being dropped or unparsed.
+//! The fixture is a real repository with a store, so each verb reaches the row lookup. The answer for a nonexistent row proves the verb ran rather than being dropped or unparsed.
 
 use std::time::{Duration, Instant};
 

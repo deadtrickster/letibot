@@ -5366,7 +5366,7 @@ mod the_wire_report {
         );
     }
 
-    /// **What the record kept, and what it was allowed** (R22): the levels a reader needs to judge a
+    /// What the record kept, and what it was allowed: the levels a reader needs to judge a
     /// summary rather than take it on trust, in the sentence AND in the wire report - one set of
     /// numbers, two shapes, so a head drawing one cannot contradict the other.
     #[test]
@@ -5626,7 +5626,7 @@ mod the_wire_report {
         );
     }
 
-    /// **A record's window is the one the wall fires on.** The wall stops a round at
+    /// A record's window is the one the wall fires on. The wall stops a round at
     /// `15/16 of context_window` in the provider's own count, so the window a head draws beside a
     /// compaction is that window and not a planning window converted back through the ratio.
     #[test]

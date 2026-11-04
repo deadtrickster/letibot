@@ -235,7 +235,7 @@ pub const ALIVE_WITHIN: Duration = Duration::from_secs(2 * BEAT.as_secs());
 
 /// Whether the daemon that wrote `instance` is still running: no stop recorded, a heartbeat inside
 /// [`ALIVE_WITHIN`], and - when the instance names it - a pid that is a live process. A store is
-/// shared by every daemon on the box, so another instance's records are not a stop's (R91.9).
+/// shared by every daemon on the box, so another instance's records are not a stop's.
 pub fn is_running(store: &Store, instance: &str, now_ms: u64) -> bool {
     let Some(life) = store.life(instance).ok().flatten() else {
         return false;
@@ -329,7 +329,7 @@ pub fn header(
         }
     };
     let down = Duration::from_millis(back_ms.saturating_sub(at_ms));
-    // R93.E12: what happened leads, and the clock is one bracket - the sentence a reader needs is
+    // what happened leads, and the clock is one bracket - the sentence a reader needs is
     // the same whether the daemon can name its stop time or not. `~` is an inference from a
     // heartbeat rather than a recorded stop.
     let est = if estimated_from.is_some() { "~" } else { "" };
@@ -535,7 +535,7 @@ pub fn notice(header: &str, lines: &[String], outcome: Outcome) -> String {
         text.push('\n');
         text.push_str(&lines.join("\n"));
     }
-    // R93.E16: a restored restart still leaves every background job dead - its process was the
+    // a restored restart still leaves every background job dead - its process was the
     // old daemon's - so a job line means the closing is owed whatever the outcome says.
     let any_job = lines.iter().any(|l| l.starts_with("- job "));
     if outcome != Outcome::Restored || any_job {
@@ -1211,7 +1211,7 @@ mod tests {
         }
     }
 
-    /// **Another daemon is running while its life row says so** (R91.9): no stop, a heartbeat inside
+    /// Another daemon is running while its life row says so: no stop, a heartbeat inside
     /// two beats, and a pid that is a live process. A stop, a stale beat and a pid that is gone all
     /// make it a gone daemon - the last one so a crash is not read as a daemon still working.
     #[test]

@@ -1462,7 +1462,7 @@ fn a_relic_beside_a_real_record_takes_the_down_time_from_the_real_one() {
     d.stop(None);
 }
 
-/// **A daemon that is still beating is not a gone one** (R91.9): another instance's child, monitor
+/// A daemon that is still beating is not a gone one: another instance's child, monitor
 /// and job belong to a daemon that is working, and a restore here would resume the child twice in
 /// one worktree, run the monitor twice and mark the job lost.
 #[test]

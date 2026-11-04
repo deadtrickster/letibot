@@ -41,7 +41,7 @@ fn opened_by_a_later_daemon(dir: &Scratch, id: &str) -> Option<Harness> {
     opened_by_a_later_daemon_with(dir, id, |_| {})
 }
 
-/// The same, with rows written into the earlier daemon's store **before** this one opens it - the
+/// The same, with rows written into the earlier daemon's store before this one opens it - the
 /// board and the transcript are read at `Harness::open`, so a fixture that seeds them afterwards
 /// seeds a harness that never saw them.
 fn opened_by_a_later_daemon_with(
@@ -52,7 +52,7 @@ fn opened_by_a_later_daemon_with(
     let gguf = crate::vocab_gguf()?;
     let path = dir.store();
     let store = Store::open(&path).expect("a store");
-    // **A daemon has to have stopped here.** The guard is a fact about the box rather than an
+    // A daemon has to have stopped here. The guard is a fact about the box rather than an
     // inference from a session's creation time (a seeded session is older than this daemon while
     // nothing restarted), so a fixture that wants the restart said must leave a stopped life.
     store
@@ -85,7 +85,7 @@ fn opened_by_a_later_daemon_with(
     Some(Harness::open(&parts, cfg, Hub::new(id)).expect("the session opens"))
 }
 
-/// **One row of the board**, as the model writes it.
+/// One row of the board, as the model writes it.
 fn a_row(what: &str, status: TodoStatus) -> TodoItem {
     TodoItem {
         content: what.into(),
@@ -123,7 +123,7 @@ fn stage_a_last_row(dir: &Scratch, id: &str, item: TranscriptItem) {
         .expect("the row is appended");
 }
 
-/// **The daemon that comes back to that store** - a new `Harness` over the same file, which is what
+/// The daemon that comes back to that store - a new `Harness` over the same file, which is what
 /// a restart is here: the previous one is dropped first, because a session has ONE writer and the
 /// store refuses a second open while the first still holds its claim (`crate::writer`).
 fn reopened(dir: &Scratch, id: &str) -> Harness {
@@ -176,9 +176,9 @@ fn an_empty_restart_is_one_row_and_never_a_turn() {
         "the stop is dated from a stopped life row, not invented: {text}"
     );
     assert!(text.ends_with(". Nothing was running."), "{text}");
-    // **The model has it**, as a row of the transcript.
+    // The model has it, as a row of the transcript.
     assert_eq!(restart_rows(&h), vec![text.clone()], "{:?}", h.items());
-    // **And nothing is waiting for a turn to be spent on it.**
+    // And nothing is waiting for a turn to be spent on it.
     assert!(
         h.restart_notices.is_empty(),
         "a notice left for a wake is a turn: {:?}",
@@ -188,7 +188,7 @@ fn an_empty_restart_is_one_row_and_never_a_turn() {
         h.injected.lock().unwrap().is_empty(),
         "nothing was injected: a boundary would only be taken by a turn"
     );
-    // **Once per (session, restart)** - the key names the daemon.
+    // Once per (session, restart) - the key names the daemon.
     assert!(
         h.restore_after_restart().is_none(),
         "the same daemon said it twice"
@@ -203,7 +203,7 @@ fn an_empty_restart_is_one_row_and_never_a_turn() {
     );
 }
 
-/// **A session the daemon itself created is not a restart, and is told nothing** - a head
+/// A session the daemon itself created is not a restart, and is told nothing - a head
 /// attaching to a session this daemon started, a `/resume` of it, and a second open: there is no
 /// stop behind any of them.
 #[test]
@@ -236,7 +236,7 @@ fn a_session_this_daemon_created_is_never_told_of_a_restart() {
     );
 }
 
-/// **A turn already running reads the sentence at its next step boundary** - filed, not spoken,
+/// A turn already running reads the sentence at its next step boundary - filed, not spoken,
 /// and not a second turn opened under the one in flight.
 #[test]
 fn a_session_mid_turn_reads_the_line_at_its_next_round_boundary() {
@@ -249,9 +249,9 @@ fn a_session_mid_turn_reads_the_line_at_its_next_round_boundary() {
     h.hold_a_turn_open_for_test(true);
     let text = "[restart] The daemon restarted (down 1s). Nothing was running.";
     h.say_without_a_turn(text).expect("the sentence is filed");
-    // **Not a row yet**: it waits for the boundary of the turn that is already running.
+    // Not a row yet: it waits for the boundary of the turn that is already running.
     assert!(restart_rows(&h).is_empty(), "{:?}", h.items());
-    // **And the boundary hands it to the engine**, as context in that turn.
+    // And the boundary hands it to the engine, as context in that turn.
     let said = h.steering().try_next().expect("the step boundary has it");
     assert!(said.text.contains(text), "{}", said.text);
     // Nothing is left over for a wake to turn into a turn of its own.
@@ -296,7 +296,7 @@ fn a_plan_with_rows_owed_makes_the_restart_a_turn() {
         text.contains("2 todo rows still owed"),
         "the two rows that are owed, and not the three that are not: {text}"
     );
-    // **A turn is owed, and the ring at open is what spends it** - `restart_notices` is the door
+    // A turn is owed, and the ring at open is what spends it - `restart_notices` is the door
     // `Harness::wake` drains, and a non-empty list is a turn.
     assert_eq!(
         h.restart_notices,
@@ -304,16 +304,16 @@ fn a_plan_with_rows_owed_makes_the_restart_a_turn() {
         "a session that owes work keeps the turn: {:?}",
         h.restart_notices
     );
-    // **And it is NOT also filed as a row** - one restart, one notification, and this one is the
+    // And it is NOT also filed as a row - one restart, one notification, and this one is the
     // turn's opening line.
     assert!(restart_rows(&h).is_empty(), "{:?}", h.items());
-    // **Once per (session, restart)**: a second open of the same session by the same daemon says
+    // Once per (session, restart): a second open of the same session by the same daemon says
     // nothing at all, and does not queue a second turn.
     assert!(h.restore_after_restart().is_none(), "said twice");
     assert_eq!(h.restart_notices.len(), 1, "{:?}", h.restart_notices);
 }
 
-/// **A session that was mid-turn when the rows stopped is woken** - the arm the operator's own
+/// A session that was mid-turn when the rows stopped is woken - the arm the operator's own
 /// case is: a model that restarts the daemon from inside a tool call leaves its call and no
 /// result, and nothing else in the store says a turn was going.
 #[test]
@@ -354,7 +354,7 @@ fn a_turn_cut_off_mid_work_makes_the_restart_a_turn() {
     assert!(restart_rows(&h).is_empty(), "{:?}", h.items());
 }
 
-/// **A prompt nobody answered is the same arm** - the person typed, the daemon stopped before the
+/// A prompt nobody answered is the same arm - the person typed, the daemon stopped before the
 /// answer, and the session is woken to carry on rather than told into a row they must type again
 /// to see read.
 #[test]
@@ -386,7 +386,7 @@ fn a_prompt_nobody_answered_makes_the_restart_a_turn() {
     );
 }
 
-/// **A session whose last row is a finished answer owes nothing, and keeps the row** - the cost
+/// A session whose last row is a finished answer owes nothing, and keeps the row - the cost
 /// argument still holds where it is true, and this is the session it is true about.
 #[test]
 fn a_session_that_answered_last_is_told_in_a_row_and_not_woken() {
@@ -430,7 +430,7 @@ fn the_restart_row_it_filed_is_not_work_it_owes() {
     let first = h.restore_after_restart().expect("a restart is said");
     assert!(h.restart_notices.is_empty(), "{:?}", h.restart_notices);
     assert_eq!(restart_rows(&h), vec![first.clone()], "{:?}", h.items());
-    // **The next daemon**, opening the same session against the row that is now its last.
+    // The next daemon, opening the same session against the row that is now its last.
     drop(h);
     let mut again = reopened(&dir, id);
     let second = again

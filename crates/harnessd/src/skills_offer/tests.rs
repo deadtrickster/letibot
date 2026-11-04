@@ -105,7 +105,7 @@ fn logs(name: &str) -> PathBuf {
     p
 }
 
-/// **A skill asked for in none of its words.** `keynote` and `deck` are in no frontmatter here,
+/// A skill asked for in none of its words. `keynote` and `deck` are in no frontmatter here,
 /// so the words score the subject at zero; the second tier's cosine, over the two planted as
 /// synonyms of `beamer` and `slides`, earns the offer - and with no tier nothing is offered.
 #[test]
@@ -188,7 +188,7 @@ fn a_prompt_about_slides_composes_the_offer_of_the_slides_skill() {
     );
 }
 
-/// **One name is one line.** Two skills sharing a name are one skill to every door that keys by
+/// One name is one line. Two skills sharing a name are one skill to every door that keys by
 /// name - a pin, a `skill load`, an offer - so a round offers it once rather than twice.
 #[test]
 fn two_skills_with_one_name_are_offered_once() {
@@ -256,7 +256,7 @@ fn the_plan_on_the_board_is_part_of_the_subject() {
     );
 }
 
-/// **The plan survives a tool result that fills the subject.** The rows on the board are the work in
+/// The plan survives a tool result that fills the subject. The rows on the board are the work in
 /// hand, and a cut that kept only the newest end of the walk dropped them in exactly the rounds a
 /// tool result was longest - which are the rounds a skill is wanted in.
 #[test]

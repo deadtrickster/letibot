@@ -63,7 +63,7 @@ fn pin(name: &str, text: &str) {
 
 #[test]
 fn the_tuis_restart_card_fixtures_are_what_the_daemon_writes() {
-    // **The operator's restart**: the first start on a new build, whose old daemon kept no
+    // The operator's restart: the first start on a new build, whose old daemon kept no
     // record - and one job.
     let unknown = Stopped::Unknown { seen_ms: 0 };
     let lines = vec![job_line(&running("j46", ACCEPTANCE), None, None, None, &[])];
@@ -78,7 +78,7 @@ fn the_tuis_restart_card_fixtures_are_what_the_daemon_writes() {
         &warning_detail(&text, &[said::job("j46", 0)]),
     );
 
-    // **Under the threshold, with things brought back**: two subagents, a monitor, and a job
+    // Under the threshold, with things brought back: two subagents, a monitor, and a job
     // that is only ever reminded.
     let stop = Stopped::At {
         at_ms: BACK - 252_000,
@@ -123,7 +123,7 @@ fn the_tuis_restart_card_fixtures_are_what_the_daemon_writes() {
         ),
     );
 
-    // **Over the threshold, after a crash**: everything reminded.
+    // Over the threshold, after a crash: everything reminded.
     let crash = Stopped::At {
         at_ms: BACK - (3 * 3_600_000 + 12 * 60_000),
         estimated_from: Some("its last heartbeat (it did not stop in an orderly way)"),
@@ -156,7 +156,7 @@ fn the_tuis_restart_card_fixtures_are_what_the_daemon_writes() {
         ),
     );
 
-    // **Under the threshold with only a job**: nothing restored, and said so.
+    // Under the threshold with only a job: nothing restored, and said so.
     let quick = Stopped::At {
         at_ms: BACK - 4_000,
         estimated_from: None,
@@ -185,7 +185,7 @@ fn the_tuis_restart_card_fixtures_are_what_the_daemon_writes() {
         &warning_detail(&text, &[said::job("j46", 0)]),
     );
 
-    // **A restart with nothing to restore** - the operator, 2026-10-30: *"mb always tell agent
+    // A restart with nothing to restore - the operator, 2026-10-30: *"mb always tell agent
     // about restart? with the current time lol"*. One sentence, no list, and its own code.
     let text = notice(
         &header(&quick, BACK, BACK, RESTORE_WITHIN, Outcome::Nothing),
@@ -196,7 +196,7 @@ fn the_tuis_restart_card_fixtures_are_what_the_daemon_writes() {
     pin("restart_nothing_warning.txt", &warning_detail(&text, &[]));
 }
 
-/// **The `prefix_stale` sentence pg-noop's head drew as a wall** - seated 09-20 17:51, a tool
+/// The `prefix_stale` sentence pg-noop's head drew as a wall - seated 09-20 17:51, a tool
 /// (`task_resume`) seated since.
 #[test]
 fn the_tuis_stale_card_fixture_is_what_the_daemon_writes() {

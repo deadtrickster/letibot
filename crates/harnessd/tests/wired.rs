@@ -98,11 +98,8 @@ fn the_default_session_is_read_only_and_seats_exactly_what_it_did() {
     let w = h.wiring();
 
     assert_eq!(w.role, "orchestrator");
-    // `todo_write` is the session's own list and `flowy` the door to the room - a door with
-    // nothing behind it in a session opened without a seat, which says so and names `/flowy
-    // login`. `recall` arrived with the compacted base's map: a session that reads one of those
-    // ids has a tool to open it with, which is a re-prefill for every stored session and a
-    // capability change, so it is asserted here rather than assumed.
+    // `todo_write` is the session's own list and `flowy` the door to the room (without a seat it says so and names `/flowy login`).
+    // `recall` arrived with the compacted base's map: it is a re-prefill for every stored session and a capability change, so it is asserted here.
     assert_eq!(
         w.seated,
         vec![

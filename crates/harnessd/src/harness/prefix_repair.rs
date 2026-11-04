@@ -27,7 +27,7 @@ use letibot_turn::resume::{RestoreError, restore_parts};
 /// What a repair produced: the conversation, where it now lives, and what to tell the operator.
 pub(crate) struct Repaired {
     pub session: Session,
-    /// The new `<session>#tN` the rows were carried onto — now the session's conversation.
+    /// The new `<session>#tN` the rows were carried onto - now the session's conversation.
     pub transcript_id: String,
     /// The prefix those rows were actually written under, which the fork is seated with.
     pub prefix_id: String,

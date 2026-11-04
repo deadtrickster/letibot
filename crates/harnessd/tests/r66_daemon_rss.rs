@@ -279,10 +279,8 @@ fn wait_turn(frames: &Receiver<ServerFrame>, what: &str, scratch: &Scratch) -> b
     }
 }
 
-/// Wait for the compaction until the model has been asked `want` summaries, taking this head's frames
-/// off the channel as they come. A head that stops reading BLOCKS the daemon's writer - one thread
-/// both reads this socket and writes it - so a wait that polls anything else stops the very command
-/// it is waiting on from being read at all.
+/// Wait for the compaction until the model has been asked `want` summaries, taking this head's frames as they come.
+/// A head that stops reading blocks the daemon's writer (one thread reads and writes this socket), so polling anything else would stop the awaited command from being read.
 fn wait_compaction(
     frames: &Receiver<ServerFrame>,
     asked: &Mutex<Asked>,
@@ -350,10 +348,7 @@ fn authority(url: &str) -> String {
         .to_string()
 }
 
-/// What the daemon's own `memwatch` summary line says it holds. Every byte figure on it is a SUM
-/// over every session the daemon serves, and each is printed rounded - so a figure is only as exact
-/// as the grain beside it. Resident memory is not on it: that is the kernel's, and the line prints it
-/// separately.
+/// What the daemon's `memwatch` summary line says it holds. Every byte figure is a sum over all sessions and printed rounded, so it is only as exact as its grain. Resident memory is the kernel's and printed separately.
 #[derive(Clone, Copy, Default, Debug)]
 struct Held {
     harness: u64,
@@ -556,14 +551,9 @@ fn the_daemon_probe() {
     println!("\nthe daemon's log tail:\n{}", log_tail(&run.scratch));
 }
 
-/// The assertion: many turns with a refused compaction after each, and what the daemon HOLDS stays
-/// within what the rows themselves cost. The numbers are the daemon's own census - rows, region, log
-/// and view - because resident memory is the allocator's opinion and drifts by megabytes either way
-/// between two runs of the same binary. A term that grows with the TURN COUNT and not with the rows
-/// is what R66 is, and it fails here.
-///
-/// The region is 4 bytes a token and a byte vocabulary spends a token a byte, so the footprint of a
-/// session is about five times the text it holds.
+/// The assertion: many turns with a refused compaction after each, and what the daemon holds stays within what the rows cost.
+/// The numbers are the daemon's own census (rows, region, log, view), since resident memory drifts by megabytes between runs. A term growing with the turn count rather than the rows fails here.
+/// The region is 4 bytes a token and a byte vocabulary spends a token a byte, so a session's footprint is about five times its text.
 #[test]
 fn forty_turns_with_a_failed_compaction_each_keep_the_daemon_bounded() {
     let turns = 40usize;
@@ -571,10 +561,7 @@ fn forty_turns_with_a_failed_compaction_each_keep_the_daemon_bounded() {
     // What one refused attempt adds besides the prompt: the instruction, and a boundary or two.
     let instruction = 1_500usize;
     let run = drive("r66-daemon-bounded", turns, prompt_bytes, None, "6G");
-    // The watch ticks once a second, so the first turn or two read a line that is not there yet. The
-    // baseline is the first reading that carries a census, and the slope is measured from it - a
-    // session's first turns pay the hub's bounds filling and the store's first write, which are
-    // constants and would be read as a slope.
+    // The watch ticks once a second, so early turns may read no line. The baseline is the first reading with a census, and the slope is measured from it, since first-turn costs (hub bounds filling, store's first write) are constants a slope would misread.
     let readings: Vec<&Row> = run.rows.iter().filter(|r| r.held.harness > 0).collect();
     assert!(
         readings.len() >= turns - 4,
@@ -629,10 +616,7 @@ fn forty_turns_with_a_failed_compaction_each_keep_the_daemon_bounded() {
         mb(allowed as f64)
     );
 
-    // Printed and not asserted: a per-turn slope over the census is a sawtooth while the region is
-    // doubling, so a turn that lands on a doubling looks ten times a turn that does not. A copy of
-    // the conversation per turn is what the total above rejects, and its excess grows with the turn
-    // count; this line is here so a person reading a failing run sees which it was.
+    // Printed, not asserted: the per-turn slope is a sawtooth while the region doubles. A conversation copy per turn is what the total rejects; this line shows a person which it was.
     let mid = readings[readings.len() / 2];
     let early = (mid.held.harness.saturating_sub(first.held.harness)) as f64
         / (mid.turn - first.turn).max(1) as f64;

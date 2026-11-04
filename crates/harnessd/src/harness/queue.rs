@@ -1,4 +1,4 @@
-//! **The merge queue's operator verbs**, as one session reaches them: `/queue restart`, `approve`,
+//! The merge queue's operator verbs, as one session reaches them: `/queue restart`, `approve`,
 //! `veto`, `rm`, `reset`, `clean` and `regate`, each with the repository scope it acts in, plus the
 //! review board the queue's own session draws.
 
@@ -12,7 +12,7 @@ impl Harness {
         self.hub.session_id() == crate::sessions::gatekeeper::session(&self.cfg.workspace)
     }
 
-    /// **The review queue, onto this session's board** - one row per review this daemon's queues
+    /// The review queue, onto this session's board - one row per review this daemon's queues
     /// serve that is waiting for a reviewer or under one, the rows a child is on marked with it.
     /// A VIEW, replaced whole from the store; the states stay in the store.
     pub fn fill_queue_board(&mut self) -> usize {
@@ -52,14 +52,14 @@ impl Harness {
         })
     }
 
-    /// **The repository a `/queue` verb may act in** (R92 item 5) - `None` is every repository.
+    /// The repository a `/queue` verb may act in (R92 item 5) - `None` is every repository.
     /// [`QueueScope::Here`](crate::slash::QueueScope::Here) is this session's own, and a session
     /// of no repository is told so with the line that reaches every repository.
     pub fn queue_scope(&self, scope: &crate::slash::QueueScope) -> Result<Option<String>, String> {
         crate::mergequeue::verbs::scope_repository(&self.cfg.workspace, scope)
     }
 
-    /// **[`Harness::queue_scope`] for a session of several repositories** - see
+    /// [`Harness::queue_scope`] for a session of several repositories - see
     /// [`crate::mergequeue::verbs::scope_repositories`].
     pub fn queue_scopes(
         &self,
@@ -68,7 +68,7 @@ impl Harness {
         crate::mergequeue::verbs::scope_repositories(&self.cfg.workspace, scope)
     }
 
-    /// **Which of `scopes` holds the row `id`** - the first when there is one scope (the verb
+    /// Which of `scopes` holds the row `id` - the first when there is one scope (the verb
     /// refuses a row outside it by name), else the one whose repository the row is of.
     pub fn queue_scope_of_row(&self, scopes: &[Option<String>], id: &str) -> Option<String> {
         if scopes.len() == 1 {
@@ -176,7 +176,7 @@ impl Harness {
         })
     }
 
-    /// **The repository this session's queue verbs are about, and its target** - the one its
+    /// The repository this session's queue verbs are about, and its target - the one its
     /// workspace means (`mergequeue::repo_of_workspace`), keyed the way the queues key it, unless
     /// `named` is a path; and `[queue] target` (else `main`/`master`) when no target is named.
     pub fn queue_repository(
@@ -348,8 +348,8 @@ impl Harness {
         // Every repository of the workspace - one, or each of a one-org project folder's.
         let mine = crate::mergequeue::repositories_of_workspace(&self.cfg.workspace);
         let mut out = Vec::new();
-        // **Green again** (R92.6): an emergency this session was told about is over - said once,
-        // and forgotten, so the next red of the same tip is news again (R92.31).
+        // Green again: an emergency this session was told about is over - said once,
+        // and forgotten, so the next red of the same tip is news again.
         for h in &greens {
             if !mine.contains(&h.repository) {
                 continue;
@@ -409,7 +409,7 @@ impl Harness {
         out
     }
 
-    /// **The reviews the queue handed to THIS project's main session** (R61 decision 4's
+    /// The reviews the queue handed to THIS project's main session (R61 decision 4's
     /// per-project option, `[queue] merge_via_session = true`): a review that could not run, so
     /// the project gates and merges the branch itself - told once, read off the row.
     pub fn handover_notices(&mut self) -> Vec<String> {
@@ -479,11 +479,11 @@ impl Harness {
                 );
             },
             deliver: &deliver,
-            // **The queue's own liveness door**, asked of a refusal whose author and root are
+            // The queue's own liveness door, asked of a refusal whose author and root are
             // both dead: the session that takes it has to be one this daemon holds now.
             live: &|id: &str| crate::mergequeue::session_is_live(&registry, id),
             settings: &crate::mergequeue::settings::for_repository,
-            // **The reviewers' declared skills**, from this daemon's project file.
+            // The reviewers' declared skills, from this daemon's project file.
             reviewer_skills: &self.cfg.reviewer_skills,
             clones: self.cfg.review_clones.clone().unwrap_or_else(|| {
                 std::env::temp_dir().join(crate::mergequeue::review::CLONES_DIR)

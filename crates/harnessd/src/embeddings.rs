@@ -42,7 +42,7 @@ pub fn tier(embedder: Option<&Arc<Embedder>>) -> Option<Tier> {
     embedder.map(|e| Tier::over(Arc::clone(e)))
 }
 
-/// **The sentence a session says once** when the box's embedder could not answer, and `None` the
+/// The sentence a session says once when the box's embedder could not answer, and `None` the
 /// rest of the session's turns. Asked at the round boundary, by which time every caller has
 /// already fallen back to its own words - so this is a disclosure and never a decision.
 pub fn fault_note(embedder: Option<&Arc<Embedder>>) -> Option<String> {
@@ -119,7 +119,7 @@ mod tests {
         file
     }
 
-    /// **A box that never wrote the key has no embedder**, and that is not a failure: it is the
+    /// A box that never wrote the key has no embedder, and that is not a failure: it is the
     /// default this whole feature is off behind.
     #[test]
     fn no_section_is_no_embedder() {
@@ -153,7 +153,7 @@ mod tests {
         assert!(said.contains("no-model"), "{said}");
     }
 
-    /// **A tier that cannot answer is said once, and the callers keep their words.** The sentence
+    /// A tier that cannot answer is said once, and the callers keep their words. The sentence
     /// names what refused it, the second ask gets nothing, and a box with no embedder never asks.
     #[test]
     fn a_failing_embedder_is_said_once_and_a_box_with_none_is_silent() {

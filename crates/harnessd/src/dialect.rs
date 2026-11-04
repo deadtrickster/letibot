@@ -243,7 +243,7 @@ mod tests {
         }
     }
 
-    /// T20.1: `ToolRuntime::transcript_item` already renders the `NO_RESULT` envelope into
+    /// `ToolRuntime::transcript_item` already renders the `NO_RESULT` envelope into
     /// `payload`, so a renderer that wrapped it again would hand the model two. Both dialects
     /// emit `payload` verbatim, and the marker appears once in what they emit.
     #[test]

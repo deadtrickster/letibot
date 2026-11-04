@@ -1,4 +1,4 @@
-//! **The box's room, as this session speaks in it**: the link a `room` tool and a room pane read,
+//! The box's room, as this session speaks in it: the link a `room` tool and a room pane read,
 //! and the reminders the idle check puts on this session's own board.
 
 use super::*;
@@ -11,7 +11,7 @@ impl Harness {
         self.room.clone()
     }
 
-    /// **Whether this session speaks in the box's room** - the daemon's own question, and the one
+    /// Whether this session speaks in the box's room - the daemon's own question, and the one
     /// the room pass's clock asks before it makes itself a reason to wake.
     pub fn has_room(&self) -> bool {
         self.room.is_some()
@@ -21,7 +21,7 @@ impl Harness {
     /// idle check so a holder is reminded without a model call. A subagent returns 0 first, because the
     /// room's rule is top-level sessions only. A room that does not answer clears the rows.
     pub fn fill_room_board(&mut self) -> usize {
-        // **The room's rule, said here as well as at the door.** See this function's own doc.
+        // The room's rule, said here as well as at the door. See this function's own doc.
         if self.cfg.parent_session_id.is_some() {
             return 0;
         }

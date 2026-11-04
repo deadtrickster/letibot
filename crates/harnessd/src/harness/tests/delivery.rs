@@ -109,7 +109,7 @@ fn steering(hub: &Arc<Hub>, d: Deliveries) -> HubSteering {
 }
 
 /// One poll at a step boundary, which is the only poll a turn's results are handed over at
-/// (R91.16) - a poll between tokens answers nothing, which is its own test.
+/// - a poll between tokens answers nothing, which is its own test.
 fn boundary(s: &mut HubSteering) -> Option<SteeringMessage> {
     s.at_a_step_boundary();
     s.try_next()
@@ -358,7 +358,7 @@ fn the_held_counts_are_said_on_the_hub_when_they_change() {
     assert_eq!(held_said(&hub), [(1, 1, 1), (0, 0, 0)]);
 }
 
-/// **A `when: job` row's job is delivered at once - to a ROOT too**, at the round boundary of the
+/// A `when: job` row's job is delivered at once - to a ROOT too, at the round boundary of the
 /// turn that is running. (Before R79 a root heard nothing mid-turn: its every settlement waited
 /// for the turn to end and then cost a wake turn.) A routine one beside it stays held.
 #[test]
@@ -393,7 +393,7 @@ fn a_when_job_rows_job_is_delivered_at_once() {
     assert_eq!(rec[0]["batch"], 1);
 }
 
-/// **The failure of a needed job is immediate** - named by the slug the row used - and recorded
+/// The failure of a needed job is immediate - named by the slug the row used - and recorded
 /// as a broken dependency rather than as a need met.
 #[test]
 fn the_failure_of_a_needed_job_is_immediate() {
@@ -420,7 +420,7 @@ fn the_failure_of_a_needed_job_is_immediate() {
     assert_eq!(dir.records()[0]["rule"], "immediate:dependency_failed");
 }
 
-/// **`wake: "now"` is immediate**, and so is a result the model asked for with a wait after it
+/// `wake: "now"` is immediate, and so is a result the model asked for with a wait after it
 /// had been held - the sort re-reads what is held against what is wanted now.
 #[test]
 fn wake_now_and_a_wait_are_immediate() {
@@ -452,7 +452,7 @@ fn wake_now_and_a_wait_are_immediate() {
     assert_eq!(rules, ["immediate:wake_now", "immediate:awaited"]);
 }
 
-/// **The sort runs at a step boundary, not on every streamed delta** (R91.16): what a turn may
+/// The sort runs at a step boundary, not on every streamed delta: what a turn may
 /// deliver is read from the whole board and taken out of the held set, so a poll between tokens
 /// answers nothing and the boundary the engine marks is where the result comes in - once.
 #[test]
@@ -481,7 +481,7 @@ fn a_result_waits_for_the_step_boundary_and_not_for_a_token() {
     assert_eq!(dir.records().len(), 1, "{:?}", dir.records());
 }
 
-/// **The starvation cap**: a turn running with a result held past the (here shortened) cap gets
+/// The starvation cap: a turn running with a result held past the (here shortened) cap gets
 /// the batch at its next round boundary anyway, as one note - and not before.
 #[test]
 fn the_starvation_cap_releases_the_batch_mid_turn() {
@@ -520,7 +520,7 @@ fn the_starvation_cap_releases_the_batch_mid_turn() {
     );
 }
 
-/// **A held batch with a row waiting on it** says the plan line and a head that does not deny
+/// A held batch with a row waiting on it says the plan line and a head that does not deny
 /// it: the head used to say "nothing in your plan was waiting on it" over a line naming the row
 /// that was.
 #[test]
@@ -543,7 +543,7 @@ fn a_held_batch_never_denies_the_plan_line_under_it() {
     );
 }
 
-/// **The batch's own words are pinned for the head**: `[meanwhile] …` and then the `[job]` group
+/// The batch's own words are pinned for the head: `[meanwhile] …` and then the `[job]` group
 /// exactly as `completion_notice` writes it, so the head's compact job rows parse it. Written to
 /// the head's fixture and compared byte for byte, as `job_notice_*.txt` are.
 #[test]
@@ -695,7 +695,7 @@ fn a_wait_ons_grace_lasts_until_the_turn_after_the_completion_was_read() {
     );
 }
 
-/// **A result HELD under R79 is undelivered too, and quiet** - and so is a completion delivered as
+/// A result HELD under R79 is undelivered too, and quiet - and so is a completion delivered as
 /// a wake's own turn start, until the turn after it. The held queue is the other place an ended job
 /// can sit unread; pg-noop, 2026-10-11.
 #[test]

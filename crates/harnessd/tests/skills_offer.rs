@@ -485,7 +485,7 @@ fn the_offer_is_a_tail_and_never_a_row() {
     );
 }
 
-/// **A skill whose body the model loaded on round one is not offered again on round two.** The body
+/// A skill whose body the model loaded on round one is not offered again on round two. The body
 /// is in the transcript by then, so it is the newest and most on-topic text the round scores - and
 /// the offer's own sentence would be a claim about a body the model is holding.
 #[test]

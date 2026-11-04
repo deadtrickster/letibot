@@ -1,7 +1,6 @@
-//! A turn nobody asked to continue does not ask for one: the held results wait for the next turn a
-//! person types, whether the operator stopped this one or it failed.
+//! A turn nobody asked to continue does not ask for one: held results wait for the next turn a person types, whether the operator stopped this one or it failed.
 //!
-//! ONE test in this binary, because it writes the process's config dirs before anything reads them.
+//! One test in this binary, because it writes the process's config dirs before anything reads them.
 
 use std::io::Write;
 use std::net::{TcpListener, TcpStream};
@@ -195,11 +194,7 @@ fn a_stopped_or_failed_turn_does_not_wake_the_session_for_its_held_results() {
         "a failed turn rang a wake nobody asked for: its next turn is the one somebody types"
     );
 
-    // ----------------------------------------------------------------------
-    // And a stop, with the settlement arriving the way a watcher hands one over: queued, and rung
-    // on the bell. The wake is standing when the turn ends, nothing can un-ring it, so the stop has
-    // to take it back rather than let the court run the turn it just ended.
-    // ----------------------------------------------------------------------
+    // A stop, with the settlement queued and rung as a watcher hands one over. The wake stands when the turn ends and nothing can un-ring it, so the stop must take it back.
     let bell = registry.bell().clone();
     let mut rung_stopped = open(&parts, &cfg, &registry, "s-rang", &workspace, &fake.url);
     let watch = rung_stopped
@@ -317,10 +312,8 @@ fn open(
         .expect("the session opens")
 }
 
-/// What happens while the turn streams: a job's ending lands - so the turn cannot open with it,
-/// and it is still held when the turn ends - and, when `stop` is given, the operator stops the turn.
-/// `ring` delivers it the way a watcher does, queued and rung, where `hold` is a door that does not
-/// ring. `held` is signalled once the result landed, so a stub can wait for it.
+/// What happens while the turn streams: a job's ending lands (so the turn cannot open with it and it is held at the end) and, if `stop` is given, the operator stops the turn.
+/// `ring` delivers like a watcher, queued and rung; `hold` does not ring. `held` is signalled once the result landed.
 fn while_the_turn_streams(
     watch: Arc<JobWatchers>,
     owner: &str,

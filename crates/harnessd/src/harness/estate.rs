@@ -43,7 +43,7 @@ fn counted(n: usize, one: &str, many: &str) -> String {
     }
 }
 
-/// **What a session's end says about its estate.** Pure, and `None` when there is nothing to tell:
+/// What a session's end says about its estate. Pure, and `None` when there is nothing to tell:
 /// every clause ends in what happened and what a reader can do about it, because a leftover nobody
 /// can act on costs attention and buys nothing.
 pub fn estate_said(e: &Estate) -> Option<String> {
@@ -110,7 +110,7 @@ fn in_a_scope_here(j: &letibot_tools::exec::JobView) -> bool {
     !j.scope.path.as_os_str().is_empty()
 }
 
-/// **Settle a session's estate**: hand what outlives it to `heir`, end what does not, and say what
+/// Settle a session's estate: hand what outlives it to `heir`, end what does not, and say what
 /// became of each. The order inside is the correctness: hand over before the scopes end, read the
 /// lists before the end, and end before returning the sentence that claims it.
 pub fn settle_estate(

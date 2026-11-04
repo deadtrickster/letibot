@@ -111,10 +111,7 @@ fn a_held_turn_in_one_session_does_not_delay_another() {
     wait_until("both sessions to be served by their own threads", || {
         quick.owner() == Owner::OwnThread && slow.owner() == Owner::OwnThread
     });
-    // ---- 1b. and those are two OS threads, not one reader wearing two hats ----------------
-    // `Owner::OwnThread` is the daemon's own word for it; the kernel's task list is the fact.
-    // `spawn_court` names a session's thread `session-<id>` (15 bytes of it survive on Linux,
-    // which is enough to hold both of these), so a shared worker would leave one task, not two.
+    // The two sessions are two OS threads. `spawn_court` names a session's thread `session-<id>` (15 bytes survive on Linux, enough for both), so a shared worker would leave one task, not two.
     #[cfg(target_os = "linux")]
     {
         wait_until("a thread named for each session", || {

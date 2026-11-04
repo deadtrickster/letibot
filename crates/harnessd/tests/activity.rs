@@ -285,10 +285,8 @@ fn the_activity_follows_a_session_through_a_turn_a_card_and_a_settlement() {
     );
 }
 
-/// **Arming a watcher is a change no event announces**, so the value a head reads has to move
-/// with the snapshot: a handle in `mine` the PUBLISHED activity does not have is a session with a
-/// running child that reads quiet, which is a `wait` answering the turn that started it. Nothing
-/// here asks the hub to re-derive: the daemon is what must say it.
+/// Arming a watcher is a change no event announces, so the value a head reads must move with the snapshot: a handle in `mine` missing from the published activity is a session with a running child that reads quiet, and a `wait` answers the turn that started it.
+/// The daemon must say it; nothing asks the hub to re-derive.
 #[test]
 fn arming_a_watcher_publishes_the_child_the_session_now_waits_on() {
     let hub = Hub::new("s-armed");

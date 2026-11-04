@@ -1,4 +1,4 @@
-//! **The context wall**: compaction, reseat and forking - the ways a long
+//! The context wall: compaction, reseat and forking - the ways a long
 //! conversation is carried onto a smaller prompt, and the arithmetic that decides
 //! when each is needed.
 use super::*;
@@ -99,13 +99,13 @@ pub struct ReseatReport {
     /// the gained/lost pair is silent about. Named here so the re-seat's report can say the schema the model now
     /// reads is not the one it was using.
     pub grew: Vec<String>,
-    /// **What changed in each of `grew`, in a phrase** - `monitor (new \`github\`)`,
+    /// What changed in each of `grew`, in a phrase - `monitor (new \`github\`)`,
     /// `todo_write (\`todos[].needs[].kind\` gains \`monitor\`)` - so the model is told what to
     /// look for and not only that something moved. See [`schema_change`].
     pub grew_how: Vec<String>,
 }
 
-/// **Each grown tool, named with what changed in it** - [`grown_schemas`]'s names, each with
+/// Each grown tool, named with what changed in it - [`grown_schemas`]'s names, each with
 /// [`schema_change`]'s phrase when there is one.
 pub(crate) fn grown_with_how(was: &[String], is: &[String]) -> Vec<String> {
     let (old, new) = (tool_schemas(was), tool_schemas(is));
@@ -216,7 +216,7 @@ fn schema_walk(path: &str, a: &serde_json::Value, b: &serde_json::Value, out: &m
     }
 }
 
-/// **Tools seated on both sides whose schema text differs**, sorted - the `grew` half of the
+/// Tools seated on both sides whose schema text differs, sorted - the `grew` half of the
 /// stale-prefix comparison, as one function so the notice and the re-seat's report name the
 /// same tools.
 fn grown_schemas(was: &[String], is: &[String]) -> Vec<String> {
@@ -298,7 +298,7 @@ impl Harness {
         now
     }
 
-    /// **Whether the next request echoes the reasoning it holds** - the provider does this for its own reason (a
+    /// Whether the next request echoes the reasoning it holds - the provider does this for its own reason (a
     /// tool chain without the thought is refused), so it is a fact about the tools, decided in one place and read by
     /// both the request and the count of what that request sends.
     pub(crate) fn echoes_reasoning(&self) -> bool {
@@ -373,7 +373,7 @@ impl Harness {
         self.compact_at_the_wall(WallWhy::Refused)
     }
 
-    /// **One body, two questions.** `should_compact`/`at_the_wall` are the
+    /// One body, two questions. `should_compact`/`at_the_wall` are the
     /// decision - the arithmetic is NOT copied - and `why` is the only thing the
     /// two doors disagree on.
     fn compact_at_the_wall(&mut self, why: WallWhy) -> bool {
@@ -421,7 +421,7 @@ impl Harness {
                 f.name()
             ),
         };
-        // **And it names the session, for the reason the sibling's line does**: the
+        // And it names the session, for the reason the sibling's line does: the
         // log is one file every daemon appends to, and a child's compaction lines
         // land between its parent's work with nothing to say whose they were.
         eprintln!(
@@ -600,7 +600,7 @@ impl Harness {
         self.publish_settings();
     }
 
-    /// **The operator's re-arm** - `/auto-compact on`. Clears `Stuck` (and whatever the
+    /// The operator's re-arm - `/auto-compact on`. Clears `Stuck` (and whatever the
     /// controller was waiting for), and the operator's own `--no-auto-compact` with it:
     /// the verb says ON. Returns the sentence the verb answers with.
     pub fn rearm_auto_compact(&mut self) -> String {
@@ -621,7 +621,7 @@ impl Harness {
         }
     }
 
-    /// **Whether the count is the estimate of a metered base no round has measured**  -
+    /// Whether the count is the estimate of a metered base no round has measured  -
     /// the one count no wall judgement is made on (`crate::wall`).
     pub fn base_is_unmeasured(&self) -> bool {
         self.provider.is_some() && self.cfg.wall.awaiting_on(&self.session.transcript_id)
@@ -632,7 +632,7 @@ impl Harness {
         &self.cfg.wall
     }
 
-    /// **The controller's `Stuck` on the session row**, or its absence - the v19 pair is
+    /// The controller's `Stuck` on the session row, or its absence - the v19 pair is
     /// the durable half, so a restart comes back stuck exactly when the controller was.
     fn persist_stuck(&mut self) {
         let pair = self.cfg.wall.stuck_pair();
@@ -727,7 +727,7 @@ impl Harness {
         Some(next)
     }
 
-    /// **Record the prompt [`Self::reseat_candidate`] decided**: its `stable_prefix` row, and
+    /// Record the prompt [`Self::reseat_candidate`] decided: its `stable_prefix` row, and
     /// `cfg.system` moved to it - the second half of [`Self::reseat_target`].
     fn seat_target(&mut self, next: StablePrefix) -> Result<(StablePrefix, String), HarnessError> {
         let measured = self
@@ -1102,7 +1102,7 @@ impl Harness {
                 // detail: the turn appends its instruction and its answer to this session, and a tail that could reach
                 // those would put the question and its answer into the record that replaces them.
                 let items: Vec<TranscriptItem> = self.session.items.clone();
-                // **The work in hand, scored against the old half.** With the second tier on, an
+                // The work in hand, scored against the old half. With the second tier on, an
                 // old exchange that is about a row on the board is kept whole instead of
                 // summarised; mode `off` scores nothing and both plans below stay as they were.
                 let tier = self.cfg.tier();
@@ -1223,7 +1223,7 @@ impl Harness {
                     }
                     None => Vec::new(),
                 };
-                // **What this record is asked for** (R22): a size, and the facts the tail already carries, so a
+                // What this record is asked for: a size, and the facts the tail already carries, so a
                 // record is not sent back for something the new base holds verbatim. `resident` is the same
                 // `prefix + items` the overrun arithmetic compared against the window a few lines up.
                 let budget = letibot_turn::summary_budget(
@@ -1470,7 +1470,7 @@ impl Harness {
         let tail_split = tail.split;
         let old_id = self.transcript_id.clone();
         let was_tokens = self.session.ledger.len();
-        // **Whether this fork carries the conversation verbatim** - a re-ingest (`/reseat`):
+        // Whether this fork carries the conversation verbatim - a re-ingest (`/reseat`):
         // no summary, no first item of its own, every row of the history in the tail. Then the
         // provider's last measurement still describes the conversation, and is kept (below).
         let verbatim = lead.is_none()
@@ -1505,7 +1505,7 @@ impl Harness {
             )
             .map_err(|e| HarnessError::Store(e.to_string()))?;
         let new_id = format!("{}#t{}", self.cfg.session_id, n);
-        // The fork point is the session **log's** seq, which is what §5.5's
+        // The fork point is the session log's seq, which is what §5.5's
         // `forked_at_seq` means: where in the session's event stream the divergence
         // happened, not where in the transcript.
         let forked_at = self.hub.head_seq();
@@ -1637,7 +1637,7 @@ impl Harness {
             }
             return Err(e.into());
         }
-        // The transcript row, unsealed (see above), with a busy store's patience (R91.6).
+        // The transcript row, unsealed (see above), with a busy store's patience.
         let registered = {
             let (session_id, new_id, onto_id, old_id) =
                 (&self.cfg.session_id, &new_id, &onto_id, &old_id);
@@ -1660,7 +1660,7 @@ impl Harness {
             transcript_id: new_id.clone(),
             fingerprint,
         });
-        // **A settlement nobody was told is owed in THIS conversation, not the one just left**:
+        // A settlement nobody was told is owed in THIS conversation, not the one just left:
         // re-armed here, after the swap, so the wake that says it writes into the new transcript.
         if self.rearm_owed_settlements() > 0 {
             // Nothing else rings for a row that has already settled, so the fork rings: the turn
@@ -1843,8 +1843,8 @@ impl Harness {
     }
 }
 
-/// **The stored provider count and the ledger length it was measured at, or `None`
-/// when there is nothing to anchor to.**
+/// The stored provider count and the ledger length it was measured at, or `None`
+/// when there is nothing to anchor to.
 ///
 /// The decision is a free function for the reason `sweep_abandoned_calls` gives
 /// about its own: it can be tested without a daemon, a model or a socket. That is
@@ -1854,7 +1854,7 @@ impl Harness {
 /// DeepSeek. The bug this replaces was found in production precisely because
 /// nothing checked the pairing.
 ///
-/// **What it returns is an ANCHOR, not a ratio** - `(ledger, provider)`: the
+/// What it returns is an ANCHOR, not a ratio - `(ledger, provider)`: the
 /// provider counted `provider` tokens for the prompt whose ledger was `ledger`
 /// long. [`roll_resident`] adds what was appended after `ledger` to it, sized the
 /// way the provider will be sent it, and that sum is the resident count.
@@ -1873,7 +1873,7 @@ impl Harness {
 /// the last round's `persist_context` - a notice, a nag, the tool result of a turn
 /// that did not end in a round - broke it, the pair was refused, the window went
 /// UNSCALED, and the raw ledger was compared against the provider's window.
-/// MEASURED 2026-10-11 (R72), leticl's `s-1791151788256943467` on deepseek-flash,
+/// MEASURED 2026-10-11, leticl's `s-1791151788256943467` on deepseek-flash,
 /// the first idle pass after a restart:
 ///
 /// ```text
@@ -1934,7 +1934,7 @@ pub(crate) fn wall_stops_round(
     }
 }
 
-/// **Whether the wall stops THIS round** - [`wall_stops_round`]'s arithmetic plus the one
+/// Whether the wall stops THIS round - [`wall_stops_round`]'s arithmetic plus the one
 /// question about where the count came from.
 ///
 /// MEASURED 2026-10-25, `s-1791394076177451000`: a session switched from deepseek to
@@ -1952,7 +1952,7 @@ pub(crate) fn wall_stops_round(
 /// it answers it with a refusal that the compaction door already handles on evidence
 /// (`WallWhy::Refused`). So at round 0 an unmeasured count does not stop the turn.
 ///
-/// **Carried is not unmeasured.** A ratio measured on the model before the switch converts
+/// Carried is not unmeasured. A ratio measured on the model before the switch converts
 /// bytes into that model's tokens - the same quantity, off by however differently the two
 /// tokenizers count - so the comparison is meaningful and the wall may fire on it, with
 /// every line that prints it saying which model measured the ratio. Only *nothing has ever
@@ -2085,7 +2085,7 @@ pub(crate) fn sent_scale(
     (sent > 0).then_some((sent, provider))
 }
 
-/// **One reading of how big this conversation is, in the units its wall is in**  -
+/// One reading of how big this conversation is, in the units its wall is in  -
 /// the provider's on a metered session, the ledger's on a local one (where the
 /// two are the same count by construction: the ledger IS the prompt).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2141,8 +2141,8 @@ fn sent_since(
         .sum()
 }
 
-/// **A round's reasoning, as one text** - every `Reasoning` item the round produced, in order, for
-/// the context check (R71). The engine streams reasoning as several items; one thought is judged
+/// A round's reasoning, as one text - every `Reasoning` item the round produced, in order, for
+/// the context check. The engine streams reasoning as several items; one thought is judged
 /// whole.
 pub(crate) fn reasoning_text(items: &[TranscriptItem]) -> String {
     items

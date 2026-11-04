@@ -1,7 +1,4 @@
-//! A model that stops because "my context is full" when it is not gets told so, through the
-//! harness's own round loop. The canned server plays the model: one round ends the turn
-//! with the model's sentence, verbatim, and no tool call - and one round says the same sentence
-//! and calls a tool anyway, which is the branch where the correction waits for the step boundary.
+//! A model that stops because "my context is full" when it is not gets told so, through the harness's round loop. The canned server plays the model: one round ends the turn with the sentence and no tool call, one says it and calls a tool anyway, where the correction waits for the step boundary.
 
 use letibot_harnessd::Parts;
 use letibot_harnessd::config::Config;
@@ -276,10 +273,7 @@ fn an_excuse_at_low_fill_is_answered_with_the_measured_fill_and_the_turn_continu
     assert_eq!(window, 1_000_000, "{row}");
 }
 
-/// **R93.A6: a claim found in the reasoning is not left lying at the head of the next turn.** The
-/// reasoning's line does not continue the turn, so on a turn that ends cleanly there is nothing for
-/// it to correct - said there it is the last item in the transcript, read at the start of an
-/// unrelated later turn. The claim is still measured and logged.
+/// A claim found in the reasoning is not left at the head of the next turn. The reasoning's line does not continue the turn, so on a clean ending there is nothing to correct and it would be read at an unrelated later turn's start. The claim is still measured and logged.
 #[test]
 fn a_reasoning_claim_on_a_turn_that_ends_is_not_said() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -321,10 +315,8 @@ fn a_reasoning_claim_on_a_turn_that_ends_is_not_said() {
     assert_eq!(row["source"], "reasoning", "{row}");
 }
 
-/// **The same excuse in a round that calls a tool.** The model has not stopped, so the correction is
-/// not the turn's own next round: it rides the step boundary the call opens, and the round after it
-/// is where the model reads it. Before this there was no harness-level test of that branch at all -
-/// every round the fixtures played answered in plain text.
+/// The same excuse in a round that calls a tool. The model has not stopped, so the correction rides the step boundary the call opens and is read in the round after.
+/// The fixtures' plain-text rounds never covered this branch.
 #[test]
 fn an_excuse_in_a_round_that_calls_a_tool_rides_the_step_boundary() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {

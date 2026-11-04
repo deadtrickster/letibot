@@ -56,7 +56,7 @@ fn answer(hub: &Arc<Hub>, question: &str, a: QuestionAnswer) {
     );
 }
 
-/// **An answer given mid-turn rides the next step boundary** - the row is unblocked with the reply
+/// An answer given mid-turn rides the next step boundary - the row is unblocked with the reply
 /// on it, and the model's next message is the `[answer]` line, as a notice of its own (not
 /// coalesced into the operator's prompt text, and not dropped by a take-back).
 #[test]
@@ -88,7 +88,7 @@ fn an_answer_given_mid_turn_rides_the_step_boundary() {
     );
 }
 
-/// **An answer the row cannot take is said to the heads and changes nothing** - a question the
+/// An answer the row cannot take is said to the heads and changes nothing - a question the
 /// row no longer asks, or an option it never offered. The turn is not handed anything.
 #[test]
 fn an_answer_the_row_cannot_take_is_refused_on_the_hub() {

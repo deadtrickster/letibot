@@ -85,7 +85,7 @@ pub struct JobCompletion {
     /// . Wall-clock rather than an `Instant` because it is written down and read by
     /// somebody who was not running this process.
     pub arrived: SystemTime,
-    /// **A turn of a child the parent has already been told about**, and not its first answer: the
+    /// A turn of a child the parent has already been told about, and not its first answer: the
     /// same child, settling again. Never set for a job, which ends once.
     pub later: bool,
 }
@@ -570,7 +570,7 @@ impl JobWatchers {
         self.completions.push(c);
     }
 
-    /// **A settlement made on this session's OWN side of the tree**: the daemon's worker runs a
+    /// A settlement made on this session's OWN side of the tree: the daemon's worker runs a
     /// parked child's later turn, and the slot and the queue that must move are its parent's. Queued
     /// and rung exactly as a watcher's would be, because this session is the one that has to act.
     pub fn settle_here(&self, c: JobCompletion) {
@@ -588,7 +588,7 @@ impl JobWatchers {
         queue.push(c);
     }
 
-    /// **A settlement found by the session that knows and not by a watcher**: a subagent's later
+    /// A settlement found by the session that knows and not by a watcher: a subagent's later
     /// turn ends and nothing is blocked on its slot, so it goes to the level above - queued and
     /// rung the way a stopped session's queue hands up. `false` for a session with no level above.
     pub fn settle_up(&self, c: JobCompletion) -> bool {
@@ -1062,7 +1062,7 @@ impl JobWatchers {
             // And the activity's snapshot - a handle in `mine` the snapshot does not have is
             // a session waiting on a child and reading `quiet`.
             watched.rebuild();
-            // **And the value a head reads**, at the moment it is true: no event announces an
+            // And the value a head reads, at the moment it is true: no event announces an
             // armed watcher, so leaving this to the next publish is a session with a running
             // child that answers `quiet`.
             if let Some(h) = hub.upgrade() {

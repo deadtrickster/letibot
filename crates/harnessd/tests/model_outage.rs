@@ -169,7 +169,7 @@ struct Rec {
     answered: Vec<String>,
     /// Turns that ended FAILED.
     failed: usize,
-    /// **Every `ModelRetry` frame, in order** - the one row the series is, as the head was told it.
+    /// Every `ModelRetry` frame, in order - the one row the series is, as the head was told it.
     /// Three failed attempts are three frames of ONE row: two live and one settled.
     series: Vec<Row>,
 }
@@ -388,10 +388,9 @@ fn one_outage_is_one_row_with_a_counter() {
     // The operator's per-project mode is not this test's business (`wired.rs`'s rule).
     *parts.mode_store.write().unwrap() = letibot_harnessd::modes::ModeStore::default();
 
-    // ── A. Three failed attempts, and the ladder gives up ────────────────────────────────
-    //
-    // **One row, and it MOVES**: the live line at 2 attempts, again at 3, and then the same row
-    // settled to the give-up. The durable warning beside it is one row, with the count.
+    // A. Three failed attempts, then the ladder gives up.
+    //     //
+    // One row, and it moves: the live line at 2 attempts, again at 3, then the same row settled to the give-up. The durable warning beside it is one row, with the count.
     endpoint.refuse(100);
     let before = endpoint.seen();
     let cfg = config(&scratch, "givesup", 2);

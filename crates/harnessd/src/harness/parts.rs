@@ -27,11 +27,11 @@ pub struct Parts {
     /// a `target` resolves its child through. It rides [`Parts`] because it belongs to the daemon,
     /// and the store path rides along because the resolver's flush runs on another thread.
     pub child_boards: std::sync::Arc<crate::child_todos::ChildBoards>,
-    /// The watcher set of the subagent TREE this session belongs to, when it is a child (R58).
+    /// The watcher set of the subagent TREE this session belongs to, when it is a child.
     /// `None` for a root, whose set is its own; a child carries its parent's, so the tree shares the
     /// watching bookkeeping, the level above and the ROOT a permission card can be drawn by.
     pub tree_watch: Option<std::sync::Arc<crate::jobwatch::JobWatchers>>,
-    /// The subagent handle list a child of this session shares (R58): `None` for a root, `Some` for a
+    /// The subagent handle list a child of this session shares: `None` for a root, `Some` for a
     /// child, so the whole tree hands out and collects one list. Without it a settlement names a
     /// handle no runner in `open` holds.
     pub(crate) tree_slots: Option<TaskSlots>,
@@ -102,9 +102,9 @@ impl Parts {
             child_boards: crate::child_todos::ChildBoards::shared(cfg.store.clone()),
             // A root session is its own tree; it has no parent's watcher set to join.
             tree_watch: None,
-            // Nor a parent's handle list: a root's runner gets a fresh one (R58).
+            // Nor a parent's handle list: a root's runner gets a fresh one.
             tree_slots: None,
-            // **Nor a parent's head answers**: a root's own are built as its gate is, and a
+            // Nor a parent's head answers: a root's own are built as its gate is, and a
             // root with no head-wired adjudicator has none to pass down. See `tree_head`.
             tree_head: None,
             // The daemon's review desk, empty: the queue's session opens a review on it when it

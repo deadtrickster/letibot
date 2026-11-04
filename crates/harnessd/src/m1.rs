@@ -51,7 +51,7 @@
 //!
 //! §18.2's C4 originally read `cached_tokens / prompt_tokens`, whose denominator is the *new*
 //! prompt - llama's `f_sim`, which falls purely as a function of how much the conversation grew and
-//! cannot reach 0.99 on any session that returns tool output (T22). D11 settles C4 as `lcp /
+//! cannot reach 0.99 on any session that returns tool output. D11 settles C4 as `lcp /
 //! cached_entry`. Both are printed under their own names, because the old one is real and only its
 //! name was wrong.
 

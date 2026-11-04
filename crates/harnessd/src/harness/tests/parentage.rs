@@ -38,7 +38,7 @@ fn parts_for(dir: &Scratch, id: &str) -> Option<(Parts, Config, std::path::PathB
     let path = dir.0.join("sessions.db");
     let mut cfg = Config::for_this_box(&dir.0);
     cfg.dialect = crate::Dialect::Qwen;
-    // **`leticode` is the seat that names `task`** (and `task_result`/`task_message`), and it is
+    // `leticode` is the seat that names `task` (and `task_result`/`task_message`), and it is
     // unconfined, so it opens on a Mac as well as here. The default seat names no delegation at
     // all, and a spawn test on it would measure the seat table instead of the parentage.
     cfg.seat = crate::config::Seat::Leticode;
@@ -126,7 +126,7 @@ fn a_session_a_person_started_has_no_parent() {
     assert_eq!(stored_parent(&path, "s-parentage-mine"), None);
 }
 
-/// **A child of a child is parented on the child, not on the root** - the tree is a chain, and a
+/// A child of a child is parented on the child, not on the root - the tree is a chain, and a
 /// rule that flattened it would put every grandchild directly under the operator's conversation.
 #[test]
 fn a_child_of_a_child_is_parented_on_the_child() {
@@ -187,8 +187,8 @@ fn a_daemon_whose_entry_forgot_reads_the_parent_off_the_row() {
     );
 }
 
-/// **The caller's word is what a spawn relies on, because at the child's open there is nothing
-/// else** - the `task`/`task_start` shape, exactly: the id is minted, the config is built with the
+/// The caller's word is what a spawn relies on, because at the child's open there is nothing
+/// else - the `task`/`task_start` shape, exactly: the id is minted, the config is built with the
 /// parent, and the session is adopted only *after* it opens.
 #[test]
 fn the_callers_word_is_written_when_nothing_else_knows() {

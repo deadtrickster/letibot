@@ -1,4 +1,4 @@
-/// **`[embeddings]` is read off the two `leticode.toml` levels**, the project's over the user's: a
+/// `[embeddings]` is read off the two `leticode.toml` levels, the project's over the user's: a
 /// level that wrote none leaves the other's standing, and a section that cannot be built is a
 /// sentence kept for the next session's open rather than a silence.
 #[test]
@@ -33,7 +33,7 @@ fn the_embedder_section_is_read_from_the_project_level_then_the_users() {
     let _ = std::fs::remove_dir_all(&base);
 }
 
-/// **A box that may not reach the network writes it down.** With the download off, a built-in
+/// A box that may not reach the network writes it down. With the download off, a built-in
 /// model that is not on disk is the refusal this tree already had, and never a fetch.
 #[test]
 fn a_section_that_turns_the_download_off_keeps_the_refusal() {
@@ -1813,7 +1813,7 @@ fn every_new_seam_is_disclosed_and_the_line_moves_with_it() {
         detail(&woken, "monitor wake"),
         detail(&watching, "monitor wake")
     );
-    // **And a wake nobody could arm is its own line.** T24 left this one open: from a bool,
+    // And a wake nobody could arm is its own line. T24 left this one open: from a bool,
     // *the daemon's waiter would not start* and *no daemon armed one* were one sentence, and a
     // reader told *POLL ONLY* goes looking for a knob that would not have helped.
     let failed = GateWiring {
@@ -1831,7 +1831,7 @@ fn every_new_seam_is_disclosed_and_the_line_moves_with_it() {
         unarmed.contains("No daemon armed"),
         "and the unarmed line says nobody tried: {unarmed}"
     );
-    // **And the LINE says it, not only the detail.** A banner read at a glance carries the state
+    // And the LINE says it, not only the detail. A banner read at a glance carries the state
     // word; a reader who sees `POLL ONLY` twice cannot tell a knob from a failure without scrolling
     // into prose that both states already had.
     assert_ne!(

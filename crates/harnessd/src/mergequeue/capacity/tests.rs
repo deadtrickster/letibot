@@ -62,7 +62,7 @@ fn a_real_placement_failure_is_not_capacity() {
     }
 }
 
-/// **The shortage is read off the facts, not off firecode's banner.** A wrapper that hands on the
+/// The shortage is read off the facts, not off firecode's banner. A wrapper that hands on the
 /// refusal without its `[firecode]` prefixes, and one whose shortage sentence is the counts line
 /// alone, are the same refusal - and a message that merely mentions a tap is not.
 #[test]

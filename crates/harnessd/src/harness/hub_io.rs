@@ -35,7 +35,7 @@ impl HubAdmissions {
 
 impl letibot_tools::adjudicate::AdmissionSink for HubAdmissions {
     fn admitted(&self, notice: &letibot_tools::adjudicate::AdmissionNotice) {
-        // **One line, and the command is the part a reader scans for.** The reason is in the
+        // One line, and the command is the part a reader scans for. The reason is in the
         // audit row (`basis`); what a reader of the transcript needs is *which command ran
         // without me* and *which rule said so*.
         self.lines
@@ -111,11 +111,11 @@ pub struct HubSteering {
     /// harness so a firing is delivered exactly once, whether it is picked up
     /// mid-turn here or between turns by [`Harness::wake`].
     pub(crate) monitor_cursor: Arc<AtomicUsize>,
-    /// **This session's results, delivered by R79's rules** - the immediates at every round
+    /// This session's results, delivered by R79's rules - the immediates at every round
     /// boundary, the held batch only past the starvation cap. `None` in a test that has no
     /// daemon behind it.
     pub(crate) deliveries: Option<Deliveries>,
-    /// **This session's children** - the tree's downward edge. An `Interrupt` that reaches a
+    /// This session's children - the tree's downward edge. An `Interrupt` that reaches a
     /// running turn IS this session being stopped, and a supervisor stops its children before
     /// it goes (see [`HarnessTaskRunner`]). `None` in a test with no session behind it.
     pub(crate) subagents: Option<Arc<dyn letibot_tools::builtins::task::TaskRunner>>,
@@ -123,10 +123,10 @@ pub struct HubSteering {
     /// them first. Shared with the harness on purpose: a `HubSteering` is built per round, and one
     /// that owned them lost them when the round let go.
     pub(crate) held: Arc<Mutex<VecDeque<SteeringMessage>>>,
-    /// **An interrupt this turn took**, shared with the harness the way `held` is: what the turn's
+    /// An interrupt this turn took, shared with the harness the way `held` is: what the turn's
     /// ending is told, so a stop does not ring a wake of its own a moment after the operator's.
     pub(crate) stopped: Arc<AtomicBool>,
-    /// **This session's board**, for the one command a running turn applies to it: the
+    /// This session's board, for the one command a running turn applies to it: the
     /// operator's answer to a row's question (`CommandKind::AnswerTodo`), which reaches the model
     /// at the next step boundary rather than after the turn. `None` in a test with no board.
     pub(crate) todos: Option<Arc<TodoBoard>>,
@@ -277,8 +277,8 @@ impl SteeringSource for HubSteering {
             return Some(SteeringMessage::normal(text));
         }
         // Then a background job or subagent of THIS session's own that has ended, above the
-        // monitors because that block returns early with no registry. **Only at a step boundary**:
-        // saying it reads the whole board and takes the held set (R91.16).
+        // monitors because that block returns early with no registry. Only at a step boundary:
+        // saying it reads the whole board and takes the held set.
         if let Some(d) = &self.deliveries
             && std::mem::take(&mut self.at_boundary)
             && let Some(text) = d.at_round_boundary()
@@ -303,7 +303,7 @@ impl SteeringSource for HubSteering {
             return None;
         }
         // A firing is immediate by R79's rules and recorded as one - every one, even those
-        // the sentence leaves out (R93.C8).
+        // the sentence leaves out.
         if let Some(d) = &self.deliveries {
             d.log_firings(&fired);
         }

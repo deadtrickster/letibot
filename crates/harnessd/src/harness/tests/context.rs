@@ -65,7 +65,7 @@ fn deepseek_window() -> Config {
     cfg
 }
 
-/// R72: a reasoning-heavy history is judged at the window's REAL edge. The provider counted 880k over a ledger ~3.4x
+/// a reasoning-heavy history is judged at the window's REAL edge. The provider counted 880k over a ledger ~3.4x
 /// that, so the ratio reading put it past the wall and compacted a conversation with 108k of its window free.
 #[test]
 fn a_reasoning_heavy_history_meets_the_wall_at_the_providers_count() {
@@ -115,7 +115,7 @@ fn a_reasoning_heavy_history_meets_the_wall_at_the_providers_count() {
     );
 }
 
-/// R72: a restart whose last append was a notice comes back at the provider's count, and does not compact. Measured: a
+/// a restart whose last append was a notice comes back at the provider's count, and does not compact. Measured: a
 /// session the provider counted at ~740k compacted to 75k, because the stored pair's ledger no longer EQUALLED the
 /// rebuilt one, so the window went unscaled.
 #[test]
@@ -159,7 +159,7 @@ fn a_restart_after_a_notice_recovers_the_providers_count_and_does_not_compact() 
     assert!(!cfg.tokens_are_unscaled());
 }
 
-/// **A fork re-bases the count on the new base**, rather than applying the
+/// A fork re-bases the count on the new base, rather than applying the
 /// history's ratio to a summary whose reasoning share is nothing like it; and a
 /// local session counts every row, because its prompt IS the ledger.
 #[test]
@@ -250,7 +250,7 @@ fn a_fork_of_a_byte_ledger_is_sized_by_the_last_measured_ratio() {
     );
 }
 
-/// **A round that carries tools echoes its reasoning**, so the count of what will be sent includes it: before this,
+/// A round that carries tools echoes its reasoning, so the count of what will be sent includes it: before this,
 /// a thought written after the last measurement was left out and the wall was short by a round's thought. A request
 /// with no tools is sent without it and counts nothing.
 #[test]
@@ -295,7 +295,7 @@ fn the_compacted_line_is_one_unit_said_once() {
         since: 0,
     };
     let said = super::compacted_line(937_686, base, "deepseek tokens", true);
-    // **An estimate is labelled as one** (pg-noop, 2026-10-11: ≈ 1,039,055 printed and
+    // An estimate is labelled as one (pg-noop, 2026-10-11: ≈ 1,039,055 printed and
     // judged as if measured; the provider then counted 507,355).
     assert!(
         said.starts_with("compacted: 937686 → ≈ 75408 deepseek tokens resident"),
@@ -391,7 +391,7 @@ fn round_zero_stops_past_the_window_and_later_rounds_inside_the_reserve() {
     assert!(!super::wall_stops_round(0, 5_600, 5_443, 128, 512));
 }
 
-/// **A fresh provider is not a reason to refuse** - the wall on a count nothing has
+/// A fresh provider is not a reason to refuse - the wall on a count nothing has
 /// measured, and the ratio a switch carries.
 ///
 /// MEASURED 2026-10-25, `s-1791394076177451000`, on the way from deepseek to
@@ -434,7 +434,7 @@ fn a_fresh_provider_is_judged_by_the_scale_the_model_before_it_measured() {
         "a switch clears the measurement"
     );
 
-    // **One `if` for the whole of it.** The arithmetic still says the prompt is past the
+    // One `if` for the whole of it. The arithmetic still says the prompt is past the
     // window - that is the log line above - so the decision has to be about the count,
     // not about the arithmetic.
     let window = cfg.planning_window().expect("the provider's window");
@@ -460,7 +460,7 @@ fn a_fresh_provider_is_judged_by_the_scale_the_model_before_it_measured() {
         crate::config::WallBasis::Unmeasured
     ));
 
-    // **Now the same session with the ratio it had measured a moment earlier.**
+    // Now the same session with the ratio it had measured a moment earlier.
     cfg.carried_scale = Some(measured.clone());
     assert_eq!(
         cfg.wall_basis(),
@@ -482,7 +482,7 @@ fn a_fresh_provider_is_judged_by_the_scale_the_model_before_it_measured() {
         !super::wall_stops_this_round(0, ledger, 20_000, cfg.headroom(), window, cfg.wall_basis()),
         "an estimate may decide, and this one says the prompt fits"
     );
-    // **And the pre-emptive door still stands down on it**: a fold nobody measured is not
+    // And the pre-emptive door still stands down on it: a fold nobody measured is not
     // a fold an inherited ratio gets to order. The refused door - the provider's own
     // answer - is untouched by this and compacts when it is refused.
     assert!(!cfg.pre_emptive_compact(ledger, true));
@@ -492,7 +492,7 @@ fn a_fresh_provider_is_judged_by_the_scale_the_model_before_it_measured() {
     assert_eq!(cfg.carried_note(), None);
     assert_eq!(cfg.wall_basis(), crate::config::WallBasis::Measured);
 
-    // **And a carried pair never converts a LOCAL session.** Coming home means the engine
+    // And a carried pair never converts a LOCAL session. Coming home means the engine
     // sends its own token ids and the ledger IS the prompt: a cloud ratio applied there
     // would be a conversion of a count into something it is not.
     let mut local = deepseek_window();
@@ -518,7 +518,7 @@ fn a_switch_that_fails_names_the_model_before_it_and_the_command_back() {
     assert!(said.contains("glm-coding/glm-5.3"), "{said}");
     assert!(said.contains("http 400"), "{said}");
 
-    // **A refusal of what was sent is 4xx and not 429.** Everything else is a fact
+    // A refusal of what was sent is 4xx and not 429. Everything else is a fact
     // about the endpoint or about patience, and neither is a reason to leave a model.
     let status = |code: u16| {
         super::HarnessError::Turn(super::TurnFailure::Http(letibot_turn::HttpError::Status {

@@ -20,11 +20,11 @@ pub struct JobWindow {
     pub dropped: u64,
     /// The job's own word - `exited 0`, `running`, `killed by …`.
     pub state: String,
-    /// **Whether anything was ever executed for this job** - `true` only for the one
+    /// Whether anything was ever executed for this job - `true` only for the one
     /// state where the wrapper could not join the cgroup, so a head with an empty
     /// window can say *never ran* rather than *wrote nothing* (A.2, §11.6).
     pub never_ran: bool,
-    /// The window, split into lines **here**, so two heads cannot disagree about
+    /// The window, split into lines here, so two heads cannot disagree about
     /// where a line ends.
     pub lines: Vec<String>,
     /// Where to ask next when there is more that is still readable, and `None`
@@ -38,11 +38,11 @@ pub struct JobWindow {
 /// never heard of is what that looks like after a restart. It does not say what became of the job.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JobFate {
-    /// Still running **here**. The condition is not met.
+    /// Still running here. The condition is not met.
     Running,
     /// It ended, and this is its own word - `exited 0`, `killed by job_kill`, `signalled 15`.
     Ended { state: String },
-    /// **Not a job this session knows**: it ended before this daemon came back, or the handle is
+    /// Not a job this session knows: it ended before this daemon came back, or the handle is
     /// wrong. The condition is met and the result is not here.
     Unknown,
 }
@@ -63,7 +63,7 @@ pub(crate) fn fate_line(handle: &str, fate: &JobFate) -> String {
     }
 }
 
-/// **The rows a condition just met, as the note the model is handed**: the head says what fired and
+/// The rows a condition just met, as the note the model is handed: the head says what fired and
 /// never how many, because a count is a second statement that can disagree with the lines under it.
 pub(crate) fn due_notice(due: &[(String, String, JobFate)]) -> String {
     let lines: Vec<String> = due
@@ -169,7 +169,7 @@ impl Harness {
         })
     }
 
-    /// **The stored row for one handle**, or `None` - the one read the output window and the
+    /// The stored row for one handle, or `None` - the one read the output window and the
     /// condition evaluator share, so the two cannot look in different places.
     fn recorded_job(&self, handle: &str) -> Option<JobRecord> {
         let store = self.store.as_ref()?;
@@ -184,7 +184,7 @@ impl Harness {
     /// honesty: only the process host can say a job runs now, and a stored `running` row is a fact about
     /// then. The record is the second look, because it is what survives a restart.
     pub fn job_fate(&self, handle: &str) -> JobFate {
-        // **Two looks, and [`fate_of`] is the decision between them** - the live table first,
+        // Two looks, and [`fate_of`] is the decision between them - the live table first,
         // because only the process host can say a job runs *now*, and the record second, because
         // it is what survives a restart.
         let live = self
@@ -200,7 +200,7 @@ impl Harness {
     /// caller can report and consume them in one breath. The fate is carried and not collapsed into a
     /// boolean, because a handle that ended here can be read and one never heard of cannot.
     pub fn due_todo_rows(&self) -> Vec<(String, String, JobFate)> {
-        // **The rows and both live facts, taken together** - the same reading `nag_notice` takes, so
+        // The rows and both live facts, taken together - the same reading `nag_notice` takes, so
         // the firing and the nag cannot disagree about whether a row is one the check may speak
         // about: a row waiting on a young child or on a running job is not due by EITHER door.
         let rows = self.todos.snapshot();
@@ -340,7 +340,7 @@ pub(crate) fn job_window_for(
                     next: (w.to < w.produced).then_some(w.to),
                 }
             }
-            // **The file is not there yet**, or it cannot be read. The sentence that names
+            // The file is not there yet, or it cannot be read. The sentence that names
             // it is still the honest answer, and it names the command that would read it.
             None => JobWindow {
                 from: 0,
@@ -365,7 +365,7 @@ pub(crate) fn job_window_for(
         state: state.word(),
         never_ran: state.never_ran(),
         lines: if slice.produced == 0 {
-            // **Empty, and the redirected case cannot reach here** - a job whose command
+            // Empty, and the redirected case cannot reach here - a job whose command
             // redirects its output was answered from the FILE above.
             Vec::new()
         } else {
@@ -402,7 +402,7 @@ pub(crate) fn tail_file(path: &str, offset: u64, limit: usize) -> Option<FileWin
         produced.min(from.saturating_add(limit))
     };
     f.seek(SeekFrom::Start(from)).ok()?;
-    // **Read what is actually there**, not the length the metadata promised: a running job
+    // Read what is actually there, not the length the metadata promised: a running job
     // appends while this runs, and a file that grew between the two must not fail the read.
     let mut buf = Vec::new();
     f.take(end.saturating_sub(from))
@@ -456,7 +456,7 @@ pub(crate) fn next_job_offset(slice: &letibot_tools::exec::OutputSlice) -> Optio
 /// What a job killed with its subagent's VM reads as, on its row.
 pub(crate) const VM_LOST: &str = "lost with its VM";
 
-/// **The background jobs a VM child left running, as its parent is told they died** (TODO.md
+/// The background jobs a VM child left running, as its parent is told they died (TODO.md
 /// R92.1) - `None` when there were none. Pure, so the wording is asserted without a VM.
 pub(crate) fn vm_jobs_lost_line(lost: &[letibot_tools::exec::JobView]) -> Option<String> {
     if lost.is_empty() {

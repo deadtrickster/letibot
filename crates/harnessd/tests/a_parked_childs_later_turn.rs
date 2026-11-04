@@ -1,12 +1,7 @@
 //! A parked child's later turn reaches its parent: the notice, and `task_result`.
 //!
-//! A child that parked has no thread. The parent's `task_message` reopens its session and the
-//! DAEMON'S WORKER runs the turn, so the two acts the child's own thread would have done -
-//! settling the parent's slot and queueing the settlement on the parent - have to happen on the
-//! worker's side, or the parent is never told and `task_result` keeps answering the first answer.
-//!
-//! The tree here is the daemon's: a `Sessions` with the parent open in it, the parent's real
-//! `task` call, and the child parked by a park window of a few hundred milliseconds.
+//! A parked child has no thread. The parent's `task_message` reopens its session and the daemon's worker runs the turn, so settling the parent's slot and queueing the settlement happen on the worker's side, or the parent is never told.
+//! The tree is the daemon's: a `Sessions` with the parent open, its real `task` call, and a child parked by a short park window.
 
 use std::net::TcpListener;
 use std::sync::Arc;
@@ -71,7 +66,7 @@ fn config(session_id: &str, endpoint: Endpoint, store: &std::path::Path) -> Conf
     cfg.web_search = None;
     cfg.permission = Vec::new();
     cfg.vocab_gguf = support::vocab::gguf();
-    // **The child parks in a few hundred milliseconds**, which is the whole state this file is
+    // The child parks in a few hundred milliseconds, which is the whole state this file is
     // about: a child whose thread has EXITED and whose session is in the store.
     cfg.child_park_after = Some(Duration::from_millis(300));
     cfg
@@ -402,7 +397,7 @@ fn a_parked_childs_later_turn_reaches_its_parent() {
         "the child never answered its task"
     );
 
-    // **The parent messages it**, through the tool a parent actually uses: that is the door that
+    // The parent messages it, through the tool a parent actually uses: that is the door that
     // reopens the parked session and puts the turn on a queue the worker owns.
     let said = {
         let rt = sessions
@@ -422,7 +417,7 @@ fn a_parked_childs_later_turn_reaches_its_parent() {
         "the message did not reopen the parked child: {said}"
     );
 
-    // **The worker runs the child's later turn** - the command the reopen put on its queue.
+    // The worker runs the child's later turn - the command the reopen put on its queue.
     let mut ran_the_child = false;
     let began = Instant::now();
     while !ran_the_child {
@@ -447,7 +442,7 @@ fn a_parked_childs_later_turn_reaches_its_parent() {
         "the child ran no second turn"
     );
 
-    // **And the parent was rung for it.** A settlement the worker queued on the parent is a wake
+    // And the parent was rung for it. A settlement the worker queued on the parent is a wake
     // on the parent; nothing else here rings the parent's bell.
     let mut rung = false;
     let began = Instant::now();
@@ -485,7 +480,7 @@ fn a_parked_childs_later_turn_reaches_its_parent() {
         "the notice carries the later turn's answer: {notice}"
     );
 
-    // **And `task_result` answers with it**, not with the answer to the task.
+    // And `task_result` answers with it, not with the answer to the task.
     let rt = sessions
         .harness_of(parent_id)
         .expect("the parent is open")

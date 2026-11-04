@@ -71,7 +71,7 @@ pub(crate) fn monitor_notice(fired: &[letibot_tools::exec::monitor::Firing]) -> 
     (!lines.is_empty()).then(|| lines.join("\n"))
 }
 
-/// **The row a delivery becomes**: a `Notice`, so nothing has to remember to attribute it. A `User`
+/// The row a delivery becomes: a `Notice`, so nothing has to remember to attribute it. A `User`
 /// row's `speaker` defaults to the operator, and a row written without one reads as their words.
 pub(crate) fn notice_row(
     kind: letibot_transcript::NoticeKind,
@@ -107,11 +107,11 @@ pub(crate) fn monitor_facts(fired: &[letibot_tools::exec::monitor::Firing]) -> s
     serde_json::json!({"fired": rows})
 }
 
-/// **How many ended monitors the pane lists** - the newest. A session that ran a repeating watch
+/// How many ended monitors the pane lists - the newest. A session that ran a repeating watch
 /// all day would otherwise ship its whole history with every job-table refill.
 pub const MONITORS_ENDED_SHOWN: usize = 20;
 
-/// **What reaps a monitor, as a person says it** - `session`, `turn`, or a named scope's own name;
+/// What reaps a monitor, as a person says it - `session`, `turn`, or a named scope's own name;
 /// the scope's id (`session.s0`) is the daemon's, not the reader's.
 pub(crate) fn owner_words(s: &letibot_tools::exec::scope::ScopeId) -> String {
     use letibot_tools::exec::scope::ScopeKind;
@@ -122,7 +122,7 @@ pub(crate) fn owner_words(s: &letibot_tools::exec::scope::ScopeId) -> String {
     }
 }
 
-/// **Who armed a monitor, as a person says it** - `turn pr-watch` was the harness on a
+/// Who armed a monitor, as a person says it - `turn pr-watch` was the harness on a
 /// `gh pr create`, `turn restart` a restart re-arming its stored call; a model's own turn is
 /// said as it is.
 pub(crate) fn declared_words(by: &str) -> String {
@@ -198,7 +198,7 @@ mod monitor_rows {
     use letibot_tools::exec::monitor::{DEFAULT_TTL, Monitors, Watch};
     use letibot_tools::exec::scope::{ScopeId, ScopeKind};
 
-    /// **The monitors pane's rows** - a live repeating watch is one row with its firing count and
+    /// The monitors pane's rows - a live repeating watch is one row with its firing count and
     /// its deadline; a one-shot that fired and one the operator retired are ended rows saying how,
     /// in the order they ended.
     #[test]
@@ -302,7 +302,7 @@ pub(crate) fn completion_notice(done: &[JobCompletion], mine: bool) -> String {
         )),
     }
     for c in done {
-        // R93.C3: no byte count (a number with nothing to do), and the command only for a job
+        // no byte count (a number with nothing to do), and the command only for a job
         // ANOTHER session started - the model wrote its own one call ago, and echoing it back in
         // full was most of the notice.
         let whose = if mine {
@@ -334,11 +334,11 @@ pub(crate) fn completion_notice(done: &[JobCompletion], mine: bool) -> String {
         }
     }
     if mine {
-        // R93.C1: the closing named `job_wait` on every completion, said "you do not need to wait"
+        // the closing named `job_wait` on every completion, said "you do not need to wait"
         // to a model that had just waited, and gave `job="…"` for an id it knew. It names the door.
         s.push_str(&format!("{JOB_CLOSING}{}.", handles_as("job", done)));
     } else {
-        // R93.C5: the paragraph this replaces spent its length explaining why the reader is
+        // the paragraph this replaces spent its length explaining why the reader is
         // being told, and named no starter.
         s.push_str(&stopped_closing(done, "output is gone."));
     }
@@ -392,7 +392,7 @@ pub(crate) fn subagent_notice(done: &[JobCompletion], mine: bool) -> String {
         } else {
             format!(" (started by `{}`)", c.owner)
         };
-        // **The child by its name**, `fix-login · s-…-sub-3` - the job rule, and the same
+        // The child by its name, `fix-login · s-…-sub-3` - the job rule, and the same
         // spelling `task` printed when it started the child. A child nobody named (a settlement
         // from a daemon before names) is its bare handle, byte for byte what this always said.
         let label = letibot_tools::builtins::task::subagent_label(c.slug.as_deref(), &c.job);
@@ -406,7 +406,7 @@ pub(crate) fn subagent_notice(done: &[JobCompletion], mine: bool) -> String {
         }
     }
     if mine {
-        // R93.C2: "calling `task_result` would only hold you … Read what it said with
+        // "calling `task_result` would only hold you … Read what it said with
         // `task_result`" said don't and do in one breath, with `task="…"` for a known handle.
         s.push_str(&format!("{TASK_CLOSING}{}.", handles_as("task", done)));
     } else {
@@ -421,7 +421,7 @@ pub(crate) fn subagent_notice(done: &[JobCompletion], mine: bool) -> String {
     s
 }
 
-/// **The closing a `[job]` notice for this session's own jobs ends with**, up to its handles - the
+/// The closing a `[job]` notice for this session's own jobs ends with, up to its handles - the
 /// words the head's fold and job card recognise (`tui`'s `PROMISES` and `CLOSINGS`).
 pub const JOB_CLOSING: &str = "Output: `job_output` ";
 /// The same for a `[task]` notice of this session's own children.
@@ -442,7 +442,7 @@ pub(crate) fn completion_notices(
     me: &str,
     rows: &[TodoItem],
 ) -> Vec<String> {
-    // **Mine first**, then what was handed up - so a session reading one wake reads its
+    // Mine first, then what was handed up - so a session reading one wake reads its
     // own settlements before its children's, and the order of the two groups cannot be
     // mistaken for one list.
     let (theirs, mine): (Vec<JobCompletion>, Vec<JobCompletion>) =
@@ -457,7 +457,7 @@ pub(crate) fn completion_notices(
             s.push_str(&waiting_on_these(&jobs, rows));
             out.push(s);
         }
-        // **A later turn of a child already reported is its own sentence**: it is not the child
+        // A later turn of a child already reported is its own sentence: it is not the child
         // finishing, so a heading saying so over it would be false. No plan line under it, since no
         // row waits on the same child twice.
         let (again, tasks): (Vec<JobCompletion>, Vec<JobCompletion>) =
@@ -588,7 +588,7 @@ pub const WAITING_ON_THIS: &str = "Waiting on this: ";
 /// The same for a group of several completions.
 pub const WAITING_ON_THESE: &str = "Waiting on these: ";
 
-/// **The held batch, as one note** (R79): the `[meanwhile]` line, then the settlements in
+/// The held batch, as one note: the `[meanwhile]` line, then the settlements in
 /// [`completion_notices`]' own words - unchanged, so the head's compact job rows read the groups
 /// under the heading exactly as they read a wake's.
 pub(crate) fn meanwhile_notice(
@@ -641,7 +641,7 @@ impl Deliveries {
         }
     }
 
-    /// **What must be said now**: the sort, its immediates recorded and worded. Everything else
+    /// What must be said now: the sort, its immediates recorded and worded. Everything else
     /// is left held.
     pub(crate) fn immediates(&self, skip: impl Fn(&JobCompletion) -> bool) -> Vec<String> {
         let rows = self
@@ -655,7 +655,7 @@ impl Deliveries {
         }
         self.log.immediates(&now, std::time::SystemTime::now());
         let done: Vec<JobCompletion> = now.into_iter().map(|(c, _)| c).collect();
-        // **Delivered, and recorded as such** - the fact the plan check's grace reads
+        // Delivered, and recorded as such - the fact the plan check's grace reads
         // (`JobWatchers::grace_left`).
         self.watch.read_now(&done);
         completion_notices(done, &self.me, &rows)
@@ -669,7 +669,7 @@ impl Deliveries {
             .unwrap_or_default()
     }
 
-    /// **The held batch, taken and recorded**, as one `[meanwhile]` note - or `None` when nothing
+    /// The held batch, taken and recorded, as one `[meanwhile]` note - or `None` when nothing
     /// is held.
     pub(crate) fn batch(&self, rule: crate::delivery::Rule) -> Option<String> {
         let held = self.watch.take_held();
@@ -688,7 +688,7 @@ impl Deliveries {
         ))
     }
 
-    /// **A round boundary inside a running turn**: the immediates, and the batch only when the
+    /// A round boundary inside a running turn: the immediates, and the batch only when the
     /// longest-held result has waited past the cap.
     pub(crate) fn at_round_boundary(&self) -> Option<String> {
         let mut parts = self.immediates(|_| false);
@@ -711,7 +711,7 @@ impl Deliveries {
     }
 
     /// [`Deliveries::at_turn_start`] for a door whose submit can still fail: the words, and the
-    /// results they say, for a caller that marks them only once its row is in (R91.11).
+    /// results they say, for a caller that marks them only once its row is in.
     pub(crate) fn at_turn_start_unread(&self) -> (Option<String>, Vec<JobCompletion>) {
         let (b, told) = self.between_turns_unread(|_| false, crate::delivery::Rule::Batch);
         let mut parts = b.now;
@@ -733,7 +733,7 @@ impl Deliveries {
         out
     }
 
-    /// `between_turns` without marking anything read (R91.11): the sentences and the results they say,
+    /// `between_turns` without marking anything read: the sentences and the results they say,
     /// for a caller that has not yet put them in front of the model. It marks them with `read` once it
     /// has, or hands them back with `put_back` when the turn never opened.
     pub(crate) fn between_turns_unread(
@@ -741,7 +741,7 @@ impl Deliveries {
         skip: impl Fn(&JobCompletion) -> bool,
         held_rule: crate::delivery::Rule,
     ) -> (BetweenTurns, Vec<JobCompletion>) {
-        // **Taken means owed until the turn that says it begins** - marked before the take,
+        // Taken means owed until the turn that says it begins - marked before the take,
         // because `pending` and `held` are what a reader waits on and the take is what clears
         // them. Without it the activity read quiet between the drain and the clock.
         if self.watch.pending() || self.watch.held_count() > 0 {
@@ -782,7 +782,7 @@ impl Deliveries {
         (BetweenTurns { now, batch }, said)
     }
 
-    /// **These results are in front of the model now** - the read record the plan check's grace
+    /// These results are in front of the model now - the read record the plan check's grace
     /// reads, and a subagent's `delivered` in the store.
     pub(crate) fn read(&self, told: &[JobCompletion]) {
         if !told.is_empty() {
@@ -790,7 +790,7 @@ impl Deliveries {
         }
     }
 
-    /// **These results were never told** - the turn that was to carry them did not open - so
+    /// These results were never told - the turn that was to carry them did not open - so
     /// they are held again, for the next break to say.
     pub(crate) fn put_back(&self, untold: Vec<JobCompletion>) {
         if untold.is_empty() {

@@ -1,4 +1,4 @@
-//! **What an open or a turn refuses with**, and the one question a caller asks of it: whether the
+//! What an open or a turn refuses with, and the one question a caller asks of it: whether the
 //! refusal came from the provider rather than from this process.
 
 use super::*;
@@ -40,7 +40,7 @@ pub enum HarnessError {
 }
 
 impl HarnessError {
-    /// **The HTTP failure underneath this error**, for the two questions asked after it is
+    /// The HTTP failure underneath this error, for the two questions asked after it is
     /// said - never for re-deciding whether to retry, which the ladder already answered.
     pub fn http_cause(&self) -> Option<&letibot_turn::HttpError> {
         match self {
@@ -57,7 +57,7 @@ impl std::fmt::Display for HarnessError {
         match self {
             HarnessError::Setup(s) => write!(f, "{s}"),
             HarnessError::Turn(e) => write!(f, "{e}"),
-            // **The whole account of one endpoint failure**: what it was, how many calls it
+            // The whole account of one endpoint failure: what it was, how many calls it
             // took, and what the provider said last. See [`HarnessError::Endpoint`].
             HarnessError::Endpoint { said, .. } => write!(f, "{said}"),
             HarnessError::Store(s) => write!(f, "store: {s}"),
@@ -101,7 +101,7 @@ impl std::fmt::Display for HarnessError {
 
 impl std::error::Error for HarnessError {}
 
-/// **What a child tells its parent about a turn that failed**: the wall's own `Display` is a page of
+/// What a child tells its parent about a turn that failed: the wall's own `Display` is a page of
 /// token numbers the parent cannot act on, and the move it CAN make is to resume the child.
 pub(crate) fn said_failure(e: &HarnessError) -> String {
     match e {

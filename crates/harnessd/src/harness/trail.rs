@@ -5,7 +5,7 @@ use super::*;
 
 struct Said {
     speaker: Speaker,
-    /// **At most [`UTTERANCE_CHARS`] characters** - see [`TrailMirror::say`].
+    /// At most [`UTTERANCE_CHARS`] characters - see [`TrailMirror::say`].
     text: String,
     /// It was longer than that when it was said, and says so - the flag is what
     /// `Utterance::clipped` reports, and it is recorded here rather than recomputed
@@ -93,7 +93,7 @@ impl TrailMirror {
         }
     }
 
-    /// **What the trail holds**, in bytes of text and in utterances - the third term of a
+    /// What the trail holds, in bytes of text and in utterances - the third term of a
     /// hub's [`Footprint`](letibot_sessionlog::hub::Footprint), read live because this is
     /// already shared behind its own lock.
     pub(crate) fn held(&self) -> (usize, usize) {
@@ -101,7 +101,7 @@ impl TrailMirror {
         (g.said.iter().map(|s| s.text.len()).sum(), g.said.len())
     }
 
-    /// Seed from a transcript rebuilt out of the store. The speaker comes off the row (R42): calling
+    /// Seed from a transcript rebuilt out of the store. The speaker comes off the row: calling
     /// every `User` row the operator's put the session's own settlements and notices into the
     /// authorisation trail as citable utterances. A row older than the field reads as `Operator`.
     pub(crate) fn seed(&self, items: &[TranscriptItem]) {
@@ -167,7 +167,7 @@ impl TrailMirror {
         g.claim = Some(t.chars().take(UTTERANCE_CHARS).collect());
     }
 
-    /// **The trail, walked backwards.** What
+    /// The trail, walked backwards. What
     /// [`AdjudicatedGate::with_trail_source`] installs.
     pub fn trail(&self) -> AuthorisationTrail {
         let g = self.lock();

@@ -624,7 +624,7 @@ fn a_grandchilds_settlement_reaches_its_parent_and_rings_its_parent() {
     );
 }
 
-/// **A child's later turn is queued on its PARENT and rung there** - `settle_up`, which is the one
+/// A child's later turn is queued on its PARENT and rung there - `settle_up`, which is the one
 /// door a child has for a settlement its parent's watcher has already stopped waiting on.
 #[test]
 fn a_later_turn_is_queued_on_the_level_above_and_rings_it() {
@@ -703,8 +703,8 @@ fn a_later_turn_is_queued_on_the_level_above_and_rings_it() {
     );
 }
 
-/// **A settlement handed up from below a session that has itself stopped goes to the level above
-/// that.** A stopped set has handed its own queue up, so a settlement pushed into it afterwards sits
+/// A settlement handed up from below a session that has itself stopped goes to the level above
+/// that. A stopped set has handed its own queue up, so a settlement pushed into it afterwards sits
 /// where nothing will ever drain it - which is the one thing a hand-up exists to prevent.
 #[test]
 fn a_settlement_handed_up_past_a_stopped_level_reaches_the_one_above_it() {
@@ -1422,7 +1422,7 @@ fn a_job_of_jobs_settles_through_the_jobs_channel_and_carries_its_table() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// **A monitor's firing survives the drop a stopped turn makes.** The drop takes back the wake a
+/// A monitor's firing survives the drop a stopped turn makes. The drop takes back the wake a
 /// SETTLEMENT rang, because the settlement is still queued; a firing has no queue behind it, so a
 /// wake rung for one taken back leaves the court asleep on a firing nobody reads.
 #[test]
@@ -1449,7 +1449,7 @@ fn a_stopped_turn_keeps_the_wake_a_monitor_rang() {
     );
 }
 
-/// **A settlement hops as far as it has to.** A stopped session hands its queue up, and the level it
+/// A settlement hops as far as it has to. A stopped session hands its queue up, and the level it
 /// hands to may have stopped as well - the common stop order hides it, children first into a live
 /// parent, and `--max-subagent-depth` 3 makes the chain that bites reachable.
 #[test]

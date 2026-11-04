@@ -1,4 +1,4 @@
-//! R66: what the daemon's per-session worker and its job table retain, per turn and per job.
+//! what the daemon's per-session worker and its job table retain, per turn and per job.
 //! Counts and bytes held, never wall-clock RSS: the subject is what is kept, not how fast.
 
 mod support;
@@ -107,11 +107,8 @@ impl ScopeTree for PlainDirectories {
         Ok(id)
     }
 
-    /// What the kernel would answer: the pids the join script wrote into this scope's
-    /// `cgroup.procs`, less the ones that have exited - the kernel drops a pid from the file when
-    /// its process goes, and a fake that kept it would call a settled job's scope populated for
-    /// ever. A tree that answered `empty` for a live process would fail every spawn that outlives
-    /// the five-second membership check.
+    ///     /// What the kernel would answer: the pids the join script wrote into this scope's `cgroup.procs`, less the exited ones.
+    ///     /// The kernel drops an exited pid, and a fake that kept it would call a settled job's scope populated; one answering `empty` for a live process would fail every spawn outliving the membership check.
     fn members(&self, scope: &ScopeId) -> Result<Vec<u32>, ExecError> {
         let body = std::fs::read_to_string(scope.path.join("cgroup.procs")).unwrap_or_default();
         Ok(body
@@ -422,10 +419,7 @@ fn completion(job: &str, slug: Option<&str>) -> JobCompletion {
 // The worker and the queue: many turns through a real `Sessions`
 // ---------------------------------------------------------------------------
 
-/// One test at a time in this binary. Two reasons, and either alone is enough: `XDG_CONFIG_HOME` is
-/// the process's and the provider this file points at is written there, and every measurement here
-/// is `memwatch::heap()`, which is the WHOLE process's live heap - a sibling test allocating
-/// through the same window is a delta that is not this test's.
+/// One test at a time in this binary: `XDG_CONFIG_HOME` is process-wide and the provider is written there, and every measurement is `memwatch::heap()`, the whole process's live heap, which a sibling test would disturb.
 static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
 
 fn serial() -> std::sync::MutexGuard<'static, ()> {

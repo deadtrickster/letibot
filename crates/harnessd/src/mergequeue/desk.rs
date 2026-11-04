@@ -733,7 +733,7 @@ fn first_rows(reviews: &[ReviewRow], merges: &[MergeRow]) -> (Vec<String>, usize
     (lines.into_iter().map(|(_, line)| line).collect(), more)
 }
 
-/// **A state as a reader of this text understands it.** The store's column names are codes
+/// A state as a reader of this text understands it. The store's column names are codes
 /// (`cannot_decide`, `timed_out`), and this answer is read by a model that repeats it to a person;
 /// an unknown state falls back to the store's own word rather than to a guess.
 pub(crate) fn plain_state(state: &str) -> String {
@@ -764,7 +764,7 @@ pub(crate) fn plain_state(state: &str) -> String {
     word.to_string()
 }
 
-/// **Who judged the row**, when the store recorded it - `reviewer:s-x` reads as `s-x`, and a
+/// Who judged the row, when the store recorded it - `reviewer:s-x` reads as `s-x`, and a
 /// `human:` verdict as the person. Empty when nobody has.
 fn judged_by(verdict_by: Option<&str>) -> String {
     let Some(by) = verdict_by.filter(|b| !b.is_empty()) else {
@@ -1193,7 +1193,7 @@ mod tests {
         assert!(said.contains("merge queue: 0 open"), "{said}");
     }
 
-    /// **A row says its state in words, and who judged it** - the store's column names
+    /// A row says its state in words, and who judged it - the store's column names
     /// (`cannot_decide`, `timed_out`) are codes, and this answer is quoted to a person.
     #[test]
     fn a_row_says_its_state_in_words_and_who_judged_it() {
@@ -1234,7 +1234,7 @@ mod tests {
         );
     }
 
-    /// **The counts are a word of their own.** `1 waiting` is a count, read beside rows that say
+    /// The counts are a word of their own. `1 waiting` is a count, read beside rows that say
     /// `waiting for a reviewer`: a count names the state, and never the store's own code.
     #[test]
     fn the_counts_say_a_word_a_reader_uses() {

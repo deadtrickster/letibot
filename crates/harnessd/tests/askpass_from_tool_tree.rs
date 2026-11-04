@@ -1,9 +1,6 @@
 //! The one door a tool call is here for, through the real binary.
 //!
-//! The daemon serves a connection from inside its own process tree only the askpass question:
-//! every operator door is refused by name. The helper below is the production consumer of that one
-//! door, spawned the way a command is - as a child of the process that owns the socket - so a
-//! refusal that also swallowed the password would fail here rather than on a sudo prompt.
+//! The daemon serves a connection from inside its own process tree only the askpass question; every operator door is refused by name. The helper is spawned as a child of the socket's owner, so a refusal that also swallowed the password fails here rather than at a sudo prompt.
 
 use std::sync::mpsc::channel;
 use std::time::{Duration, Instant};

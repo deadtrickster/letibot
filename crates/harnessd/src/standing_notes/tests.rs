@@ -815,7 +815,7 @@ fn the_section_carries_the_skills_index_and_never_a_body() {
     let _ = std::fs::remove_dir_all(&g);
 }
 
-/// **A note on the session's own backend is read into the prompt.** A placed session's notes are
+/// A note on the session's own backend is read into the prompt. A placed session's notes are
 /// on that host, and the reader went to the daemon's path for the workspace instead: the note the
 /// model had just written reached no prompt until the branch came home.
 #[test]

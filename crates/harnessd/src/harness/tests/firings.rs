@@ -18,7 +18,7 @@ fn fired(name: &str, why: &str) -> letibot_tools::exec::monitor::Firing {
     }
 }
 
-/// **A burst is one delivery**, not a wall: a session with a watch that holds every tick would
+/// A burst is one delivery, not a wall: a session with a watch that holds every tick would
 /// otherwise be handed a line a firing, and the model pays for every one of them in a turn it did
 /// not ask for. One line a monitor, the newest words, and how many the line stands for.
 #[test]
@@ -48,7 +48,7 @@ fn a_burst_of_firings_is_one_line_a_monitor_that_counts_the_rest() {
     );
 }
 
-/// **An ending keeps its own line**, because it says the one thing a firing's words cannot: nothing
+/// An ending keeps its own line, because it says the one thing a firing's words cannot: nothing
 /// is watching any more. Folding the two would read *expired without firing (and 19 firings since)*,
 /// which is a contradiction the model would have to untangle for itself.
 #[test]
@@ -77,7 +77,7 @@ fn a_burst_and_its_ending_are_two_lines_and_the_ending_is_not_folded_into_the_fi
     );
 }
 
-/// **A firing is a delivery, not a message.** The row it becomes is a `Notice`: it carries a kind,
+/// A firing is a delivery, not a message. The row it becomes is a `Notice`: it carries a kind,
 /// and there is no `speaker` field for anybody to leave at its default and hand the operator words
 /// they never said.
 #[test]
@@ -117,7 +117,7 @@ fn a_firing_heard_mid_turn_is_a_notice_as_well() {
     assert!(!m.from_operator);
 }
 
-/// **The whole chain on a real monitor**: twenty firings are one delivery carrying all of them, and
+/// The whole chain on a real monitor: twenty firings are one delivery carrying all of them, and
 /// the step boundary that asks twice cannot make two. Nothing is dropped either - every firing is in
 /// the registry, and the count on the line is the proof the model was told about the burst.
 #[test]

@@ -120,7 +120,7 @@ fn an_unrelated_brief_is_said_nothing() {
     assert!(!offers.compose(&[], BRIEF));
 }
 
-/// **Mode off is exactly what the daemon did before this caller existed**: no tier, no offer, an
+/// Mode off is exactly what the daemon did before this caller existed: no tier, no offer, an
 /// unchanged request.
 #[test]
 fn mode_off_composes_nothing() {
@@ -208,7 +208,7 @@ fn a_settled_row_is_not_open() {
     }
 }
 
-/// **The brief is the prompt and the `task` prompt.** A subagent prompt is the text this caller
+/// The brief is the prompt and the `task` prompt. A subagent prompt is the text this caller
 /// exists to catch, and a `task` call carries it in its arguments rather than in the row's prose.
 #[test]
 fn the_draft_is_the_prompt_and_the_task_prompt() {

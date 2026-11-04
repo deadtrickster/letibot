@@ -14,7 +14,7 @@ use letibot_plugins::MANIFEST;
 /// so the bound is about a title that fits rather than about a filesystem.
 const MAX_NAME: usize = 48;
 
-/// **The hook kinds this host runs**, as `scaffold` names them: the word without the name after
+/// The hook kinds this host runs, as `scaffold` names them: the word without the name after
 /// its prefix. `pane` is drawn by a head; the other four are the patch points of
 /// `docs/plugins-plan.md` §4.1–4.4, each wired where the host does that thing.
 pub const HOOK_KINDS: &[&str] = &[
@@ -25,7 +25,7 @@ pub const HOOK_KINDS: &[&str] = &[
     "condition",
 ];
 
-/// Where the slice-1 Rust SDK lives on a box that has a rano checkout beside its projects — the
+/// Where the slice-1 Rust SDK lives on a box that has a rano checkout beside its projects - the
 /// path `plugins/examples/plan-dashboard/Cargo.toml` uses, and the one a template has to write
 /// because cargo cannot be told *any checkout of rano will do*.
 pub const SDK_DEFAULT: &str = "Projects/rano/rano/sdks/rust";
@@ -100,7 +100,7 @@ fn cargo_cache_checkout() -> Option<PathBuf> {
     candidates.pop()
 }
 
-/// **The rev `Cargo.lock` pins rano to**, `git+<url>?rev=<rev>#<rev>`, which is the only place
+/// The rev `Cargo.lock` pins rano to, `git+<url>?rev=<rev>#<rev>`, which is the only place
 /// the answer is written down.
 fn locked_rev(lock: &str) -> Option<String> {
     let mut lines = lock.lines();
@@ -202,17 +202,17 @@ pub fn ident(name: &str) -> String {
     name.replace('-', "_")
 }
 
-/// **[`hook_name`] for a kind and a plugin's name** — spelled the way the host asks for it.
+/// [`hook_name`] for a kind and a plugin's name - spelled the way the host asks for it.
 pub fn hook_name(kind: &str, name: &str) -> String {
     match kind {
-        // **One hook for the kind.** Every layer that wants to intercept a call exports the same
+        // One hook for the kind. Every layer that wants to intercept a call exports the same
         // name, and they stack; a name per plugin would be a hook nothing ever asks for.
         "on_tool_call" | "on_tool_result" => kind.to_string(),
-        // **A notice hook is named after the notice's KIND**, not after the plugin (§4.3), and the
+        // A notice hook is named after the notice's KIND, not after the plugin (§4.3), and the
         // template starts with the plan's own example: a monitor firing's wording. Another kind is
         // a rename of the export and of `plugin.toml`'s `hooks`.
         "notice" => format!("notice_{}", letibot_plugin::notice::MONITOR),
-        // **Per subject**, like a pane: the name says which one.
+        // Per subject, like a pane: the name says which one.
         _ => format!("{kind}_{}", ident(name)),
     }
 }
@@ -233,7 +233,7 @@ pub struct Scaffolded {
     pub files: Vec<String>,
     pub sdk: Sdk,
     pub manifest: String,
-    /// The export the template answers — what `plugin.toml` declares and the host asks for.
+    /// The export the template answers - what `plugin.toml` declares and the host asks for.
     pub hook: String,
     /// The kind it was scaffolded for, so the sentence can say what the layer is FOR.
     pub kind: String,
@@ -245,7 +245,7 @@ pub struct Scaffolded {
     pub types: Sdk,
 }
 
-/// **Write the template into `plugins_dir/<name>`** — refusing to touch a directory that already
+/// Write the template into `plugins_dir/<name>` - refusing to touch a directory that already
 /// has a manifest, because that is somebody's plugin and the scaffold's job is the first frame.
 pub fn write(
     plugins_dir: &Path,
@@ -303,7 +303,7 @@ pub fn write(
     })
 }
 
-/// The `plugin.toml` the template writes — through [`letibot_plugins::Manifest`]'s own parser at
+/// The `plugin.toml` the template writes - through [`letibot_plugins::Manifest`]'s own parser at
 /// load time, so a template that did not parse would be a scaffold whose every plugin fails at
 /// discovery. The unit test below runs the real parser over it.
 fn manifest(name: &str, purpose: &str, hook: &str) -> String {
@@ -320,9 +320,9 @@ fn manifest(name: &str, purpose: &str, hook: &str) -> String {
 }
 
 fn cargo_toml(name: &str, kind: &str, sdk: &str, types: &str) -> String {
-    // **The four patch points link the tree's own contract crate.** A guest that parses its input
+    // The four patch points link the tree's own contract crate. A guest that parses its input
     // into the host's types cannot drift from the host: a renamed field is a compile error in the
-    // plugin, in the session, at the moment the build runs — which is the whole point of the SDK.
+    // plugin, in the session, at the moment the build runs - which is the whole point of the SDK.
     let typed = if kind == "pane" {
         String::new()
     } else {

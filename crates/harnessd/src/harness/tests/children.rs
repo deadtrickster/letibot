@@ -2,7 +2,7 @@
 
 use super::*;
 
-/// **A child that ran out of room says so, and not in token numbers**: the wall's own Display is a
+/// A child that ran out of room says so, and not in token numbers: the wall's own Display is a
 /// page about ledgers and compaction that the parent can neither read nor act on.
 #[test]
 fn a_child_that_hit_the_wall_hands_its_parent_a_move_and_not_its_numbers() {
@@ -64,7 +64,7 @@ fn a_worktree_is_arranged_with_its_branch_and_the_main_tree_untouched() {
     let base_sha =
         super::git_in(root.to_str().unwrap(), &["rev-parse", "HEAD"]).expect("the base SHA");
 
-    // **The worktree, arranged the way `start_worktree` arranges it.**
+    // The worktree, arranged the way `start_worktree` arranges it.
     let slug = "task-start";
     let path = letibot_tools::builtins::task::worktree_path(root.to_str().unwrap(), slug);
     let branch = letibot_tools::builtins::task::worktree_branch(slug);
@@ -74,14 +74,14 @@ fn a_worktree_is_arranged_with_its_branch_and_the_main_tree_untouched() {
     )
     .expect("the worktree is created");
 
-    // **The branch is `agent/<slug>`, cut from the base.**
+    // The branch is `agent/<slug>`, cut from the base.
     let wt_branch = super::git_in(&path, &["rev-parse", "--abbrev-ref", "HEAD"])
         .expect("the worktree's branch");
     assert_eq!(wt_branch, branch, "the branch is agent/<slug>");
     let wt_base = super::git_in(&path, &["rev-parse", "HEAD"]).expect("the worktree's HEAD");
     assert_eq!(wt_base, base_sha, "the branch is cut from the base");
 
-    // **The main tree is untouched**: its branch is still `main`, its HEAD is still
+    // The main tree is untouched: its branch is still `main`, its HEAD is still
     // the base, and its status is clean - the worktree did not move the main tree.
     let main_branch = super::git_in(
         root.to_str().unwrap(),
@@ -105,7 +105,7 @@ fn a_worktree_is_arranged_with_its_branch_and_the_main_tree_untouched() {
         "the main tree's tracked files are untouched: {status}"
     );
 
-    // **And the worktree is a fact on disk**: `git worktree list` shows it.
+    // And the worktree is a fact on disk: `git worktree list` shows it.
     let list =
         super::git_in(root.to_str().unwrap(), &["worktree", "list"]).expect("the worktree list");
     assert!(list.contains(&path), "the worktree is listed: {list}");
@@ -294,7 +294,7 @@ fn a_killed_subagent_settles_as_stopped_rather_than_as_an_answer() {
         other => panic!("a killed subagent settled as {other:?}"),
     }
 
-    // **A real failure is not relabelled.** The flag must not overwrite the child's
+    // A real failure is not relabelled. The flag must not overwrite the child's
     // own reason for dying, which is the more useful sentence of the two.
     let failed = TaskSlot::new("s-parent");
     failed.kill();
@@ -307,7 +307,7 @@ fn a_killed_subagent_settles_as_stopped_rather_than_as_an_answer() {
     ));
 }
 
-/// **A child's later answer is written where a restart reads it.** The slot holds the newest one, and
+/// A child's later answer is written where a restart reads it. The slot holds the newest one, and
 /// the daemon that heard it is not the one that answers `task_result` afterwards; the row already said
 /// what the first turn said, so the later answer goes beside it rather than over it.
 #[test]
@@ -388,7 +388,7 @@ fn a_later_turns_answer_is_written_beside_the_first_one() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **A child nobody gave a model runs on its parent's** - *"so if no local config, and no
+/// A child nobody gave a model runs on its parent's - *"so if no local config, and no
 /// model - default to the same"*. `local` only for a parent that is itself local.
 #[test]
 fn a_child_with_no_model_named_runs_on_its_parents_model() {
@@ -419,7 +419,7 @@ fn a_child_with_no_model_named_runs_on_its_parents_model() {
     assert!(l.provider.is_none());
 }
 
-/// **A child whose thread ends in failure leaves its worktree reaped**: the one exit every refused,
+/// A child whose thread ends in failure leaves its worktree reaped: the one exit every refused,
 /// failed and killed child takes is `finish_child_thread`, and nothing else removed the trees those
 /// children left. The branch keeps its commits, and a tree with uncommitted work is kept.
 #[test]
@@ -527,7 +527,7 @@ fn a_failed_child_leaves_no_worktree_and_keeps_its_branch() {
         "a tree with uncommitted work is not reaped"
     );
 
-    // **A child that ANSWERED and then parked keeps its tree**, whatever its last turn did: the
+    // A child that ANSWERED and then parked keeps its tree, whatever its last turn did: the
     // parent was told the branch is at this path, and `later_turn` settles the same slot when a
     // `task_message` turn fails. That is not the turn the child was started for.
     let path3 = root.join("wt-answered");
@@ -563,7 +563,7 @@ fn a_failed_child_leaves_no_worktree_and_keeps_its_branch() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// **A child the daemon's orderly stop ended keeps its tree.** The stop is the daemon's ending and
+/// A child the daemon's orderly stop ended keeps its tree. The stop is the daemon's ending and
 /// not the child's: its row stays `running`, and the next daemon resumes it into this worktree, so a
 /// reap here would resume a child into a directory that is gone.
 #[test]
@@ -642,7 +642,7 @@ fn a_child_refused_before_it_opened_settles_its_slot_with_the_reason() {
         other => panic!("a refused child still reads {other:?} — task_result would wait"),
     }
 
-    // **A slot the child's own path settled keeps that**, answer or failure: the thread's
+    // A slot the child's own path settled keeps that, answer or failure: the thread's
     // fallback is for the case nothing spoke, not a second opinion.
     let answered = TaskSlot::new("s-parent");
     answered.settle(TaskStatus::Done {
@@ -982,10 +982,10 @@ fn a_completion_notice_names_the_job_and_says_do_not_wait() {
     assert!(text.contains("`j7`"), "{text}");
     assert!(text.contains("exited 0"), "{text}");
     assert!(text.contains("4.4s"), "how long it ran: {text}");
-    // R93.C3: no byte count, and the model's own command is not echoed back.
+    // no byte count, and the model's own command is not echoed back.
     assert!(!text.contains("cargo build --release"), "{text}");
     assert!(!text.contains("4096"), "{text}");
-    // R93.C1: the closing names the door with the real handle - not `job_wait`, not `job="…"`.
+    // the closing names the door with the real handle - not `job_wait`, not `job="…"`.
     assert!(text.ends_with("Output: `job_output` job=\"j7\"."), "{text}");
     assert!(!text.contains("job_wait") && !text.contains('…'), "{text}");
 }
@@ -1034,7 +1034,7 @@ fn a_child_answers_a_prompt_and_leaves_the_machinery_its_parent_owns() {
     }
 }
 
-/// **What the head attached to a subagent is told about a command the child leaves** - R67
+/// What the head attached to a subagent is told about a command the child leaves - R67
 /// item 15: the line it typed, named back, and where to send it instead.
 #[test]
 fn a_command_a_child_leaves_is_named_back_to_its_head() {
@@ -1064,7 +1064,7 @@ fn a_progress_bar_is_one_line_and_not_every_update_concatenated() {
         vec!["100%"],
         "the row is what a terminal would end up showing"
     );
-    // **A SHORTER final segment leaves the tail of the longer one standing** - that is
+    // A SHORTER final segment leaves the tail of the longer one standing - that is
     // what the screen showed, and dropping the tail would be inventing a different one.
     // (The naive `after the last \r` rule gets this wrong.)
     assert_eq!(progress_lines("abcdefgh\rXY"), vec!["XYcdefgh"]);
@@ -1104,7 +1104,7 @@ fn a_parents_message_is_the_childs_steering_and_not_the_operators_words() {
         at_boundary: false,
     };
 
-    // **What `HarnessTaskRunner::send` does**, exactly: the daemon's own name at the
+    // What `HarnessTaskRunner::send` does, exactly: the daemon's own name at the
     // door, the parent's id in the kind.
     let f = hub.submit(
         letibot_sessionlog::hub::DAEMON_SUBMITTER,
@@ -1226,7 +1226,7 @@ fn flowy_is_a_door_for_every_root_session_and_for_no_subagent() {
     cfg.flowy = Some(crate::config::FlowyConfig::default());
     let root = role_for(&cfg);
     assert!(root.tools.iter().any(|t| t == "flowy"));
-    // **And the person can be asked.** The operator's ruling, 2026-10-09: *"yeah i
+    // And the person can be asked. The operator's ruling, 2026-10-09: *"yeah i
     // want you to be able to ask me for a choice"* - the seat carries it whether or
     // not a room is attached, because asking is not a room's business.
     assert!(
@@ -1315,7 +1315,7 @@ fn a_child_that_ends_with_children_on_their_task_stops_them() {
     );
 }
 
-/// **An answer is kept only while it is owed to somebody.** What a reader has been handed is in the
+/// An answer is kept only while it is owed to somebody. What a reader has been handed is in the
 /// child's own session, so the slot drops the body: how many bodies the tree still owes must not
 /// grow with the children it has run.
 #[test]
@@ -1362,7 +1362,7 @@ fn a_delivered_answer_is_not_kept_for_the_daemons_life() {
     assert_eq!(owed_answers(&slots), 0);
 }
 
-/// **A later answer is let go when a reader has it and the record keeps it, and never before.** The
+/// A later answer is let go when a reader has it and the record keeps it, and never before. The
 /// slot holds one only while it is owed; a child whose row never landed has no other copy, so that
 /// answer stays where it is.
 #[test]
@@ -1397,7 +1397,7 @@ fn a_later_answer_the_record_keeps_is_not_kept_twice() {
     let _ = std::fs::remove_dir_all(recorded_store_dir("a-later-answer"));
 }
 
-/// **The slot is the only copy for a child whose row never landed**, so a reader being handed the
+/// The slot is the only copy for a child whose row never landed, so a reader being handed the
 /// text does not take it away: the answer a restart would have read is here or nowhere.
 #[test]
 fn a_later_answer_no_record_kept_stays_the_slots_own() {
@@ -1481,7 +1481,7 @@ fn reply(text: &str) -> Reply {
     }
 }
 
-/// **A `[meanwhile]` turn is somebody's word** (R91.15): the door a child's held result wakes it
+/// A `[meanwhile]` turn is somebody's word: the door a child's held result wakes it
 /// through is the door a prompt or a message comes in by, so its answer reaches its parent - while
 /// the plan-check and the census are the harness talking to itself, and are not news.
 #[test]
@@ -1617,7 +1617,7 @@ fn a_slot_keeps_the_newest_later_answer_and_not_every_one() {
     assert_eq!(slot.answers_kept(), 1);
 }
 
-/// **A failed child's tree is removed before its survivors are handed to the parent.** A handed-over
+/// A failed child's tree is removed before its survivors are handed to the parent. A handed-over
 /// process keeps the directory it stands in, so the reverse order leaves it writing into a path
 /// nothing owns - and the reap is the caller's, which is why the order is a function and not a habit.
 #[test]

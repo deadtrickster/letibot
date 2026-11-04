@@ -212,7 +212,7 @@ impl ProgressDetector {
             return None;
         }
         self.nudged = true;
-        // R93.D4: two sentences - what the harness saw and what to do about it. The tally, the
+        // two sentences - what the harness saw and what to do about it. The tally, the
         // repeat clause and the holding policy were ninety words read mid-turn, and a model
         // answers a wall of prose rather than the turn.
         Some(format!(
@@ -526,7 +526,7 @@ mod tests {
         d.observe(&call("read", r#"{"path":"a"}"#), &ok(), "same");
         d.end_round();
         let n = d.nudge().expect("the round before the stop");
-        // R93.D4: two sentences. The call's name and the repeat tally went with the rest of the
+        // two sentences. The call's name and the repeat tally went with the rest of the
         // policy, which is what a model mid-turn has no use for.
         assert!(!n.contains("read path=a"), "{n}");
         assert!(!d.exhausted(), "the nudge is a correction, not the stop");

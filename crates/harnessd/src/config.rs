@@ -16,7 +16,7 @@ use crate::dialect::Dialect;
 pub use crate::mergequeue::settings::Reviewers;
 
 /// §8.3 clause 5's budget, as configuration. `Unset` is the default and it is correct, per
-/// D6: nothing spills until somebody configures a budget, and `harnessd --spill-inline N` is
+/// nothing spills until somebody configures a budget, and `harnessd --spill-inline N` is
 /// where that gap stops being invisible.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum SpillPolicy {
@@ -415,7 +415,7 @@ pub struct Config {
     /// `providers.toml`, in the order written; empty is the old behaviour. Read once at startup
     /// like `[default]`, so an edit takes effect on the next daemon.
     pub fallback: Vec<String>,
-    /// **How many consecutive model timeouts earn one of those moves.** A timeout is the failure that
+    /// How many consecutive model timeouts earn one of those moves. A timeout is the failure that
     /// says nothing about the model - the request never came back - so one is weather and a run of
     /// them is the model. 3 unless a session's own `leticode.toml` says otherwise.
     pub fallback_after_timeouts: u32,
@@ -546,7 +546,7 @@ pub struct Config {
     /// nothing new when no call returned an `Ok` result this turn had not already seen
     /// ([`crate::progress`]); `0` turns the check off and leaves the round count as the only stop.
     pub stall_rounds: usize,
-    /// **How long a metered provider may take to answer AT ALL** - its response headers - before the
+    /// How long a metered provider may take to answer AT ALL - its response headers - before the
     /// round fails as a timeout. `None` is the provider's own ten minutes, which is right for a box
     /// that has no opinion; an operator who must react to a model API timeout sets its own patience.
     pub provider_timeout: Option<std::time::Duration>,

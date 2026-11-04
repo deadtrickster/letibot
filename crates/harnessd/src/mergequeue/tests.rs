@@ -178,7 +178,7 @@ fn a_row_that_is_not_gating_carries_no_running_step() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **A live row's own moves survive a window full of other rows' work.** The pane's history for one
+/// A live row's own moves survive a window full of other rows' work. The pane's history for one
 /// row is filtered out of `recent`, which holds the last [`super::RECENT_MOVES`] moves across the
 /// queue, so on a busy queue a waiting row was drawn with no history at all.
 #[test]

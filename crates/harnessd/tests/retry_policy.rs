@@ -477,10 +477,7 @@ fn what_is_retryable_and_what_the_operator_is_told() {
         "and the provider's own sentence, for the bug report: {said}"
     );
 
-    // ── F. A stop during a retry's wait ends the turn at once ────────────────────────────
-    // The wait watched only the daemon's own closure, so a person who pressed interrupt waited out
-    // the whole ladder. The interrupt lands during the second wait and the turn must end at once,
-    // saying a stop ended it rather than that the endpoint gave up.
+    // F. A stop during a retry's wait ends the turn at once. The interrupt lands during the second wait, and the turn ends saying a stop ended it, not that the endpoint gave up.
     endpoint.refuse(100, Refusal::Unavailable);
     let stub = endpoint.clone();
     let before = endpoint.seen();

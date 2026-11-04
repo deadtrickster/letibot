@@ -132,7 +132,7 @@ impl Harness {
         unfinished_plan(&askable, &board, &children, &jobs)
     }
 
-    /// [`Harness::nag_notice`] and the row it named — `None` for the second half when the notice is
+    /// [`Harness::nag_notice`] and the row it named - `None` for the second half when the notice is
     /// only the stale-prompt sentence, which names no row.
     fn nag_notice_naming(&self) -> Option<(String, Option<String>)> {
         // The board, the narrowed rows the check may speak about (the ONE predicate), the children

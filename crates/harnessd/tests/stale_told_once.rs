@@ -132,7 +132,7 @@ fn the_model_is_told_the_prompt_is_stale_once_and_not_on_every_check() {
         first.contains("[stale prompt]") && first.contains("the person's call"),
         "and says whose decision it is, instead of telling the model to keep asking: {first}"
     );
-    // R93.E9: the model's copy names no session and cannot name `/reseat` - that is the head's
+    // the model's copy names no session and cannot name `/reseat` - that is the head's
     // sentence, and the model can act on neither the id nor the verb.
     assert!(
         !first.contains(id) && !first.contains("/reseat"),

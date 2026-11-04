@@ -322,7 +322,7 @@ impl Harness {
     }
 
     /// The session's own scope, for a monitor the daemon declares on the session's
-    /// behalf — the flowy listener. `None` when the backend cannot start processes,
+    /// behalf - the flowy listener. `None` when the backend cannot start processes,
     /// which is also when there are no monitors to declare it in.
     pub fn session_scope(&self) -> Option<letibot_tools::exec::ScopeId> {
         self.runtime

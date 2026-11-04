@@ -6,7 +6,7 @@ use super::*;
 /// the front would be a citable utterance of the wrong thing, and the trail cites this row.
 #[test]
 fn the_answer_row_is_the_persons_words_and_nothing_else() {
-    // A choice is the OPTION'S TEXT — the label they were shown and picked. An index is
+    // A choice is the OPTION'S TEXT - the label they were shown and picked. An index is
     // not something anybody said.
     assert_eq!(
         operator_answer_text(&asked(QuestionAnswer::choosing(1))).as_deref(),
@@ -30,9 +30,9 @@ fn the_answer_row_is_the_persons_words_and_nothing_else() {
         operator_answer_text(&asked(QuestionAnswer::abstaining())).as_deref(),
         Some("abstain")
     );
-    // **An index nobody offered has nothing of theirs in it.** The tool refuses one of
+    // An index nobody offered has nothing of theirs in it. The tool refuses one of
     // those, so this is the belt to that pair of braces rather than a state a session
-    // reaches — and returning words here would be inventing a sentence for them.
+    // reaches - and returning words here would be inventing a sentence for them.
     assert_eq!(
         operator_answer_text(&asked(QuestionAnswer::choosing(7))),
         None
@@ -106,7 +106,7 @@ fn a_recorded_job_says_what_happened_and_where_its_bytes_went() {
         said.contains("not kept"),
         "the bytes are lost and the window must say so rather than look empty: {said}"
     );
-    // **A word this function does not know is REPEATED, not interpreted.** A job whose
+    // A word this function does not know is REPEATED, not interpreted. A job whose
     // state is `not run (could not join its scope)` must not read here as one that ran,
     // which is why the sentence says *not in this daemon's table* and not *it ran*.
     let never = recorded_job_lines(&row("not run (could not join its scope)", None)).join("\n");
@@ -114,7 +114,7 @@ fn a_recorded_job_says_what_happened_and_where_its_bytes_went() {
         never.contains("not run (could not join its scope)"),
         "{never}"
     );
-    // **And the file, when the row knows it** — R41's other half: the pane cannot read the
+    // And the file, when the row knows it - R41's other half: the pane cannot read the
     // bytes, so the one useful thing it can do is say where they are.
     let redirected = recorded_job_lines(&row("exited 0", Some("/tmp/build.log"))).join("\n");
     assert!(

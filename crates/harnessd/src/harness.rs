@@ -129,7 +129,7 @@ impl Reply {
     }
 }
 
-/// The warning code for a session whose workspace no longer exists (R92.24).
+/// The warning code for a session whose workspace no longer exists.
 const WORKSPACE_GONE: &str = "workspace_gone";
 
 /// The warning code for a `[skills] pin` naming nothing this box holds: said at open, once, so a
@@ -146,8 +146,8 @@ const BOUNDARY_ABSENT: &str = "boundary_absent";
 /// the branch that comes back, and what stayed here (`docs/remote-hosts.md`).
 const REMOTE_PLACEMENT: &str = "remote_placement";
 
-/// **"workspace gone", in one sentence** - said when a session opens or wakes on a workspace that
-/// no longer exists (R92.24).
+/// "workspace gone", in one sentence - said when a session opens or wakes on a workspace that
+/// no longer exists.
 fn workspace_gone(workspace: &std::path::Path) -> String {
     format!(
         "workspace gone: `{}` no longer exists (a retired worktree, or a checkout moved or \
@@ -163,7 +163,7 @@ pub struct Harness {
     /// because the claim is a LIFETIME and not a permission check: it is what a second process's open is
     /// refused by. `None` with no store, and for a session whose live copy is elsewhere.
     _writer: Option<crate::writer::Claim>,
-    /// **The daemon's mode rows**, which a `/mode` taken by a running turn writes
+    /// The daemon's mode rows, which a `/mode` taken by a running turn writes
     /// (`apply_queued_mode`, through [`crate::modes::record`]).
     mode_store: std::sync::Arc<std::sync::RwLock<crate::modes::ModeStore>>,
     /// The worktree and branch this session's work must end up on, for a `task_start` child, and `None`
@@ -197,7 +197,7 @@ pub struct Harness {
     /// `self.engine`, because the notes pane reads on the server's thread. It tracks the engine wherever
     /// the engine moves, so a session that changed weights measures notes it now speaks.
     note_vocab: Arc<Vocab>,
-    /// **The skills this daemon loaded**, which the prompt's index is composed from and the page's
+    /// The skills this daemon loaded, which the prompt's index is composed from and the page's
     /// rows are read off - the same `Arc` the `skill` tool and the dashboard hold, so a pane and a
     /// prompt cannot list two different corpora.
     skills: Arc<letibot_tools::builtins::skill::SkillRegistry>,
@@ -255,7 +255,7 @@ pub struct Harness {
     /// A title this harness derived and the daemon has not yet published. See
     /// [`Harness::take_new_title`].
     new_title: Option<String>,
-    /// **The `!` sequence**: how many of the operator's own shell lines this session
+    /// The `!` sequence: how many of the operator's own shell lines this session
     /// has run. The `call_id` of each is `bang-<n>`, minted here because - unlike the
     /// door - no head chooses one: the head sends the line and the daemon owns the run.
     bang_seq: u64,
@@ -289,7 +289,7 @@ pub struct Harness {
     /// once when asked and once when settled. Seeded from the board at open, so a restart does not
     /// re-announce and the settings row carries the state to a head that attaches.
     asks_said: Vec<(String, String)>,
-    /// **The row the last plan-check named**, so the check keeps asking about THAT row rather than
+    /// The row the last plan-check named, so the check keeps asking about THAT row rather than
     /// whatever happens to head the queue now. See `unfinished_plan_for`: the choice is sticky, and
     /// this is the one field that remembers it.
     nag_choice: Option<String>,
@@ -297,10 +297,10 @@ pub struct Harness {
     /// the person's and it stares at them from their own head. Compared by text, so a different
     /// sentence is told again, and cleared by the fork that re-seats.
     stale_told: Option<String>,
-    /// **A fork whose rows are not all stored yet** (R91.2) - sealed by [`Harness::seal_fork`]
+    /// A fork whose rows are not all stored yet - sealed by [`Harness::seal_fork`]
     /// once they are.
     unsealed_fork: Option<UnsealedFork>,
-    /// **This turn's metrics, as it runs** (TODO R81) - begun and closed by the turn tail, fed
+    /// This turn's metrics, as it runs (TODO R81) - begun and closed by the turn tail, fed
     /// by the round loop. See `crate::instruments`.
     pub(crate) meter: crate::instruments::TurnMeter,
     /// T21.3's encoder and error signal. Always constructed and always attached  -
@@ -311,9 +311,9 @@ pub struct Harness {
     /// Shared with the session's [`HubSteering`].
     injected: Arc<Mutex<VecDeque<String>>>,
     /// What a round handed back to its steering, shared with every `HubSteering` this harness builds,
-    /// so a message handed back by a failed or interrupted round outlives the round (R91.1).
+    /// so a message handed back by a failed or interrupted round outlives the round.
     handed_back: Arc<Mutex<VecDeque<SteeringMessage>>>,
-    /// **Whether the turn in flight was stopped by an interrupt**, shared with every `HubSteering` for
+    /// Whether the turn in flight was stopped by an interrupt, shared with every `HubSteering` for
     /// `handed_back`'s reason and read once, when the turn ends: a stopped turn rings no wake.
     stopped: Arc<AtomicBool>,
     /// This session's monitors, when the backend can start processes.
@@ -349,7 +349,7 @@ pub struct Harness {
     /// line per child that was resumed or could not be. Filled by `restore_after_restart` at open and
     /// said by the next turn the session takes.
     restart_notices: Vec<String>,
-    /// Whether this harness has said its workspace is gone (R92.24) - once, at the first wake
+    /// Whether this harness has said its workspace is gone - once, at the first wake
     /// that found it so.
     workspace_gone_said: bool,
     /// The monitor names live at the last [`Harness::sync_monitor_records`], sorted.
@@ -358,11 +358,11 @@ pub struct Harness {
     /// set for both kinds, because an entry has one `evidence` string and a second telling would be
     /// about the same row.
     gate_told: std::collections::HashSet<String>,
-    /// **The outage the retry ladder is in, if any** - one per endpoint, told ONCE when it ends.
+    /// The outage the retry ladder is in, if any - one per endpoint, told ONCE when it ends.
     /// See [`Outage`] for why the row is written at the end and not per attempt.
     outage: Option<Outage>,
     /// The cloud provider the turns go to, when the session has one. `None` is
-    /// the local server through the engine's own `/completion` path - **unless**
+    /// the local server through the engine's own `/completion` path - unless
     /// [`Harness::key_wanted`] is set, which is a provider with no key yet.
     provider: Option<Box<dyn letibot_backend::MessagesBackend>>,
     /// A provider chosen and not yet usable, because no key for it resolves. It used to be a refusal at
@@ -396,11 +396,11 @@ pub struct Harness {
     /// opens it, built where the refusal is and taken where a turn ends. Ending the turn on the refusal
     /// was half an answer, so the work goes on in a new turn. At most one, or a chain would ping-pong.
     fallback_continuation: Option<String>,
-    /// **This turn IS the automatic continuation a fallback earned** - set while it runs, so
+    /// This turn IS the automatic continuation a fallback earned - set while it runs, so
     /// [`Harness::fall_back_from`] moves the session to the next name without arming a second
     /// continuation. See `fallback_continuation` for why the bound exists.
     continuation_of_fallback: bool,
-    /// **The run of provider troubles this session is in**: the kind of the last one, and how many of
+    /// The run of provider troubles this session is in: the kind of the last one, and how many of
     /// that kind in a row. Carried so the event says *the fourth timeout* rather than *a timeout*, and
     /// so a fallback policy can count what the wire is told.
     trouble_kind: String,
@@ -409,7 +409,7 @@ pub struct Harness {
     /// through, handed over because the tool is seated at open and the host when the daemon opens the
     /// session. `None` in a session the daemon did not open, where scaffold and build still work.
     plugin_slot: Arc<std::sync::Mutex<Option<Arc<crate::plugins::PluginHost>>>>,
-    /// **The mode confirmation a head asked for and nobody has answered**
+    /// The mode confirmation a head asked for and nobody has answered
     /// (`PROTOCOL_VERSION` 54, B8). One per session: a second ask supersedes it.
     mode_confirm: Option<PendingModeConfirm>,
     /// The map the last compaction left: the ids the new base names and `recall` opens. One handle,
@@ -529,7 +529,7 @@ impl Harness {
     /// synchronous, so if this is running no round owns a call: the fact that we are here is the fact
     /// that the executor is gone, which needs no timeout. `NotRun`, because nothing ran and nothing failed.
     pub fn sweep_abandoned_calls(&mut self) -> usize {
-        // **THE DECISION IS A FREE FUNCTION**, so it can be tested without a daemon, a model or a
+        // THE DECISION IS A FREE FUNCTION, so it can be tested without a daemon, a model or a
         // socket. What is left here is the plumbing: read the log, build the rows, append them.
         let abandoned = self.swept_calls.sweep(self.session.items.as_slice());
         if abandoned.is_empty() {
@@ -660,7 +660,7 @@ impl Harness {
             said.push_str("; the guard model now answers");
         }
         self.cfg.mode = mode;
-        // **And the spawn path's copy of it**, which is a different object: the runner
+        // And the spawn path's copy of it, which is a different object: the runner
         // holds `base`, cloned at open, and a child built from it would inherit the point
         // this session no longer holds. See `HarnessTaskRunner::point`.
         *self.point_cell.lock().unwrap_or_else(|e| e.into_inner()) = mode;
@@ -706,7 +706,7 @@ impl Harness {
             self.settle_mode_confirm(&open, &named, false, "nobody", superseded(&open.name));
         }
         if !self.mode_needs_consent(mode) {
-            // **The same `mode_set` line the `/mode` path writes**, because a point that moved
+            // The same `mode_set` line the `/mode` path writes, because a point that moved
             // has to be legible afterwards on the session it moved in - and this one moved
             // without anybody typing it, which is precisely the case a reader would question.
             let applied = match self.set_mode_consented(mode, false) {
@@ -761,7 +761,7 @@ impl Harness {
                 name: mode.name.to_string(),
                 asked_by: from_identity.to_string(),
             },
-            // **Never the head that asked.** A program that could answer its own request
+            // Never the head that asked. A program that could answer its own request
             // would be consenting for the person the request exists to consult.
             |head| asked.iter().any(|a| a == head),
         );
@@ -843,7 +843,7 @@ impl Harness {
                 Ok(())
             }
             Err(why) => {
-                // **A yes the session cannot carry is not applied**, and the person is told by
+                // A yes the session cannot carry is not applied, and the person is told by
                 // the settle frame as well as by their own screen: `applied: false` with the
                 // prerequisite check's own words.
                 let named = open.name.clone();
@@ -900,7 +900,7 @@ impl Harness {
             self.gate().supervising(),
             &self.door_tools(),
         );
-        // **Whether the board waits on the operator** - `none`, or how many and the first
+        // Whether the board waits on the operator - `none`, or how many and the first
         // question. A row here because a head that attaches after the question was asked never
         // saw the `waiting_on_operator` row, and must still draw the loud line.
         rows.push(letibot_sessionlog::protocol::SettingRow {
@@ -1133,16 +1133,16 @@ impl Harness {
         &self.engine.endpoint
     }
 
-    /// **A warning on this session's log** - the operator's own sentence about something that
+    /// A warning on this session's log - the operator's own sentence about something that
     /// did not go as asked. One writer for the two doors that can refuse an attachment, and it goes
     /// through [`Hub::warn`] so the daemon and the harness cannot word one fact two ways.
     pub(crate) fn warn(&self, code: &str, detail: String) {
         self.hub.warn(code, detail);
     }
 
-    /// **The batch a turn about to open carries** (R79), taken and NOT yet called delivered: the
+    /// The batch a turn about to open carries, taken and NOT yet called delivered: the
     /// door marks it once its row is in the transcript, or hands it back with
-    /// [`Harness::the_batch_arrived`] (R91.11).
+    /// [`Harness::the_batch_arrived`].
     pub(crate) fn batch_riding_in(&self) -> (Option<String>, Vec<JobCompletion>) {
         match self.deliveries() {
             Some(d) => d.at_turn_start_unread(),
@@ -1150,7 +1150,7 @@ impl Harness {
         }
     }
 
-    /// **That batch reached the model, or it did not**: `opened` is whether the door's row went in.
+    /// That batch reached the model, or it did not: `opened` is whether the door's row went in.
     /// A row that never went in leaves the results owed, so the next break says them.
     pub(crate) fn the_batch_arrived(&self, told: Vec<JobCompletion>, opened: bool) {
         if told.is_empty() {
@@ -1166,7 +1166,7 @@ impl Harness {
         }
     }
 
-    /// **R79's delivery for this session** - see [`Deliveries`]. `None` for a session with no
+    /// R79's delivery for this session - see [`Deliveries`]. `None` for a session with no
     /// watcher set, which has nothing to deliver.
     pub(crate) fn deliveries(&self) -> Option<Deliveries> {
         let watch = self.job_watch.clone()?;
@@ -1186,7 +1186,7 @@ impl Harness {
         self.monitors.as_ref()
     }
 
-    /// **The operator ends a monitor** - the monitors pane's `x`, as `/monitor retire NAME`. The
+    /// The operator ends a monitor - the monitors pane's `x`, as `/monitor retire NAME`. The
     /// record says who (`retired by the operator`), so the model's next notice says so, and the
     /// pane's table is refilled at once.
     pub fn retire_monitor_for_operator(&self, name: &str) -> crate::slash::SlashReply {
@@ -1217,7 +1217,7 @@ impl Harness {
     fn install_notes_source(&self) {
         let workspace = self.cfg.workspace.clone();
         let global = self.cfg.global_notes();
-        // **The box's instruction directories, from the config and not from `$HOME`**: the pane
+        // The box's instruction directories, from the config and not from `$HOME`: the pane
         // re-reads the corpus on every open and the answer is the config's, so a fixture's pane
         // names the files a fixture wrote.
         let box_dirs = self.cfg.box_dirs.clone();
@@ -1237,7 +1237,7 @@ impl Harness {
         );
     }
 
-    /// **Install this session's skills source**, which is what a head's `ListSkills` is answered
+    /// Install this session's skills source, which is what a head's `ListSkills` is answered
     /// from - the same rows the prompt's index is composed from, read on the ask.
     fn install_skills_source(&self) {
         let skills = self.skills.clone();
@@ -1452,7 +1452,7 @@ impl Harness {
         self.subagents = runner;
     }
 
-    /// **Monitors this daemon recorded that are no longer live** are closed in the store, so a
+    /// Monitors this daemon recorded that are no longer live are closed in the store, so a
     /// restart re-arms only what was really watching. Called where a firing, a retirement or an
     /// expiry has just been seen (a wake, a turn's end).
     fn sync_monitor_records(&mut self) {
@@ -1461,7 +1461,7 @@ impl Harness {
         };
         let mut live = monitors.live_names();
         live.sort();
-        // **Only when the live set moved** - a wake is frequent and a store open is not free, and
+        // Only when the live set moved - a wake is frequent and a store open is not free, and
         // the only change this records is a monitor leaving the live set.
         if live == self.monitors_seen_live {
             return;
@@ -1526,13 +1526,13 @@ pub const JOB_OUTPUT_WINDOW: usize = 16 * 1024;
 mod clear;
 pub use clear::{ClearReport, clear_reply};
 
-// **A transcript whose rows do not rebuild under the prefix it names** - the repair to the fork
+// A transcript whose rows do not rebuild under the prefix it names - the repair to the fork
 // that a store already in that state needs, so a conversation is not refused for ever. See the
 // module's header for the shape it is, and why only that shape is repaired.
 mod children;
 // Where each open session's own watcher set and slots are, by id - see the module's header.
 pub(crate) mod trees;
-// **A session's estate** - what it was still holding when it ended, what ended with it, and what
+// A session's estate - what it was still holding when it ended, what ended with it, and what
 // it handed to the session that outlives it. See the module's header for why the substrate's own
 // reaping is not the whole answer for a subagent.
 mod estate;
@@ -1628,7 +1628,7 @@ pub(crate) use wall::{
     sent_scale, wall_stops_this_round,
 };
 
-// **The branch is the deliverable** - the brief's rule checked when a worktree child's turn ends,
+// The branch is the deliverable - the brief's rule checked when a worktree child's turn ends,
 // and the line its parent reads when it ends dirty anyway. See the module's header.
 pub mod deliverable;
 
@@ -1664,7 +1664,7 @@ pub(crate) fn model_adjudicator(
         .unwrap_or_else(|| cfg.model.clone());
     let mut oracle = crate::oracle::HttpOracle::new(ep, guard_model, cfg.oracle_budget)
         .with_question(cfg.oracle_question);
-    // **The ceiling, when the operator named one** (R12). The default is the measured one;
+    // The ceiling, when the operator named one. The default is the measured one;
     // what this makes possible is acting on the one reading that is a budget - a reply cut
     // off before its verdict says so, and `--oracle-max-tokens` is the wheel it names.
     if let Some(n) = cfg.oracle_max_tokens {
@@ -1708,7 +1708,7 @@ pub(crate) fn model_adjudicator(
 
 #[cfg(test)]
 mod gatekeeper_reviews {
-    //! **The seats a review child and a notes keeper run in, and the mark a head hides them by.**
+    //! The seats a review child and a notes keeper run in, and the mark a head hides them by.
     //! What a reviewer's state and its verdict do to the queue's rows is asserted with the
     //! queues themselves (`mergequeue::serve::tests`).
     use super::*;
@@ -1724,7 +1724,7 @@ mod gatekeeper_reviews {
         }
     }
 
-    /// **A session above its repositories is told which ones it can name** - `task_start`'s
+    /// A session above its repositories is told which ones it can name - `task_start`'s
     /// refusal when its root is in no repository.
     #[test]
     fn the_repositories_under_a_root_are_named() {
@@ -1834,7 +1834,7 @@ mod gatekeeper_reviews {
         );
     }
 
-    /// **The keeper's brief begins with the mark**, on the gatekeeper's rule - so the piece that
+    /// The keeper's brief begins with the mark, on the gatekeeper's rule - so the piece that
     /// spawns one has nothing to change here when it lands.
     #[test]
     fn the_keepers_brief_begins_with_the_mark() {

@@ -1,4 +1,4 @@
-//! **The turn loop**: submit, stream, dispatch a round's tool calls, append their
+//! The turn loop: submit, stream, dispatch a round's tool calls, append their
 //! results and resubmit - with the retry ladder, outage and fallback handling
 //! around it, and the restart restore that starts a turn nobody typed for.
 use super::*;
@@ -182,7 +182,7 @@ impl Harness {
         extra: Vec<UserPart>,
     ) -> Result<Reply, HarnessError> {
         self.trail.begin_turn();
-        // **R79: the results held for this break ride in with the turn** - as the harness's
+        // the results held for this break ride in with the turn - as the harness's
         // own row, BEFORE the words that started the turn, so what the operator (or a parent)
         // said is still the last thing the model reads.
         let mut items = Vec::new();
@@ -197,14 +197,14 @@ impl Harness {
         }
         self.trail.say(speaker, text, Some(Instant::now()));
         items.push(TranscriptItem::User {
-            // The same speaker the trail records, one line up (R42).
+            // The same speaker the trail records, one line up.
             speaker: match speaker {
                 Speaker::Operator => letibot_transcript::Speaker::Operator,
                 // A session talking to itself, a tool's row, a parent's message: none of
                 // them is the operator's words, and none may be drawn as them.
                 Speaker::Agent | Speaker::Tool => letibot_transcript::Speaker::Agent,
             },
-            // **The words first and whole, the chips after** - a head retires its `queued`
+            // The words first and whole, the chips after - a head retires its `queued`
             // echo by the row's leading lines, so nothing may be spliced in front of them.
             parts: {
                 let mut parts = vec![UserPart::Text { text: text.into() }];
@@ -232,7 +232,7 @@ impl Harness {
     /// with the engine's field carried on every `TurnStarted` so a head does not restart its clock. Idempotent
     /// within one prompt, and not called by the door: a door that says nothing must not publish a turn.
     pub fn begin_turn_clock(&mut self, began_ms: u64) {
-        // **A settlement taken for this turn is no longer owed** - the words are in the rows this
+        // A settlement taken for this turn is no longer owed - the words are in the rows this
         // turn opens with, whether or not the clock below starts. See
         // `JobWatchers::settlement_in_flight`.
         if let Some(w) = &self.job_watch {
@@ -246,7 +246,7 @@ impl Harness {
         }
         self.turn_began_ms = Some(began_ms);
         self.engine.turn_began_ms = Some(began_ms);
-        // **And a prompt is in flight from here until the loop returns** - see the field. The
+        // And a prompt is in flight from here until the loop returns - see the field. The
         // engine's rounds come and go inside this, which is exactly why a reader that times the
         // round events reads a working session as idle at every boundary.
         self.prompt_in_flight.store(true, Ordering::SeqCst);
@@ -272,7 +272,7 @@ impl Harness {
         // ended it. Whatever the session is waiting on from here is said by the rest of the facts
         // (`delivery`, a job, a monitor, a child, a card) and not by a turn.
         self.prompt_in_flight.store(false, Ordering::SeqCst);
-        // **And a turn that ends owes nothing** - one that never opened the batch it took hands the
+        // And a turn that ends owes nothing - one that never opened the batch it took hands the
         // results back with `put_back`, and this keeps a take from outliving its turn.
         if let Some(w) = &self.job_watch {
             w.turn_began();
@@ -341,7 +341,7 @@ impl Harness {
             handover,
             serde_json::json!({}),
         ));
-        // **And a target emergency, or a row parked for a person** (R76 item 1) - the one the
+        // And a target emergency, or a row parked for a person (R76 item 1) - the one the
         // queue used to say only on the hubs.
         let emergency = self.queue_emergency_notices();
         notices.extend(self.noticed_all(
@@ -351,7 +351,7 @@ impl Harness {
         ));
         let queue_n = notices.len();
         let cursor_before = self.monitor_cursor.load(Ordering::SeqCst);
-        // **A firing is a delivery and not one more sentence among the settlements**: it gets a row
+        // A firing is a delivery and not one more sentence among the settlements: it gets a row
         // of its own, folded per monitor, so nothing has to remember whose words it is.
         let mut firing_row: Option<String> = None;
         if let Some(monitors) = self.monitors.clone() {
@@ -374,7 +374,7 @@ impl Harness {
                 }
             }
         }
-        // The hop that did not exist (R7): `JobSettled` reaches every head, and this is what reaches the model,
+        // The hop that did not exist: `JobSettled` reaches every head, and this is what reaches the model,
         // taking it here so it cannot arrive twice. It is THIS session's queue that is drained, so a subagent's
         // job is not announced to its parent as one the parent backgrounded. R79: between turns nothing is held.
         let monitor_n = usize::from(firing_row.is_some());
@@ -407,7 +407,7 @@ impl Harness {
         let due = self.due_todo_rows();
         let fired: Vec<String> = due.iter().map(|(_, handle, _)| handle.clone()).collect();
         if !due.is_empty() {
-            // R93.C9: the head said "{n} row you attached a condition to is due" for any n.
+            // the head said "{n} row you attached a condition to is due" for any n.
             let due_line = due_notice(&due);
             notices.extend(self.noticed(
                 letibot_plugin::notice::TODO,
@@ -422,7 +422,7 @@ impl Harness {
             due.len(),
             usize::from(held_batch.is_some()),
         ];
-        // **The held batch last**, after everything said now.
+        // The held batch last, after everything said now.
         let held: Vec<String> = match held_batch.as_deref() {
             Some(text) => self
                 .noticed(letibot_plugin::notice::JOB, text, serde_json::json!({}))
@@ -432,7 +432,7 @@ impl Harness {
         };
         notices.extend(held);
         let anything = !notices.is_empty() || firing_row.is_some();
-        // **A wake with nothing to say runs no turn**, so nothing is owed for what the take
+        // A wake with nothing to say runs no turn, so nothing is owed for what the take
         // removed - and this has to be cleared BEFORE the publish below, or the value a reader
         // holds says delivery about a turn that is not coming.
         if !anything && let Some(w) = &self.job_watch {
@@ -456,7 +456,7 @@ impl Harness {
                 notices.insert(0, line);
             }
         }
-        // **Two rows sometimes, and one turn**: the settlements in the session's own voice as it
+        // Two rows sometimes, and one turn: the settlements in the session's own voice as it
         // has always said them, and a firing as a delivery with a kind of its own - never a `User`
         // row, whose `speaker` default is what would read as the operator's words.
         let mut items: Vec<TranscriptItem> = Vec::new();
@@ -464,7 +464,7 @@ impl Harness {
             let text = notices.join("\n\n");
             items.push(TranscriptItem::User {
                 // The same speaker the trail records, one line up: this is the session talking
-                // to itself, and a head must not draw it as the operator's words (R42).
+                // to itself, and a head must not draw it as the operator's words.
                 speaker: letibot_transcript::Speaker::Agent,
                 parts: vec![UserPart::Text { text }],
             });
@@ -552,7 +552,7 @@ impl Harness {
             return 0;
         };
         let mut queued = 0usize;
-        // **The children first** - this row's own subject, and the one the operator went
+        // The children first - this row's own subject, and the one the operator went
         // looking for: a `task` child that answered into a session nobody was holding.
         for run in store.subagent_runs_of(sid).unwrap_or_default() {
             if run.instance != me
@@ -563,7 +563,7 @@ impl Harness {
             {
                 continue;
             }
-            // **The child's latest word, and whether it is a later turn's**: a later answer puts the row
+            // The child's latest word, and whether it is a later turn's: a later answer puts the row
             // back to undelivered, so the sentence that carries it here is the one `task_result` promises.
             let (answer, later) = crate::subagent_record::latest_answer(&run);
             if watch.queue_unless_owed(JobCompletion {
@@ -646,8 +646,8 @@ impl Harness {
         let store = Store::open(&path).ok()?;
         let me = self.session_registry.instance().to_string();
         let back_ms = self.session_registry.started_ms();
-        // **When this session is being opened** - the clock the restore threshold is applied to
-        // (R91.8): the operator's rule is *"more than 1 hours after the stop"*, and a session
+        // When this session is being opened - the clock the restore threshold is applied to
+        //: the operator's rule is *"more than 1 hours after the stop"*, and a session
         // opened hours after the daemon came back is exactly the case the threshold exists for.
         let opened_ms = letibot_sessionlog::event::now_ms();
         let sid = self.cfg.session_id.clone();
@@ -655,11 +655,11 @@ impl Harness {
         // passes through, and its own ring is what turns a queued settlement into a turn. The count is kept
         // because a settlement nobody was told about is one thing that makes an empty restart a TURN.
         let settlements = self.rearm_owed_settlements();
-        // **A daemon whose heartbeat is still fresh is not a gone one** (R91.9): the store is shared
+        // A daemon whose heartbeat is still fresh is not a gone one: the store is shared
         // by every daemon on the box, so its records are its own until its pid or its clock says not.
         let running = |instance: &str| crate::restart::is_running(&store, instance, opened_ms);
 
-        // **What a gone daemon left**, and which daemon that was. Read before anything is
+        // What a gone daemon left, and which daemon that was. Read before anything is
         // touched, so the down time is decided once for the whole session.
         let runs: Vec<_> = store
             .subagent_runs_of(&sid)
@@ -725,7 +725,7 @@ impl Harness {
                 None => relics.push(job),
             }
         }
-        // **Jobs that ENDED and were never delivered** (TODO.md R91.5): a result held under R79,
+        // Jobs that ENDED and were never delivered (TODO.md R91.5): a result held under R79,
         // or queued, when the daemon stopped. Only a gone daemon's - one this daemon holds is
         // still in its own queue - and only with a context, which is what names the daemon.
         let mut settled = Vec::new();
@@ -814,7 +814,7 @@ impl Harness {
                 None => instances.push((inst, at)),
             }
         }
-        // **Every record here names a daemon** (a relic does not, and was closed above), so the
+        // Every record here names a daemon (a relic does not, and was closed above), so the
         // stop is UNKNOWN only when one of those daemons kept no life row - no clock, not "down
         // for 0s" - and an unknown down time restores nothing (`restart` module docs).
         let stop = crate::restart::Stopped::latest(
@@ -835,7 +835,7 @@ impl Harness {
         let mut lines: Vec<String> = Vec::new();
         let mut said: Vec<String> = Vec::new();
 
-        // **Subagents.**
+        // Subagents.
         for c in self.subagents.resume_recorded(mode) {
             let name = format!("`{}` ({})", self.subagents.label_of(&c.handle), c.title);
             match &c.fate {
@@ -872,7 +872,7 @@ impl Harness {
             }
         }
 
-        // **Monitors.** One that had already run out its TTL before the stop is closed quietly:
+        // Monitors. One that had already run out its TTL before the stop is closed quietly:
         // it would have ended on its own, restart or none.
         let rt = self.runtime.clone();
         for m in monitors {
@@ -885,7 +885,7 @@ impl Harness {
                 said.push(crate::restart::said::monitor_reminded(&m.name));
                 continue;
             }
-            // **A monitor a named scope owned is the model's to bring back**, however short the
+            // A monitor a named scope owned is the model's to bring back, however short the
             // stop: the scope was something it set up, the stopped daemon was the only one that
             // knew it, and whether it still matters is a judgement, not a replay.
             if let Some(scope) = crate::restart::named_owner(&m) {
@@ -919,7 +919,7 @@ impl Harness {
             }
         }
 
-        // **Jobs: reminded, never re-run.**
+        // Jobs: reminded, never re-run.
         let rows = self.todos.snapshot();
         for (job, ctx) in jobs {
             let slug = ctx.slug.clone();
@@ -933,7 +933,7 @@ impl Harness {
                 &waiting,
             ));
             said.push(crate::restart::said::job(&job.handle, waiting.len()));
-            // **Said once**: the row stops reading `running`, so the next open does not remind
+            // Said once: the row stops reading `running`, so the next open does not remind
             // again and the pane does not draw a job nobody runs.
             let mut lost = job.clone();
             lost.state = "lost at restart".into();
@@ -943,7 +943,7 @@ impl Harness {
             let _ = store.deliver_job(&sid, &job.handle);
         }
 
-        // **Jobs that ended untold: their ending, said now** - whatever the down time, the way a
+        // Jobs that ended untold: their ending, said now - whatever the down time, the way a
         // settled child's result is delivered past the threshold too: a result is not work to
         // redo, and nothing is re-run. Marked delivered once said, so it is said once.
         for (job, ctx) in settled {
@@ -988,7 +988,7 @@ impl Harness {
                 Some((_, t)) => *t = (*t).max(at),
                 None => instances.push((instance.to_string(), at)),
             };
-        // **A daemon that is still beating dates nothing** (R91.9): its rows are not a stop's, and
+        // A daemon that is still beating dates nothing: its rows are not a stop's, and
         // its heartbeat would otherwise be read as a daemon that came back a moment ago.
         let now = letibot_sessionlog::event::now_ms();
         let gone = |instance: &str| !crate::restart::is_running(store, instance, now);
@@ -1016,7 +1016,7 @@ impl Harness {
                 .map(|(i, at)| crate::restart::stop_of(store, i, *at))
                 .chain(std::iter::once(latest_box_stop(store))),
         );
-        // **The same sentence, and one clause when the session owes work** - a model woken to
+        // The same sentence, and one clause when the session owes work - a model woken to
         // *nothing was running* alone could not know why it is reading it now.
         let text = match owed.any() {
             true => crate::restart::nothing_running_but(&stop, back_ms, owed),
@@ -1128,7 +1128,7 @@ impl Harness {
         Some(notice)
     }
 
-    /// **The turn a fallback earned is running** - the one-shot, seen from inside it: read by
+    /// The turn a fallback earned is running - the one-shot, seen from inside it: read by
     /// [`Harness::fall_back_from`], which moves the session to the next name in the list but does
     /// not arm a second continuation.
     pub(crate) fn in_fallback_continuation(&self) -> bool {
@@ -1178,7 +1178,7 @@ impl Harness {
         .expect("a spoken turn always runs")
     }
 
-    /// **A parent's or peer's message as a turn, bare** - the words
+    /// A parent's or peer's message as a turn, bare - the words
     /// [`Harness::submit_a_parents_message`] speaks, without the tail around them, for a caller
     /// that runs the tail itself ([`crate::turn_tail::run_turn`]).
     pub fn parents_message_turn(&mut self, from: &str, text: &str) -> Result<Reply, HarnessError> {
@@ -1228,7 +1228,7 @@ impl Harness {
     }
 
     /// [`Harness::submit_item`] for a turn that opens with more than one row - the held batch
-    /// before the words that started the turn (R79).
+    /// before the words that started the turn.
     fn submit_items(&mut self, items: Vec<TranscriptItem>) -> Result<Reply, HarnessError> {
         self.submit_items_then(items, |_| {})
     }
@@ -1342,13 +1342,13 @@ impl Harness {
         Ok(())
     }
 
-    /// **Name the worktree and branch this session's work must end up on** - a `task_start`
+    /// Name the worktree and branch this session's work must end up on - a `task_start`
     /// child's, set by its spawn. `None` clears it. See [`deliverable`].
     pub fn set_deliverable(&mut self, d: Option<deliverable::Deliverable>) {
         self.deliverable = d;
     }
 
-    /// A turn's rounds, and what is left of its steering when they end (R91.1): the rounds hand back whatever
+    /// A turn's rounds, and what is left of its steering when they end: the rounds hand back whatever
     /// a failed or interrupted one had taken from the hub, and the next round's greedy poll takes it. When the
     /// turn is over an interrupt is spent, another session's message becomes a row, and everything else stays.
     pub(crate) fn run_rounds(&mut self) -> Result<Reply, HarnessError> {
@@ -1428,10 +1428,10 @@ impl Harness {
         Ok(())
     }
 
-    /// **A turn needs somewhere to go, and a key to get there**: the two refusals `rounds`
+    /// A turn needs somewhere to go, and a key to get there: the two refusals `rounds`
     /// makes before it drains anything the operator typed.
     fn the_turn_has_somewhere_to_go(&mut self) -> Result<(), HarnessError> {
-        // **The key first, before anything is drained or sent.** A provider with no key
+        // The key first, before anything is drained or sent. A provider with no key
         // is asked for one here; a refusal returns before the turn takes the operator's
         // message, so nothing they typed is spent on a turn that could not run.
         if self.key_wanted.is_some() {
@@ -1446,7 +1446,7 @@ impl Harness {
         Ok(())
     }
 
-    /// **The wall, checked between two rounds rather than only at a turn's boundary** - and
+    /// The wall, checked between two rounds rather than only at a turn's boundary - and
     /// the whole turn stopped when it has been reached, which is the honest half a `Harness`
     /// can do on its own.
     fn stop_the_turn_at_the_wall(&mut self, round: usize) -> Result<(), HarnessError> {
@@ -1927,7 +1927,7 @@ impl Harness {
         Err(HarnessError::LoopBound { rounds: backstop })
     }
 
-    /// **What happens once the round's results are in**: they are appended in one batch, the gate's
+    /// What happens once the round's results are in: they are appended in one batch, the gate's
     /// admissions are said after them, the doors a running turn holds shut are answered at this
     /// boundary, and the two corrections ride the next step - the intent diff and a context claim.
     fn after_the_round(
@@ -2019,20 +2019,20 @@ impl Harness {
             let r = self.runtime.invoke(turn_id, call, &mut self.tool_sink);
             self.meter.tool(&self.cfg.session_id, &r, started);
             let mut item = ToolRuntime::transcript_item(&r);
-            // **A question the model asked is an exchange with a person, and the
-            // person's half of it is theirs.** The tool returns the answer; the
+            // A question the model asked is an exchange with a person, and the
+            // person's half of it is theirs. The tool returns the answer; the
             // session writes it down, here, where every other result is appended.
             if call.name == ASK_USER_QUESTION {
                 asked.extend(self.settle_asked(&mut item));
             }
-            // **A plugin layer sees the result before the model does** (`docs/plugins-plan.md`
+            // A plugin layer sees the result before the model does (`docs/plugins-plan.md`
             // §4.2), and before the harness's own intercept below: the layer is about what the
             // CALL produced, and `pr_watch`'s sentence is the harness's own reading of it.
             if let TranscriptItem::ToolResult {
                 outcome, payload, ..
             } = &mut item
             {
-                // **A successful result only.** A call that failed did nothing to react to,
+                // A successful result only. A call that failed did nothing to react to,
                 // and its result is the failure's own words - which the model has to read
                 // exactly, not through a layer's opinion of them.
                 let how = match outcome {
@@ -2046,7 +2046,7 @@ impl Harness {
                     self.plugin_result(call, how, payload);
                 }
             }
-            // **A pull request this call opened is watched from here on** (`pr_watch`), and
+            // A pull request this call opened is watched from here on (`pr_watch`), and
             // the call's own result says so.
             if let TranscriptItem::ToolResult {
                 outcome: letibot_transcript::ToolOutcome::Ok,
@@ -2081,7 +2081,7 @@ impl Harness {
         (results, backgrounded)
     }
 
-    /// **What a round's own failure means.** Two arms carry a notice the model answers and the
+    /// What a round's own failure means. Two arms carry a notice the model answers and the
     /// loop goes on; two end the turn - one of them as the wall the provider itself named, which is
     /// the only measurement of a session whose box set no window.
     fn judge_the_round(
@@ -2114,7 +2114,7 @@ impl Harness {
             // nameable string, so this is self-inflicted, and the answer is the same shape as the arms above:
             // tell the model and let the loop run, bounded by the same salvage budget.
             Err(TurnFailure::UnfinishedReasoning { .. }) => {
-                // R93.D2: this arm is the turn ending INSIDE its reasoning, not running out.
+                // this arm is the turn ending INSIDE its reasoning, not running out.
                 self.append_notice(
                     letibot_plugin::notice::NUDGE,
                     "Your reply ended inside reasoning with no output. Make the tool call \
@@ -2210,7 +2210,7 @@ impl Harness {
         key_asks: &mut usize,
     ) -> Result<(Result<TurnOk, TurnFailure>, letibot_http::retry::Ladder), HarnessError> {
         let mut tried_fallbacks: Vec<String> = Vec::new();
-        // **One steering per round, outside the retry loop (R91.1).** A failed attempt
+        // One steering per round, outside the retry loop. A failed attempt
         // hands what it took back to this value, and the retried attempt's greedy poll
         // must find it there; one built per pass dropped it on the floor.
         let mut steering = self.steering();
@@ -2221,11 +2221,11 @@ impl Harness {
             self.cfg.http_retries,
         ));
         let outcome = loop {
-            // **The operator's own line, answered before the attempt rather than after
-            // it** - the window they type in. What comes back says when the switch
+            // The operator's own line, answered before the attempt rather than after
+            // it - the window they type in. What comes back says when the switch
             // takes; nothing about this attempt moves.
             self.apply_queued_model();
-            // **Start watching BEFORE the round, so the wait itself is covered.**
+            // Start watching BEFORE the round, so the wait itself is covered.
             // The host is `Some` only on the metered route - a local prefill's
             // silence is progress, not a hang; see `SilenceWatch`.
             let cloud_host = silence_host(self.provider.as_deref());
@@ -2270,7 +2270,7 @@ impl Harness {
                 self.trouble_count = stalls + 1;
             }
             let Err(TurnFailure::Http(e)) = attempted else {
-                // **The new model answered**, which is the whole of what a switch had
+                // The new model answered, which is the whole of what a switch had
                 // to prove - there is nothing to go back to any more. A round that came back
                 // without a provider failure also ends any run of them.
                 self.switch_back = None;
@@ -2300,7 +2300,7 @@ impl Harness {
                 self.provider = None;
                 self.key_wanted = Some(pc);
                 if let Err(e) = self.obtain_key(Some(why)) {
-                    // **The turn ends here, so the outage does too.** Left in the field it
+                    // The turn ends here, so the outage does too. Left in the field it
                     // would be continued by the NEXT turn's first failure, carrying this
                     // one's start time into a duration that never happened.
                     self.settle_outage(false);
@@ -2317,7 +2317,7 @@ impl Harness {
                 // this round: the MODEL refused and a fallback list exists, so the switch is recorded for the end of
                 // this turn and the round is not re-issued. A transport failure gets not even that.
                 let next = self.fall_back_from(&e, &mut tried_fallbacks);
-                // **The provider's own trouble, as a type**, here and not per attempt: a ladder of five
+                // The provider's own trouble, as a type, here and not per attempt: a ladder of five
                 // attempts on one 429 is one fact, and an automation wakes once for it.
                 self.publish_trouble(&e, next.clone());
                 if let Some(next) = next {
@@ -2329,7 +2329,7 @@ impl Harness {
                     // The outage is this notice's to tell: one row per outage, and this is it, since the session
                     // is moving and the count belongs in that sentence. Taken, so `settle_outage` finds nothing.
                     let outage = self.outage.take();
-                    // **And the row the reader has been watching settles here**, because this ending is
+                    // And the row the reader has been watching settles here, because this ending is
                     // not the ladder's: the session moves, so the row says where it went. Without it the
                     // row would still be saying `retrying` in a session that had stopped trying.
                     if let Some(o) = outage.as_ref()
@@ -2352,7 +2352,7 @@ impl Harness {
             match self.sleep_unless_closed(wait) {
                 Waited::Out => {}
                 Waited::Closed => break Err(TurnFailure::Http(e)),
-                // **The stop is the news, not the endpoint**: the ladder stops where it is,
+                // The stop is the news, not the endpoint: the ladder stops where it is,
                 // since taking the round again spends another wait on an answer the person
                 // has already given up on.
                 Waited::Interrupted => {
@@ -2461,12 +2461,12 @@ impl Harness {
                 return;
             }
         };
-        // **The rows are written here too** (`modes::record`, the worker's writes). This said the
+        // The rows are written here too (`modes::record`, the worker's writes). This said the
         // worker's path would write them; it never saw this command, which this turn had already
         // taken off the queue.
         let consented = *consented;
         let moved = self.set_mode_consented(mode, consented);
-        // **And written down, as the worker's door writes it** - this door used to apply the
+        // And written down, as the worker's door writes it - this door used to apply the
         // point and write nothing, so a `/mode` typed while the session worked was gone at the
         // next restart.
         if let Err(e) = crate::modes::record(
@@ -2541,7 +2541,7 @@ impl Harness {
                     ok: false,
                 },
             };
-            // **The reply the worker would have published** - the same two codes and
+            // The reply the worker would have published - the same two codes and
             // the same body, so "what did my switch do" does not depend on which thread
             // happened to apply it. `apply_queued_mode`'s rule, one verb along.
             self.hub.publish(SessionEvent::Warning {
@@ -2557,8 +2557,8 @@ impl Harness {
         }
     }
 
-    /// The picker half of [`Harness::apply_queued_model`]: **the next queued command
-    /// this running turn can carry out**, with the verb's own grammar answering.
+    /// The picker half of [`Harness::apply_queued_model`]: the next queued command
+    /// this running turn can carry out, with the verb's own grammar answering.
     fn take_queued_model(&self) -> Option<letibot_sessionlog::hub::QueuedCommand> {
         let foreign = self.on_foreign_weights();
         self.hub.try_command_for_running_turn(|kind| match kind {
@@ -2616,7 +2616,7 @@ impl Harness {
         }
     }
 
-    /// **The series' one row, published.** `ended` is `None` while the ladder is still trying and the
+    /// The series' one row, published. `ended` is `None` while the ladder is still trying and the
     /// row's last value when it stops: the same event either way, so a head that holds the row rewrites
     /// it and one that attached mid-series is told where it stands.
     fn publish_series(&self, outage: &Outage, ended: Option<String>) {
@@ -2636,7 +2636,7 @@ impl Harness {
             return;
         };
         let now = letibot_sessionlog::event::now_ms();
-        // **The endpoint came back, and that is said however few attempts it took** - a silent
+        // The endpoint came back, and that is said however few attempts it took - a silent
         // recovery is how somebody spends an afternoon believing it is still down.
         if answered {
             if outage.attempts >= 2 {
@@ -2662,7 +2662,7 @@ impl Harness {
         });
     }
 
-    /// **The provider's trouble, as the type an automation branches on.** Called where the daemon knows
+    /// The provider's trouble, as the type an automation branches on. Called where the daemon knows
     /// the round is over for good, not per attempt: a ladder of five calls against one 429 is one fact.
     /// The count is the run of this kind, so a caller can tell the first timeout from the fourth.
     fn publish_trouble(&mut self, e: &letibot_turn::HttpError, switched_to: Option<String>) {
@@ -2688,7 +2688,7 @@ impl Harness {
         });
     }
 
-    /// **Is the model itself the likely fault?** A refusal, a spent account, a server that is down, or a run
+    /// Is the model itself the likely fault? A refusal, a spent account, a server that is down, or a run
     /// of timeouts long enough to stop reading as weather. The first two are the provider's own words; a
     /// timeout says nothing about the model on its own, which is why it has to repeat.
     fn worth_moving_for(&self, e: &letibot_turn::HttpError) -> bool {
@@ -2726,7 +2726,7 @@ impl Harness {
         }
         let here = self.model_name();
         for name in self.cfg.fallback.clone() {
-            // **Once each, and never the model that just refused the round.** A name
+            // Once each, and never the model that just refused the round. A name
             // already spent is skipped; a name that IS what is answering would be a
             // no-op switch and the same failure one attempt later.
             if tried.contains(&name) || name == here {
@@ -2734,7 +2734,7 @@ impl Harness {
             }
             tried.push(name.clone());
             let (provider, model) = crate::slash::split_model_name(&name);
-            // **The resolver's own notes are dropped on the success arm**, deliberately: a
+            // The resolver's own notes are dropped on the success arm, deliberately: a
             // fallback is a switch nobody typed, so the sentence that has to be right is
             // `fallback_notice`'s, said by the caller with the provider's refusal in it.
             let (choice, _notes) =
@@ -2755,7 +2755,7 @@ impl Harness {
                 );
                 continue;
             };
-            // **The note the `models_choice` resolver came back with is not carried**: a
+            // The note the `models_choice` resolver came back with is not carried: a
             // fallback is a switch nobody typed, so the sentence that matters is
             // `fallback_notice`'s, said by the caller with the provider's own refusal in it.
             let target = model_name_of(&Some(pc.clone()));
@@ -2771,7 +2771,7 @@ impl Harness {
         None
     }
 
-    /// **A fallback name that could not be taken, said.** The same code as the retry it
+    /// A fallback name that could not be taken, said. The same code as the retry it
     /// is part of - the round is still being taken again, and what this adds is why it
     /// is not going *there*.
     fn fallback_skip(&self, name: &str, why: &str) {
@@ -2796,16 +2796,16 @@ impl Harness {
             // The session's own set, read by R79's rules: what the work waits on at the
             // round boundary, the held batch only past the cap.
             deliveries: self.deliveries(),
-            // **And the session's own children, so a stop takes them with it.** See the
+            // And the session's own children, so a stop takes them with it. See the
             // interrupt arm of `try_next`.
             subagents: Some(self.subagents.clone()),
             held: self.handed_back.clone(),
             // And the same for a stop: the turn's ending reads it, and a `HubSteering` built per
             // round would report a round's stop as nothing at all.
             stopped: self.stopped.clone(),
-            // **And the board, so the operator's answer lands mid-turn.** See the `AnswerTodo` arm.
+            // And the board, so the operator's answer lands mid-turn. See the `AnswerTodo` arm.
             todos: Some(self.todos.clone()),
-            // **And this session's own parent**, so a message's sentence says which way the edge
+            // And this session's own parent, so a message's sentence says which way the edge
             // runs - the same field `submit_a_parents_message` reads, so the two doors word it
             // identically.
             parent: self.cfg.parent_session_id.clone(),
@@ -2827,7 +2827,7 @@ impl Harness {
     /// and now the whole of the turn-boundary check. The plan's finding is not joined here, so a reader looking for
     /// the todo check will not find it at this layer: it is `nag_turn`, on the idle clock.
     fn close_the_turn_with(&self, turn_id: &str, items: &[TranscriptItem]) -> Option<String> {
-        // R93.F30: one plan tool per seat. Where it is `todo_write`, the intent ledger's own
+        // one plan tool per seat. Where it is `todo_write`, the intent ledger's own
         // board is empty and the check reads the `todo_write` board instead.
         let seated = tool_names(&self.prefix.tools_json);
         let plan = (seated.contains("todo_write") && !seated.contains("todo"))
@@ -2853,7 +2853,7 @@ impl Harness {
             false => check.judge(text, fill)?,
             true => check.judge_reasoning(text, fill)?,
         };
-        // R93.A4: with auto-compaction off, "the harness handles it" is false - nothing compacts
+        // with auto-compaction off, "the harness handles it" is false - nothing compacts
         // at the wall (`turn_tail` says so when the turn stops there) - so the model is told
         // nothing, and the operator is not told it was. The claim is still logged and measured.
         if !self.cfg.auto_compact {
@@ -2887,7 +2887,7 @@ impl Harness {
         let resident = self.session.ledger.len() as u64;
         Some(crate::context_claim::Fill {
             resident: self.cfg.shown_tokens(resident),
-            // **The window as it was GIVEN** (`shown_wall`, R72's rule for a line), not
+            // The window as it was GIVEN (`shown_wall`, R72's rule for a line), not
             // `shown_tokens(planning_window())` - a round trip through the ratio, which is where
             // every row of R71's log got `999999` for a 1,000,000-token window (TODO R81).
             window: self.cfg.shown_wall().0,
@@ -2926,7 +2926,7 @@ impl Harness {
             .collect()
     }
 
-    /// **A notice this harness injects, said once and dropped if a layer dropped it.**
+    /// A notice this harness injects, said once and dropped if a layer dropped it.
     ///
     /// The kinds are `letibot_plugin::notice`'s; the sentence is the site's own.
     fn append_notice(&mut self, kind: &str, text: &str) -> Result<(), HarnessError> {
@@ -2976,11 +2976,11 @@ impl Harness {
         // so the census's number is a walk of the transcript as it is and not a counter that can drift from it.
         self.restate_footprint();
         // The trail's denominator, counted where every appended batch passes.
-        // `messages_scanned` has to be what was **looked at**, and this is the one
+        // `messages_scanned` has to be what was looked at, and this is the one
         // place that knows how much there is.
         self.trail.note_items(items.len());
         let ids = reconcile_rows(&self.hub, sink, items);
-        // **And what each reply cited**, read now - the moment it landed.
+        // And what each reply cited, read now - the moment it landed.
         for (id, item) in ids.iter().zip(items) {
             self.publish_citations(id, item);
         }
@@ -3109,7 +3109,7 @@ impl Harness {
             for (row, question) in self.asks_said.iter().filter(|w| !waiting.contains(w)) {
                 self.hub.publish(SessionEvent::Warning {
                     code: "operator_question_settled".into(),
-                    // **And WHY it stopped** - an answer, a take-back and a row that closed are
+                    // And WHY it stopped - an answer, a take-back and a row that closed are
                     // three different facts, and the person who was asked can only tell their own
                     // answer landed if the notice says so. See `operator_ask::settled_words`.
                     detail: crate::operator_ask::settled_words(&items, row, question),
@@ -3149,13 +3149,13 @@ impl Harness {
                     letibot_tokencore::store::TodoNeed::Row { content } => {
                         letibot_sessionlog::event::TodoNeed::Row { content }
                     }
-                    // **The child's id travels verbatim**, the same rule `TodoBy::Parent`'s author
+                    // The child's id travels verbatim, the same rule `TodoBy::Parent`'s author
                     // string keeps: it is the handle `task_result` collects by, so a head that
                     // shortened it would hand the model a name nothing answers to.
                     letibot_tokencore::store::TodoNeed::Child { id } => {
                         letibot_sessionlog::event::TodoNeed::Child { id }
                     }
-                    // **And the job handle travels verbatim too**, for the same reason one layer
+                    // And the job handle travels verbatim too, for the same reason one layer
                     // down: it is the name `job_output` and `job_kill` are given, and the pane has
                     // to be able to carry an edge into a job rather than only draw one.
                     letibot_tokencore::store::TodoNeed::Job { handle } => {
@@ -3164,7 +3164,7 @@ impl Harness {
                     letibot_tokencore::store::TodoNeed::Monitor { name } => {
                         letibot_sessionlog::event::TodoNeed::Monitor { name }
                     }
-                    // **The room's item number crosses verbatim**, the same rule the child's id and
+                    // The room's item number crosses verbatim, the same rule the child's id and
                     // the job handle keep: it is what `room`'s `done`, `beat` and `abandon` take,
                     // and the head draws the edge so a person can see the row is quiet on purpose.
                     letibot_tokencore::store::TodoNeed::Room { item, working } => {
@@ -3189,13 +3189,13 @@ impl Harness {
                 letibot_tokencore::store::TodoBy::Operator => {
                     letibot_sessionlog::event::TodoBy::Operator
                 }
-                // **The author string TRAVELS**: `Parent s-…` is the same string in the store and
+                // The author string TRAVELS: `Parent s-…` is the same string in the store and
                 // on the wire, which is what lets a head or a `sqlite3` reader name the session
                 // that wrote a child's row without a second lookup.
                 letibot_tokencore::store::TodoBy::Parent(who) => {
                     letibot_sessionlog::event::TodoBy::Parent(who)
                 }
-                // **The queue's own word, and it is the same word on both sides** - the fourth
+                // The queue's own word, and it is the same word on both sides - the fourth
                 // author is a name and not a string, so there is nothing to carry. A head that
                 // predates it cannot decode it, which is what moved `PROTOCOL_VERSION` to 42.
                 letibot_tokencore::store::TodoBy::Queue => letibot_sessionlog::event::TodoBy::Queue,
@@ -3238,7 +3238,7 @@ impl Harness {
 
     /// A wait on the store, said on this session and on every other one this daemon holds: the
     /// worker runs one turn at a time, so the others' commands queue behind this write and their
-    /// heads would show `queued` with no reason at all (R91.10).
+    /// heads would show `queued` with no reason at all.
     fn say_the_store_is_busy(&self, detail: String) {
         self.hub.publish(SessionEvent::Warning {
             code: "store_busy_wait".into(),
@@ -3302,7 +3302,7 @@ impl Harness {
                     }
                     match busy_after(self.sleep_unless_closed(std::time::Duration::from_secs(5))) {
                         BusyWait::Again => {}
-                        // **A person's stop is not waited out** (R91.10): this write cannot be made
+                        // A person's stop is not waited out: this write cannot be made
                         // later by anybody else, so it fails - saying the stop, not the closure.
                         BusyWait::Leave => {
                             return Err(HarnessError::Store(format!(
@@ -3416,7 +3416,7 @@ impl Harness {
                     }
                     match busy_after(self.sleep_unless_closed(std::time::Duration::from_secs(5))) {
                         BusyWait::Again => {}
-                        // **A person's stop does not wait the store out** (R91.10): the rows are in
+                        // A person's stop does not wait the store out: the rows are in
                         // the ledger, `persisted` is where to resume, and the next store write takes
                         // them - so the turn is not held here for another half hour.
                         BusyWait::Leave => return Ok(carried),
@@ -3515,7 +3515,7 @@ pub(crate) struct Outage {
 }
 
 impl Outage {
-    /// **The row while the ladder is still trying**: the count, the last reason, and how long. Terse
+    /// The row while the ladder is still trying: the count, the last reason, and how long. Terse
     /// on purpose, since a frame at eighty columns keeps about thirty of these characters; the span
     /// is as of the attempt that closed the count, since only a publish can move a row.
     fn retrying(&self) -> String {
@@ -3528,7 +3528,7 @@ impl Outage {
         )
     }
 
-    /// **The row's last value when the endpoint came back**: the count a reader was watching, and
+    /// The row's last value when the endpoint came back: the count a reader was watching, and
     /// how long it was out. The count is the FAILED attempts, the same number the live line was
     /// showing, because a count that jumps by one as the row settles reads as a different series.
     fn settled_well(&self, now_ms: u64) -> String {
@@ -3540,7 +3540,7 @@ impl Outage {
         )
     }
 
-    /// **The row's last value when the ladder gave up**: the count and the failure it stopped on,
+    /// The row's last value when the ladder gave up: the count and the failure it stopped on,
     /// which is the one thing a person acts on. The provider's whole sentence, and when each
     /// attempt failed, are in the durable warning this rides beside.
     fn gave_up(&self) -> String {
@@ -3565,7 +3565,7 @@ impl Outage {
         )
     }
 
-    /// **The row for an outage that ended because the endpoint came back** - the count, how long
+    /// The row for an outage that ended because the endpoint came back - the count, how long
     /// it was out, and the last thing it said before that (which is what a click opens and what
     /// gets pasted into a bug report).
     fn answered(&self, now_ms: u64) -> String {
@@ -3602,7 +3602,7 @@ fn outage_clock(ms: u64) -> Option<String> {
     ok.then(|| format!("{:02}:{:02}:{:02}", tm.tm_hour, tm.tm_min, tm.tm_sec))
 }
 
-/// **How long an outage lasted**, in the words a sentence reads with: `14s`, `2m 14s`, `1h 02m`.
+/// How long an outage lasted, in the words a sentence reads with: `14s`, `2m 14s`, `1h 02m`.
 fn outage_span(ms: u64) -> String {
     let secs = ms / 1000;
     match secs {
@@ -3612,7 +3612,7 @@ fn outage_span(ms: u64) -> String {
     }
 }
 
-/// **`attempt` or `attempts`**, in one place: the live line, the two endings and the durable
+/// `attempt` or `attempts`, in one place: the live line, the two endings and the durable
 /// warning all count the same attempts, and a sentence that says `after 1 attempts` is what a
 /// second copy of this rule looks like.
 fn attempts_word(n: u32) -> &'static str {
@@ -3629,7 +3629,7 @@ fn fallback_notice(
     opens_a_turn: bool,
     outage: Option<&Outage>,
 ) -> String {
-    // **One continuation per fallback, so this branch is real**: a chain whose second name is also
+    // One continuation per fallback, so this branch is real: a chain whose second name is also
     // out moves the session again and opens nothing, and a sentence promising a turn nobody will
     // run is the kind of lie this tree keeps deleting.
     let on = if opens_a_turn {
@@ -3642,7 +3642,7 @@ fn fallback_notice(
              fallback earns — so the next thing you send is what goes to {now}."
         )
     };
-    // **The count, when there is one to give** - this notice IS the outage's row when a
+    // The count, when there is one to give - this notice IS the outage's row when a
     // fallback fires (`Harness::settle_outage` finds the record taken), so the number the
     // retry row would have carried belongs in the sentence that says the ladder is over.
     let after = match outage {
@@ -3724,7 +3724,7 @@ pub(crate) fn provider_refusal(e: &HarnessError) -> Option<u16> {
         .and_then(letibot_http::retry::Policy::refusal_of_what_was_sent)
 }
 
-/// **Is this HTTP failure the context wall, spoken by the thing that owns it?**
+/// Is this HTTP failure the context wall, spoken by the thing that owns it?
 ///
 /// A provider refuses an over-long prompt with a STATUS, not with a wall event  -
 /// `HttpError::Status` renders as `http {code}: {body}` and lands as a backend error,
@@ -3736,13 +3736,13 @@ pub(crate) fn provider_refusal(e: &HarnessError) -> Option<u16> {
 /// The two measured shapes, verbatim, because a matcher is only as narrow as its
 /// fixtures:
 ///
-/// * **llama.cpp**, JSON with a type field - the structured signal, preferred:
+/// * llama.cpp, JSON with a type field - the structured signal, preferred:
 ///
 ///   ```text
 ///   {"error":{"code":400,"message":"request (1504198 tokens) exceeds the available context size (262144 tokens), try increasing it","type":"exceed_context_size_error","n_prompt_tokens":1504198,"n_ctx":262144}}
 ///   ```
 ///
-/// * **an OpenAI-shaped provider**, plain text naming a context length  -
+/// * an OpenAI-shaped provider, plain text naming a context length  -
 ///   `error.code` is absent and the numbers live in the sentence:
 ///
 ///   ```text
@@ -3910,7 +3910,7 @@ impl SilenceWatch {
                         count: streak + 1,
                         switched_to: None,
                     });
-                    // **Once.** A round that is slow for a minute should not fill the
+                    // Once. A round that is slow for a minute should not fill the
                     // session with the same sentence; the first one carried the news.
                     return;
                 }
@@ -4089,7 +4089,7 @@ mod endpoint_retry {
             );
         }
 
-        /// **And the case it must NOT touch.** An answered call is the ordinary one, and a sweep
+        /// And the case it must NOT touch. An answered call is the ordinary one, and a sweep
         /// that flagged it would rewrite every finished round in the transcript.
         #[test]
         fn an_answered_call_is_not() {
@@ -4100,7 +4100,7 @@ mod endpoint_retry {
             );
         }
 
-        /// **BY ID, not by position and not by name.** Two calls to the same tool are two calls, and
+        /// BY ID, not by position and not by name. Two calls to the same tool are two calls, and
         /// answering the first must not discharge the second - the mistake a name-keyed check makes
         /// silently, because both rows read `grep`.
         #[test]
@@ -4128,7 +4128,7 @@ mod endpoint_retry {
             assert!(abandoned_calls(&items).is_empty());
         }
 
-        /// **The sweep's cost, pinned as a count** - the reason a quadratic pass cannot come back
+        /// The sweep's cost, pinned as a count - the reason a quadratic pass cannot come back
         /// unnoticed: it is one probe per asked call however many results the transcript holds.
         #[test]
         fn the_sweep_probes_the_answers_once_per_asked_call() {
@@ -4168,7 +4168,7 @@ mod endpoint_retry {
             assert!(abandoned_calls(&items).is_empty());
         }
 
-        /// **The sweep reads only what no earlier sweep has.** A turn appends a round to a
+        /// The sweep reads only what no earlier sweep has. A turn appends a round to a
         /// transcript that only grows, and the sweep runs after every turn: reading it whole each
         /// time is one pass over the whole conversation per turn, on the worker.
         #[test]
@@ -4312,7 +4312,7 @@ mod endpoint_retry {
             "and how a person undoes it: {moved}"
         );
 
-        // **And the case where no turn is opened says so**: the session still moves, and the
+        // And the case where no turn is opened says so: the session still moves, and the
         // sentence names what actually happens next at the operator's hand.
         let again = fallback_notice("glm/glm-4.6", "grok/grok-4", &out(), false, None);
         assert!(
@@ -4325,7 +4325,7 @@ mod endpoint_retry {
             "and the operator is told what does happen: {again}"
         );
 
-        // **And the count, when the ladder has one to give** - this notice IS the outage's row
+        // And the count, when the ladder has one to give - this notice IS the outage's row
         // when a fallback fires, so the number the retry row would have carried is here.
         let outage = Outage {
             host: "open.bigmodel.cn".into(),
@@ -4377,7 +4377,7 @@ mod endpoint_retry {
             back.contains("The last thing it said, at ") && back.ends_with("http 502: bad gateway"),
             "and keeps the last thing it said, for the click: {back}"
         );
-        // **One attempt is a word, not a count of one** - and a short outage reads in seconds.
+        // One attempt is a word, not a count of one - and a short outage reads in seconds.
         let once = Outage {
             host: "local".into(),
             attempts: 1,
@@ -4423,7 +4423,7 @@ mod endpoint_retry {
             "a recovery names the attempts that failed before it, so the count the reader was \
              watching is the count that settles"
         );
-        // **One attempt is a word, not a count of one.**
+        // One attempt is a word, not a count of one.
         let once = Outage {
             attempts: 1,
             ..outage
@@ -4444,7 +4444,7 @@ mod endpoint_retry {
         assert_eq!(outage_span(3_720_000), "1h 02m");
     }
 
-    /// **The notice that OPENS the turn a fallback earned**, in the harness's own register  -
+    /// The notice that OPENS the turn a fallback earned, in the harness's own register  -
     /// `[fallback]`, like `[todo]`, `[workspace]` and `[reseat]`, because a head draws the row and
     /// a reader has to be able to tell the daemon's words from the operator's.
     #[test]

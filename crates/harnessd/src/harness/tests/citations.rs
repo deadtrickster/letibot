@@ -1,4 +1,4 @@
-//! **A reply's citations, read from the file through the session's backend and kept.**
+//! A reply's citations, read from the file through the session's backend and kept.
 
 use super::*;
 
@@ -21,7 +21,7 @@ fn published(h: &Harness) -> Vec<Vec<letibot_sessionlog::Citation>> {
         .collect()
 }
 
-/// **The lines are read when the reply lands and the snapshot is what comes back** - a reply
+/// The lines are read when the reply lands and the snapshot is what comes back - a reply
 /// published again (a restore, a fork's carry) shows what it cited when it was written, not the
 /// file as it is now; a reply that cites nothing publishes nothing.
 #[test]
@@ -84,7 +84,7 @@ fn a_citation_is_read_once_and_kept_for_the_reply() {
     );
 }
 
-/// **A pull request the session opened is watched without being asked** (`pr_watch`): the five
+/// A pull request the session opened is watched without being asked (`pr_watch`): the five
 /// watches are armed as the session's monitors, and the sentence names them. `gh` is a stub that
 /// never answers, so nothing reaches GitHub; an arming that runs twice arms nothing new.
 #[test]

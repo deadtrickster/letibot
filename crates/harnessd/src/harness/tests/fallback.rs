@@ -32,7 +32,7 @@ fn a_fallback_continuation_is_taken_once_and_never_over_a_stop() {
                   glm/glm-4.6."
         .to_string();
 
-    // **A turn that fell back owes exactly one turn, and the notice is spent when it is taken.**
+    // A turn that fell back owes exactly one turn, and the notice is spent when it is taken.
     h.fallback_continuation = Some(notice.clone());
     assert_eq!(
         h.take_fallback_continuation().as_deref(),
@@ -44,8 +44,8 @@ fn a_fallback_continuation_is_taken_once_and_never_over_a_stop() {
         "the same fallback opened a second turn"
     );
 
-    // **And nothing is started over a stop.** The interrupt arrived after the failed turn's last
-    // round, so no round of it would act on it — but starting a turn on top of it is either a
+    // And nothing is started over a stop. The interrupt arrived after the failed turn's last
+    // round, so no round of it would act on it - but starting a turn on top of it is either a
     // turn aborted at its first delta or, worse, their stop ignored.
     h.fallback_continuation = Some(notice.clone());
     h.hub.submit(

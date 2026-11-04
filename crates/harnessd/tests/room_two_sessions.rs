@@ -1,16 +1,6 @@
-//! Two daemons on one host, talking through the room: A posts a need to a tagged queue, B claims
-//! it and answers, and A is woken by the answer with nobody typing into it.
+//! Two daemons on one host, talking through the room: A posts a need to a tagged queue, B claims it and answers, and A is woken by the answer with nobody typing.
 //!
-//! Every earlier room test drives one session and a raw `Client` for the other half - the frames
-//! are proved, and the hop from a socket back into a session's own turn is proved, but never in
-//! the same run by two daemons holding one coordinator. That gap is what this file is for: the
-//! room's whole promise is that two sessions which have never heard of each other can find each
-//! other on one box, and only a second daemon can be wrong about it.
-//!
-//! The shape is the shipped one: `Coordinator` (`harnessd --room`), a real `Daemon` per session
-//! with its own store, socket and workspace, and a canned model on loopback behind each - so
-//! what runs here is the production path from `room post` through the coordinator's routing to
-//! the other session's bell, `Harness::wake`, and the turn that reads the answer back.
+//! Earlier room tests drive one session and a raw `Client`; only a second daemon can be wrong about two sessions finding each other. The shape is the shipped one: `Coordinator` (`harnessd --room`), a real `Daemon` per session with its own store, socket and workspace, and a canned model on loopback behind each.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -105,10 +95,7 @@ struct One {
 }
 
 impl One {
-    /// The session's own config: a store and a workspace of its own, no provider (so the turn
-    /// talks to this test's endpoint and not to a key somewhere on the box), the `leticode` seat
-    /// (unconfined, and it names `room`), and the room link asked for explicitly - a constructor
-    /// that stopped setting it would otherwise make this file measure nothing.
+    /// The session's own config: its own store and workspace, no provider (the turn talks to this test's endpoint), the `leticode` seat (unconfined, names `room`), and the room link asked for explicitly so a constructor that stopped setting it cannot make this file measure nothing.
     fn config(dir: &Path, id: &str) -> Config {
         let workspace = dir.join("ws");
         std::fs::create_dir_all(&workspace).expect("a workspace");

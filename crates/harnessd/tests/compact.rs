@@ -631,7 +631,7 @@ fn the_fork_says_what_it_carried_verbatim_and_never_claims_it_was_replaced() {
     let letibot_transcript::TranscriptItem::System { text, .. } = &words[0].0 else {
         panic!("the base's first item is the note");
     };
-    // R93.E3/E4: one sentence each, and no count: the model is told the shape of what it is
+    // one sentence each, and no count: the model is told the shape of what it is
     // reading, not the arithmetic behind it.
     assert!(
         text.contains("The most recent messages follow verbatim."),
@@ -650,7 +650,7 @@ fn the_fork_says_what_it_carried_verbatim_and_never_claims_it_was_replaced() {
         !text.contains("everything said before this point is replaced"),
         "the note must not claim a region was replaced while the tail shows it: {text}"
     );
-    // R93.E5: the opening says what stands in for the history, and names no transcript.
+    // the opening says what stands in for the history, and names no transcript.
     assert!(
         text.starts_with("Earlier conversation is replaced by this summary (full history: "),
         "{text}"
@@ -705,7 +705,7 @@ fn a_fork_with_no_tail_claims_nothing_about_a_tail() {
     );
 }
 
-/// **A summary the model was cut off writing says so, and what to do about it** (R93.E2): one
+/// A summary the model was cut off writing says so, and what to do about it: one
 /// sentence, and no line of literal spaces where a broken continuation used to be.
 #[test]
 fn a_cut_off_summary_is_admitted_in_one_sentence() {
@@ -829,7 +829,7 @@ fn the_compaction_note_says_why_it_has_no_tail() {
     let dir = TempDir::new("harnessd-compact-why");
     let path = dir.path().join("sessions.db");
     for (because, want) in [
-        // R93.E6: a local model's reason is a rule id and a cache rule, which is the operator's
+        // a local model's reason is a rule id and a cache rule, which is the operator's
         // question; the model is told nothing about it.
         ("local_model", None),
         ("nothing_fits", Some("larger than the whole tail budget")),

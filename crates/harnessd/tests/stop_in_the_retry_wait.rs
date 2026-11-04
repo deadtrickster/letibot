@@ -1,8 +1,6 @@
-//! A stop that lands while a retry is waiting is a STOP and not just the end of the wait: the
-//! session's children go first, and the failure the daemon publishes names the turn it was taken
-//! in. Both were skipped when the wait learned to end early.
+//! A stop landing while a retry waits is a stop, not just the end of the wait: the session's children go first, and the published failure names the turn it was taken in.
 //!
-//! ONE test in this binary, because it writes the process's config dirs before anything reads them.
+//! One test in this binary, because it writes the process's config dirs before anything reads them.
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};

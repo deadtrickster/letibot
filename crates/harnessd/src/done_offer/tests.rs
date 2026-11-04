@@ -119,7 +119,7 @@ fn an_unrelated_brief_is_said_nothing() {
     assert!(!offers.compose(&[], BRIEF));
 }
 
-/// **Mode off changes nothing**: no tier, no offer, an unchanged request.
+/// Mode off changes nothing: no tier, no offer, an unchanged request.
 #[test]
 fn mode_off_composes_nothing() {
     let mut offers = Offers::new();

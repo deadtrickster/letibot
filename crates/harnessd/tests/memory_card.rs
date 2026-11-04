@@ -1,14 +1,7 @@
 //! The memory card above the ceiling, answered by a real head over the session socket.
 //!
-//! `AdjudicatedGate::grant_memory` poses the ask a `bash` call makes when it wants more than half of
-//! what is free, and the card's path was built and tested against a fake adjudicator - no head has
-//! ever been put in front of it. Here the question is posed on one thread and answered on another
-//! through `ClientFrame::Answer`, which is the frame the head a person is looking at sends.
-//!
-//! The ask is built from `/proc/meminfo`, because that is where the numbers come from and an ask no
-//! fixture can produce proves nothing about a box; `apparatus::applies` says so on a platform that
-//! has no such file, and it is not a refusable skip - an OS that never had the file is not missing
-//! apparatus.
+//! `AdjudicatedGate::grant_memory` poses the ask a `bash` call makes when it wants over half of free memory. The ask is posed on one thread and answered on another through `ClientFrame::Answer`.
+//! It is built from `/proc/meminfo`; `apparatus::applies` says so on a platform without it, and that is not a refusable skip.
 
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, channel};
@@ -83,7 +76,7 @@ fn answer_a_card(rx: &Receiver<Inbound>, head: &mut HeadClient, option: &str) ->
     }
 }
 
-/// **One ask, one card, one answer.** The card the model's `memory` above the ceiling produces is
+/// One ask, one card, one answer. The card the model's `memory` above the ceiling produces is
 /// answered by the operator's head: `grant_memory` runs this call only, `grant_memory_session`
 /// covers what follows it, and the once-one covers nothing after it.
 #[test]

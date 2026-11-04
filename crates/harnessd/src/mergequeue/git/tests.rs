@@ -202,7 +202,7 @@ fn a_tree_holding_only_the_daemons_logs_is_retired_and_one_with_work_is_kept() {
 fn only_a_file_directly_under_letibot_is_a_daemon_leftover() {
     assert!(daemon_leftover(".letibot/delivery-log.jsonl"));
     assert!(daemon_leftover("\".letibot/x.jsonl\""));
-    // R93.C14: the daemon writes more than logs there, and none of it is the child's work.
+    // the daemon writes more than logs there, and none of it is the child's work.
     assert!(daemon_leftover(".letibot/head.toml"));
     assert!(daemon_leftover(".letibot/monitors.db-journal"));
     // A SUBDIRECTORY is the project's - the plugin layers and the notes are files a model wrote.

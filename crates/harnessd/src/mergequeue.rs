@@ -153,7 +153,7 @@ pub(crate) fn sleep_unless_stopped(wait: std::time::Duration, stop: &AtomicBool)
 /// How many moves the snapshot carries.
 pub const RECENT_MOVES: usize = 60;
 
-/// **How many of a live row's OWN moves the snapshot guarantees**, whatever other rows have done
+/// How many of a live row's OWN moves the snapshot guarantees, whatever other rows have done
 /// since: the pane reads one row's history out of a window the whole queue shares, so a busy queue
 /// would otherwise push a waiting row's own moves out of it.
 pub const RECENT_MOVES_PER_ROW: usize = 4;
@@ -300,7 +300,7 @@ pub fn snapshot(store: &Store) -> letibot_sessionlog::event::QueueSnapshot {
     }
     match store.recent_transitions(RECENT_MOVES) {
         Ok(ts) => {
-            // **Each live row's own last moves as well**, so a row's history survives a window that
+            // Each live row's own last moves as well, so a row's history survives a window that
             // other rows filled: the union is by `seq`, so a move already in the window is not said
             // twice, and the reading stays in order - which is what a from-to chain needs.
             let mut moves = ts;

@@ -1562,7 +1562,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         Ok(_) => {}
         Err(why) => eprintln!("  providers.toml: {why} — no fallback is in force"),
     }
-    // **A session's own list outranks the box's**, because it is the narrower statement: a file in
+    // A session's own list outranks the box's, because it is the narrower statement: a file in
     // the project says where THIS project's sessions go.
     session_fallback(&mut cfg);
 
@@ -2342,7 +2342,7 @@ enum Query {
     },
 }
 
-/// **The id is the mistake, so the second line is how to find the right one.** `not found: session
+/// The id is the mistake, so the second line is how to find the right one. `not found: session
 /// s-nope` named what was missing and left a person to guess which verb lists the ones there are.
 fn no_such_session(e: impl std::fmt::Display) -> String {
     format!("{e}\n         `letibot --sessions` lists the sessions this store holds")
@@ -3096,7 +3096,7 @@ mod tests {
         );
     }
 
-    /// **A session's own fallback list replaces the box's, and its timeout budget rides along.** The
+    /// A session's own fallback list replaces the box's, and its timeout budget rides along. The
     /// list is where a project's sessions go when their model is out; a merge would inherit a third
     /// name from the box file that this project never chose.
     #[test]

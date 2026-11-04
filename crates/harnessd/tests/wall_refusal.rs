@@ -335,10 +335,7 @@ fn a_stuck_session_is_released_by_a_measured_count_and_then_compacts_at_the_wall
         "re-armed by a measurement, then the wall: {released} < {refused}"
     );
 
-    // (2) The compaction that answered it was FORCED - announced as under duress,
-    // because the automatic one is off and an operator watching a session that
-    // "compacts automatically" deserves to know why this ran. The announcement is a
-    // `compacting` warning: state behind the progress line, not a row of its own.
+    // (2) The compaction that answered it was forced, announced as a `compacting` warning (state behind the progress line, not a row of its own) so an operator with automatic compaction off knows why it ran.
     let duress = at(&warnings, "compacting", "under duress");
     assert!(
         refused < duress,

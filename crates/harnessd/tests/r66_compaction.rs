@@ -1,9 +1,6 @@
-//! R66, the compaction-retry line: what ONE failed compaction attempt leaves behind, and what N
-//! of them accumulate. The instrument is `memwatch::Counting` as this binary's allocator, so
-//! `memwatch::heap` is this process's live heap exactly, plus the harness's own census.
+//! The compaction-retry line: what one failed compaction attempt leaves behind, and what N accumulate. `memwatch::Counting` is this binary's allocator, so `memwatch::heap` is the live heap exactly, plus the harness's census.
 //!
-//! The fake is a provider on loopback whose answer the test chooses, so a turn is a real turn and
-//! a compaction is a real refusal - no GGUF, no server, and the history can be any size.
+//! The fake is a loopback provider whose answer the test chooses, so a turn and a refused compaction are real, with no GGUF or server and any history size.
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -466,11 +463,8 @@ fn a_refused_reseat_leaves_the_census_where_it_found_the_transcript() {
     );
 }
 
-/// The other failure: the summary turn RAN, wrote its answer, and the compaction was refused for
-/// what the answer proposed. What stays behind is the instruction plus that answer - one turn's
-/// output per attempt, not the conversation. This one is main's design and not the rollback's: the
-/// hub pairs the refusal's warning with that instruction, and the error tells the model to try
-/// again on the transcript it can see.
+/// The other failure: the summary turn ran and wrote its answer, and the compaction was refused for what the answer proposed. What stays is the instruction plus that answer, one turn's output per attempt, not the conversation.
+/// The hub pairs the refusal's warning with that instruction, and the error tells the model to retry on the transcript it can see.
 #[test]
 fn a_compaction_that_ran_and_was_refused_leaves_its_own_answer_too() {
     let _serial = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());

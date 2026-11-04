@@ -584,7 +584,7 @@ fn a_note_this_session_wrote_is_not_offered_back() {
     );
 }
 
-/// **A tier that cannot answer leaves the offer exactly as the words scored it**, and the reason
+/// A tier that cannot answer leaves the offer exactly as the words scored it, and the reason
 /// is there once for the caller that says it. A box whose endpoint is down keeps its hint, not a
 /// silent one and not a crash.
 #[test]

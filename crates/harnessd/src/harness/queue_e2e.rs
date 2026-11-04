@@ -67,15 +67,15 @@ struct Fixture {
     parts: Parts,
     cfg: Config,
     registry: Arc<SessionRegistry>,
-    /// The session whose child finished — where the `merge_queued` sentence goes.
+    /// The session whose child finished - where the `merge_queued` sentence goes.
     parent: Arc<Hub>,
-    /// A session attached somewhere else — where only the broadcast goes, and the case the
+    /// A session attached somewhere else - where only the broadcast goes, and the case the
     /// queue pane exists for.
     elsewhere: Arc<Hub>,
 }
 
 impl Fixture {
-    /// `None` after announcing the skip, when this box has no vocabulary GGUF — the shape
+    /// `None` after announcing the skip, when this box has no vocabulary GGUF - the shape
     /// `compact.rs` uses, and the only apparatus any test here needs.
     fn new(tag: &str) -> Option<Self> {
         let gguf = crate::vocab_gguf()?;
@@ -115,7 +115,7 @@ impl Fixture {
         HarnessTaskRunner::for_enqueue(&self.parts, self.cfg.clone(), self.registry.clone(), placed)
     }
 
-    /// The store, opened fresh — a connection that did not write the row.
+    /// The store, opened fresh - a connection that did not write the row.
     fn store(&self) -> Store {
         Store::open(&self.db).expect("the store reopens")
     }
@@ -172,7 +172,7 @@ fn repo_with_children(under: &Path, children: &[(&str, &str)]) -> (PathBuf, Stri
 struct Branch {
     worktree: PathBuf,
     branch: String,
-    /// The commit the branch is at — what `main` must be after the queue lands it.
+    /// The commit the branch is at - what `main` must be after the queue lands it.
     sha: String,
 }
 
@@ -574,7 +574,7 @@ fn a_branch_with_no_commit_of_its_own_is_refused_by_name_and_leaves_no_row() {
             "main",
         ],
     );
-    // And a second child whose branch this host no longer has — the worktree swept away.
+    // And a second child whose branch this host no longer has - the worktree swept away.
     let gone = root.join("worktrees").join("gone");
     let gone_branch = "agent/gone".to_string();
     git(

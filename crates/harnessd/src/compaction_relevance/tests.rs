@@ -90,7 +90,7 @@ fn the_room_bounds_what_is_kept() {
     assert_eq!(keep(&items, &tokens, 6, u64::MAX, &scores), 2);
 }
 
-/// **Mode off is today's order**: no tier, no scores, and the plan the age and size computed.
+/// Mode off is today's order: no tier, no scores, and the plan the age and size computed.
 #[test]
 fn mode_off_computes_no_scores() {
     let (items, _) = history();

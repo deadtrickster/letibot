@@ -6,7 +6,7 @@ use super::*;
 use letibot_tokencore::ledger::{chain, hash_tokens};
 use letibot_tokencore::store::StablePrefixRecord;
 
-/// **What the model is told about a stale prompt** (`R93.E9`): the tools it cannot call, and whose
+/// What the model is told about a stale prompt (`R93.E9`): the tools it cannot call, and whose
 /// decision the fix is - not the head's sentence about a session and the clock it was seated at.
 #[test]
 fn the_models_stale_prompt_names_tools_and_no_session() {
@@ -60,7 +60,7 @@ impl Drop for Scratch {
     }
 }
 
-/// **A config that opens on the BYTE vocabulary**, so nothing here needs a GGUF or a server.
+/// A config that opens on the BYTE vocabulary, so nothing here needs a GGUF or a server.
 fn byte_vocab_config(dir: &Scratch, id: &str) -> Config {
     let mut cfg = Config::for_this_box(&dir.0);
     cfg.dialect = crate::Dialect::Qwen;
@@ -123,7 +123,7 @@ fn seed(
     store
         .put_transcript(transcript, id, &old)
         .expect("the transcript row");
-    // **Written through the escape hatch on purpose**: `append_item` refuses a row that does not
+    // Written through the escape hatch on purpose: `append_item` refuses a row that does not
     // start where the transcript's prefix ends - that is the fix - so a fixture for the state a
     // buggy build left behind has to be written the way that build wrote it.
     for (seq, (offset, tokens, h_k)) in rows.iter().enumerate() {
@@ -173,7 +173,7 @@ fn an_empty_transcript_is_reseated_onto_the_prompt_this_daemon_composes() {
     let old = seed(&dir, "s-reseat", "s-reseat#t0", &parts, &[]);
     let mut h = Harness::open(&parts, cfg, Hub::new("s-reseat")).expect("the session opens");
 
-    // **The store's own view of what the open above wrote** - and it is the process's ONE
+    // The store's own view of what the open above wrote - and it is the process's ONE
     // connection (`Store::open`), not a second opener: this is a read, and the sharing that makes
     // it one is pinned by `tests/store_handles.rs` and `tokencore/tests/connection_fds.rs`.
     let store = Store::open(&dir.0.join("sessions.db")).expect("the store");
@@ -208,7 +208,7 @@ fn an_empty_transcript_is_reseated_onto_the_prompt_this_daemon_composes() {
         "the session records the prompt it is now seated with"
     );
 
-    // **And the first append lands at the prompt's own length and rebuilds.** This is what the
+    // And the first append lands at the prompt's own length and rebuilds. This is what the
     // store would have refused before the re-seat: the row starts where the transcript's prefix
     // ends, so `Session::restore` recomputes the chain the ledger wrote.
     h.session
@@ -234,7 +234,7 @@ fn an_empty_transcript_is_reseated_onto_the_prompt_this_daemon_composes() {
     assert_eq!(restored.ledger.rows().len(), 1);
 }
 
-/// **An empty transcript already on this daemon's prompt is left exactly as it is** - the guard
+/// An empty transcript already on this daemon's prompt is left exactly as it is - the guard
 /// that keeps the re-seat from being a rewrite that happens on every open of a session nobody has
 /// spoken to yet, and its note from being pushed for a re-seat that did not happen.
 #[test]
@@ -265,7 +265,7 @@ fn an_empty_transcript_on_this_prompt_is_not_reseated_or_reported() {
     );
 }
 
-/// **A transcript whose rows chain from a prefix it no longer names is forked onto that prefix**,
+/// A transcript whose rows chain from a prefix it no longer names is forked onto that prefix,
 /// the old transcript untouched - the repair for a store already in the state the defect left.
 #[test]
 fn a_transcript_that_does_not_rebuild_is_forked_onto_the_prefix_its_rows_chain_from() {
@@ -333,7 +333,7 @@ fn a_transcript_that_does_not_rebuild_is_forked_onto_the_prefix_its_rows_chain_f
         "the tokens are the stored ones — carried, never re-rendered"
     );
 
-    // **The old transcript is untouched**: still the prefix it named, still its rows, still the
+    // The old transcript is untouched: still the prefix it named, still its rows, still the
     // chain nothing can rebuild. A repair that rewrote it would be unauditable, and a wrong
     // diagnosis would have destroyed the only copy.
     let kept = store

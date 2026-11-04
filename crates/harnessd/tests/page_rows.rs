@@ -114,7 +114,7 @@ fn fixture(tag: &str, n: u32, unreadable: Option<u32>) -> (TempDir, PathBuf) {
     (dir, path)
 }
 
-/// **A paged row names its ordinal and the clock it was written at.** The store answers a page by
+/// A paged row names its ordinal and the clock it was written at. The store answers a page by
 /// ordinal, and a row drawn without its `ts` is the one row on the screen with no time beside it.
 #[test]
 fn a_paged_row_names_its_ordinal_and_its_clock() {
@@ -140,7 +140,7 @@ fn a_paged_row_names_its_ordinal_and_its_clock() {
     );
 }
 
-/// **A row the store cannot read does not slide the page.** `row_items` leaves an unparseable row
+/// A row the store cannot read does not slide the page. `row_items` leaves an unparseable row
 /// out, and the rows after it keep the ordinals they were written at - a page labelled from the
 /// request instead puts every row of it one place to the left.
 #[test]

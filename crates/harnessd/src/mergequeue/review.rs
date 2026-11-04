@@ -282,7 +282,7 @@ pub fn serve(p: &Pool) -> Result<Served, StoreError> {
     let mut out = Served::default();
     // The trees no row is on any more, before anything is started - see [`sweep_clones`].
     sweep_clones(p);
-    // **The other end of a refusal nobody heard** - before the rows are read, so a session that
+    // The other end of a refusal nobody heard - before the rows are read, so a session that
     // opened since the verdict is told in the same pass that starts the next reviewer.
     out.redelivered = redeliver_refusals(p)?;
     out.moved |= out.redelivered > 0;
@@ -883,7 +883,7 @@ fn deliver_refusal(p: &Pool, r: &ReviewRow, reasons: &[String]) {
     let Err(tried) = hand_refusal(p, r, reasons) else {
         return;
     };
-    // **A refusal is the child's news, and a child whose daemon is gone comes back.** The write is
+    // A refusal is the child's news, and a child whose daemon is gone comes back. The write is
     // the fact a later pass reads; `tell_once` is also what makes the operator's warning one row
     // per undelivered head rather than one per pass.
     let first = p.store.tell_once(&owed_key(r), now_ms()).unwrap_or(true);
@@ -933,7 +933,7 @@ fn hand_refusal(p: &Pool, r: &ReviewRow, reasons: &[String]) -> Result<String, V
     Err(tried)
 }
 
-/// **A refusal nobody heard is owed to whoever opens next**: `deliver_refusal` wrote the debt down at
+/// A refusal nobody heard is owed to whoever opens next: `deliver_refusal` wrote the debt down at
 /// the verdict, and this is the other end, a pass that hands it to a session opened since. A row that
 /// is no longer the verdict it was rejected with is owed nothing, and neither is a day-old one.
 pub fn redeliver_refusals(p: &Pool) -> Result<usize, StoreError> {

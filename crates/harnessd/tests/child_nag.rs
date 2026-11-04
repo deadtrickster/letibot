@@ -566,7 +566,7 @@ fn nag_verb_to(hub: &Hub, line: &str) {
     );
 }
 
-/// **A command a child does not run is said back to its head, naming the child and what it was.**
+/// A command a child does not run is said back to its head, naming the child and what it was.
 /// The sentence was asserted only as a pure function; here it arrives on a real child's hub, from
 /// the door that refuses the command.
 #[test]

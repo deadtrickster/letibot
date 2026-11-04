@@ -16,7 +16,7 @@ pub struct Deliverable {
 }
 
 impl Deliverable {
-    /// The deliverable of a `task_start` placement, or `None` for the main-tree exception —
+    /// The deliverable of a `task_start` placement, or `None` for the main-tree exception -
     /// whose status holds whatever the operator had open, not the child's account of its work.
     pub fn of(placement: &WorktreePlacement) -> Option<Deliverable> {
         (!placement.main_tree).then(|| Deliverable {
@@ -117,7 +117,7 @@ impl EndOfWork {
         Self::default()
     }
 
-    /// The nudge to append when the turn is about to end, or `None` — a clean tree, no
+    /// The nudge to append when the turn is about to end, or `None` - a clean tree, no
     /// deliverable, or the one nudge already spent.
     pub fn at_turn_end(&mut self, d: Option<&Deliverable>) -> Option<String> {
         if self.nudged {
@@ -254,7 +254,7 @@ mod tests {
             "one nudge, then it may finish"
         );
 
-        // R93.C13: the answer is what the parent's first line reads, so the line follows it.
+        // the answer is what the parent's first line reads, so the line follows it.
         let handed = with_the_line(Some(&r.wt), "all done");
         assert!(handed.starts_with("all done\n\n"), "{handed}");
         let line = handed.trim_start_matches("all done\n\n");
@@ -339,7 +339,7 @@ mod tests {
             other => panic!("expected a failure, got {other:?}"),
         };
 
-        // Died: the provider refused, the context wall, a crash — a `fail` with a reason.
+        // Died: the provider refused, the context wall, a crash - a `fail` with a reason.
         let slot = TaskSlot::new("s-parent");
         AnswerOnce::new(&slot)
             .with_deliverable(Some(r.wt.clone()))
@@ -401,7 +401,7 @@ mod tests {
         assert_eq!(why_of(slot.status()), "plain");
     }
 
-    /// **A failed child's tree is reaped and its branch is kept**: nothing else removes the worktree
+    /// A failed child's tree is reaped and its branch is kept: nothing else removes the worktree
     /// a refused, failed or killed child leaves, and the branch already holds whatever it committed.
     #[test]
     fn a_failure_reaps_the_tree_and_keeps_the_branch() {

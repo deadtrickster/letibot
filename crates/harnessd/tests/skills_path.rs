@@ -1,7 +1,5 @@
-//! The whole skill path, walked offline: the roots off `Config`, `/skills` listing what they hold,
-//! `/skills NAME` handing a body over as the person's turn, `task {skills}` preloading one in a
-//! child, and an unknown name refused by name. The same walk against a real model needs no other
-//! code; every assertion here is about a fact that does not need one.
+//! The whole skill path, walked offline: roots off `Config`, `/skills` listing them, `/skills NAME` handing a body over as the person's turn, `task {skills}` preloading one in a child, and an unknown name refused by name.
+//! Every assertion needs no real model.
 
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};

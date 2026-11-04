@@ -870,7 +870,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// **The same excuse in words no exemplar uses.** `brimming`, `shall` and `halt` are in
+    /// The same excuse in words no exemplar uses. `brimming`, `shall` and `halt` are in
     /// none of [`EXEMPLARS`], so the words score the sentence under [`FLOOR`] - and the second
     /// tier's cosine, over the three planted as synonyms, carries it over.
     #[test]

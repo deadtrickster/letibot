@@ -1,21 +1,9 @@
-//! **A provider's four troubles reach the wire as types**, measured against a real daemon and a
-//! scripted provider on loopback: a 429 with and without `Retry-After`, a quota refusal, a model API
-//! that never answers, and a round that stalls past the first-byte threshold.
+//! A provider's four troubles reach the wire as types, measured against a real daemon and a scripted provider on loopback: a 429 with and without `Retry-After`, a quota refusal, a model API that never answers, and a round stalling past the first-byte threshold.
 //!
-//! The subject is `SessionEvent::ProviderTrouble`, so the assertions are on the frames a head actually
-//! receives: the kind, the model the round was on, the reset instant the provider named, and the count
-//! that makes *the second timeout* a different fact from *a timeout*. Nothing here mocks the daemon:
-//! the turn runs, the provider refuses or says nothing, and the ladder's own end is where the event is
-//! published.
+//! The subject is `SessionEvent::ProviderTrouble`, so assertions are on the frames a head receives: kind, model, the named reset instant, and the count that makes *the second timeout* a different fact from *a timeout*.
 //!
-//! # One test, five scenarios, and why
-//!
-//! `XDG_CONFIG_HOME` is process-global and libtest runs a binary's tests in parallel, so the scratch
-//! config dir is pointed at once, by the single test that owns this process, and the scenarios run in
-//! sequence inside it - the same shape `model_switch_at_turn_end.rs` uses for its four.
-//!
-//! The timeout and the stall cannot share one daemon: a session told to give up on a silent provider
-//! after 400 ms would fail the round that is meant to stall for fifteen seconds and then answer.
+//! One test, five scenarios: `XDG_CONFIG_HOME` is process-global and libtest runs tests in parallel, so the single test owning this process runs the scenarios in sequence (as `model_switch_at_turn_end.rs` does).
+//! The timeout and the stall cannot share a daemon: a short give-up would fail the round meant to stall and then answer.
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -89,7 +77,7 @@ impl Fake {
                         g.remove(0)
                     }
                 };
-                // **One thread per connection, taken in arrival order.** A real provider serves
+                // One thread per connection, taken in arrival order. A real provider serves
                 // concurrent requests, and a silent one that held the accept loop would make the
                 // request AFTER it time out as well - a fixture failing its own subject.
                 std::thread::spawn(move || match act {
@@ -525,7 +513,7 @@ fn the_four_provider_troubles_reach_the_wire_as_types() {
         rec.troubles
     );
 
-    // F. **A quota moves the session by itself.** The account cannot pay, a fallback list names where
+    // F. A quota moves the session by itself. The account cannot pay, a fallback list names where
     // this session goes, and the daemon makes the switch and says so: `switched_to` on the event is the
     // announcement, and the continuation's request is sent to the new model.
     let mut cfg = config(&scratch, "quota-fallback", None);
@@ -564,11 +552,8 @@ fn the_four_provider_troubles_reach_the_wire_as_types() {
         "and the turn that follows is sent there: {after:?}"
     );
 
-    // G. **Two timeouts in a row move it, and one does not.** A timeout says nothing about the model
-    // on its own, so the budget is what makes it evidence: at two, the first turn stays where it is and
-    // the second moves the session with the same `switched_to` announcement.
-    // Three seconds and not four hundred milliseconds: the deadline still ends a silent round, and a
-    // loaded box now has room to put the request on the wire before it fires.
+    // G. Two timeouts in a row move it, one does not. A timeout is evidence only through the budget: at two, the first turn stays and the second moves the session with the same `switched_to` announcement.
+    // Three seconds, not 400 ms: the deadline still ends a silent round and a loaded box can put the request on the wire first.
     let mut cfg = config(&scratch, "timeout-fallback", Some(Duration::from_secs(3)));
     cfg.fallback = vec!["glm/glm-4.6".to_string()];
     cfg.fallback_after_timeouts = 2;

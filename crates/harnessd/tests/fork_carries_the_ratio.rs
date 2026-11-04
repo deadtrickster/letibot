@@ -1,7 +1,4 @@
-//! A fork that REPLACES the conversation cannot keep the provider's count of the old one, but the
-//! ratio it measured is not a fact about the old conversation: it is how many ledger tokens this
-//! box's prompt takes per token the provider counted. That half rides the fork, so a restart before
-//! any round reads the new base in the provider's units instead of falling back to its ledger bytes.
+//! A fork that replaces the conversation cannot keep the provider's count of the old one, but the measured ratio (ledger tokens per provider token) is not about the old conversation. It rides the fork, so a restart before any round reads the new base in provider units.
 
 use letibot_harnessd::config::{Config, ProviderConfig};
 use letibot_harnessd::harness::ForkTail;

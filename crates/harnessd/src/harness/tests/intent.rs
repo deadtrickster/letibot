@@ -2,7 +2,7 @@
 
 use super::*;
 
-/// A `User` row **this session appended** - a job settlement, a salvage notice,
+/// A `User` row this session appended - a job settlement, a salvage notice,
 /// an intent check. The same variant on the wire and never the operator's words.
 fn agent_row(text: &str) -> TranscriptItem {
     TranscriptItem::User {
@@ -84,7 +84,7 @@ fn a_childs_answer_is_settled_once_and_never_overwritten() {
         }
     );
 
-    // **A path out with no answer still settles** - the one that would hang a parent: a
+    // A path out with no answer still settles - the one that would hang a parent: a
     // thread ending with the slot still `Running` is a `task_result` that never returns.
     let slot = TaskSlot::new("s-parent");
     {
@@ -96,7 +96,7 @@ fn a_childs_answer_is_settled_once_and_never_overwritten() {
         slot.status()
     );
 
-    // **And the first answer is the answer.**
+    // And the first answer is the answer.
     let slot = TaskSlot::new("s-parent");
     {
         let answer = AnswerOnce::new(&slot);
@@ -317,7 +317,7 @@ fn a_resumed_trail_does_not_call_the_harnesss_own_rows_the_operators() {
 
 // -- the intent diff -----------------------------------------------------
 
-/// **T21.3, closed.** An item declared in a turn that then ran nothing is the
+/// closed. An item declared in a turn that then ran nothing is the
 /// acceptance case, and the steering text is what the model is handed.
 #[test]
 fn an_intent_declared_and_not_acted_on_produces_steering() {

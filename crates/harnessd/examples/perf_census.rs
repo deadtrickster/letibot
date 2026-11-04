@@ -14,15 +14,15 @@
 //!
 //! The numbers, and how each is taken:
 //!
-//! * **RSS** - `/proc/self/status`: after every session opened, and the peak at the end, so a
+//! * RSS - `/proc/self/status`: after every session opened, and the peak at the end, so a
 //!   per-session cost is read off the difference between the runs.
-//! * **CPU** - `getrusage(RUSAGE_SELF)` over the streaming phase only, and again per event.
-//! * **emit-to-subscriber latency** - the bench publishes a probe warning on a session's own hub
+//! * CPU - `getrusage(RUSAGE_SELF)` over the streaming phase only, and again per event.
+//! * emit-to-subscriber latency - the bench publishes a probe warning on a session's own hub
 //!   and times it to the moment a subscriber has the frame. That is the whole real path: the
 //!   fan-out clone, the head's queue, the pump's JSON, the socket, the client's parse.
-//! * **socket fan-out per subscriber** - one session, K probes, with S subscribers attached (1, 2,
+//! * socket fan-out per subscriber - one session, K probes, with S subscribers attached (1, 2,
 //!   4, 8): the fit of CPU per event against S is what one more subscriber costs.
-//! * **store write volume** - the store file and its WAL, before and after, per session and per
+//! * store write volume - the store file and its WAL, before and after, per session and per
 //!   event.
 //!
 //! `subs` may be 0, which is the control: the same turns with nobody listening, so the daemon's own

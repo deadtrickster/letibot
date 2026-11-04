@@ -321,10 +321,7 @@ fn the_password_ask_is_served_while_the_operators_run_is_blocked() {
         .join()
         .expect("the run thread")
         .expect("the run records");
-    // The run ending and its last frames are two buffers: a settlement is on the wire before the
-    // process can exit, but this loop breaks on the completion, so the queue is read to the end
-    // here. A verdict built on whichever frames the loop happened to reach first is a verdict on
-    // the box's scheduling, not on what the head was told.
+    // The run ending and its last frames are two buffers: a settlement is on the wire before the process exits, but the loop breaks on completion, so the queue is read to the end to avoid a verdict set by scheduling.
     while let Ok(inbound) = rx.try_recv() {
         if let ServerFrame::Event(env) = inbound.frame() {
             seen.push(env.event.clone());

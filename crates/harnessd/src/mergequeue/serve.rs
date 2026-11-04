@@ -1061,7 +1061,7 @@ impl RepoQueue {
                 continue;
             };
             let target = target_of(r);
-            // **The reason it waited outlives the claim.** A capacity wait is a row's whole story
+            // The reason it waited outlives the claim. A capacity wait is a row's whole story
             // for an hour, and writing the claim over it left a pane with no reason on it at all.
             let waited = r.failure.trim();
             let why = match waited.is_empty() {

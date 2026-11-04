@@ -655,7 +655,7 @@ fn a_refusal_nobody_heard_is_handed_to_the_session_that_opens_later() {
     );
 }
 
-/// **A refusal is owed for a day, and only while its verdict stands.** Two ends of the same rule: a
+/// A refusal is owed for a day, and only while its verdict stands. Two ends of the same rule: a
 /// session that opens a week later is not handed a stale complaint about a branch nobody has touched
 /// since, and a row a person put back in line is owed nothing at all.
 #[test]

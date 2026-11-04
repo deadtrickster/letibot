@@ -1,4 +1,4 @@
-//! **Writes to the session store that a failure must not lose** (R91.6, R91.7).
+//! Writes to the session store that a failure must not lose.
 
 use super::*;
 use letibot_tokencore::store::{TodoBy, TodoStatus};
@@ -58,7 +58,7 @@ fn a_todo_write_the_store_refused_is_made_by_the_next_flush() {
         needs: Vec::new(),
     }]);
 
-    // **`open_private`**: the refusal has to come from OUTSIDE the harness's connection, and
+    // `open_private`: the refusal has to come from OUTSIDE the harness's connection, and
     // `Store::open` would hand back the very connection `h` writes through.
     let other = Store::open_private(&path).expect("a connection of its own");
     other
@@ -121,7 +121,7 @@ fn a_busy_store_write_is_waited_out_and_said() {
     assert_eq!(n, 1, "a failure that is not busy is not waited for");
 }
 
-/// **A person's stop ends the wait on a busy store** (R91.10): the operator pressed esc-esc on a
+/// A person's stop ends the wait on a busy store: the operator pressed esc-esc on a
 /// turn that was waiting for another daemon's write lock, and the wait ran to its patience before
 /// the stop was read. The session is closing, so the write is not abandoned; a STOP is not.
 #[test]
@@ -172,8 +172,8 @@ fn a_stop_ends_the_wait_on_a_busy_store() {
     );
 }
 
-/// **The whole daemon is stalled by one session's wait, so every other session's head is told why**
-/// (R91.10): the worker runs one turn at a time, and a session left to read `queued` with no
+/// The whole daemon is stalled by one session's wait, so every other session's head is told why
+///: the worker runs one turn at a time, and a session left to read `queued` with no
 /// reason is the operator's report.
 #[test]
 fn a_wait_on_the_store_is_said_on_every_other_session_too() {
@@ -286,7 +286,7 @@ fn a_mode_set_mid_turn_survives_a_restart() {
     );
 }
 
-/// A settlement a door took for a turn whose row the store refused is still owed (R91.11): the
+/// A settlement a door took for a turn whose row the store refused is still owed: the
 /// door used to mark it delivered before it knew its row went in, so a refusal lost it.
 #[test]
 fn a_settlement_a_refused_door_never_said_is_still_owed() {

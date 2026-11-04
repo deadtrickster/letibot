@@ -1,4 +1,4 @@
-//! **R92.24: "workspace gone" is said when a session opens or wakes on a missing workspace.**
+//! "workspace gone" is said when a session opens or wakes on a missing workspace.
 
 use super::*;
 

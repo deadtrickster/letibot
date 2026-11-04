@@ -388,7 +388,7 @@ pub fn decide(
     if run.instance == instance || held {
         return Decision::Leave;
     }
-    // **And the same for a daemon that is still beating** (R91.9): the store is shared by every
+    // And the same for a daemon that is still beating: the store is shared by every
     // daemon on the box, so another instance's running child is running there - not a stop's.
     if writer_running {
         return Decision::Leave;
@@ -457,7 +457,7 @@ pub fn decide(
         };
     }
     if spec.placement == Placement::Firecode && !vm_work_survives(&spec) {
-        // R93.E13: the row names the tree that was copied, so "beside the copy" has a path.
+        // the row names the tree that was copied, so "beside the copy" has a path.
         let copied = match spec.vm_source.as_deref() {
             Some(p) => format!("the tree it copied, `{}`", p.display()),
             None => "its workspace".to_string(),
@@ -485,7 +485,7 @@ fn vm_work_survives(spec: &TaskSpec) -> bool {
             .is_some_and(|wt| letibot_tools::firecode::mounts(std::path::Path::new(&wt.path)))
 }
 
-/// **The child's latest word**, and whether it is a later turn's: the answer of the last turn it ran
+/// The child's latest word, and whether it is a later turn's: the answer of the last turn it ran
 /// after settling, else the one its first turn gave. `outcome` keeps the first either way, so a reader
 /// that wants it has it.
 pub fn latest_answer(run: &SubagentRun) -> (String, bool) {
@@ -745,7 +745,7 @@ pub fn resumable(
              Nothing was spawned."
         ));
     }
-    // **Another daemon still beating is running it** (R91.9): a second copy in the same worktree
+    // Another daemon still beating is running it: a second copy in the same worktree
     // is the double resume this refusal exists to stop.
     if run.state == "running" && writer_running {
         return Err(format!(
@@ -954,7 +954,7 @@ mod tests {
         }
     }
 
-    /// **A later turn the orderly stop interrupted is not the child's answer.** `run_turn` hands back
+    /// A later turn the orderly stop interrupted is not the child's answer. `run_turn` hands back
     /// the text it had when the daemon stopped it, so recording that makes the next daemon deliver a
     /// fragment as the child's last word - the reading `settled` already refuses for the first turn.
     #[test]
@@ -1058,7 +1058,7 @@ mod tests {
         );
     }
 
-    /// **Another daemon still beating is not a gone one** (R91.9): the store is shared by every
+    /// Another daemon still beating is not a gone one: the store is shared by every
     /// daemon on the box, so a running child of a live instance is left where it runs - resumed, it
     /// would be a second copy in the same worktree - and `task_resume` is refused by name.
     #[test]
@@ -1170,7 +1170,7 @@ mod tests {
         ));
     }
 
-    /// **A child that failed and then answered again reads as its last word, at every door.** The row
+    /// A child that failed and then answered again reads as its last word, at every door. The row
     /// keeps the failure in `outcome`, but the later turn is what the parent is handed as news - so a
     /// reader that reported the old failure would contradict the notice it just received.
     #[test]
@@ -1272,7 +1272,7 @@ mod tests {
         }
     }
 
-    /// **A child that answered again is read as its later turn**, because after a restart the row is
+    /// A child that answered again is read as its later turn, because after a restart the row is
     /// all `task_result` has: the answer it hands over is the last word, it says which turn that came
     /// from, and the first answer stays in the row for whoever reads `outcome`.
     #[test]
@@ -1292,7 +1292,7 @@ mod tests {
             }
             other => panic!("a settled child with a later answer read as {other:?}"),
         }
-        // **A restart's delivery at open says the same thing**, or the notice would carry the first
+        // A restart's delivery at open says the same thing, or the notice would carry the first
         // answer while `task_result` hands over the second.
         match decide(&again, NEW, false, |_| true, RestoreMode::Resume) {
             Decision::Deliver(TaskStatus::Done { answer, .. }) => {
@@ -1677,7 +1677,7 @@ mod tests {
     fn the_notices_say_what_happened() {
         assert_eq!(utc(0), "1970-01-01 00:00:00 UTC");
         assert_eq!(utc(1_791_806_400_000), "2026-10-12 12:00:00 UTC");
-        // R93.E11: what happened and what survived, with no clock and no build sha.
+        // what happened and what survived, with no clock and no build sha.
         let n = child_notice(1_791_806_400_000);
         assert_eq!(
             n,
@@ -1685,7 +1685,7 @@ mod tests {
              are as you left them, and background jobs you started are gone. Carry on."
         );
         assert!(!n.contains("2026-10-12") && !n.contains("build "), "{n}");
-        // R93.E13: a bullet in the parent's notice, and no second `[restart]` tag inside it.
+        // a bullet in the parent's notice, and no second `[restart]` tag inside it.
         assert_eq!(
             parent_resumed_line("s-1-sub-1"),
             "- subagent s-1-sub-1: resumed."
