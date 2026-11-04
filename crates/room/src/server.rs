@@ -44,6 +44,11 @@ pub const MAX_FRAME_BYTES: usize = 1 << 20;
 /// would otherwise grow two maps without end. Past it the room says so rather than growing.
 pub const MAX_PRINCIPALS: usize = 4_096;
 
+/// How many chat messages one member's inbox keeps while it is away. A message is at most
+/// `MAX_TEXT` bytes, so this is a quarter of a megabyte per absent member, and the room's own ring
+/// still holds every one of them: what is dropped here is the PUSH, never the record.
+pub const MAX_PENDING: usize = 64;
+
 /// One connection's identity - what its `Hello` said, the room it is in, and the queue its writer
 /// thread drains. Nothing writes to a peer's socket from another thread: a reader that has stopped
 /// reading must not be able to stop the room.
@@ -136,6 +141,10 @@ struct Inner {
     /// The principals this room has armed an inbox cursor for - [`MAX_PRINCIPALS`], or what a test
     /// set. A name here is one the chat log keeps a cursor for, and that map is chat's own.
     armed: Mutex<BTreeSet<String>>,
+    /// Chat that arrived while a principal had no connection, per principal, in the order it was
+    /// said. A disconnect is not a reason to lose a message: what is here is pushed when that
+    /// principal next says `hello`, and emptied then.
+    pending: Mutex<BTreeMap<String, Pending>>,
     /// The bound on both per-principal maps: [`MAX_PRINCIPALS`], or what a test set.
     principals: AtomicUsize,
     /// The token a connection must present to be the operator, minted at [`Server::with_options`]
@@ -150,6 +159,15 @@ struct Inner {
 struct Missed {
     count: u64,
     since_ms: u64,
+}
+
+/// A principal's chat while it has no connection - see [`Inner::pending`]. `dropped` is what did
+/// not fit, said out loud on the log and again when the inbox is delivered, never a silent cut.
+#[derive(Debug, Default)]
+struct Pending {
+    rows: std::collections::VecDeque<chat::Message>,
+    since_ms: u64,
+    dropped: u64,
 }
 
 /// A handle to a running server - what the coordinator's own threads use: the tie-breaker reads
@@ -211,6 +229,7 @@ impl Server {
                 chat: Mutex::new(Chat::new()),
                 externals: Mutex::new(BTreeSet::new()),
                 armed: Mutex::new(BTreeSet::new()),
+                pending: Mutex::new(BTreeMap::new()),
                 principals: AtomicUsize::new(MAX_PRINCIPALS),
                 operator_token,
                 stop: AtomicBool::new(false),
@@ -765,6 +784,108 @@ impl Server {
             .collect()
     }
 
+    /// Keep a message for every member of its room that has no connection - the ones a push cannot
+    /// reach. `here` is who has one, so this and the push before it never disagree about a member.
+    fn remember_for_absent(&self, message: &chat::Message, here: &BTreeSet<String>) {
+        // Who could be told: the room's members, the principal it is addressed to, and whoever it
+        // names. The last two matter most - a session that is away is very often exactly the one
+        // the message was for, and a room that only counted its connected members would lose it.
+        let project = chat::project_of_room(&message.room)
+            .unwrap_or("")
+            .to_string();
+        let mut audience: BTreeMap<String, (Seat, String)> = BTreeMap::new();
+        for p in self.roster_of(&message.room) {
+            audience.insert(p.name, (p.kind, p.project));
+        }
+        let named: Vec<String> = message
+            .to
+            .iter()
+            .cloned()
+            .chain(chat::mentions(&message.text))
+            .collect();
+        // A name is worth keeping for if the room can still deliver to it: somebody who answers now,
+        // or a session the room has a cursor for that has simply gone quiet. Without the second
+        // half, the message naming a session while it restarts would be the one it never hears.
+        let armed = self.inner.armed.lock().expect("the armed lock").clone();
+        for who in named {
+            if who == message.author || !(self.is_known(&who) || armed.contains(&who)) {
+                continue;
+            }
+            audience
+                .entry(who)
+                .or_insert((Seat::Session, project.clone()));
+        }
+        let max_principals = self.inner.principals.load(Ordering::SeqCst);
+        let mut pending = self.inner.pending.lock().expect("the pending lock");
+        for (name, (kind, project)) in audience {
+            if name == message.author
+                || here.contains(&name)
+                || !self.visible(&name, kind, &project, message)
+            {
+                continue;
+            }
+            if !pending.contains_key(&name)
+                && pending.len() >= max_principals
+                && let Some((gone, was)) = pending
+                    .iter()
+                    .min_by_key(|(_, p)| p.since_ms)
+                    .map(|(k, p)| (k.clone(), p.rows.len() + p.dropped as usize))
+            {
+                pending.remove(&gone);
+                eprintln!(
+                    "room: forgetting {was} unread message(s) for `{gone}`; the room tracks \
+                     {max_principals} sessions"
+                );
+            }
+            let inbox = pending.entry(name.clone()).or_insert_with(|| Pending {
+                rows: std::collections::VecDeque::new(),
+                since_ms: message.ts,
+                dropped: 0,
+            });
+            inbox.rows.push_back(message.clone());
+            while inbox.rows.len() > MAX_PENDING {
+                inbox.rows.pop_front();
+                inbox.dropped += 1;
+                // Said once per member rather than once per message: a flood of drops is one
+                // sentence, and the ring still has every one of them for an `inbox` read.
+                if inbox.dropped == 1 {
+                    eprintln!(
+                        "room: `{name}` already has {MAX_PENDING} undelivered message(s); the \
+                         oldest are not pushed - `inbox` still has them"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Hand a connection the chat its principal missed while it had none, oldest first, and empty
+    /// the inbox: a member that has been told is not told twice.
+    fn deliver_pending(&self, conn: &Conn, session: &str) {
+        let Some(mut inbox) = self
+            .inner
+            .pending
+            .lock()
+            .expect("the pending lock")
+            .remove(session)
+        else {
+            return;
+        };
+        if inbox.dropped > 0 {
+            eprintln!(
+                "room: `{session}` was away for {} message(s), and the {} the inbox holds are \
+                 pushed; `inbox` has the rest",
+                inbox.rows.len() as u64 + inbox.dropped,
+                inbox.rows.len()
+            );
+        }
+        for message in std::mem::take(&mut inbox.rows) {
+            conn.send(Response::Chat {
+                names_you: message.names(session),
+                message,
+            });
+        }
+    }
+
     /// May a principal in `seat` and `project` see chat room `room`?
     fn may_see(&self, seat: Seat, project: &str, room: &str) -> bool {
         if room == chat::HOST_ROOM {
@@ -792,7 +913,10 @@ impl Server {
         self.may_see(seat, project, &m.room)
     }
 
-    /// Does anybody on this host answer to `name`?
+    /// Does anybody on this host answer to `name`? An external that has connected, a session with a
+    /// connection, or a top-level session in a project's tree. A session the room has merely seen
+    /// before is NOT here - that would accept a message to nobody - and it is
+    /// [`Server::remember_for_absent`] that keeps such a session's chat for it.
     fn is_known(&self, name: &str) -> bool {
         if name == chat::OPERATOR
             || self
@@ -1093,8 +1217,10 @@ impl Server {
         };
         // Pushed after the log lock is released. A repeat of `id` pushes again: a reader that
         // already has the seq drops it, and one that missed it gets it.
+        let mut here: BTreeSet<String> = BTreeSet::new();
         for c in self.conn_list() {
             let name = c.who.session.as_str();
+            here.insert(name.to_string());
             if name == message.author || !self.visible(name, c.seat, &c.project, &message) {
                 continue;
             }
@@ -1103,6 +1229,9 @@ impl Server {
                 message: message.clone(),
             });
         }
+        // And a member with no connection is told nothing by a push. It is not lost: the message is
+        // kept for it and delivered when it next connects, and its inbox cursor counts it unread.
+        self.remember_for_absent(&message, &here);
         Response::Said {
             id: id.to_string(),
             message,
@@ -1293,6 +1422,10 @@ impl Server {
                         .expect("the externals lock")
                         .insert(speaker.session.clone());
                 }
+                // What was said while this principal had no connection, pushed now that it has
+                // one. After the `Welcome`, and after the connection is registered, so a message
+                // said during the delivery reaches it by one door or the other and not neither.
+                me.deliver_pending(&conn, &speaker.session);
 
                 // The read loop. Every frame is answered, and every event the answer carries
                 // is routed to the connections it is about - including this one, because a claim

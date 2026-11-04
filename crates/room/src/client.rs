@@ -2,6 +2,7 @@
 //! the bell delivered to a callback, and a beat run on the session's behalf.
 //! The connection stays open for the session's life, or each close would be a `note_gone`.
 
+use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -69,6 +70,14 @@ impl Default for Welcome {
 /// What a client does with a pushed chat message: the message, and whether it names this reader.
 pub type ChatHook = Arc<dyn Fn(&crate::chat::Message, bool) + Send + Sync>;
 
+/// The chat hook, and the messages that arrived before there was one. A member's undelivered
+/// messages arrive with its first frames, which is before a caller of `connect` can install a hook.
+#[derive(Default)]
+struct Chatty {
+    hook: Option<ChatHook>,
+    early: VecDeque<(crate::chat::Message, bool)>,
+}
+
 /// What a client does when the room rings it - the wake, as a callback.
 pub type Wake = Arc<dyn Fn(&Event) + Send + Sync>;
 
@@ -86,8 +95,10 @@ struct Shared {
     room: String,
     wake: Wake,
     seat: crate::chat::Seat,
-    /// Called for every chat message pushed to this connection. Runs on the reader thread.
-    chat: Mutex<Option<ChatHook>>,
+    /// The chat hook and what arrived before there was one - ONE lock, because the handover is one
+    /// moment: a message buffered just as a hook is installed would otherwise wait for a hook that
+    /// has already looked.
+    chat: Mutex<Chatty>,
     live: Mutex<Option<Live>>,
     generation: std::sync::atomic::AtomicU64,
     /// One round trip at a time: the reply channel below is a single slot, and two calls in flight
@@ -165,7 +176,7 @@ impl Client {
                 room: room.into(),
                 wake,
                 seat,
-                chat: Mutex::new(None),
+                chat: Mutex::new(Chatty::default()),
                 live: Mutex::new(None),
                 generation: std::sync::atomic::AtomicU64::new(0),
                 call: Mutex::new(()),
@@ -206,9 +217,17 @@ impl Client {
         }
     }
 
-    /// Hear pushed chat. Replaces any earlier hook.
+    /// Hear pushed chat. Replaces any earlier hook, and hands it what arrived before this call:
+    /// the first frames on a reconnected member's socket are the messages it missed.
     pub fn on_chat(&self, hook: ChatHook) {
-        *self.inner.chat.lock().expect("the chat lock") = Some(hook);
+        let early: Vec<(crate::chat::Message, bool)> = {
+            let mut slot = self.inner.chat.lock().expect("the chat lock");
+            slot.hook = Some(Arc::clone(&hook));
+            slot.early.drain(..).collect()
+        };
+        for (message, names_you) in early {
+            hook(&message, names_you);
+        }
     }
 
     pub fn session(&self) -> &str {
@@ -445,7 +464,21 @@ impl Client {
                     match frame {
                         Some(Response::Event { event }) => (me.inner.wake)(&event),
                         Some(Response::Chat { message, names_you }) => {
-                            let hook = me.inner.chat.lock().expect("the chat lock").clone();
+                            // One lock for the handover, and the hook is called OUTSIDE it: a hook
+                            // that asked the room something would otherwise wait on this lock.
+                            let hook = {
+                                let mut slot = me.inner.chat.lock().expect("the chat lock");
+                                match slot.hook.clone() {
+                                    Some(hook) => Some(hook),
+                                    None => {
+                                        slot.early.push_back((message.clone(), names_you));
+                                        while slot.early.len() > crate::server::MAX_PENDING {
+                                            slot.early.pop_front();
+                                        }
+                                        None
+                                    }
+                                }
+                            };
                             if let Some(hook) = hook {
                                 hook(&message, names_you);
                             }

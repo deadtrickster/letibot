@@ -434,3 +434,100 @@ fn a_linked_client_redials_a_restarted_coordinator_and_hears_what_follows() {
     said(a.say("r2", "", "back"));
     second.stop();
 }
+
+/// Wait until `f` says so, polling - for a fact that arrives on a thread (a connection served, a
+/// close noticed) rather than as a frame.
+fn until(what: &str, mut f: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        if f() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    panic!("waited five seconds for {what}");
+}
+
+/// A message to a session that is not connected is neither pushed nor lost: the room keeps it and
+/// pushes it when that session connects, and its inbox cursor counts it unread in the meantime.
+#[test]
+fn a_message_to_a_session_that_is_away_is_delivered_when_it_connects() {
+    let dir = Scratch::new();
+    let server = coordinator(&dir);
+    // It connects once, so the room has a cursor for it, and then goes.
+    let away = seat(&server, "s-away", A, Seat::Session);
+    drop(away);
+    until("the away session's connection to close", || {
+        server.connections() == 0
+    });
+    let here = seat(&server, "s-here", A, Seat::Session);
+    let m = said(here.say("1", "", "@s-away: the disk is free now"));
+    // It comes back, and the message it was not connected for arrives without it asking.
+    let back = seat(&server, "s-away", A, Seat::Session);
+    let (got, names) = back.next();
+    assert_eq!(got.seq, m.seq, "the message it missed");
+    assert!(names, "and it names the reader");
+    // Counted while it was away: the cursor did not move, so the room's own read says one unread.
+    match back.call(Request::Rooms) {
+        Response::Rooms { rows } => {
+            let project = rows
+                .iter()
+                .find(|r| r.id == project_room(A))
+                .unwrap_or_else(|| panic!("its own room: {rows:?}"));
+            assert_eq!(project.unread, 1, "counted as unread until it acks");
+        }
+        other => panic!("{other:?}"),
+    }
+    // And an inbox read has it too: the push is a convenience, the record is the log.
+    match back.call(Request::Inbox {
+        attention: Attention::All,
+        limit: None,
+    }) {
+        Response::Inbox { rows, .. } => {
+            assert!(rows.iter().any(|r| r.seq == m.seq), "{rows:?}");
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+/// The inbox one absent member can grow is bounded, and what does not fit is a push that was not
+/// made - the ring still has every message, so the oldest is dropped from the PUSH, never lost.
+#[test]
+fn an_absent_members_inbox_is_bounded_and_the_ring_still_has_the_rest() {
+    let dir = Scratch::new();
+    let server = coordinator(&dir);
+    let away = seat(&server, "s-away", A, Seat::Session);
+    drop(away);
+    until("the away session's connection to close", || {
+        server.connections() == 0
+    });
+    let here = seat(&server, "s-here", A, Seat::Session);
+    let bound = letibot_room::server::MAX_PENDING;
+    let sent = bound + 10;
+    for i in 0..sent {
+        said(here.say(&format!("m{i}"), "", &format!("@s-away line {i}")));
+    }
+    let back = seat(&server, "s-away", A, Seat::Session);
+    let mut pushed = Vec::new();
+    while pushed.len() < sent {
+        match back.heard.recv_timeout(Duration::from_millis(200)) {
+            Ok((m, _)) => pushed.push(m.seq),
+            Err(_) => break,
+        }
+    }
+    assert_eq!(pushed.len(), bound, "the newest {bound} are pushed");
+    assert!(
+        pushed.windows(2).all(|w| w[0] < w[1]),
+        "in the order they were said"
+    );
+    // Nothing was cut from the record: the oldest of them is still readable.
+    match back.call(Request::Inbox {
+        attention: Attention::All,
+        limit: None,
+    }) {
+        Response::Inbox { rows, .. } => {
+            assert_eq!(rows.len(), sent, "the ring still has all {sent}");
+        }
+        other => panic!("{other:?}"),
+    }
+}

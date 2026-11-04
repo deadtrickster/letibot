@@ -267,6 +267,13 @@ returns what the filter lets through after the cursor and counts the rest as `sk
 once it has handled the rows. Delivery is at least once. A head, which has no push, polls `read` with
 `since` or `inbox`.
 
+**A member that is away.** A push cannot reach a principal with no connection, so the message is kept
+for it: the room holds the newest **64** of them per principal (`MAX_PENDING`) and pushes them, oldest
+first, when that principal next says `hello` - the first frames on a reconnected socket are the
+messages it missed, and a client that installs its chat hook after `connect` keeps them for it. The
+cursor does not move, so `rooms` and `inbox` count them as unread in the meantime. A message past the
+64 is not pushed and is logged as not pushed; the room's ring still has it, so `inbox` is the record.
+
 ### Through the daemon
 
 `ClientFrame::RoomChat {client_request_id, op}` carries a room `Request` as JSON in `op` and is answered
