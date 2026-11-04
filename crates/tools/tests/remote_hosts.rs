@@ -1242,7 +1242,8 @@ fn a_wedged_master_fails_a_big_write_at_its_deadline_and_the_next_call_is_fresh(
         "{detail}"
     );
     assert!(
-        *at - (began_write.duration_since(began)) < bound,
+        // The write's deadline is the bound plus a second per 512 KiB: 4 s for 1 MiB.
+        *at - (began_write.duration_since(began)) < bound + Duration::from_secs(2),
         "the warning came before the deadline: {at:?}"
     );
 
