@@ -726,11 +726,15 @@ which merely starts with `-` in non-diff output (a `ls -l`, a flag list) is not 
 **Status:** open. Item 5 is done on `z-r123-claims`: the queues are kept in one append-only store
 beside the socket (`crates/room/src/store.rs`), every project's room appends to it and reloads at
 start, and a claim whose beat stopped while the coordinator was down is taken back on reload by
-the room's own sweep (requeued below the threshold, raised at it). left: items 1, 2, 3, 4 and 6.
+the room's own sweep (requeued below the threshold, raised at it). Item 1 is on `z-r123-wide`: a
+`leticode` session with a shell on Linux gets the wide seat (`ViewSpec::wide`: `--bind / /`, the
+operator's home as `$HOME`, every store on `seatbelt::deny_under_home` masked), and a machine that
+cannot build it is refused with `boundary_absent` instead of running unconfined. left: items 2, 3,
+4 and 6.
 
 Record: `docs/reviews/2026-11-04-release.md` (30 reports verbatim, synthesis and decisions at the end). The agreed must-fix list is being fixed for the release; these were deferred there:
 
-1. A wide bwrap seat for a Linux top-level session (the release only tells the model and the head that there is no boundary). Folds into R121.
+1. A wide bwrap seat for a Linux top-level session (the release only tells the model and the head that there is no boundary). Folds into R121. **On `z-r123-wide`.**
 2. The refused compaction summary turn stays in the transcript and spends context at the wall; roll it back.
 3. The transcript walk is O(L^2) over a long hidden run (`crates/tui/src/app/scroll.rs:244-248`, `ui/transcript/markers.rs:99-161`).
 4. **DONE** — the picture and text-only marks belong to the SESSION: `crates/provider/src/marks.rs` is a bounded set (64, oldest out) entered around each provider call, and `session_marks` (schema 40) keeps it on the session's row across a restart. A refusal in one session leaves another's request untouched (`a_refusal_learned_in_one_session_leaves_another_sessions_request_alone`), the bound holds, and `crates/harnessd/src/harness/tests/marks.rs` reopens a session and finds its mark.

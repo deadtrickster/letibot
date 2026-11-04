@@ -136,12 +136,13 @@ const WORKSPACE_GONE: &str = "workspace_gone";
 /// typo does not read as a pin that took effect.
 pub(crate) const SKILLS_PIN: &str = "skills_pin";
 
-/// The warning code for a session that runs unconfined as designed (a `leticode` seat asks for no
-/// boundary, and Linux has no wide one), said once by the top-level session. Routine: a disclosure.
+/// The warning code for a session that runs unconfined as designed: a `leticode` seat asks for no
+/// boundary, and this session seats no shell for a wide one to wrap. Said once by the top-level
+/// session. Routine: a disclosure.
 const UNCONFINED_SESSION: &str = "unconfined_session";
 
-/// The warning code for a boundary that was asked for and could not be built, so the session fell
-/// back to the whole host.
+/// The warning code for a boundary that was asked for and could not be built: on a Mac the session
+/// fell back to the whole host, on Linux it was refused. Both say it before anything runs.
 const BOUNDARY_ABSENT: &str = "boundary_absent";
 
 /// The warning code for a session whose tools run on another machine - where its tree is,

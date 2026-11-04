@@ -265,12 +265,12 @@ pub const TABLE: &[(&str, Class)] = &[
     // A session's workspace is gone - said when it opens or wakes on a directory
     // that no longer exists. A Failure: nothing the session runs can work until somebody acts.
     ("workspace_gone", Class::Failure),
-    // A session asked for a boundary and got an unconfined shell: a command is admitted
-    // without a card only inside a measured boundary, so without one every command that runs code is
-    // decided per command. The fix is the operator's.
+    // A session asked for a boundary and did not get one: on a Mac it runs unconfined and every
+    // command that runs code is decided per command, on Linux the seat is refused. The fix is the
+    // operator's.
     ("boundary_absent", Class::Failure),
-    // A session that runs unconfined by design, said once by the top-level session. A
-    // disclosure of the state the session was asked to be in, so Routine.
+    // A session that runs unconfined by design: a `leticode` seat that seats no command, said once
+    // by the top-level session. A disclosure of the state the session was asked to be in, so Routine.
     ("unconfined_session", Class::Routine),
     // The seat opened without a GitHub token: `gh auth token` gave none, so `git push` and `gh`
     // cannot authenticate. The fix is the operator's (`gh auth login`).

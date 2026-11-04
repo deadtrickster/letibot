@@ -524,6 +524,13 @@ pub struct ViewSpec {
     /// Paths inside a read-write grant that stay read-only: a file the operator's own tools run
     /// later outside the boundary (git hooks and config) must not be writable from inside.
     pub protected: Vec<Protection>,
+    /// The whole host filesystem is the view, at its own paths and writable as the user, with
+    /// `home` as `$HOME`: a top-level session's seat, whose only fence is [`ViewSpec::masked`].
+    pub wide: bool,
+    /// Read and write, whatever else the view binds: the bwrap rendering puts an empty filesystem
+    /// where the path is a directory and `/dev/null` where it is a file. A credential store has to
+    /// be gone even from a view of the whole machine, and it is empty rather than absent.
+    pub masked: Vec<PathBuf>,
 }
 
 /// A path a confined command must not write, and what to bind there when it does not exist. bwrap
@@ -648,7 +655,25 @@ impl ViewSpec {
             grants: Vec::new(),
             hidden: Vec::new(),
             protected: Vec::new(),
+            wide: false,
+            masked: Vec::new(),
         }
+    }
+
+    /// The whole machine at its own paths, read-write, with the operator's home as `$HOME`. The
+    /// caller sets `home` too: a wide view whose home is a throwaway would be the tight one.
+    pub fn wide(mut self) -> ViewSpec {
+        self.wide = true;
+        self
+    }
+
+    /// Put `paths` behind an empty filesystem inside the view. Only a wide view renders them:
+    /// anywhere else the operator's home is already outside the view.
+    pub fn masking(mut self, paths: impl IntoIterator<Item = PathBuf>) -> ViewSpec {
+        self.masked.extend(paths);
+        self.masked.sort();
+        self.masked.dedup();
+        self
     }
 
     /// Keep this path read-only even inside a read-write grant.
@@ -684,6 +709,11 @@ impl ViewSpec {
     /// host would disclose what the operator has, and cannot answer about an absent path.
     pub fn classify(&self, path: &Path) -> Presence {
         if !path.is_absolute() {
+            return Presence::Inside;
+        }
+        // A wide view is the machine itself: nothing is absent from it, and a masked path is
+        // there and empty rather than outside.
+        if self.wide {
             return Presence::Inside;
         }
         // The bound roots first, so a project under `/tmp` is Inside, not Replaced.
@@ -728,6 +758,9 @@ impl ViewSpec {
 
     /// The roots a disclosure lists, in the order it lists them.
     pub fn summary(&self) -> String {
+        if self.wide {
+            return self.wide_summary();
+        }
         let mut s = format!("project {} (rw)", self.project.display());
         s.push_str(&format!("; {} read-only system paths", self.system.len()));
         match &self.home {
@@ -751,6 +784,47 @@ impl ViewSpec {
                  the next",
                 d.display()
             )),
+        }
+        if self.grants.is_empty() {
+            s.push_str("; no grants");
+        } else {
+            for g in &self.grants {
+                s.push_str(&format!("\n    grant: {}", g.line()));
+            }
+        }
+        s
+    }
+
+    /// [`ViewSpec::summary`] for a wide view, where the project is not a bound root because the
+    /// whole machine is: the fence is the only thing worth listing.
+    fn wide_summary(&self) -> String {
+        let home = match &self.home {
+            HomeView::Dir(d) => d.display().to_string(),
+            // A wide view with a throwaway home is a caller's mistake, and a disclosure that
+            // said nothing about it would be the place it went unnoticed.
+            HomeView::Tmpfs => TMPFS_HOME.to_string(),
+        };
+        let mut s = format!(
+            "the WHOLE host filesystem at its own paths, read-write as this user, so nothing is \
+             absent from it; $HOME is {home} (rw); {} paths masked for read and write (an empty \
+             filesystem where a store is a directory, an unreadable `/dev/null` where it is a file)",
+            self.masked.len()
+        );
+        match &self.tmp {
+            TmpView::PerCommand => s.push_str("; /tmp is this machine's own"),
+            TmpView::Session(d) => s.push_str(&format!(
+                "; the session's scratch is $TMPDIR, {} (rw)",
+                d.display()
+            )),
+        }
+        if !self.masked.is_empty() {
+            let list = self
+                .masked
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            s.push_str(&format!("\n    masked: {list}"));
         }
         if self.grants.is_empty() {
             s.push_str("; no grants");
@@ -954,6 +1028,9 @@ impl Boundary {
     /// the view's own home, and what a path outside it is. A model with only the failure note
     /// reads a hermetic view as a broken box.
     pub fn model_brief(&self) -> String {
+        if self.view.wide {
+            return self.wide_brief();
+        }
         let v = &self.view;
         // Top-level roots only: `/etc/ssl` and `/etc/ld.so.cache` are one answer to "what is
         // under /etc", and the full table is 19 lines of prompt bytes for one fact.
@@ -1033,6 +1110,49 @@ impl Boundary {
                 s.push_str(&format!(" {}.", g.line()));
             }
         }
+        s
+    }
+
+    /// [`Boundary::model_brief`] for a wide view: the machine is not a view of some of its files,
+    /// so what a model has to know is that everything is here and what the mask is.
+    fn wide_brief(&self) -> String {
+        let v = &self.view;
+        let home = match &v.home {
+            HomeView::Dir(d) => format!("`{}`, this machine's own home, writable", d.display()),
+            HomeView::Tmpfs => format!("`{TMPFS_HOME}`, a home this view makes for itself"),
+        };
+        let tmp = match &v.tmp {
+            TmpView::PerCommand => "this machine's own".to_string(),
+            TmpView::Session(d) => {
+                format!(
+                    "`{}`, this session's scratch, through `$TMPDIR`",
+                    d.display()
+                )
+            }
+        };
+        let mut s = format!(
+            "Commands here run inside a boundary AROUND this machine, not in a view of part of \
+             it: every path is at its own place, writable as this user, and nothing is absent. \
+             `$HOME` is {home}; `/tmp` is {tmp}. The fence is a mask: {} of the operator's \
+             credential stores are an empty filesystem inside the boundary, or an unreadable \
+             `/dev/null` where a store is a file, so a name like `~/.ssh` is there and holds \
+             nothing.",
+            v.masked.len()
+        );
+        s.push_str(&match &self.egress {
+            Egress::Denied => {
+                " There is no network either: no interfaces, no routes, no DNS.".to_string()
+            }
+            Egress::Host { why } => {
+                format!(" The network is this machine's, by a decision — {why}.")
+            }
+        });
+        s.push_str(
+            " Nothing is outside this boundary: a path that fails here failed on its own \
+             permissions or because it is not there, so a missing file really is missing. What \
+             that costs is the same as anywhere: what a command reads it can copy into the \
+             transcript, and the masked stores are the one thing the boundary hides.",
+        );
         s
     }
 
@@ -2164,53 +2284,87 @@ fn pieces_of(
         arg(&mut a, "--new-session");
     }
 
-    // The system roots, read-only and `-try`: a host without `/lib64` is not a failure, and a
-    // merged-`/usr` host has symlinks where a split one has directories.
-    for p in &view.system {
-        arg(&mut a, "--ro-bind-try");
-        arg(&mut a, p.display().to_string());
-        arg(&mut a, p.display().to_string());
-    }
-    // A shared network has to be able to name things: with the host's routes and no resolver
-    // files every name fails to resolve, so the decision to share the network reads as no
-    // network at all. Only with egress, and a symlink binds its target.
-    if egress.allowed() {
-        for p in NETWORK_ROOTS {
+    if view.wide {
+        // The machine itself, at its own paths and writable as this user: that is the wide seat,
+        // and the masks below are the only thing it hides. The system roots and the project are
+        // inside this bind, so binding them again would only be two mounts of one tree.
+        arg(&mut a, "--bind");
+        arg(&mut a, "/");
+        arg(&mut a, "/");
+        // Still this command's own `/proc`, because the PID namespace above is: the host's would
+        // show pids the namespace says are not there.
+        arg(&mut a, "--proc");
+        arg(&mut a, "/proc");
+        // An empty filesystem over a store, or an unreadable `/dev/null` where it is a file. A
+        // path that is not there is skipped: bwrap mounts only over an existing mount point, and
+        // making one would write the operator's home.
+        for p in &view.masked {
+            match (p.is_dir(), p.is_file()) {
+                (true, _) => {
+                    arg(&mut a, "--tmpfs");
+                    arg(&mut a, p.display().to_string());
+                    // Read-only too, so a command cannot fill it and have the operator's own
+                    // tools read what it left there.
+                    arg(&mut a, "--remount-ro");
+                    arg(&mut a, p.display().to_string());
+                }
+                (false, true) => {
+                    arg(&mut a, "--ro-bind");
+                    arg(&mut a, "/dev/null");
+                    arg(&mut a, p.display().to_string());
+                }
+                (false, false) => {}
+            }
+        }
+    } else {
+        // The system roots, read-only and `-try`: a host without `/lib64` is not a failure, and a
+        // merged-`/usr` host has symlinks where a split one has directories.
+        for p in &view.system {
             arg(&mut a, "--ro-bind-try");
-            arg(&mut a, *p);
-            arg(&mut a, *p);
+            arg(&mut a, p.display().to_string());
+            arg(&mut a, p.display().to_string());
         }
-    }
-    // The kernel interfaces a process needs to be a process. `--proc` is what makes the PID
-    // namespace visible as isolation rather than as a lie: without it the sandbox reads the
-    // host's `/proc` and sees every pid.
-    arg(&mut a, "--proc");
-    arg(&mut a, "/proc");
-    arg(&mut a, "--dev");
-    arg(&mut a, "/dev");
-    // `/tmp` is the session's, not the command's, when the caller has a directory for it: a
-    // fresh tmpfs silently eats a two-call scratch idiom. `/var/tmp` and `/run` stay fresh
-    // either way, and `/run` holds the agent socket and the tmpfs home bound below.
-    match &view.tmp {
-        TmpView::PerCommand => {
-            arg(&mut a, "--tmpfs");
-            arg(&mut a, "/tmp");
+        // A shared network has to be able to name things: with the host's routes and no resolver
+        // files every name fails to resolve, so the decision to share the network reads as no
+        // network at all. Only with egress, and a symlink binds its target.
+        if egress.allowed() {
+            for p in NETWORK_ROOTS {
+                arg(&mut a, "--ro-bind-try");
+                arg(&mut a, *p);
+                arg(&mut a, *p);
+            }
         }
-        TmpView::Session(dir) => {
-            arg(&mut a, "--bind");
-            arg(&mut a, dir.display().to_string());
-            arg(&mut a, "/tmp");
+        // The kernel interfaces a process needs to be a process. `--proc` is what makes the PID
+        // namespace visible as isolation rather than as a lie: without it the sandbox reads the
+        // host's `/proc` and sees every pid.
+        arg(&mut a, "--proc");
+        arg(&mut a, "/proc");
+        arg(&mut a, "--dev");
+        arg(&mut a, "/dev");
+        // `/tmp` is the session's, not the command's, when the caller has a directory for it: a
+        // fresh tmpfs silently eats a two-call scratch idiom. `/var/tmp` and `/run` stay fresh
+        // either way, and `/run` holds the agent socket and the tmpfs home bound below.
+        match &view.tmp {
+            TmpView::PerCommand => {
+                arg(&mut a, "--tmpfs");
+                arg(&mut a, "/tmp");
+            }
+            TmpView::Session(dir) => {
+                arg(&mut a, "--bind");
+                arg(&mut a, dir.display().to_string());
+                arg(&mut a, "/tmp");
+            }
         }
-    }
-    arg(&mut a, "--tmpfs");
-    arg(&mut a, "/var/tmp");
-    arg(&mut a, "--tmpfs");
-    arg(&mut a, "/run");
+        arg(&mut a, "--tmpfs");
+        arg(&mut a, "/var/tmp");
+        arg(&mut a, "--tmpfs");
+        arg(&mut a, "/run");
 
-    // The project, read-write, at its own path.
-    arg(&mut a, "--bind");
-    arg(&mut a, view.project.display().to_string());
-    arg(&mut a, view.project.display().to_string());
+        // The project, read-write, at its own path.
+        arg(&mut a, "--bind");
+        arg(&mut a, view.project.display().to_string());
+        arg(&mut a, view.project.display().to_string());
+    }
 
     for g in &view.grants {
         match g {
@@ -2285,9 +2439,13 @@ fn pieces_of(
     let home = match &view.home {
         HomeView::Tmpfs => TMPFS_HOME.to_string(),
         HomeView::Dir(d) => {
-            arg(&mut a, "--bind");
-            arg(&mut a, d.display().to_string());
-            arg(&mut a, d.display().to_string());
+            // A wide view already has the operator's home at its own path. Anywhere else it is a
+            // directory of letibot's, which nothing has bound.
+            if !view.wide {
+                arg(&mut a, "--bind");
+                arg(&mut a, d.display().to_string());
+                arg(&mut a, d.display().to_string());
+            }
             d.display().to_string()
         }
     };
@@ -2321,6 +2479,15 @@ fn pieces_of(
     arg(&mut a, "--setenv");
     arg(&mut a, "HOME");
     arg(&mut a, home);
+    // A wide view keeps this machine's `/tmp`, so the session's scratch reaches the command as
+    // `$TMPDIR` instead: the `--bind` over `/tmp` above is the tight view's arm.
+    if view.wide
+        && let TmpView::Session(d) = &view.tmp
+    {
+        arg(&mut a, "--setenv");
+        arg(&mut a, "TMPDIR");
+        arg(&mut a, d.display().to_string());
+    }
     if view
         .grants
         .iter()
@@ -2667,6 +2834,151 @@ mod tests {
             !joined.contains(&dir.join("common/gone").display().to_string()),
             "a parent that is absent is not made in the operator's tree: {joined}"
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The wide seat's argv: the machine at its own paths and writable, with the stores masked out
+    /// of it. Nothing is bound twice, and the mask is the whole of what the view hides.
+    #[test]
+    fn a_wide_view_binds_the_machine_and_masks_the_stores_it_is_given() {
+        let dir = std::env::temp_dir().join(format!("letibot-wide-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let home = dir.join("home");
+        std::fs::create_dir_all(home.join(".ssh")).expect("a fake store");
+        std::fs::write(home.join(".npmrc"), "//registry/:_authToken=fake\n").expect("a fake file");
+        std::fs::create_dir_all(dir.join("project")).expect("a project");
+        let tmp = dir.join("tmp");
+        let view = ViewSpec::project_only(dir.join("project"))
+            .with_home(HomeView::Dir(home.clone()))
+            .with_tmp(TmpView::Session(tmp.clone()))
+            .wide()
+            .masking([home.join(".ssh"), home.join(".npmrc"), home.join(".aws")]);
+        let argv = build_argv_with(
+            Path::new("/usr/bin/bwrap"),
+            &view,
+            &Egress::Denied,
+            &ConfinePlan {
+                cwd: &dir,
+                env: &[],
+            },
+            Session::Detached,
+        );
+        let joined = argv.join(" ");
+        assert!(joined.contains("--bind / /"), "{joined}");
+        // Still this command's own `/proc`, because the PID namespace above it is.
+        assert!(joined.contains("--proc /proc"), "{joined}");
+        let ssh = home.join(".ssh").display().to_string();
+        assert!(
+            joined.contains(&format!("--tmpfs {ssh} --remount-ro {ssh}")),
+            "a store that is a directory is an empty one: {joined}"
+        );
+        let npmrc = home.join(".npmrc").display().to_string();
+        assert!(
+            joined.contains(&format!("--ro-bind /dev/null {npmrc}")),
+            "a store that is a file is the unreadable empty one: {joined}"
+        );
+        assert!(
+            !joined.contains(&home.join(".aws").display().to_string()),
+            "a store that is not there has no mount point, and making one writes the operator's \
+             home: {joined}"
+        );
+        // The machine IS the view, so nothing is bound a second time: no system roots, no project,
+        // and the machine keeps its own `/tmp`.
+        assert!(!joined.contains("--ro-bind-try"), "{joined}");
+        assert!(!joined.contains("--tmpfs /tmp "), "{joined}");
+        let project = dir.join("project").display().to_string();
+        assert!(
+            !joined.contains(&format!("--bind {project} {project}")),
+            "{joined}"
+        );
+        assert!(
+            joined.contains(&format!("--setenv HOME {}", home.display())),
+            "{joined}"
+        );
+        assert!(
+            joined.contains(&format!("--setenv TMPDIR {}", tmp.display())),
+            "the session's scratch reaches a wide command as $TMPDIR: {joined}"
+        );
+        assert!(
+            joined.contains("--unshare-net"),
+            "a read-only seat has no network: {joined}"
+        );
+        // And the same view with the network seated does not take it away.
+        let open = build_argv_with(
+            Path::new("/usr/bin/bwrap"),
+            &view,
+            &Egress::Host {
+                why: "a test".into(),
+            },
+            &ConfinePlan {
+                cwd: &dir,
+                env: &[],
+            },
+            Session::Detached,
+        )
+        .join(" ");
+        assert!(!open.contains("--unshare-net"), "{open}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// One list, two renderings: the Linux seat's masks are the paths the macOS profile denies,
+    /// over the same home, so a store added to one cannot be missing from the other.
+    #[test]
+    fn the_wide_seats_masks_are_the_list_the_macos_seat_denies() {
+        use crate::exec::seat;
+        let dir = std::env::temp_dir().join(format!("letibot-parity-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let home = dir.join("operator");
+        let mut want: Vec<PathBuf> = crate::exec::seatbelt::deny_under_home(true)
+            .into_iter()
+            .map(|rel| home.join(rel))
+            .collect();
+        want.sort();
+        want.dedup();
+        // Every store made, so the argv carries one mount per entry and the comparison is about
+        // the list rather than about what this box happens to have.
+        for p in &want {
+            std::fs::create_dir_all(p).expect("a fake store");
+        }
+        std::fs::create_dir_all(dir.join("project")).expect("a project");
+        let wide = seat::seat_for_level(
+            seat::Level::Wide,
+            &crate::mode::Mode::WRITES_ALLOWED,
+            "this machine",
+            &[] as &[&str],
+            &home,
+            None,
+        );
+        assert_eq!(
+            wide.masked, want,
+            "the seat holds the list both renderings read"
+        );
+        assert!(
+            !want.iter().any(|p| p.ends_with(".config/gh")),
+            "a top-level seat keeps gh's config, which is what the token it injects is for: {want:?}"
+        );
+        let view = ViewSpec::project_only(dir.join("project"))
+            .with_home(HomeView::Dir(home.clone()))
+            .wide()
+            .masking(wide.masked.iter().cloned());
+        let argv = build_argv_with(
+            Path::new("/usr/bin/bwrap"),
+            &view,
+            &Egress::Denied,
+            &ConfinePlan {
+                cwd: &dir,
+                env: &[],
+            },
+            Session::Detached,
+        );
+        let joined = argv.join(" ");
+        for p in &want {
+            let p = p.display().to_string();
+            assert!(
+                joined.contains(&format!("--tmpfs {p} --remount-ro {p}")),
+                "{p} is on the macOS deny list and not masked here: {joined}"
+            );
+        }
         std::fs::remove_dir_all(&dir).ok();
     }
 

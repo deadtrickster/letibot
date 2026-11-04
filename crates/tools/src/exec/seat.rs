@@ -94,6 +94,10 @@ pub struct SeatView {
     /// readable and the home writable, and the deny list is the only fence. `None` is the tight
     /// view with a throwaway home.
     pub home: Option<PathBuf>,
+    /// Hidden whatever else the view holds, read and write: the stores
+    /// [`super::seatbelt::deny_under_home`] names, joined to `home`. A wide seat's fence, and a
+    /// test holds the list the Linux mask renders and the list the macOS profile denies equal.
+    pub masked: Vec<PathBuf>,
 }
 
 /// How much of the machine a session's commands see. A session nobody started on the operator's
@@ -127,13 +131,24 @@ pub fn seat_for_level<S: AsRef<str>>(
 ) -> SeatView {
     match level {
         Level::Tight => seat_view(mode, place, present),
-        Level::Wide => SeatView {
-            grants: Vec::new(),
-            egress: network_rule(mode, place),
-            env: Vec::new(),
-            home: Some(operator_home.to_path_buf()),
-            secret_env: gh_token.map(github_env).unwrap_or_default(),
-        },
+        Level::Wide => {
+            let mut masked: Vec<PathBuf> = super::seatbelt::deny_under_home(true)
+                .into_iter()
+                .map(|rel| operator_home.join(rel))
+                .collect();
+            // Sorted and deduped, so a disclosure lists the fence in one order and two stores
+            // spelled twice are one path.
+            masked.sort();
+            masked.dedup();
+            SeatView {
+                grants: Vec::new(),
+                egress: network_rule(mode, place),
+                env: Vec::new(),
+                home: Some(operator_home.to_path_buf()),
+                masked,
+                secret_env: gh_token.map(github_env).unwrap_or_default(),
+            }
+        }
     }
 }
 
@@ -381,6 +396,7 @@ pub fn seat_view<S: AsRef<str>>(mode: &crate::mode::Mode, place: &str, present: 
         egress: network_rule(mode, place),
         env,
         home: None,
+        masked: Vec::new(),
         secret_env: SecretEnv::default(),
     }
 }

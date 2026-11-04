@@ -404,6 +404,7 @@ impl HostBackend {
                 egress: crate::exec::confine::Egress::Denied,
                 env: Vec::new(),
                 home: None,
+                masked: Vec::new(),
                 secret_env: Default::default(),
             },
         )
@@ -451,7 +452,12 @@ impl HostBackend {
             }
         }
         if let Some(h) = &seat.home {
-            view = view.with_home(crate::exec::confine::HomeView::Dir(h.clone()));
+            // The operator's own home makes this the wide seat: the whole machine, and the
+            // seat's masks are the fence, whichever renderer draws them.
+            view = view
+                .with_home(crate::exec::confine::HomeView::Dir(h.clone()))
+                .wide()
+                .masking(seat.masked.iter().cloned());
         }
         let confine = crate::exec::confine::probe(view, seat.egress)
             .map_err(|e| BackendError::Io(e.to_string()))?;

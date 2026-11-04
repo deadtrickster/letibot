@@ -664,15 +664,15 @@ impl Harness {
     }
 
     /// A session whose tools run over the whole host says so, on the hub the head draws and in
-    /// the daemon's log. Asked for on every platform, because the alternative is a session that
-    /// reads as confined because nobody said otherwise.
+    /// the daemon's log. It is the session with no command in it: one that seats a shell gets a
+    /// boundary, and a boundary that was asked for and could not be built says that instead.
     fn say_no_boundary(hub: &Arc<Hub>) {
-        let said = "this session runs UNCONFINED: a command here has this user's rights over \
-                    this whole host, and nothing hides a file from it. A `leticode` seat asks \
-                    for no boundary, and this platform has no wide one to put in front of it: \
-                    macOS has the Seatbelt one, Linux has none. What a command reads it can \
-                    copy into the transcript, so a call that runs code is decided per call by \
-                    the gate. `docs/boundary-and-adjudication.md` §4k has the long form."
+        let said = "this session runs UNCONFINED: its file tools reach this whole host, and \
+                    nothing hides a file from them. It seats no shell, so there is no command for \
+                    a boundary to go in front of — a `leticode` seat asks for none, and the wide \
+                    seat wraps commands: the Seatbelt one on a Mac, bubblewrap on Linux. What a \
+                    file tool reads it can copy into the transcript. \
+                    `docs/boundary-and-adjudication.md` §4k has the long form."
             .to_string();
         eprintln!("letibot: {said}");
         hub.publish(SessionEvent::Warning {
@@ -703,6 +703,29 @@ impl Harness {
         });
     }
 
+    /// A Linux wide seat that could not be built is a REFUSAL, not a fallback: the same failure
+    /// on a Mac would leave the session unconfined and say so, and here the alternative is the
+    /// whole host with the operator's keys readable. Says it, then hands back the sentence.
+    #[cfg(not(target_os = "macos"))]
+    fn say_wide_seat_refused(hub: &Arc<Hub>, e: &dyn std::fmt::Display) -> String {
+        let said = format!(
+            "this session asks for the wide seat and no boundary could be built for it: {e}\n\n\
+             It is refused rather than opened UNCONFINED, which would give a command this user's \
+             rights over the whole host with the operator's keys readable. The wide seat is \
+             bubblewrap around this machine's own filesystem with the credential stores masked, \
+             and it needs bwrap and a delegated cgroup v2 subtree. Install bubblewrap \
+             (`apt install bubblewrap`) or point `LETIBOT_BWRAP` at it; a session that seats no \
+             shell needs no boundary at all."
+        );
+        eprintln!("letibot: {said}");
+        hub.publish(SessionEvent::Warning {
+            code: BOUNDARY_ABSENT.into(),
+            detail: said.clone(),
+            compaction: None,
+        });
+        said
+    }
+
     /// The view this machine's confined commands are threaded with: the shared builder over what
     /// exists under the operator's home.
     fn local_seat(cfg: &Config) -> letibot_tools::exec::seat::SeatView {
@@ -713,8 +736,8 @@ impl Harness {
         seat::seat_view(&cfg.mode, "this machine", &seat::present_under(&home))
     }
 
-    /// The default seat's view: wide for a top-level session, tight for a child.
-    #[cfg(target_os = "macos")]
+    /// The default seat's view: wide for a top-level session, tight for a child. The GitHub token
+    /// is asked for once, here, outside the boundary; a child never asks.
     fn default_seat(cfg: &Config, hub: &Arc<Hub>) -> letibot_tools::exec::seat::SeatView {
         use letibot_tools::exec::seat;
         let home = std::env::var_os("HOME")
@@ -749,17 +772,16 @@ impl Harness {
         )
     }
 
-    /// The default local seat on a Mac: commands inside the seatbelt boundary over the checkout,
-    /// file tools still rooted at `/`. `None` where the seat asks for no command, off a Mac, or
-    /// where the probe refuses (said on the hub, and the caller falls back to unconfined).
-    #[cfg(target_os = "macos")]
-    fn seatbelt_for_unconfined_seat(
+    /// The default local seat for a `leticode` session: commands inside the seat's boundary over
+    /// the checkout, file tools still rooted at `/`. `None` where the seat asks for no command, and
+    /// a machine with no boundary fails closed on Linux and falls back to unconfined on a Mac.
+    fn wide_seat(
         cfg: &Config,
         hub: &Arc<Hub>,
         may_exec: bool,
-    ) -> Option<HostBackend> {
+    ) -> Result<Option<HostBackend>, HarnessError> {
         if !(cfg.unconfined && cfg.allow_bash && may_exec) {
-            return None;
+            return Ok(None);
         }
         let built = HostBackend::confined_over(
             "/",
@@ -769,17 +791,15 @@ impl Harness {
         )
         .and_then(|b| b.with_cwd(&cfg.workspace));
         match built {
-            Ok(b) => Some(b),
+            Ok(b) => Ok(Some(b)),
+            #[cfg(target_os = "macos")]
             Err(e) => {
                 Self::say_boundary_absent(hub, &e);
-                None
+                Ok(None)
             }
+            #[cfg(not(target_os = "macos"))]
+            Err(e) => Err(HarnessError::Setup(Self::say_wide_seat_refused(hub, &e))),
         }
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    fn seatbelt_for_unconfined_seat(_: &Config, _: &Arc<Hub>, _: bool) -> Option<HostBackend> {
-        None
     }
 
     /// Where this session's tools run and what bounds them: host backend, firecode VM, or remote checkout, then the shared home, promote channel and scratch directory.
@@ -845,15 +865,16 @@ impl Harness {
             // `SshBackend::place` below, which probes the host.
             HostBackend::new(&cfg.workspace)
                 .map_err(|e| HarnessError::Setup(format!("workspace {:?}: {e}", cfg.workspace)))?
-        } else if let Some(b) = Self::seatbelt_for_unconfined_seat(cfg, hub, may_exec) {
+        } else if let Some(b) = Self::wide_seat(cfg, hub, may_exec)? {
             b
         } else if cfg.unconfined {
-            // A `leticode` seat asks for no boundary and this platform builds no wide one, so the
-            // session gets the whole host. Said on the hub and in the prompt; the mode is what
-            // decides each command, and it is not a boundary.
+            // A `leticode` seat asks for no boundary, and this session seats no shell for one to
+            // go in front of, so it gets the whole host. Said on the hub and in the prompt; the
+            // mode is what decides each command, and it is not a boundary.
             whole_host = true;
-            // Said by the top-level session; a child it started inherits the same state.
-            if cfg.parent_session_id.is_none() {
+            // Said by the top-level session; a child it started inherits the same state. A
+            // boundary that was asked for and refused has already said so itself.
+            if cfg.parent_session_id.is_none() && !(cfg.allow_bash && may_exec) {
                 Self::say_no_boundary(hub);
             }
             if cfg.allow_bash && may_exec {
@@ -4417,9 +4438,9 @@ mod embedder_warning_tests {
 mod no_boundary_tests {
     use super::*;
 
-    /// A `leticode` seat asks for no boundary, and this platform has no wide one to put in front
-    /// of it. The session must not read as confined because nobody said otherwise: the head gets a
-    /// warning and the prompt gets the sentence a confined session's view would have had.
+    /// A `leticode` seat asks for no boundary, and this session seats no shell for a wide one to
+    /// go in front of. The session must not read as confined because nobody said otherwise: the
+    /// head gets a warning and the prompt gets the whole-host sentence.
     #[test]
     fn a_session_with_no_boundary_says_so_on_the_hub_and_in_its_brief() {
         let dir = std::env::temp_dir().join(format!("letibot-noboundary-{}", std::process::id()));
@@ -4463,5 +4484,84 @@ mod no_boundary_tests {
         // And the view a confined session would state is still absent, so the two cannot read
         // alike: `whole_host_brief` is chosen by the flag and not by a missing boundary.
         assert_eq!(view_brief(None), None);
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod linux_wide_seat_tests {
+    use super::*;
+
+    fn warned(hub: &Hub, code: &str) -> Vec<String> {
+        hub.retained()
+            .iter()
+            .filter_map(|e| match &e.event {
+                SessionEvent::Warning {
+                    code: c, detail, ..
+                } if c == code => Some(detail.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A `leticode` session with a shell on Linux is bounded by the wide seat, or REFUSED: what it
+    /// must never be is this user's rights over the whole host with a warning. Both branches are
+    /// asserted, because a box that cannot nest a namespace can only measure the refusal.
+    #[test]
+    fn a_leticode_session_with_a_shell_is_bounded_or_refused_and_never_whole_host() {
+        let dir = std::env::temp_dir().join(format!("letibot-linuxwide-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a fixture workspace");
+        let mut cfg = Config::for_this_box(&dir);
+        cfg.seat = Seat::Leticode;
+        cfg.unconfined = true;
+        cfg.allow_bash = true;
+        cfg.session_id = "linux-wide-seat".into();
+        let hub = Hub::new(&cfg.session_id);
+        let registry = letibot_sessionlog::registry::Registry::new();
+        let placed = Harness::place_the_tools(&mut cfg, &hub, &registry);
+        let refused = warned(&hub, BOUNDARY_ABSENT);
+        let unconfined = warned(&hub, UNCONFINED_SESSION);
+        hub.close();
+
+        match placed {
+            Ok(p) => {
+                assert!(p.confined, "a wide seat is a boundary: {}", p.described);
+                assert!(!p.whole_host, "{}", p.described);
+                assert!(refused.is_empty(), "a boundary was built: {refused:?}");
+                assert!(
+                    unconfined.is_empty(),
+                    "it is not unconfined: {unconfined:?}"
+                );
+                let boundary = p.backend.boundary().expect("a measured boundary");
+                assert!(boundary.view.wide, "the view is the machine itself");
+                assert!(
+                    matches!(boundary.view.home, letibot_tools::exec::HomeView::Dir(_)),
+                    "the wide seat's $HOME is a real directory"
+                );
+                assert!(
+                    !boundary.view.masked.is_empty(),
+                    "the stores are the fence, and there are some"
+                );
+                let brief = view_brief(Some(&boundary)).expect("the view a model is told");
+                assert!(brief.contains("AROUND this machine"), "{brief}");
+                assert!(!brief.contains("not on this machine's disk"), "{brief}");
+            }
+            Err(e) => {
+                let m = format!("{e}");
+                assert!(
+                    m.contains("wide seat") && m.contains("UNCONFINED"),
+                    "a refusal has to say what it refused: {m}"
+                );
+                assert!(
+                    !refused.is_empty(),
+                    "the head is told the boundary was not built: {m}"
+                );
+                assert!(
+                    unconfined.is_empty(),
+                    "a refused session never says it runs unconfined: {unconfined:?}"
+                );
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

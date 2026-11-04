@@ -107,6 +107,14 @@ policy on macOS (§4k).
 | the network | an empty network namespace by default; the host's only with `Egress::Host` and the sentence that asked for it, plus `/etc/resolv.conf` and its friends - without which every name fails to resolve and the decision reads as no network at all |
 | grants | a path the operator admitted, `--ro-bind` or `--bind`, each carrying the `why` that put it there. An agent socket is bound at a fixed `/run/letibot/agent.sock` so `SSH_AUTH_SOCK` inside does not carry the operator's path out; the key never enters the view |
 
+The **top-level seat** is the one view that is not a subset of the machine. `ViewSpec::wide` binds
+`/` itself, read-write at its own paths, `$HOME` is the operator's real home, and `ViewSpec::masked`
+is the whole of what it hides: each credential store replaced by an empty read-only filesystem, or by
+an unreadable `/dev/null` where the store is a file. The list is `seatbelt::deny_under_home`, the
+same one the macOS profile denies (§4k), and a test holds the two renderings equal. A store that is
+not on the disk is not mounted: bwrap can only mount over an existing mount point, and making one
+would write the operator's home.
+
 The environment is cleared and a keep-list put back (`KEEP_ENV`: `PATH`, `TERM`, `LANG`, `LC_ALL`,
 `TZ`) - absence beats denial applied to the environment. The argv: `--unshare-user --unshare-pid
 --unshare-ipc --unshare-uts --unshare-cgroup`, plus `--unshare-net` unless egress was granted;
@@ -780,8 +788,9 @@ dependency cannot fetch it into the registry from inside the boundary and fails 
 session gets the policy boundary and `backend_confined` is true - which is what makes `allow-all`
 available on a Mac at all (`Prereq::Confinement`). The default local seat (`leticode`) with `bash` on
 runs its commands in the same boundary, over the checkout, while its file tools stay rooted at `/`
-(`HostBackend::confined_over`, chosen in `Harness::place_the_tools`); a refused probe leaves it
-unconfined with `boundary_absent`, exactly as above. Every widening re-probes through the same dispatch (`with_session_tmp`,
+(`HostBackend::confined_over`, chosen in `Harness::place_the_tools`); a Mac whose probe refuses
+leaves it unconfined with `boundary_absent`, exactly as below, and on Linux the same call builds the
+wide view and a refused probe leaves no session at all. Every widening re-probes through the same dispatch (`with_session_tmp`,
 `grant_into_view_impl`), so what is described is what runs. `bash`, background jobs and the persistent
 shell all go through `Confinement::wrap`, which for this mechanism is `sandbox-exec -f <profile>
 /bin/sh -c 'export HOME=… TMPDIR=…; exec "$@"'` - the shim exists because a profile cannot set an
@@ -794,9 +803,11 @@ tight view only.
 - **Top-level session: wide.** `$HOME` is the operator's own, read-write, and the whole filesystem is
   readable. No toolchain list and no `CARGO_HOME`/`GIT_CONFIG_GLOBAL` redirection, because the real
   home makes them right. Network follows the session mode. `DENY_UNDER_HOME` (less `.config/gh`) is the
-  only fence, still emitted last, so `~/.ssh`, browser profiles, `~/.aws`, shell profiles and
-  letibot's own store stay unreadable and unwritable. This restores what a Mac session could do before
-  R98 half 2 (`git push` asks and works) without opening the credential stores.
+  only fence, still emitted last on a Mac and a mask on Linux, so `~/.ssh`, browser profiles, `~/.aws`,
+  shell profiles and letibot's own store stay unreadable and unwritable. This restores what a session
+  could do before R98 half 2 (`git push` asks and works) without opening the credential stores. The
+  level is a policy both mechanisms render: `sandbox-exec` on a Mac, `bwrap --bind / /` plus masks on
+  Linux, and a machine that cannot render it refuses the session rather than falling back.
 - **Child (subagent): tight.** The throwaway home, the project and the toolchain read-only, the
   operator's `.gitconfig` for the commit identity (`GIT_CONFIG_GLOBAL`), `credential.helper` reset
   through `GIT_CONFIG_*`, and `.config/gh` added to the deny list (`NARROW_DENY_UNDER_HOME`). A
@@ -833,9 +844,13 @@ checkout and the same command refused a write outside it. What is not measured h
 that needs a built daemon, see R98 in TODO.md for the step.
 
 If `sandbox-exec` is missing or the probe refuses, the daemon **seats an unconfined whole-host session,
-says so on the session's log as `boundary_absent`, and prints the refusal's own words**. On Linux the
-same failure is still a refusal, because `bwrap` and a delegated cgroup are things a host can be given.
-Two things are deliberately left: the profile is written per probe and never removed
+says so on the session's log as `boundary_absent`, and prints the refusal's own words**. On Linux
+nothing falls back: a `leticode` session that seats a shell asks for the wide seat, and a machine
+that cannot build one (no `bwrap`, no delegated cgroup) is refused with `boundary_absent` and the
+same words, because `bwrap` and a cgroup are things a host can be given. A `leticode` session that
+seats no shell has no command for a boundary to go in front of, and that one is the whole-host
+session `unconfined_session` is about. Two things are deliberately left: the profile is written per
+probe and never removed
 (`$TMPDIR/letibot-seatbelt-<pid>/profile-<n>.sb`, outside every checkout on purpose, since a policy the
 command can edit is not a policy), and `sandbox-exec` is deprecated - the day it goes, `probe` refuses
 by name and every session falls back to the `boundary_absent` sentence.
