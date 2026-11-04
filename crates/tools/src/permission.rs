@@ -51,6 +51,36 @@ pub type Ruleset = Vec<Rule>;
 /// is opencode's wildcard, anchored and dotall, not a filesystem glob.
 pub fn wildcard_match(input: &str, pattern: &str) -> bool {
     let normalized = input.replace('\\', "/");
+    match compiled(pattern) {
+        Some(regex) => regex.is_match(&normalized),
+        None => false,
+    }
+}
+
+/// How many distinct patterns stay compiled. Rule sets are small and fixed per session, so this
+/// is a ceiling on a pattern that varies per call, not a working size.
+const COMPILED_MAX: usize = 4096;
+
+/// The pattern's regex, compiled on first use. A rule is evaluated on every call and its pattern
+/// does not change, so compiling per evaluation was the cost. `None` is a pattern that does not compile.
+fn compiled(pattern: &str) -> Option<regex::Regex> {
+    use std::collections::HashMap;
+    use std::sync::{LazyLock, RwLock};
+    static CACHE: LazyLock<RwLock<HashMap<String, Option<regex::Regex>>>> =
+        LazyLock::new(|| RwLock::new(HashMap::new()));
+    if let Some(hit) = CACHE.read().unwrap_or_else(|e| e.into_inner()).get(pattern) {
+        return hit.clone();
+    }
+    let made = compile(pattern);
+    let mut cache = CACHE.write().unwrap_or_else(|e| e.into_inner());
+    if cache.len() >= COMPILED_MAX {
+        cache.clear();
+    }
+    cache.insert(pattern.to_string(), made.clone());
+    made
+}
+
+fn compile(pattern: &str) -> Option<regex::Regex> {
     let escaped = pattern.replace('\\', "/");
 
     // Every metacharacter is escaped so it matches itself; `*` and `?` are the
@@ -75,10 +105,7 @@ pub fn wildcard_match(input: &str, pattern: &str) -> bool {
         re.push_str("( .*)?");
     }
 
-    let Ok(regex) = regex::Regex::new(&format!("^(?s:{})$", re)) else {
-        return false;
-    };
-    regex.is_match(&normalized)
+    regex::Regex::new(&format!("^(?s:{})$", re)).ok()
 }
 
 /// The last rule whose permission and pattern both wildcard-match, else `ask`. Rulesets are flattened in
@@ -521,6 +548,31 @@ mod tests {
     fn wildcard_normalises_backslash_to_slash() {
         assert!(wildcard_match("src\\lib.rs", "src/lib.rs"));
         assert!(wildcard_match("src/lib.rs", "src\\lib.rs"));
+    }
+
+    /// The cache answers as a fresh compile would, on a repeat and on a pattern that never compiles.
+    #[test]
+    fn wildcard_results_are_the_same_on_the_second_evaluation() {
+        let cases = [
+            ("git status", "git *", true),
+            ("git", "git *", true),
+            ("gitx", "git *", false),
+            ("a.b", "a.b", true),
+            ("axb", "a.b", false),
+            ("src\\lib.rs", "src/*.rs", true),
+            ("a\nb", "a*", true),
+            ("x", "\\", false),
+        ];
+        for _ in 0..3 {
+            for (input, pattern, want) in cases {
+                assert_eq!(wildcard_match(input, pattern), want, "{input} ~ {pattern}");
+            }
+        }
+        assert!(compiled("git *").is_some());
+        assert_eq!(
+            compiled("a(b").map(|r| r.as_str().to_string()),
+            compile("a(b").map(|r| r.as_str().to_string())
+        );
     }
 
     #[test]
