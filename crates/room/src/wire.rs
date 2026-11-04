@@ -79,6 +79,10 @@ pub enum Request {
         /// coordinator's own runtime directory can be the person.
         #[serde(default)]
         token: Option<String>,
+        /// An external asking to be one more connection of a name that is already connected (a
+        /// bridge and its waiter). The socket is the same user's, so the claim is the user's own.
+        #[serde(default)]
+        share: bool,
     },
     /// The rooms this connection may see, with unread counts.
     Rooms,
@@ -448,6 +452,7 @@ impl Room {
                 room: _,
                 seat: _,
                 token: _,
+                share: _,
             } => {
                 if let Some(why) = protocol_refusal(*protocol) {
                     return Answer::quiet(Response::Bye { why });

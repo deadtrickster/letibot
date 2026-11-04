@@ -518,6 +518,7 @@ impl Server {
             protocol,
             room,
             token,
+            share,
             ..
         } = frame
         {
@@ -536,7 +537,7 @@ impl Server {
                     events: Vec::new(),
                 };
             }
-            if let Some(refused) = self.hello_name_refusal(seat, who) {
+            if let Some(refused) = self.hello_name_refusal(seat, who, *share) {
                 return Answer {
                     response: refused,
                     events: Vec::new(),
@@ -821,7 +822,7 @@ impl Server {
     }
 
     /// Why this `Hello` may not speak under this name in this seat, as the reply to send.
-    fn hello_name_refusal(&self, seat: Seat, who: &Speaker) -> Option<Response> {
+    fn hello_name_refusal(&self, seat: Seat, who: &Speaker, share: bool) -> Option<Response> {
         let name = who.session.as_str();
         let ok = match seat {
             Seat::Session => name != chat::OPERATOR && !name.is_empty(),
@@ -829,7 +830,8 @@ impl Server {
             Seat::External => chat::valid_handle(name) && who.is_top_level(),
             Seat::System => false,
         };
-        if ok && seat == Seat::External && self.external_names().iter().any(|n| n == name) {
+        if ok && seat == Seat::External && !share && self.external_names().iter().any(|n| n == name)
+        {
             return Some(Response::Refused {
                 id: None,
                 why: crate::Refused::NameInUse {
@@ -2190,6 +2192,7 @@ mod tests {
             room: server.name(),
             seat: Default::default(),
             token: None,
+            share: false,
         })
         .unwrap();
         a.write_all(format!("{hello}\n").as_bytes()).unwrap();
@@ -2256,6 +2259,7 @@ mod tests {
                 room: "the-other-box".to_string(),
                 seat: Default::default(),
                 token: None,
+                share: false,
             },
             now_ms(),
         );
@@ -2282,6 +2286,7 @@ mod tests {
                 room: String::new(),
                 seat: Default::default(),
                 token: None,
+                share: false,
             },
             now_ms(),
         );
@@ -2315,6 +2320,7 @@ mod tests {
                 room: String::new(),
                 seat: Default::default(),
                 token: None,
+                share: false,
             },
             now,
         );

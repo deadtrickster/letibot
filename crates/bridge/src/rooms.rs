@@ -5,7 +5,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
@@ -260,6 +260,7 @@ struct Inner {
     instance: Mutex<Option<u64>>,
     /// A welcome has named this bridge, so its name no longer changes.
     named: Mutex<bool>,
+    share: AtomicBool,
 }
 
 impl Drop for Inner {
@@ -298,8 +299,15 @@ impl RoomLink {
                 delivered: Mutex::new(0),
                 instance: Mutex::new(None),
                 named: Mutex::new(false),
+                share: AtomicBool::new(false),
             }),
         }
+    }
+
+    /// Join as one more connection of a name another connection holds (a waiter beside its
+    /// bridge) instead of being refused as a duplicate.
+    pub fn share_name(&self) {
+        self.inner.share.store(true, Ordering::SeqCst);
     }
 
     pub fn connected(&self) -> bool {
@@ -348,6 +356,7 @@ impl RoomLink {
             "speaker": { "session": handle(), "parent": null },
             "room": "",
             "seat": "external",
+            "share": self.inner.share.load(Ordering::SeqCst),
         });
         write_line(&mut writer, &hello)?;
         let mut first = String::new();
@@ -880,6 +889,7 @@ pub fn call(link: &RoomLink, name: &str, args: &Value) -> Result<Value, String> 
 /// 30 the deadline passed.
 pub fn wait(link: &RoomLink, attention: Attention, deadline: Instant) -> (i32, String) {
     let (tx, rx) = mpsc::channel::<Value>();
+    link.share_name();
     link.on_chat(Arc::new(move |m, names_you| {
         if attention.passes(m, names_you) {
             let _ = tx.send(m.clone());

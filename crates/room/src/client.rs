@@ -366,6 +366,7 @@ impl Client {
             room: self.inner.room.clone(),
             seat: self.inner.seat,
             token: operator_token(&self.inner.path),
+            share: false,
         };
         write_frame(&mut writer, &hello)?;
         let first = read_frame(&mut reader)

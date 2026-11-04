@@ -657,6 +657,7 @@ fn operator_hello(token: Option<String>, session: &str, seat: Seat) -> Request {
         room: String::new(),
         seat,
         token,
+        share: false,
     }
 }
 
