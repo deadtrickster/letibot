@@ -56,8 +56,9 @@ right of a channel is its unread messages. Todo and queue lines are one quiet ro
 
 The head has no push, so while the view is open it asks its daemon every two seconds: `rooms` for
 the counts, `read` for the selected channel and for DMs, `roster` when the roster is up. Nothing is
-asked while it is closed. What the view shows is acked, but the inbox cursor is one number for every
-channel, so it only moves when no other channel has an unseen message behind it. The count of a
+asked while it is closed. What the view shows is acked, but the inbox cursor is one number for
+every channel, so it only moves when no other channel has a message this head has not drawn -
+`seq` counts the whole log, so an ack would mark older unread messages read too. The count of a
 channel you have looked at stays clear either way. History is the coordinator's 500 messages per
 room, so a coordinator restart empties the view.
 

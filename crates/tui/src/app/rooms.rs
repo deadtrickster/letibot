@@ -258,23 +258,35 @@ impl RoomsView {
         ops
     }
 
-    /// Mark the selected channel shown, and say how far the inbox cursor may move. The cursor is
-    /// one number for every channel, so it stays put while a message nobody has seen sits past it.
+    /// Mark the selected channel shown, and say how far the inbox cursor may move. The cursor
+    /// is one number for every channel, so it may not pass a message this head has not drawn
+    /// ANYWHERE: any other channel with something undrawn holds it, older or newer than this
+    /// channel's own tail - `seq` counts the whole log, not one room.
     pub(crate) fn shown(&mut self) -> Option<u64> {
         let c = self.selected()?;
         let top = self.messages(&c).last().map(|m| m.seq)?;
         self.seen.insert(Self::key(&c), top);
-        let held_room = self.rows.iter().any(|r| {
-            let other = Chan::Room(r.id.clone());
-            other != c && self.unread(&other) > 0 && r.last_seq > top
-        });
-        let held_dm = self.peers().into_iter().any(|p| {
-            let other = Chan::Dm(p);
-            other != c && self.unread(&other) > 0
-        });
-        (!held_room && !held_dm && top > self.acked).then(|| {
-            self.acked = top;
-            top
+        let undrawn = |c: &Chan| -> bool {
+            let seen = self.seen.get(&Self::key(c)).copied().unwrap_or(0);
+            match c {
+                Chan::Room(id) => self
+                    .rows
+                    .iter()
+                    .find(|r| &r.id == id)
+                    .is_some_and(|r| r.last_seq > seen),
+                Chan::Dm(_) => self.messages(c).iter().any(|m| m.seq > seen),
+            }
+        };
+        let held = self
+            .channels()
+            .iter()
+            .any(|other| *other != c && undrawn(other));
+        // With nothing undrawn anywhere, every channel's tail is drawn: the frontier is the
+        // highest seq this head has drawn in any channel, not just the selected one's.
+        let frontier = self.seen.values().copied().max().unwrap_or(top);
+        (!held && frontier > self.acked).then(|| {
+            self.acked = frontier;
+            frontier
         })
     }
 }

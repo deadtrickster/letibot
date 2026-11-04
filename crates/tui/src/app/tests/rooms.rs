@@ -416,6 +416,37 @@ fn the_cursor_does_not_pass_a_channel_nobody_looked_at() {
     assert_eq!(ops(&mut a), vec![json!({"type": "ack", "seq": 12})]);
 }
 
+/// The unread messages another channel is holding may be OLDER than this channel's tail: `seq`
+/// counts the whole log, so acking this channel's top would mark those read too. The cursor
+/// waits until every channel this head knows has been drawn to its end.
+#[test]
+fn the_cursor_does_not_pass_older_unread_in_another_room() {
+    let mut a = opened(1_000);
+    // The project room is the busier one: host unread sits at 5, well under the project's 12.
+    reply(
+        &mut a,
+        rooms_reply(&[("host", 2, 5, 2), (PROJECT, 2, 12, 1)]),
+    );
+    a.key(Key::Down);
+    reply(
+        &mut a,
+        history(PROJECT, vec![msg(12, PROJECT, "s-c", "session", "three")]),
+    );
+    assert!(
+        ops(&mut a).is_empty(),
+        "acked past the host room's older unread messages"
+    );
+
+    // The host room is drawn to its end; now nothing anywhere is undrawn, and the cursor moves
+    // to the farthest this head has drawn in any channel - the project room's 12.
+    a.key(Key::Up);
+    reply(
+        &mut a,
+        history("host", vec![msg(5, "host", "s-b", "session", "two")]),
+    );
+    assert_eq!(ops(&mut a), vec![json!({"type": "ack", "seq": 12})]);
+}
+
 #[test]
 fn a_refusal_and_a_daemon_error_are_kept_for_the_view() {
     let mut a = opened(1_000);
