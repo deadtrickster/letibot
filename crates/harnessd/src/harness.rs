@@ -322,6 +322,12 @@ pub struct Harness {
     /// speak in it. Two of its three duties are the harness's own moments (the beat starts and stops
     /// with the turn clock); this field is what keeps the connection alive for the session's life.
     room: Option<Arc<crate::room::link::SessionRoom>>,
+    /// The `room` tool's side of [`Harness::room`]: filled when the connection is made, at the open or
+    /// by a later pass.
+    room_late: Arc<crate::room::link::LateRoom>,
+    /// How to connect, kept while there is no link so the room pass can retry once the coordinator is
+    /// up. `None` for a session that may not speak in the room.
+    room_connector: Option<crate::room::link::Connector>,
     /// Shared with [`HubSteering`] so a firing reaches the model exactly once,
     /// whether it is picked up mid-turn or between turns by [`Harness::wake`].
     monitor_cursor: Arc<AtomicUsize>,

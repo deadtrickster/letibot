@@ -1832,8 +1832,10 @@ impl Harness {
         //
         // A connection that cannot be made is said once and is not fatal: a session whose room is
         // unreachable is a session that works, and its `room` tool refuses by name.
+        let mut room_connector: Option<crate::room::link::Connector> = None;
+        let room_late = std::sync::Arc::new(crate::room::link::LateRoom::default());
         let room = match (cfg.room_link, top_level, crate::room::socket_path()) {
-            (true, true, Some(socket)) if socket.exists() => {
+            (true, true, Some(socket)) => {
                 let bell: std::sync::Arc<dyn Fn(&str) + Send + Sync> = {
                     let bell = std::sync::Arc::clone(session_registry.bell());
                     std::sync::Arc::new(move |session: &str| bell.ring_wake(session))
@@ -1860,15 +1862,32 @@ impl Harness {
                 // nothing more - `Registry::list` is the same call the plugin feed makes per frame.
                 let roster: std::sync::Arc<dyn crate::room::roster::RosterSource> =
                     crate::room::roster::Roster::new(session_registry.clone());
-                match crate::room::link::SessionRoom::connect(
-                    &cfg.session_id,
-                    &socket,
-                    &project,
-                    Some(roster),
-                    bell,
-                    supervisor,
-                ) {
-                    Ok(room) => Some(room),
+                let session = cfg.session_id.clone();
+                let path = socket.clone();
+                let connect: crate::room::link::Connector = Box::new(move || {
+                    crate::room::link::SessionRoom::connect(
+                        &session,
+                        &path,
+                        &project,
+                        Some(roster.clone()),
+                        bell.clone(),
+                        supervisor.clone(),
+                    )
+                });
+                // No socket yet is not an error: the coordinator may start after this session, and
+                // the room pass tries again.
+                let first = if socket.exists() {
+                    connect()
+                } else {
+                    Err(String::new())
+                };
+                room_connector = Some(connect);
+                match first {
+                    Ok(room) => {
+                        room_late.set(room.clone());
+                        Some(room)
+                    }
+                    Err(why) if why.is_empty() => None,
                     Err(why) => {
                         notes.push(format!(
                             "the room at {} could not be reached ({why}), so `room` will refuse \
@@ -1882,10 +1901,10 @@ impl Harness {
             }
             _ => None,
         };
-        if let Some(room) = &room {
+        if room_connector.is_some() {
             registry
                 .register(Box::new(letibot_tools::builtins::room::RoomTool::new(
-                    room.clone(),
+                    room_late.clone(),
                 )))
                 .map_err(|e| HarnessError::Setup(format!("registering the room tool: {e}")))?;
         }
@@ -2973,6 +2992,8 @@ impl Harness {
             monitors,
             monitor_cursor,
             room,
+            room_late,
+            room_connector,
             tool_sink,
             job_watch,
             // The same `Arc` the tool registry has, cloned before it was moved in - see the

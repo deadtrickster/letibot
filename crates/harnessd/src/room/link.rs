@@ -17,6 +17,39 @@ use crate::plugins::room_feed::{RestartView, RoomFeed, RoomSnapshot};
 /// it runs on its own thread, so a wedged coordinator never holds the daemon's idle pass.
 pub const PANE_READ_EVERY_MS: u64 = 1_000;
 
+/// What a session's `room` tool talks through: empty until a connection exists, filled when one is
+/// made, so a coordinator that starts after the session still reaches it.
+#[derive(Default)]
+pub struct LateRoom {
+    slot: Mutex<Option<Arc<SessionRoom>>>,
+}
+
+impl LateRoom {
+    pub fn get(&self) -> Option<Arc<SessionRoom>> {
+        self.slot.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    pub fn set(&self, room: Arc<SessionRoom>) {
+        *self.slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(room);
+    }
+}
+
+impl letibot_tools::builtins::room::RoomLink for LateRoom {
+    fn call(&self, verb: &str, args: &serde_json::Value) -> Result<String, String> {
+        match self.get() {
+            Some(room) => room.call(verb, args),
+            None => letibot_tools::builtins::room::NoRoom.call(verb, args),
+        }
+    }
+
+    fn beats_on_my_behalf(&self) -> bool {
+        self.get().is_some()
+    }
+}
+
+/// Opens a session's connection to the room; kept so a later pass can try again.
+pub type Connector = Box<dyn Fn() -> Result<Arc<SessionRoom>, String> + Send>;
+
 /// A session's room. One per top-level session, held by its `Harness` and by its tool.
 pub struct SessionRoom {
     client: Client,

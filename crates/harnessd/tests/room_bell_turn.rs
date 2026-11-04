@@ -349,6 +349,23 @@ fn the_clients_that_cannot_hear_a_room_event_say_so_where_a_person_looks() {
         let manifest = root.join("crates").join(crate_name).join("Cargo.toml");
         let text = std::fs::read_to_string(&manifest)
             .unwrap_or_else(|e| panic!("{} is readable: {e}", manifest.display()));
+        // The bridge takes the protocol number from the room crate and nothing else, so a
+        // dependency is allowed there while no other `letibot_room` item is named in its source.
+        if crate_name == "bridge" && text.contains("letibot-room") {
+            let mut used = String::new();
+            for entry in std::fs::read_dir(root.join("crates/bridge/src")).expect("bridge src") {
+                let src =
+                    std::fs::read_to_string(entry.expect("an entry").path()).unwrap_or_default();
+                used.push_str(&src);
+            }
+            let named = used.matches("letibot_room::").count();
+            let version = used.matches("letibot_room::ROOM_PROTOCOL_VERSION").count();
+            assert_eq!(
+                named, version,
+                "`bridge` may name only the protocol number from the room crate"
+            );
+            continue;
+        }
         assert!(
             !text.contains("letibot-room"),
             "`{crate_name}` has grown a room connection. {why}. If that is intended, the client is \

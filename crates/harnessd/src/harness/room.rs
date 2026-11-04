@@ -17,6 +17,31 @@ impl Harness {
         self.room.is_some()
     }
 
+    /// Whether this session may speak in the room but has no link yet - the coordinator was not up
+    /// when it opened. The room pass keeps trying while this holds.
+    pub fn wants_room(&self) -> bool {
+        self.room.is_none() && self.room_connector.is_some()
+    }
+
+    /// Connect now if the coordinator's socket exists. `true` when this call made the link.
+    pub fn relink_room(&mut self) -> bool {
+        if !self.wants_room() || !crate::room::socket_exists() {
+            return false;
+        }
+        let Some(connect) = self.room_connector.as_ref() else {
+            return false;
+        };
+        let Ok(room) = connect() else {
+            return false;
+        };
+        self.room_late.set(room.clone());
+        if self.prompt_in_flight.load(Ordering::SeqCst) {
+            room.turn_started();
+        }
+        self.room = Some(room);
+        true
+    }
+
     /// The room's reminders, onto this session's own board: one row per item it holds, carried by the
     /// idle check so a holder is reminded without a model call. A subagent returns 0 first, because the
     /// room's rule is top-level sessions only. A room that does not answer clears the rows.
@@ -25,6 +50,7 @@ impl Harness {
         if self.cfg.parent_session_id.is_some() {
             return 0;
         }
+        self.relink_room();
         let Some(room) = self.room.clone() else {
             return 0;
         };

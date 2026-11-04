@@ -2745,8 +2745,8 @@ impl<'a> Sessions<'a> {
         [
             self.next_nag_at(),
             self.reviews_at,
-            // Only when some session here HAS a room. The clock stays armed, but a box with no
-            // coordinator must not be woken every five seconds for a question that has no answer.
+            // Only when some session here has a room or is waiting for one to appear: the pass
+            // is what links a session to a coordinator that started after it.
             self.has_a_room().then_some(self.room_at).flatten(),
             self.park_at,
             self.idle_exit_at,
@@ -2761,7 +2761,7 @@ impl<'a> Sessions<'a> {
     /// [`Sessions::next_idle_at`] asks before it makes the room clock a reason to wake. A court holds
     /// one harness, so this is exact there; it is `false` on a box with no coordinator.
     pub fn has_a_room(&self) -> bool {
-        self.open.values().any(|h| h.has_room())
+        self.open.values().any(|h| h.has_room() || h.wants_room())
     }
 
     /// Whether the room pass is due, spending the deadline when it is -
