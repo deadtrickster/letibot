@@ -926,6 +926,9 @@ impl Server {
             .filter(|b| chat::bridge_parts(b).is_some_and(|(_, n)| n == x))
             .cloned()
             .collect();
+        if in_folder.len() > 1 {
+            return Some(Lookup::Group(x.to_string(), in_folder));
+        }
         match (named.len(), in_folder.is_empty()) {
             (1, _) => Some(Lookup::One(named[0].clone())),
             (_, false) => Some(Lookup::Group(x.to_string(), in_folder)),
