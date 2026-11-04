@@ -398,17 +398,13 @@ impl Client {
                 };
             }
             Response::Refused { why, .. } => {
-                // An older coordinator's refusal says only "upgrade", so the command is added.
-                let hint = crate::wire::upgrade_hint(&why)
-                    .filter(|h| !why.contains(h))
-                    .map(|h| format!(" - {h}"))
-                    .unwrap_or_default();
                 return Err(ClientError(format!(
-                    "the room refused `{}`: {why}{hint}",
+                    "the room refused `{}`: {why}",
                     self.inner.speaker
                 )));
             }
             Response::Bye { why } => {
+                // An older coordinator's refusal says only "upgrade", so the command is added.
                 let hint = crate::wire::upgrade_hint(&why)
                     .filter(|h| !why.contains(h))
                     .map(|h| format!(" - {h}"))
