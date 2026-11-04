@@ -246,7 +246,10 @@ impl DecisionsTool {
                 .get("disagreements")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false),
-            last: args.get("last").and_then(|v| v.as_u64()).map(|v| v as u32),
+            last: args
+                .get("last")
+                .and_then(|v| v.as_u64())
+                .map(|v| u32::try_from(v).unwrap_or(u32::MAX)),
             limit: args
                 .get("limit")
                 .and_then(|v| v.as_u64())

@@ -248,7 +248,7 @@ impl Tool for Monitor {
                 std::time::Duration::from_millis(ms),
             )))
         } else if let Some(pid) = args.get("pid").and_then(|v| v.as_u64()) {
-            let pid = pid as u32;
+            let pid = u32::try_from(pid).unwrap_or(u32::MAX);
             if crate::exec::procs::self_and_ancestors().contains(&pid) {
                 return Invocation::failed(
                     format!("pid {pid} is this daemon or an ancestor of it"),

@@ -238,7 +238,11 @@ impl TranscriptTool {
                 .filter(|v| !v.is_empty())
                 .map(str::to_string)
         };
-        let n = |k: &str| args.get(k).and_then(|v| v.as_u64()).map(|v| v as u32);
+        let n = |k: &str| {
+            args.get(k)
+                .and_then(|v| v.as_u64())
+                .map(|v| u32::try_from(v).unwrap_or(u32::MAX))
+        };
         TranscriptQuery {
             session: s("session"),
             matching: s("match"),

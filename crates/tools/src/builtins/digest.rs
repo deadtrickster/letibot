@@ -252,7 +252,10 @@ impl Tool for DigestTool {
                 })
                 .unwrap_or_default(),
             tool: s("tool"),
-            last: args.get("last").and_then(|v| v.as_u64()).map(|v| v as u32),
+            last: args
+                .get("last")
+                .and_then(|v| v.as_u64())
+                .map(|v| u32::try_from(v).unwrap_or(u32::MAX)),
             history: args
                 .get("history")
                 .and_then(|v| v.as_bool())

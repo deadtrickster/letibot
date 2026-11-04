@@ -100,7 +100,7 @@ impl Tool for Pkill {
                 let mut report = format!("signal {} for pattern `{pattern}`:\n", signal.as_str());
                 let mut sent: Vec<procs::ProcInfo> = Vec::new();
                 for v in pids {
-                    let Some(pid) = v.as_u64().map(|p| p as u32) else {
+                    let Some(pid) = v.as_u64().and_then(|p| u32::try_from(p).ok()) else {
                         report.push_str(&format!("  {v}: not a pid\n"));
                         continue;
                     };

@@ -58,11 +58,14 @@ impl Tool for Ps {
             .unwrap_or_default();
 
         let pattern = args.get("pattern").and_then(|v| v.as_str()).map(str::trim);
-        let pid = args.get("pid").and_then(|v| v.as_u64()).map(|n| n as u32);
+        let pid = args
+            .get("pid")
+            .and_then(|v| v.as_u64())
+            .map(|n| u32::try_from(n).unwrap_or(u32::MAX));
         let children_of = args
             .get("children_of")
             .and_then(|v| v.as_u64())
-            .map(|n| n as u32);
+            .map(|n| u32::try_from(n).unwrap_or(u32::MAX));
         let top = args.get("top").and_then(|v| v.as_str());
 
         let (title, mut rows): (String, Vec<ProcInfo>) = match (pattern, pid, children_of, top) {
@@ -210,6 +213,12 @@ mod tests {
             },
             &mut crate::NullToolSink,
         )
+    }
+
+    #[test]
+    fn a_pid_past_u32_names_no_process_instead_of_wrapping_to_init() {
+        let r = run(serde_json::json!({"pid": 4_294_967_297u64}));
+        assert!(r.payload.contains("no process with pid"), "{}", r.payload);
     }
 
     #[test]
