@@ -954,7 +954,7 @@ mod tests {
         );
         assert_eq!(base_name(Some("Reviewer One"), cwd), "reviewer-one");
         assert_eq!(base_name(Some(""), cwd), "cc@letibot");
-        assert!(base_name(None, std::path::Path::new("/a/".repeat(1).as_str())).starts_with("cc@"));
+        assert!(base_name(None, std::path::Path::new("/")).starts_with("cc@"));
         let long = std::path::Path::new("/x/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
         assert!(letibot_room::valid_handle(&base_name(None, long)));
     }
