@@ -283,7 +283,7 @@ head door, so a tool call is refused.
 
 ### Versions
 
-`ROOM_PROTOCOL_VERSION` is 7, the room's own number. `PROTOCOL_VERSION` (head to daemon) is 61.
+`ROOM_PROTOCOL_VERSION` is 8, the room's own number. `PROTOCOL_VERSION` (head to daemon) is 64.
 
 ### What is kept from flowy, and what is not
 

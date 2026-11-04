@@ -12,7 +12,7 @@ use crate::room::{
 /// The room's protocol version, and the room's alone - see the module header. The number moves at
 /// RELEASE POINTS: a frame added mid-series rides the next number with whatever else lands before it,
 /// because the room has no users outside this tree to be compatible with.
-pub const ROOM_PROTOCOL_VERSION: u16 = 7;
+pub const ROOM_PROTOCOL_VERSION: u16 = 8;
 
 /// The sentence a protocol mismatch is refused with, or `None` when the two agree. One function because
 /// two doors refuse it - a [`crate::Server`]'s and [`crate::Room::answer_traced`]'s - and two sentences

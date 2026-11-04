@@ -2169,14 +2169,14 @@ mod tests {
     /// spells the number rather than the constant, so a wire change that misses a pin is a quiet lie
     /// about what two binaries share.
     #[test]
-    fn the_room_speaks_protocol_seven() {
-        assert_eq!(ROOM_PROTOCOL_VERSION, 7);
+    fn the_room_speaks_protocol_eight() {
+        assert_eq!(ROOM_PROTOCOL_VERSION, 8);
         // And the refusal names which side is older, in both directions.
-        let old = crate::wire::protocol_refusal(6).expect("6 is not 7");
+        let old = crate::wire::protocol_refusal(7).expect("7 is not 8");
         assert!(old.contains("the client is the older"), "{old}");
-        let new = crate::wire::protocol_refusal(8).expect("8 is not 7");
+        let new = crate::wire::protocol_refusal(9).expect("9 is not 8");
         assert!(new.contains("this room is the older"), "{new}");
-        assert_eq!(crate::wire::protocol_refusal(7), None);
+        assert_eq!(crate::wire::protocol_refusal(8), None);
     }
 
     /// The pane's read: the room's half from the room, the server's three from the server. What is
