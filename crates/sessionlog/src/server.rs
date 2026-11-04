@@ -908,11 +908,9 @@ pub fn serve_conn_rooted(
                 client_request_id,
                 op,
             }) => {
-                // Answered off the reader loop, on the connection's own worker: the coordinator
-                // can hold a request for seconds, and a head's Interrupts must be read while
-                // it waits rather than queue behind its own chat. Order is kept - one worker,
-                // one queue - because replies are matched by request id but polls read newest
-                // last, and a poll answered ahead of the read it followed would redraw stale.
+                // Answered off the reader loop, on the connection's own worker: the
+                // coordinator can hold a request for seconds, and the head's Interrupts
+                // must be read while it waits. One worker keeps the replies in order.
                 if chat.is_none() {
                     chat = Some(spawn_room_chat_worker(
                         Arc::clone(&registry),

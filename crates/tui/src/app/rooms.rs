@@ -258,10 +258,9 @@ impl RoomsView {
         ops
     }
 
-    /// Mark the selected channel shown, and say how far the inbox cursor may move. The cursor
-    /// is one number for every channel, so it may not pass a message this head has not drawn
-    /// ANYWHERE: any other channel with something undrawn holds it, older or newer than this
-    /// channel's own tail - `seq` counts the whole log, not one room.
+    /// Mark the selected channel shown, and say how far the inbox cursor may move. `seq`
+    /// counts the whole log, not one room, so any other channel with something undrawn
+    /// holds the cursor - it may not pass a message this head has not drawn anywhere.
     pub(crate) fn shown(&mut self) -> Option<u64> {
         let c = self.selected()?;
         let top = self.messages(&c).last().map(|m| m.seq)?;
@@ -494,9 +493,8 @@ impl App {
     }
 
     /// Enter on an empty composer with a failed line in the selected channel: send it again
-    /// under a new id. The old record is superseded by its own resend, so it goes. A key of
-    /// the view rather than the composer's empty line - the editor answers Enter on nothing
-    /// typed with `Idle`, and the binding stands behind the decision ladder either way.
+    /// under a new id, superseding the old record. A view binding rather than the composer's,
+    /// because the editor answers an empty Enter with `Idle` before `submit` is called.
     pub(crate) fn rooms_resend_send(&mut self) -> ControlFlow<Option<Action>> {
         let act = self
             .rooms

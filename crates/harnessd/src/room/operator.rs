@@ -12,9 +12,8 @@ use letibot_sessionlog::registry::RoomChatSeat;
 use serde_json::{Value, json};
 
 /// One lazily opened operator connection per daemon, shared by every head attached to it.
-/// The room keeps one read cursor per principal and every head speaks as `operator`, so the
-/// per-head cursors live here: the room's own cursor moves only as far as the head that has
-/// seen the least, and one head's ack never marks a message read for another.
+/// The room keeps one read cursor per principal and every head speaks as `operator`, so
+/// the per-head cursors live here and the room's moves only as far as the least-seen head.
 pub struct OperatorSeat {
     socket: PathBuf,
     client: Mutex<Option<Client>>,
