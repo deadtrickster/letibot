@@ -269,6 +269,9 @@ pub const TABLE: &[(&str, Class)] = &[
     // without a card only inside a measured boundary, so without one every command that runs code is
     // decided per command. The fix is the operator's.
     ("boundary_absent", Class::Failure),
+    // A session that runs unconfined by design, said once by the top-level session. A
+    // disclosure of the state the session was asked to be in, so Routine.
+    ("unconfined_session", Class::Routine),
     // The seat opened without a GitHub token: `gh auth token` gave none, so `git push` and `gh`
     // cannot authenticate. The fix is the operator's (`gh auth login`).
     ("gh_token_absent", Class::Failure),
@@ -773,8 +776,8 @@ mod the_register_census {
         // The census, kept where it cannot drift. Each assert below is a register's count;
         // a code moved or added without a thought fails here rather than silently changing what
         // a reader is taught by the colour of the screen.
-        assert_eq!(TABLE.len(), 182, "the table's size");
-        assert_eq!(count(Class::Routine), 74);
+        assert_eq!(TABLE.len(), 183, "the table's size");
+        assert_eq!(count(Class::Routine), 75);
         assert_eq!(count(Class::Refused), 15, "the fifteen in READER_INPUT");
         assert_eq!(count(Class::Failure), 93);
         // A code with an id is read by its family.

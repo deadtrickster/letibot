@@ -676,7 +676,7 @@ impl Harness {
             .to_string();
         eprintln!("letibot: {said}");
         hub.publish(SessionEvent::Warning {
-            code: BOUNDARY_ABSENT.into(),
+            code: UNCONFINED_SESSION.into(),
             detail: said,
             compaction: None,
         });
@@ -852,7 +852,10 @@ impl Harness {
             // session gets the whole host. Said on the hub and in the prompt; the mode is what
             // decides each command, and it is not a boundary.
             whole_host = true;
-            Self::say_no_boundary(hub);
+            // Said by the top-level session; a child it started inherits the same state.
+            if cfg.parent_session_id.is_none() {
+                Self::say_no_boundary(hub);
+            }
             if cfg.allow_bash && may_exec {
                 HostBackend::executable("/")
             } else if may_write {
