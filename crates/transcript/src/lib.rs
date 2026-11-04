@@ -101,8 +101,8 @@ pub enum TranscriptItem {
         text: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         tool_calls: Vec<ToolCall>,
-        /// The turn was cut short rather than finished naturally: §5.7's
-        /// `length` with usable text, or §5.8's kept partial. Absent on the wire
+        /// The turn was cut short rather than finished naturally:
+        /// `length` with usable text, or the kept partial. Absent on the wire
         /// means `false`, so rows written before the field existed still read.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         truncated: bool,

@@ -204,7 +204,7 @@ fn a_metrics_mistake_is_two_lines_and_names_the_verb_to_ask() {
 }
 
 /// `migrate` refuses a missing session and an unknown flag in two lines too, and the second
-/// line is where the flags with their defaults are. Both used to print the whole usage.
+/// line is where the flags with their defaults are. Neither prints the whole usage.
 #[test]
 fn the_migration_refusals_are_two_lines_and_name_its_help() {
     for (args, what) in [
@@ -227,7 +227,7 @@ fn the_migration_refusals_are_two_lines_and_name_its_help() {
 }
 
 /// An id that is not in the store is two lines too: what was not found, and the verb that lists
-/// what is there. It used to be the daemon's bare `not found: session s-nope`.
+/// what is there. It is not the daemon's bare `not found: session s-nope`.
 #[test]
 fn an_unknown_session_id_names_the_real_ones_and_where_to_list_them() {
     let dir = std::env::temp_dir().join(format!("letibot-cli-store-{}", std::process::id()));
@@ -299,7 +299,7 @@ fn the_dispatcher_answers_for_itself_and_refuses_a_typo() {
     );
 }
 
-/// A typo is two lines: the mistake, and what to type next. The sentence used to end
+/// A typo is two lines: the mistake, and what to type next. The sentence does not end
 /// "or see <the path this binary was run from>", which is not a command a person can use.
 #[test]
 fn a_typo_is_refused_in_two_lines_and_never_echoes_the_binary_path() {

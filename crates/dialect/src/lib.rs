@@ -252,7 +252,7 @@ pub struct DialectSpec {
     /// The jinja source, as shipped in the GGUF's `tokenizer.chat_template`.
     pub template: Cow<'static, str>,
     /// SHA-256 of `template`. A model update that changes the template invalidates the
-    /// spec automatically, and §4.4 makes this the dialect's identity in the store.
+    /// spec automatically, and this is the dialect's identity in the store.
     pub template_sha: [u8; 32],
     pub control_tokens: ControlTokens,
     pub stop_tokens: Vec<StopToken>,

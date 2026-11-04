@@ -1,9 +1,9 @@
-//! The session log and the head protocol (W7): §4.5, §13.2, §13.2b.
+//! The session log and the head protocol (W7).
 //!
 //! # What this crate is
 //!
 //! The authoritative state of a session is an append-only event log with a
-//! monotonic `seq` (§13.2). Everything else - the snapshot, a head's screen, a
+//! monotonic `seq`. Everything else - the snapshot, a head's screen, a
 //! stored transcript - is a projection of it. This crate is the log, the
 //! projections, the fan-out and the frames; it is not a daemon and it holds no
 //! model.
@@ -16,7 +16,7 @@
 //!                                          SessionView ──snapshot──> a late head
 //! ```
 //!
-//! # The nine mechanics §13.2b insists on, and where each one lives
+//! # The nine mechanics, and where each one lives
 //!
 //! | mechanic | where |
 //! |---|---|
@@ -37,10 +37,10 @@
 //!   runtime under the log to serve at most a handful of heads would be paying a
 //!   dependency for a problem we do not have. Threads and a condvar are the whole
 //!   concurrency story.
-//! - No transport but Unix sockets. §13.4's remote head is WebSocket + TLS
+//! - No transport but Unix sockets. The remote head is WebSocket + TLS
 //!   over *the same frames*; [`wire`] is deliberately generic over `Read`/`Write`
 //!   so that head is a transport and not a protocol. It is not built here.
-//! - No ACP adapter. §13.4 calls it an adapter over the same vocabulary; the
+//! - No ACP adapter. it is an adapter over the same vocabulary; the
 //!   vocabulary is in [`event`] (`DecisionOption`, `option_id`, the four
 //!   `OptionKind`s) so the adapter is a mapping when somebody writes it.
 

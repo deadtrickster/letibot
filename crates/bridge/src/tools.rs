@@ -316,7 +316,7 @@ impl Bridge {
             "last_rejection": s.rejection,
             "seq": s.seq,
         });
-        // What the last ending measured, which is §18.2's question: `prefix_check` says whether
+        // What the last ending measured, which is the question: `prefix_check` says whether
         // zero reuse was a slot that did not hold the history or a prompt that diverged, and the
         // dialect's sha says which template produced it. Keys named once, in `State`.
         for (key, value) in s.measured_keys() {

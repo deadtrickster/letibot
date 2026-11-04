@@ -484,7 +484,7 @@ impl FinishReason {
     }
 }
 
-/// §18.1-I1's verdict on one turn: the wire twin of `letibot_turn::PrefixCheck`. `Held` with a
+/// The verdict on one turn: the wire twin of `letibot_turn::PrefixCheck`. `Held` with a
 /// shortfall is the server's cache; `Violated` is a prompt of ours that did not extend the last,
 /// which is the only verdict here that is a defect in us.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1139,7 +1139,7 @@ pub enum SessionEvent {
         /// head reading the round's finish alone drew *Responded* and then *Responding* again.
         #[serde(default = "an_ending")]
         ends_turn: bool,
-        /// §18.1-I1's verdict, without which a head cannot tell a slot that did not hold the
+        /// The verdict, without which a head cannot tell a slot that did not hold the
         /// history from a prompt of ours that diverged: zero reuse is one number for both. `None`
         /// from a daemon older than the field, which measured nothing a head can read.
         #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -60,7 +60,7 @@ impl PromptSpan {
         self.len == 0
     }
 
-    /// The chain head at `len`. This is what `prefix_handle` (§3.10-B) asserts:
+    /// The chain head at `len`. This is what `prefix_handle` asserts:
     /// two requests whose heads differ at a shared index are two conversations,
     /// and the daemon says so before submitting.
     pub fn head(&self) -> &[u8; 32] {
@@ -388,8 +388,8 @@ impl TokenLedger {
         })
     }
 
-    /// Fork at a row boundary: a new ledger over a new region, with `self` untouched. This is what
-    /// §5.5 means by fork and not truncate.
+    /// Fork at a row boundary: a new ledger over a new region, with `self` untouched. This is
+    /// fork, not truncate.
     pub fn fork(&self, name: &str, keep_rows: usize) -> Result<TokenLedger, LedgerError> {
         if keep_rows > self.rows.len() {
             return Err(LedgerError::ForkPastEnd {
@@ -660,7 +660,7 @@ mod tests {
         assert_eq!(head, l.region().head_hash());
     }
 
-    /// The test §4.3 clause 1 asks for: one that fails if somebody later adds a rewrite operation.
+    /// A test that fails if somebody later adds a rewrite operation.
     /// It reads this crate's two append-only modules and pins their public surface.
     #[test]
     fn no_rewrite_operation_exists() {

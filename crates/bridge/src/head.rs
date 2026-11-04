@@ -64,7 +64,7 @@ const SEAT_PATIENCE: Duration = Duration::from_secs(5);
 /// the transcript is where history lives.
 pub const RING: usize = 500;
 
-/// The longest one-liner an entry carries - the number `crates/ui/DESIGN.md` §4.1 arrived
+/// The longest one-liner an entry carries - the number `crates/ui/DESIGN.md` arrived
 /// at for a tool's display target, kept here for the same reason: an entry is a line a
 /// reader scans, not a payload.
 const LINE: usize = 120;
@@ -454,7 +454,7 @@ pub struct State {
     pub spent: Meter,
     /// How many rounds `spent` sums.
     pub rounds: u64,
-    /// §18.1-I1's verdict on the last ending: whether this prompt extended the one before it,
+    /// The verdict on the last ending: whether this prompt extended the one before it,
     /// which is what tells a slot that did not hold the history from a prompt of ours that
     /// diverged. `None` is a daemon older than the field.
     pub prefix_check: Option<PrefixCheck>,
@@ -2385,7 +2385,7 @@ mod tests {
         );
     }
 
-    /// The two facts §18.2 needs reach `leticode_status`: which check judged the last ending and
+    /// The two facts reach `leticode_status`: which check judged the last ending and
     /// which dialect rendered it. Without the check an orchestrator reads zero reuse as a prompt
     /// that diverged; a daemon older than the fields answers `null` and an empty string.
     #[test]

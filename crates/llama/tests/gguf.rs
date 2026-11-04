@@ -365,7 +365,7 @@ mod tests {
 
     fn render_item(item: &TranscriptItem) -> Vec<RenderSpan> {
         match item {
-            // §4.2: renders to nothing.
+            // Renders to nothing.
             TranscriptItem::SegmentMark { .. } => vec![],
             TranscriptItem::System { text, .. } => vec![
                 ctl(ControlRole::TurnStartUser),

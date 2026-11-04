@@ -353,7 +353,7 @@ mod tests {
 
     #[test]
     fn a_truncated_call_keeps_its_bytes_and_does_not_become_an_empty_one() {
-        // The §5.7 case. `{}` here would mean executing a call the model never
+        // The truncated-argument case. `{}` here would mean executing a call the model never
         // finished writing.
         let spans = roundtrip("<tool_call>\n<function=read>\n<parameter=path>\nsrc/ma");
         let ParsedSpan::ToolCall {

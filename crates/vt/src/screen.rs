@@ -1516,7 +1516,7 @@ mod tests {
         assert_well_formed(&s);
 
         // The parked main screen is reshaped with the alternate one, so `?1049l` gives back a
-        // screen of the right shape rather than the shape the window used to have.
+        // screen of the right shape rather than a stale shape.
         let mut s = screen(4, 6);
         s.feed(b"main\r\nscreen");
         s.feed(b"\x1b[?1049h\x1b[2J\x1b[1;1Halt");
@@ -1651,8 +1651,8 @@ mod tests {
     }
 
     /// The program's mouse request is recorded, so the head can
-    /// tell a click that is the program's from one that is its own. It used to be consumed and
-    /// dropped (`12 | 1000..=1006 | …`), which left the head nothing to ask.
+    /// tell a click that is the program's from one that is its own, so
+    /// the request (`12 | 1000..=1006 | …`) is kept rather than dropped.
     #[test]
     fn the_programs_mouse_request_is_recorded_not_dropped() {
         let mut s = screen(3, 10);

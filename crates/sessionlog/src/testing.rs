@@ -66,7 +66,7 @@ pub fn proposed(turn_id: &str, call_id: &str, name: &str) -> SessionEvent {
     proposed_on(turn_id, call_id, name, "")
 }
 
-/// A proposal with a §4.1 display target: what the call is *about*.
+/// A proposal with a display target: what the call is *about*.
 pub fn proposed_on(turn_id: &str, call_id: &str, name: &str, target: &str) -> SessionEvent {
     SessionEvent::ToolCallProposed {
         turn_id: turn_id.into(),
@@ -81,7 +81,7 @@ pub fn requested(req_id: &str, summary: &str) -> SessionEvent {
     SessionEvent::DecisionRequested {
         write_targets: Vec::new(),
         req_id: req_id.into(),
-        // §11.6's `kind`: which of the two vocabularies settles it. Not the access
+        // The `kind`: which of the two vocabularies settles it. Not the access
         // class - `exec` was here and reads as one, and a permission over `exec` is
         // still answered by option id.
         kind: "permission".into(),
@@ -397,7 +397,7 @@ pub fn one_of_each() -> Vec<SessionEvent> {
 }
 
 /// A realistic session: a user turn, reasoning, a tool call gated by a decision, and an answer
-/// with markdown in it - long and blocky enough to exercise §13.3's incremental lexer, emitted
+/// with markdown in it - long and blocky enough to exercise the incremental lexer, emitted
 /// as small deltas, which is how it arrives from the engine.
 pub fn recorded_session() -> Vec<SessionEvent> {
     let mut out = vec![
@@ -409,7 +409,7 @@ pub fn recorded_session() -> Vec<SessionEvent> {
     for w in chunks("The user is asking about the prefix cache. I should check the ledger first.") {
         out.push(reasoning("s#1", &w));
     }
-    // With its §4.1 display target, because `--demo` is the fixture people look at
+    // With its display target, because `--demo` is the fixture people look at
     // to decide whether the head is any good, and a demo that shows `Read (c1)`
     // demonstrates the thing that was fixed as though it had not been.
     out.push(proposed_on(

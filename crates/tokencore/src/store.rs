@@ -2079,7 +2079,7 @@ impl Store {
         self.insert_transcript(transcript_id, session_id, stable_prefix_id, None)
     }
 
-    /// A transcript that came from a fork (§5.5). A separate entry point rather than an `Option`
+    /// A transcript that came from a fork. A separate entry point rather than an `Option`
     /// argument, so recording the divergence is not something a caller can forget.
     pub fn put_fork(
         &self,

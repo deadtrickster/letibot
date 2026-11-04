@@ -14,7 +14,7 @@ pub mod stats;
 #[cfg(feature = "store")]
 pub mod store;
 
-/// Every kind this tree writes - `docs/metrics.md` §2.3's vocabulary, dotted.
+/// Every kind this tree writes - `docs/metrics.md` vocabulary, dotted.
 pub mod kind {
     /// A turn began. Written with the turn's end (see the harness's `instruments`), stamped
     /// with the moment it began. `name` = the door; n1/n2/n3 = fill tokens, window, rounds.
@@ -219,7 +219,7 @@ pub struct Emitter {
     dropped: AtomicU64,
 }
 
-/// §2.7's size: 8,192 rows is two minutes of a busy daemon's ~60 rows a turn - a writer that
+/// The size: 8,192 rows is two minutes of a busy daemon's ~60 rows a turn - a writer that
 /// has fallen that far behind is not coming back by waiting, and the count says so.
 pub const CHANNEL: usize = 8192;
 
@@ -325,7 +325,7 @@ pub fn capture<R>(f: impl FnOnce() -> R) -> (R, Vec<Event>) {
     (r, got)
 }
 
-/// The `#words` in an operator's note - §2.5's tags, free vocabulary, counted as written.
+/// The `#words` in an operator's note - the tags, free vocabulary, counted as written.
 /// Lower-cased, trailing punctuation dropped, a bare `#` ignored.
 pub fn tags(note: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();

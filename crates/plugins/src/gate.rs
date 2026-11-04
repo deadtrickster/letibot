@@ -103,7 +103,7 @@ fn artifact(dir: &Path) -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
-/// One input answered differently on the shadow than on the live stack: §2.4 step 5's *"these
+/// One input answered differently on the shadow than on the live stack: the *"these
 /// inputs now answer differently, like this"*.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReplayDiff {

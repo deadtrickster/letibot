@@ -16,7 +16,7 @@ use crate::{CHANNEL, Emitter, Event, Msg, Value, kind, now_ms};
 /// still reads - the table is kind-tolerant by construction.
 pub const SCHEMA: u32 = 1;
 
-/// `docs/metrics.md` §2.2, as written. `IF NOT EXISTS` throughout: eleven daemons of mixed
+/// `docs/metrics.md`, as written. `IF NOT EXISTS` throughout: eleven daemons of mixed
 /// builds open this file, and the first one creates it.
 pub const DDL: &str = "
 CREATE TABLE IF NOT EXISTS event (
@@ -200,7 +200,7 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
         let _ = std::fs::create_dir_all(d);
     }
     let conn = Connection::open(path)?;
-    // 0600: §2.8 - the file holds the operator's own notes.
+    // 0600: the file holds the operator's own notes.
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -477,7 +477,7 @@ pub struct Writer {
     last_size_check: Option<u64>,
 }
 
-/// §2.7: a batch a second, or sooner at this many rows.
+/// A batch a second, or sooner at this many rows.
 pub const BATCH_ROWS: usize = 1000;
 pub const BATCH_EVERY: Duration = Duration::from_secs(1);
 const DAY_MS: u64 = 86_400_000;

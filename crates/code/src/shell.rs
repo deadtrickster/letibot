@@ -1,4 +1,4 @@
-//! Layer 2 of `docs/boundary-and-adjudication.md` §4: normalise a shell command
+//! Layer 2 of `docs/boundary-and-adjudication.md`: normalise a shell command
 //! through the grammar, and name what the grammar cannot resolve.
 //!
 //! # The vulnerability class this exists for
@@ -45,7 +45,7 @@
 //! that `sudo` wraps the next word, that `cat` surfaces its input, that `scp` leaves
 //! the box - is a table about this host's software, and a table is policy. Policy
 //! lives one crate up, in `letibot_tools::intent`, where the deny-list and the
-//! §3 flow rule live with it. This crate keeps the property the rest of it has: it
+//! flow rule live with it. This crate keeps the property the rest of it has: it
 //! knows about source text, and nothing about tools, turns or transcripts.
 //!
 //! # Reading the output
@@ -852,7 +852,7 @@ fn walk(node: &Node, source: &str, ctx: &mut Vec<Context>, out: &mut Normalised)
         "pipeline" => {
             // The pipe flags are a property of position in the pipeline, and they
             // decide `Stage::stdout_surfaces` - which is the structural half of
-            // §3's "may never enter the transcript".
+            // The "may never enter the transcript".
             let members: Vec<&Node> = kids(node)
                 .into_iter()
                 .filter(|c| c.kind != "|" && c.kind != "|&")
@@ -3062,7 +3062,7 @@ mod tests {
         assert_eq!(x.bytes, 0);
         assert!(x.stages.is_empty());
         // `is_resolved` is true - there is nothing unresolvable in nothing - and
-        // that is why a caller must look at `stages`/`bytes` too. §2.2: a zero with
+        // that is why a caller must look at `stages`/`bytes` too. A zero with
         // no denominator is not a measurement.
         assert!(x.is_resolved());
     }

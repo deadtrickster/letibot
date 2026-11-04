@@ -388,7 +388,7 @@ pub const TABLE: &[(&str, Class)] = &[
     ("length_empty_turn", Class::Failure),
     ("length_batch_refused", Class::Failure),
     ("ended_in_reasoning", Class::Failure),
-    // A guard fired. §18's own note on this register: *a guard nobody notices is a guard
+    // A guard fired. The note on this register: *a guard nobody notices is a guard
     // nobody wrote* - and both of these are a turn that was going nowhere, stopped.
     ("repetition_collapse", Class::Failure),
     ("reasoning_stall", Class::Failure),

@@ -39,7 +39,7 @@ impl ToolResultIn {
     }
 
     /// The synthetic input `plugin test` and the shadow gate use when a session has none
-    /// recorded: a pull request that was just opened, which is §4.2's own example.
+    /// recorded: a pull request that was just opened, which is a typical example.
     pub fn synthetic() -> ToolResultIn {
         ToolResultIn::new(
             crate::Call::new(

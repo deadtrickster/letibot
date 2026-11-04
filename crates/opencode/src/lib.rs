@@ -94,7 +94,7 @@ pub struct SessionMeta {
 impl SessionMeta {
     /// Rule 1, in one line. What every imported row is, and whose it was, so a
     /// reader who cannot tell whose sentence it is can weigh it - the same defect
-    /// §1.5 names for a card that does not label a borrowed sentence.
+    /// Named for a card that does not label a borrowed sentence.
     pub fn origin(&self) -> String {
         let who = match (&self.provider, &self.model) {
             (Some(p), Some(m)) => format!("{p}/{m}"),
