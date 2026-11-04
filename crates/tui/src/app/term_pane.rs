@@ -143,14 +143,7 @@ pub(crate) fn encode(r: &Report, sgr: bool, x: usize, y: usize) -> Option<Vec<u8
         r.button
     };
     let b = u8::try_from(b).ok().and_then(|b| b.checked_add(32))?;
-    Some(vec![
-        0x1b,
-        b'[',
-        b'M',
-        b,
-        32 + x as u8,
-        32 + y as u8,
-    ])
+    Some(vec![0x1b, b'[', b'M', b, 32 + x as u8, 32 + y as u8])
 }
 
 /// The pane: a `letibot_vt::Screen` the program's bytes drive, drawn in the conversation's
