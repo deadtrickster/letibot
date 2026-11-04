@@ -742,6 +742,8 @@ it and cannot see it: the only account of the view is the manifest the model is 
    the same configurable perimeter as the paths, so roles can be expressed rather than coded:
    e.g. a reviewer child that may comment on a PR but not push, a cleanup child with host
    access, a coder child that commits only.
+   Known gap of today's injection: the masking of `GH_TOKEN` happens when a call's output is
+   read, so a background job's output file on disk keeps the token unmasked.
 8. The file tools obey the same perimeter as the shell. Today the default seat's shell cannot
    reach `~/.local/share/letibot` (DENY_UNDER_HOME), but its file tools are rooted at `/` and
    reach the daemon's store, other sessions' folders and their plugins; a session was seen
