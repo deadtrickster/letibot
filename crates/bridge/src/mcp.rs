@@ -233,14 +233,14 @@ mod tests {
         assert_eq!(r["result"]["serverInfo"]["name"], "letibot-mcp");
     }
 
-    /// Twenty tools, each with a schema - the design's table, and the shape MCP requires.
+    /// Twenty-one tools, each with a schema - the design's table, and the shape MCP requires.
     /// Ten core verbs, `leticode_transcript`, `leticode_mode`, `leticode_model`,
-    /// `leticode_collect` for a session stopped before its branch came home, and the six room tools.
+    /// `leticode_collect` for a session stopped before its branch came home, and the seven room tools.
     #[test]
-    fn tools_list_lists_the_twenty_tools_with_schemas() {
+    fn tools_list_lists_the_twenty_one_tools_with_schemas() {
         let answers = run(&[r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#]);
         let tools = answers[0]["result"]["tools"].as_array().expect("tools");
-        assert_eq!(tools.len(), 20, "{:?}", answers[0]);
+        assert_eq!(tools.len(), 21, "{:?}", answers[0]);
         for t in tools {
             assert!(t["name"].is_string(), "{t}");
             assert!(t["description"].is_string(), "{t}");
