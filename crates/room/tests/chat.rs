@@ -511,7 +511,8 @@ fn an_absent_members_inbox_is_bounded_and_the_ring_still_has_the_rest() {
     let mut pushed = Vec::new();
     while pushed.len() < sent {
         match back.heard.recv_timeout(Duration::from_millis(200)) {
-            Ok((m, _)) => pushed.push(m.seq),
+            Ok((m, _)) if m.kind != Seat::System => pushed.push(m.seq),
+            Ok(_) => {}
             Err(_) => break,
         }
     }
@@ -530,4 +531,76 @@ fn an_absent_members_inbox_is_bounded_and_the_ring_still_has_the_rest() {
         }
         other => panic!("{other:?}"),
     }
+}
+
+/// Drain what a seat is pushed until it goes quiet.
+fn drained(s: &Seated) -> Vec<Message> {
+    let mut out = Vec::new();
+    while let Ok((m, _)) = s.heard.recv_timeout(Duration::from_millis(300)) {
+        out.push(m);
+    }
+    out
+}
+
+/// A member joining a busy room is told what was said as one digest, a mention to it stays
+/// verbatim, and the history is still there to read.
+#[test]
+fn a_member_joining_a_busy_room_gets_a_digest_and_its_mention_verbatim() {
+    let dir = Scratch::new();
+    let server = coordinator(&dir);
+    let talker = seat(&server, "s-talker", A, Seat::Session);
+    for i in 0..30 {
+        said(talker.say(&format!("m{i}"), "", &format!("line {i}")));
+    }
+    said(talker.say("q", "", "who has the disk?"));
+    said(talker.say("ping", "", "@s-new look at this"));
+
+    let fresh = seat(&server, "s-new", A, Seat::Session);
+    let got = drained(&fresh);
+    let verbatim: Vec<&Message> = got.iter().filter(|m| m.kind != Seat::System).collect();
+    let digests: Vec<&Message> = got.iter().filter(|m| m.kind == Seat::System).collect();
+    assert_eq!(verbatim.len(), 1, "{got:?}");
+    assert_eq!(verbatim[0].text, "@s-new look at this");
+    assert_eq!(digests.len(), 1, "one digest for the room: {got:?}");
+    let text = &digests[0].text;
+    assert!(text.contains("s-talker 31"), "{text}");
+    assert!(text.contains("unanswered: #31"), "{text}");
+    assert!(text.contains("more, `room read"), "{text}");
+    assert!(text.matches("\n  #").count() <= 3, "{text}");
+    match fresh.call(Request::Read {
+        room: String::new(),
+        since: 0,
+        last: None,
+        thread: None,
+    }) {
+        Response::History(h) => assert_eq!(h.rows.len(), 32, "full history on demand"),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// After a coordinator restart the reconnecting member is told a digest of what it missed.
+#[test]
+fn a_member_reconnecting_after_a_restart_gets_a_digest_of_what_it_missed() {
+    let dir = Scratch::new();
+    let first = stored(&dir);
+    let away = seat(&first, "s-away", A, Seat::Session);
+    let talker = seat(&first, "s-talker", A, Seat::Session);
+    said(talker.say("a", "", "while connected"));
+    drop(away);
+    until("the connection to close", || first.connections() == 1);
+    for i in 0..10 {
+        said(talker.say(&format!("m{i}"), "", &format!("missed {i}")));
+    }
+    first.stop();
+    drop(talker);
+    std::thread::sleep(Duration::from_millis(50));
+
+    let second = stored(&dir);
+    let back = seat(&second, "s-away", A, Seat::Session);
+    let got = drained(&back);
+    assert_eq!(got.len(), 1, "one digest, not the messages: {got:?}");
+    assert_eq!(got[0].kind, Seat::System);
+    assert!(got[0].text.contains("said since"), "{}", got[0].text);
+    assert!(got[0].text.contains("s-talker 10"), "{}", got[0].text);
+    second.stop();
 }

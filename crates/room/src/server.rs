@@ -484,13 +484,17 @@ impl Server {
         {
             "its queues are kept in a store beside the socket, so a restart brings them back"
         } else {
-            "the room keeps no store, so a restart begins with no items at all"
+            "this room has no item store, so a restart begins with no items at all"
+        };
+        let chat_kept = match self.inner.chat.lock().expect("the chat lock").store_path() {
+            Some(p) => format!("chat is kept in {}", p.display()),
+            None => "chat is in memory only, so a restart empties it".to_string(),
         };
         let items = self.with_room(project, |r| r.all().len());
         let up = now.saturating_sub(self.inner.started_ms);
         format!(
-            "the room of `{}` — started {} ago and holding {items} item(s) since then; {kept} \
-             ({n} connection(s) served since it started)",
+            "the room of `{}` — started {} ago and holding {items} item(s) since then; {kept}; \
+             {chat_kept} ({n} connection(s) served since it started)",
             self.room_name_of(project),
             crate::item::duration(up),
         )
@@ -922,32 +926,107 @@ impl Server {
         }
     }
 
-    /// Hand a connection the chat its principal missed while it had none, oldest first, and empty
-    /// the inbox: a member that has been told is not told twice.
+    /// Tell a connection what its principal missed, once: what names it verbatim, and one digest
+    /// per room for the rest. The log is the record, so the per-member backlog is dropped here.
+    /// A member never seen before is told about the last hour; one seen before, about what
+    /// followed its last mark.
     fn deliver_pending(&self, conn: &Conn, session: &str) {
-        let Some(mut inbox) = self
-            .inner
+        self.inner
             .pending
             .lock()
             .expect("the pending lock")
-            .remove(session)
-        else {
-            return;
-        };
-        if inbox.dropped > 0 {
-            eprintln!(
-                "room: `{session}` was away for {} message(s), and the {} the inbox holds are \
-                 pushed; `inbox` has the rest",
-                inbox.rows.len() as u64 + inbox.dropped,
-                inbox.rows.len()
+            .remove(session);
+        let now = now_ms();
+        let (seen, head, rows) = {
+            let chat = self.inner.chat.lock().expect("the chat lock");
+            let seen = chat.seen(session);
+            let rows = chat.missed(
+                session,
+                seen,
+                now.saturating_sub(chat::DIGEST_WINDOW_MS),
+                |_| true,
             );
-        }
-        for message in std::mem::take(&mut inbox.rows) {
+            (seen, chat.head(), rows)
+        };
+        // Visibility reads the rooms, so it runs after the chat lock is released.
+        let rows: Vec<chat::Message> = rows
+            .into_iter()
+            .filter(|m| self.visible(session, conn.seat, &conn.project, m))
+            .collect();
+        let (addressed, rest): (Vec<_>, Vec<_>) = rows
+            .into_iter()
+            .partition(|m| m.attends(session, chat::Attention::ToMe));
+        let skipped = addressed.len().saturating_sub(MAX_PENDING);
+        for message in addressed.into_iter().skip(skipped) {
             conn.send(Response::Chat {
-                names_you: message.names(session),
+                names_you: true,
                 message,
             });
         }
+        let since = match seen {
+            Some(s) => format!("#{s}"),
+            None => "the last hour".to_string(),
+        };
+        let mut by_room: BTreeMap<String, Vec<chat::Message>> = BTreeMap::new();
+        for m in rest {
+            by_room.entry(m.room.clone()).or_default().push(m);
+        }
+        let mut notes: Vec<(String, String)> = Vec::new();
+        if skipped > 0 {
+            notes.push((
+                chat::HOST_ROOM.to_string(),
+                format!(
+                    "{skipped} older message(s) addressed to you were left out, `room inbox` has them"
+                ),
+            ));
+        }
+        for (room, rows) in by_room {
+            let items = self.open_item_lines(&room);
+            if let Some(text) = chat::summarise(&room, &since, &rows, &items) {
+                notes.push((room, text));
+            }
+        }
+        for (room, text) in notes {
+            conn.send(Response::Chat {
+                names_you: true,
+                message: chat::Message {
+                    seq: head,
+                    ts: now,
+                    room,
+                    author: chat::DIGEST_AUTHOR.to_string(),
+                    kind: Seat::System,
+                    to: Some(session.to_string()),
+                    thread: None,
+                    refs: Vec::new(),
+                    text,
+                },
+            });
+        }
+        let mut chat = self.inner.chat.lock().expect("the chat lock");
+        chat.mark_seen(session, head);
+        chat.keep_seen(session);
+    }
+
+    /// The unfinished items of the project a chat room belongs to, one short line each.
+    fn open_item_lines(&self, room: &str) -> Vec<String> {
+        let key = chat::project_of_room(room).unwrap_or("");
+        let rooms = self.inner.rooms.lock().expect("the rooms lock");
+        let Some(r) = rooms.get(key) else {
+            return Vec::new();
+        };
+        r.all()
+            .into_iter()
+            .filter_map(|i| match &i.state {
+                crate::item::State::Open => Some(format!("#{} `{}` open", i.id, i.tag)),
+                crate::item::State::Claimed { claim } => {
+                    Some(format!("#{} `{}` held by {}", i.id, i.tag, claim.by))
+                }
+                crate::item::State::Abandoned { .. } => {
+                    Some(format!("#{} `{}` abandoned", i.id, i.tag))
+                }
+                _ => None,
+            })
+            .collect()
     }
 
     /// May a principal in `seat` and `project` see chat room `room`?
@@ -1292,6 +1371,11 @@ impl Server {
                 names_you: message.names(name),
                 message: message.clone(),
             });
+            self.inner
+                .chat
+                .lock()
+                .expect("the chat lock")
+                .mark_seen(name, message.seq);
         }
         // And a member with no connection is told nothing by a push. It is not lost: the message is
         // kept for it and delivered when it next connects, and its inbox cursor counts it unread.
@@ -1540,6 +1624,11 @@ impl Server {
                 // stopping coordinator shut this socket itself, and the session's daemon keeps
                 // running and redials the next one. Its claim rides the store, and the lease -
                 // not the coordinator's own exit - decides whether it is still alive.
+                me.inner
+                    .chat
+                    .lock()
+                    .expect("the chat lock")
+                    .keep_seen(&speaker.session);
                 me.inner
                     .conns
                     .lock()
@@ -1933,7 +2022,7 @@ mod tests {
         let path = dir.join("room.sock");
         let server = Server::serve(&path, Room::new()).expect("a socket");
         let said = server.identity();
-        assert!(said.contains("no store"), "{said}");
+        assert!(said.contains("no item store"), "{said}");
         assert!(said.contains("no items at all"), "{said}");
         // The name is the ROOM's - `<host key>/<project key>`, the name a client is held to  -
         // rather than the socket's path, which is one per box and not one per room.
@@ -1996,7 +2085,7 @@ mod tests {
         // Both are empty, and both say so - and both say that emptiness is what a start IS.
         for said in [&fresh, &settled] {
             assert!(said.contains("holding 0 item(s)"), "{said}");
-            assert!(said.contains("no store"), "{said}");
+            assert!(said.contains("no item store"), "{said}");
             assert!(
                 said.contains("a restart begins with no items at all"),
                 "{said}"
@@ -2096,7 +2185,7 @@ mod tests {
                     server.identity_at(crate::DEFAULT_PROJECT, now),
                     "verbatim, not reworded"
                 );
-                assert!(identity.contains("no store"), "{identity}");
+                assert!(identity.contains("no item store"), "{identity}");
             }
             other => panic!("a hello is answered with a welcome: {other:?}"),
         }
@@ -2235,6 +2324,27 @@ mod tests {
         let new = crate::wire::protocol_refusal(9).expect("9 is not 8");
         assert!(new.contains("this room is the older"), "{new}");
         assert_eq!(crate::wire::protocol_refusal(8), None);
+        assert!(
+            new.contains("letibot --room --stop && letibot --room"),
+            "{new}"
+        );
+        assert!(old.contains("letibot --stop"), "{old}");
+    }
+
+    /// An older coordinator's own sentence still gets the exact command from the client.
+    #[test]
+    fn a_refusal_from_an_older_coordinator_gets_the_command() {
+        let theirs = "this room speaks protocol 1 and the client speaks 8 — this room is the older of the two, so nothing was done: upgrade this room";
+        assert_eq!(
+            crate::wire::upgrade_hint(theirs),
+            Some(crate::wire::ROOM_UPGRADE)
+        );
+        let newer = "this room speaks protocol 9 and the client speaks 8 — x";
+        assert_eq!(
+            crate::wire::upgrade_hint(newer),
+            Some(crate::wire::CLIENT_UPGRADE)
+        );
+        assert_eq!(crate::wire::upgrade_hint("some other refusal"), None);
     }
 
     /// The pane's read: the room's half from the room, the server's three from the server. What is

@@ -114,6 +114,10 @@ pub fn waiting(session: &str) -> usize {
 /// The sentence a chat message that names a session becomes. Bounded: a long message is cut for
 /// the turn's notice, and `room read` has the whole.
 pub fn chat_sentence(m: &letibot_room::Message) -> String {
+    // A digest is already bounded by the room, and says what it left out.
+    if m.kind == letibot_room::Seat::System && m.author == letibot_room::chat::DIGEST_AUTHOR {
+        return format!("[room] {}", m.text);
+    }
     let mut line = m.line();
     if line.len() > 600 {
         let mut end = 600;

@@ -185,6 +185,102 @@ impl Message {
     }
 }
 
+/// The author of a digest message, kind `system`.
+pub const DIGEST_AUTHOR: &str = "room";
+/// Window of history a member with no mark is told about.
+pub const DIGEST_WINDOW_MS: u64 = 60 * 60 * 1000;
+/// Verbatim lines at the end of one room's digest.
+pub const DIGEST_TAIL: usize = 3;
+/// Most authors, unanswered questions and open items one digest names.
+pub const DIGEST_NAMED: usize = 5;
+/// Longest text of a digest's verbatim line, in bytes.
+pub const DIGEST_LINE: usize = 240;
+
+/// The deterministic "said since" for one room: counts, authors, the last lines, what is open.
+pub fn summarise(
+    room: &str,
+    since: &str,
+    rows: &[Message],
+    open_items: &[String],
+) -> Option<String> {
+    if rows.is_empty() {
+        return None;
+    }
+    let mut by: BTreeMap<&str, u64> = BTreeMap::new();
+    for m in rows {
+        *by.entry(m.author.as_str()).or_default() += 1;
+    }
+    let mut authors: Vec<(&str, u64)> = by.into_iter().collect();
+    authors.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+    let more_authors = authors.len().saturating_sub(DIGEST_NAMED);
+    let mut out = format!(
+        "said since {since} in `{room}`: {} message(s) - ",
+        rows.len()
+    );
+    out.push_str(
+        &authors
+            .iter()
+            .take(DIGEST_NAMED)
+            .map(|(a, n)| format!("{a} {n}"))
+            .collect::<Vec<_>>()
+            .join(", "),
+    );
+    if more_authors > 0 {
+        out.push_str(&format!(", {more_authors} more author(s)"));
+    }
+    let tail = rows.len().min(DIGEST_TAIL);
+    for m in &rows[rows.len() - tail..] {
+        let mut text = m.text.replace('\n', " ");
+        if text.len() > DIGEST_LINE {
+            let mut end = DIGEST_LINE;
+            while !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            let cut = text.len() - end;
+            text.truncate(end);
+            text.push_str(&format!(" [+{cut} bytes]"));
+        }
+        out.push_str(&format!("\n  #{} {}: {text}", m.seq, m.author));
+    }
+    // A question is open while nothing in the batch answers it as a thread reply.
+    let answered: std::collections::BTreeSet<u64> = rows.iter().filter_map(|m| m.thread).collect();
+    let questions: Vec<&Message> = rows
+        .iter()
+        .filter(|m| m.text.trim_end().ends_with('?') && !answered.contains(&m.seq))
+        .collect();
+    if !questions.is_empty() {
+        let shown: Vec<String> = questions
+            .iter()
+            .rev()
+            .take(DIGEST_NAMED)
+            .map(|m| format!("#{} {}", m.seq, m.author))
+            .collect();
+        out.push_str(&format!("\n  unanswered: {}", shown.join(", ")));
+        if questions.len() > DIGEST_NAMED {
+            out.push_str(&format!(", {} more", questions.len() - DIGEST_NAMED));
+        }
+    }
+    if !open_items.is_empty() {
+        out.push_str(&format!(
+            "\n  open: {}",
+            open_items
+                .iter()
+                .take(DIGEST_NAMED)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("; ")
+        ));
+        if open_items.len() > DIGEST_NAMED {
+            out.push_str(&format!("; {} more", open_items.len() - DIGEST_NAMED));
+        }
+    }
+    let left = rows.len() - tail;
+    if left > 0 {
+        out.push_str(&format!("\n  {left} more, `room read {room}` for all"));
+    }
+    Some(out)
+}
+
 /// A room as one principal lists it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoomInfo {
@@ -232,9 +328,23 @@ pub struct History {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum Record {
-    Msg { request: String, message: Message },
-    Cursor { name: String, seq: u64 },
-    Dropped { room: String, seq: u64 },
+    Msg {
+        request: String,
+        message: Message,
+    },
+    Cursor {
+        name: String,
+        seq: u64,
+    },
+    Dropped {
+        room: String,
+        seq: u64,
+    },
+    /// The newest `seq` a member was connected for, the start of what it missed after a gap.
+    Seen {
+        name: String,
+        seq: u64,
+    },
 }
 
 /// The file chat is kept in, and the size it had at the last write.
@@ -249,6 +359,7 @@ pub struct Chat {
     rings: BTreeMap<String, VecDeque<Message>>,
     dropped_to: BTreeMap<String, u64>,
     cursors: BTreeMap<String, u64>,
+    seen: BTreeMap<String, u64>,
     said: VecDeque<((String, String), u64)>,
     store: Option<Store>,
 }
@@ -273,6 +384,10 @@ impl Chat {
                 Ok(Record::Cursor { name, seq }) => {
                     let cur = c.cursors.entry(name).or_insert(0);
                     *cur = (*cur).max(seq);
+                }
+                Ok(Record::Seen { name, seq }) => {
+                    let s = c.seen.entry(name).or_insert(0);
+                    *s = (*s).max(seq);
                 }
                 Ok(Record::Dropped { room, seq }) => {
                     let d = c.dropped_to.entry(room).or_insert(0);
@@ -376,6 +491,12 @@ impl Chat {
         }
         for (name, seq) in &self.cursors {
             records.push(Record::Cursor {
+                name: name.clone(),
+                seq: *seq,
+            });
+        }
+        for (name, seq) in &self.seen {
+            records.push(Record::Seen {
                 name: name.clone(),
                 seq: *seq,
             });
@@ -581,6 +702,56 @@ impl Chat {
             }
         }
         (rows, skipped)
+    }
+
+    /// The file chat is kept in, `None` for a chat in memory only.
+    pub fn store_path(&self) -> Option<&Path> {
+        self.store.as_ref().map(|s| s.path.as_path())
+    }
+
+    /// Note that `name` was connected while `seq` was said. Memory only, until [`Chat::keep_seen`].
+    pub fn mark_seen(&mut self, name: &str, seq: u64) {
+        let s = self.seen.entry(name.to_string()).or_insert(0);
+        *s = (*s).max(seq);
+    }
+
+    /// Write `name`'s seen mark, so a restart knows where its gap began.
+    pub fn keep_seen(&mut self, name: &str) {
+        if let Some(seq) = self.seen.get(name).copied() {
+            self.write(&[Record::Seen {
+                name: name.to_string(),
+                seq,
+            }]);
+        }
+    }
+
+    /// The newest `seq` `name` was connected for, `None` for a member never seen.
+    pub fn seen(&self, name: &str) -> Option<u64> {
+        self.seen.get(name).copied()
+    }
+
+    /// What `name` missed, for [`summarise`]: visible messages of others after `since` (a `seq`) or,
+    /// for a member with no mark, newer than `window_from` (ms), oldest first.
+    pub fn missed(
+        &self,
+        name: &str,
+        since: Option<u64>,
+        window_from: u64,
+        see: impl Fn(&Message) -> bool,
+    ) -> Vec<Message> {
+        let mut all: Vec<Message> = self
+            .rings
+            .values()
+            .flatten()
+            .filter(|m| match since {
+                Some(s) => m.seq > s,
+                None => m.ts >= window_from,
+            })
+            .filter(|m| m.author != name && see(m))
+            .cloned()
+            .collect();
+        all.sort_by_key(|m| m.seq);
+        all
     }
 
     /// Messages after `name`'s cursor that are not its own and that it may see - a room's unread.

@@ -60,7 +60,7 @@ asked while it is closed. What the view shows is acked, but the inbox cursor is 
 every channel, so it only moves when no other channel has a message this head has not drawn -
 `seq` counts the whole log, so an ack would mark older unread messages read too. The count of a
 channel you have looked at stays clear either way. History is the coordinator's 500 messages per
-room, so a coordinator restart empties the view.
+room, kept in `room-<host key>.chat` beside its socket, so a coordinator restart keeps the view.
 
 ### Two sessions, one queue
 
@@ -127,8 +127,8 @@ An answer to a post is a `post` under the same tag. The item and its tag are the
 
 `/pane room/room` draws one line per tag, one row per item (claimant, age of its beat, abandonment
 count), the open questions, the arbiter and who is connected, the project's tree, and the room's
-identity sentence: *started T ago and holding N item(s)*, which also says whether the room keeps
-a store.
+identity sentence: *started T ago and holding N item(s)*, which also says whether the room has an item store
+and where chat is kept.
 The daemon's feed carries the newest chat the session heard in `chat`, for a pane that draws it.
 
 A row offers only the verbs that would do something there: `claim` on the head, `release` and `abandon`
@@ -224,9 +224,11 @@ A DM is a message with room `dm` and a `to`. It is readable by its author and `t
 
 ### History
 
-Each room keeps its newest **500** messages in memory (DMs together keep 500). The oldest is dropped
-first. Nothing is written to disk: a coordinator restart empties every room and every cursor. A read
-says `trimmed: true` when messages after the asked-for `seq` were dropped.
+Each room keeps its newest **500** messages, and **256 KiB** of text. The oldest is dropped first. The
+coordinator appends chat, cursors and members' seen marks to `room-<host key>.chat` beside its socket and
+loads it at start, so a restart keeps history, `seq` and cursors. Without that file (a bare `Server`) chat
+is memory only. Items and leases are in `room-<host key>.items`. A read says `trimmed: true` when messages
+after the asked-for `seq` were dropped.
 
 ### Requests
 
@@ -269,12 +271,19 @@ returns what the filter lets through after the cursor and counts the rest as `sk
 once it has handled the rows. Delivery is at least once. A head, which has no push, polls `read` with
 `since` or `inbox`.
 
-**A member that is away.** A push cannot reach a principal with no connection, so the message is kept
-for it: the room holds the newest **64** of them per principal (`MAX_PENDING`) and pushes them, oldest
-first, when that principal next says `hello` - the first frames on a reconnected socket are the
-messages it missed, and a client that installs its chat hook after `connect` keeps them for it. The
-cursor does not move, so `rooms` and `inbox` count them as unread in the meantime. A message past the
-64 is not pushed and is logged as not pushed; the room's ring still has it, so `inbox` is the record.
+**Said since.** A member that says `hello` is not replayed what it missed. The coordinator keeps, per
+member, the newest `seq` it was connected for (`seen`, in the chat store). On `hello` it builds, with no
+model call, from the log after that mark (a member never seen: the last hour, `DIGEST_WINDOW_MS`):
+
+- messages addressed to the member (mentions, DMs, the operator's unaddressed lines), verbatim, oldest
+  first, the newest 64 (`MAX_PENDING`). A note says how many older ones were left out.
+- one digest per room for everything else, pushed as a `chat` message of kind `system`, author `room`,
+  `to` the member: count since the mark, authors with counts (5), the last 3 lines (text cut at 240
+  bytes, with the cut said), unanswered questions (`?` with no thread reply), open items in that room,
+  and "N more, `room read <room>` for all".
+
+Full history stays readable with `read`. A daemon turns a digest into a wake sentence and the bridge hands
+it to Claude Code, so a restart notice and a reconnect say the same thing.
 
 ### Through the daemon
 
@@ -295,7 +304,7 @@ The local chat follows flowy's shape for talking (the verbs agents use: `say`, `
 | flowy | here |
 |---|---|
 | rooms | kept: `host` and `project/<key>` |
-| one append-only log with a cursor | kept as `seq` over a bounded ring per room, in memory |
+| one append-only log with a cursor | kept as `seq` over a bounded ring per room, stored in `room-<host key>.chat` |
 | `say --to`, `dm`, `--thread` | kept as `to`, `dm`, `thread` |
 | `@name` mentions | kept: any `@name` in the text |
 | attention (`--to-me`, `--mentions`) | kept as `attention` |
@@ -304,7 +313,7 @@ The local chat follows flowy's shape for talking (the verbs agents use: `say`, `
 | roster | kept, from the connections and the tree |
 | `@seat/session` addressing | dropped: a seat here is one session, and the name is the session id |
 | tokens, projects, roles, permissions | replaced by seats (above) |
-| Postgres, event DAG, hybrid clocks, signatures, federation | left out: one host, one process, memory only |
+| Postgres, event DAG, hybrid clocks, signatures, federation | left out: one host, one process |
 | waiter kinds and presence (`tracked`, `forked`) | left out: `connected` is the socket |
 | todos, notes, memory, findings, reports, attachments | left out: the todo board and the merge queue stay as they are, and a room line carries a `ref` to a row |
 
