@@ -1642,8 +1642,16 @@ impl Head {
             let g = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
             if g.close_acks.contains(&id) {
                 drop(g);
-                let mut c = self.said_client()?;
-                return c.detach().map_err(|e| e.to_string());
+                // A daemon that shuts down with its last session ends this connection with a
+                // goodbye right behind the ack: the close was seen, and there is nothing to detach.
+                let Ok(mut c) = self.said_client() else {
+                    return Ok(());
+                };
+                return match c.detach() {
+                    Ok(()) => Ok(()),
+                    Err(_) if self.has_closed() => Ok(()),
+                    Err(e) => Err(e.to_string()),
+                };
             }
             if let Some(why) = &g.rejection {
                 return Err(format!("the daemon refused the close: {why}"));
@@ -1860,6 +1868,11 @@ impl Head {
     /// The client, or the reason a frame cannot be sent: a connection the daemon closed
     /// answers every send with the closing sentence rather than with a dead-socket error
     /// that names nothing.
+    fn has_closed(&self) -> bool {
+        let g = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
+        g.closed.is_some()
+    }
+
     fn said_client(&self) -> Result<std::sync::MutexGuard<'_, HeadClient>, String> {
         let closed = {
             let g = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
