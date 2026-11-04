@@ -372,7 +372,20 @@ fn the_reap_log_reaches_the_model_through_job_list() {
     // assertion below is about the record, so it must not fail on a race with a slow
     // fork.
     let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    while host.job_pids(&job).len() < 2 && std::time::Instant::now() < until {
+    // Two members, one of them already exec'd into `sleep`: the record is read at the kill, and
+    // a member still a forked `/bin/sh` records no program.
+    let execd = |pids: &[u32]| {
+        pids.iter().any(|p| {
+            std::fs::read(format!("/proc/{p}/cmdline"))
+                .map(|c| c.windows(5).any(|w| w == b"sleep"))
+                .unwrap_or(false)
+        })
+    };
+    while std::time::Instant::now() < until {
+        let pids = host.job_pids(&job);
+        if pids.len() >= 2 && execd(&pids) {
+            break;
+        }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     let killed = h.call("job_kill", &serde_json::json!({"job": id}).to_string());
