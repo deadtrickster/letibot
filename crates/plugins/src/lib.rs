@@ -1,11 +1,6 @@
 //! Plugins: the layer stack, hot reload and the shadow gate.
-//!
-//! A plugin is a wasm module that answers text hooks. Layers stack - the topmost layer that answers
-//! a hook wins, what it does not mention falls through, and the bottom is the built-in defaults -
-//! so a session's model can write a small layer, load it hot, and consolidate the pile later.
-//!
-//! This crate has no wasm engine on purpose: it talks to a [`Module`] and a [`Loader`], so
-//! precedence, mask, the ask-below and a trap falling down are all tested with fakes.
+//! A plugin is a wasm module answering text hooks; the topmost layer that answers wins and the bottom is the defaults.
+//! No wasm engine here: [`Module`] and [`Loader`] are seams that tests fake.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -37,7 +32,7 @@ pub trait Module: Send + Sync {
     /// Answer one hook with the JSON text of the input.
     fn call(&self, hook: &str, input: &str) -> Result<Option<String>, String>;
 
-    /// The fuel the last `call` burned — the gate's cost per hook.
+    /// The fuel the last `call` burned - the gate's cost per hook.
     fn fuel(&self) -> u64;
 }
 
@@ -78,7 +73,7 @@ pub trait Loader: Send + Sync {
 
 /// The contract version this host speaks for every hook kind whose shape has never changed. A
 /// layer declaring another is refused by name at load and never answers, because a contract that
-/// moved is not a field that can be guessed at (`docs/plugins-plan.md` §1, principle 6).
+/// moved is not a field that can be guessed at.
 pub const CONTRACT: u32 = 1;
 
 /// One hook kind whose contract has moved, and the version it moved to.

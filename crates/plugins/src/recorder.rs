@@ -1,11 +1,6 @@
-//! The recorded inputs: the last N inputs of every hook, which is what a replay can be run over.
-//!
-//! The shadow gate is only as good as this ring: it holds the last [`Recorder::DEFAULT`] inputs per
-//! hook, because a hook's history is not the point - what arrives is a stream, and a diff over the
-//! last handful of real inputs is what tells a refactor that changed nothing from a fix that did.
-//!
-//! Inputs only, never answers: both stacks are asked the same input now, side by side, so a bug
-//! that changed the answer in between is not mistaken for an intended difference.
+//! The recorded inputs: the last N inputs of every hook, which a replay runs over.
+//! The shadow gate holds the last [`Recorder::DEFAULT`] inputs per hook. Inputs only, never answers:
+//! both stacks are asked the same input side by side, so drift in between is not an intended difference.
 
 use std::collections::BTreeMap;
 
@@ -64,7 +59,7 @@ impl Recorder {
         self.inputs(hook).len()
     }
 
-    /// Forget everything — after a squash, the inputs recorded against the old stack describe a
+    /// Forget everything - after a squash, the inputs recorded against the old stack describe a
     /// stack that no longer exists.
     pub fn clear(&mut self) {
         self.rings.clear();

@@ -1,11 +1,6 @@
-//! `on_tool_call` - the tool call, before the gate: a layer may narrow it, rewrite it, refuse it,
-//! or answer it without letting it run at all.
-//!
-//! The hook runs before the gate, and the rewritten call is the call the gate then adjudicates, so
-//! every route through this kind ends at the same boundary. A layer cannot answer *admitted*
-//! because there is no field for it: the class, the mode, the adjudicator and the operator's card
-//! are decided in Rust after this returns. What a layer can do is make a call smaller.
-//! Every layer exports the same name: the top answers, and it may ask the layer beneath.
+//! `on_tool_call` - the tool call before the gate: a layer may narrow, rewrite, refuse or answer it.
+//! The gate adjudicates the rewritten call; a layer cannot answer admitted, only make a call smaller.
+//! Every layer exports the same name: the top answers and may ask the layer beneath.
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -14,7 +9,7 @@ use serde_json::Value;
 /// subject (`crate`'s header on the two spellings).
 pub const HOOK: &str = "on_tool_call";
 
-/// **The session the call is being made in**, so a layer can be narrower than *always*: the mode
+/// The session the call is being made in, so a layer can be narrower than *always*: the mode
 /// is the gate's own word for how much this session may do without asking.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Session {
@@ -78,7 +73,7 @@ impl ToolCallIn {
 pub enum Verdict<'a> {
     /// Run it exactly as the model proposed.
     Pass,
-    /// Run it with these arguments instead - **through the gate**.
+    /// Run it with these arguments instead - through the gate.
     Rewrite(&'a Value),
     /// Do not run it; the model reads this sentence as the result.
     Refuse(&'a str),
@@ -181,7 +176,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// **Nothing in this contract can admit a call.** The five fields are the whole answer, and
+    /// Nothing in this contract can admit a call. The five fields are the whole answer, and
     /// not one of them is a decision the gate asks for: this is the type-level half of §1
     /// principle 3, and it is asserted rather than promised in prose.
     #[test]

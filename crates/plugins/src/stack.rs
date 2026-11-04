@@ -1,11 +1,6 @@
-//! The stack: what layers exist, which one answers a hook, and what a change to one costs.
-//!
-//! Four scopes in precedence - session over project over user over built-in - and within a scope
-//! the order is creation order, newest on top, so the stack reads as the history of the fixes made
-//! in a session. A directory with no readable `plugin.toml` is not a layer but a `Failure`.
-//! A layer with a manifest and no module at all is neither: it is a declaration (the documented
-//! install of a built-in's tool) and it must not look like a broken one. Failures met during a
-//! call are the call's; what discovery could not load is the stack's.
+//! The stack: what layers exist, which one answers a hook, and what a change costs.
+//! Scopes in precedence: session, project, user, built-in; newest first within a scope.
+//! A directory without a readable `plugin.toml` is a `Failure`; a manifest with no module is a declaration.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -39,7 +34,7 @@ pub struct DeclaredTool {
 /// A layer: where it came from, what it declares, and which bytes it is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Layer {
-    /// `s3`, `p1`, `u1` — or `b-github-pr` for a built-in.
+    /// `s3`, `p1`, `u1` - or `b-github-pr` for a built-in.
     pub id: String,
     pub scope: Scope,
     /// The layer's directory. Empty for a built-in, which has none.
@@ -56,13 +51,13 @@ pub struct Layer {
     /// manifest match a recorded pin. Where a file sits proves nothing, so the fact is the hash.
     /// An untrusted layer still answers, but every call it makes is adjudicated without a card.
     pub trusted: bool,
-    /// The pin nearest to this layer: the one its bytes match, or — with `trusted` false — the one
+    /// The pin nearest to this layer: the one its bytes match, or - with `trusted` false - the one
     /// they have broken. `None` for a layer nothing was ever pinned for, and for a built-in.
     pub pin: Option<Pin>,
 }
 
 impl Layer {
-    /// **What a refusal of this layer says** — the layer by name, and both hashes when there is a
+    /// What a refusal of this layer says - the layer by name, and both hashes when there is a
     /// pin to compare against ([`crate::Standing::sentence`]).
     pub fn untrusted_sentence(&self) -> String {
         crate::Standing {
@@ -112,7 +107,7 @@ impl std::fmt::Display for Failure {
 pub struct Resolved {
     /// The answer, or none when nothing answered or a layer masked the hook.
     pub answer: Option<Value>,
-    /// The layer whose answer it is — the topmost one, since a layer that asks below still
+    /// The layer whose answer it is - the topmost one, since a layer that asks below still
     /// answers for itself.
     pub by: Option<String>,
     pub failures: Vec<Failure>,
@@ -128,7 +123,7 @@ pub struct Candidate {
     pub dir: PathBuf,
     /// The manifest read when the change was noticed.
     pub manifest: Manifest,
-    /// The `plugin.wasm` the poll saw — before the gate's build rewrote it.
+    /// The `plugin.wasm` the poll saw - before the gate's build rewrote it.
     pub sha256: String,
     replayed: Mutex<Option<(String, Arc<dyn Module>)>>,
 }
@@ -169,13 +164,13 @@ impl Candidate {
         }
     }
 
-    /// Whether a gate has run over this candidate at all — which is what tells "the file moved
+    /// Whether a gate has run over this candidate at all - which is what tells "the file moved
     /// after the gate" apart from "nothing was gated here".
     fn was_replayed(&self) -> bool {
         matches!(self.replayed.lock(), Ok(slot) if slot.is_some())
     }
 
-    /// Whether a gate has run over this candidate at all — the public half of the check
+    /// Whether a gate has run over this candidate at all - the public half of the check
     /// [`Stack::apply`] makes, for a caller that wants to report it.
     pub fn gated(&self) -> bool {
         self.was_replayed()
@@ -238,8 +233,8 @@ fn has_module(path: &Path) -> bool {
 /// module exports, and the bytes it was read from.
 #[derive(Clone)]
 struct Wired {
-    /// `None` when the module could not be loaded or admitted — the reason is then in the stack's
-    /// failures — and for a layer that has no module at all (a declaration, which has no reason to
+    /// `None` when the module could not be loaded or admitted - the reason is then in the stack's
+    /// failures - and for a layer that has no module at all (a declaration, which has no reason to
     /// give). Either way the layer still appears in the stack view.
     module: Option<Arc<dyn Module>>,
     hooks: Vec<String>,
@@ -258,7 +253,7 @@ pub struct Stack {
     wired: BTreeMap<String, Wired>,
     loader: Arc<dyn Loader>,
     failures: Vec<Failure>,
-    /// **D17's book** — which layers' bytes a person has pinned. `None` on a stack nobody gave
+    /// The pin book - which layers' bytes a person has pinned. `None` on a stack nobody gave
     /// one to, and then every placed layer is unpinned, which is the fail-closed direction.
     trust: Option<Arc<Trust>>,
     /// Pins already reported as broken, so a poll every two seconds does not say it every time.
@@ -328,7 +323,7 @@ impl Stack {
             layer.trusted = standing.free;
             layer.pin = standing.pin.clone();
             layer.manifest_sha256 = manifest_sha256.clone();
-            // **A pin that was broken is news; a layer nobody pinned is the ordinary state.**
+            // A pin that was broken is news; a layer nobody pinned is the ordinary state.
             if let (false, Some(pin)) = (standing.free, standing.pin) {
                 let key = format!("{}\n{}\n{manifest_sha256}", layer.id, layer.sha256);
                 if (was || !self.said_pins.contains(&key)) && self.said_pins.insert(key) {
@@ -360,7 +355,7 @@ impl Stack {
                     .iter()
                     .find(|l| !l.dir.as_os_str().is_empty() && l.dir == dir)
             })
-            // **The name `declared_tools` carries** is the layer's DIRECTORY name, not its path —
+            // The name `declared_tools` carries is the layer's DIRECTORY name, not its path -
             // a tool's `DeclaredTool::layer` is what a refusal names, so this spelling has to
             // find the layer it came from.
             .or_else(|| {
@@ -370,7 +365,7 @@ impl Stack {
             })
     }
 
-    /// **Every layer a person could pin**, in stack order — what `/plugin` lists when it is asked
+    /// Every layer a person could pin, in stack order - what `/plugin` lists when it is asked
     /// with no name: the id, the name, whether it is free, and the two hashes.
     pub fn placed(&self) -> Vec<&Layer> {
         self.layers
@@ -429,7 +424,7 @@ impl Stack {
         &self.layers
     }
 
-    /// The engine this stack loads its modules with — the gate's step 2 and `apply`'s ungated
+    /// The engine this stack loads its modules with - the gate's step 2 and `apply`'s ungated
     /// path both go through the stack's own loader, so a shadow is compiled by the same engine as
     /// the live stack.
     pub(crate) fn loader(&self) -> &Arc<dyn Loader> {
@@ -437,7 +432,7 @@ impl Stack {
     }
 
     /// What discovery, `apply` and `poll_changes` could not load. A failure met while resolving a
-    /// hook is in [`Resolved::failures`] instead — see the module doc.
+    /// hook is in [`Resolved::failures`] instead - see the module doc.
     pub fn failures(&self) -> &[Failure] {
         &self.failures
     }
@@ -468,7 +463,7 @@ impl Stack {
     /// several stacks: a `Module` answers `&self`, so a session's stack, the gate's shadow and the
     /// next session may share the same compiled bytes, and compiling one is the expensive half.
     pub fn register_builtin_shared(&mut self, mut layer: Layer, module: Arc<dyn Module>) {
-        // **A built-in runs freely, by definition** — D17's first arm. It is the binary's own
+        // A built-in runs freely, by definition. It is the binary's own
         // bytes: nobody placed them at run time, so there is nothing to pin.
         layer.trusted = true;
         layer.pin = None;
@@ -555,7 +550,7 @@ impl Stack {
         }
     }
 
-    /// Turn a layer off (or on) without deleting it — `plugin disable s2`, the bisect for
+    /// Turn a layer off (or on) without deleting it - `plugin disable s2`, the bisect for
     /// *"which of my fixes broke this"*. A disabled layer stays in the stack view, greyed, which
     /// is the point: the stack reads as history, and history that vanished cannot be read.
     pub fn set_disabled(&mut self, id: &str, disabled: bool) -> Result<(), String> {
@@ -681,7 +676,7 @@ impl Stack {
         let dir = c.dir.clone();
         let manifest = Manifest::read(&dir)?;
         let wasm = manifest.module_path(&dir);
-        // **A module this build cannot run never applies**, in the words the loader would use.
+        // A module this build cannot run never applies, in the words the loader would use.
         crate::engine_for(&manifest.module)?;
         let seen =
             fingerprint(&wasm).map_err(|why| format!("{why} — apply needs the built module"))?;
@@ -709,8 +704,8 @@ impl Stack {
                 let id = self.layers[i].id.clone();
                 self.layers[i].manifest = manifest;
                 self.layers[i].sha256 = seen.sha256;
-                // **A rebuild is a different layer to D17's book**: the pin was about the old
-                // bytes, so this one is decided again — and if it was pinned, the fact that the
+                // A rebuild is a different layer to the pin book: the pin was about the old
+                // bytes, so this one is decided again - and if it was pinned, the fact that the
                 // pin no longer holds is news the next `refresh_trust` says.
                 let manifest_sha256 =
                     sha256_file(&dir.join(MANIFEST)).unwrap_or_else(|_| String::new());
@@ -1017,7 +1012,7 @@ impl Walk<'_> {
 }
 
 /// A layer's answer as JSON, or nothing plus a recorded failure. Malformed output is the one the
-/// plan names explicitly (§1, principle 4): it is a bug in the plugin, and the layer below still
+/// plan names explicitly: it is a bug in the plugin, and the layer below still
 /// answers.
 fn parse(text: &str, layer: &Layer, walk: &mut Walk<'_>) -> Option<Value> {
     match serde_json::from_str::<Value>(text) {
@@ -1098,7 +1093,7 @@ mod tests {
     // `module`: the file a layer answers from, which is not always plugin.wasm
     // -----------------------------------------------------------------------------------------
 
-    /// **A script layer is on the ladder and answers nothing.** It is pinned, hashed and polled
+    /// A script layer is on the ladder and answers nothing. It is pinned, hashed and polled
     /// like any other (`docs/plugins-plan.md` step 11's decision 2); what it cannot do is run,
     /// because no engine for it is built in. Saying so at load is what keeps fail-down true.
     #[test]
@@ -1178,7 +1173,7 @@ mod tests {
         );
     }
 
-    /// **A script layer is pinnable, and the pin is about the script.** D17's ladder admits it,
+    /// A script layer is pinnable, and the pin is about the script. the trust ladder admits it,
     /// which is the whole of this package: without the manifest field it would pin on an EMPTY
     /// module hash and an edit to the script would never un-pin the layer.
     #[test]
@@ -1212,7 +1207,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------------------------
-    // D17's ladder — a built-in is free, a placed layer needs a pin, and a pin is about bytes
+    // The trust ladder - a built-in is free, a placed layer needs a pin, and a pin is about bytes
     // -----------------------------------------------------------------------------------------
 
     #[test]
@@ -1274,7 +1269,7 @@ mod tests {
         s.refresh_trust();
         assert!(s.layer("p1").unwrap().trusted);
 
-        // The module is rebuilt — the shape this rule exists for.
+        // The module is rebuilt - the shape this rule exists for.
         write_wasm(
             &root.join("one"),
             &["pane_dashboard"],
@@ -1326,7 +1321,7 @@ mod tests {
         write_wasm(&dir, &[&format!("tool_{tool}")], Act::answer(json!({})));
     }
 
-    /// The same directory with the manifest and **no module** — the documented install of a
+    /// The same directory with the manifest and no module - the documented install of a
     /// built-in's tool, where the module that answers is one the host already carries.
     fn tool_manifest(root: &Path, name: &str, tool: &str, caps: &[&str]) -> PathBuf {
         let dir = root.join(name);
@@ -1348,7 +1343,7 @@ mod tests {
     #[test]
     fn declared_tools_are_read_without_loading_a_module_and_in_precedence_order() {
         let t = TempDir::new("declared-tools");
-        // Two layers in the project scope — one declaring a tool, one that is only a pane — and a
+        // Two layers in the project scope - one declaring a tool, one that is only a pane - and a
         // session layer that overrides the project's tool by name.
         tool_layer(
             &t.path().join("project/.letibot/plugins"),
@@ -1373,7 +1368,7 @@ mod tests {
             Some(&t.path().join("project")),
             Some(&t.path().join("user")),
         );
-        // **The session layer first**: it is the one on top, so it is the declaration the model is
+        // The session layer first: it is the one on top, so it is the declaration the model is
         // offered. The pane layer contributes nothing, and nothing was compiled to find that out.
         assert_eq!(declared.len(), 2, "{declared:?}");
         assert_eq!(declared[0].layer, "from-session");
@@ -1509,7 +1504,7 @@ mod tests {
             s.layers().iter().map(|l| l.id.as_str()).collect::<Vec<_>>(),
             vec!["s1", "b-sessions"],
         );
-        // It is the bottom layer: no directory, and the operator's by definition (D17).
+        // It is the bottom layer: no directory, and the operator's by definition.
         let builtin = s.layer("b-sessions").expect("the built-in");
         assert!(builtin.dir.as_os_str().is_empty());
         assert_eq!(builtin.scope, Scope::BuiltIn);
@@ -1530,7 +1525,7 @@ mod tests {
         assert_eq!(answer_of(&r), json!({"from": "builtin"}));
     }
 
-    /// **A loader with no memory path refuses a built-in, and the stack says so** — a fake engine
+    /// A loader with no memory path refuses a built-in, and the stack says so - a fake engine
     /// must not be able to pretend it loaded something it never saw.
     #[test]
     fn a_loader_that_cannot_load_bytes_answers_a_sentence_and_records_it() {
@@ -1554,8 +1549,8 @@ mod tests {
         assert_eq!(failure.scope, Scope::BuiltIn);
     }
 
-    /// **A built-in whose manifest does not admit its module is refused by NAME, not left on the
-    /// stack half-registered** — the same rule discovery follows, and the one the stack view draws
+    /// A built-in whose manifest does not admit its module is refused by NAME, not left on the
+    /// stack half-registered - the same rule discovery follows, and the one the stack view draws
     /// as *installed and exploding* rather than as absent.
     #[test]
     fn a_builtin_whose_exports_its_manifest_does_not_declare_is_refused() {
@@ -1574,8 +1569,8 @@ mod tests {
         assert!(s.layers().is_empty(), "nothing half-registered");
     }
 
-    /// **A layer written for the shape before a move is refused at load, by name, and the layer
-    /// below it answers**. No wire can tell the two shapes apart, so the manifest is the witness.
+    /// A layer written for the shape before a move is refused at load, by name, and the layer
+    /// below it answers. No wire can tell the two shapes apart, so the manifest is the witness.
     #[test]
     fn a_layer_written_for_the_old_shape_is_refused_and_the_layer_below_answers() {
         let t = TempDir::new("old-shape");
@@ -2011,7 +2006,7 @@ mod tests {
         );
         assert_eq!(s.layers()[0].id, "s1");
         assert_eq!(s.layers()[0].sha256, "", "there are no bytes to hash");
-        // Nothing answers it from here — the module that does is one the host puts below.
+        // Nothing answers it from here - the module that does is one the host puts below.
         assert_eq!(s.call("tool_look", &json!({})).answer, None);
         assert!(
             s.failures().is_empty(),

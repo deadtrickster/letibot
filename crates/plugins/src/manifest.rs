@@ -55,7 +55,7 @@ impl std::fmt::Display for Scope {
     }
 }
 
-/// What a layer may ask the world for. Declared here, granted by the host (§3) - a capability in
+/// What a layer may ask the world for. Declared here, granted by the host - a capability in
 /// a manifest is a request, not a permission, and the [`crate::Loader`] is handed exactly this
 /// list so a module's imports cannot reach past it.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -80,7 +80,7 @@ impl Capability {
         if s == "read" {
             return Ok(Capability::Read);
         }
-        // **`read:<path>` before the loop**, because `read` is also a bare word and an entry
+        // `read:<path>` before the loop, because `read` is also a bare word and an entry
         // that is almost right must be refused rather than read as the workspace.
         if let Some(rest) = s.strip_prefix("read:") {
             return read_path(rest).map(Capability::ReadPath);
@@ -187,7 +187,7 @@ pub struct Manifest {
     pub hooks: Vec<String>,
     pub capabilities: Vec<Capability>,
     pub contract: u32,
-    /// **The version of each hook kind this layer was written against**, for the kinds whose
+    /// The version of each hook kind this layer was written against, for the kinds whose
     /// contract has moved ([`crate::MOVED`]). A kind that is absent is at `contract`, which is
     /// what a layer written before the move says.
     pub contracts: std::collections::BTreeMap<String, u32>,
@@ -316,8 +316,8 @@ impl Manifest {
             }
             None => return Err("contract: missing (this host speaks 1)".to_string()),
         };
-        // **Both defaulted**, so a layer written before a pane could read a feed or perform an act
-        // keeps loading: an added key is not a version (§1, principle 6).
+        // Both defaulted, so a layer written before a pane could read a feed or perform an act
+        // keeps loading: an added key is not a version.
         let feeds = strings_opt(&table, "feeds")?
             .iter()
             .map(|f| letibot_plugin::pane::Feed::parse(f))
@@ -430,7 +430,7 @@ fn string(table: &toml::Table, key: &str) -> Result<String, String> {
     }
 }
 
-/// **`[contracts]`**: one version per hook kind the layer answers, for the kinds whose contract
+/// `[contracts]`: one version per hook kind the layer answers, for the kinds whose contract
 /// has moved. A key that names a hook the layer does not answer is refused: it is a typo standing
 /// where a declaration should be, and the version it carries would never be checked.
 fn contracts_opt(
@@ -675,8 +675,8 @@ contract = 1
         }
     }
 
-    /// **A kind whose shape moved is spoken at its own version, and a layer that names none is
-    /// taken to be the shape before the move**. It is the only detector a shape change can have.
+    /// A kind whose shape moved is spoken at its own version, and a layer that names none is
+    /// taken to be the shape before the move. It is the only detector a shape change can have.
     #[test]
     fn a_layer_that_names_no_shape_for_a_moved_kind_is_refused_by_name() {
         let old = "name = \"sessions\"\npurpose = \"p\"\nhooks = [\"pane_sessions\"]\n\
@@ -710,7 +710,7 @@ contract = 1
             .expect("a kind nobody moved is at the manifest's contract");
     }
 
-    /// **A version for a hook the layer does not answer is a typo**, and it is refused rather than
+    /// A version for a hook the layer does not answer is a typo, and it is refused rather than
     /// kept where it would never be checked.
     #[test]
     fn a_contract_for_a_hook_the_layer_does_not_answer_is_refused() {
@@ -753,7 +753,7 @@ contract = 1
             .expect_err("this host speaks 1");
         assert!(why.contains("contract 2"), "{why}");
     }
-    /// **A layer that offers the model a tool.** The manifest is the prompt bytes; the export is
+    /// A layer that offers the model a tool. The manifest is the prompt bytes; the export is
     /// `tool_<name>`, so a declaration and its hook cannot drift apart.
     const A_TOOL: &str = r#"
 name = "claude-transcript"

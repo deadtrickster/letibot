@@ -1,11 +1,6 @@
-//! The shadow gate: build, load, shadow, replay, report - the mechanical check every change to a
-//! stack takes before it answers.
-//!
-//! It is the merge gate's role for layers, and like the merge gate it is run by the daemon and not
-//! by an agent: nobody who can be asked to verify their own fix is asked. The steps run in order
-//! and the first failure stops, because a report that mixes a build error into a replay diff is
-//! read by a model that then edits the wrong thing.
-//! The module the gate loaded is kept on the candidate, so what answers was replayed, not recompiled.
+//! The shadow gate: build, load, shadow, replay, report - the check every stack change takes.
+//! Run by the daemon, not an agent. Steps run in order and the first failure stops, so a build error
+//! is never mixed into a replay diff. The loaded module stays on the candidate: what answers was replayed.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

@@ -1,11 +1,6 @@
-//! `on_tool_result` - what happens after a call: a layer may append to the result, rewrite it, and
-//! arm monitors. It runs on `Ok` and `Backgrounded` only: a call that failed did nothing to react
-//! to, and its result is the failure's own words, which the model has to read exactly.
-//!
-//! `arm` is not a second way to start a monitor: the host turns each entry into the same `monitor`
-//! call the model would type, so the coalescing, the already-watched refusal, the TTL caps and the
-//! name collision rules all apply. A layer gets *the harness noticed something*, not an unruled
-//! monitor.
+//! `on_tool_result` - after a call: a layer may append to the result, rewrite it, and arm monitors.
+//! Runs on `Ok` and `Backgrounded` only; a failure's words are read exactly by the model.
+//! `arm` is the same `monitor` call the model could type, so coalescing, TTL caps and name rules apply.
 
 use serde_json::Value;
 
@@ -23,7 +18,7 @@ pub struct ToolResultIn {
     /// [`V`](crate::V).
     pub v: u32,
     pub call: crate::Call,
-    /// [`OK`] or [`BACKGROUNDED`] — the two outcomes a hook is asked about.
+    /// [`OK`] or [`BACKGROUNDED`] - the two outcomes a hook is asked about.
     pub outcome: String,
     /// What the call produced: the text the model is about to read.
     pub payload: String,
@@ -60,7 +55,7 @@ impl ToolResultIn {
 /// A monitor a layer asks the host to arm.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Arm {
-    /// Which kind of watch — the `plugin` field a `monitor` call takes, naming the layer's own
+    /// Which kind of watch - the `plugin` field a `monitor` call takes, naming the layer's own
     /// `condition_<name>` hook.
     pub plugin: String,
     #[serde(default)]
@@ -82,7 +77,7 @@ pub struct ToolResultOut {
     /// The result, replaced.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payload: Option<String>,
-    /// A suffix added to the result — the shape `pr_watch`'s sentence has: the harness saying what
+    /// A suffix added to the result - the shape `pr_watch`'s sentence has: the harness saying what
     /// it just did, in the call's own answer so the model reads it where it looks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub append: Option<String>,
@@ -96,7 +91,7 @@ pub struct ToolResultOut {
 pub enum Said<'a> {
     /// Nothing: the result is the call's own.
     Unchanged,
-    /// The text the model reads — borrowed when it is the answer's own replacement, owned when
+    /// The text the model reads - borrowed when it is the answer's own replacement, owned when
     /// the answer's suffix had to be joined onto it.
     Text(std::borrow::Cow<'a, str>),
     /// Nothing about the text; this much appended to it.
@@ -139,7 +134,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// The plan's own example parses into the type and back out again — the round trip the host
+    /// The plan's own example parses into the type and back out again - the round trip the host
     /// and a guest each do one half of.
     #[test]
     fn the_plans_example_is_this_type() {

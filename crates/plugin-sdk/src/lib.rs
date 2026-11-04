@@ -1,11 +1,6 @@
-//! The letibot plugin SDK: the typed contract of every hook kind, in one place.
-//!
-//! A hook is a wasm export that takes one JSON document and answers another. The shapes live here
-//! as types, not as a table, so a renamed field breaks a compilation and not a sentence.
-//!
-//! `pane_` and `condition_` are named per subject; `notice_<kind>`, `on_tool_result` and
-//! `on_tool_call` are one hook per kind, resolved as a stack - the top answers, and the ones below
-//! answer when it asks. Nothing here can widen a permission: `on_tool_call` runs before the gate.
+//! The letibot plugin SDK: the typed contract of every hook kind (a wasm export taking one JSON document).
+//! `pane_` and `condition_` are named per subject; `notice_<kind>`, `on_tool_result` and `on_tool_call`
+//! resolve as a stack. Nothing here can widen a permission.
 
 /// The contract version every input carries, and the only one this crate describes.
 ///

@@ -1,11 +1,6 @@
 //! `notice` - what the harness is about to say to the model, and how a layer may say it better.
-//!
-//! Every sentence the harness injects is composed from structured facts and offered to this hook
-//! before it becomes a row. It changes no decision, only what a decision reads like.
-//!
-//! The name after `notice_` is the notice's kind, so a layer that patches one firing does not
-//! become the answerer for every notice. [`MUST_SEE`] is the host's list: those hooks may reword
-//! and may not delete, and the refusal is reported so the model learns why its layer did nothing.
+//! Every injected sentence is offered to this hook before it becomes a row. It changes wording, never a decision.
+//! The name after `notice_` is the kind. [`MUST_SEE`] hooks may reword but not delete.
 
 use serde_json::{Value, json};
 
@@ -32,7 +27,7 @@ pub const WORKSPACE: &str = "workspace";
 /// asking visible in the transcript rather than only in the audit rows. A kind of its own because
 /// a layer that rewords one is rewording a disclosure.
 pub const GATE: &str = "gate";
-/// A turn that produced no answer being salvaged (§5.7).
+/// A turn that produced no answer being salvaged.
 pub const SALVAGE: &str = "salvage";
 /// The host's room - a tagged queue somebody else posted to, claimed, finished or lost a claimant
 /// on, and the questions a raised item puts to the arbiter. Its own kind because it is news about
@@ -55,8 +50,8 @@ pub const KINDS: &[&str] = &[
     ROOM,
 ];
 
-/// **The kinds whose notice may not be dropped**, only reworded - the host's set, not the
-/// plugin's (`docs/plugins-plan.md` §4.3).
+/// The kinds whose notice may not be dropped, only reworded - the host's set, not the
+/// plugin's.
 pub const MUST_SEE: &[&str] = &[
     JOB,
     TODO,
@@ -173,7 +168,7 @@ impl NoticeOut {
         }
     }
 
-    /// **What this answer means**, in the one order the host applies it: a drop, then a rewording,
+    /// What this answer means, in the one order the host applies it: a drop, then a rewording,
     /// then the harness's own sentence. A drop is the stronger statement, so an answer that says
     /// both drops.
     pub fn said(&self) -> Said<'_> {

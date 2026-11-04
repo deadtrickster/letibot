@@ -1,11 +1,6 @@
-//! The plugin layers that ship inside the binary.
-//!
-//! A built-in is a layer like any other, overridable by name from a project or a
-//! session; what changes is where the bytes come from. A directory beside the
-//! binary would be a second thing to install and a second thing to have the wrong
-//! version of, so [`build`](build.rs) compiles the modules and `include_bytes!`
-//! puts them in the executable. It is a build script rather than a step somebody
-//! has to remember: a step that can be skipped is skipped on the machine that ships.
+//! The plugin layers that ship inside the binary: a layer like any other, overridable by name.
+//! [`build`](build.rs) compiles the modules and `include_bytes!` embeds them, so there is no second
+//! thing to install and no step to skip.
 
 use letibot_plugins::Stack;
 

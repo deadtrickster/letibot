@@ -1,11 +1,6 @@
-//! Fakes, so the whole of the plugin machinery is testable without a wasm engine, a cargo, or a
-//! network.
-//!
-//! A stand-in `plugin.wasm` here is a JSON script, not a module: [`FakeLoader`] reads it and
-//! produces a [`Fake`], a module whose answers come from a table. That is the point of the `Loader`
-//! seam - a module is anything that can report its hooks and answer with text, so every question
-//! these tests ask is a question about the stack, not about compiling wasm.
-//! Nothing here is compiled into the library: the module is `#[cfg(test)]`, so rano stays the only engine.
+//! Fakes so the plugin machinery is testable without a wasm engine, cargo or a network.
+//! A stand-in `plugin.wasm` is a JSON script that [`FakeLoader`] turns into a [`Fake`] module.
+//! `#[cfg(test)]` only, so rano stays the only engine.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -363,7 +358,7 @@ pub(crate) fn layer_with(root: &Path, name: &str, hooks: &[&str], capabilities: 
     std::fs::create_dir_all(&dir).expect("a layer directory");
     let hooks_toml: Vec<String> = hooks.iter().map(|h| format!("\"{h}\"")).collect();
     let caps_toml: Vec<String> = capabilities.iter().map(|c| format!("\"{c}\"")).collect();
-    // **The version of each kind whose shape has moved**, so a fixture layer is a layer the host
+    // The version of each kind whose shape has moved, so a fixture layer is a layer the host
     // would accept: a test that means to watch a call fail should not be refused at load instead.
     let moved: String = hooks
         .iter()

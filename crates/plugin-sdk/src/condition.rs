@@ -1,11 +1,6 @@
-//! `condition` - what a monitor watches: the plugin says what to look at, the host runs it, and
-//! the plugin is asked again with the result to say whether it fired and what to look at next.
-//!
-//! A `look` in an answer is a declaration, not an act: the host spawns it under the layer's
-//! declared capability, so a hook call is pure and the shadow gate's replay means something.
-//!
-//! The input's `look` is a result and the answer's is an ask - two types, because one struct with
-//! both fields would be a document a plugin can read backwards. `state` is the host's, so it survives.
+//! `condition` - what a monitor watches: the plugin says what to look at, the host runs it, and the
+//! plugin is asked again with the result whether it fired and what to look at next.
+//! A `look` is a declaration the host spawns under the layer's capability. `state` is the host's.
 
 use serde_json::Value;
 
@@ -26,7 +21,7 @@ pub const EVERY_MIN_S: u64 = 5;
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LookResult {
     /// The exit status, or 126 for a look the host refused to run (a capability it does not
-    /// hold) — the same spelling a refused `read` uses, so a plugin has one thing to check.
+    /// hold) - the same spelling a refused `read` uses, so a plugin has one thing to check.
     pub exit: i32,
     #[serde(default)]
     pub stdout: String,
@@ -84,7 +79,7 @@ pub struct Github {
 pub struct ConditionIn {
     /// [`V`](crate::V).
     pub v: u32,
-    /// The `args` of the `monitor` call that armed this watch — the plugin's own vocabulary.
+    /// The `args` of the `monitor` call that armed this watch - the plugin's own vocabulary.
     #[serde(default)]
     pub args: Value,
     /// What this hook returned last time, or `null` before the first call.
@@ -134,7 +129,7 @@ pub struct ConditionOut {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub look: Option<LookAsk>,
     /// How often to look, in seconds. Absent keeps the last interval; the host's floor is
-    /// [`EVERY_MIN_S`], and a smaller number is raised to it rather than refused — an interval is
+    /// [`EVERY_MIN_S`], and a smaller number is raised to it rather than refused - an interval is
     /// a preference, and a watch that refuses to arm over one is worse than a slow one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub every_s: Option<u64>,
@@ -148,7 +143,7 @@ pub struct ConditionOut {
     /// Handed back on the next call. The host keeps it; the plugin does not.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<Value>,
-    /// The pull request this watch is on, when it is on one — for the coalescing rule.
+    /// The pull request this watch is on, when it is on one - for the coalescing rule.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub github: Option<Github>,
 }

@@ -17,7 +17,7 @@ pub fn hook(name: &str) -> String {
     format!("pane_{name}")
 }
 
-/// **A fact the host already has and can hand a pane**, by the name the manifest spells.
+/// A fact the host already has and can hand a pane, by the name the manifest spells.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Feed {
     /// The daemon's sessions: what the session picker is drawn from. Fed today.
@@ -71,7 +71,7 @@ impl Feed {
         }
     }
 
-    /// A feed the manifest spells. A word this build does not know is refused **by name** rather
+    /// A feed the manifest spells. A word this build does not know is refused by name rather
     /// than ignored: a pane asked for a feed nobody hands over would draw an empty panel and look
     /// like a host that lost its data.
     pub fn parse(s: &str) -> Result<Feed, String> {
@@ -140,7 +140,7 @@ impl Act {
         Act::Event { event: word.into() }
     }
 
-    /// **A verb on one entry** - see [`Act::Verb`].
+    /// A verb on one entry - see [`Act::Verb`].
     pub fn verb_on(verb: impl Into<String>, id: impl Into<String>) -> Act {
         Act::Verb {
             verb: verb.into(),
@@ -160,7 +160,7 @@ impl Act {
         }
     }
 
-    /// **The entry this act names**, when it names one - what the queue pane's verb keys act on.
+    /// The entry this act names, when it names one - what the queue pane's verb keys act on.
     pub fn entry(&self) -> Option<&str> {
         match self {
             Act::Verb { id, .. } => Some(id),
@@ -259,7 +259,7 @@ impl Cell {
     }
 }
 
-/// **A string IS a cell** - the untagged spelling, in Rust as on the wire: a caller writing a
+/// A string IS a cell - the untagged spelling, in Rust as on the wire: a caller writing a
 /// row of plain text writes `vec!["one".into(), "two".into()]` and says nothing about roles.
 impl From<&str> for Cell {
     fn from(text: &str) -> Cell {
@@ -322,13 +322,13 @@ pub struct Event {
     pub action: String,
 }
 
-/// **What a pane is asked with**, once per call.
+/// What a pane is asked with, once per call.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Input {
     /// The contract version this host speaks - [`V`].
     pub v: u32,
     /// What the pane returned last time, handed back to it: state belongs to the host
-    /// (§1, principle 5).
+    ///.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<serde_json::Value>,
     /// The answer to the look the pane's last answer asked for.
@@ -339,7 +339,7 @@ pub struct Input {
     pub event: Option<Event>,
     #[serde(default)]
     pub size: Size,
-    /// **The feeds this layer declared, and only those**, by name (`Feed::name`).
+    /// The feeds this layer declared, and only those, by name (`Feed::name`).
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub feeds: std::collections::BTreeMap<String, serde_json::Value>,
     /// The host's fold state, by row id: `true` for a row the person has OPENED, which is what a
@@ -347,7 +347,7 @@ pub struct Input {
     /// and a layer answers `Fold::Open`/`Fold::Closed` from it - not the other way round.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub folded: std::collections::BTreeMap<String, bool>,
-    /// The answer of the layer below, when this layer asked for it (§2.1) - absent otherwise, and
+    /// The answer of the layer below, when this layer asked for it - absent otherwise, and
     /// inserted by the stack rather than by a host.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub below: Option<serde_json::Value>,

@@ -1,8 +1,6 @@
-//! **Build `plugins/builtin/*` for `wasm32-unknown-unknown` and hand the crate a table of them.**
-//!
-//! See `src/lib.rs` for why this is a build script at all. Everything here is about the two ways a
-//! build script that runs `cargo` goes wrong: inheriting the outer build's environment, and
-//! failing with something a person cannot act on.
+//! Build `plugins/builtin/*` for `wasm32-unknown-unknown` and hand the crate a table of them.
+//! See `src/lib.rs` for why this is a build script. Two failure modes are handled: inheriting the
+//! outer build's environment, and failing with something a person cannot act on.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -17,7 +15,7 @@ fn main() {
     let root = repo.join("plugins").join("builtin");
     let out = PathBuf::from(std::env::var("OUT_DIR").expect("cargo sets OUT_DIR"));
 
-    // **The target, before anything is built.** A box without it can build the host and not the
+    // The target, before anything is built. A box without it can build the host and not the
     // guest, and the failure a nested cargo gives for that is a wall of errors about a missing
     // `core` that names no command. One sentence here, and the build stops before it starts.
     if !wasm_target_installed() {
@@ -29,7 +27,7 @@ fn main() {
     }
 
     let guests = guests(&root);
-    // **The whole built-in tree is a dependency**, not only each layer's own directory: a layer
+    // The whole built-in tree is a dependency, not only each layer's own directory: a layer
     // may share a crate with its neighbours (`plugins/builtin/abi`), and a build script that only
     // watched `<layer>/src` would keep a stale module after a change to the shared half.
     println!("cargo:rerun-if-changed={}", root.display());
@@ -164,7 +162,7 @@ fn build(name: &str, dir: &Path, out: &Path) -> PathBuf {
         );
         std::process::exit(1);
     }
-    // **Copied out of the target directory** so the path in the table is one this crate owns: a
+    // Copied out of the target directory so the path in the table is one this crate owns: a
     // `cargo clean -p` on the guest would otherwise move what the host's `include_bytes!` reads.
     let kept = out.join(name);
     std::fs::create_dir_all(&kept).expect("create the layer's directory in OUT_DIR");
@@ -176,7 +174,7 @@ fn build(name: &str, dir: &Path, out: &Path) -> PathBuf {
     kept
 }
 
-/// The package name the guest's own `Cargo.toml` declares — the module's file name is that, not
+/// The package name the guest's own `Cargo.toml` declares - the module's file name is that, not
 /// the directory's, because the two are allowed to differ.
 fn crate_name(dir: &Path, fallback: &str) -> String {
     let Ok(text) = std::fs::read_to_string(dir.join("Cargo.toml")) else {
