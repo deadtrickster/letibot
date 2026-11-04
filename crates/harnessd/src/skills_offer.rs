@@ -11,11 +11,8 @@ use letibot_transcript::{Speaker, ToolCall, TranscriptItem, UserPart};
 
 use letibot_embeddings::Tier;
 
-/// The score a skill has to reach before it is offered - this offer's own floor, apart from
-/// `skill find`'s. MEASURED over one project's skills plus this build's two: a subject about a
-/// skill scored 0.33 to 0.63, and the highest any subject got from a word it merely shared with a
-/// frontmatter was 0.14. The floor sits between them, because the first time a reader learns to
-/// ignore the line the feature is dead.
+/// The score a skill must reach to be offered, apart from `skill find`'s floor.
+/// Set above words merely shared with a frontmatter: once a reader learns to ignore the line, the feature is dead.
 pub const OFFER_FLOOR: f64 = 0.18;
 
 /// How many skills one round may name. Two is the cap the operator asked for: a wall of names is a
@@ -202,10 +199,8 @@ impl Offers {
     }
 }
 
-/// The subject a skill is scored against: the plan, the person's latest prompt, and the model's
-/// latest text and reasoning - walked backwards from the newest end so [`SUBJECT_CHARS`] keeps what
-/// is happening now. A note's offer stops at the prompt; a skill may be made relevant by the model's
-/// own reasoning, so the walk takes that too.
+/// The subject a skill is scored against: plan, the person's latest prompt, and the model's latest text and reasoning, walked from the newest end so [`SUBJECT_CHARS`] keeps what is happening now.
+/// A note's offer stops at the prompt; the model's own reasoning can make a skill relevant.
 pub fn subject(items: &[TranscriptItem], plan: &[TodoItem]) -> String {
     // The plan first, and out of the walk's budget: a row the model wrote is the work in hand, and a
     // long tool result at the newest end used to take the whole subject and cut it away.

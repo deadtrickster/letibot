@@ -204,10 +204,7 @@ impl Settlements {
     }
 }
 
-/// How many settled handles the duplicate guard keeps. A second `watch` for one handle can only
-/// arrive while the call that produced it is still being finished, so the recent past is the whole
-/// of what the set has to answer for - and a session that has backgrounded a hundred thousand jobs
-/// must not keep a name for each of them for its life.
+/// How many settled handles the duplicate guard keeps. A second `watch` for a handle only arrives while its first call is still finishing, so recent history suffices and a long session need not keep every name.
 const SETTLED_KEPT: usize = 1024;
 
 /// The handles already settled, so a late duplicate finish cannot publish one settlement twice.
@@ -614,10 +611,8 @@ impl JobWatchers {
         self.queue(c);
     }
 
-    /// Queue a settlement found by a reader rather than a watcher, unless this set already owes
-    /// it: the queue, the held batch and what the last turn was told are the three ways a handle
-    /// is spoken for. A door that re-arms from the store needs the guard, or a settlement the
-    /// queue still holds is said twice.
+    /// Queue a settlement found by a reader rather than a watcher, unless already owed: the queue, the held batch and what the last turn was told are the three ways a handle is spoken for.
+    /// A door re-arming from the store needs the guard or a queued settlement is said twice.
     pub fn queue_unless_owed(&self, c: JobCompletion) -> bool {
         let queued = self
             .completions
@@ -736,10 +731,7 @@ impl JobWatchers {
         }
     }
 
-    /// A turn of this session has ended - counted after its rounds have run, whatever they came
-    /// to, by the harness's two doors into `run_rounds`. A turn that ends with results held rings
-    /// this session's own wake, and one that was stopped or failed takes back the wake a settlement
-    /// rang during it: nothing asked for the turn that wake would start.
+    /// A turn has ended, counted after its rounds by the harness's two doors into `run_rounds`. A turn ending with results held rings this session's wake; one stopped or failed takes back the wake a settlement rang during it, since nothing asked for that turn.
     pub fn turn_ended(&self, how: TurnEnd) {
         {
             let mut r = self.read.lock().expect("read record");
@@ -803,10 +795,8 @@ impl JobWatchers {
         self.say_held();
     }
 
-    /// **A batch this session owes its model.** A door put results back that it could not say, so the
-    /// ring they arrived with is spent and the next break has to be caused by this one. Rung as a
-    /// fact and not as a settlement: nothing queues a second copy, and the turn it was put back
-    /// under must not take it back on its way out.
+    /// A batch this session owes its model. A door put back results it could not say, so the ring they came with is spent and the next break must be caused by this one.
+    /// Rung as a fact, not a settlement: nothing queues a second copy, and the turn it was put back under must not take it back.
     pub fn a_batch_is_owed(&self) {
         if let Some(bell) = &self.bell {
             bell.ring_wake(&self.me);

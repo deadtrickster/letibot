@@ -315,11 +315,8 @@ pub(crate) struct Ring {
     pub spoke: Vec<String>,
 }
 
-/// **Which monitors a batch of firings may ring the bell for**, given when each last did. One ring
-/// a monitor a window is the bound the TTL does not give: the condition can hold every tick, and a
-/// ring starts a turn. An ENDING is never held back - it is the last thing that monitor will say,
-/// and it clears the name so one declared again starts the window fresh - and a monitor's window
-/// holds nobody else's.
+/// Which monitors a batch of firings may ring the bell for, given when each last did. One ring per monitor per window bounds what the TTL does not: a condition can hold every tick and a ring starts a turn.
+/// An ending is never held back and clears the name; one monitor's window holds nobody else's.
 pub(crate) fn may_ring(
     fired: &[letibot_tools::exec::monitor::Firing],
     spoke: &std::collections::HashMap<String, std::time::Instant>,
@@ -411,10 +408,8 @@ pub(crate) fn spawn_monitor_wake(
             }
         });
     if let Err(e) = started {
-        // **Said here rather than only by the caller's warning**, because the banner is what a
-        // reader trusts and *POLL ONLY* for a thread that would not start reads exactly like
-        // *POLL ONLY* for a session nobody armed. One is a knob somebody can move; the other is
-        // this box at this moment.
+        // Said here as well as in the caller's warning: the banner is what a reader trusts, and *POLL ONLY* for a thread that would not start reads like one nobody armed.
+        // One is a movable knob, the other this box at this moment.
         h.declare_monitor_wake_failed();
         return Err(e.to_string());
     }
@@ -442,11 +437,8 @@ mod firing_tests {
         }
     }
 
-    /// **A monitor's voice is bounded besides its TTL.** A continuous watch whose condition holds
-    /// every tick records a firing a tick; if each of those rang the bell the session would run a
-    /// turn a tick, which is the generation D26 was opened about. The burst rings once, and what it
-    /// fired in between waits for the next ring - nothing is lost, because the next wake reads
-    /// every firing since its cursor.
+    /// A monitor's voice is bounded besides its TTL: a condition holding every tick would ring a turn per tick.
+    /// A burst rings once; what fires between waits for the next ring, which reads every firing since its cursor, so nothing is lost.
     #[test]
     fn a_burst_of_one_monitors_firings_rings_once_inside_the_window() {
         let t0 = std::time::Instant::now();

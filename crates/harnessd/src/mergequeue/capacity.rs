@@ -42,11 +42,8 @@ fn collapse(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Is this placement failure firecode saying it has no free slot? `None` for anything else.
-///
-/// The shortage is read off the facts firecode states - a tap it could not make, or taps that
-/// exist with carrier - and not off its banner: a wrapper that hands the refusal on without the
-/// `[firecode]` prefixes is the same shortage.
+/// Is this placement failure firecode saying it has no free slot? `None` otherwise.
+/// Read from facts firecode states (a tap it could not make, or taps with carrier), not its banner, so a wrapper dropping the `[firecode]` prefixes is the same shortage.
 pub fn vm_capacity(why: &str) -> Option<VmCapacity> {
     let flat = collapse(why);
     let wants_a_tap = flat.contains("needs tap");

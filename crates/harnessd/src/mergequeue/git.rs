@@ -1028,10 +1028,8 @@ fn attempt_beside(stem: &Path) -> Result<(PathBuf, PathBuf), String> {
     Err(format!("every name beside `{}` is taken", stem.display()))
 }
 
-/// A file the daemon itself wrote into a workspace - anything it keeps directly in `.letibot/`:
-/// the delivery log, the head's notes, a monitor record. Not the child's work, so it neither keeps
-/// a tree nor is the child nudged about it. A SUBDIRECTORY there is the project's (`plugins`,
-/// `notes`) and stays the child's. `path` is a porcelain path, relative to the tree.
+/// A file the daemon wrote into a workspace, directly in `.letibot/`: delivery log, head's notes, a monitor record. Not the child's work, so it neither keeps a tree nor nudges the child.
+/// A subdirectory there (`plugins`, `notes`) is the project's and stays the child's. `path` is porcelain, relative to the tree.
 pub fn daemon_leftover(path: &str) -> bool {
     let path = path.trim().trim_matches('"');
     path.strip_prefix(".letibot/")
@@ -1197,12 +1195,8 @@ impl Reaped {
     }
 }
 
-/// **The debris nothing else reaps**: a registration git holds for a directory that is not there,
-/// and a directory under a worktrees home whose `.git` names a gitdir that is not - a tree of a
-/// checkout that is gone. Neither can hold a commit, so neither is the resource sweep's rule
-/// ([`remove_worktree`] keeps what it cannot prove is released): there is nothing inside to prove.
-/// A tree that is there, a directory that is a repository of its own, and another checkout's living
-/// worktree under the same folder are all kept, and said.
+/// The debris nothing else reaps: a git registration for a missing directory, and a directory under a worktrees home whose `.git` names a missing gitdir. Neither can hold a commit, so [`remove_worktree`]'s proof rule does not apply.
+/// A present tree, a directory that is its own repository, and another checkout's live worktree are kept, and said.
 pub fn reap_worktrees(repo: &Path, now: std::time::SystemTime) -> Result<Reaped, String> {
     let listed = git(repo, &["worktree", "list", "--porcelain"])?;
     let mut registered: Vec<(String, bool)> = Vec::new();

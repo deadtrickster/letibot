@@ -261,10 +261,8 @@ pub fn score(sentence: &str) -> f64 {
     score_with(sentence, None)
 }
 
-/// [`score`] with the box's second tier attached: each window is compared to the exemplars and
-/// the holdings as [`blended`] of the words and the cosine, so an excuse in words no exemplar
-/// uses still reads as one. The window's vector is made once per window, never once per
-/// document.
+/// [`score`] with the box's second tier: each window is compared to the exemplars and holdings as [`blended`] of words and cosine, so an excuse in words no exemplar uses still reads as one.
+/// The window's vector is made once per window, not per document.
 pub fn score_with(sentence: &str, tier: Option<&Tier>) -> f64 {
     let d = detector();
     let ws = words(sentence);

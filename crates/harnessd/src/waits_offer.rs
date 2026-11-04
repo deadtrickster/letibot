@@ -1,11 +1,6 @@
-//! A brief that is already somebody's todo, said at the TAIL of the request - never the prefix (a
-//! prefix change re-prefills the conversation) and never a row (a row cannot be un-said). Earned by
-//! a score floor, once per row, silent when nothing clears it.
+//! A brief that is already somebody's todo, said at the tail of the request - never the prefix (a change re-prefills the conversation) and never a row (cannot be un-said). Earned by a score floor, once per row, silent when nothing clears it.
 //!
-//! What is scored is the brief in hand: the person's latest prompt and the model's own words since,
-//! which is where a `task` call's prompt is written. What it is scored against is the open rows of
-//! this session, its parent and its children - one tree's work, so a child starting what its
-//! parent's plan already holds is the case this exists for.
+//! Scored: the person's latest prompt and the model's words since. Against: the open rows of this session, its parent and its children, so a child starting what the parent's plan holds is caught.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -15,10 +10,8 @@ use letibot_tokencore::store::{TodoItem, TodoStatus};
 use letibot_tools::similarity::Corpus;
 use letibot_transcript::{Speaker, TranscriptItem, UserPart};
 
-/// The score a row has to reach before it is offered at all - this caller's own floor, apart from
-/// the notes' and the skills'. MEASURED over the fixture's corpus: a brief carrying two of a row's
-/// four terms scored 0.387, one term 0.327, and an unrelated brief 0.047 to 0.129, so the floor
-/// sits above one shared term because a hint worth stopping for names more than a word.
+/// The score a row must reach to be offered, this caller's own floor.
+/// Above one shared term: a hint worth stopping for names more than a word.
 pub const OFFER_FLOOR: f64 = 0.35;
 
 /// How many chars of a brief are scored, from the newest end: a task prompt is the brief, and the
@@ -126,12 +119,8 @@ impl Offers {
         }
     }
 
-    /// Compose this round's offer, or decide to say nothing - `false` is the common case.
-    ///
-    /// A tier is what this caller exists for: mode `off` scores nothing and therefore offers
-    /// nothing, so a box that never wrote `[embeddings]` sees exactly the request it saw before.
-    /// The best row over the floor is the one offered; a row already offered this session is
-    /// skipped, and no second-best is put in its place.
+    /// Compose this round's offer, or say nothing (`false` is common).
+    /// Mode `off` scores nothing, so a box without `[embeddings]` sees the request it always saw. The best row over the floor is offered; one already offered this session is skipped, with no second-best in its place.
     pub fn compose(&mut self, rows: &[OpenRow], brief: &str) -> bool {
         self.open = None;
         if brief.trim().is_empty() || rows.is_empty() {
@@ -225,10 +214,8 @@ fn corpus(rows: &[OpenRow]) -> Vec<(PathBuf, String)> {
         .collect()
 }
 
-/// The brief in hand: every `task` prompt the model's latest row proposed, the person's latest
-/// prompt, and the model's own latest words. The subagent prompt leads because it is the most
-/// specific brief of the three, and the cap falls at the oldest end so the brief being written now
-/// is what survives it.
+/// The brief in hand: every `task` prompt the model's latest row proposed, the person's latest prompt, and the model's latest words.
+/// The subagent prompt leads as the most specific; the cap falls at the oldest end so the brief being written survives.
 pub fn draft(items: &[TranscriptItem]) -> String {
     let mut prompt = String::new();
     let mut said = String::new();

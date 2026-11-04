@@ -1,10 +1,6 @@
 //! Which old turns a compaction keeps in full because they are about the work in hand.
 //!
-//! A compaction decides by age and size: the newest exchanges are carried verbatim and the rest is
-//! summarised. With the second tier on, the old half is scored against the plan once more, and an
-//! exchange that answers a row on the board is kept whole - a summary of the turn that decided
-//! something is worth less than the turn itself. Mode off scores nothing, so the plan stays the one
-//! age and size computed, which is the order this tree had before the tier existed.
+//! Compaction decides by age and size. With the second tier on, the old half is scored against the plan and an exchange that answers a board row is kept whole. Mode off scores nothing, leaving the age and size plan.
 
 use std::path::PathBuf;
 

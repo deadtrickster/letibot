@@ -386,10 +386,8 @@ fn percentile(sorted: &[f64], p: f64) -> f64 {
     sorted[idx]
 }
 
-/// C1: every submission's token vector must begin with the previous one's, and a divergence
-/// names the token it happened on. No pair to compare is not a pass: a run whose every turn
-/// failed submitted nothing, and reporting that as exact extension is the vacuous pass this
-/// whole instrument exists to refuse.
+/// C1: each submission's token vector must begin with the previous one's, and a divergence names its token.
+/// No pair to compare is not a pass: a run whose every turn failed submitted nothing, the vacuous pass this instrument refuses.
 fn c1(vectors: &[Vec<TokenId>]) -> String {
     for w in vectors.windows(2) {
         if !w[1].starts_with(&w[0]) {
@@ -553,10 +551,8 @@ fn c6(tool_call_only: usize, owning_no_tokens: usize) -> String {
     format!("C6  FAIL  {owning_no_tokens} of {tool_call_only} such turns own no tokens")
 }
 
-/// C8: `finish_reason` reaches `turn_metrics` on every submission, and a `length` is never
-/// recorded as a completed turn. The second half is a type, since `TurnOk`'s constructor refuses
-/// a hard-fail verdict, and its policy is exercised in `letibot_turn::length`; what a live run
-/// adds is the server producing a `length` at all, so a run that saw none has not finished C8.
+/// C8: `finish_reason` reaches `turn_metrics` on every submission, and a `length` is never recorded as a completed turn.
+/// The second half is a type (`TurnOk` refuses a hard-fail verdict; policy tested in `letibot_turn::length`). A live run must also see the server produce a `length`.
 fn c8(rows: &[Row]) -> String {
     let dropped = rows
         .iter()

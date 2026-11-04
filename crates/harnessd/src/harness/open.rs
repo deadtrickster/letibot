@@ -3472,8 +3472,8 @@ pub(crate) fn render_sampling(s: &serde_json::Map<String, serde_json::Value>) ->
         .join(" ")
 }
 
-/// /// A provider backend from its config: preset, key (missing is a refusal naming variable and file), model, switches.
-/// /// `notes` is passed in because the provider must stay below this crate's session log. `answer_within` is the patience for a silent provider; `None` is its own.
+/// A provider backend from its config: preset, key (missing is a refusal naming variable and file), model, switches.
+/// `notes` is passed in because the provider must stay below this crate's session log. `answer_within` is the patience for a silent provider; `None` is its own.
 pub fn build_provider(
     pc: &crate::config::ProviderConfig,
     sampling: &serde_json::Value,

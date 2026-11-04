@@ -820,10 +820,8 @@ fn a_remote_that_is_not_github_is_pushed_to_origin() {
     assert_eq!(push(&repo, "main", &sha), Pushed::NoRemote);
 }
 
-/// **The debris nothing else reaps.** A registration git holds for a directory that is not there -
-/// locked or not - goes on a sweep, and so does a directory under the worktrees home whose `.git`
-/// names a gitdir that is gone. A live tree (dirty included) and another checkout's living worktree
-/// in the same folder stay, and the tree a child has only just made stays for the grace window.
+/// The debris nothing else reaps: a registration for a missing directory (locked or not) and a directory under the worktrees home whose `.git` names a missing gitdir go on a sweep.
+/// A live tree (dirty included) and another checkout's live worktree stay, as does a tree newer than the grace window.
 #[test]
 fn the_worktree_sweep_takes_the_debris_and_keeps_the_living() {
     let dir = TempDir::new("worktree-sweep");

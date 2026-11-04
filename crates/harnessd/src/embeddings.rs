@@ -1,10 +1,6 @@
-//! The box's one embedder: `[embeddings]` read off the project file, the model loaded once at
-//! daemon start, and every caller scoring through the tiers that come off it.
+//! The box's one embedder: `[embeddings]` read from the project file, the model loaded once at daemon start, callers scoring through the tiers off it.
 //!
-//! A tier is per caller and holds that caller's corpus's vectors; the embedder underneath it is
-//! one per box, so four callers load one model and a text is embedded once. `mode = "off"` - the
-//! default, and every box that never wrote the section - is no embedder at all, and then each
-//! caller's own lexical floor is the whole score.
+//! A tier is per caller and holds that caller's corpus vectors; the embedder under it is per box. `mode = "off"` (default) is no embedder, and each caller's lexical floor is the whole score.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -91,10 +87,8 @@ pub mod fixture {
         }
     }
 
-    /// The box's embedder over the tiny BERT, built rather than downloaded: its words are two
-    /// directions, so `alpha beta gamma delta` and `kappa lambda mu nu` are as far apart as the
-    /// fixture's model can make two sentences and a test is written in them. A tier holds one
-    /// caller's corpus, so a test takes one per caller over this.
+    /// The box's embedder over the tiny BERT, built not downloaded: its words are two directions, so `alpha beta gamma delta` and `kappa lambda mu nu` are as far apart as the fixture can make two sentences.
+    /// A tier holds one caller's corpus, so a test takes one per caller.
     pub fn model(tag: &str) -> (Dir, Dir, Arc<Embedder>) {
         let model = Dir::new(&format!("model-{tag}"));
         letibot_embeddings::testing::tiny_bert(model.path()).expect("fixture model");

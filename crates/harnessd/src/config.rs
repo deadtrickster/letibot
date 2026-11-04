@@ -459,11 +459,8 @@ pub struct Config {
     /// [`Config::for_the_daemon`]; `None` in every fixture. They were in `<workspace>/.letibot/`
     /// and a child's workspace is its worktree, so every finished child's tree looked dirty.
     pub logs_root: Option<std::path::PathBuf>,
-    /// **The box's one embedder**, built by [`Config::read_embeddings`] from `[embeddings]` and
-    /// shared by every caller that scores something: the notes offer, the near-copy gate, the
-    /// context-claim check, the skill offer, and the three callers over the plan, the commit log
-    /// and a compaction's old half. `None` is the lexical score exactly, which is the default and
-    /// every fixture.
+    /// The box's one embedder, built by [`Config::read_embeddings`] from `[embeddings]` and shared by every scorer (notes offer, near-copy gate, context-claim check, skill offer, plan, commit log, compaction's old half).
+    /// `None` is the lexical score, the default and every fixture.
     pub embedder: Option<std::sync::Arc<letibot_embeddings::Embedder>>,
     /// Why a section the box DID write produced no embedder. Said once, at the next session's
     /// open, because a tier that is silently absent is a tier nobody can fix.
@@ -1607,12 +1604,8 @@ impl Config {
         self.reviewers = Reviewers::Vm;
     }
 
-    /// **Read `[embeddings]` and build the box's one embedder.** Called by the daemon's start path
-    /// once both `leticode.toml` levels are merged, and nowhere else, so a fixture is lexical-only
-    /// unless it says otherwise. The project's section wins and a level that wrote none leaves the
-    /// other's standing - the precedence every other key in that table has. A box that wrote no
-    /// section gets no embedder and no fault; a box whose section did not produce one keeps the
-    /// sentence, which the next session's open publishes.
+    /// Read `[embeddings]` and build the box's one embedder. Called once by the daemon start path after both `leticode.toml` levels merge, so fixtures stay lexical-only.
+    /// The project's section wins; no section means no embedder and no fault; a failed one keeps the sentence the next session's open publishes.
     pub fn read_embeddings(&mut self) {
         let mut levels: Vec<PathBuf> = Vec::new();
         levels.extend(self.leticode.path.clone());
@@ -2552,10 +2545,7 @@ impl Config {
                  is ours rather than the model's.",
             ));
         }
-        // The monitor wake. A poll and a wake are different facts, and T24 says
-        // so in the entry that left this gap open. Three states, because *nobody armed one* and
-        // *the thread would not start* are the same word to a reader and different facts to
-        // somebody deciding what to do next.
+        // The monitor wake. Three states, because *nobody armed one* and *the thread would not start* read the same but call for different actions.
         if wiring.seated.iter().any(|t| t == "monitor") {
             match wiring.monitor_wake {
                 MonitorWake::Armed => out.push(Disclosure::on(
@@ -2792,13 +2782,9 @@ pub struct GateWiring {
     /// the turn *said* it would do against what ran. `false` makes every completion
     /// `Verification::NoEncoder` - not complete, and the reason is ours.
     pub intent_encoder: bool,
-    /// Whether a fired monitor WAKES this session between turns, or only waits to be asked, and
-    /// when it waits, WHICH of the two waits it is.
+    /// Whether a fired monitor wakes this session between turns, or only waits to be asked, and which wait it is.
     ///
-    /// Three states and not a bool: *no daemon armed one* and *the waiter thread failed to start*
-    /// render the same line from a bool, and they are different facts - the second already
-    /// published a `Warning` naming the error, and a reader told only *POLL ONLY* goes looking
-    /// for a knob that would not have helped.
+    /// Three states, not a bool: *no daemon armed one* and *the waiter thread failed to start* differ, and the second already published a `Warning` naming the error. A bare *POLL ONLY* sends a reader after a useless knob.
     pub monitor_wake: MonitorWake,
     /// Whether the gate's decisions are written somewhere durable, and what is already there. `None`
     /// means the corpus is discarded: the rows die with this daemon, and nothing about a session

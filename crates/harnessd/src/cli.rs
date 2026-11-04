@@ -521,10 +521,7 @@ impl Drop for GuestsDown {
     }
 }
 
-/// **Where this session's turns go when its model is out.** The box's `[fallback] models` is the
-/// default and a `leticode.toml` that names a list replaces it WHOLE: a list is the narrower
-/// statement, and a project naming two names must not silently inherit a third. The timeout budget
-/// rides with the list, because it is the same policy's other half.
+/// Where this session's turns go when its model is out. `[fallback] models` is the default and a `leticode.toml` list replaces it whole, so a project naming two does not inherit a third. The timeout budget rides with the list.
 fn session_fallback(cfg: &mut Config) {
     if !cfg.leticode.fallback.is_empty() {
         eprintln!(
@@ -582,14 +579,8 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         if let Some(a) = parse("ceiling", &m.ceiling)? {
             cfg.memory.ceiling = a;
         }
-        // The merge gate's own cap : every gate step runs in a cgroup of its
-        // own beside the daemon's leaf, under this - half of what is free when the gate starts
-        // unless `gate` says otherwise (`uncapped` keeps the scope and the peak, with no cap).
-        // The FILE is handed over and not the value: the gate reads `[memory] gate` again at the
-        // start of every run, so a person who edits it and asks for a gate gets the number in the
-        // file. This call still parses it NOW, so a malformed value is refused where the daemon
-        // starts, naming the file - and it is not a `let _ =`: a set that cannot take effect is an
-        // error, not silence.
+        // The merge gate's cap: each gate step runs in its own cgroup beside the daemon's leaf, under this (half of free memory unless `gate` says otherwise; `uncapped` keeps scope and peak, no cap).
+        // The file is handed over, not the value: the gate re-reads `[memory] gate` every run. It is parsed now so a malformed value is refused at start, naming the file, not swallowed.
         crate::mergequeue::gate::set_gate_memory_from_file(&letibot_provider::keys::config_file())?;
         // The daemon's own throttle : `memory.high` on its leaf, so a daemon that grows
         // without bound is slowed by the kernel instead of taking the box - 16 GiB unless
@@ -2003,10 +1994,8 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     for landed in sessions.close_backends() {
         eprintln!("  {landed}");
     }
-    // And the placements no close could reach - a session's own thread holds its backend, so a stop
-    // gets neither its sweep nor its fetch. This runs AFTER the closes for that reason: a session
-    // that did close has already ended its processes and brought its branch home, and its placement
-    // is off the last act's list.
+    // Placements no close could reach: a session's own thread holds its backend, so a stop gets neither sweep nor fetch.
+    // Runs after the closes, since a session that did close already ended its processes and brought its branch home.
     eprintln!("  stopping: ending what the placed sessions no close reached started on its host");
     for said in letibot_tools::remote::placements_down() {
         eprintln!("  {said}");

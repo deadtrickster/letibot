@@ -337,12 +337,8 @@ mod tests {
         ));
     }
 
-    /// T20.5, at the seam it was reported at: `Session::append_items`.
-    ///
-    /// The ledger keeps one row per tool result - it is append-only and a row is an item - and the
-    /// PROMPT those rows build is the template's ONE user turn for the run. A byte vocabulary
-    /// makes the assertion exact: every id decodes back to the byte that was tokenized, so the
-    /// ledger's whole text can be compared against the template's own bytes.
+    /// `Session::append_items` seam: the ledger keeps one row per tool result, while the prompt those rows build is the template's one user turn for the run.
+    /// A byte vocabulary makes the check exact: every id decodes to its tokenized byte, so the ledger text compares against the template's bytes.
     #[test]
     fn the_ledger_keeps_a_row_per_result_under_one_user_turn() {
         use letibot_tokencore::Vocab;

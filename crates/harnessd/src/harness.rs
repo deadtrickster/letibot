@@ -1285,10 +1285,8 @@ impl Harness {
         self.wiring.monitor_wake = crate::config::MonitorWake::Armed;
     }
 
-    /// **The waiter was asked for and could not be started.** The caller still publishes the
-    /// `Warning` with the error; this is the banner's half, which from a bool read exactly like a
-    /// session nobody armed - and a reader told *POLL ONLY* goes looking for a knob that would not
-    /// have helped.
+    /// The waiter was asked for and could not be started. The caller still publishes the `Warning` with the error; this is the banner's half.
+    /// A bool would read like a session nobody armed, and *POLL ONLY* would send a reader after a useless knob.
     pub fn declare_monitor_wake_failed(&mut self) {
         self.wiring.monitor_wake = crate::config::MonitorWake::Failed;
     }

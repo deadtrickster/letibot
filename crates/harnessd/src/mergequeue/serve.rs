@@ -1188,9 +1188,7 @@ impl RepoQueue {
         Ok(moved)
     }
 
-    /// **The debris no row names.** A registration whose directory is gone and a tree whose `.git`
-    /// names a gitdir that is not are the two leftovers of a child that was killed, refused or
-    /// landed elsewhere - neither can hold a commit, and nothing else in this daemon looks at them.
+    /// The debris no row names: a registration whose directory is gone and a tree whose `.git` names a missing gitdir, left by a killed, refused or elsewhere-landed child. Neither can hold a commit.
     /// The tree says so in the daemon's log; a sweep that took nothing says nothing.
     fn reap_worktree_debris(&self) {
         match git::reap_worktrees(&self.repo, std::time::SystemTime::now()) {

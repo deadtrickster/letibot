@@ -1,11 +1,6 @@
-//! The daemon's half of `!term`: the panes a session owns, and how their bytes reach a
-//! head. [`letibot_sessionlog::TerminalDriver`] is the seam and [`Terminals`] implements
-//! it; the pty itself is [`letibot_tools::exec::term`].
+//! The daemon's half of `!term`: the panes a session owns and how their bytes reach a head. [`letibot_sessionlog::TerminalDriver`] is the seam, [`Terminals`] implements it, the pty is [`letibot_tools::exec::term`].
 //!
-//! A pane is the SESSION's work, so it ends with the session that opened it, and a daemon that
-//! starts sweeps the panes a killed predecessor of the same workspace left ([`Terminals::begin`]).
-//! Neither is a courtesy: a program drawing into a pane nobody can open again is one nobody can
-//! end, and the box has no other door to it.
+//! A pane ends with its session, and a starting daemon sweeps panes a killed predecessor of the same workspace left ([`Terminals::begin`]): a program drawing into an unopenable pane cannot otherwise be ended.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -249,10 +244,8 @@ fn owner_pid(name: &str) -> Option<u32> {
     parts.next().is_none().then_some(pid)
 }
 
-/// End the panes under one dead daemon's tree root, and say what happened there: the sentence and
-/// whether anything in it would NOT die. Only a child directory named for a pane scope is touched
-/// ([`PANE_DIR`]): a tree also holds the job and turn scopes of work that is not a pane, and those
-/// are not this sweep's to end.
+/// End the panes under one dead daemon's tree root and say what happened: the sentence and whether anything would not die.
+/// Only child directories named for a pane scope ([`PANE_DIR`]) are touched; job and turn scopes are not this sweep's.
 fn end_panes_under(tree: &dyn ScopeTree, root: &Path) -> Option<(String, bool)> {
     let mut dirs: Vec<PathBuf> = std::fs::read_dir(root)
         .ok()?
@@ -304,10 +297,8 @@ fn end_panes_under(tree: &dyn ScopeTree, root: &Path) -> Option<(String, bool)> 
     Some((said, !left.is_empty()))
 }
 
-/// The rule, with the two facts handed in so it can be measured without a cgroup: whether a pid is
-/// a live process, and the tree that ends a scope. A line names a tree ROOT, and only a root whose
-/// owner pid is dead is swept - the name and the path are the whole of the claim. Answer: the
-/// lines worth keeping for the next daemon, and one sentence per root swept.
+/// The rule, with its two facts handed in so it runs without a cgroup: whether a pid is live, and the tree that ends a scope.
+/// Only a root whose owner pid is dead is swept. Answers the lines to keep for the next daemon and one sentence per root swept.
 fn sweep_record(
     record: &Path,
     tree: &dyn ScopeTree,
@@ -667,10 +658,8 @@ impl Drop for Terminals {
 
 #[cfg(test)]
 mod tests {
-    //! The driver's decisions, measured on a tree whose scopes are directories: which scope a pane
-    //! is given, what it is capped at, and what a session's end does to them. The kernel's own half
-    //! of that story belongs to `letibot_tools::exec::scope`, and a cgroup here would measure the
-    //! box rather than this module.
+    //! The driver's decisions on a tree whose scopes are directories: a pane's scope, its cap, and what a session's end does.
+    //! The kernel half belongs to `letibot_tools::exec::scope`.
     use std::sync::Mutex as StdMutex;
     use std::time::{Duration, Instant};
 

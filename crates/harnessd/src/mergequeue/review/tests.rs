@@ -562,10 +562,7 @@ fn a_child_nobody_can_walk_from_is_tried_alone_and_then_raised() {
     );
 }
 
-/// **A refusal nobody could take is owed to whoever opens next.** The daemon was gone when the
-/// verdict landed and the child that wrote the branch comes back: the queue wrote the debt down, so
-/// a pass after the door opens hands it over - once, to the first session that takes it - and the
-/// operator hears about the miss once rather than once per pass.
+/// A refusal nobody could take is owed to whoever opens next: the verdict landed with the daemon gone and the child returns. The queue wrote the debt down, so the first session after the door opens takes it once, and the operator hears of the miss once.
 #[test]
 fn a_refusal_nobody_heard_is_handed_to_the_session_that_opens_later() {
     let (_dir, store) = the_queue("owed");

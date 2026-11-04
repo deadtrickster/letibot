@@ -1,9 +1,6 @@
-//! A brief that the repository already did, said at the TAIL of the request like the notes and the
-//! skills: earned by a score floor, once per record, silent when nothing clears it.
+//! A brief the repository already did, said at the tail of the request like the notes and skills: earned by a score floor, once per record, silent when nothing clears it.
 //!
-//! The corpus is what "already done" means in this tree: this workspace's recent commit subjects,
-//! keyed by their short sha, and the entries of `TODO-settled.md`, keyed by their id. Both are
-//! bounded - a log of every commit ever is not a corpus a round can pay for.
+//! The corpus is this workspace's recent commit subjects (keyed by short sha) and `TODO-settled.md` entries (keyed by id), both bounded.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -12,10 +9,8 @@ use letibot_embeddings::Tier;
 use letibot_tools::similarity::Corpus;
 use letibot_transcript::{Speaker, TranscriptItem, UserPart};
 
-/// The score a record has to reach before it is offered - this caller's own floor. MEASURED over
-/// the fixture's corpus: a brief carrying two of a subject's four terms scored 0.387, one term
-/// 0.327, an unrelated subject 0.047 to 0.129. Higher than one shared word, because *stop and
-/// check* costs a round and a wrong one costs the line its reader.
+/// The score a record must reach to be offered, this caller's own floor.
+/// Above one shared word: *stop and check* costs a round and a wrong one costs the line its reader.
 pub const OFFER_FLOOR: f64 = 0.35;
 
 /// How many commits of the log are read. A commit subject is one line, so a real project's last
@@ -155,10 +150,8 @@ impl Offers {
             .unwrap_or_default()
     }
 
-    /// Settle the round's offer against what the round actually did, and log both sides. A take-up
-    /// is any call that names the record - a `git show` of the sha, a `read` of the settled file -
-    /// because checking is the whole of what the line asks for. Logged either way, because the
-    /// ratio is what tunes [`OFFER_FLOOR`].
+    /// Settle the round's offer against what the round did, and log both sides. A take-up is any call naming the record (a `git show` of the sha, a `read` of the settled file).
+    /// Logged either way: the ratio tunes [`OFFER_FLOOR`].
     pub fn settle(
         &mut self,
         logs: &Path,
