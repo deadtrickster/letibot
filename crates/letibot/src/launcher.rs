@@ -65,6 +65,7 @@ fn fallback_runtime_base() -> PathBuf {
 #[cfg(target_os = "macos")]
 fn fallback_runtime_base() -> PathBuf {
     let mut buf = vec![0u8; 1024];
+    // SAFETY: confstr writes at most `buf.len()` bytes into `buf`.
     let n = unsafe {
         libc::confstr(
             libc::_CS_DARWIN_USER_TEMP_DIR,
@@ -184,7 +185,10 @@ pub fn read_record(path: &Path) -> Option<Record> {
         socket: s("socket"),
         // A number, and `as_u64` rather than a string read: the shell's `json_num` had
         // to try both forms for exactly this field.
-        pid: v.get("pid").and_then(|x| x.as_u64()).map(|n| n as u32),
+        pid: v
+            .get("pid")
+            .and_then(|x| x.as_u64())
+            .and_then(|n| u32::try_from(n).ok()),
         role: s("role"),
         model: s("model"),
         answers: s("answers"),
@@ -343,6 +347,7 @@ fn listener_pid(socket: &Path) -> Option<u32> {
     };
     let mut pid: libc::pid_t = 0;
     let mut len = std::mem::size_of::<libc::pid_t>() as libc::socklen_t;
+    // SAFETY: `pid` and `len` outlive the call and `len` is the size of `pid`.
     let rc = unsafe {
         libc::getsockopt(
             s.as_raw_fd(),
@@ -390,8 +395,10 @@ fn lsof_pids(listing: &str, socket: &Path) -> Vec<u32> {
 /// `PROC_PIDTBSDINFO` for one pid: `(ppid, status)`, or `None` when it is gone.
 #[cfg(target_os = "macos")]
 fn bsdinfo(pid: u32) -> Option<(u32, u32)> {
+    // SAFETY: `proc_bsdinfo` is plain data, zero is a valid value.
     let mut bi: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
     let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    // SAFETY: `bi` is `size` bytes and outlives the call.
     let got = unsafe {
         libc::proc_pidinfo(
             pid as libc::c_int,
@@ -535,11 +542,13 @@ fn argv_bytes(pid: u32) -> Option<Vec<u8>> {
     let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as libc::c_int];
     let mut size: libc::size_t = 0;
     let null = std::ptr::null_mut();
+    // SAFETY: a null buffer asks sysctl for the size only; `mib` is three ints.
     if unsafe { libc::sysctl(mib.as_mut_ptr(), 3, null, &mut size, null, 0) } != 0 {
         return None;
     }
     let mut buf = vec![0u8; size];
     let p = buf.as_mut_ptr() as *mut libc::c_void;
+    // SAFETY: `buf` is `size` bytes and sysctl writes at most `size`.
     if unsafe { libc::sysctl(mib.as_mut_ptr(), 3, p, &mut size, null, 0) } != 0 {
         return None;
     }
@@ -1082,16 +1091,26 @@ pub enum Stopped {
 /// that had gone away swallowed SIGTERM, and the record was deleted over an orphan.
 pub const STOP_TENTHS: u32 = 10;
 
+/// A recorded pid as one `kill` may take: positive and in `pid_t`. A cast would turn a large
+/// number into a negative one, which `kill` reads as a process group.
+fn signalable(pid: u32) -> Option<libc::pid_t> {
+    libc::pid_t::try_from(pid).ok().filter(|&p| p > 0)
+}
+
 /// Signal a daemon to stop and wait for it, bounded. The grace is spent in 50 ms steps
 /// rather than one 500 ms sleep: a daemon that exits at once is the common case.
 pub fn stop(pid: u32) -> Stopped {
+    let Some(raw) = signalable(pid) else {
+        return Stopped::NoSuchProcess;
+    };
     if !is_running(pid) {
         return Stopped::NoSuchProcess;
     }
     // SIGTERM. `libc` rather than shelling out to `kill`: that is a shell builtin on
     // several systems and a fork on the rest, and this is one syscall.
+    // SAFETY: `kill` takes plain integers; `signalable` refuses a pid that is not a process id.
     unsafe {
-        libc::kill(pid as libc::pid_t, libc::SIGTERM);
+        libc::kill(raw, libc::SIGTERM);
     }
     for _ in 0..(STOP_TENTHS * 10) {
         if !is_running(pid) {
@@ -1106,11 +1125,15 @@ pub fn stop(pid: u32) -> Stopped {
 /// is stuck on something that is never coming back, and leaving it holding the store and the
 /// GPU is worse than killing it. The caller has already *said* it is forcing.
 pub fn force_kill(pid: u32) -> Stopped {
+    let Some(raw) = signalable(pid) else {
+        return Stopped::NoSuchProcess;
+    };
     if !is_running(pid) {
         return Stopped::NoSuchProcess;
     }
+    // SAFETY: as in `stop`.
     unsafe {
-        libc::kill(pid as libc::pid_t, libc::SIGKILL);
+        libc::kill(raw, libc::SIGKILL);
     }
     for _ in 0..20 {
         if !is_running(pid) {
@@ -1140,6 +1163,21 @@ mod stop_tests {
         // And it really is gone: `wait` reaps it, and a second `stop` finds nothing.
         let _ = child.wait();
         assert_eq!(stop(pid), Stopped::NoSuchProcess);
+    }
+
+    /// A pid past `pid_t` is no process. Cast, it would be a negative pid and a signal to a group.
+    #[test]
+    fn a_pid_past_pid_t_is_not_signalable_and_not_truncated() {
+        assert_eq!(signalable(u32::MAX), None);
+        assert_eq!(signalable(0), None);
+        assert_eq!(signalable(1), Some(1));
+        let dir = std::env::temp_dir().join(format!("launcher-pid-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("rec.json");
+        std::fs::write(&path, format!("{{\"pid\": {}}}", (1u64 << 32) + 7)).unwrap();
+        let rec = read_record(&path).expect("a record");
+        assert_eq!(rec.pid, None, "2^32 + 7 is not pid 7");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A pid that is not there is `NoSuchProcess` rather than an error - the common case
