@@ -218,9 +218,8 @@ impl Corpus {
             .iter()
             .map(|n| similarity(&q, &n.weights))
             .collect();
-        // Words first: a note already decided by them, or a text with no terms to score, does not
-        // wake the embedder.
-        let decided = q.is_empty() || lexical.iter().any(|l| *l >= DECIDED_BY_WORDS);
+        // Words first: a note already decided by them does not wake the embedder.
+        let decided = lexical.iter().any(|l| *l >= DECIDED_BY_WORDS);
         let query = tier.filter(|_| !decided).and_then(|t| match t.round() {
             Some(round) => t.query(&round, now_ms()).ok(),
             None => t.query(bounded(text), now_ms()).ok(),
