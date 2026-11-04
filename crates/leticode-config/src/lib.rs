@@ -112,7 +112,7 @@
 //! the operator's own evening is why:
 //!
 //! ```toml
-//! # ~/.config/letibot/providers.toml — written by `/models deepseek`
+//! # ~/.config/letibot/providers.toml - written by `/models deepseek`
 //! [default]
 //! provider = "deepseek"
 //! model = "deepseek-flash"

@@ -1,7 +1,6 @@
 //! The hub tap: turns a session's event stream into metrics rows and knows which turn a mark
-//! lands on. [`Tap::observe`] keeps the session's "now" so the connection thread can place an
-//! operator's mark ([`crate::protocol::ClientFrame::Feedback`]) without asking the worker.
-//! A turn is a prompt, id'd by its first round. Free when [`letibot_metrics::enabled`] is off.
+//! lands on. [`Tap::observe`] keeps the session's "now" so the connection thread can place a
+//! [`crate::protocol::ClientFrame::Feedback`] mark without asking the worker. Free when disabled.
 
 use std::collections::VecDeque;
 

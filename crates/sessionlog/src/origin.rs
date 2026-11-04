@@ -18,8 +18,7 @@ pub const MCP_IDENTITY: &str = "letibot-mcp";
 #[serde(rename_all = "snake_case")]
 pub enum SessionOrigin {
     /// The operator's own - a `leticode` start, `/new`, a `--continue`, a head that asked
-    /// over the socket. The default, and the answer for every row written before this column
-    /// existed that nothing else claims.
+    /// over the socket. The default, and the answer for a row nothing else claims.
     #[default]
     Operator,
     /// A package started it - a head that is not a terminal, today `letim`'s bridge

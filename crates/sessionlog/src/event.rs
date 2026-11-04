@@ -12,13 +12,13 @@
 //! TurnFinished{turn_id, finish_reason, usage, timings, ends_turn,
 //!              prefix_check, dialect_template_sha}
 //! TurnInterrupted{turn_id, reason, partial_kept: bool}
-//! TurnFailed{turn_id, error, partial_kept: bool}   — not §4.5's; see the variant
+//! TurnFailed{turn_id, error, partial_kept: bool}   - not §4.5's; see the variant
 //! ProviderTrouble{kind, model, detail, reset_ms, count, switched_to}
 //! TranscriptAppended{item_id, kind, ledger_head, item?, body_bytes}
-//! TranscriptContent{item_id, item}          — for a row too large to ride its announcement
+//! TranscriptContent{item_id, item}          - for a row too large to ride its announcement
 //! HeadAttached / HeadDetached{head_id, kind, identity}
 //! Warning{code, detail}
-//! ModelRetry{host, attempts, said, log, ended}   — one row's whole value; see the variant
+//! ModelRetry{host, attempts, said, log, ended}   - one row's whole value; see the variant
 //! Explain{turn_id, plan}
 //! ```
 //!
