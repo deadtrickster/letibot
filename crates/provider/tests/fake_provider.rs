@@ -740,6 +740,27 @@ fn bare_request(p: &OpenAiProvider) -> Result<(), BackendError> {
     p.complete(&req, &mut |_| StreamFlow::Continue).map(|_| ())
 }
 
+/// The same round, counting the deltas: a stream that fails half way still reaches the screen, and
+/// a test about how a round ENDED has to say what arrived before it ended.
+fn bare_with_deltas(p: &OpenAiProvider) -> (usize, Result<(), BackendError>) {
+    let items: Vec<TranscriptItem> = Vec::new();
+    let req = TurnRequest {
+        system: "",
+        tools_json: &[],
+        items: &items,
+        tail: &[],
+        max_output_tokens: None,
+    };
+    let mut n = 0;
+    let out = p
+        .complete(&req, &mut |_| {
+            n += 1;
+            StreamFlow::Continue
+        })
+        .map(|_| ());
+    (n, out)
+}
+
 /// The provider's own answer to *when may I come back* reaches the caller: a 429 carrying
 /// `Retry-After` is a rate limit an automation can sleep out, and one without it is a wait nobody
 /// can size.
@@ -789,4 +810,64 @@ fn a_provider_that_never_answers_times_out_at_the_deadline_it_was_given() {
         "and the failure says it was a timeout, because that is what an automation branches on: {e}"
     );
     assert!(matches!(e, BackendError::Unreachable(_)), "{e:?}");
+}
+
+/// Half a stream is not an answer. A socket that closes cleanly after two chunks used to finish as
+/// `Stop` with zero usage: billed as nothing, and drawn as if the model had completed the thought.
+#[test]
+fn a_stream_that_closes_without_an_ending_is_a_fragment_and_not_an_answer() {
+    const HALF: &str = "data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}\n\n\
+                        data: {\"choices\":[{\"delta\":{\"content\":\"lo\"}}]}\n\n";
+    let f = fake(HALF, 200);
+    let p = provider(&f.url);
+    let (deltas, out) = bare_with_deltas(&p);
+    let err = out.expect_err("a stream with no ending is not a finished answer");
+    assert!(matches!(err, BackendError::Unreachable(_)), "{err:?}");
+    let said = format!("{err}");
+    assert!(
+        said.contains("[DONE]") && said.contains("finish_reason"),
+        "the failure must name what was missing, or a reader cannot tell this from a reset: {said}"
+    );
+    assert_eq!(
+        deltas, 2,
+        "the fragment did reach the screen before it ended"
+    );
+}
+
+/// The control: a `finish_reason` with no `[DONE]` after it IS an ending, because some servers
+/// close on the reason and a rule that demanded both would fail a whole answer.
+#[test]
+fn a_finish_reason_is_an_ending_even_with_no_done_after_it() {
+    const REASON_ONLY: &str = "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n\
+                             data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
+    let f = fake(REASON_ONLY, 200);
+    let p = provider(&f.url);
+    let (deltas, out) = bare_with_deltas(&p);
+    out.expect("a finish_reason is the provider saying the stream is over");
+    assert_eq!(deltas, 1);
+}
+
+/// An `{\"error\":…}` chunk arrives after the 200, so it is the only place a mid-stream refusal can
+/// be said. It was dropped as a chunk with no choices, and the round went on to look truncated.
+#[test]
+fn an_error_chunk_inside_the_stream_is_the_providers_refusal() {
+    const ERRORED: &str = "data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}\n\n\
+                          data: {\"error\":{\"code\":\"insufficient_quota\",\"message\":\"You \
+                          exceeded your current quota\"}}\n\n";
+    let f = fake(ERRORED, 200);
+    let p = provider(&f.url);
+    let err = bare_request(&p).expect_err("the provider refused inside the stream");
+    match err {
+        BackendError::Refused { body, .. } => {
+            assert!(
+                body.contains("exceeded your current quota"),
+                "the provider's own words were dropped: {body}"
+            );
+            assert!(
+                body.contains("insufficient_quota"),
+                "the code the retry policy reads was dropped: {body}"
+            );
+        }
+        other => panic!("expected the provider's own refusal, got {other:?}"),
+    }
 }

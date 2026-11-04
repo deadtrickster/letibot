@@ -488,6 +488,9 @@ impl OpenAiProvider {
         let reader = BufReader::new(resp.into_body().into_reader());
         let mut acc = Accumulator::default();
         let mut aborted = false;
+        // Whether the provider said the stream was over. A socket that closes cleanly after half an
+        // answer looks exactly like a finished one, so the absence of this has to be a failure.
+        let mut ended = false;
         for line in reader.lines() {
             let line = line.map_err(|e| BackendError::Unreachable(format!("mid-stream: {e}")))?;
             let Some(data) = line.strip_prefix("data:") else {
@@ -495,10 +498,16 @@ impl OpenAiProvider {
             };
             let data = data.trim();
             if data == "[DONE]" {
+                ended = true;
                 break;
             }
             let chunk: Value = serde_json::from_str(data)
                 .map_err(|e| BackendError::Malformed(format!("{e} in chunk {data}")))?;
+            // The headers carried a 200 before this byte, so an `{"error":…}` chunk is the only
+            // place a mid-stream refusal can arrive; dropped, it left a half answer standing.
+            if let Some(refusal) = in_band_refusal(&chunk, status, retry_after) {
+                return Err(refusal);
+            }
             for d in acc.absorb(&chunk) {
                 if on_delta(&d) == StreamFlow::Stop {
                     aborted = true;
@@ -512,6 +521,16 @@ impl OpenAiProvider {
         if aborted {
             return Err(BackendError::Aborted);
         }
+        if !ended && acc.finish.is_none() {
+            // A half answer is not an answer: recorded as `Stop` with zero usage it was billed as
+            // nothing and shown as if the model had finished the thought.
+            return Err(BackendError::Unreachable(format!(
+                "the stream closed without `[DONE]` or a finish_reason after {} character(s) of \
+                 answer and {} tool call(s), so what arrived is a fragment",
+                acc.text.chars().count() + acc.reasoning.chars().count(),
+                acc.calls.len()
+            )));
+        }
         let wall_ms = started.elapsed().as_millis() as u64;
         Ok(acc.finish(
             &self.model,
@@ -521,6 +540,40 @@ impl OpenAiProvider {
             &self.catalogue,
         ))
     }
+}
+
+/// The refusal a provider sends INSIDE its stream, which has no status of its own: the response's
+/// is `200` because the headers went out first. `None` for a chunk that is not an error.
+fn in_band_refusal(chunk: &Value, status: u16, retry_after: Option<u64>) -> Option<BackendError> {
+    let err = chunk.get("error")?;
+    let message = err
+        .as_str()
+        .map(String::from)
+        .or_else(|| {
+            err.get("message")
+                .map(|m| m.as_str().map_or_else(|| m.to_string(), String::from))
+        })
+        .unwrap_or_else(|| err.to_string());
+    // The provider's own code, for the reason the non-2xx arm keeps it: it is the one
+    // machine-readable word in a refusal, and a quota is read off it.
+    let message = match err.get("code").and_then(Value::as_str) {
+        Some(code) if !message.contains(code) => format!("{message} ({code})"),
+        _ => message,
+    };
+    // The status the chunk names when it names one, and the response's otherwise. Both are the
+    // provider's own numbers; neither is invented here.
+    let code = err
+        .get("code")
+        .and_then(Value::as_u64)
+        .or_else(|| err.get("status").and_then(Value::as_u64))
+        .and_then(|n| u16::try_from(n).ok())
+        .filter(|n| (400..600).contains(n))
+        .unwrap_or(status);
+    Some(BackendError::Refused {
+        status: code,
+        body: message,
+        retry_after,
+    })
 }
 
 /// What the deltas build up, and the last chunk's usage.
