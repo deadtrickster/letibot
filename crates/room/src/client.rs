@@ -194,9 +194,7 @@ impl Client {
                         return;
                     };
                     let _one = me.inner.call.lock().expect("the call lock");
-                    if me.connected() {
-                        delay = REDIAL_MIN;
-                    } else if me.open().is_ok() {
+                    if me.connected() || me.open().is_ok() {
                         delay = REDIAL_MIN;
                     } else {
                         delay = (delay * 2).min(REDIAL_MAX);
