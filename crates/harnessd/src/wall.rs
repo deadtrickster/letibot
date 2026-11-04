@@ -3,8 +3,8 @@
 //!
 //! # The case it answers
 //!
-//! MEASURED 2026-10-11 on pg-noop, session `s-1789919514688401228` (deepseek-flash
-//! window 1,000,000): `compacting: 941101 of 1000000 deepseek tokens resident (936387 at
+//! Example: a deepseek-flash session
+//! with a 1,000,000 window: `compacting: 941101 of 1000000 deepseek tokens resident (936387 at
 //! the last round + 4714 appended since)`, then on the head *"⚠ auto-compaction is off
 //! compacted from 941101 to 1039055 tokens and that is STILL within 62500 of the 1000000
 //! window … and a refusal will not force another"*. The first round on the new
@@ -349,7 +349,7 @@ mod tests {
         }
     }
 
-    /// The live case, replayed on the controller. `s-1789919514688401228`: the fold of
+    /// The live case, replayed on the controller. the fold of
     /// 941,101 was ESTIMATED at 1,039,055 - past the window - and the first round on `#t18`
     /// measured 507,355.
     #[test]
@@ -403,7 +403,7 @@ mod tests {
     }
 
     /// A refusal after `Stuck` still folds, with the hardest press, and so does
-    /// one in every other state: the 2026-10-09 wedge was a stood-down switch that
+    /// one in every other state: the wedge was a stood-down switch that
     /// the refused door also read.
     #[test]
     fn a_refusal_is_folded_from_every_state_stuck_included() {

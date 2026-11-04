@@ -182,7 +182,7 @@ fn a_resumed_session_is_put_back_on_the_log_where_a_head_can_see_it() {
     let f = fixture("harnessd-resume", &probe, &renders_template(&probe));
 
     // Deliberately NOT the session's own workspace: the daemon is started somewhere else, which is
-    // the normal case for `--continue` and the one that used to seat a conversation's tools in the
+    // the normal case for `--continue` and the one that could seat a conversation's tools in the
     // wrong tree.
     let elsewhere = "/tmp";
     assert_ne!(f.workspace, elsewhere);

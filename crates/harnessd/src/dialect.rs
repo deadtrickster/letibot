@@ -116,7 +116,7 @@ impl Wiring {
             .collect()
     }
 
-    /// §5.3's system update, in the form this dialect can actually render. GLM takes a real
+    /// The system update, in the form this dialect can actually render. GLM takes a real
     /// `System { origin: Update }` item; Qwen's template raises on a mid-history system
     /// message, so it takes a user turn with a fixed envelope.
     pub fn system_update(&self, seq: u64, text: &str) -> TranscriptItem {

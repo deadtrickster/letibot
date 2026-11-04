@@ -19,7 +19,7 @@ fn a_harness(id: &str) -> Option<Harness> {
 
 /// The old conversation is named by what the model can DO about it, not by its id: `transcript`
 /// takes predicates and no transcript id, so an id in this sentence is an instruction that cannot
-/// be obeyed. `R93.E10` took the session's own id and the job counts out for the same reason.
+/// be obeyed. The session's own id and the job counts are left out for the same reason.
 #[test]
 fn the_orientation_reaches_the_old_conversation_without_naming_its_id() {
     let Some(h) = a_harness("s-clear-orientation") else {

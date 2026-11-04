@@ -87,8 +87,8 @@ impl Offers {
         self
     }
 
-    /// Seed the memory with what this SESSION has already been offered. The memory used to be the
-    /// turn's alone, which is wrong about a session
+    /// Seed the memory with what this SESSION has already been offered. The memory is not the
+    /// turn's alone, which would be wrong about a session
     /// The log is the memory, so the fact survives a restart and there is no second copy of it.
     pub fn recall(&mut self, logs: &Path, session: &str) {
         let Ok(text) = std::fs::read_to_string(logs.join(LOG)) else {

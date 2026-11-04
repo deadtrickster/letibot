@@ -2278,7 +2278,7 @@ mod tests {
         }
     }
 
-    /// The measured case: letibot's `main` at 79c32c1, 2026-10-12, on lab2x1.
+    /// The measured case: letibot's `main` at 79c32c1, on lab2x1.
     const GIB: u64 = 1 << 30;
     fn measured(oom_kills: u64) -> StepMemory {
         StepMemory::Used(MemoryUse {
@@ -2463,7 +2463,7 @@ mod tests {
     }
 
     /// A step that refused to skip is the MACHINE's, not the branch's - the measured case from
-    /// `lab2x1` on 2026-10-30: `LETIBOT_REQUIRE_APPARATUS=1 cargo test --no-fail-fast -p
+    /// `lab2x1`: `LETIBOT_REQUIRE_APPARATUS=1 cargo test --no-fail-fast -p
     /// letibot-harnessd --lib`, sixteen refusals and one genuine failure.
     #[test]
     fn a_step_that_refused_to_skip_is_the_machines_and_not_the_branches() {
@@ -3247,7 +3247,7 @@ exit 101
         );
     }
 
-    /// The arithmetic, on a real cargo stream - MEASURED 2026-10-30 on this box
+    /// The arithmetic, on a real cargo stream - on this box
     #[test]
     fn a_real_workspace_stream_is_cut_into_targets_and_only_the_failing_one_is_quoted() {
         let text = r#"   Compiling probe-a v0.1.0 (/w/a)

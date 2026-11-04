@@ -115,7 +115,7 @@ fn the_vocab_comparison_is_the_file_name_not_the_path() {
 
 #[test]
 fn the_shell_is_declared_pinned_only_where_an_exec_backend_exists() {
-    // R10's wiring: the pin claim rides on the host spawn's env hygiene, which `letibot-tools` holds, so a seat with an
+    // The wiring: the pin claim rides on the host spawn's env hygiene, which `letibot-tools` holds, so a seat with an
     // exec backend declares it and one without leaves `Unknown`, under which a bare name is `not_run`.
     let mut cfg = Config::for_this_box(std::env::temp_dir());
     cfg.seat = Seat::Runner;
@@ -132,7 +132,7 @@ fn the_shell_is_declared_pinned_only_where_an_exec_backend_exists() {
     );
 }
 
-/// R18's daemon half: layer A is given the configured workspace. The wrong fact the operator's cards showed came from
+/// The daemon half: layer A is given the configured workspace. The wrong fact the operator's cards showed came from
 /// the backend's root, not from here, and this pins it, because two halves answering where this session is differently
 /// is the shape of that defect.
 #[test]
@@ -386,7 +386,7 @@ fn the_hold_waits_on_children_still_on_their_task_and_no_others() {
 }
 
 /// A re-seat names what changed inside a tool, not only that it did - the two changes of
-/// 2026-10-15: `monitor` gained `github`, and `todo_write`'s needs gained the `monitor` kind and its
+/// `monitor` gained `github`, and `todo_write`'s needs gained the `monitor` kind and its
 /// `name`. Only wording moved: `wording`.
 #[test]
 fn a_reseat_names_what_changed_inside_a_tool() {

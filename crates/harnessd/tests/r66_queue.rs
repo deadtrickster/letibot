@@ -252,7 +252,7 @@ fn a_job_row_outlives_its_job_and_the_captures_do_not() {
     host.end_running("test");
 }
 
-/// A hundred jobs that each write a megabyte: the capture is the term R66 guessed at, and the
+/// A hundred jobs that each write a megabyte: the capture is the term the old estimate guessed at, and the
 /// host holds a budget of it rather than a window per job.
 #[test]
 fn a_hundred_big_jobs_hold_the_capture_budget_and_not_a_window_each() {
@@ -266,7 +266,7 @@ fn a_hundred_big_jobs_hold_the_capture_budget_and_not_a_window_each() {
         let _ = host.wait_job(&id, Duration::from_secs(30));
         if i == 0 {
             // The first job's own window, before any budget can have released it: 8 MiB per job
-            // is what R66's estimate multiplied by the number of jobs.
+            // is what the estimate multiplied by the number of jobs.
             let held = host.output(&id, 0, 1).map(|o| o.retained).unwrap_or(0);
             println!("one job's window holds {held} of the {EACH} bytes it wrote");
         }

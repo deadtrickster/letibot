@@ -1,4 +1,4 @@
-//! R79 at the round boundary and the turn's start: what a running turn is handed, and what waits for the next break.
+//! Delivery at the round boundary and the turn's start: what a running turn is handed, and what waits for the next break.
 //! The decision is `crate::delivery`'s and asserted there; these drive it through the steering source a turn polls.
 
 use super::*;
@@ -125,8 +125,8 @@ fn row(when: Option<TodoCondition>, needs: Vec<TodoNeed>) -> TodoItem {
     }
 }
 
-/// A routine completion during a long turn is held, and the batch arrives as ONE note at the boundary: a child used to
-/// hear every settlement at its next round, and now neither of two routine ones reaches it mid-turn, with both under one
+/// A routine completion during a long turn is held, and the batch arrives as ONE note at the boundary: a child does not
+/// hear every settlement at its next round: neither of two routine ones reaches it mid-turn, with both under one
 /// `[meanwhile]` line and recorded as a batch of two with the times they arrived.
 #[test]
 fn a_routine_completion_during_a_long_turn_is_held_and_arrives_as_one_batch() {
@@ -359,8 +359,7 @@ fn the_held_counts_are_said_on_the_hub_when_they_change() {
 }
 
 /// A `when: job` row's job is delivered at once - to a ROOT too, at the round boundary of the
-/// turn that is running. (Before R79 a root heard nothing mid-turn: its every settlement waited
-/// for the turn to end and then cost a wake turn.) A routine one beside it stays held.
+/// turn that is running. A routine one beside it stays held.
 #[test]
 fn a_when_job_rows_job_is_delivered_at_once() {
     let dir = Scratch::new("r79-when");
@@ -521,7 +520,7 @@ fn the_starvation_cap_releases_the_batch_mid_turn() {
 }
 
 /// A held batch with a row waiting on it says the plan line and a head that does not deny
-/// it: the head used to say "nothing in your plan was waiting on it" over a line naming the row
+/// it, so it never says "nothing in your plan was waiting on it" over a line naming the row
 /// that was.
 #[test]
 fn a_held_batch_never_denies_the_plan_line_under_it() {
@@ -695,9 +694,9 @@ fn a_wait_ons_grace_lasts_until_the_turn_after_the_completion_was_read() {
     );
 }
 
-/// A result HELD under R79 is undelivered too, and quiet - and so is a completion delivered as
+/// A result HELD for the boundary is undelivered too, and quiet - and so is a completion delivered as
 /// a wake's own turn start, until the turn after it. The held queue is the other place an ended job
-/// can sit unread; pg-noop, 2026-10-11.
+/// can sit unread.
 #[test]
 fn a_held_or_wake_delivered_completion_is_graced_the_same_way() {
     let dir = Scratch::new("grace-held");
@@ -723,7 +722,7 @@ fn a_held_or_wake_delivered_completion_is_graced_the_same_way() {
     assert_eq!(askable(&board, &w, cap, SystemTime::now()).len(), 2);
 }
 
-/// The backstop: a grace cannot outlive R79's starvation cap, so a completion never delivered cannot silence a row for
+/// The backstop: a grace cannot outlive the starvation cap, so a completion never delivered cannot silence a row for
 /// ever. Measured from the ending, and the idle clock is armed for the moment it runs out, since a model that went idle
 /// takes no turn that would re-arm it.
 #[test]
@@ -778,7 +777,7 @@ fn the_grace_has_a_backstop_and_the_clock_is_armed_for_it() {
 }
 
 /// The completion names the rows that wait on it, on both halves of the board, and says nothing when none do: the
-/// gate's completion used to arrive while the row attached to it stayed `in_progress`. A DONE row is not named, since
+/// gate's completion does not arrive while the row attached to it stays `in_progress`. A DONE row is not named, since
 /// it owes nothing.
 #[test]
 fn the_completion_names_the_rows_waiting_on_it() {

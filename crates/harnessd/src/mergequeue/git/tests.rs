@@ -485,7 +485,7 @@ fn a_ref_git_cannot_read_is_not_a_ref_that_is_gone() {
         ref_proof(&repo, "agent/never-existed", "main", what),
         Proof::Gone
     );
-    // A repository git cannot read is NOT `Gone` - this is the one that used to take a tree with it.
+    // A repository git cannot read is NOT `Gone` - this is the one that must not take a tree with it.
     // `show-ref` exits 128 here and `rev-parse` answers `None`, and the two are different facts.
     let not_a_repo = dir.0.join("not-a-repository");
     std::fs::create_dir_all(&not_a_repo).unwrap();
@@ -595,7 +595,7 @@ fn a_branch_with_one_commit_on_a_rewritten_main_replays_its_one() {
 }
 
 /// The reflog alone finds the base once nothing else does - the same branch with no recorded base
-/// `main`'s reflog still names the tip it used to point at, which is the fork.
+/// `main`'s reflog still names the tip it pointed at, which is the fork.
 #[test]
 fn a_rewritten_main_is_asked_for_the_tip_it_used_to_point_at() {
     let dir = TempDir::new("rebase-reflog");

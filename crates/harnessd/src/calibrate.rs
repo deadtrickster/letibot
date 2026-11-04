@@ -191,7 +191,7 @@ pub const ARMS: &[Arm] = &[
         claim: true,
         question: crate::oracle::Question::Verdict,
     },
-    // TraceGuard arXiv 2604.03968 §4: the two questions scored apart, the
+    // TraceGuard arXiv 2604.03968: the two questions scored apart, the
     // verdict derived by thresholds. Same brief as the fullest verdict arm, so
     // the only difference measured is the question.
     Arm {

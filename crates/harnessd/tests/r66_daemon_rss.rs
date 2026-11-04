@@ -1,4 +1,4 @@
-//! R66's own instrument: a scratch daemon serving one long session against a fake model, with its
+//! The own instrument: a scratch daemon serving one long session against a fake model, with its
 //! resident memory and its heap sampled after every turn. The daemon prints `memwatch` lines of its
 //! own, so the heap is the allocator's count and not a guess from VmRSS.
 

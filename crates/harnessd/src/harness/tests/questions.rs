@@ -114,7 +114,7 @@ fn a_recorded_job_says_what_happened_and_where_its_bytes_went() {
         never.contains("not run (could not join its scope)"),
         "{never}"
     );
-    // And the file, when the row knows it - R41's other half: the pane cannot read the
+    // And the file, when the row knows it - the other half: the pane cannot read the
     // bytes, so the one useful thing it can do is say where they are.
     let redirected = recorded_job_lines(&row("exited 0", Some("/tmp/build.log"))).join("\n");
     assert!(

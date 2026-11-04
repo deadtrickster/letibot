@@ -1,5 +1,5 @@
 //! The daemon watching its own memory - `TODO.md`. A harnessd serving qwen-3.8-flash-next
-//! reached 108 GB resident over 47 hours and was killed by the kernel at 2026-10-11 00:47
+//! reached 108 GB resident over 47 hours and was killed by the kernel
 //! and its log had not one line about memory in it
 
 use std::alloc::{GlobalAlloc, Layout, System};

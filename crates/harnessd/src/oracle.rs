@@ -136,8 +136,8 @@ impl HttpOracle {
         .to_string();
 
         // The budget, made real: a budget the caller merely promises to respect is not one, and
-        // this used to reach only `describe` while the endpoint's own 180-second read timeout
-        // bounded the request.
+        // it reaches the request, not only `describe`, whatever the endpoint's own 180-second read
+        // timeout.
         let mut endpoint = self.endpoint.clone();
         endpoint.read_timeout = self.budget;
         let res = http::post_json(&endpoint, "/v1/chat/completions", &body).ok()?;

@@ -1130,7 +1130,7 @@ fn a_child_whose_record_was_never_written_is_still_listed_and_readable() {
 
     // The window, and this is the assertion an unwindowed reader fails - a child older than
     // the store's first record was never due one, so the list does not carry it. A reader that
-    // dropped the window lists it here, which is the wall of rows this class used to be.
+    // dropped the window lists it here, which is the wall of rows to avoid.
     assert!(
         !listed.contains(old),
         "a child from before the store recorded any was never due a row: {listed}"
@@ -2033,8 +2033,8 @@ fn an_empty_restart_is_said_once_and_starts_no_turn() {
         "[restart] The daemon restarted (down {}). Nothing was running.",
         letibot_harnessd::restart::span(Duration::from_millis(back.saturating_sub(stopped))),
     );
-    // One line, and it is the row. The sentence used to be published as a card *and* written as a
-    // row, which drew one restart twice; the row is the copy both readers can use, so the card is
+    // One line, and it is the row. The sentence is not published as a card *and* written as a
+    // row, which would draw one restart twice; the row is the copy both readers can use, so the card is
     // gone.
     assert!(
         warnings(&hub, "restart_nothing").is_empty(),
@@ -2733,7 +2733,7 @@ fn the_old_daemons(store: &Store, handle: &str) {
 }
 
 /// A job whose ending was held when the daemon stopped is said by the next one, once.
-/// Restore used to collect only `running` rows
+/// Restore collects rows that ended untold, not only `running` rows.
 #[test]
 fn a_job_that_ended_untold_before_the_stop_is_said_after_it_once() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {

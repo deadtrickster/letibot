@@ -616,7 +616,7 @@ fn a_childs_answer_wakes_its_parent_with_nobody_asking() {
 }
 
 /// A child's LATER turn reaches its parent, and reads as one: the slot settled once, so a
-/// second answer used to produce no settlement, no ring and no notice; now it settles again and is
+/// second answer settles again with a settlement, a ring and a notice, and is
 /// not told as the child finishing, which it is not.
 #[test]
 fn a_childs_second_answer_reaches_its_parent() {

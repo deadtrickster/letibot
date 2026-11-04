@@ -191,8 +191,8 @@ fn ten_reads_of(vocab: &letibot_tokencore::Vocab, dir: &TempDir, rel: &str) -> u
     ids(vocab, &body).len() as u64 * 10
 }
 
-/// The session row a resumed daemon needs, carrying the guard's stood-down pair - the state the
-/// restart used to lose. A `measured` over the window is not the provider's count and is refused
+/// The session row a resumed daemon needs, carrying the guard's stood-down pair - the state a
+/// restart must keep. A `measured` over the window is not the provider's count and is refused
 /// (`restore_auto_compact`).
 fn seed_a_stood_down_session(path: &std::path::Path, session_id: &str, before: u64, measured: u64) {
     let s = Store::open(path).expect("seeding");
@@ -457,7 +457,7 @@ fn a_refusal_on_a_stuck_session_still_folds() {
         sizing.headroom()
     };
 
-    // The finding the restart used to lose, in this window's own numbers: a fold of
+    // The finding a restart must keep, in this window's own numbers: a fold of
     // `before` measured `measured`, still at the wall.
     seed_a_stood_down_session(&path, session_id, window + window / 4, window - reserve);
     cfg.context_window = Some(window);
@@ -669,7 +669,7 @@ fn a_non_context_400_stays_a_backend_error() {
 }
 
 /// The two automatic doors take the pre-turn check. `nag_turn` (the plan check) and `wake`
-/// (a monitor firing) both start a turn, and both used to go straight to `submit_item`.
+/// (a monitor firing) both start a turn, and neither may go straight to `submit_item`.
 fn a_session_at_the_wall(tag: &str, todos: &[TodoItem]) -> (TempDir, Config, Parts) {
     let dir = TempDir::new(tag);
     let path = dir.path().join("sessions.db");

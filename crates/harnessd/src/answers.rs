@@ -778,8 +778,7 @@ fn pose(
         // the declaration and `detail` is layer A's reading of the action.
         access: req.class.access.as_str().to_string(),
         // The question, and nothing else, on the line the operator reads first. These three
-        // used to be one string with layer A's reading joined to it by an em dash, and the
-        // command ended up missing from the middle of four registers.
+        // stay separate strings, or the command goes missing from the middle of four registers.
         summary: req.summary.clone(),
         target: req.target.clone(),
         detail: req.baseline.clone(),

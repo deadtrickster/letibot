@@ -8,7 +8,7 @@
 //!
 //! `condition_engine` is named rather than numbered because a condition's name is the word a
 //! `monitor` call asks for (`{"plugin": "engine"}`), the same way `notice_job` names the notice
-//! KIND it rewords (`docs/plugins-plan.md` §4.3–§4.4).
+//! KIND it rewords (`docs/plugins-plan.md`).
 //!
 //! # How `../plugin.wasm` was built, and how to build it again
 //!

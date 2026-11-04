@@ -603,7 +603,7 @@ pub(crate) fn meanwhile_notice(
     parts.join("\n\n")
 }
 
-/// R79's delivery, for the two places that hand a result to the model: the round boundary and a
+/// The delivery, for the two places that hand a result to the model: the round boundary and a
 /// turn's start. The decision is `crate::delivery::decide`'s, pure and asserted there; this reads the
 /// session and turns the decision into notices, holding no state of its own.
 #[derive(Clone)]

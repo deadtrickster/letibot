@@ -26,7 +26,7 @@
 //!                                 #   one gate, exactly as before)
 //! ```
 //!
-//! The first three are the operator's own rulings of 2026-10-11, and each per PROJECT because
+//! The first three are the operator's own rulings, and each per PROJECT because
 //! the projects differ: pg-noop lands on `feat/memory-engine`, 91 commits ahead of its `main`
 //! and a queue that measured its branches against `main` saw every one 56–60 commits ahead.
 //!
@@ -319,7 +319,7 @@ mod tests {
     }
 
     /// `reviewers` says where this project's reviewers run, and `host` is what a project that
-    /// says nothing gets - the operator's ruling of 2026-10-29. A word this build does not
+    /// says nothing gets. A word this build does not
     /// know is refused BY NAME with both of them in the sentence, like every other key here.
     #[test]
     fn reviewers_defaults_to_host_and_a_word_this_build_does_not_know_is_refused() {

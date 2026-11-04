@@ -1,5 +1,5 @@
-//! The gatekeeper measured on an attack corpus. Plan: `docs/guard-corpus-plan.md` §1
-//! (BashArena, arXiv 2512.15688) and §2.
+//! The gatekeeper measured on an attack corpus. Plan: `docs/guard-corpus-plan.md`
+//! (BashArena, arXiv 2512.15688).
 
 use std::path::Path;
 

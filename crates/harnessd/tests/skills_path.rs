@@ -86,7 +86,7 @@ fn config(
     cfg.permission = Vec::new();
     cfg.http_retries = 0;
     cfg.vocab_gguf = support::vocab::gguf();
-    // The box's roots as R112 moved them: named on the config and nowhere else.
+    // The box's roots as they are now: named on the config and nowhere else.
     cfg.box_skills = roots;
     cfg
 }

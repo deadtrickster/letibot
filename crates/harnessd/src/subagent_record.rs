@@ -565,7 +565,7 @@ pub fn recorded_status(run: &SubagentRun, instance: &str) -> TaskStatus {
 
 /// Why the store holds no row for a child, in the words a model is given - and the two
 /// classes are the point of the window: one is a write that went missing, the other a store
-/// that was not writing yet, and only one of them went wrong. MEASURED 2026-11-01
+/// that was not writing yet, and only one of them went wrong.
 pub fn no_record_cause(why: letibot_tokencore::store::NoRecord) -> &'static str {
     use letibot_tokencore::store::NoRecord;
     match why {
@@ -574,8 +574,7 @@ pub fn no_record_cause(why: letibot_tokencore::store::NoRecord) -> &'static str 
     }
 }
 
-/// What a child with NO record reads as - the second witness, and the answer that used to
-/// be *nothing at all*.
+/// What a child with NO record reads as - the second witness, and not *nothing at all*.
 pub fn a_child_with_no_record(child: &letibot_tokencore::store::UnrecordedChild) -> TaskStatus {
     let id = &child.id;
     if let Some(text) = its_answer(child.last_item.as_ref()) {
@@ -621,7 +620,7 @@ fn its_answer(last: Option<&TranscriptItem>) -> Option<&str> {
 
 /// How a child with no record got on, as a value - one judgement with two renderings: the
 /// single-handle door writes a paragraph and can afford to be exact ([`Self::said`]), a
-/// list row gets a few words ([`Self::brief`]). MEASURED 2026-11-01
+/// list row gets a few words ([`Self::brief`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EndedIn {
     /// It wrote no row of its own at all.
@@ -904,7 +903,7 @@ mod tests {
     const NEW: &str = "new";
 
     /// A spawn whose row the store refused still leaves a record when the child settles. A
-    /// `database is locked` at the spawn used to print and be dropped, leaving the child with
+    /// `database is locked` at the spawn is not dropped after a print, which would leave the child with
     /// no record at all
     #[test]
     fn a_row_the_spawn_could_not_write_is_written_when_the_child_settles() {
@@ -1070,7 +1069,7 @@ mod tests {
                 "{mode:?}"
             );
         }
-        // A tool's helper is the one a restart used to RETIRE - which would kill a live daemon's read.
+        // A tool's helper is the one a restart must not RETIRE - which would kill a live daemon's read.
         let mut helper = run("running");
         helper.prompt = "You are reading part 3 of 12 of a longer body of text on somebody else's \
                          behalf. They asked:\n\n  why"
@@ -1235,7 +1234,7 @@ mod tests {
         );
     }
 
-    /// One state for one child, whichever door asks - pg-noop, 2026-10-14: `task_result` listed
+    /// One state for one child, whichever door asks: `task_result` listed
     /// `slt-current-number` as `unknown`, refused it as *"no subagent called … was started here"*
     /// and `task_resume` refused it as *"finished its task"*. The record answers both now.
     #[test]
@@ -1635,7 +1634,7 @@ mod tests {
     }
 
     /// A child older than the store's first record is not told a write was refused - the class
-    /// the window exists for, and the sentence a model reads about it. MEASURED 2026-11-01
+    /// the window exists for, and the sentence a model reads about it.
     #[test]
     fn a_child_from_before_the_record_is_told_that_and_not_a_refused_write() {
         let old = letibot_tokencore::store::UnrecordedChild {

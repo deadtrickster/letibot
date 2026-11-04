@@ -1,4 +1,4 @@
-//! The four hook kinds, through rano's real engine - `docs/plugins-plan.md` §7 step 2.
+//! The four hook kinds, through rano's real engine - `docs/plugins-plan.md`.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -56,7 +56,7 @@ fn a_call() -> letibot_plugin::Call {
     letibot_plugin::Call::new("bash", json!({"command": "cargo test"}))
 }
 
-/// `on_tool_call` (§4.1): the module answers a call, and the answer is the host's own verdict type -
+/// `on_tool_call`: the module answers a call, and the answer is the host's own verdict type -
 /// so the ABI's result block, the JSON text and `ToolCallOut` all agree.
 #[test]
 fn a_call_is_answered_by_the_committed_module() {
@@ -75,7 +75,7 @@ fn a_call_is_answered_by_the_committed_module() {
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
-/// `on_tool_result` (§4.2): the result is what the module appended, through the typed contract.
+/// `on_tool_result`: the result is what the module appended, through the typed contract.
 #[test]
 fn a_result_is_amended_by_the_committed_module() {
     let tmp = tempdir("result");
@@ -93,7 +93,7 @@ fn a_result_is_amended_by_the_committed_module() {
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
-/// `notice` (§4.3): the harness's sentence is reworded, resolved per KIND - `notice_job` is the
+/// `notice`: the harness's sentence is reworded, resolved per KIND - `notice_job` is the
 /// export this module has, and the only notice it answers.
 #[test]
 fn a_notice_is_reworded_by_the_committed_module() {
@@ -117,7 +117,7 @@ fn a_notice_is_reworded_by_the_committed_module() {
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
-/// `condition` (§4.4): the module arms a watch through the daemon's seam, its look runs under the
+/// `condition`: the module arms a watch through the daemon's seam, its look runs under the
 /// `read` capability it declared, and its interval and state come back through `ConditionOut`.
 #[test]
 fn a_watch_is_armed_by_the_committed_module() {

@@ -81,7 +81,7 @@ fn child(
 }
 
 /// A row that waits on a child gets its ROOM TO BREATHE, and then a sentence that steers.
-/// MEASURED 2026-10-10: a row in progress with a child working on it was nagged four times in
+/// A row in progress with a child working on it was nagged four times in
 /// twenty minutes, and no nag could tell *the child is working* from *the child is stuck*.
 #[test]
 fn a_young_child_keeps_the_check_silent_and_an_old_one_is_spoken_about() {
@@ -333,8 +333,8 @@ fn an_unchanged_plan_is_not_a_new_notice() {
 }
 
 /// A change to the QUESTION is a new thing to say - the named row started, or another row named.
-/// A row added elsewhere is not : the notice used to carry *"(N more open)"*, so any
-/// row added or closed anywhere made the same question new and reset the backoff.
+/// A row added elsewhere is not : the notice carries no *"(N more open)"*, which would make any
+/// row added or closed anywhere a new question and reset the backoff.
 #[test]
 fn a_plan_that_moved_is_armed_again() {
     let plan = [row("open", TodoStatus::Pending)];

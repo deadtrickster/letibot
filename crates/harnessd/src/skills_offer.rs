@@ -203,7 +203,7 @@ impl Offers {
 /// A note's offer stops at the prompt; the model's own reasoning can make a skill relevant.
 pub fn subject(items: &[TranscriptItem], plan: &[TodoItem]) -> String {
     // The plan first, and out of the walk's budget: a row the model wrote is the work in hand, and a
-    // long tool result at the newest end used to take the whole subject and cut it away.
+    // long tool result at the newest end must not take the whole subject and cut it away.
     let mut out = String::new();
     for row in plan.iter().filter(|r| !matches!(r.by, TodoBy::Queue)) {
         out.push_str(&row.content);

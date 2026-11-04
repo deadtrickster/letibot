@@ -734,7 +734,7 @@ fn a_model_switch_takes_effect_when_the_turn_ends() {
         rec.refused
     );
     // The verb's own reply says when it takes, and is answered inside the turn - which is the
-    // half of the 2026-10-12 change worth keeping now that the switch itself waits.
+    // half of the change worth keeping now that the switch itself waits.
     assert_eq!(
         rec.switch_answers().len(),
         1,

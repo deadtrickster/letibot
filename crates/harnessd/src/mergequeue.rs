@@ -774,7 +774,7 @@ pub fn repositories_of_workspace_cached(workspace: &Path) -> Vec<String> {
 
 /// Whether a daemon seated at `workspace` is one of `repo`'s session daemons: its workspace is
 /// that repository, or under it, or one of its worktrees. An ancestor directory that merely
-/// contains the repository is NOT - it once took letibot's lease and reported its red `main`.
+/// contains the repository is NOT - it would take another repository's lease and report its red `main`.
 pub fn serves(workspace: &Path, repo: &Path) -> bool {
     let key = std::fs::canonicalize(repo).unwrap_or_else(|_| repo.to_path_buf());
     repositories_of_workspace(workspace)

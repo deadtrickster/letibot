@@ -448,7 +448,7 @@ mod job_tail {
     }
 
     /// A `2>&1` merge is not a redirect - it is what makes the capture complete,
-    /// so the window is the capture. R41's parser guarantees it; this holds the
+    /// so the window is the capture. The parser guarantees it; this holds the
     /// window path to the same guarantee end to end.
     #[test]
     fn a_merged_descriptor_keeps_the_capture_as_the_window() {
@@ -989,8 +989,8 @@ fn a_later_turn_is_its_own_sentence_and_not_a_second_finish() {
     );
 
     // And a later turn handed UP from a session below is not one this session started - the
-    // same rule the finish sentence keeps, which this one used to lose by taking no account of
-    // whose batch it was reading.
+    // same rule the finish sentence keeps, which this one must keep by accounting for
+    // whose batch it is reading.
     let theirs = JobCompletion {
         arrived: std::time::SystemTime::UNIX_EPOCH,
         later: true,
@@ -1348,7 +1348,7 @@ fn a_fleet_url_is_read_the_way_the_operator_writes_it() {
     );
 }
 
-/// The parent is told which jobs died with a VM child (TODO.md R92.1, second half) - by
+/// The parent is told which jobs died with a VM child - by
 /// label and command - and nothing is said when none did.
 #[test]
 fn the_jobs_a_vm_child_left_running_are_named_to_its_parent() {

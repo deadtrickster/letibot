@@ -11,7 +11,7 @@
 //! > A run must not block the door that serves it.
 //!
 //! The daemon served every session from one worker when this was measured
-//! (`harnessd/src/daemon.rs`; since R63 each root session has a thread of its own), and the
+//! (`harnessd/src/daemon.rs`; each root session has a thread of its own), and the
 //! operator's `!` line ran *on* it - `run_operator_shell` calls `invoke_operator`, which waited
 //! on the job - so for as long as the command ran, everything queued behind it waited.
 //!
@@ -42,7 +42,7 @@
 //!
 //! `letibot_tools::exec::ask` reads `/proc/<pid>/fd/0` and `/proc/<pid>/wchan`, so the two
 //! processes it *can* read (the shell in `wait4`, the helper on a socket) say *not asking*
-//! and the one that is asking cannot be opened. MEASURED on this box, 2026-10-06
+//! and the one that is asking cannot be opened. On this box
 //! `readlink /proc/1/fd/0` is `PermissionDenied`; `wchan` for such a process reads `0`, the
 //! kernel's own *could not look*; and a process of this uid that has called
 //! `PR_SET_DUMPABLE 0` - the flag a setuid exec sets - is refused exactly the same way.

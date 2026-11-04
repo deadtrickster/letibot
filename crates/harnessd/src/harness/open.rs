@@ -1158,8 +1158,7 @@ impl Harness {
         HarnessError,
     > {
         // A session already in the store is RESUMED, not opened a second time. Deciding it here rather than on a flag
-        // is what makes the two entry points agree, since a restart and a head asking a running daemon are the same act
-        // and used to be two.
+        // is what makes the two entry points agree, since a restart and a head asking a running daemon are the same act.
         let resumed = match (&store, &stored) {
             (Some(s), Some(st)) if st.items > 0 => {
                 let transcript_id = st.transcript_id.clone().ok_or_else(|| {
@@ -1452,7 +1451,7 @@ impl Harness {
                         );
                         // On the session's own log, and said AT ATTACH rather than here: a warning published before a
                         // head attaches is filed `Placed::Before` and not drawn. So it goes into the registry, which also
-                        // tells a head already watching. R93.E9: the model gets its own, shorter sentence.
+                        // tells a head already watching. The model gets its own, shorter sentence.
                         stale = Some(say);
                         stale_for_model = Some(stale_prompt_for_the_model(&added, &gone, &grew));
                     }
@@ -1934,7 +1933,7 @@ impl Harness {
             ))
             .map_err(|e| HarnessError::Setup(format!("registering the notes tool: {e}")))?;
         registry
-            // The box-wide `[memory]` under the session's project's own (R76 item 7): the
+            // The box-wide `[memory]` under the session's project's own: the
             // project is this session's workspace, settled above, not the daemon's.
             .register(Box::new(letibot_tools::builtins::bash::Bash::with_memory(
                 crate::leticode_config::memory_policy(
@@ -2107,7 +2106,7 @@ impl Harness {
 
         // The role comes from the SESSION when it has one: `cfg.seat` already IS the session's role,
         // taken from the store at the top of this function where it still had time to reach the
-        // backend. One read, one seat, where the two used to be resolved separately and disagree.
+        // backend. One read, one seat, where two separate resolutions could disagree.
         let role = role_for(&cfg);
         let registry = registry
             .resolve_role(&role)
@@ -2283,7 +2282,7 @@ impl Harness {
                 have.push(Prereq::Confinement);
             }
             // The guard model, by the same fact the advisor is built from: `cfg.oracle` is `Some` when an endpoint is
-            // known. Nothing used to push this, so `automode` could not open however the box was configured. Reachability
+            // known. Without this `automode` could not open however the box is configured. Reachability
             // is not tested here, since a probe at open would wait on another box.
             if cfg.oracle.is_some() {
                 have.push(Prereq::Oracle);
@@ -2453,7 +2452,7 @@ impl Harness {
                         let t = trail.clone();
                         move || t.claim()
                     })
-                    // §4b. Without this a denial reaches the model and stops there.
+                    // Without this a denial reaches the model and stops there.
                     .with_denial_sink(Box::new(HubDenials::new(hub.clone())))
                     // And the other direction: a call the gate admitted without asking
                     // is told, not only recorded - see [`Harness::flush_gate_admissions`].
@@ -2630,7 +2629,7 @@ impl Harness {
         // nothing polls the head, so the hub's answer goes down into the runtime and a tool about to spend real time can
         // find out the operator is waiting and stop.
         let waiting_hub = hub.clone();
-        // And the fact that closes R23: `job_wait` on a job the daemon is already watching returns at once rather
+        // And the fact that closes the gap: `job_wait` on a job the daemon is already watching returns at once rather
         // than blocking on an answer in flight. Wired to the same watcher set the sink feeds, so there is one fact read
         // in two places. `None` when the backend cannot start processes.
         let delivering = job_watch.clone();
@@ -2716,8 +2715,8 @@ impl Harness {
             parts.wiring.parser.clone(),
             cfg.endpoint.clone(),
             // A llama.cpp server we run: token ids in, per-stage cache accounting,
-            // a wall-clock meter, and a structural prefix guarantee - so §18.1-I1's
-            // post-flight assertion is allowed to run rather than being skipped.
+            // a wall-clock meter, and a structural prefix guarantee - so the
+            // prefix post-flight assertion is allowed to run rather than being skipped.
             letibot_backend::BackendCaps::OWN_SERVER,
             cfg.model.clone(),
             cfg.sampling.clone(),
@@ -3800,7 +3799,7 @@ pub(crate) fn base_role_for_seat(seat: Seat, cfg: &Config) -> Role {
 /// `env_clear()`s and filters `BASH_ENV` and its three companions, which `HostProcesses` does. A seat with no exec
 /// backend spawns no shell, so `Unknown` stays and a bare command is unresolved. The root and `$HOME` are filled in.
 pub fn scratch_dir() -> std::path::PathBuf {
-    // The head's own rule, applied to the daemon's half: this used to be a world-readable name in `temp_dir()`, and
+    // The head's own rule, applied to the daemon's half: a world-readable name in `temp_dir()` would not do, as
     // it holds what the jobs write and the model read. `$XDG_RUNTIME_DIR` is per-user, 0700 and tmpfs, and the fallback
     // creates its directory at 0700. Still per daemon process, so the one place that cleans it up can find it.
     let pid = std::process::id();

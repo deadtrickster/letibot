@@ -514,7 +514,7 @@ fn an_approved_branch_lands_through_the_gate_in_the_queues_own_worktree() {
         !crate::mergequeue::git::checkouts_of(&w.repo, "main").is_empty(),
         "the landing never checked anything out in the operator's place"
     );
-    // The operator, 2026-10-11: "the merges and branches shoudlnt land into.git".
+    // The operator: "the merges and branches shoudlnt land into.git".
     assert!(
         !w.repo.join(".git").join(git::OLD_LANDING_NAME).exists(),
         "nothing landed inside .git"
@@ -1330,7 +1330,7 @@ fn a_gate_whose_own_setup_fails_after_the_build_is_unjudged_not_red_and_lands_no
     assert_eq!(w.tip(), tip);
 }
 
-/// firecode's red, 2026-10-11 - *"a git worktree doesn't carry gitignored files … every check that
+/// firecode's red - *"a git worktree doesn't carry gitignored files … every check that
 /// boots a VM fails"*. The red notice names what the checkout has and the landing tree lacks, and
 /// `[queue] gate_carry` brings it in so the same gate passes.
 #[test]
@@ -1528,7 +1528,7 @@ fn a_judged_tip_is_gated_again_on_request_and_when_a_daemon_takes_the_queue() {
 }
 
 /// A red target puts its sentence on a session, not only on a bell - the operator's report
-/// of 2026-10-30: *"those red states must reach top session agent or a gatekeeper"*. A ring
+///: *"those red states must reach top session agent or a gatekeeper"*. A ring
 /// wakes a project's roots and leaves what happened to the store
 #[test]
 fn a_red_target_is_told_to_a_session_not_only_rung() {
@@ -1976,8 +1976,8 @@ fn served(store: &Store, desk: &ReviewDesk, me: &str) -> crate::mergequeue::revi
 }
 
 /// A capacity wait is not an attempt, so a row under one carries its reason in `failure` with
-/// `attempts` at zero - and the claim used to write *claimed for review at …* over it, leaving the
-/// pane with a row that had waited an hour and no reason on it at all.
+/// `attempts` at zero - and the claim must not write *claimed for review at …* over it, which would leave the
+/// pane with a row that has waited an hour and no reason on it at all.
 #[test]
 fn a_claimed_row_keeps_the_capacity_wait_it_was_under() {
     let w = World::new("claim-keeps-wait");
@@ -2063,7 +2063,7 @@ fn a_reviewer_has_judged(
 }
 
 /// A reviewer whose verdict is waiting at the desk is not `gone` - the defect measured on
-/// the operator's daemon, 2026-10-29 evening: a reviewer's last act is handing its verdict
+/// the operator's daemon: a reviewer's last act is handing its verdict
 /// in and its turn ending, and a session whose turn has ended is not live.
 #[test]
 fn a_verdict_waiting_at_the_desk_is_not_a_dead_reviewer() {
@@ -2328,7 +2328,7 @@ impl Drop for HeldProps {
 }
 
 /// A reviewer that is still OPENING is alive; one that ends without a verdict still is not.
-/// The operator's report, 2026-10-26: every review was re-seated seconds after it started
+/// The operator's report: every review was re-seated seconds after it started
 /// and BLOCKED at *attempt 3 of 3* - 2.0 s, one queue pass.
 #[test]
 fn a_reviewer_that_is_still_opening_is_not_re_seated_and_one_that_ends_is() {
@@ -3035,7 +3035,7 @@ impl GateRunner for CouldNotRunGate {
     }
 }
 
-/// A gate that could not run does not halt the queue - the 2026-10-30 halt, pinned: a poll
+/// A gate that could not run does not halt the queue - the halt, pinned: a poll
 /// slower than ten seconds on a busy machine sent the target `blocked`, which stops BOTH
 /// queues, and four branches sat behind a healthy host.
 #[test]
@@ -3518,7 +3518,7 @@ fn leases_seen_over(
 }
 
 /// A repository whose target declares no `Merge gate` is not a queue target - the operator
-/// 2026-10-26: *"red most of the time everywhere … something happens somewhere and result
+/// *"red most of the time everywhere … something happens somewhere and result
 /// is ignored"*.
 #[test]
 fn a_repository_with_no_merge_gate_is_not_a_queue_target() {
@@ -4097,7 +4097,7 @@ fn a_branch_landed_by_hand_is_released_like_a_landing() {
 }
 
 /// A tree a live session works in is left alone - and released once that session ends, which
-/// is what asks for and what a person used to have to do by hand.
+/// a person need not do by hand.
 #[test]
 fn a_terminal_rows_tree_a_live_session_holds_is_left_alone() {
     let w = World::new("release-live");
@@ -4406,7 +4406,7 @@ fn a_queue_holds_its_daemon_up_only_while_it_has_work_in_line() {
 
 // ===== What the daemon's log says, in one line ===== The daemon started in the foreground
 // writes its log to the operator's terminal, so these lines are read interleaved with the
-// banner. MEASURED 2026-10-26
+// banner.
 
 /// The not-a-target line is the folder's, not the repository's, and it is said once.
 /// `not_targets_to_say` is the state machine: the first pass answers a line, the same set
@@ -4507,7 +4507,7 @@ fn the_leases_a_pass_gave_up_are_said_in_one_line() {
 }
 
 /// The startup line is the supervisor's own list - the contradiction the operator read on
-/// 2026-10-26: *"queues
+/// *"queues
 #[test]
 fn the_serving_line_names_what_the_supervisor_will_actually_examine() {
     // One project of several - the operator's `~/Projects/stroppy-io`, in miniature.
@@ -4546,7 +4546,7 @@ fn the_serving_line_names_what_the_supervisor_will_actually_examine() {
     );
 
     // A folder of unrelated checkouts is nobody's session - two repositories, no `origin`
-    // between them, which is the guard of 2026-10-12 and not a queue.
+    // between them, which is the guard and not a queue.
     let loose = TempDir::new("serving-line-loose");
     for name in ["x", "y"] {
         let r = loose.0.join(name);
@@ -4568,7 +4568,7 @@ fn the_serving_line_names_what_the_supervisor_will_actually_examine() {
     );
 }
 
-/// A one-shot serves no queue - it claimed six leases for one prompt on 2026-10-26 and the
+/// A one-shot serves no queue - it claimed six leases for one prompt and the
 /// operator's next daemon had to give them all up. The flag is `cfg.serve_queues`, and the
 /// daemon's log says which of the two causes took it away.
 #[test]
@@ -4793,7 +4793,7 @@ fn the_sweep_never_deletes_a_ref_whose_commits_are_not_on_the_target() {
 }
 
 /// A tree whose own `HEAD` is not on the target is kept even when the row's branch is.
-/// `settle_tree` used to prove the row's BRANCH and then remove the worktree whole, and a tree can hold
+/// `settle_tree` must not prove only the row's BRANCH and then remove the worktree whole, since a tree can hold
 /// a commit no ref of the row names. git`'s reflog.
 #[test]
 fn a_tree_whose_own_head_is_not_on_the_target_is_kept_and_says_so() {
@@ -5037,7 +5037,7 @@ impl GateRunner for Counting {
 }
 
 /// One gate for three branches, and the target moves once per landing. The operator's
-/// decision of 2026-10-30 - *"we can batch merges at this point"* - on the numbers that
+/// decision - *"we can batch merges at this point"* - on the numbers that
 /// made it
 #[test]
 fn a_train_of_three_green_branches_lands_three_commits_with_one_gate() {

@@ -252,7 +252,7 @@ fn a_carry_is_converted_into_the_providers_units_before_it_is_judged() {
         cfg.headroom()
     );
     // The unconverted comparison, kept here so the regression is named rather
-    // than merely absent: this is what used to be asked, and it says no.
+    // than merely absent: this is the wrong question, and it says no.
     assert!(
         991_596 + cfg.headroom() >= 1_000_000,
         "the premise: the LEDGER figure does not fit, which is why the units \
@@ -1249,7 +1249,7 @@ fn the_stop_is_the_progress_check_and_the_round_count_is_the_backstop() {
     assert!(d.to_string().contains(&c.stall_rounds.to_string()));
 }
 
-/// The mode line's second sentence must agree with the mode's own summary - 2026-10-26 at
+/// The mode line's second sentence must agree with the mode's own summary at
 /// `allow-all (this box, consented)`, whose summary admits the always-ask list and which was then
 /// told *"the list reaches you at every one of them"*. The two reasons it can be absent differ.
 #[test]
@@ -1654,7 +1654,7 @@ fn the_adjudication_line_reads_the_wiring_rather_than_asserting_it() {
     );
     assert_ne!(w.detail, u.detail);
 
-    // A fourth thing, and it is the one §4b is about. An adjudicator over a writable backend whose
+    // A fourth thing, and it is the one the denial rule is about. An adjudicator over a writable backend whose
     // denials go nowhere is not a boundary an operator has: they see a task that stopped and never the
     // decision that stopped it. The line must differ from the fully wired one and must not read as on.
     let blind = GateWiring {
@@ -1713,8 +1713,8 @@ fn an_unknown_role_is_refused_with_the_list() {
     assert_eq!(Seat::parse("opencode").unwrap(), Seat::Leticode);
 }
 
-/// The model adjudicator parses, and refuses by name without an oracle. It used to fail at parse
-/// time because the build had no oracle at all; there is one now, so the missing piece moved one layer
+/// The model adjudicator parses, and refuses by name without an oracle. It does not fail at parse
+/// time; the missing piece is one layer
 /// down - an endpoint, whose refusal names `--oracle` (`Harness::open_with_registry`).
 #[test]
 fn the_model_adjudicator_parses_now_that_an_oracle_exists() {
@@ -1813,7 +1813,7 @@ fn every_new_seam_is_disclosed_and_the_line_moves_with_it() {
         detail(&woken, "monitor wake"),
         detail(&watching, "monitor wake")
     );
-    // And a wake nobody could arm is its own line. T24 left this one open: from a bool,
+    // And a wake nobody could arm is its own line. this one was open: from a bool,
     // *the daemon's waiter would not start* and *no daemon armed one* were one sentence, and a
     // reader told *POLL ONLY* goes looking for a knob that would not have helped.
     let failed = GateWiring {
@@ -1901,7 +1901,7 @@ fn every_thing_that_is_off_is_disclosed() {
 
 #[test]
 fn the_system_prompt_carries_nothing_volatile() {
-    // §5.2 rule 1, as a test rather than as a habit. `branch` and `commit` are words of the queue rule
+    // Rule 1, as a test rather than as a habit. `branch` and `commit` are words of the queue rule
     // now (`working`), not values; the values are what this guards - a home path, a date - and the
     // scratch path, the one value the prompt does carry, is masked out of the fingerprint.
     let f = SeatFacts {

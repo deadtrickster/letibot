@@ -91,7 +91,7 @@ struct Inner {
 
 /// What the host knows about one open pane.
 struct Open {
-    /// The `state` the pane answered with, handed back to it on the next call - §1, principle 5
+    /// The `state` the pane answered with, handed back to it on the next call
     /// state belongs to the host, and a plugin is stateless between calls.
     state: Option<Value>,
     /// The look the pane's last answer asked for, so a refresh can run it again.
@@ -3293,7 +3293,7 @@ mod tests {
     }
 
     /// The recorder is what the gate replays, so a pane call has to land in it - and the pane has
-    /// to see the `state` it returned last time (§1, principle 5).
+    /// to see the `state` it returned last time.
     #[test]
     fn a_pane_hands_its_state_back_and_the_input_is_recorded() {
         let answer =

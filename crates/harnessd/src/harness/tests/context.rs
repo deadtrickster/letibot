@@ -295,7 +295,7 @@ fn the_compacted_line_is_one_unit_said_once() {
         since: 0,
     };
     let said = super::compacted_line(937_686, base, "deepseek tokens", true);
-    // An estimate is labelled as one (pg-noop, 2026-10-11: ≈ 1,039,055 printed and
+    // An estimate is labelled as one: ≈ 1,039,055 printed and
     // judged as if measured; the provider then counted 507,355).
     assert!(
         said.starts_with("compacted: 937686 → ≈ 75408 deepseek tokens resident"),
@@ -394,7 +394,7 @@ fn round_zero_stops_past_the_window_and_later_rounds_inside_the_reserve() {
 /// A fresh provider is not a reason to refuse - the wall on a count nothing has
 /// measured, and the ratio a switch carries.
 ///
-/// MEASURED 2026-10-25, `s-1791394076177451000`, on the way from deepseek to
+/// On the way from deepseek to
 /// `glm-coding`:
 ///
 /// ```text

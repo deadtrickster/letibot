@@ -111,7 +111,7 @@ pub struct HubSteering {
     /// harness so a firing is delivered exactly once, whether it is picked up
     /// mid-turn here or between turns by [`Harness::wake`].
     pub(crate) monitor_cursor: Arc<AtomicUsize>,
-    /// This session's results, delivered by R79's rules - the immediates at every round
+    /// This session's results, delivered by the rules - the immediates at every round
     /// boundary, the held batch only past the starvation cap. `None` in a test that has no
     /// daemon behind it.
     pub(crate) deliveries: Option<Deliveries>,
@@ -302,7 +302,7 @@ impl SteeringSource for HubSteering {
         if fired.is_empty() {
             return None;
         }
-        // A firing is immediate by R79's rules and recorded as one - every one, even those
+        // A firing is immediate by the rules and recorded as one - every one, even those
         // the sentence leaves out.
         if let Some(d) = &self.deliveries {
             d.log_firings(&fired);

@@ -149,7 +149,7 @@ pub(crate) struct TaskSlot {
     /// slot's latest status: a later turn's error says nothing about the task it was started for.
     answer_failed: std::sync::atomic::AtomicBool,
     /// Whether the answer this slot settled with has been handed to a reader and dropped from the slot.
-    /// One answer is 5-120 KB, and nothing used to remove one, so a tree held every child's whole
+    /// One answer is 5-120 KB, and a handed-over answer is removed, or a tree would hold every child's whole
     /// output for the daemon's life. Cleared by each settlement: a second answer is a new debt.
     handed_over: std::sync::atomic::AtomicBool,
 }
@@ -726,7 +726,7 @@ pub(crate) fn say_a_childs_estate(hub: Option<Arc<Hub>>, sub_id: &str, said: &st
 
 /// A child that ends while its own children are still on their task stops them; `None`, and nothing is
 /// stopped, when none is. A child that answers holds for its children, but one whose turn FAILS has no
-/// answer to hold, and its children used to run on with nobody left to report to.
+/// answer to hold, and its children would run on with nobody left to report to.
 pub(crate) fn a_child_that_ends_stops_its_own(
     runner: Option<&Arc<dyn letibot_tools::builtins::task::TaskRunner>>,
     hub: &Hub,
@@ -968,7 +968,7 @@ pub(crate) fn serve_child_with(
 ) -> ChildExit {
     use crate::turn_tail::Door;
     use letibot_sessionlog::hub::OwnWork;
-    // The park clock (R68's idle-child policy, `Config::child_park_after`): restarted by
+    // The park clock (the idle-child policy, `Config::child_park_after`): restarted by
     // every piece of work this loop takes, so it measures idleness and not age. `None` is the
     // old loop - a child that waits for its hub to close, however long that is.
     let park_after = sub.config().child_park_after;
@@ -1173,7 +1173,7 @@ pub(crate) fn serve_child_with(
                     "  {sub_id}: left a command in this subagent's queue — {why}. A child's \
                      machinery is its parent's, so nothing was run."
                 );
-                // And the head that sent it is told (R67 item 15).
+                // And the head that sent it is told.
                 hub.publish(letibot_sessionlog::SessionEvent::Warning {
                     code: "child_door_refused".into(),
                     detail: child_leave_said(sub_id, &kind, why),
@@ -1407,7 +1407,7 @@ pub(crate) struct HarnessTaskRunner {
     /// harness has its own `job_watch`; for a root that set is the root's, and for a child it carries the
     /// tree's ROOT and the level above, so a grandchild's `Parts` inherits both without a chain walk.
     pub(crate) tree_watch: Arc<std::sync::Mutex<Option<Arc<crate::jobwatch::JobWatchers>>>>,
-    /// The head's answers a child of THIS session asks through: the ask route's half of R58, and a slot for
+    /// The head's answers a child of THIS session asks through: the ask route's half, and a slot for
     /// `tree_watch`'s reason. For a root it is its own head adjudicator's; a child inherits the ROOT's, and
     /// `None` is a tree with no head-wired adjudicator, which a child refuses by name.
     pub(crate) head_answers: Arc<std::sync::Mutex<Option<Arc<crate::answers::Answers>>>>,
@@ -1639,7 +1639,7 @@ pub(crate) fn child_mode_source(why: Option<&str>) -> String {
     }
 }
 
-/// The R58 depth refusal, as one pure function: `Some` refuses a `task` call past `max`, `None` is go. It
+/// The depth refusal, as one pure function: `Some` refuses a `task` call past `max`, `None` is go. It
 /// refuses by NAME, so the model sees the tool and learns which knob moves, and it is assessed at the CALL
 /// because a seat can only say always or never. A `max` of 0 refuses every call, which is no nesting.
 pub(crate) fn subagent_depth_refusal(depth: u32, max: u32) -> Option<String> {
@@ -2444,9 +2444,9 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
                     leftover_hint(&workspace, &branch, &e)
                 )
             })?;
-            // No file is written into the tree: the build cache is shared through the child's environment. This
-            // used to write `.cargo/config.toml` and hide it in a git exclude that git does not read inside a
-            // worktree, so every worktree showed `?? .cargo/` and a child's `git add -A` committed it.
+            // No file is written into the tree: the build cache is shared through the child's environment. Writing
+            // `.cargo/config.toml` hidden in a git exclude that git does not read inside a
+            // worktree would show `?? .cargo/` in every worktree and a child's `git add -A` would commit it.
             WorktreePlacement {
                 path,
                 branch,
@@ -2695,7 +2695,7 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
         };
         // A body the slot has handed to a reader is not gone: the child's RECORD keeps the answer
         // every lifetime of this handle reads, so a second reader is answered from there rather
-        // than from the sentence the slot holds where its copy used to be.
+        // than from the sentence the slot holds.
         match slot.handed_over() {
             true => self.answer_from_the_record(handle, status),
             false => status,
@@ -3397,7 +3397,7 @@ impl HarnessTaskRunner {
         let parent = self.base.session_id.clone();
 
         // Publish the state on the parent's hub, so a head attached there sees the spawn and the finish. Every
-        // spawn goes through the model door, the absent `model:` case included, which used to keep the PARENT's
+        // spawn goes through the model door, the absent `model:` case included, which must not keep the PARENT's
         // window while the daemon's own server answered: the call's word, then the seat's, then the parent's.
         let named = spec
             .model
@@ -3607,8 +3607,8 @@ impl HarnessTaskRunner {
         );
 
         // And say which wall the child plans against, and WHICH TREE its VM is booted on, in the line a person
-        // is already reading: nothing else records either, and the sentence used to say *copying the workspace*,
-        // which was a lie for a session seated above its repository. The tree is `vm_copy_source`'s read.
+        // is already reading: nothing else records either, and the sentence must not say *copying the workspace*,
+        // which is wrong for a session seated above its repository. The tree is `vm_copy_source`'s read.
         let on_window = match sub_window {
             Some(Some(w)) => format!(" on {sub_model} ({w} token window)"),
             _ => format!(" on {sub_model}"),
@@ -3670,7 +3670,7 @@ impl HarnessTaskRunner {
             // And the child shares this tree's handle list, the other half of *every ancestor's handle can be
             // collected from any level*: a grandchild pushed into this list is collectable and killable by the root.
             tree_slots: Some(self.slots.clone()),
-            // And the tree's head answers (R58's ask route): a child has no head, so an `ask` is posted to the
+            // And the tree's head answers (the ask route): a child has no head, so an `ask` is posted to the
             // tree's ROOT and the root's `Answers` settles it. Handed down through `Parts` like the watcher set, and
             // `None` is a tree with no head-wired adjudicator, which the child's adjudicator refuses by name.
             tree_head: self
@@ -3682,8 +3682,8 @@ impl HarnessTaskRunner {
             trees: self.trees.clone(),
         };
 
-        // The child's adjudicator: its asks surface at the tree's ROOT. A child used to deny every `ask` on a
-        // policy, and now the card goes to the session whose head exists. The addressing is `subagent_ask_target`'s,
+        // The child's adjudicator: its asks surface at the tree's ROOT. A child does not deny every `ask` on a
+        // policy: the card goes to the session whose head exists. The addressing is `subagent_ask_target`'s,
         // which says why the root comes from the watcher set rather than from the parent chain.
         let (sub_tree_root, sub_head) = subagent_ask_target(
             &self.registry,
@@ -3713,7 +3713,7 @@ impl HarnessTaskRunner {
         )
         .map_err(|e| fail(e.to_string()))?;
         // Open. Now it is a session a head can switch into, and now it is running. Adopted into the REGISTRY and
-        // not into `Sessions::open`, which is R58's constraint: a head can peek and attach while the daemon holds
+        // not into `Sessions::open`, which is the constraint: a head can peek and attach while the daemon holds
         // no harness for it, and the daemon serves it by handing the wake to the thread that owns it.
         self.registry
             // Cloned, because the serving loop below needs it back: this hub is the child's

@@ -33,7 +33,7 @@
 //!
 //! # The floor, measured
 //!
-//! MEASURED 2026-10-11 against this box's store: 747 distinct sentences carrying `context`, `room`
+//! on this box's store: 747 distinct sentences carrying `context`, `room`
 //! or `running low`, labelled by hand - 79 positives, 641 negatives. Through [`find`]
 //!
 //! ```text
@@ -108,7 +108,7 @@ pub const EXEMPLARS: &[&str] = &[
     "I can't finish it in what is left of this session's context.",
     "I have very little context left, so I am naming it rather than starting it.",
     "I'm at the end of what I can hold in context, so here is the state.",
-    // The capacity claim used to justify HANDING WORK OFF, not only stopping - pg-noop's
+    // A capacity claim can justify HANDING WORK OFF, not only stopping:
     // *"my context cannot carry it safely - a half-applied refactor is worse than none"* scored
     // under the floor: none of the stop family's words (full, spent, wall, out) are in it.
     "My context cannot carry it safely, so I am dispatching it to a subagent.",
@@ -116,8 +116,7 @@ pub const EXEMPLARS: &[&str] = &[
     "My context won't survive this change, so I'm delegating it.",
     "I can't keep all of this in my context, so a subagent will do it.",
     "It is too big for my context, so I'm dispatching it with the sites named.",
-    // The capacity claim used to RATION work, in reasoning - pg-noop's reasoning, where it
-    // appeared 295 times in one transcript generation: *"Hmm - my context 49% → one call"*.
+    // A capacity claim can RATION work, in reasoning: *"Hmm - my context 49% → one call"*.
     // Nothing stops, so none of the families above match
     "My context is at 49%, so one call.",
     "My context is long, so keep the reply tight.",
@@ -731,8 +730,8 @@ mod tests {
         }
     }
 
-    /// The live miss of 2026-10-11 - a capacity claim used to justify delegating, which the
-    /// stop family did not reach. It must score over the floor now.
+    /// A capacity claim that justifies delegating, which the
+    /// stop family does not reach. It must score over the floor.
     #[test]
     fn a_context_that_cannot_carry_the_work_is_a_claim() {
         let said = "That last piece is mechanical but it is eight sites across two files, and my \

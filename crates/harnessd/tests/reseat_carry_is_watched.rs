@@ -324,8 +324,8 @@ fn a_long_reseat_is_watched_by_a_boot_window_head_and_its_queued_prompt_is_taken
          {} ticks",
         ticks.len()
     );
-    // The render ticks too - the long half of the carry, which used to say `0 of N` and nothing more
-    // until the write raced through. Between its start and its end it says how far it has got, and it
+    // The render ticks too - the long half of the carry, which must say more than `0 of N`
+    // until the write races through. Between its start and its end it says how far it has got, and it
     // ends before the write's bar begins.
     let rendering: Vec<u64> = ticks
         .iter()

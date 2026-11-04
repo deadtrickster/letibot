@@ -214,7 +214,7 @@ fn a_layer_in_force_seats_its_tool_and_no_layer_seats_none() {
 }
 
 /// The registry is a superset and the role decides what the prompt carries. The failure
-/// this rules out is the one §8.4 names: a build that registers ten tools and quietly seats
+/// this rules out is the one the role table names: a build that registers ten tools and quietly seats
 /// eight.
 #[test]
 fn a_registered_tool_the_role_does_not_name_is_not_in_the_prompt() {
@@ -485,7 +485,7 @@ fn the_coder_role_does_not_seat_bash_without_its_own_flag_and_grants_reach_the_v
 // 4. The seats that were built and had no constructor
 // ---------------------------------------------------------------------------
 
-/// D9's plan mode, and the two tools that make a plan a plan. The interesting assertion is
+/// The plan mode, and the two tools that make a plan a plan. The interesting assertion is
 /// the negative one
 #[test]
 fn the_planner_seat_can_write_its_plan_and_not_the_work() {
@@ -543,7 +543,7 @@ fn the_researcher_seat_carries_seams_that_refuse_by_name() {
 // 5. A denial the operator can see
 // ---------------------------------------------------------------------------
 
-/// §4b, end to end through the parts that will actually carry it. The chain the requirement
+/// End to end through the parts that will actually carry it. The chain the requirement
 /// exists for
 #[test]
 fn a_refusal_reaches_the_operators_log_at_the_moment_it_is_decided() {
@@ -608,7 +608,7 @@ fn a_refusal_reaches_the_operators_log_at_the_moment_it_is_decided() {
         !by.is_empty(),
         "a refusal that does not say who decided is the one that costs an hour"
     );
-    // §4b's requirement: the way OUT arrives with the denial, not after the task has died - a
+    // The requirement: the way OUT arrives with the denial, not after the task has died - a
     // refusal that can only be routed around teaches people to route around refusals. What the
     // way out IS depends on who refused.
     assert_eq!(by, "boundary:normaliser");

@@ -1,5 +1,5 @@
 //! What a monitor firing becomes: one delivery, folded per monitor, typed as news and never as
-//! somebody's words - the half of T24 a `Woken` ring does not decide.
+//! somebody's words - the half a `Woken` ring does not decide.
 
 use super::*;
 

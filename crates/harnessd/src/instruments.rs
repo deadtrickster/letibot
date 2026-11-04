@@ -1,4 +1,4 @@
-//! The daemon's metrics instruments - TODO phase 1, `docs/metrics.md` §4 and §6. Every site
+//! The daemon's metrics instruments - TODO phase 1, `docs/metrics.md`. Every site
 //! in the daemon that records a measurement calls ONE function here, on one line, so a
 //! merge that moves the site moves one line and the arithmetic stays put.
 

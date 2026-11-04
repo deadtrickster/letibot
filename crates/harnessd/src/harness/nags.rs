@@ -169,7 +169,7 @@ impl Harness {
     }
 
     /// The stale-prompt sentence, when the model has not been told it yet: `None` when the prompt
-    /// is current or the model already heard this very sentence. `R93.E9`: the model's own copy,
+    /// is current or the model already heard this very sentence. The model's own copy,
     /// which names no session and no clock.
     fn stale_untold(&self) -> Option<String> {
         self.session_registry

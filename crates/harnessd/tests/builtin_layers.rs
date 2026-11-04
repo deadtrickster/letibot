@@ -1,4 +1,4 @@
-//! The layers this binary carries - `docs/plugins-plan.md` §7 step 10: the `builtin` scope
+//! The layers this binary carries - `docs/plugins-plan.md`: the `builtin` scope
 //! is a table of modules compiled into the executable, not a directory beside it. Four
 //! things are asserted, each a way the mechanism can be silently wrong
 
@@ -147,7 +147,7 @@ fn a_project_layer_of_the_same_name_masks_the_builtin() {
         stack.layer("p1").expect("the project layer").scope,
         Scope::Project
     );
-    // And a layer from disk is not trusted until D17's package says so.
+    // And a layer from disk is not trusted until the package says so.
     assert!(!stack.layer("p1").expect("the project layer").trusted);
     std::fs::remove_dir_all(&tmp).ok();
 }

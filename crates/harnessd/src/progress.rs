@@ -53,10 +53,10 @@
 //!
 //! # The tolerance band
 //!
-//! `docs/closed-loop.md` §4: a closed loop corrects inside the band and faults
+//! `docs/closed-loop.md`: a closed loop corrects inside the band and faults
 //! outside it. So the stop is two-stage - at `stall_rounds - 1` consecutive stalled
 //! rounds the model is told what the harness sees, once, through the same
-//! steering path T21.3 uses; only if the next round is also stalled does the turn
+//! steering path; only if the next round is also stalled does the turn
 //! stop. A turn that was working gets a sentence and carries on; a turn that is
 //! looping gets stopped one round later than it would have been. That asymmetry is
 //! deliberate: the measured cost of cutting a working turn is now two wasted
@@ -65,7 +65,7 @@
 //! # What it says when it fires
 //!
 //! Never a count of rounds. It names what it saw, with the denominator
-//! (`docs/tool-design-brief.md` §2.2) - *"the last 5 rounds ran 7 calls and 0 of 7
+//! (`docs/tool-design-brief.md`) - *"the last 5 rounds ran 7 calls and 0 of 7
 //! returned a result this turn had not already seen"* - because a stop that cites
 //! evidence is one an operator can contradict, and `rounds: 12` is not.
 
@@ -126,7 +126,7 @@ pub struct ProgressDetector {
     run: usize,
     /// The observations that make up the current stalled run. Cleared by progress.
     window: Vec<Observation>,
-    /// The mid-run nudge is once per turn, for the same reason T21.3's is: one is
+    /// The mid-run nudge is once per turn, for the same reason as the first: one is
     /// the error signal, two is the harness insisting.
     nudged: bool,
 }
@@ -224,7 +224,7 @@ impl ProgressDetector {
     }
 
     /// What the stalled window contained, with its denominator. `docs/tool-design-brief.md`
-    /// §2.2: the size of what was examined travels with the number.
+    /// The size of what was examined travels with the number.
     pub fn window_summary(&self) -> String {
         let calls = self.window.len();
         let mut tally: Vec<(&'static str, usize)> = Vec::new();

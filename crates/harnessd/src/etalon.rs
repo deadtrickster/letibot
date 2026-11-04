@@ -1,5 +1,4 @@
-//! The etalon, read against layer A as it is today. Plan: `docs/guard-corpus-plan.md` §2
-//! and §7.
+//! The etalon, read against layer A as it is today. Plan: `docs/guard-corpus-plan.md`.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -78,8 +77,7 @@ pub struct Report {
     /// number is what resolving that one construct would recover
     pub not_run_constructs: BTreeMap<String, (usize, usize)>,
     /// Where here-document bodies go, by count of commands: the program that reads the body on
-    /// stdin, or the file it is redirected into (by its extension or directory class). Plan
-    /// §4b
+    /// stdin, or the file it is redirected into (by its extension or directory class).
     pub heredoc_sinks: BTreeMap<String, usize>,
     /// Program heads layer A does not know (`Intent::Unknown`), by count of
     /// commands they appear in. The list the next tranche of heads is chosen

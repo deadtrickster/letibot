@@ -4,7 +4,7 @@ use letibot_tools::exec::{HostProcesses, ScopeKind, SpawnRequest};
 use std::time::Instant;
 
 /// A row the store refuses is said on the session's hub : a job whose row never
-/// landed used to be a fact nobody heard, and a `when: job` todo row waiting on it would not be
+/// landed must not be a fact nobody hears, or a `when: job` todo row waiting on it would not be
 /// released after a restart. The refusal here is the foreign key: no session row.
 #[test]
 fn a_row_the_store_refuses_is_said_on_the_hub() {
@@ -972,7 +972,7 @@ fn a_childs_close_does_not_stop_its_trees_watchers() {
     );
 
     // The child's turn ends and it releases its substrate - which is the moment the tree's job
-    // notices used to die.
+    // notices would die.
     child_watch.stop();
     assert!(child_watch.stopped(), "the child's own set is stopped");
     assert!(

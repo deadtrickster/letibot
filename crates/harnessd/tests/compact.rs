@@ -706,7 +706,7 @@ fn a_fork_with_no_tail_claims_nothing_about_a_tail() {
 }
 
 /// A summary the model was cut off writing says so, and what to do about it: one
-/// sentence, and no line of literal spaces where a broken continuation used to be.
+/// sentence, and no line of literal spaces for a broken continuation.
 #[test]
 fn a_cut_off_summary_is_admitted_in_one_sentence() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -908,8 +908,8 @@ fn the_compaction_note_says_why_it_has_no_tail() {
     }
 }
 
-/// A summary cut off at the length limit says so in one plain sentence. The sentence used to
-/// carry runs of fourteen literal spaces, from line breaks without a `\`.
+/// A summary cut off at the length limit says so in one plain sentence. The sentence
+/// carries no runs of literal spaces from line breaks without a `\`.
 #[test]
 fn a_cut_off_summary_says_so_without_whitespace_gaps() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -1017,9 +1017,8 @@ fn a_switch_clears_the_token_ratio_and_a_local_round_can_set_it() {
         !h.config().tokens_are_unscaled(),
         "a local session's counts need no measurement and are not a warning"
     );
-    // And a LOCAL round may set the ratio. The setter's guard used to be
-    // `self.provider.is_some`, so this assignment was impossible and a session that had ever
-    // been switched ran unscaled for ever.
+    // And a LOCAL round may set the ratio. The setter's guard must not be
+    // `self.provider.is_some`, or a session that had ever been switched would run unscaled for ever.
     h.config_mut().ledger_scale = Some((1_000_699, 1_000_699));
     assert!(
         !h.config().tokens_are_unscaled(),

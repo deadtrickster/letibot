@@ -300,8 +300,8 @@ fn a_row_a_parent_writes_nags_the_parked_child() {
         let said = checks_timed(hub);
         (said.len() >= 2).then(|| said[1].clone())
     });
-    // The repeat names the same row, in the same words: it used to say *"you were asked about
-    // this one already"*, which the model answered instead of the row.
+    // The repeat names the same row, in the same words, and does not say *"you were asked about
+    // this one already"*, which the model would answer instead of the row.
     assert!(
         found.contains(&format!("{PARENTS_ROW} — Parent {parent}")),
         "the check names the parent's row and its author: {found}"

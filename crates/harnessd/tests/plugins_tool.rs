@@ -503,7 +503,7 @@ fn load_reports_a_failed_build_with_the_compiler_output() {
 }
 
 /// A reload is `load` again, and the pane changes - a layer's second version takes effect on
-/// the next call, with no restart (`docs/plugins-plan.md` §2.3).
+/// the next call, with no restart (`docs/plugins-plan.md`).
 #[test]
 fn loading_a_rebuilt_layer_replaces_what_the_pane_says() {
     let rig = Rig::new("load-reload");

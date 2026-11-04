@@ -190,7 +190,7 @@ fn a_daemon_with_no_key_asks_saves_and_asks_again_when_the_key_is_refused() {
         .expect("harnessd starts");
     let _daemon = Daemon(child);
 
-    // It comes up - it used to bind and then die on the missing key.
+    // It comes up, and does not die on the missing key.
     let deadline = Instant::now() + Duration::from_secs(30);
     while !socket.exists() {
         assert!(

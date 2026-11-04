@@ -1,4 +1,4 @@
-//! One agent per tag, seated by the daemon that owns the room (`docs/room.md` § *Slice 5*).
+//! One agent per tag, seated by the daemon that owns the room (`docs/room.md`).
 //! It takes no bell: a claim, a beat and a finished item are comparisons the room already made
 //! and a comparison must not cost a model call.
 

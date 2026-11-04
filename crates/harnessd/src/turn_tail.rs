@@ -32,7 +32,7 @@ pub enum Door {
     /// The turn after the operator's `/reseat`: the model is told its prompt was rebuilt.
     Reseat,
     /// The turn the daemon owes after it moved the session off a model that was out - the
-    /// operator's ruling, 2026-10-12: *"when it finally applied the turn didnt continue"*. The
+    /// operator's ruling: *"when it finally applied the turn didnt continue"*. The
     /// model that refused has already been replaced
     Fallback,
 }
@@ -238,7 +238,7 @@ fn settle(
     }
     owner.arm_wake(h);
     // The failure reaches the head FIRST: it is the answer to what was asked, and the tidying
-    // after it is not. With its reason - a child's failure used to be `.is_ok`'d away. Except
+    // after it is not. With its reason - a child's failure is not `.is_ok`'d away. Except
     // the wall, whose failure is decided after its compaction.
     if let Err(e) = &out
         && !is_wall(&out)
@@ -288,14 +288,14 @@ fn settle(
     out
 }
 
-/// Announce a failed turn on the session's own log, as a terminal event. It used to publish
-/// a `Warning` and nothing else, so a head's `TurnState` stayed `Running` for the rest of
-/// the session and its spinner span at a dead turn. Both frames go out
+/// Announce a failed turn on the session's own log, as a terminal event. A `Warning` alone
+/// would leave a head's `TurnState` `Running` for the rest of
+/// the session with its spinner on a dead turn. Both frames go out
 pub(crate) fn publish_failure(hub: &Arc<Hub>, turn_id: &str, e: &HarnessError) {
     hub.publish(SessionEvent::TurnFailed {
         turn_id: turn_id.to_string(),
         error: e.to_string(),
-        // §5.7 commits nothing on a failed turn, so there is no partial to keep.
+        // A failed turn commits nothing, so there is no partial to keep.
         // The field is here so a future failure that *does* keep one cannot arrive
         // looking like this.
         partial_kept: false,
@@ -346,7 +346,7 @@ pub(crate) fn may_ring(
 }
 
 /// Start this session's monitor waiter - the thread that rings the bell when a monitor the
-/// session declared fires between turns. `Ok(false)` when nothing is watching yet (T24's
+/// session declared fires between turns. `Ok(false)` when nothing is watching yet (the
 /// rule that watchers must not accumulate); `Err` when the thread could not be started.
 pub(crate) fn spawn_monitor_wake(
     registry: &Arc<Registry>,

@@ -67,8 +67,8 @@ impl Session {
 }
 
 /// What a pane's scope is capped by, resolved PER SESSION the way a `bash` call's cap is: the
-/// box's `[memory]` under the user's and the session's own project's (R76 item 7). A pane is
-/// somebody working at a keyboard, and it used to be the one way into the box that ran uncapped.
+/// box's `[memory]` under the user's and the session's own project's. A pane is
+/// somebody working at a keyboard, so it is capped like the rest of the box.
 #[derive(Clone)]
 pub struct PaneMemory {
     /// The box-wide numbers, `providers.toml`'s `[memory]`.

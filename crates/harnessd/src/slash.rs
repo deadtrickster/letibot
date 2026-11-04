@@ -143,7 +143,7 @@ pub enum QueueVerb {
     },
 }
 
-/// Which repositories a `/queue` verb may act in. A sweep typed in one project's session used to
+/// Which repositories a `/queue` verb may act in. A sweep typed in one project's session must not
 /// withdraw another project's parked rows; the default is the session's own repository, and any
 /// other needs the line to say so.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -770,8 +770,8 @@ pub fn mid_turn_switch_ok(line: &str, on_foreign_weights: bool) -> bool {
     }
 }
 
-/// `/default-model` - what a NEW session starts on, and the other half of what `/models`
-/// used to do in one breath. One verb doing two things is what made the operator ask how to
+/// `/default-model` - what a NEW session starts on, and the other half of `/models`.
+/// One verb doing two things is what made the operator ask how to
 /// do either. `None` reports.
 pub fn default_model(want: Option<&str>, file: Option<&std::path::Path>) -> SlashReply {
     let Some(want) = want else {
@@ -1303,8 +1303,8 @@ mod tests {
             notes.iter().any(|n| n.contains("stored the grok key")),
             "{notes:?}"
         );
-        // And no standing choice. This used to write one, which is the conflation
-        // `/default-model` was split out of: switching a session is not a statement about every
+        // And no standing choice. This writes none, which keeps the two verbs apart:
+        // switching a session is not a statement about every
         // session this box opens afterwards.
         assert!(
             !notes.iter().any(|n| n.contains("standing choice")),

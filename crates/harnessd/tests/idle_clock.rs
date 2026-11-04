@@ -247,7 +247,7 @@ fn a_wake_arms_the_sweep_that_closes_a_call_nothing_answered() {
         "the wake left the worker no deadline: the idle arm never ran and the call nothing \
          answered is still open"
     );
-    // And the head is told: a call closed out here used to reach the transcript with no
+    // And the head is told: a call closed out here reaches the transcript with a
     // sentence saying why the spinner stopped.
     let said = watched.retained().iter().any(|e| {
         matches!(&e.event, SessionEvent::Warning { code, detail, .. }

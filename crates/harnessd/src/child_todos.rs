@@ -24,7 +24,7 @@ pub struct ChildBoards {
     store_path: Option<PathBuf>,
     /// The store, opened once on first write - a handle onto the process's one connection to
     /// that file (`Store::open`), behind a `Mutex` because a flush runs on whichever thread wrote
-    /// the board. It used to be a second connection; there is one per file per process now.
+    /// the board. There is one per file per process.
     store: Mutex<Option<Store>>,
 }
 
@@ -701,7 +701,7 @@ mod tests {
         );
     }
 
-    /// A child still booting its VM is a child - the operator's stroppy session, 2026-10-14
+    /// A child still booting its VM is a child
     #[test]
     fn a_child_still_booting_its_vm_can_be_waited_on_by_id_or_name() {
         let dir = letibot_sessionlog::testing::scratch_root().join(format!(

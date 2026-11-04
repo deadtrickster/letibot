@@ -707,8 +707,8 @@ impl JobWatchers {
                 }
             }
         }
-        // And its want is spent, whichever door delivered it : only the immediate door
-        // used to forget it, so a batched result left its want in the map for the session's life.
+        // And its want is spent, whichever door delivered it, or a batched result would
+        // leave its want in the map for the session's life.
         {
             let mut wanted = self.wanted.lock().expect("wanted results");
             for c in done {

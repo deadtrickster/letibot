@@ -164,8 +164,8 @@ fn apply_reviewers_flag(cfg: &mut Config, word: &str) -> Result<(), String> {
 }
 
 /// Where this session's tools run, from the two asks the command line can carry -.
-/// A VM and a machine used to be alternatives: one field written by both arms, so the flag
-/// that came last won and the other ask was dropped without a word.
+/// A VM and a machine are not alternatives: neither ask is dropped without a word
+/// because the other came last.
 fn placement_from_flags(
     vm: bool,
     host: Option<&str>,
@@ -489,9 +489,9 @@ enum Step {
 /// is the process's exit
 const SUBAGENT_EXIT_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// The daemon's memory caps, said once, by the daemon - /. This sentence used to
-/// be printed by the `harnessd` binary's `main`, so every short-lived invocation of that
-/// binary said it
+/// The daemon's memory caps, said once, by the daemon - /. It is
+/// not printed by the `harnessd` binary's `main`, or every short-lived invocation of that
+/// binary would say it
 fn say_memory_caps() {
     match letibot_tools::exec::delegate_memory() {
         Ok(scope) => eprintln!(
@@ -736,11 +736,11 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             // never reinstated from the row.
             "--etalon" => query = Some(Query::Etalon(PathBuf::from(next()?))),
             // The guard itself over an etalon-shaped JSONL - an attack set, with
-            // the main task as the operator's ask. Plan §1 (BashArena). Needs
+            // the main task as the operator's ask. (BashArena). Needs
             // --oracle. Rows are seated in a scratch copy of the store.
             "--etalon-oracle" => query = Some(Query::EtalonOracle(PathBuf::from(next()?))),
             // Every command's tree-sitter shape, aggregated and laid out on a
-            // self-organising map; writes the JSON the map page draws. Plan §7.
+            // self-organising map; writes the JSON the map page draws.
             "--etalon-map" => {
                 let file = PathBuf::from(next()?);
                 let out = PathBuf::from(next()?);
@@ -791,7 +791,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             "--role" => cfg.seat = Seat::parse(&next()?)?,
             // The approval policy, separate from the role. `Config::mode` has existed and been
             // disclosed at startup since roles and policy were split -- its own doc says `--role
-            // coder` used to mean both -- but nothing ever set it, so every session ran at the
+            // coder` means both -- but nothing sets it, so every session runs at the
             "--mode" => cfg.mode = letibot_tools::mode::Mode::parse(&next()?)?,
             // Bind one path read-only into the confined view. Repeatable. The boundary is hermetic
             // `$HOME` inside is a fresh tmpfs, so `~/.cargo` and `~/.rustup` are absent and `cargo`
@@ -823,7 +823,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             }
             // A daemon that serves no queue. The merge and review queues belong to the
             // repository's session daemons, which means a daemon the Claude Code bridge starts in a
-            // package's worktree is one of them by construction - and on 2026-10-26 the one started
+            // package's worktree is one of them by construction - and the one started
             "--no-queue" => cfg.serve_queues = false,
             // The box's room coordinator (the room's slice 2). A whole daemon whose only job is
             // the room: its own socket, no store, no project, and one session of its own that
@@ -852,7 +852,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
                 );
             }
             // What the guard is asked: `verdict` (its own ALLOW/DENY/UNSURE) or `scores` (FIT and
-            // CLAIM 0-10, TraceGuard arXiv 2604.03968 §4; the thresholds derive the verdict). Plan §3
+            // CLAIM 0-10, TraceGuard arXiv 2604.03968; the thresholds derive the verdict).
             // `--compare` measures both. The guard's output ceiling.
             "--oracle-max-tokens" => {
                 let v = next()?;
@@ -1025,9 +1025,8 @@ pub fn run(args: &[String]) -> Result<i32, String> {
                 let (h, p) = v.rsplit_once(':').ok_or("--endpoint wants HOST:PORT")?;
                 cfg.endpoint = Endpoint::new(h, p.parse().map_err(|e| format!("port: {e}"))?);
             }
-            // `--system` is the prompt; `--system-file` is where to read one from. It used to be
-            // the file alone, undocumented as such beyond one word in the usage line, and the operator
-            // hit it the obvious way: *"wtf is --system FILE? I also want a string"*.
+            // `--system` is the prompt; `--system-file` is where to read one from. The string
+            // form exists because the operator expected it: *"wtf is --system FILE? I also want a string"*.
             "--system" => {
                 let v = next()?;
                 if std::path::Path::new(&v).is_file() {
@@ -1549,7 +1548,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
 
     // What to try when the model this session is on is OUT - `[fallback] models` in the
     // same file, read once here rather than at the moment of need. A model that cannot answer
-    // is the one failure a person cannot fix by waiting (MEASURED 2026-10-12
+    // is the one failure a person cannot fix by waiting
     match letibot_provider::keys::fallback_models(None) {
         Ok(list) if !list.is_empty() => {
             eprintln!(
@@ -1597,8 +1596,8 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             // A local endpoint states its own window, and `/props` is the only
             // place that number is true.
             None => letibot_turn::serving::served_ctx(&cfg.endpoint),
-            // A metered provider's window comes from the catalogue. This used to be skipped
-            // entirely for a provider, on the reasoning that "a guessed window would either compact a
+            // A metered provider's window comes from the catalogue. It is not skipped
+            // for a provider, although "a guessed window would either compact a
             // conversation that had room or fail to compact one that did not".
             Some(pc) => pc.catalogue_window(&letibot_provider::catalogue::Catalogue::load()),
         };
@@ -1919,7 +1918,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         // turn's own thread reports it through this door - one line either way.
         OutcomeSaid::Command(cmd, outcome) => match outcome {
             // The session is named on every line: with more than one of them, "who did
-            // what" is only half the question and the other half used to be unanswerable
+            // what" is only half the question and the other half is answerable
             // from this log.
             Outcome::Replied(r) => eprintln!(
                 "  {session} · {} -> {} round(s), {} tool call(s)",
@@ -1942,8 +1941,8 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             // `Sessions::wake` - the arm exists because the outcome is the worker's vocabulary.
             Outcome::HandedOn => {}
         },
-        // A wake has no command behind it. It used to be the worker's own `monitor ->` line
-        // now it is said by whichever thread ran the turn, in the same words.
+        // A wake has no command behind it. It is said by whichever thread ran the turn, in the same words as the
+        // worker's own `monitor ->` line.
         OutcomeSaid::Wake(outcome) => match outcome {
             Outcome::Replied(r) => eprintln!(
                 "  {session} · monitor -> {} round(s), {} tool call(s)",
@@ -1960,7 +1959,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     eprintln!("  stopping: bringing every subagent VM down");
     // Every subagent's VM comes down with the daemon - first. Their backends live on
     // threads the process's exit does not unwind, so their `Drop` never ran and the VMs
-    // outlived it - two of the acceptance suite's own runs, 2026-10-08.
+    // outlived it - two of the acceptance suite's own runs.
     letibot_tools::firecode::down_all();
     // And every guest a remote session booted, whose `down` is the host's own client: the same
     // act, one machine over, and the line says where each copy-out landed.
@@ -2509,7 +2508,7 @@ fn run_query(
         Query::EtalonOracle(file) => {
             drop(store);
             // The best arm `--compare` found: the fullest brief, the verdict
-            // question. Measured 2026-09-16 at 52/11 on the store's rows.
+            // question. Measured at 52/11 on the store's rows.
             let arm = crate::calibrate::ARMS
                 .iter()
                 .find(|a| {
@@ -2656,7 +2655,7 @@ fn run_query(
             }
         }
         Query::List => {
-            // The listing is GROUPED, and it lists everything - the operator, 2026-10-26: *"in
+            // The listing is GROUPED, and it lists everything - the operator: *"in
             // session view the automatic sessions must be grouped somehow, so my vs auto.
             let all = scoped(&store, scope)?;
             let groups = grouped(&all);
@@ -3167,7 +3166,7 @@ mod tests {
     }
 
     /// The header names the model that ANSWERS the turns, and says the local binding is the
-    /// binding - 2026-10-26
+    /// binding
     #[test]
     fn the_header_names_the_model_that_answers_and_labels_the_binding() {
         // A metered session: the provider answers, the local alias is only the vocabulary.
@@ -3403,14 +3402,13 @@ mod tests {
 
     /// `--reviewers` is parsed, both spellings, and it wins over the file - the flag
     /// `--help` has advertised since the two words existed and the parser did not have.
-    /// MEASURED 2026-10-29
     #[test]
     fn the_reviewers_flag_takes_both_spellings_and_overrides_the_project() {
         // The default, with no flag at all.
         let mut cfg = Config::for_the_daemon("/tmp");
         assert_eq!(cfg.reviewers, Reviewers::Host, "no flag, no VM");
 
-        // `--reviewers vm` - the spelling that used to be *unknown argument*.
+        // `--reviewers vm` - a spelling that is accepted, not *unknown argument*.
         apply_reviewers_flag(&mut cfg, "vm").expect("`vm` is one of the two words");
         assert_eq!(cfg.reviewers, Reviewers::Vm);
 

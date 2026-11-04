@@ -54,7 +54,7 @@ fn a_daemon(cfg: &Config) -> std::sync::Arc<Registry> {
 }
 
 /// A second `Sessions` on one store file is REFUSED, by name, before a row is written.
-/// MEASURED 2026-10-26 in the operator's store: two daemons both appended to `#t0`, the store
+/// Two daemons both appended to `#t0`, the store
 /// refused the second's rows, and the transcript kept a hole no restart could repair.
 #[test]
 fn a_second_session_cannot_write_one_transcript() {
@@ -97,7 +97,7 @@ fn a_second_session_cannot_write_one_transcript() {
         .expect("the first daemon still holds it");
     assert_ne!(holder.owner, "", "the claim names its owner: {holder:?}");
 
-    // The transcript reads back as a chain - what the interleaving used to break, silently.
+    // The transcript reads back as a chain - what interleaving would break, silently.
     first
         .open
         .get_mut("s-contended")

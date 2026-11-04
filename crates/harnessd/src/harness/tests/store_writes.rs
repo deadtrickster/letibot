@@ -287,7 +287,7 @@ fn a_mode_set_mid_turn_survives_a_restart() {
 }
 
 /// A settlement a door took for a turn whose row the store refused is still owed: the
-/// door used to mark it delivered before it knew its row went in, so a refusal lost it.
+/// door must not mark it delivered before it knows its row went in, or a refusal loses it.
 #[test]
 fn a_settlement_a_refused_door_never_said_is_still_owed() {
     use crate::jobwatch::{BackgroundKind, JobCompletion};

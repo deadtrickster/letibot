@@ -369,7 +369,7 @@ fn a_needed_completion_wakes_a_root_and_the_held_batch_rides_along() {
     );
 }
 
-/// A wake whose turn never opened leaves its results held, not told: `Harness::wake` used to empty
+/// A wake whose turn never opened leaves its results held, not told: `Harness::wake` must not empty
 /// the held set before `submit_item`, which can fail before any round runs, and the results were
 /// then in no transcript and in no held set, with nothing to ever say them.
 #[test]

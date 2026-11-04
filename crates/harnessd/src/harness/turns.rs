@@ -341,8 +341,8 @@ impl Harness {
             handover,
             serde_json::json!({}),
         ));
-        // And a target emergency, or a row parked for a person (R76 item 1) - the one the
-        // queue used to say only on the hubs.
+        // And a target emergency, or a row parked for a person - the one the
+        // queue says on the hubs and here.
         let emergency = self.queue_emergency_notices();
         notices.extend(self.noticed_all(
             letibot_plugin::notice::MERGE_QUEUE,
@@ -363,7 +363,7 @@ impl Harness {
                 // The monitors pane's table moved with it: a fire, an expiry or a retire.
                 self.publish_jobs();
                 if !fired.is_empty() {
-                    // Immediate by R79's rules, and recorded as such.
+                    // Immediate by the rules, and recorded as such.
                     if let Some(d) = self.deliveries() {
                         d.log_firings(&fired);
                     }
@@ -376,7 +376,7 @@ impl Harness {
         }
         // The hop that did not exist: `JobSettled` reaches every head, and this is what reaches the model,
         // taking it here so it cannot arrive twice. It is THIS session's queue that is drained, so a subagent's
-        // job is not announced to its parent as one the parent backgrounded. R79: between turns nothing is held.
+        // job is not announced to its parent as one the parent backgrounded. Between turns nothing is held.
         let monitor_n = usize::from(firing_row.is_some());
         let deliveries = self.deliveries();
         // A gatekeeper's settlement is the review's, not this session's news: the verdict went onto
@@ -725,7 +725,7 @@ impl Harness {
                 None => relics.push(job),
             }
         }
-        // Jobs that ENDED and were never delivered (TODO.md R91.5): a result held under R79,
+        // Jobs that ENDED and were never delivered: a result held for the round boundary,
         // or queued, when the daemon stopped. Only a gone daemon's - one this daemon holds is
         // still in its own queue - and only with a context, which is what names the daemon.
         let mut settled = Vec::new();
@@ -1193,9 +1193,8 @@ impl Harness {
         self.submit_spoken_as_a_normal_session(Speaker::Agent, &said)
     }
 
-    /// The turn and its tail, with the speaker given: the body both doors above share, and since R68.4 nothing
-    /// but the shared tail with no owner around it. It used to be a second copy of that sequence, and the copy
-    /// was a step behind the daemon's: no failure published, a different `auto_compact_skipped` sentence.
+    /// The turn and its tail, with the speaker given: the body both doors above share, and nothing
+    /// but the shared tail with no owner around it, so it cannot fall behind the daemon's copy.
     fn submit_spoken_as_a_normal_session(
         &mut self,
         speaker: Speaker,
@@ -1787,7 +1786,7 @@ impl Harness {
                 }
             }
             // Persisted beside the count, so a restart recovers the pair instead of pairing the count with whatever
-            // ledger it has then. Not fatal: a measurement a busy store refused used to end the whole turn, and the
+            // ledger it has then. Not fatal: a measurement a busy store refused must not end the whole turn, and the
             // next round writes a fresh one.
             if !context_carried && let Err(e) = self.persist_context(&ok.metrics, rendered_at) {
                 eprintln!("  store: {e}");
@@ -1875,7 +1874,7 @@ impl Harness {
                     goes_on = true;
                 }
                 // A message queued while the head was running is a prompt, not a footnote: the engine appends what it
-                // finds at the step boundary, and a turn that made no tool call used to return with the message
+                // finds at the step boundary, and a turn that made no tool call must not return with the message
                 // answered by nobody. The loop continues, and a round with nothing queued returns below.
                 if !goes_on && !ok.steering_applied.is_empty() {
                     goes_on = true;
@@ -2058,8 +2057,8 @@ impl Harness {
             if call.name == ASK_USER_QUESTION {
                 asked.extend(self.settle_asked(&mut item));
             }
-            // A plugin layer sees the result before the model does (`docs/plugins-plan.md`
-            // §4.2), and before the harness's own intercept below: the layer is about what the
+            // A plugin layer sees the result before the model does (`docs/plugins-plan.md`),
+            // and before the harness's own intercept below: the layer is about what the
             // CALL produced, and `pr_watch`'s sentence is the harness's own reading of it.
             if let TranscriptItem::ToolResult {
                 outcome, payload, ..
@@ -2499,8 +2498,8 @@ impl Harness {
         // taken off the queue.
         let consented = *consented;
         let moved = self.set_mode_consented(mode, consented);
-        // And written down, as the worker's door writes it - this door used to apply the
-        // point and write nothing, so a `/mode` typed while the session worked was gone at the
+        // And written down, as the worker's door writes it - applying the
+        // point without writing would lose a `/mode` typed while the session worked at the
         // next restart.
         if let Err(e) = crate::modes::record(
             &self.mode_store,
@@ -2826,7 +2825,7 @@ impl Harness {
             injected: self.injected.clone(),
             monitors: self.monitors.clone(),
             monitor_cursor: self.monitor_cursor.clone(),
-            // The session's own set, read by R79's rules: what the work waits on at the
+            // The session's own set, read by the rules: what the work waits on at the
             // round boundary, the held batch only past the cap.
             deliveries: self.deliveries(),
             // And the session's own children, so a stop takes them with it. See the
@@ -2912,7 +2911,7 @@ impl Harness {
     /// measurement changes this changes with it. The verdict is the wall's own predicate, and the numbers are in the
     /// units the head shows. `None` when the window is unknown, since not knowing is not a measurement.
     fn context_fill(&mut self) -> Option<crate::context_claim::Fill> {
-        // R72's count, the one the head and the wall show: `measure_resident` refreshes the scale from the
+        // The count, the one the head and the wall show: `measure_resident` refreshes the scale from the
         // provider's last count plus what was sent since, so every reader below takes that one number rather than the
         // ledger's reasoning-heavy length.
         self.measure_resident();
@@ -2920,9 +2919,9 @@ impl Harness {
         let resident = self.session.ledger.len() as u64;
         Some(crate::context_claim::Fill {
             resident: self.cfg.shown_tokens(resident),
-            // The window as it was GIVEN (`shown_wall`, R72's rule for a line), not
+            // The window as it was GIVEN (`shown_wall`, the rule for a line), not
             // `shown_tokens(planning_window())` - a round trip through the ratio, which is where
-            // every row of R71's log got `999999` for a 1,000,000-token window (TODO R81).
+            // every row of the log got `999999` for a 1,000,000-token window.
             window: self.cfg.shown_wall().0,
             at_wall: self.cfg.at_the_wall(resident),
         })
@@ -3081,7 +3080,7 @@ impl Harness {
     ) -> Result<CompactionOutcome, HarnessError> {
         let mark = session.items.len();
         // The summary turn is a provider call, so it walks the same ladder and its failure is said with the count
-        // in it: a compaction that failed on a blip used to end the session's only chance to fold, with no way to
+        // in it: a compaction that failed on a blip must not end the session's only chance to fold, with no way to
         // tell one attempt from six.
         let outcome =
             run_compaction(engine, session, sink, answerer, ladder, ask).map_err(|e| match e {
@@ -3098,7 +3097,7 @@ impl Harness {
 
     /// Write every ledger row that has not reached the store yet, and persist and announce the todo list if the
     /// model wrote one. Called at every round boundary, so the pane moves with the work. The `_or_say` half is for
-    /// the three doors that used to `eprintln!` the failure and nothing else.
+    /// the doors that must say the failure, not only `eprintln!` it.
     pub(crate) fn flush_todos_or_say(&mut self, what: &str) {
         if let Err(e) = self.flush_todos() {
             eprintln!("  todos: {what} could not be written down: {e}");
@@ -3762,8 +3761,8 @@ pub(crate) fn provider_refusal(e: &HarnessError) -> Option<u16> {
 /// A provider refuses an over-long prompt with a STATUS, not with a wall event  -
 /// `HttpError::Status` renders as `http {code}: {body}` and lands as a backend error,
 /// so every recovery gated on `HarnessError::ContextWall` (the turn tail's
-/// `out.is_ok() || wall`) reads false and no door reacts. MEASURED 2026-10-09,
-/// session `s-1789919514688401228` on `deepseek/deepseek-flash`: thirty consecutive
+/// `out.is_ok() || wall`) reads false and no door reacts.
+/// : thirty consecutive
 /// 400s, the first attributed to `monitor`, the last to `todo check`, none recovered.
 ///
 /// The two measured shapes, verbatim, because a matcher is only as narrow as its
@@ -4686,7 +4685,7 @@ mod endpoint_retry {
             }
         );
         // An OpenAI-shaped provider, plain text, the numbers in the sentence  -
-        // deepseek's own words on 2026-10-09, request id and all.
+        // deepseek's own words, request id and all.
         let openai = context_length_refusal(
             "This model's maximum context length is 1048576 tokens. However, you requested \
              1463497 tokens (1463497 in the messages, 0 in the completion). Please reduce the \

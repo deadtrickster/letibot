@@ -70,7 +70,7 @@ pub const SWEEP_AFTER: Duration = Duration::from_secs(2);
 const SETTLE_PATIENCE: Duration = Duration::from_secs(30);
 
 /// How long a `Sessions` being dropped waits for the threads that served its sessions.
-/// MEASURED 2026-10-26, or this would not exist: a court still freeing the vocabulary when
+/// a court still freeing the vocabulary when
 /// the process runs its ELF finalizers is a SIGSEGV with no `panicked at` anywhere.
 const COURT_TEARDOWN: Duration = Duration::from_secs(2);
 
@@ -589,7 +589,7 @@ enum Follow {
 
 /// One session, on its own thread - the reader that serves it, the shape a subagent already
 /// had (`harness::serve_child`). Before this every session was served by ONE worker, one
-/// command at a time across all of them - MEASURED 2026-10-26
+/// command at a time across all of them -
 struct Court {
     /// The nudge. A job sent here does not wake the thread by itself: it is blocked in the hub's
     /// condvar, so [`Court::ask`] rings that too.
@@ -694,7 +694,7 @@ pub struct Sessions<'a> {
     gatekeeper: String,
     registry: Arc<Registry>,
     open: HashMap<String, Harness>,
-    /// Sessions whose monitor waiter is already running. One waiter per name which is T24
+    /// Sessions whose monitor waiter is already running. One waiter per name which is
     /// requirement 4 - the fleet has already paid for what two processes under one reader
     /// costs: the roster shows a seat attached while the real one hears nothing.
     armed: std::collections::HashSet<String>,
@@ -925,7 +925,7 @@ fn court_main(
                 let ran = s.deliver_due_nags();
                 crate::instruments::worker_pass("todo-check", pass, ran);
                 // And the queue's census, on the same idle arm and as a TURN - one model call per
-                // interval while a row is stuck, because the notice it used to be reached nobody.
+                // interval while a row is stuck, because a notice reaches nobody.
                 let pass = Instant::now();
                 let rang = s.deliver_due_censuses();
                 crate::instruments::worker_pass("queue-census", pass, rang);
@@ -1773,7 +1773,7 @@ impl<'a> Sessions<'a> {
                     return SlashReply { lines, ok: false };
                 };
                 // The act itself is the harness's - `Harness::apply_model_choice` which is now the ONE
-                // implementation of this verb. It has a second caller as of 2026-10-12
+                // implementation of this verb. It has a second caller as
                 h.apply_model_choice(choice, lines)
             }
         }
@@ -1912,7 +1912,7 @@ impl<'a> Sessions<'a> {
     }
 
     /// Re-read the fabric for a root session and, when the block changed, append
-    /// it as a system update (§5.3). Called after a compaction. Returns whether
+    /// it as a system update. Called after a compaction. Returns whether
     /// an update went in.
     pub fn refresh_fabric(&mut self, session_id: &str) -> Result<bool, HarnessError> {
         // The fabric block is a system update, which is the harness's - so it is asked of the
@@ -2292,7 +2292,7 @@ impl<'a> Sessions<'a> {
             return;
         };
         // The daemon's session list, handed to the host - a pane on disk that declares the
-        // `sessions` feed is drawn from it (`docs/plugins-plan.md` §4.9). The registry is the one
+        // `sessions` feed is drawn from it (`docs/plugins-plan.md`). The registry is the one
         // holder of *every* session, live and on disk, so it is the whole source
         let host =
             crate::plugins::PluginHost::production(session_id, &workspace).with_sessions(Arc::new(
@@ -2501,8 +2501,8 @@ impl<'a> Sessions<'a> {
     }
 
     /// One turn, and everything that has to happen around one. Both ways a prompt reaches a
-    /// session go through here, because they used to be two copies of this sequence and one of
-    /// them was missing the automatic compaction - the path every interactive session takes.
+    /// session go through here, so there is one copy of this sequence, with the automatic
+    /// compaction - the path every interactive session takes.
     fn run_prompt(
         &mut self,
         session_id: &str,
@@ -3097,8 +3097,8 @@ impl<'a> Sessions<'a> {
         self.bangs.remove(session_id);
         self.armed.remove(session_id);
         // And the plugin host, which nothing else removed. `open_plugins` installs one per session
-        // and `close` used to leave it in the map for the daemon's life: a layer stack its wasm
-        // instances and the panes it drew, held for every session ever opened.
+        // and `close` removes it, or the layer stack, its wasm
+        // instances and the panes it drew would be held for every session ever opened.
         self.plugins.remove(session_id);
         self.registry.remove(session_id);
         close_report(held.as_ref().map(|_| said.unwrap_or_default()), panes)
@@ -3307,8 +3307,7 @@ impl<'a> Sessions<'a> {
                 continue;
             };
             // The shared tail arms the sweep and the wake, records the notice as said and
-            // re-arms the clock - what this door used to do by hand, and once did not
-            // .
+            // re-arms the clock.
             match self.turn(&session_id, Door::Nag(notice), |h| h.nag_turn()) {
                 None => {}
                 Some(Ok(_)) => ran += 1,
@@ -3406,7 +3405,7 @@ impl<'a> Sessions<'a> {
         }
     }
 
-    /// Arm the monitor wake for a session that has declared one - T24's *"wakes the loop when
+    /// Arm the monitor wake for a session that has declared one - the *"wakes the loop when
     /// it fires"*, which had no caller. A thread and not a poll
     pub fn arm_wake(&mut self, session_id: &str) {
         let Some(mut h) = self.open.remove(session_id) else {
@@ -3619,7 +3618,7 @@ impl<'a> Sessions<'a> {
         }
         // And the turn its rows are for - the same sending half the settle arm runs
         // because the operator asked for their command's result to reach the model. Through the
-        // shared tail, which this door used to run without the wake or the sweep.
+        // shared tail, so the wake and the sweep run.
         if !self.open.contains_key(session_id) {
             return Outcome::Failed(self.not_open(session_id, "the turn after your `!` line"));
         }
@@ -3692,7 +3691,7 @@ impl<'a> Sessions<'a> {
             CommandKind::Prompt { text, attachments } => {
                 // One line, because everything a turn needs around it - the title, the wake, the failure
                 // notice, the compaction at the wall - is in `run_prompt`, which the scripted path also
-                // calls. This arm used to be a second copy, and it missed the compaction.
+                // calls. One copy, so the compaction is never missed.
                 match self.run_prompt(session_id, text, attachments) {
                     Ok(reply) => Outcome::Replied(Box::new(reply)),
                     Err(e) => Outcome::Failed(e.to_string()),
@@ -4040,8 +4039,8 @@ impl<'a> Sessions<'a> {
                     h.set_operator_todos(converted, &states);
                 }
                 let _ = n;
-                // ARMING HERE IS THE WHOLE POINT OF A ROW THE OPERATOR ADDS. The clock used to start in
-                // one place only - the end of a turn - so a row added to an IDLE session was never
+                // ARMING HERE IS THE WHOLE POINT OF A ROW THE OPERATOR ADDS. The clock must not start in
+                // one place only - the end of a turn - or a row added to an IDLE session is never
                 // checked. It is the same arm the turn end makes, and an ADD is more than a moved board
                 let after = self
                     .open
@@ -4553,8 +4552,8 @@ impl<'a> Sessions<'a> {
                     };
                     harness.workspace().to_path_buf()
                 };
-                // A consented `allow-all` IS written now - with the answer that opens it. It used to be
-                // left out of the row, and for a good reason
+                // A consented `allow-all` IS written - with the answer that opens it. It is
+                // otherwise left out of the row, for a good reason
                 let consented_here =
                     *consented && mode.name == letibot_tools::mode::Mode::ALLOW_ALL.name;
                 // The row, and then the answer - in that order, through one lock, so a reader of the file
@@ -4663,8 +4662,7 @@ struct DaemonTurn<'s, 'a, 'id> {
 }
 
 impl TurnOwner for DaemonTurn<'_, '_, '_> {
-    /// Before the turn, as the command and wake arms of `Daemon::run` used to do at their call
-    /// sites and the nag door did by hand : a turn can strand a call, and only an
+    /// Before the turn, for every door: a turn can strand a call, and only an
     /// idle pass closes it out.
     fn arm_sweep(&mut self) {
         self.sessions.arm_sweep(SWEEP_AFTER);
@@ -4837,7 +4835,7 @@ fn shown_tokens(scale: Option<(u64, u64)>) -> impl Fn(usize) -> u64 {
 }
 
 /// The two pairs a compaction's numbers convert through - the history's, and the new
-/// base's. One pair used to convert both, and it was the HISTORY's
+/// base's. One pair must not convert both: it would be the HISTORY's
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Scales {
     pub before: Option<(u64, u64)>,
@@ -5311,8 +5309,8 @@ mod the_wake_route {
     }
 
     /// A dropped wake is a SENTENCE, and it names the session - the half the board named as
-    /// *HOLE NAMED, NOT FIXED*: `Gone` used to be `return Outcome::Ignored` with nothing said
-    /// anywhere, so a ring that woke nobody was the one fact in this file with no witness.
+    /// *HOLE NAMED, NOT FIXED*: `Gone` is not `return Outcome::Ignored` with nothing said
+    /// anywhere, or a ring that woke nobody was the one fact in this file with no witness.
     #[test]
     fn a_dropped_wake_names_the_session_and_says_what_is_not_lost() {
         let said = super::dropped_wake("s-gone");
@@ -5431,7 +5429,7 @@ mod the_wire_report {
         );
 
         // A compaction that was asked for nothing has neither, and says neither: the overrun path,
-        // which R22 left alone.
+        // which was left alone.
         let plain = report("a summary", Vec::new(), 0, "local_model");
         let said = compaction_said(&plain, None);
         assert!(!said.contains("carries files"), "{said}");

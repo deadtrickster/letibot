@@ -185,7 +185,7 @@ fn the_tuis_restart_card_fixtures_are_what_the_daemon_writes() {
         &warning_detail(&text, &[said::job("j46", 0)]),
     );
 
-    // A restart with nothing to restore - the operator, 2026-10-30: *"mb always tell agent
+    // A restart with nothing to restore - the operator: *"mb always tell agent
     // about restart? with the current time lol"*. One sentence, no list, and its own code.
     let text = notice(
         &header(&quick, BACK, BACK, RESTORE_WITHIN, Outcome::Nothing),

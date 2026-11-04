@@ -5,7 +5,7 @@ use letibot_tokencore::store::QueueTransition;
 
 use super::*;
 
-/// The refusal of 2026-10-12, as the reviewer's failure carried it - firecode's stderr, line
+/// The refusal, as the reviewer's failure carried it - firecode's stderr, line
 /// breaks and indentation included (the sentence that makes it capacity is wrapped across two).
 pub(crate) const FIRECODE_NO_SLOT: &str = "placing this session in a firecode VM: io: firecode up \
 refused (exit status: 1): [firecode] starting a VM and leaving it up (log: \
@@ -157,7 +157,7 @@ fn a_waiting_row_is_held_only_by_its_own_capacity_wait() {
 }
 
 /// The gist of a placement failure is firecode's own `error:` sentence, not its banner - the
-/// hub row of 2026-10-12 showed *"starting a VM and leaving it up (log: …)"* and nothing else.
+/// hub row showed *"starting a VM and leaving it up (log: …)"* and nothing else.
 #[test]
 fn the_gist_of_a_firecode_refusal_is_its_error_sentence() {
     let g = gist(&format!("the reviewer `x` failed: {FIRECODE_NO_SLOT}"));

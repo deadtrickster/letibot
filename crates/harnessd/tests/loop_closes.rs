@@ -157,7 +157,7 @@ fn a_tool_call_goes_out_runs_and_comes_back_as_an_answer() {
         .collect();
     assert!(!results.is_empty(), "no ToolResult row was appended");
 
-    // §4.3: every item owns tokens, and the chain still agrees with them.
+    // Every item owns tokens, and the chain still agrees with them.
     for (i, item) in h.items().iter().enumerate() {
         if matches!(item, TranscriptItem::SegmentMark { .. }) {
             continue;
@@ -165,7 +165,7 @@ fn a_tool_call_goes_out_runs_and_comes_back_as_an_answer() {
         assert!(h.row_len(i) > 0, "item {i} ({item:?}) owns no tokens");
     }
 
-    // T13.1's gap, closed out of band: a head that attaches now must see the
+    // The gap, closed out of band: a head that attaches now must see the
     // conversation, not a list of empty rows.
     let snap = hub.snapshot();
     assert!(
@@ -241,8 +241,8 @@ fn an_inert_retrieval_tool_reports_not_run_and_says_so_structurally() {
             "the result reached the model with no recognisable envelope: {p:?}"
         );
     }
-    // And exactly one envelope. The tool runtime renders it and the dialect used to render a second
-    // one around it; a result wrapped twice is what running the two crates together first found.
+    // And exactly one envelope. The tool runtime renders it and the dialect must not render a second
+    // one around it; a result wrapped twice is the failure.
     for p in &payloads {
         assert_eq!(
             p.matches("<<<").count(),

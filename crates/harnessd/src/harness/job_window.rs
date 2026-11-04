@@ -22,7 +22,7 @@ pub struct JobWindow {
     pub state: String,
     /// Whether anything was ever executed for this job - `true` only for the one
     /// state where the wrapper could not join the cgroup, so a head with an empty
-    /// window can say *never ran* rather than *wrote nothing* (A.2, §11.6).
+    /// window can say *never ran* rather than *wrote nothing* (A.2).
     pub never_ran: bool,
     /// The window, split into lines here, so two heads cannot disagree about
     /// where a line ends.
@@ -456,8 +456,8 @@ pub(crate) fn next_job_offset(slice: &letibot_tools::exec::OutputSlice) -> Optio
 /// What a job killed with its subagent's VM reads as, on its row.
 pub(crate) const VM_LOST: &str = "lost with its VM";
 
-/// The background jobs a VM child left running, as its parent is told they died (TODO.md
-/// R92.1) - `None` when there were none. Pure, so the wording is asserted without a VM.
+/// The background jobs a VM child left running, as its parent is told they died -
+/// `None` when there were none. Pure, so the wording is asserted without a VM.
 pub(crate) fn vm_jobs_lost_line(lost: &[letibot_tools::exec::JobView]) -> Option<String> {
     if lost.is_empty() {
         return None;

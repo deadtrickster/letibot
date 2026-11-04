@@ -1,5 +1,5 @@
 //! Run a repository's own merge gate on a declared host, by hand - the instrument behind the numbers
-//! in `docs/remote-hosts.md` § *The merge gate on a declared host*, and the way to try a host before
+//! in `docs/remote-hosts.md`, and the way to try a host before
 //! a project's `[queue] gate_host` names it.
 //!
 //! ```sh

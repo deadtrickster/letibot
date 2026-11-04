@@ -6,7 +6,7 @@ use super::*;
 use letibot_tokencore::ledger::{chain, hash_tokens};
 use letibot_tokencore::store::StablePrefixRecord;
 
-/// What the model is told about a stale prompt (`R93.E9`): the tools it cannot call, and whose
+/// What the model is told about a stale prompt: the tools it cannot call, and whose
 /// decision the fix is - not the head's sentence about a session and the clock it was seated at.
 #[test]
 fn the_models_stale_prompt_names_tools_and_no_session() {

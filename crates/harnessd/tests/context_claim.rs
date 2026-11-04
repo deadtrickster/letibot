@@ -267,8 +267,8 @@ fn an_excuse_at_low_fill_is_answered_with_the_measured_fill_and_the_turn_continu
         serde_json::from_str(log.lines().next().expect("one line")).expect("json");
     assert_eq!(row["slapped"], true, "{row}");
     assert_eq!(row["at_wall"], false, "{row}");
-    // The window as configured: it used to be converted through the ratio the round measured, and
-    // landed a token off.
+    // The window as configured: it is not converted through the ratio the round measured, which
+    // lands a token off.
     let window = row["window"].as_u64().expect("a measured window");
     assert_eq!(window, 1_000_000, "{row}");
 }

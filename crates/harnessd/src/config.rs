@@ -15,7 +15,7 @@ use crate::dialect::Dialect;
 /// `mergequeue::settings`, because the project file is where a PROJECT says it.
 pub use crate::mergequeue::settings::Reviewers;
 
-/// §8.3 clause 5's budget, as configuration. `Unset` is the default and it is correct, per
+/// The budget, as configuration. `Unset` is the default and it is correct, per
 /// nothing spills until somebody configures a budget, and `harnessd --spill-inline N` is
 /// where that gap stops being invisible.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -43,18 +43,18 @@ pub enum SpillStorage {
 /// the list's `Access` picks the backend, and that decides whether an adjudicator is required.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Seat {
-    /// §8.4's `orchestrator`: `read`, `grep`, `glob`, `ask_code`, `ask_corpus`
+    /// The `orchestrator`: `read`, `grep`, `glob`, `ask_code`, `ask_corpus`
     /// `read_spill`. Read-only backend, no gate traffic. The default.
     #[default]
     Orchestrator,
-    /// D9's plan mode: read, search, the intent list, and the two things that make a plan a plan - `write_plan` (scoped to plan documents by taking a *name*, not a path) and `say`. Needs
+    /// The plan mode: read, search, the intent list, and the two things that make a plan a plan - `write_plan` (scoped to plan documents by taking a *name*, not a path) and `say`. Needs
     /// a writable backend and an adjudicator.
     Planner,
-    /// §8.4's `researcher` with the web instead of `search_corpus`. Four of its
+    /// The `researcher` with the web instead of `search_corpus`. Four of its
     /// seven seats refuse today for want of a backend; the two network ones still
     /// declare `Access::Network`, so it needs an adjudicator to be honest.
     Researcher,
-    /// §8.4's `coder` without `bash`: `read`, `write`, `edit`, `grep`, `glob`
+    /// The `coder` without `bash`: `read`, `write`, `edit`, `grep`, `glob`
     /// `read_spill`. Writable backend.
     Coder,
     /// The only role that can run a command: the job verbs, `monitor`, and - only
@@ -124,7 +124,7 @@ impl Seat {
     /// Whether this seat needs a backend that can start processes, and therefore
     /// the boundary that goes around one.
     pub fn needs_exec_backend(self) -> bool {
-        // Coder joined Runner on 2026-09-11: a role that writes code and cannot run it leaves
+        // Coder joined Runner: a role that writes code and cannot run it leaves
         // the loop open where it would have paid. `HostBackend::confined` is writable + EXEC, so this
         // adds a project-rooted boundary, not file access - and it does NOT seat `bash`.
         matches!(self, Seat::Runner | Seat::Coder | Seat::Gatekeeper)
@@ -139,7 +139,7 @@ impl Seat {
 }
 
 /// How the daemon reaches the flowy fabric. `None` is no flowy at all - the mode
-/// `docs/tool-design-brief.md` §3b keeps - and it is the default. What is missing is looked up
+/// `docs/tool-design-brief.md` keeps - and it is the default. What is missing is looked up
 /// along the usual path, and the banner says where each value came from.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FlowyConfig {
@@ -153,7 +153,7 @@ pub struct FlowyConfig {
     pub new_reader: bool,
 }
 
-/// A cloud provider for the turns - D10's mode 3. `None` is the local server
+/// A cloud provider for the turns - the mode 3. `None` is the local server
 /// which is the default and what every invocation got before this existed.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ProviderConfig {
@@ -266,7 +266,7 @@ pub struct Config {
     pub auto_compact: bool,
     /// What this session does at its wall - the wall controller's state and the last count a
     /// provider measured (`crate::wall`). Replaced `auto_compact_stood_down`, the latch that
-    /// judged a fold on an estimate and never released (`s-1789919514688401228`).
+    /// judged a fold on an estimate and never released.
     pub wall: crate::wall::WallControl,
     /// The operator's pause of this session's idle plan-check (`/nag pause`), or `None`. On
     /// the config because the store row is written from it and read back at open. Never
@@ -310,7 +310,7 @@ pub struct Config {
     pub title: String,
     pub owner: String,
     /// The bootstrap system prompt - message 0 of the stable prefix, and nothing volatile belongs
-    /// in it (§5.2). Composed once, at session open ([`Config::compose_for_seat`]); only a fork
+    /// in it. Composed once, at session open ([`Config::compose_for_seat`]); only a fork
     /// re-reads the notes files, because a fork is already a cold prefill.
     pub system: String,
     /// Compose [`Config::system`] at open, for the tools this session seats. `Some` for every
@@ -440,7 +440,7 @@ pub struct Config {
     /// touch the tree its previous reviewer is reading. `None` in every other fixture.
     pub review_clones: Option<std::path::PathBuf>,
     /// Whether this daemon runs the merge and review queues - `true` unless `--no-queue`. Wrong
-    /// for a package worker: on 2026-10-26 one took its repository's lease, found `main` red
+    /// for a package worker: one took its repository's lease, found `main` red
     /// and put an EMERGENCY in front of a model that had never been asked about that tree.
     pub serve_queues: bool,
     /// This daemon is the box's ROOM COORDINATOR (`--room`) - a whole `harnessd` whose only
@@ -469,10 +469,10 @@ pub struct Config {
     /// is what every invocation gets today. See [`Seat`].
     pub seat: Seat,
     /// `bash` stays off even behind [`Seat::Runner`], and this is the flag. A named hole, not
-    /// caution: §3's invariant is that secret bytes never enter the transcript, the choke point
+    /// caution: the invariant is that secret bytes never enter the transcript, the choke point
     /// that would enforce it does not exist yet, and `bash`'s result is an arbitrary byte stream.
     pub allow_bash: bool,
-    /// How deep a subagent tree may go. The operator's ruling, 2026-10-03: *"subagents are
+    /// How deep a subagent tree may go. The operator's ruling: *"subagents are
     /// absolutely allowed to spawn subagents up to configured nesting level."* Default 3. The seat
     /// names `task`; the limit is enforced at the call and refused by name, not by hiding the tool.
     pub max_subagent_depth: u32,
@@ -568,7 +568,7 @@ pub enum AdjudicatorChoice {
     Head,
     /// [`letibot_tools::ConsoleAdjudicator`] over the daemon's own stdin/stderr. Right for
     /// `harnessd --prompt …` and for a daemon run in a foreground terminal, and only those: a
-    /// head attached over the socket cannot answer it, which is D25.
+    /// head attached over the socket cannot answer it.
     Console,
 }
 
@@ -1473,7 +1473,7 @@ impl Config {
             vm_mount: false,
             build_env: Vec::new(),
             // The safe end: a fixture must not be able to boot a microVM by forgetting a line.
-            // `Host` is also the operator's own ruling of 2026-10-29; the daemon reads the project
+            // `Host` is also the operator's own ruling; the daemon reads the project
             // file in `for_the_daemon`. See the field.
             reviewers: Reviewers::Host,
             // The gate runs here unless the daemon reads otherwise. A fixture must not find
@@ -2304,8 +2304,8 @@ impl Config {
              model to continue",
         ));
         // Retrieval, the web tools, the forge and MCP: computed from what the session attached and
-        // what it seated, never asserted. This line used to be a constant sentence about `ask_code`
-        // which was true and unchecked - the same defect `GateWiring` exists to make unwriteable.
+        // what it seated, never asserted. A constant sentence about `ask_code`
+        // would be true and unchecked - the same defect `GateWiring` exists to make unwriteable.
         for row in wiring.external.startup_disclosures() {
             out.push(Disclosure {
                 subject: row.subject.into(),
@@ -2410,8 +2410,8 @@ impl Config {
             ),
             active: true,
         });
-        // The backend quotes itself. `HostBackend::describe` used to answer
-        // `read-only` for every backend including the writable one, and a banner
+        // The backend quotes itself. `HostBackend::describe` answers per backend
+        // rather than `read-only` for all, and a banner
         // that paraphrases a wiring is a banner that can be wrong about it.
         out.push(Disclosure {
             subject: "backend".into(),
@@ -2426,7 +2426,7 @@ impl Config {
         });
         // Plan mode, and the half of it this build cannot do. Seating `planner` puts the session in
         // plan mode for real; what it cannot do is the *widening* - a role's tool list is stable-prefix
-        // bytes, so re-seating `write` costs a full cold re-prefill (§5.3, 179k tokens).
+        // bytes, so re-seating `write` costs a full cold re-prefill.
         if self.seat == Seat::Planner {
             out.push(Disclosure::off(
                 "plan mode",
@@ -2526,7 +2526,7 @@ impl Config {
                 )),
             }
         }
-        // The intent diff, T21.3's error signal.
+        // The intent diff, the error signal.
         if wiring.intent_encoder {
             out.push(Disclosure::on(
                 "intent check",
@@ -2615,8 +2615,8 @@ impl Config {
             )),
         }
         // What `task(where: firecode)` would get on this host, said where a subagent can be
-        // started - FIRECODE-NOTES item 4: the placement's preconditions used to be found out
-        // at spawn, one refusal per attempt.
+        // started: the placement's preconditions are said here,
+        // not found out at spawn one refusal per attempt.
         if wiring
             .seated
             .iter()
@@ -2767,11 +2767,11 @@ pub struct GateWiring {
     /// Whether any seated tool declares `Access::Network`.
     pub has_network_tools: bool,
     /// How the execution backend describes itself - `HostBackend::describe`, which says `read-only`
-    /// `writable`, `NOT CONFINED` or names the boundary. It exists because `describe` used to answer
-    /// `read-only` for every backend: the banner now *quotes* the backend rather than paraphrasing it.
+    /// `writable`, `NOT CONFINED` or names the boundary. It exists so that `describe` does not answer
+    /// `read-only` for every backend: the banner *quotes* the backend rather than paraphrasing it.
     pub backend: String,
     /// Whether a [`letibot_tools::DenialSink`] is attached, so a refusal reaches the operator at the
-    /// moment it is decided (`docs/boundary-and-adjudication.md` §4b: denials that go nowhere are not
+    /// moment it is decided (`docs/boundary-and-adjudication.md`: denials that go nowhere are not
     /// a state to be in silently).
     pub denials_surfaced: bool,
     /// Whether an authorisation trail source is installed, so the adjudicator sees the operator's own

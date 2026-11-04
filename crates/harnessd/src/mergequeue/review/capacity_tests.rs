@@ -1,6 +1,6 @@
 //! A reviewer firecode had no free slot for WAITS; a review that stops says why. A shortage
-//! of VM slots used to be counted as a failed attempt, so three refusals in a row blocked a
-//! branch nobody had judged.
+//! of VM slots is not a failed attempt, or three refusals in a row would block a
+//! branch nobody has judged.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};

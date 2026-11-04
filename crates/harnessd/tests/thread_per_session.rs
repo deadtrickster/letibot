@@ -1,5 +1,5 @@
-//! One thread per session, and the turn that used to hold the daemon. Every session the
-//! daemon held used to be served by ONE worker, one command at a time across all of them so
+//! One thread per session, and a turn that must not hold the daemon. Sessions are not
+//! served by ONE worker, one command at a time across all of them, or
 //! a prompt to one session sat behind an unrelated session's turn.
 
 use std::sync::{Arc, Condvar, Mutex};

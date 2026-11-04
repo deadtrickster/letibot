@@ -235,7 +235,7 @@ fn a_stored_token_pair_is_used_only_for_the_conversation_it_measured() {
         super::recovered_scale(Some(940_211), Some(940_211), 940_211),
         Some((940_211, 940_211)),
     );
-    // The 2026-10-02 row: an anchor at the conversation it measured, which the roll
+    // The row: an anchor at the conversation it measured, which the roll
     // then adds the later rows to - see the restart test below for the addition.
     assert_eq!(
         super::recovered_scale(Some(940_211), Some(950_000), 1_486_369),
@@ -991,8 +991,8 @@ fn a_completion_notice_names_the_job_and_says_do_not_wait() {
 }
 
 /// A prompt is answered, a parent's message is HEARD, a stop is a STOP for the whole subtree, and everything else a child
-/// inherits is left and named. The interrupt arm is the measured correction, since it used to say nothing is running to
-/// interrupt about a session whose subtree was, and the message arm now starts a turn of its own.
+/// inherits is left and named. The interrupt arm does not say nothing is running to
+/// interrupt about a session whose subtree is, and the message arm starts a turn of its own.
 #[test]
 fn a_child_answers_a_prompt_and_leaves_the_machinery_its_parent_owns() {
     use letibot_sessionlog::CommandKind as K;
@@ -1034,8 +1034,7 @@ fn a_child_answers_a_prompt_and_leaves_the_machinery_its_parent_owns() {
     }
 }
 
-/// What the head attached to a subagent is told about a command the child leaves - R67
-/// item 15: the line it typed, named back, and where to send it instead.
+/// What the head attached to a subagent is told about a command the child leaves: the line it typed, named back, and where to send it instead.
 #[test]
 fn a_command_a_child_leaves_is_named_back_to_its_head() {
     use letibot_sessionlog::CommandKind as K;
@@ -1226,7 +1225,7 @@ fn flowy_is_a_door_for_every_root_session_and_for_no_subagent() {
     cfg.flowy = Some(crate::config::FlowyConfig::default());
     let root = role_for(&cfg);
     assert!(root.tools.iter().any(|t| t == "flowy"));
-    // And the person can be asked. The operator's ruling, 2026-10-09: *"yeah i
+    // And the person can be asked. The operator's ruling: *"yeah i
     // want you to be able to ask me for a choice"* - the seat carries it whether or
     // not a room is attached, because asking is not a room's business.
     assert!(

@@ -52,7 +52,7 @@ impl Harness {
         })
     }
 
-    /// The repository a `/queue` verb may act in (R92 item 5) - `None` is every repository.
+    /// The repository a `/queue` verb may act in - `None` is every repository.
     /// [`QueueScope::Here`](crate::slash::QueueScope::Here) is this session's own, and a session
     /// of no repository is told so with the line that reaches every repository.
     pub fn queue_scope(&self, scope: &crate::slash::QueueScope) -> Result<Option<String>, String> {
@@ -188,7 +188,7 @@ impl Harness {
     }
 
     /// `/queue regate [/REPO] [TARGET]` and the `queue` tool's `regate` - the target's tip gated
-    /// again even when it was already judged (R76 item 3). `who` goes on the move.
+    /// again even when it was already judged. `who` goes on the move.
     pub fn regate_target(
         &self,
         repository: Option<&str>,
@@ -255,7 +255,7 @@ impl Harness {
 
     /// The census as a TURN: the sentence `stuck_census_text` composed, said by the harness and answered
     /// by the model. As a notice it reached nobody for hours, because a mailbox is read at the model's next
-    /// turn and a quiet session has none. The held batch rides in with it, as R79 gives it to any break.
+    /// turn and a quiet session has none. The held batch rides in with it, as for any break.
     pub fn census_turn(&mut self, text: &str) -> Result<Reply, HarnessError> {
         self.submit_spoken(Speaker::Agent, text)
     }
@@ -409,7 +409,7 @@ impl Harness {
         out
     }
 
-    /// The reviews the queue handed to THIS project's main session (R61 decision 4's
+    /// The reviews the queue handed to THIS project's main session (the
     /// per-project option, `[queue] merge_via_session = true`): a review that could not run, so
     /// the project gates and merges the branch itself - told once, read off the row.
     pub fn handover_notices(&mut self) -> Vec<String> {

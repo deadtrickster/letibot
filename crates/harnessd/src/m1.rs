@@ -14,7 +14,7 @@
 //!            [--endpoint HOST:PORT] [--model ALIAS] [--vocab GGUF] [--json FILE]
 //! ```
 //!
-//! §17's M1 exit is *"C1–C10 pass against harnessd where opencode failed, and `f_keep` p10 ≥ 0.99
+//! The M1 exit is *"C1–C10 pass against harnessd where opencode failed, and `f_keep` p10 ≥ 0.99
 //! over a scripted 30-turn session"*. Every C-test it can reach is reported, and the ones it
 //! cannot are named with the reason - `NOT RUN`, never folded into a pass count, because a
 //! vacuous pass here is exactly the failure this whole project is a reaction to.
@@ -28,8 +28,8 @@
 //! |---|---|
 //! | C1 | the submitted token vector at turn N is an exact prefix of turn N+1's. Read off the ledger, not inferred from cache numbers. |
 //! | C2 | NOT RUN - it is the fidelity gate, which needs no model. GLM 139/139, Qwen 56/56. |
-//! | C3 | the engine's own `PrefixCheck`, which is §18.1-I1: turn N+1's prompt begins with turn N's plus what the model generated. Read off, never recomputed. |
-//! | C4 | `f_keep` p10/p50/p99 and p99 re-prefill over the session, with `f_keep` in D11's settled form - `cached_tokens(N+1) / (prompt_tokens(N) + committed_generated(N))`. Those are C3's own two numbers, so C3 and C4 are read from one `PrefixCheck`. |
+//! | C3 | the engine's own `PrefixCheck`, which is the prefix invariant: turn N+1's prompt begins with turn N's plus what the model generated. Read off, never recomputed. |
+//! | C4 | `f_keep` p10/p50/p99 and p99 re-prefill over the session, with `f_keep` in the settled form - `cached_tokens(N+1) / (prompt_tokens(N) + committed_generated(N))`. Those are C3's own two numbers, so C3 and C4 are read from one `PrefixCheck`. |
 //! | C5 | `f_keep` does not collapse on the submission that follows an assistant turn carrying reasoning. |
 //! | C6 | every assistant item with tool calls and empty text still owns a non-empty ledger row. |
 //! | C7 | NOT RUN live - see below. |
@@ -38,20 +38,20 @@
 //! | C10 | the server's own `n_prompt_tokens` equals ours, and equals `cached + processed`. |
 //!
 //! C7 cannot be produced live, deliberately: it needs a `length` finish, which needs either an
-//! `n_predict` cap - §5.7 removed it on purpose and no test may add it back - or a 262,144-token
+//! `n_predict` cap - it was removed on purpose and no test may add it back - or a 262,144-token
 //! context filled on a production box. The policy is exercised exhaustively offline in
 //! `letibot_turn::length`; what is measured here is the server half, that `finish_reason` arrives.
 //!
 //! The run ends with one `M1 EXIT` line and exits 1 unless that line says `MET`. The criterion is
-//! that the checks pass, so `NOT RUN` and `PARTIAL` count against it - the exit status used to be
-//! "nothing said FAIL", which a run that measured nothing passed - and the two checks this
+//! that the checks pass, so `NOT RUN` and `PARTIAL` count against it - the exit status is not
+//! "nothing said FAIL", which a run that measured nothing would pass - and the two checks this
 //! instrument cannot produce are named on the line rather than counted as failures.
 //!
-//! # `f_keep` here is D11's, and `f_sim` is printed beside it
+//! # `f_keep` here is the settled form, and `f_sim` is printed beside it
 //!
-//! §18.2's C4 originally read `cached_tokens / prompt_tokens`, whose denominator is the *new*
+//! The C4 originally read `cached_tokens / prompt_tokens`, whose denominator is the *new*
 //! prompt - llama's `f_sim`, which falls purely as a function of how much the conversation grew and
-//! cannot reach 0.99 on any session that returns tool output. D11 settles C4 as `lcp /
+//! cannot reach 0.99 on any session that returns tool output. C4 is settled as `lcp /
 //! cached_entry`. Both are printed under their own names, because the old one is real and only its
 //! name was wrong.
 
@@ -122,7 +122,7 @@ pub fn run(args: &[String]) -> i32 {
 
     // A nonce in the session id keeps the *session* distinct; the stable prefix is
     // deliberately not nonced, because sharing a warm prefix between sessions is
-    // the design (§5.2) and noncing it would measure a cold start on purpose.
+    // the design and noncing it would measure a cold start on purpose.
     let parts = Parts::load(&cfg).unwrap_or_else(|e| die(&e.to_string()));
     let hub = Hub::new(cfg.session_id.clone());
     let workspace = cfg.workspace.clone();
@@ -326,7 +326,7 @@ impl Step {
     }
 }
 
-/// The scripted session (§18.2: *"a fixed 30-turn conversation with a fixed tool script
+/// The scripted session (*"a fixed 30-turn conversation with a fixed tool script
 /// replayed identically against any client"*).
 fn script(turns: usize) -> Vec<Step> {
     let ask = |s: &str| Step::Ask(s.to_string());
@@ -671,11 +671,11 @@ fn judge(
     // recomputed from `prompt + predicted`
     out.push(c3(rows));
 
-    // ---- C4: the f_keep distribution -------------------------------------- D11
+    // ---- C4: the f_keep distribution --------------------------------------
     out.extend(c4(rows));
 
     // ---- C5: reasoning replay does not collapse the cache ------------------ Measured on
-    // `f_keep`, which since D11 is the right metric for it.
+    // `f_keep`, which is the right metric for it.
     out.push(c5(rows));
 
     // ---- C6: an empty assistant turn still owns its boundary tokens --------
@@ -1050,7 +1050,7 @@ mod tests {
     }
 
     /// A check that never ran has not passed, which is why the run has a verdict of its own: the
-    /// exit status used to be "nothing said FAIL", and NOT RUN passed it.
+    /// exit status is not "nothing said FAIL", which NOT RUN would pass.
     #[test]
     fn a_check_that_never_ran_is_not_a_pass() {
         let (met, line) = exit_verdict(&[

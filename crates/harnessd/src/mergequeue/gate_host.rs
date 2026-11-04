@@ -1,4 +1,4 @@
-//! The gate on a declared host - the operator's instruction of 2026-10-29: *"i told you
+//! The gate on a declared host: *"i told you
 //! about other hosts so you actually use that capability for running gates and subagents
 //! fanouts"*.
 

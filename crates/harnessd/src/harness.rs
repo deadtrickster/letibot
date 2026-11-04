@@ -109,12 +109,12 @@ pub struct Reply {
     pub metrics: Vec<TurnMetrics>,
     pub rounds: usize,
     pub tool_calls: usize,
-    /// §5.7: the output was cut short but is usable. Never folded into success.
+    /// The output was cut short but is usable. Never folded into success.
     pub truncated: bool,
 }
 
 impl Reply {
-    /// D11's `f_keep` (`cached / what the previous turn left in the cache`) for every submission this
+    /// The `f_keep` (`cached / what the previous turn left in the cache`) for every submission this
     /// reply cost, shorter than `metrics` when a submission had no cached entry: those are dropped
     /// rather than reported as 0.0 or 1.0.
     pub fn f_keep(&self) -> Vec<f64> {
@@ -223,7 +223,7 @@ pub struct Harness {
     /// How many ledger rows have reached the store.
     persisted: usize,
     system_updates: u64,
-    /// The turn this harness last started. §4.5: a failure has to name one.
+    /// The turn this harness last started. A failure has to name one.
     last_turn_id: String,
     /// Read at open time from the backend, the gate and the seated schemas, so the
     /// adjudication disclosure is a reading rather than a claim. See [`GateWiring`].
@@ -300,10 +300,10 @@ pub struct Harness {
     /// A fork whose rows are not all stored yet - sealed by [`Harness::seal_fork`]
     /// once they are.
     unsealed_fork: Option<UnsealedFork>,
-    /// This turn's metrics, as it runs (TODO R81) - begun and closed by the turn tail, fed
+    /// This turn's metrics, as it runs - begun and closed by the turn tail, fed
     /// by the round loop. See `crate::instruments`.
     pub(crate) meter: crate::instruments::TurnMeter,
-    /// T21.3's encoder and error signal. Always constructed and always attached  -
+    /// The encoder and error signal. Always constructed and always attached  -
     /// measuring costs nothing and `Verification::NoEncoder` is a state whose
     /// reason is ours rather than the model's.
     intent: Arc<IntentLedger>,
@@ -365,8 +365,8 @@ pub struct Harness {
     /// the local server through the engine's own `/completion` path - unless
     /// [`Harness::key_wanted`] is set, which is a provider with no key yet.
     provider: Option<Box<dyn letibot_backend::MessagesBackend>>,
-    /// A provider chosen and not yet usable, because no key for it resolves. It used to be a refusal at
-    /// open, which killed the daemon before a head could attach; now the first turn asks for the key on
+    /// A provider chosen and not yet usable, because no key for it resolves. It is not a refusal at
+    /// open, which would kill the daemon before a head could attach; the first turn asks for the key on
     /// the masked secret card, saves it to providers.toml (0600) and builds the provider.
     key_wanted: Option<crate::config::ProviderConfig>,
     /// The local server's own context window, kept from before the first switch to a provider so
@@ -560,9 +560,8 @@ impl Harness {
             });
             settled += 1;
         }
-        // And the head is told, including when the record could not be written: this used to be a hub
-        // block that did nothing and a `let _ =` on the append, so a close-out the store refused was
-        // announced to nobody and the spinner the sweep exists to end stayed up.
+        // And the head is told, including when the record could not be written: a close-out the store refused
+        // must still be announced, or the spinner the sweep exists to end stays up.
         let named: Vec<String> = results
             .iter()
             .filter_map(|r| match r {
@@ -1166,7 +1165,7 @@ impl Harness {
         }
     }
 
-    /// R79's delivery for this session - see [`Deliveries`]. `None` for a session with no
+    /// The delivery for this session - see [`Deliveries`]. `None` for a session with no
     /// watcher set, which has nothing to deliver.
     pub(crate) fn deliveries(&self) -> Option<Deliveries> {
         let watch = self.job_watch.clone()?;
@@ -1858,7 +1857,7 @@ mod gatekeeper_reviews {
     }
 }
 
-/// What a D16 admission says on the transcript: the one line an operator reads while the work happens.
+/// What an admission says on the transcript: the one line an operator reads while the work happens.
 /// The row the gate writes is the record; this is the channel beside it, and the only thing that can go
 /// wrong is a sentence that does not say which command ran or which rule said so.
 #[cfg(test)]

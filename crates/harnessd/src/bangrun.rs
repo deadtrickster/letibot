@@ -1,8 +1,8 @@
 //! The operator's own run, on a thread of its own: one thread per run, two
 //! handoffs, and all of the state on the worker.
 //!
-//! An operator's run used to hold the daemon's single worker for as long as the
-//! command did, so a turn in another session queued behind it and the daemon looked
+//! An operator's run must not hold the daemon's single worker for as long as the
+//! command does, or a turn in another session queues behind it and the daemon looks
 //! hung. The result comes back as a command, not over a channel, because the queue's
 //! ordering already holds and the worker is the one writer of the transcript.
 //!

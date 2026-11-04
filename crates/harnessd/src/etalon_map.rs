@@ -1,5 +1,5 @@
-//! The etalon on a map: every command's tree, clustered. Plan `docs/guard-corpus-plan.md`
-//! §7. The operator: *"treesitter as normalization for each command and clustering over
+//! The etalon on a map: every command's tree, clustered. Plan `docs/guard-corpus-plan.md`.
+//! The operator: *"treesitter as normalization for each command and clustering over
 //! trees, something like SOM or vectors to see the clusters.
 
 use std::collections::HashMap;

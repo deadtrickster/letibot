@@ -123,7 +123,7 @@ pub(crate) fn grown_with_how(was: &[String], is: &[String]) -> Vec<String> {
 
 /// What changed between two versions of one tool's schema, in a phrase: new and removed parameters at any
 /// depth, values an enum gained or lost, and `wording` when only the text moved. `None` when the two cannot be
-/// read. A re-seat used to say only `Changed: monitor`.
+/// read. A re-seat says more than `Changed: monitor`.
 pub fn schema_change(was: &str, is: &str) -> Option<String> {
     let parse = |s: &str| -> Option<serde_json::Value> {
         let v: serde_json::Value = serde_json::from_str(s).ok()?;
@@ -450,9 +450,9 @@ impl Harness {
                 // (`roll_resident`), so the wall's next judgement is on that roll and not on the
                 // old history's ratio. The screen's sentence carries the after-count.
                 self.measure_resident();
-                // An estimate is said as one, with `≈`, until the next round measures it. The report used to print
-                // the base's estimate in the same breath as the measured count it was folded from, and the guard
-                // below JUDGED that estimate.
+                // An estimate is said as one, with `≈`, until the next round measures it. The report must not print
+                // the base's estimate as the measured count it was folded from, and the guard
+                // below must not JUDGE that estimate.
                 let estimated = self.cfg.wall.awaiting_on(&self.session.transcript_id)
                     || self.cfg.carried_note().is_some();
                 let scales = crate::sessions::Scales {
@@ -522,7 +522,7 @@ impl Harness {
 
     /// A measured count, into the wall controller: the one place its state changes on a measurement, and the
     /// one place that says so. `count` is in the window's units, either a round's `prompt_tokens` or a local
-    /// base's exact size, and the judgement the no-progress guard used to make on an estimate is made here.
+    /// base's exact size, and the no-progress judgement is made here, not on an estimate.
     pub(crate) fn observe_wall(&mut self, count: u64) {
         let (window, headroom) = self.cfg.shown_wall();
         if window == 0 {
@@ -946,7 +946,7 @@ impl Harness {
             ));
             // The same ask a compaction gets, because this is the same loss: `/reseat summarise`
             // replaces the conversation with a record, and a record sized by the model's guess is the
-            // failure R22 is about. No tail is carried, so nothing is measured as already carried.
+            // failure at hand. No tail is carried, so nothing is measured as already carried.
             let ask = self
                 .cfg
                 .planning_window()
@@ -1505,12 +1505,12 @@ impl Harness {
             )
             .map_err(|e| HarnessError::Store(e.to_string()))?;
         let new_id = format!("{}#t{}", self.cfg.session_id, n);
-        // The fork point is the session log's seq, which is what §5.5's
+        // The fork point is the session log's seq, which is what
         // `forked_at_seq` means: where in the session's event stream the divergence
         // happened, not where in the transcript.
         let forked_at = self.hub.head_seq();
-        // Nothing is written to the store yet, since the row used to go in before a row of the new transcript
-        // existed and a crash during the carry resumed onto a partial conversation. The row goes in UNSEALED before
+        // Nothing is written to the store yet, since a row that went in before a row of the new transcript
+        // existed would let a crash during the carry resume onto a partial conversation. The row goes in UNSEALED before
         // the swap, and the seal, the fingerprint and the stale flag follow the last row.
         let fingerprint = prefix_fingerprint(self.cfg.seat, &onto);
         let mut next = self
@@ -1518,7 +1518,7 @@ impl Harness {
             .open(&new_id, &onto)
             .map_err(|e| HarnessError::Setup(format!("opening the compacted transcript: {e}")))?;
         // A record that was cut off says so, in the record: this base is what every later turn reads as the whole
-        // of what came before, and it used to claim to be the summary of the full history with a third of it missing.
+        // of what came before, so it must not claim to be the summary of the full history with a third of it missing.
         // Not a refusal, since a session at the wall has nowhere else to go, and the sentence goes FIRST.
         let cut = if outcome.truncated {
             " The summary is incomplete (cut off); treat anything missing as unknown and check \
@@ -1585,8 +1585,8 @@ impl Harness {
                 origin: SystemOrigin::Update,
             },
         };
-        // The recent past is carried verbatim, not described: compaction used to keep none of it, so a session
-        // came back unable to see the turn it was in the middle of. The newest items under their own budget, appended
+        // The recent past is carried verbatim, not described: compaction that kept none of it would leave a session
+        // unable to see the turn it was in the middle of. The newest items under their own budget, appended
         // after the summary, mapped to the wire's role and text as appended so the report and the bytes cannot differ.
         let mut body: Vec<TranscriptItem> = Vec::with_capacity(1 + tail_items.len());
         body.push(note);
@@ -1861,10 +1861,10 @@ impl Harness {
 ///
 /// # Why equality was the test, and why it is not any more
 ///
-/// This used to give the pair back only when the stored ledger EQUALLED the
-/// rebuilt one, because the pair was used as a RATIO: `ledger_now ÷ ratio`. A
+/// The pair is not given back only when the stored ledger EQUALS the
+/// rebuilt one, since the pair would be used as a RATIO: `ledger_now ÷ ratio`. A
 /// count from a smaller conversation divided into a bigger ledger overstates the
-/// ratio, and the session compacts too late - MEASURED 2026-10-02: a store holding
+/// ratio, and the session compacts too late: a store holding
 /// 940,211, measured on a ~950k-token conversation, was paired with a rebuilt
 /// ledger of 1,486,369; the window came out 1,580,888 for a session already 1.46M
 /// deep, and it died at the provider's 400 on every attempt.
@@ -1873,7 +1873,7 @@ impl Harness {
 /// the last round's `persist_context` - a notice, a nag, the tool result of a turn
 /// that did not end in a round - broke it, the pair was refused, the window went
 /// UNSCALED, and the raw ledger was compared against the provider's window.
-/// MEASURED 2026-10-11, leticl's `s-1791151788256943467` on deepseek-flash,
+/// On deepseek-flash,
 /// the first idle pass after a restart:
 ///
 /// ```text
@@ -1886,9 +1886,9 @@ impl Harness {
 /// direction nobody loses a session to"*), and early by 4.6× is losing the
 /// session's working context on every restart.
 ///
-/// An anchor has neither failure. The 2026-10-02 conversation comes back as
+/// An anchor has neither failure. The conversation comes back as
 /// 940,211 PLUS the ~536k ledger tokens appended since, sized as sent - larger, so
-/// it compacts; the 2026-10-11 one comes back as ~740k plus one notice - and does
+/// it compacts; the one comes back as ~740k plus one notice - and does
 /// not. Nothing is divided, so a stale count cannot shrink a big ledger, and a
 /// later append cannot throw the count away.
 ///
@@ -1937,7 +1937,7 @@ pub(crate) fn wall_stops_round(
 /// Whether the wall stops THIS round - [`wall_stops_round`]'s arithmetic plus the one
 /// question about where the count came from.
 ///
-/// MEASURED 2026-10-25, `s-1791394076177451000`: a session switched from deepseek to
+/// A session switched from deepseek to
 /// `glm-coding` was stopped at round 0 with
 ///
 /// ```text
@@ -2015,9 +2015,9 @@ pub(crate) fn compaction_logged(sentence: &str, cut: &str) -> String {
     format!("{sentence}{cut}")
 }
 
-/// Where the provider last counted this conversation, and its own count of that prompt. The wall used to be judged
+/// Where the provider last counted this conversation, and its own count of that prompt. The wall is not judged
 /// as a ledger length divided by a ratio, which is a property of how much of the history was reasoning at one moment,
-/// so it now counts the provider's number and adds only what came after, sized the way it will be sent.
+/// so it counts the provider's number and adds only what came after, sized the way it will be sent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WallAnchor {
     /// The transcript the count was taken on. A compaction forks a new one, and a
