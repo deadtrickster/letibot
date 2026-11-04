@@ -17,6 +17,21 @@ pub fn scan(store: &Path, own: &Path) -> Result<Vec<FleetRow>, String> {
     scan_in(store, own, &rundir())
 }
 
+/// The reader a head holds: the folder it was started in decides which daemon is its own. A scan
+/// that fails reads as no fleet.
+pub fn reader() -> letibot_sessionlog::FleetReader {
+    std::sync::Arc::new(|| {
+        let d = match std::env::current_dir()
+            .map_err(|e| e.to_string())
+            .and_then(|cwd| crate::daemon::resolve(&cwd))
+        {
+            Ok(d) => d,
+            Err(_) => return Vec::new(),
+        };
+        scan(&d.store, &d.workspace).unwrap_or_default()
+    })
+}
+
 pub fn scan_in(store: &Path, own: &Path, rundir: &Path) -> Result<Vec<FleetRow>, String> {
     let store = letibot_tokencore::store::Store::open(store).map_err(|e| e.to_string())?;
     let mut stored = store.list_sessions().map_err(|e| e.to_string())?;
@@ -132,7 +147,10 @@ mod tests {
         let a = rows.iter().find(|r| r.id == "s-a").unwrap();
         assert_eq!(a.workspace, "/w/one");
         assert_eq!(a.attach_command(), "cd /w/one && letibot --session s-a");
-        assert!(!run.read_dir().unwrap().any(|_| true), "no daemon was started");
+        assert!(
+            !run.read_dir().unwrap().any(|_| true),
+            "no daemon was started"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

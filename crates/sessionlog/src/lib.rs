@@ -89,12 +89,12 @@ pub use event::{
     PromptProgress, PromptReading, RESTORING_ROWS, SessionEvent, TARGET_MAX_BYTES, Timings, Usage,
     display_target,
 };
+pub use fleet::{FleetReader, FleetRow, FleetState};
 pub use hub::{
     Attached, CommandKind, Delivery, Hub, JournaledPrompt, PromptJournal, QueuedCommand, Reply,
     SessionStatus,
 };
 pub use log::{LogBounds, SessionLog};
-pub use fleet::{FleetReader, FleetRow, FleetState};
 pub use origin::{GroupRow, MCP_IDENTITY, SessionGroup, SessionOrigin, group_of};
 pub use protocol::{
     Ack, Attachment, AttachmentKind, Caps, ClientFrame, HEAD_RUN_KIND_PATH, HEAD_RUN_KIND_TEXT,

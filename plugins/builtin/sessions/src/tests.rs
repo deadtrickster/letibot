@@ -56,6 +56,7 @@ fn draw(feed: &Feed, folded: &[(&str, bool)]) -> Vec<Out> {
         folded.iter().map(|(k, v)| ((*k).to_string(), *v)).collect();
     let ctx = Ctx {
         sessions: &feed.sessions,
+        fleet: &feed.fleet,
         here: &feed.here,
         home: &feed.home,
         folded: &folded,

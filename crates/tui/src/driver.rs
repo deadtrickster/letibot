@@ -481,6 +481,7 @@ impl Link {
         // measurement never runs where the frame is drawn. Two seconds between readings keeps the rate low.
         app.refresh_git();
         app.refresh_github_refs();
+        app.refresh_fleet();
         // And the model check a held message waits on (`app::reach`) - collected here for the
         // same reason: a probe is a network round trip, and the loop never waits on one.
         app.poll_reach();

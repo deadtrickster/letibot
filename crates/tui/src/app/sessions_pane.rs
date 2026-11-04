@@ -520,6 +520,53 @@ impl App {
         }
     }
 
+    /// Take the fleet reader the binary supplies.
+    pub fn set_fleet_reader(&mut self, reader: letibot_sessionlog::FleetReader) {
+        self.fleet_reader = Some(reader);
+    }
+
+    /// Read the other daemons' packages in the background while the picker is open, never from a
+    /// paint: a reading connects to sockets. One at a time, [`FLEET_REFRESH_MS`] apart.
+    pub fn refresh_fleet(&mut self) {
+        if let Some(rx) = &self.fleet_job {
+            match rx.try_recv() {
+                Ok(rows) => {
+                    self.fleet = rows;
+                    self.fleet_job = None;
+                    self.fleet_read = self.now_ms;
+                    self.redraw = true;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => return,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.fleet_job = None;
+                    self.fleet_read = self.now_ms;
+                }
+            }
+            return;
+        }
+        let Some(reader) = self.fleet_reader.clone() else {
+            return;
+        };
+        if !self.is_open(Surface::Picker)
+            || self.now_ms.saturating_sub(self.fleet_read) < FLEET_REFRESH_MS
+                && self.fleet_read != 0
+        {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        if std::thread::Builder::new()
+            .name("fleet".into())
+            .spawn(move || {
+                let _ = tx.send(reader());
+            })
+            .is_ok()
+        {
+            self.fleet_job = Some(rx);
+        } else {
+            self.fleet_read = self.now_ms;
+        }
+    }
+
     /// What the pane is asked with - the one feed it declared, the fold state, and the size.
     fn sessions_input(&self, state: Option<Value>) -> Input {
         let mut feeds = BTreeMap::new();
@@ -589,8 +636,22 @@ impl App {
                 })
             })
             .collect();
+        let fleet: Vec<Value> = self
+            .fleet
+            .iter()
+            .map(|f| {
+                json!({
+                    "id": f.id,
+                    "name": fleet_name(f),
+                    "facts": fleet_facts(f),
+                    "under": fleet_under(f, &self.home),
+                    "running": f.state == letibot_sessionlog::FleetState::Running,
+                })
+            })
+            .collect();
         json!({
             "sessions": sessions,
+            "fleet": fleet,
             "here": self.session_id,
             // The one home the head shortens against - the same value its own list uses, so
             // a plugin's rows and the head's rows cannot disagree about what `~` means.
@@ -714,6 +775,40 @@ impl App {
                         number: Some(number),
                         enter: Some(RowAct::switch(id)),
                         open,
+                    });
+                }
+                None if matches!(r.node, crate::app::session::Node::Fleet { .. }) => {
+                    let Some(f) = self.fleet.iter().find(|f| f.id == r.node.key()) else {
+                        continue;
+                    };
+                    tree.push(TreeRow {
+                        id: Some(f.id.clone()),
+                        depth: r.depth,
+                        number: None,
+                        open: None,
+                        cells: vec![TreeCell::role(
+                            clean(&fleet_name(f)),
+                            rano::style::Role::Plain,
+                        )],
+                        facts: vec![TreeCell::role(
+                            clean(&fleet_facts(f)),
+                            if f.state == letibot_sessionlog::FleetState::Running {
+                                rano::style::Role::Pending
+                            } else {
+                                rano::style::Role::Faint
+                            },
+                        )],
+                        detail: vec![clean(&fleet_under(f, &self.home))],
+                        detail_column: None,
+                        actions: vec![TreeAction::new("enter", "shows the attach command")],
+                        ..TreeRow::default()
+                    });
+                    listed.push(Listed {
+                        id: f.id.clone(),
+                        session: None,
+                        number: None,
+                        enter: Some(RowAct::switch(f.id.clone())),
+                        open: None,
                     });
                 }
                 None => {
@@ -888,6 +983,40 @@ impl App {
         }
         self.redraw = true;
     }
+}
+
+/// Milliseconds between two readings of the other daemons.
+const FLEET_REFRESH_MS: u64 = 5_000;
+
+/// A fleet row's name, facts and faint line. The feed carries these words so the plugin draws
+/// the head's sentences and cannot differ.
+fn fleet_name(f: &letibot_sessionlog::FleetRow) -> String {
+    if f.title.is_empty() {
+        letibot_sessionlog::registry::short_id(&f.id).to_string()
+    } else {
+        f.title.clone()
+    }
+}
+
+fn fleet_facts(f: &letibot_sessionlog::FleetRow) -> String {
+    let mut facts = vec![f.state.word()];
+    if let Some(p) = &f.placement {
+        facts.push(p.clone());
+    }
+    if !f.model.is_empty() {
+        facts.push(f.model.clone());
+    }
+    facts.join(" · ")
+}
+
+fn fleet_under(f: &letibot_sessionlog::FleetRow, home: &str) -> String {
+    let ws = match f.workspace.strip_prefix(home) {
+        Some(rest) if !home.is_empty() && (rest.is_empty() || rest.starts_with('/')) => {
+            format!("~{rest}")
+        }
+        _ => f.workspace.clone(),
+    };
+    format!("{}  {ws}", f.id)
 }
 
 /// The tree block a sessions view answers with, and its empty sentence.

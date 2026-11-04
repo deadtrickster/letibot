@@ -151,6 +151,11 @@ fn usage() -> String {
 /// Run the head over `args`, returning the process exit code. `args` is what followed the program name, so the
 /// launcher and `letibot tui` arrive here identically.
 pub fn run(args: &[String]) -> i32 {
+    run_with(args, None)
+}
+
+/// [`run`], with a reader of the other daemons' packages for the sessions list.
+pub fn run_with(args: &[String], fleet: Option<letibot_sessionlog::FleetReader>) -> i32 {
     let args = match parse(args) {
         Ok(a) => a,
         Err(e) => {
@@ -203,7 +208,7 @@ pub fn run(args: &[String]) -> i32 {
 
     // The id, on stdout, as the last thing this head says: the launcher execs the head, so this stream is the
     // launcher's, and it is the one place an exit can leave something for the next command to read.
-    match live(&args, cfg) {
+    match live(&args, cfg, fleet) {
         Ok(served) => {
             if !args.no_tty
                 && let Err(e) = print_exit_session(&mut std::io::stdout(), &served)
@@ -786,9 +791,16 @@ fn ask_sessions(
 
 /// Run the head until it quits, and return the session it was serving. The id is returned rather than printed here
 /// so the caller can write it after the terminal is restored. See [`print_exit_session`].
-fn live(args: &Args, cfg: RenderConfig) -> Result<String, Box<dyn std::error::Error>> {
+fn live(
+    args: &Args,
+    cfg: RenderConfig,
+    fleet: Option<letibot_sessionlog::FleetReader>,
+) -> Result<String, Box<dyn std::error::Error>> {
     let mut app = App::new(cfg);
     app.load_prefs();
+    if let Some(reader) = fleet {
+        app.set_fleet_reader(reader);
+    }
 
     // Take the screen and draw chrome before the round trip: `attach` blocks until the `Hello` arrives, and that
     // carries the whole snapshot, so a head that waited drew nothing at all for the length of a big session's.

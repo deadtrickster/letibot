@@ -45,6 +45,9 @@ type Branch<'a> = Option<(&'a str, Option<&'a str>)>;
 struct Feed {
     #[serde(default)]
     sessions: Vec<Session>,
+    /// Package sessions of other daemons, already worded by the head.
+    #[serde(default)]
+    fleet: Vec<Fleet>,
     /// The session the head is standing in - its list is drawn around it.
     #[serde(default)]
     here: String,
@@ -52,6 +55,23 @@ struct Feed {
     #[serde(default)]
     home: String,
 }
+
+/// One package session of another daemon.
+#[derive(Debug, Deserialize)]
+struct Fleet {
+    id: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    facts: String,
+    #[serde(default)]
+    under: String,
+    #[serde(default)]
+    running: bool,
+}
+
+/// The fold key of the packages line, the head's `PACKAGES_KEY`.
+const PACKAGES_KEY: &str = "fleet/packages";
 
 /// One session, as the head holds it and as this list reads it.
 #[derive(Debug, Deserialize)]
@@ -123,6 +143,7 @@ struct Out {
 /// What one call needs besides the feed itself.
 struct Ctx<'a> {
     sessions: &'a [Session],
+    fleet: &'a [Fleet],
     here: &'a str,
     home: &'a str,
     folded: &'a std::collections::BTreeMap<String, bool>,
@@ -348,6 +369,33 @@ fn rows(ctx: &Ctx<'_>) -> Vec<Out> {
             }
         }
     }
+    if !ctx.fleet.is_empty() {
+        let open = ctx.node_open(PACKAGES_KEY);
+        out.push(node_row(
+            PACKAGES_KEY.to_string(),
+            0,
+            format!("packages in other daemons ({})", ctx.fleet.len()),
+            "package sessions of other folders' daemons - enter says how to attach",
+            open,
+        ));
+        if open {
+            for f in ctx.fleet {
+                out.push(Out {
+                    id: f.id.clone(),
+                    depth: 1,
+                    number: None,
+                    cells: vec![Cell::role(clean(&f.name), Role::Plain)],
+                    facts: vec![Cell::role(
+                        clean(&f.facts),
+                        if f.running { Role::Pending } else { Role::Faint },
+                    )],
+                    under: vec![clean(&f.under)],
+                    open: None,
+                    enter: Some(Act::switch(f.id.clone())),
+                });
+            }
+        }
+    }
     out
 }
 
@@ -562,6 +610,7 @@ fn answer(bytes: &[u8]) -> Option<String> {
     }
     let ctx = Ctx {
         sessions: &feed.sessions,
+        fleet: &feed.fleet,
         here: &feed.here,
         home: &feed.home,
         folded: &input.folded,

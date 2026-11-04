@@ -25,7 +25,10 @@ pub fn run(role: Role, args: &[std::ffi::OsString]) -> ExitCode {
         // Wired. `letibot_tui::head::run` is that binary's body, and the flags parse exactly as
         // they did: `scripts/letibot` execs the head with `--socket S --identity U`, and
         // leticl's Common Lisp head speaks that contract.
-        Role::Head => exit_code(letibot_tui::head::run(&args_to_strings(args))),
+        Role::Head => exit_code(letibot_tui::head::run_with(
+            &args_to_strings(args),
+            Some(letibot_bridge::fleet::reader()),
+        )),
         // Wired. `letibot_harnessd::m1::run` is that binary's body; a usage error
         // exits 2 from inside it rather than returning, which is named in the module
         // docs there and is why this arm cannot report a code for every path.

@@ -346,6 +346,28 @@ impl App {
                 }
             }
         }
+        if !self.fleet.is_empty() {
+            let node = Node::Packages {
+                count: self.fleet.len(),
+            };
+            let open = self.node_open(&node, &here);
+            out.push(SessionRow {
+                idx: None,
+                depth: 0,
+                node,
+                open: Some(open),
+            });
+            if open {
+                for f in &self.fleet {
+                    out.push(SessionRow {
+                        idx: None,
+                        depth: 1,
+                        node: Node::Fleet { id: f.id.clone() },
+                        open: None,
+                    });
+                }
+            }
+        }
         out
     }
 
@@ -971,6 +993,14 @@ impl App {
     /// Go to another session: the one door every switch goes through, and the reason the wait is a state and not a
     /// gap. A `Switch` is a round trip, so until the second `Hello` lands the screen holds the session being left,
     pub(crate) fn switch_to(&mut self, id: String) -> Option<Action> {
+        if let Some(f) = self.fleet.iter().find(|f| f.id == id) {
+            // Another daemon holds it, and this head is attached to one socket: the command is the
+            // way in.
+            let said = format!("{} - {}", f.state.word(), f.attach_command());
+            self.say(&said);
+            self.redraw = true;
+            return None;
+        }
         if id == self.session_id {
             self.close_surface(Surface::Picker);
             self.redraw = true;
@@ -1342,6 +1372,13 @@ impl SystemKind {
     }
 }
 
+/// The fold key of the packages line. Session ids begin `s-` and project keys are paths.
+pub(crate) const PACKAGES_KEY: &str = "fleet/packages";
+
+/// What the line over other daemons' packages says it is.
+pub(crate) const FLEET_LEGEND: &str =
+    "package sessions of other folders' daemons - enter says how to attach";
+
 /// What a row of the session list is - a session, or one of the three lines the tree is built
 /// from.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1361,6 +1398,14 @@ pub(crate) enum Node {
         count: usize,
     },
     Session,
+    /// The line over the package sessions of other daemons.
+    Packages {
+        count: usize,
+    },
+    /// One of them. Not in `App::sessions`: another daemon holds it.
+    Fleet {
+        id: String,
+    },
 }
 
 impl Node {
@@ -1369,6 +1414,8 @@ impl Node {
     pub(crate) fn key(&self) -> &str {
         match self {
             Node::Project { key, .. } | Node::System { key, .. } | Node::Group { key, .. } => key,
+            Node::Packages { .. } => PACKAGES_KEY,
+            Node::Fleet { id } => id,
             Node::Session => "",
         }
     }
@@ -1379,7 +1426,8 @@ impl Node {
             Node::Project { name, count, .. } => format!("{name} ({count})"),
             Node::System { count, .. } => format!("system ({count})"),
             Node::Group { kind, count, .. } => format!("{} ({count})", kind.title()),
-            Node::Session => String::new(),
+            Node::Packages { count } => format!("packages in other daemons ({count})"),
+            Node::Session | Node::Fleet { .. } => String::new(),
         }
     }
 
@@ -1389,7 +1437,8 @@ impl Node {
             Node::Project { .. } => "a workspace root, and every session that runs in it",
             Node::System { .. } => "the sessions the harness runs for itself",
             Node::Group { kind, .. } => kind.legend(),
-            Node::Session => "",
+            Node::Packages { .. } => FLEET_LEGEND,
+            Node::Session | Node::Fleet { .. } => "",
         }
     }
 

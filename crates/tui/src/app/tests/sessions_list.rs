@@ -485,3 +485,54 @@ fn a_child_whose_parent_has_closed_is_drawn_under_the_project() {
         "and it is on the screen rather than vanishing"
     );
 }
+
+/// Package sessions of two other daemons are listed with their folder and state, one whose daemon is
+/// down says so, both drawings agree, and Enter names the command that attaches.
+#[test]
+fn packages_of_other_daemons_are_listed_with_folder_and_state() {
+    use letibot_sessionlog::{FleetRow, FleetState};
+    let mut a = the_daemon();
+    let row = |id: &str, ws: &str, state: FleetState| FleetRow {
+        id: id.into(),
+        title: format!("work of {id}"),
+        workspace: ws.into(),
+        model: "glm-coding/glm-4.7".into(),
+        placement: Some("host:lab2x1".into()),
+        state,
+    };
+    a.fleet = vec![
+        row(
+            "s-far-1",
+            "/home/dead/Projects/letibot/wt-a",
+            FleetState::Running,
+        ),
+        row(
+            "s-far-2",
+            "/home/dead/Projects/letibot/wt-b",
+            FleetState::DaemonDown,
+        ),
+    ];
+    a.set_row_fold(crate::app::session::PACKAGES_KEY, true);
+    let (own, plugins) = both_lists(&a);
+    assert_eq!(own, plugins, "the plugin's list is the head's list");
+    let text = own.join("\n");
+    assert!(text.contains("packages in other daemons (2)"), "{text}");
+    assert!(text.contains("work of s-far-1"), "{text}");
+    assert!(text.contains("running"), "{text}");
+    assert!(text.contains("daemon not running"), "{text}");
+    assert!(text.contains("~/Projects/letibot/wt-b"), "{text}");
+    assert!(text.contains("host:lab2x1"), "{text}");
+    a.switch_to("s-far-2".into());
+    assert!(
+        a.notice.as_deref().is_some_and(
+            |n| n.contains("cd /home/dead/Projects/letibot/wt-b && letibot --session s-far-2")
+        ),
+        "{:?}",
+        a.notice
+    );
+    // Folded, the group is one line.
+    a.set_row_fold(crate::app::session::PACKAGES_KEY, false);
+    let (own, plugins) = both_lists(&a);
+    assert_eq!(own, plugins);
+    assert!(!own.join("\n").contains("work of s-far-1"));
+}
