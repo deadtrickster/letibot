@@ -97,7 +97,9 @@ struct One {
 impl One {
     /// The session's own config: its own store and workspace, no provider (the turn talks to this test's endpoint), the `leticode` seat (unconfined, names `room`), and the room link asked for explicitly so a constructor that stopped setting it cannot make this file measure nothing.
     fn config(dir: &Path, id: &str) -> Config {
-        let workspace = dir.join("ws");
+        // One project folder for both daemons: queues are per project room, and a folder is its
+        // own project, so two sessions share a queue only by sharing a folder.
+        let workspace = dir.parent().unwrap_or(dir).join("project");
         std::fs::create_dir_all(&workspace).expect("a workspace");
         let mut cfg = Config::for_this_box(&workspace);
         cfg.dialect = Dialect::Qwen;
@@ -497,8 +499,8 @@ fn two_daemons_one_host_and_the_answer_arrives_with_nobody_asking() {
     let coord = Coordinator::start(&arbiter, Arc::new(|_: &str| {})).expect("the box's room");
     let socket = coord.socket().to_path_buf();
 
-    // The two daemons. Each has its own store, socket and workspace; both are in the box's own
-    // room, because a workspace that is no project has no project key (docs/room.md, slice 6).
+    // The two daemons. Each has its own store, socket and workspace; both sit in one project
+    // folder, so they share one project room and its queues.
     let a = One::start(dir.path().join("a"), "s-two-a", a_script);
     let b = One::start(dir.path().join("b"), "s-two-b", b_script);
 

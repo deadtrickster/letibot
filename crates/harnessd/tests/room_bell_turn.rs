@@ -225,9 +225,13 @@ fn a_room_event_starts_a_turn_in_a_session_nobody_typed_into() {
 
     // Another session's work, and this session becomes a member of the tag by claiming it -
     // the production door, through the tool the model would call.
-    let elsewhere = Client::connect(
+    // In the harness session's own project room: queues are per room, and the session's folder
+    // is its own project, so a post is claimable only by a session of that project.
+    let project = letibot_room::project_key(&cfg.workspace.display().to_string());
+    let elsewhere = Client::connect_named(
         &socket,
         Speaker::top_level("s-elsewhere"),
+        letibot_room::room_name(&server.name(), &project),
         Arc::new(|_: &letibot_room::Event| {}),
     )
     .expect("the other session joins the room");
@@ -359,10 +363,11 @@ fn the_clients_that_cannot_hear_a_room_event_say_so_where_a_person_looks() {
                 used.push_str(&src);
             }
             let named = used.matches("letibot_room::").count();
-            let version = used.matches("letibot_room::ROOM_PROTOCOL_VERSION").count();
+            let allowed = used.matches("letibot_room::ROOM_PROTOCOL_VERSION").count()
+                + used.matches("letibot_room::wire::upgrade_hint").count();
             assert_eq!(
-                named, version,
-                "`bridge` may name only the protocol number from the room crate"
+                named, allowed,
+                "`bridge` may name only the protocol number and the upgrade hint from the room crate"
             );
             continue;
         }
