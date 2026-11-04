@@ -477,13 +477,8 @@ impl Harness {
                         h,
                     ))),
                 );
-                // Whether it helped is not decided here: it used to be, on the base's estimate, for good. A
-                // metered base is judged by the first round that measures it, and a local one inside `compact_with`,
-                // where the count is exact. Either way the controller said it, once.
-                //
-                // The report is the one row this compaction leaves: a second row here repeated
-                // these numbers and drew a second size for one fold, and the log is the account
-                // an operator reads in a tail.
+                // Whether it helped is not decided here: a metered base is judged by the first round that measures it, a local one inside `compact_with` where the count is exact.
+                // The report is the compaction's one row, so numbers are not repeated and the log stays the operator's account.
                 let cut = if report.fork.truncated {
                     crate::sessions::SUMMARY_CUT_OFF
                 } else {
@@ -1531,11 +1526,8 @@ impl Harness {
         } else {
             ""
         };
-        // A fork that summarised says so; one that did not must not: an empty summary is `reingest`, and telling
-        // the model everything before is replaced by a summary it is not shown contradicts what it can see. The
-        // sentence also changed when a tail arrived, for the same reason: `CompactionTail::why_line` words it.
-        // R93.E6: a local model's reason is a rule id and a cache rule - the operator's question,
-        // and nothing the model can act on - so that one is left out of the row it reads.
+        // A fork that summarised says so; an empty summary is `reingest` and must not claim a replacement the model cannot see. `CompactionTail::why_line` words the tail case.
+        // A local model's reason is a rule id and cache rule, the operator's question, so it is left out of the model's row.
         let tail_why_text = match tail.because {
             "" | "local_model" => None,
             because => Some(
@@ -1715,10 +1707,8 @@ impl Harness {
                 ),
             );
         }
-        // The stored context size is about the OLD conversation: the last prompt the provider measured, which this
-        // fork replaced. A verbatim fork replaced nothing, so its count is kept and its ledger anchor moved. Any
-        // other fork has nothing measured on its new base - but the RATIO is not a fact about the old conversation,
-        // so it rides the fork, and a restart before any round reads the new base in the provider's units.
+        // The stored context size describes the old conversation, which this fork replaced.
+        // A verbatim fork keeps its count and moves its ledger anchor; any other fork has nothing measured on its new base. The ratio is not about the old conversation, so it rides the fork.
         if let Some(store) = &self.store {
             let kept = if verbatim {
                 store
@@ -2124,10 +2114,8 @@ impl Resident {
     }
 }
 
-/// What the ledger holds after `from` that the next request will carry, in ledger tokens: the provider-sized
-/// estimate of an append, so on a metered session it drops what the request leaves out - the segment mark, and the
-/// reasoning unless the request echoes it - while on a local one the request IS the ledger. A row that starts before
-/// `from` is not counted.
+/// What the ledger holds after `from` that the next request carries, in ledger tokens: the provider-sized estimate of an append.
+/// On a metered session it drops what the request omits (segment mark, unechoed reasoning); on a local one the request is the ledger. A row starting before `from` is not counted.
 fn sent_since(
     ledger: &letibot_tokencore::ledger::TokenLedger,
     items: &[TranscriptItem],

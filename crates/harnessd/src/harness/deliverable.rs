@@ -79,10 +79,8 @@ pub fn completion_line(d: &Deliverable, files: &[String]) -> String {
     )
 }
 
-/// What the parent is handed, with the dirty-tree line AFTER what the child said. `text` is the
-/// child's answer or the failure's sentence; a child with no deliverable, or a clean tree, gets it
-/// back unchanged. The line goes second because the parent's `[task]` bullet is the first line, and
-/// that must be the answer rather than a complaint about the tree.
+/// What the parent is handed, with the dirty-tree line after the child's words. `text` is the answer or failure sentence; no deliverable or a clean tree returns it unchanged.
+/// The line goes second because the parent's `[task]` bullet is the first line and must be the answer.
 pub fn with_the_line(d: Option<&Deliverable>, text: &str) -> String {
     match d.and_then(|d| d.uncommitted().map(|f| completion_line(d, &f))) {
         Some(line) => format!("{text}\n\n{line}"),
@@ -90,10 +88,8 @@ pub fn with_the_line(d: Option<&Deliverable>, text: &str) -> String {
     }
 }
 
-/// **A child that failed does not need its tree.** Nothing else removes the worktree a refused,
-/// failed or killed child leaves behind, and the branch keeps whatever it committed, so the tree
-/// is a copy of work that is already somewhere else. `Err` is what was kept and why — a tree with
-/// uncommitted work, which the removal refuses on its own.
+/// A failed child does not need its tree: the branch keeps what it committed, so the worktree is a redundant copy and nothing else removes it.
+/// `Err` is what was kept and why, e.g. uncommitted work, which the removal refuses.
 pub fn reap_failed(d: Option<&Deliverable>) -> Result<(), String> {
     let Some(d) = d else {
         return Ok(());

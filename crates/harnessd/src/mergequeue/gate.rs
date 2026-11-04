@@ -114,17 +114,11 @@ pub(crate) fn killed_at_cap_words(step: &str, clause: &str, how: &str, leftover:
     )
 }
 
-/// Where the gate's cap comes from - a lock and not a `OnceLock`, because a number that decides a
-/// step's cap has to be readable when the GATE starts, not when the daemon did. As a `OnceLock` a
-/// second [`set_gate_memory`] was dropped by `let _ =`, so a box whose `[memory] gate` was raised
-/// while the queue ran went on gating at the number it started with.
+/// Where the gate's cap comes from. A lock, not a `OnceLock`: the number must be readable when the gate starts, and a later [`set_gate_memory`] must not be dropped.
 enum CapSource {
     /// A value somebody decided: a fixture, or a caller with no file to read.
     Fixed(Ask),
-    /// The operator's `providers.toml`, re-read every time a gate asks ([`gate_memory`]). `last` is
-    /// the newest value that read cleanly - a file that goes bad keeps the last number the operator
-    /// wrote rather than falling back to half of what is free - and `said` is the refusal already
-    /// printed, so a gate every pass does not say it every pass.
+    /// The operator's `providers.toml`, re-read at every ask ([`gate_memory`]). `last` is the newest cleanly read value, kept when the file goes bad. `said` is the refusal already printed, so it is not repeated each pass.
     File {
         path: PathBuf,
         last: Ask,
@@ -144,11 +138,8 @@ pub fn set_gate_memory(ask: Ask) {
     *cap_source() = Some(CapSource::Fixed(ask));
 }
 
-/// The gate's cap from the operator's `providers.toml`: parsed NOW, so a malformed value is refused
-/// where the daemon starts and the sentence names the file, and re-read at every gate after that, so
-/// a person who edits `[memory] gate` and asks for a gate gets the number in the file. The `Err` is
-/// why a `set` cannot take effect, said by the caller (`cli.rs` refuses the start with it) instead of
-/// being swallowed.
+/// The gate's cap from `providers.toml`: parsed now so a malformed value is refused at start with a sentence naming the file, then re-read at every gate.
+/// The `Err` is why a `set` cannot take effect, reported by the caller (`cli.rs`).
 pub fn set_gate_memory_from_file(path: &Path) -> Result<Ask, String> {
     let ask = gate_memory_in(path)?;
     *cap_source() = Some(CapSource::File {
@@ -168,10 +159,8 @@ pub fn gate_memory_in(path: &Path) -> Result<Ask, String> {
         .map_err(|e| format!("[memory] gate in {}: {e}", path.display()))
 }
 
-/// The gate's cap in force NOW: the file's `[memory] gate` when one was armed
-/// ([`set_gate_memory_from_file`]), else [`set_gate_memory`]'s value, else [`GATE_MEMORY_DEFAULT`].
-/// [`LocalGate::run`] asks once per gate, which is what makes an edited file the number the next
-/// gate uses.
+/// The gate's cap in force now: the file's `[memory] gate` if armed ([`set_gate_memory_from_file`]), else [`set_gate_memory`]'s value, else [`GATE_MEMORY_DEFAULT`].
+/// [`LocalGate::run`] asks once per gate.
 pub fn gate_memory() -> Ask {
     let mut slot = cap_source();
     match slot.as_mut() {
@@ -213,13 +202,8 @@ fn gate_host_slot() -> std::sync::MutexGuard<'static, Option<String>> {
     GATE_HOST.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// `[queue] gate_host` / `--gate-host` - the declared host the gate's steps run on, or `None` for
-/// this machine. A second call takes effect, for [`set_gate_memory`]'s reason: the queue builds ONE
-/// runner per daemon, so [`LocalGate::run`] reads this at every gate rather than at the build. An
-/// empty name is `None`, which is how a project says *here*.
-///
-/// No file is re-read here, unlike the cap: the name comes from the project's `leticode.toml` AND
-/// from `--gate-host`, and the flag wins over the file - a re-read would quietly undo the flag.
+/// `[queue] gate_host` / `--gate-host`: the declared host the gate's steps run on, `None` for this machine. Read at every gate for [`set_gate_memory`]'s reason. An empty name is `None`.
+/// No file is re-read: the flag wins over `leticode.toml` and a re-read would undo it.
 pub fn set_gate_host(host: Option<String>) {
     *gate_host_slot() = host.map(|h| h.trim().to_string()).filter(|h| !h.is_empty());
 }
@@ -714,10 +698,8 @@ fn red_cause(out: &str, exit: StepExit, memory: &StepMemory) -> RedCause {
     if let Some(what) = apparatus_absent(out) {
         return RedCause::ApparatusAbsent(what);
     }
-    // A child killed far from the cap - the box's OOM killer took a rustc - leaves cargo answering
-    // with a code of its own and the kill in its output. The step's leader is not the thing that
-    // ended without judging, so the output's signal is the answer - unless the output also shows
-    // code failing, which no kill beside it turns back into an absence of a verdict.
+    // A child killed far from the cap (the OOM killer took a rustc) leaves cargo with its own code and the kill in the output, so the output's signal is the answer.
+    // Unless the output also shows code failing: no kill beside it removes that verdict.
     if !shows_a_verdict(out)
         && let Some(sig) = shown_kill(out)
     {
@@ -851,10 +833,8 @@ pub trait GateRunner: Send + Sync {
 pub struct LocalGate;
 
 impl GateRunner for LocalGate {
-    /// The host and the cap are read HERE, when the gate starts, and not when the daemon started: a
-    /// cap edited into `providers.toml` is the number the next gate uses. Both are read once per
-    /// run and [`run_with_memory`] resolves the cap once for every step of it, so one gate never
-    /// judges two of its steps by two different numbers.
+    /// Host and cap are read when the gate starts, not at daemon start, so an edited cap applies to the next gate.
+    /// [`run_with_memory`] resolves the cap once, so one gate never judges two steps by different numbers.
     fn run(&self, worktree: &Path, steps: &[String], ctl: &GateControl) -> GateRun {
         run_gate(gate_host().as_deref(), worktree, steps, ctl, gate_memory())
     }

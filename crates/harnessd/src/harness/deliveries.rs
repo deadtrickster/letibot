@@ -1,8 +1,6 @@
-//! **What a session tells its model between turns**: a monitor that fired, a background job or a
-//! subagent that ended, and R79's rule for holding a batch until a break can carry it.
+//! What a session tells its model between turns: a fired monitor, an ended background job or subagent, and the rule for holding a batch until a break can carry it.
 //!
-//! The decision is `crate::delivery`'s, pure and asserted there; what lives here is the reading of a
-//! session's own facts and the words those facts become.
+//! The decision is `crate::delivery`'s, pure and tested there. This file reads the session's facts and words them.
 
 use super::*;
 use letibot_tools::exec::monitor::{Fired, Firing};
@@ -29,10 +27,8 @@ impl FiringLine {
     }
 }
 
-/// **A burst of firings, folded to one line a monitor**: the newest words, and how many the line
-/// stands for. The fold is per NAME and per KIND and in first-seen order: two monitors are two
-/// lines, one chatty monitor cannot push another's news out of the delivery, and an ending keeps
-/// its own line because it says something a firing's words cannot - *and nothing is watching now*.
+/// A burst of firings folded to one line per monitor: the newest words and the count.
+/// Folded per name and kind in first-seen order, so one chatty monitor cannot push out another's news, and an ending keeps its own line (*and nothing is watching now*).
 pub(crate) fn fold_firings(fired: &[Firing]) -> Vec<FiringLine> {
     let mut out: Vec<FiringLine> = Vec::new();
     for f in fired {
@@ -704,10 +700,8 @@ impl Deliveries {
         (!parts.is_empty()).then(|| parts.join("\n\n"))
     }
 
-    /// A turn the model is taking anyway: whatever is immediate, what arrived while the session was
-    /// idle, and the batch held while the last turn ran (under `Rule::Batch`, which rides this turn).
-    /// Test-only: every door that opens a turn uses [`Deliveries::at_turn_start_unread`], because a
-    /// door's row can still fail (R91.11).
+    /// A turn the model is taking anyway: immediate items, what arrived while idle, and the batch held during the last turn (`Rule::Batch` rides this turn).
+    /// Test-only: doors use [`Deliveries::at_turn_start_unread`] because a door's row can still fail.
     #[cfg(test)]
     pub(crate) fn at_turn_start(&self) -> Option<String> {
         let b = self.between_turns(|_| false, crate::delivery::Rule::Batch);
@@ -725,10 +719,9 @@ impl Deliveries {
         ((!parts.is_empty()).then(|| parts.join("\n\n")), told)
     }
 
-    /// Everything owed to a session between turns: holding exists only so a running turn is not
-    /// interrupted, so nothing stays held. What arrived while the model was working is the batch under
-    /// `held_rule`; what arrived while it was idle is an ordinary completion, recorded as `Rule::Idle`.
-    /// Test-only, for [`Deliveries::at_turn_start`]'s reason: a door waits until its row is in (R91.11).
+    /// Everything owed between turns: holding exists only so a running turn is not interrupted, so nothing stays held.
+    /// Arrivals during work are the batch under `held_rule`, arrivals while idle an ordinary `Rule::Idle` completion.
+    /// Test-only, for [`Deliveries::at_turn_start`]'s reason.
     #[cfg(test)]
     pub(crate) fn between_turns(
         &self,

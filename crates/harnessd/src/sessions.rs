@@ -2358,10 +2358,8 @@ impl<'a> Sessions<'a> {
         self.plugins.values().filter_map(|h| h.next_at()).min()
     }
 
-    /// Close every held session's backend, and say what each one delivered - the daemon's last
-    /// act. A session's placement hands its work back only when its backend closes, and the
-    /// sessions the daemon serves on their own threads keep theirs there ([`Court`]), so both
-    /// halves are asked: this is the only door `--stop` and the idle exit have.
+    /// Close every held session's backend and say what each delivered - the daemon's last act.
+    /// A placement hands work back only when its backend closes, and sessions on their own threads keep theirs ([`Court`]), so both are asked. The only door `--stop` and the idle exit have.
     pub fn close_backends(&self) -> Vec<String> {
         // The daemon is going, so everything it supervises goes too - the same rule a session's
         // own close keeps, applied to every session this daemon holds. `--stop` reaches here; a
@@ -2576,10 +2574,8 @@ impl<'a> Sessions<'a> {
                 pending: None,
             });
         let prior = record.as_ref().and_then(|r| r.later_turn_began());
-        // **The parent's slot, settled from here.** This turn is not on the child's own thread, so
-        // the two acts that thread makes (`harness::later_turn`) have to be made from the parent's
-        // side - and whether it had settled is read BEFORE the turn, since a turn of the hold is
-        // part of the answer it ends with rather than news of its own.
+        // The parent's slot, settled from here: this turn is not on the child's thread, so the two acts it makes (`harness::later_turn`) are made from the parent's side.
+        // Whether it had settled is read before the turn, since a turn of the hold is part of the answer, not news.
         let parent = h.config().parent_session_id.clone();
         let a_child_turn = parent.as_ref().map(|parent| {
             let settled_before = self
@@ -3024,10 +3020,8 @@ impl<'a> Sessions<'a> {
         settled
     }
 
-    /// Close one session this worker holds: its harness, every per-session table, and its
-    /// registry entry. Nothing closed a session before this, so `open` kept every harness the
-    /// daemon ever built and nine maps kept an entry each. The answer is `None` for a session this
-    /// worker does not hold, and otherwise where the work went - see [`Sessions::close_backends`].
+    /// Close one session this worker holds: its harness, every per-session table and its registry entry.
+    /// `None` for a session this worker does not hold, else where the work went - see [`Sessions::close_backends`].
     pub fn close(&mut self, session_id: &str) -> Option<String> {
         // The panes this session held go first, and they are the one thing here a head can see:
         // the operator typed `!term` into them, and a program still drawing into a pane no session
@@ -4901,11 +4895,8 @@ pub(crate) fn compaction_said(
             r.fork.transcript_id
         );
     }
-    // In the units the operator's header shows; see `Config::shown_tokens`. This line said
-    // `1352917 → 11353` beside a header reading 900k, and the operator read the first number as a lie.
-    // One sentence carrying every fact a head draws: the size, what stands in for the history,
-    // what was kept and what was dropped. A count repeated in a later sentence is a second
-    // number a reader has to reconcile.
+    // In the units the operator's header shows; see `Config::shown_tokens`.
+    // One sentence carries every fact a head draws (size, what stands in for history, what was kept and dropped), so no count is repeated for a reader to reconcile.
     let (kept, dropped) = compaction_account(r);
     let mark = if scales.estimated { "≈ " } else { "" };
     // Between the facts and the transcript, so the facts stay inside the first clause.
@@ -4939,10 +4930,8 @@ pub(crate) fn compaction_said(
     {
         said.push_str(&format!(" {line}"));
     }
-    // **What the record kept of what the conversation held** (R22), and what it was allowed: a
-    // summary is sized by a stated fraction of the room now, so the line says the fraction rather
-    // than leaving a reader to take the model's word for it. Both numbers come off the outcome the
-    // daemon measured, so a head drawing this sentence and a head drawing the wire report agree.
+    // What the record kept of the conversation and what it was allowed: a summary is sized by a stated fraction of the room, so the line says the fraction.
+    // Both numbers come from the measured outcome, so a head drawing this sentence and the wire report agree.
     if let Some(f) = &r.summary_turn.fidelity {
         let mut line = format!(" The record it wrote carries {}", f.line());
         if let Some(b) = r.summary_turn.budget {

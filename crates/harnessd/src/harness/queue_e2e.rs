@@ -486,10 +486,8 @@ fn a_child_of_the_main_tree_leaves_no_entry() {
     assert!(warning(&fx.parent, "merge_not_queued").is_none());
 }
 
-/// **A tree with nothing in it is nobody's deliverable.** A child that failed leaves a worktree of
-/// its own behind; when its branch carries nothing over its base and the tree is clean there is
-/// nothing in it to lose, and it is retired - while a child that left a commit keeps its tree, that
-/// commit being the only copy of the work.
+/// A tree with nothing in it is nobody's deliverable: a failed child's worktree is retired when its branch adds nothing over base and the tree is clean.
+/// A child that committed keeps its tree, the commit being the only copy.
 #[test]
 fn a_failed_childs_empty_tree_is_retired_and_one_with_work_is_kept() {
     let Some(fx) = Fixture::new("reap-empty") else {
@@ -675,10 +673,7 @@ fn a_second_finish_of_one_child_is_one_row() {
     assert_eq!(rows[0].id, handle);
 }
 
-/// **A later commit puts the branch back in line.** The queue writes a row's head once, at the
-/// enqueue, and `insert or ignore` makes every later enqueue silent - so a row withdrawn for
-/// carrying nothing stayed withdrawn while the child went on committing, and nothing ever asked
-/// a reviewer to look at the work.
+/// A later commit puts the branch back in line. The queue writes a row's head once at enqueue and `insert or ignore` silences later enqueues, so a withdrawn row must be re-asked when the child commits again.
 #[test]
 fn a_later_commit_puts_a_withdrawn_row_back_in_line() {
     let Some(fx) = Fixture::new("later") else {
