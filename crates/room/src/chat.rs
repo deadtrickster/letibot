@@ -53,6 +53,18 @@ pub fn valid_handle(name: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'@')
 }
 
+/// May a session's name slug stand as its member handle: lowercase letters, digits and `-`, not
+/// an id's prefix (`s-`), the operator, or a bridge alias. A slug that fails stays addressable by id.
+pub fn is_member_handle(slug: &str) -> bool {
+    !slug.is_empty()
+        && slug != OPERATOR
+        && !slug.starts_with("s-")
+        && !BRIDGE_ALIASES.contains(&slug)
+        && slug
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
 /// The short names a bare `to` or `@mention` may use for the Claude Code bridges, whose own names
 /// are `cc@<folder>`.
 pub const BRIDGE_ALIASES: [&str; 2] = ["cc", "claude-code"];
@@ -335,7 +347,11 @@ pub struct RoomInfo {
 /// One participant in a room's roster.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Presence {
+    /// What the room calls this participant: a named session's handle, else its id.
     pub name: String,
+    /// The principal's identity - a session's id - whatever `name` shows.
+    #[serde(default)]
+    pub id: String,
     pub kind: Seat,
     /// Holding a connection to the coordinator now.
     pub connected: bool,

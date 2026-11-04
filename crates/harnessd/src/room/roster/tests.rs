@@ -248,3 +248,39 @@ fn a_child_and_a_gatekeeper_join_their_roots_project_room() {
         "a child under a temp dir is in its root's room"
     );
 }
+
+/// A named top-level session is a member by the slug of its name. Unnamed, a subagent, a slug
+/// that reads as an id, a bridge alias and a repeated slug are not.
+#[test]
+fn a_named_top_level_session_is_a_member_by_its_slug() {
+    let rows = vec![
+        row("s-a", "Stroppy Conformity", None),
+        row("s-b", "stroppy-conformity", None),
+        row("s-c", "", None),
+        row("s-d", "s-looks-like-an-id", None),
+        row("s-e", "claude code", None),
+        row("s-f", "claude-code", None),
+        row("s-a-sub", "the rust rewrite", Some("s-a")),
+    ];
+    let members = members_of(&rows, &letibot_room::project_key(PROJECT), |_| {
+        PROJECT.to_string()
+    });
+    let handle = |id: &str| {
+        members
+            .iter()
+            .find(|m| m.session == id)
+            .map(|m| m.handle.as_str())
+            .unwrap_or("?")
+    };
+    assert_eq!(handle("s-a"), "stroppy-conformity");
+    assert_eq!(
+        handle("s-b"),
+        "",
+        "the later of two equal slugs keeps its id"
+    );
+    assert_eq!(handle("s-c"), "");
+    assert_eq!(handle("s-d"), "");
+    assert_eq!(handle("s-e"), "", "`claude-code` is a bridge alias");
+    assert_eq!(handle("s-f"), "");
+    assert_eq!(handle("s-a-sub"), "", "a subagent is not addressed by name");
+}

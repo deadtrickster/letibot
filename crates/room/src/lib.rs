@@ -16,7 +16,7 @@ pub mod wire;
 pub use agent::{AgentLedger, TagAgent};
 pub use chat::{
     Attention, Chat, DM_ROOM, HOST_ROOM, History, MAX_TEXT, Message, OPERATOR, Presence, RING, Ref,
-    RoomInfo, Seat, project_room, valid_handle,
+    RoomInfo, Seat, is_member_handle, project_room, valid_handle,
 };
 pub use item::{Abandonment, Claim, Item, Speaker, State, Wait, Why, duration};
 pub use lease::{

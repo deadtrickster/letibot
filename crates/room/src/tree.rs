@@ -381,6 +381,7 @@ mod tests {
         let top = Member {
             session: "s-a".into(),
             label: "the habr article".into(),
+            handle: String::new(),
             group: Group::Top,
             parent: None,
             depth: 0,
@@ -389,6 +390,7 @@ mod tests {
         let sub = Member {
             session: "s-a-sub-1".into(),
             label: "the rust rewrite".into(),
+            handle: String::new(),
             group: Group::Sub,
             parent: Some("s-a".into()),
             depth: 1,
@@ -397,6 +399,7 @@ mod tests {
         let gate = Member {
             session: "s-gatekeeper-aaaaaaaaaaaa".into(),
             label: "review queue".into(),
+            handle: String::new(),
             group: Group::Gatekeeper,
             parent: None,
             depth: 0,
@@ -421,6 +424,7 @@ mod tests {
         let mk = |session: &str, label: &str, group: Group, depth: u32| Member {
             session: session.into(),
             label: label.into(),
+            handle: String::new(),
             group,
             parent: None,
             depth,

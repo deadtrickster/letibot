@@ -857,11 +857,14 @@ impl Server {
     }
 
     /// What a name a sender wrote means: itself when somebody answers to it, else the one
-    /// connected bridge a short name (`cc`, `claude-code`) stands for. `Err` lists the full names
-    /// when the short name fits several.
-    fn resolve_name(&self, name: &str) -> Result<String, Vec<String>> {
-        if self.is_known(name) || !chat::BRIDGE_ALIASES.contains(&name) {
+    /// connected bridge a short name (`cc`, `claude-code`) stands for, else the session whose
+    /// handle it is. `Err` lists the full names when the short name fits several.
+    fn resolve_name(&self, project: &str, name: &str) -> Result<String, Vec<String>> {
+        if self.is_known(name) {
             return Ok(name.to_string());
+        }
+        if !chat::BRIDGE_ALIASES.contains(&name) {
+            return self.resolve_handle(project, name);
         }
         let mut found: Vec<String> = self
             .external_names()
@@ -877,15 +880,82 @@ impl Server {
         }
     }
 
-    /// `text` with each short bridge name in an `@mention` made the full name, or the refusal
-    /// for one that fits several.
-    fn resolve_mentions(&self, text: &str) -> Result<String, crate::Refused> {
+    /// The session id a member handle means: the one in the sender's project if that is unambiguous,
+    /// else the only one on the host. `name` itself when no member has the handle, and `Err` with
+    /// the ids when several do.
+    fn resolve_handle(&self, project: &str, name: &str) -> Result<String, Vec<String>> {
+        let want = name.to_lowercase();
+        let found: Vec<(String, String)> = {
+            let rooms = self.inner.rooms.lock().expect("the rooms lock");
+            rooms
+                .iter()
+                .flat_map(|(p, r)| {
+                    r.members()
+                        .iter()
+                        .filter(|m| m.group == crate::Group::Top && m.handle == want)
+                        .map(|m| (p.clone(), m.session.clone()))
+                        .collect::<Vec<_>>()
+                })
+                .collect()
+        };
+        let here: Vec<&(String, String)> = found.iter().filter(|(p, _)| p == project).collect();
+        match (here.as_slice(), found.as_slice()) {
+            ([one], _) => Ok(one.1.clone()),
+            (_, []) => Ok(name.to_string()),
+            (_, [one]) => Ok(one.1.clone()),
+            _ => {
+                let mut ids: Vec<String> = found.into_iter().map(|(_, id)| id).collect();
+                ids.sort();
+                ids.dedup();
+                Err(ids)
+            }
+        }
+    }
+
+    /// Every named top-level member's handle, by session id.
+    fn handles(&self) -> BTreeMap<String, String> {
+        let rooms = self.inner.rooms.lock().expect("the rooms lock");
+        rooms
+            .values()
+            .flat_map(|r| r.members().to_vec())
+            .filter(|m| m.group == crate::Group::Top && !m.handle.is_empty())
+            .map(|m| (m.session, m.handle))
+            .collect()
+    }
+
+    /// `message` as a reader sees it: a named session's id in the author, the addressee and the
+    /// `@` mentions becomes its handle. The log keeps ids, so a rename changes how old lines read.
+    fn shown(
+        &self,
+        mut message: chat::Message,
+        handles: &BTreeMap<String, String>,
+    ) -> chat::Message {
+        if handles.is_empty() {
+            return message;
+        }
+        let swap = |name: &mut String| {
+            if let Some(h) = handles.get(name.as_str()) {
+                *name = h.clone();
+            }
+        };
+        swap(&mut message.author);
+        if let Some(to) = message.to.as_mut() {
+            swap(to);
+        }
+        for m in chat::mentions(&message.text) {
+            if let Some(h) = handles.get(&m) {
+                message.text = replace_mention(&message.text, &m, h);
+            }
+        }
+        message
+    }
+
+    /// `text` with each short bridge name and each member handle in an `@mention` made the full
+    /// name or id, or the refusal for one that fits several.
+    fn resolve_mentions(&self, project: &str, text: &str) -> Result<String, crate::Refused> {
         let mut out = text.to_string();
         for m in chat::mentions(text) {
-            if !chat::BRIDGE_ALIASES.contains(&m.as_str()) {
-                continue;
-            }
-            match self.resolve_name(&m) {
+            match self.resolve_name(project, &m) {
                 Ok(full) if full != m => {
                     out = replace_mention(&out, &m, &full);
                 }
@@ -922,7 +992,7 @@ impl Server {
             .to_string();
         let mut audience: BTreeMap<String, (Seat, String)> = BTreeMap::new();
         for p in self.roster_of(&message.room) {
-            audience.insert(p.name, (p.kind, p.project));
+            audience.insert(p.id, (p.kind, p.project));
         }
         let named: Vec<String> = message
             .to
@@ -1025,10 +1095,11 @@ impl Server {
             .into_iter()
             .partition(|m| m.attends(session, chat::Attention::ToMe));
         let skipped = addressed.len().saturating_sub(MAX_PENDING);
+        let handles = self.handles();
         for message in addressed.into_iter().skip(skipped) {
             conn.send(Response::Chat {
                 names_you: true,
-                message,
+                message: self.shown(message, &handles),
             });
         }
         let since = match seen {
@@ -1037,7 +1108,10 @@ impl Server {
         };
         let mut by_room: BTreeMap<String, Vec<chat::Message>> = BTreeMap::new();
         for m in rest {
-            by_room.entry(m.room.clone()).or_default().push(m);
+            by_room
+                .entry(m.room.clone())
+                .or_default()
+                .push(self.shown(m, &handles));
         }
         let mut notes: Vec<(String, String)> = Vec::new();
         if skipped > 0 {
@@ -1186,7 +1260,12 @@ impl Server {
                     rows.insert(
                         m.session.clone(),
                         chat::Presence {
-                            name: m.session.clone(),
+                            name: if m.handle.is_empty() {
+                                m.session.clone()
+                            } else {
+                                m.handle.clone()
+                            },
+                            id: m.session.clone(),
                             kind: Seat::Session,
                             connected: false,
                             project: project.clone(),
@@ -1203,6 +1282,7 @@ impl Server {
                 continue;
             }
             let row = rows.entry(name.clone()).or_insert(chat::Presence {
+                id: name.clone(),
                 name,
                 kind: c.seat,
                 connected: false,
@@ -1284,13 +1364,13 @@ impl Server {
                     .as_deref()
                     .map(|t| t.trim().trim_start_matches('@').to_string())
                     .filter(|t| !t.is_empty());
-                let to = match to.map(|t| self.resolve_name(&t).map_err(|c| (t, c))) {
+                let to = match to.map(|t| self.resolve_name(project, &t).map_err(|c| (t, c))) {
                     Some(Err((name, candidates))) => {
                         return refuse(Some(id), crate::Refused::Ambiguous { name, candidates });
                     }
                     other => other.and_then(Result::ok),
                 };
-                let text = &match self.resolve_mentions(text) {
+                let text = &match self.resolve_mentions(project, text) {
                     Ok(t) => t,
                     Err(why) => return refuse(Some(id), why),
                 };
@@ -1311,7 +1391,7 @@ impl Server {
                 thread,
             } => {
                 let to = to.trim().trim_start_matches('@').to_string();
-                let to = match self.resolve_name(&to) {
+                let to = match self.resolve_name(project, &to) {
                     Ok(t) => t,
                     Err(candidates) => {
                         return refuse(
@@ -1323,7 +1403,7 @@ impl Server {
                         );
                     }
                 };
-                let text = &match self.resolve_mentions(text) {
+                let text = &match self.resolve_mentions(project, text) {
                     Ok(t) => t,
                     Err(why) => return refuse(Some(id), why),
                 };
@@ -1392,15 +1472,22 @@ impl Server {
                 if room != chat::DM_ROOM && !self.may_see(seat, project, &room) {
                     return refuse(None, crate::Refused::UnknownChatRoom { room });
                 }
+                let handles = self.handles();
                 let chat = self.inner.chat.lock().expect("the chat lock");
-                Response::History(chat.read(
+                let mut history = chat.read(
                     &room,
                     *since,
                     last.map(|n| n as usize),
                     *thread,
                     *before,
                     |m| self.visible(name, seat, project, m),
-                ))
+                );
+                history.rows = history
+                    .rows
+                    .into_iter()
+                    .map(|m| self.shown(m, &handles))
+                    .collect();
+                Response::History(history)
             }
             Request::Roster { room } => {
                 let room = match room.trim() {
@@ -1416,6 +1503,7 @@ impl Server {
                 }
             }
             Request::Inbox { attention, limit } => {
+                let handles = self.handles();
                 let chat = self.inner.chat.lock().expect("the chat lock");
                 let (rows, skipped) = chat.inbox(
                     name,
@@ -1424,7 +1512,7 @@ impl Server {
                     |m| self.visible(name, seat, project, m),
                 );
                 Response::Inbox {
-                    rows,
+                    rows: rows.into_iter().map(|m| self.shown(m, &handles)).collect(),
                     skipped,
                     cursor: chat.cursor(name),
                     head: chat.head(),
@@ -1473,6 +1561,7 @@ impl Server {
         // Pushed after the log lock is released. A repeat of `id` pushes again: a reader that
         // already has the seq drops it, and one that missed it gets it.
         let mut here: BTreeSet<String> = BTreeSet::new();
+        let handles = self.handles();
         for c in self.conn_list() {
             let name = c.who.session.as_str();
             here.insert(name.to_string());
@@ -1481,7 +1570,7 @@ impl Server {
             }
             c.send(Response::Chat {
                 names_you: message.names(name),
-                message: message.clone(),
+                message: self.shown(message.clone(), &handles),
             });
             self.inner
                 .chat
@@ -1494,7 +1583,7 @@ impl Server {
         self.remember_for_absent(&message, &here);
         Response::Said {
             id: id.to_string(),
-            message,
+            message: self.shown(message, &handles),
         }
     }
 

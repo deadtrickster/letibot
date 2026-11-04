@@ -281,6 +281,7 @@ fn a_hand_to_a_member_of_the_tree_needs_no_vouch() {
         letibot_room::Member {
             session: "s-member".into(),
             label: "a top-level session".into(),
+            handle: String::new(),
             group: letibot_room::Group::Top,
             parent: None,
             depth: 0,
@@ -289,6 +290,7 @@ fn a_hand_to_a_member_of_the_tree_needs_no_vouch() {
         letibot_room::Member {
             session: "s-member-sub".into(),
             label: "its child".into(),
+            handle: String::new(),
             group: letibot_room::Group::Sub,
             parent: Some("s-member".into()),
             depth: 1,
@@ -313,6 +315,7 @@ fn a_hand_to_a_member_of_the_tree_needs_no_vouch() {
     room.set_members(vec![letibot_room::Member {
         session: "s-kid".into(),
         label: "a child".into(),
+        handle: String::new(),
         group: letibot_room::Group::Sub,
         parent: Some("s-a".into()),
         depth: 1,

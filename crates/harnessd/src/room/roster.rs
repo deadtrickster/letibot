@@ -206,12 +206,25 @@ pub fn members_of(
         .map(|r| Member {
             session: r.session.to_string(),
             label: label_of(r),
+            handle: String::new(),
             group: group_of(&mine, r),
             parent: r.parent.map(str::to_string),
             depth: depth_of(&mine, r),
             live: r.live,
         })
         .collect();
+    // Only a top-level session is addressed by name. A duplicate slug (two titles that differ only
+    // in punctuation, from before names were unique) leaves the later one to its id.
+    let mut seen = std::collections::HashSet::new();
+    for (m, r) in out.iter_mut().zip(&mine) {
+        if m.group != Group::Top || r.parent.is_some() {
+            continue;
+        }
+        let slug = letibot_tokencore::store::slug_of(r.title);
+        if letibot_room::is_member_handle(&slug) && seen.insert(slug.clone()) {
+            m.handle = slug;
+        }
+    }
     letibot_room::tree_order(&mut out);
     out
 }

@@ -693,3 +693,133 @@ fn a_room_is_labelled_by_its_project_folder() {
         other => panic!("{other:?}"),
     }
 }
+
+fn top(session: &str, handle: &str) -> letibot_room::Member {
+    letibot_room::Member {
+        session: session.into(),
+        label: handle.into(),
+        handle: handle.into(),
+        group: letibot_room::Group::Top,
+        parent: None,
+        depth: 0,
+        live: true,
+    }
+}
+
+fn tell(s: &Seated, rows: Vec<letibot_room::Member>) {
+    s.call(Request::Members {
+        rows,
+        root: String::new(),
+    });
+}
+
+fn say_to(s: &Seated, id: &str, to: &str, text: &str) -> Response {
+    s.call(Request::Say {
+        id: id.into(),
+        room: String::new(),
+        text: text.into(),
+        to: Some(to.into()),
+        thread: None,
+        refs: Vec::new(),
+    })
+}
+
+/// A named session is spoken to, and spoken as, by its handle. The log keeps the id, so the id
+/// still addresses it, and a rename changes how old lines read.
+#[test]
+fn a_named_session_is_addressed_and_authored_by_its_handle() {
+    let dir = Scratch::new();
+    let server = coordinator(&dir);
+    let named = seat(&server, "s-1", A, Seat::Session);
+    let plain = seat(&server, "s-2", A, Seat::Session);
+    tell(
+        &named,
+        vec![top("s-1", "stroppy-conformity"), top("s-2", "")],
+    );
+
+    // `to` and `@` by handle reach the session, and the line reads with the handle.
+    let m = said(say_to(
+        &plain,
+        "1",
+        "@stroppy-conformity",
+        "hi @stroppy-conformity",
+    ));
+    assert_eq!(m.author, "s-2");
+    assert_eq!(m.to.as_deref(), Some("stroppy-conformity"));
+    let (heard, names_you) = named.next();
+    assert!(names_you, "the handle resolved to the session: {heard:?}");
+    assert_eq!(heard.text, "hi @stroppy-conformity");
+
+    // The id still works.
+    said(say_to(&plain, "2", "s-1", "by id"));
+    let (heard, names_you) = named.next();
+    assert!(names_you, "{heard:?}");
+    assert_eq!(heard.to.as_deref(), Some("stroppy-conformity"));
+
+    // The named session speaks under its handle.
+    said(named.say("3", "", "reply"));
+    let (heard, _) = plain.next();
+    assert_eq!(heard.author, "stroppy-conformity");
+
+    // The roster names it by handle and keeps the id.
+    match plain.call(Request::Roster {
+        room: String::new(),
+    }) {
+        Response::Roster { rows, .. } => {
+            let p = rows.iter().find(|p| p.id == "s-1").expect("the member");
+            assert_eq!(p.name, "stroppy-conformity");
+            let q = rows.iter().find(|p| p.id == "s-2").expect("the other");
+            assert_eq!(q.name, "s-2", "unnamed keeps its id");
+        }
+        other => panic!("{other:?}"),
+    }
+
+    // A rename changes how the same lines read, and the old handle stops resolving.
+    tell(&named, vec![top("s-1", "renamed"), top("s-2", "")]);
+    match plain.call(Request::Read {
+        room: String::new(),
+        since: 0,
+        last: None,
+        thread: None,
+        before: None,
+    }) {
+        Response::History(h) => {
+            assert!(
+                h.rows.iter().any(|r| r.author == "renamed"),
+                "old lines read with the new name: {:?}",
+                h.rows
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(matches!(
+        refused(say_to(&plain, "4", "stroppy-conformity", "gone")),
+        Refused::UnknownAddressee { .. }
+    ));
+    said(say_to(&plain, "5", "renamed", "new name"));
+}
+
+/// The same handle in two projects: the sender's own project wins, and a sender in neither is
+/// refused with the ids.
+#[test]
+fn a_handle_in_two_projects_is_the_senders_own_or_ambiguous() {
+    let dir = Scratch::new();
+    let server = coordinator(&dir);
+    let a1 = seat(&server, "s-a1", A, Seat::Session);
+    let b1 = seat(&server, "s-b1", B, Seat::Session);
+    let op = seat(&server, "cc@app", "", Seat::External);
+    tell(&a1, vec![top("s-a1", "same")]);
+    tell(&b1, vec![top("s-b1", "same")]);
+
+    let a2 = seat(&server, "s-a2", A, Seat::Session);
+    said(say_to(&a2, "1", "same", "own project"));
+    let (_, names_you) = a1.next();
+    assert!(names_you, "the sender's own project holds the handle");
+    b1.silent();
+    match refused(say_to(&op, "2", "same", "which")) {
+        Refused::Ambiguous { candidates, .. } => {
+            assert_eq!(candidates, vec!["s-a1".to_string(), "s-b1".to_string()])
+        }
+        other => panic!("{other:?}"),
+    }
+}

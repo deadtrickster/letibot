@@ -56,6 +56,7 @@ fn member(session: &str, label: &str, group: Group, parent: Option<&str>, depth:
     Member {
         session: session.to_string(),
         label: label.to_string(),
+        handle: String::new(),
         group,
         parent: parent.map(str::to_string),
         depth,
