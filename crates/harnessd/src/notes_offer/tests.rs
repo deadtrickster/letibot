@@ -703,11 +703,8 @@ fn a_round_embeds_only_what_changed() {
         waits.share_round(shared.clone());
         done.share_round(shared);
         notes.compose(&f.reader(), &f.global, &f.box_dirs, "", items);
-        eprintln!("DBG notes {:?}", embedder.spent());
         waits.compose(&rows, &brief);
-        eprintln!("DBG waits {:?}", embedder.spent());
         done.compose(&records, &brief);
-        eprintln!("DBG done {:?} fault {:?}", embedder.spent(), embedder.take_fault());
         let after = embedder.spent();
         (
             after.embedded - before.embedded,
@@ -715,7 +712,8 @@ fn a_round_embeds_only_what_changed() {
             after.bytes - before.bytes,
         )
     };
-    let mut items = prompt(ABOUT);
+    // Short, because the fixture checkpoint reads 64 positions.
+    let mut items = prompt("alpha beta gamma delta kappa lambda");
     let first = round(&items);
     let same = round(&items);
     items.push(result(
