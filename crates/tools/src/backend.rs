@@ -443,16 +443,11 @@ impl HostBackend {
         {
             view = view.granting(g);
         }
-        // Only the tight view: a top-level session edits its own hooks and config.
+        // Only the tight view: a top-level session edits its own hooks and config, and a child
+        // gets every part of the repository a write could land itself with, one by one.
         if seat.home.is_none() {
-            for g in &grants {
-                if let crate::exec::confine::Grant::ReadWrite { path, .. } = g
-                    && path.join("objects").is_dir()
-                {
-                    for p in crate::exec::seat::git_dir_protected(path) {
-                        view = view.protecting(p);
-                    }
-                }
+            for p in crate::exec::seat::git_dir_protected(&project) {
+                view = view.protecting(p);
             }
         }
         if let Some(h) = &seat.home {

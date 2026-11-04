@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::confine::{Egress, GRANT_CANDIDATES, GRANT_GLOBS, Grant};
+use super::confine::{Egress, GRANT_CANDIDATES, GRANT_GLOBS, Grant, Protection};
 
 /// Environment whose values are secrets: the names print, the values never do.
 #[derive(Clone, Default, PartialEq, Eq)]
@@ -188,33 +188,120 @@ pub fn grants_for<S: AsRef<str>>(present: &[S]) -> Vec<Grant> {
 /// live in that repository's common dir. Without a read-write grant on it a confined `git commit`
 /// cannot write, and the branch is the whole deliverable.
 pub fn worktree_git_grants(project: &Path) -> Vec<Grant> {
-    let Ok(text) = std::fs::read_to_string(project.join(".git")) else {
+    // A plain checkout's `.git` is a directory the project bind already covers, and a second
+    // grant for it would say nothing new.
+    if project.join(".git").is_dir() {
+        return Vec::new();
+    }
+    let Some(dirs) = git_dirs(project) else {
         return Vec::new();
     };
-    let Some(dir) = text.trim().strip_prefix("gitdir:").map(str::trim) else {
-        return Vec::new();
-    };
-    let dir = project.join(dir);
-    let common = std::fs::read_to_string(dir.join("commondir"))
-        .map(|c| dir.join(c.trim()))
-        .unwrap_or_else(|_| dir.clone());
-    let common = common.canonicalize().unwrap_or(common);
     vec![Grant::ReadWrite {
-        path: common,
+        path: dirs.common,
         why: "this worktree's repository: its objects and refs, so `git commit` works in the \
               checkout"
             .to_string(),
     }]
 }
 
-/// What inside a granted git dir stays read-only: hooks and config are run by the operator's own
-/// git later, outside the boundary, so a write there is code execution after the session.
-pub fn git_dir_protected(git_dir: &Path) -> Vec<PathBuf> {
-    let mut out = vec![git_dir.join("hooks"), git_dir.join("config")];
-    if let Ok(rd) = std::fs::read_dir(git_dir.join("worktrees")) {
-        for e in rd.flatten() {
-            out.push(e.path().join("config.worktree"));
-            out.push(e.path().join("hooks"));
+/// A checkout's two git directories, and the branch it has out. Read off the disk, because the
+/// answer to `what may a child write in here` is different for a commit than for the tree.
+struct GitDirs {
+    /// The worktree's own git dir: `.git` itself, or the `worktrees/<name>` entry it names.
+    worktree: PathBuf,
+    /// The repository's common dir, where objects, refs, hooks and config live.
+    common: PathBuf,
+    /// The branch this checkout has out, as git spells it in `HEAD`: `refs/heads/agent/x`.
+    own_ref: Option<String>,
+}
+
+fn git_dirs(project: &Path) -> Option<GitDirs> {
+    let dot = project.join(".git");
+    let (worktree, common) = if dot.is_dir() {
+        (dot.clone(), dot)
+    } else {
+        let text = std::fs::read_to_string(&dot).ok()?;
+        let dir = project.join(text.trim().strip_prefix("gitdir:")?.trim());
+        let common = std::fs::read_to_string(dir.join("commondir"))
+            .map(|c| dir.join(c.trim()))
+            .unwrap_or_else(|_| dir.clone());
+        (dir, common)
+    };
+    let common = common.canonicalize().unwrap_or(common);
+    let worktree = worktree.canonicalize().unwrap_or(worktree);
+    let own_ref = std::fs::read_to_string(worktree.join("HEAD"))
+        .ok()
+        .and_then(|h| h.trim().strip_prefix("ref: ").map(|r| r.trim().to_string()));
+    Some(GitDirs {
+        worktree,
+        common,
+        own_ref,
+    })
+}
+
+/// What inside a granted git dir stays read-only, and of what kind when it is not there. A child
+/// commits, so it writes objects and its own branch; every other ref, the hooks and config the
+/// operator's git runs later, and the files that decide which repository a checkout reads are
+/// not its to write. The entries are read off the disk, so the set is this repository's.
+pub fn git_dir_protected(project: &Path) -> Vec<Protection> {
+    let Some(dirs) = git_dirs(project) else {
+        return Vec::new();
+    };
+    let common = &dirs.common;
+    let mut out = vec![
+        Protection::dir(common.join("hooks")),
+        Protection::file(common.join("config")),
+        Protection::file(common.join("packed-refs")),
+        // Its own branch has to be writable, so `refs/heads` itself cannot be: git creates
+        // `<branch>.lock` beside the ref, which needs the directory, not the ref.
+        Protection::dir(common.join("refs/tags")),
+        Protection::dir(common.join("refs/remotes")),
+    ];
+    for (path, name) in loose_refs(common, &common.join("refs/heads")) {
+        if dirs.own_ref.as_deref() != Some(name.as_str()) {
+            out.push(Protection::file(path));
+        }
+    }
+    // A sibling worktree's `HEAD` says which branch it has out, and its `commondir`/`gitdir`
+    // decide which repository and which checkout git reads there at all.
+    for e in std::fs::read_dir(common.join("worktrees"))
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        let at = e.path();
+        out.push(Protection::file(at.join("commondir")));
+        out.push(Protection::file(at.join("gitdir")));
+        out.push(Protection::file(at.join("config.worktree")));
+        out.push(Protection::dir(at.join("hooks")));
+        if at != dirs.worktree {
+            out.push(Protection::file(at.join("HEAD")));
+        }
+    }
+    // The checkout's `.git` file names the git dir every command in this tree reads, so writing
+    // it points the operator's next `git` at a repository the child controls.
+    if project.join(".git").is_file() {
+        out.push(Protection::file(project.join(".git")));
+    } else {
+        // A plain checkout keeps HEAD in the common dir, and moving it moves the operator's tree.
+        out.push(Protection::file(common.join("HEAD")));
+    }
+    out
+}
+
+/// Every loose ref under `dir`, as the path and git's name for it relative to the common dir
+/// (`refs/heads/agent/x`). Bounded by the tree: a ref namespace deep enough to matter is a cycle.
+fn loose_refs(common: &Path, dir: &Path) -> Vec<(PathBuf, String)> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            let at = e.path();
+            if at.is_dir() {
+                stack.push(at);
+            } else if let Ok(rel) = at.strip_prefix(common) {
+                out.push((at.clone(), rel.display().to_string()));
+            }
         }
     }
     out
@@ -390,5 +477,99 @@ mod tests {
         assert_eq!(got.len(), 2, "{got:?}");
         assert!(got.iter().any(|p| p.ends_with("/.cargo")));
         assert!(got.iter().any(|p| p.ends_with("/.gitconfig")));
+    }
+
+    /// The set a child may not write, read off a repository laid out the way git lays one out: a
+    /// common dir, one linked worktree, and the branch that worktree has out. Its own branch is
+    /// the one exception, because a commit writes it and nothing else here.
+    #[test]
+    fn a_childs_protections_are_every_ref_but_its_own_and_the_files_that_move_a_checkout() {
+        let root = std::env::temp_dir().join(format!("letibot-gitdirs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let common = root.join("repo/.git");
+        let wt = root.join("wt");
+        for d in [
+            common.join("refs/heads/agent"),
+            common.join("refs/tags"),
+            common.join("worktrees/wt"),
+            wt.clone(),
+        ] {
+            std::fs::create_dir_all(&d).expect("a fixture git dir");
+        }
+        std::fs::write(common.join("refs/heads/main"), "0".repeat(40)).unwrap();
+        std::fs::write(common.join("refs/heads/agent/child"), "1".repeat(40)).unwrap();
+        std::fs::write(common.join("config"), "[core]\n").unwrap();
+        std::fs::write(common.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::write(
+            common.join("worktrees/wt/HEAD"),
+            "ref: refs/heads/agent/child\n",
+        )
+        .unwrap();
+        std::fs::write(common.join("worktrees/wt/commondir"), "../..\n").unwrap();
+        std::fs::write(
+            wt.join(".git"),
+            format!("gitdir: {}\n", common.join("worktrees/wt").display()),
+        )
+        .unwrap();
+
+        let grants = worktree_git_grants(&wt);
+        assert_eq!(grants.len(), 1, "the common dir is the one grant");
+        assert_eq!(grants[0].path(), &common.canonicalize().unwrap());
+
+        let protected: Vec<PathBuf> = git_dir_protected(&wt).into_iter().map(|p| p.path).collect();
+        let has = |p: PathBuf| protected.iter().any(|q| q == &p);
+        assert!(has(common.join("refs/heads/main")), "{protected:?}");
+        assert!(
+            !has(common.join("refs/heads/agent/child")),
+            "the child's own branch has to stay writable, or it cannot commit: {protected:?}"
+        );
+        for must in [
+            common.join("hooks"),
+            common.join("config"),
+            common.join("packed-refs"),
+            common.join("refs/tags"),
+            common.join("worktrees/wt/commondir"),
+            wt.join(".git"),
+        ] {
+            assert!(
+                has(must.clone()),
+                "{} is not protected: {protected:?}",
+                must.display()
+            );
+        }
+        assert!(
+            !has(common.join("worktrees/wt/HEAD")),
+            "a worktree's own HEAD is the one it works on"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A plain checkout has no second grant to make, and its `HEAD` is the file that decides what
+    /// the operator has out.
+    #[test]
+    fn a_plain_checkout_grants_nothing_and_protects_its_head() {
+        let root = std::env::temp_dir().join(format!("letibot-plaingit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".git/refs/heads")).expect("a fixture checkout");
+        std::fs::write(root.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::write(root.join(".git/refs/heads/main"), "2".repeat(40)).unwrap();
+
+        assert!(
+            worktree_git_grants(&root).is_empty(),
+            "a plain checkout's .git is inside the project bind already"
+        );
+        let protected: Vec<PathBuf> = git_dir_protected(&root)
+            .into_iter()
+            .map(|p| p.path)
+            .collect();
+        assert!(
+            protected.iter().any(|p| p.ends_with(".git/HEAD")),
+            "{protected:?}"
+        );
+        assert!(
+            !protected.iter().any(|p| p.ends_with("refs/heads/main")),
+            "a checkout's own branch is the one it commits on: {protected:?}"
+        );
+        std::fs::remove_dir_all(&root).ok();
     }
 }

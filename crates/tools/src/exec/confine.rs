@@ -523,7 +523,39 @@ pub struct ViewSpec {
     pub hidden: Vec<PathBuf>,
     /// Paths inside a read-write grant that stay read-only: a file the operator's own tools run
     /// later outside the boundary (git hooks and config) must not be writable from inside.
-    pub protected: Vec<PathBuf>,
+    pub protected: Vec<Protection>,
+}
+
+/// A path a confined command must not write, and what to bind there when it does not exist.
+/// bwrap can only mount over a path that is there, so an absent `hooks/` was a directory the
+/// command could create and fill; the kind is carried because an empty file where a directory
+/// belongs is a different hole from an open one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Protection {
+    pub path: PathBuf,
+    pub kind: ProtectedKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProtectedKind {
+    Dir,
+    File,
+}
+
+impl Protection {
+    pub fn dir(path: impl Into<PathBuf>) -> Protection {
+        Protection {
+            path: path.into(),
+            kind: ProtectedKind::Dir,
+        }
+    }
+
+    pub fn file(path: impl Into<PathBuf>) -> Protection {
+        Protection {
+            path: path.into(),
+            kind: ProtectedKind::File,
+        }
+    }
 }
 
 /// The host room coordinator's files (`room-<host key>.sock`, `.lease`, `.restart`, `.token`) in
@@ -621,8 +653,8 @@ impl ViewSpec {
     }
 
     /// Keep this path read-only even inside a read-write grant.
-    pub fn protecting(mut self, path: impl Into<PathBuf>) -> ViewSpec {
-        self.protected.push(path.into());
+    pub fn protecting(mut self, protection: Protection) -> ViewSpec {
+        self.protected.push(protection);
         self
     }
 
@@ -2181,10 +2213,36 @@ fn pieces_of(
     }
 
     for p in &view.protected {
-        if view.classify(p) == Presence::Inside && p.exists() {
-            arg(&mut a, "--ro-bind");
-            arg(&mut a, p.display().to_string());
-            arg(&mut a, p.display().to_string());
+        if view.classify(&p.path) != Presence::Inside {
+            continue;
+        }
+        // A path that is there is bound over itself. One that is not is given an empty read-only
+        // placeholder of its own kind, or the command creates it inside the grant and fills it.
+        // The parent must be there: bwrap would otherwise make the parent directories in the
+        // operator's real tree, and a path nobody can reach needs no placeholder.
+        let parent_there = p.path.parent().is_some_and(|d| d.exists());
+        match (p.path.exists(), p.kind) {
+            (true, _) => {
+                arg(&mut a, "--ro-bind");
+                arg(&mut a, p.path.display().to_string());
+                arg(&mut a, p.path.display().to_string());
+            }
+            (false, ProtectedKind::Dir) if parent_there => {
+                // A tmpfs is created empty and then remounted read-only: a directory that is
+                // there and cannot be written, which is what an absent `hooks/` was not.
+                arg(&mut a, "--tmpfs");
+                arg(&mut a, p.path.display().to_string());
+                arg(&mut a, "--remount-ro");
+                arg(&mut a, p.path.display().to_string());
+            }
+            (false, ProtectedKind::File) if parent_there => {
+                // `/dev/null` is the one empty file every box has: bound in its place, a name a
+                // `mkdir` or `touch` would otherwise claim exists and refuses both.
+                arg(&mut a, "--ro-bind");
+                arg(&mut a, "/dev/null");
+                arg(&mut a, p.path.display().to_string());
+            }
+            (false, _) => {}
         }
     }
 
@@ -2543,6 +2601,52 @@ mod tests {
         assert!(m.contains("was NOT run"), "{m}");
         assert!(c.boundary().is_none());
         assert!(c.describe().contains("refuses to exec"));
+    }
+
+    /// A protected path that is not there is a name a command can claim, and bwrap can only mount
+    /// over what exists: each kind gets an empty read-only placeholder of its own kind, and a path
+    /// whose parent is absent gets none, because bwrap would make the parents in the real tree.
+    #[test]
+    fn a_protected_path_that_is_not_there_is_still_bound_read_only() {
+        let dir = std::env::temp_dir().join(format!("letibot-protect-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("common/present")).expect("a fixture tree");
+        let view = ViewSpec::project_only(&dir)
+            .protecting(Protection::dir(dir.join("common/present")))
+            .protecting(Protection::dir(dir.join("common/hooks")))
+            .protecting(Protection::file(dir.join("common/packed-refs")))
+            .protecting(Protection::dir(dir.join("common/gone/child")));
+        let argv = build_argv_with(
+            Path::new("/usr/bin/bwrap"),
+            &view,
+            &Egress::Denied,
+            &ConfinePlan {
+                cwd: &dir,
+                env: &[],
+            },
+            Session::Detached,
+        );
+        let joined = argv.join(" ");
+        let present = dir.join("common/present").display().to_string();
+        assert!(
+            joined.contains(&format!("--ro-bind {present} {present}")),
+            "a path that is there is bound over itself: {joined}"
+        );
+        let hooks = dir.join("common/hooks").display().to_string();
+        assert!(
+            joined.contains(&format!("--tmpfs {hooks} --remount-ro {hooks}")),
+            "an absent directory gets an empty one it cannot write: {joined}"
+        );
+        let packed = dir.join("common/packed-refs").display().to_string();
+        assert!(
+            joined.contains(&format!("--ro-bind /dev/null {packed}")),
+            "an absent file is the empty read-only one every box has: {joined}"
+        );
+        assert!(
+            !joined.contains(&dir.join("common/gone").display().to_string()),
+            "a parent that is absent is not made in the operator's tree: {joined}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

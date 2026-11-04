@@ -628,7 +628,7 @@ fn a_child_commits_in_a_worktree_with_the_operators_identity_and_has_no_credenti
         .with_home(HomeView::Dir(f.home()))
         .with_tmp(TmpView::Session(f.root.join("tmp")));
     for g in letibot_tools::exec::seat::worktree_git_grants(&wt) {
-        for p in letibot_tools::exec::seat::git_dir_protected(g.path()) {
+        for p in letibot_tools::exec::seat::git_dir_protected(&wt) {
             view = view.protecting(p);
         }
         view = view.granting(g);

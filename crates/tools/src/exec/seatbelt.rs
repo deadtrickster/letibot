@@ -359,7 +359,7 @@ pub fn render_profile(view: &ViewSpec, egress: &Egress, l: &Layout) -> String {
     if !view.protected.is_empty() {
         s.push_str("\n; --- read-only inside a read-write grant ---\n(deny file-write*\n");
         for p in &view.protected {
-            for q in both_spellings(p) {
+            for q in both_spellings(&p.path) {
                 s.push_str(&format!("  (subpath \"{}\")\n", q.display()));
             }
         }
