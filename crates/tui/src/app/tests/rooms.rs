@@ -357,6 +357,9 @@ fn the_roster_key_asks_for_the_roster_of_the_selected_channel() {
         next.contains(&json!({"type": "roster", "room": "host"})),
         "{next:?}"
     );
+    // A second press lists the offline members too, a third closes.
+    a.key(Key::Char('r'));
+    assert!(a.rooms.roster_open && a.rooms.roster_all);
     a.key(Key::Char('r'));
     a.clock(1_200);
     assert!(!types(&ops(&mut a)).contains(&"roster"));
@@ -994,10 +997,19 @@ fn the_roster_replaces_the_chat_and_goes_back() {
         let rows = screen(&mut a, cols);
         fits(&rows, cols);
         let all = rows.join("\n");
-        assert!(all.contains("2 in this channel"), "{all}");
+        assert!(all.contains("1 connected, +1 offline"), "{all}");
         assert!(row_with(&rows, "operator  operator").contains('●'));
-        assert!(row_with(&rows, "the doc writer").contains('○'));
+        assert!(!all.contains("the doc writer"), "offline is a count: {all}");
         assert!(!all.contains("hello there"), "{all}");
+        a.key(Key::Char('r'));
+        let all = screen(&mut a, cols).join("\n");
+        assert!(
+            row_with(
+                &all.lines().map(str::to_string).collect::<Vec<_>>(),
+                "the doc writer"
+            )
+            .contains('○')
+        );
         a.key(Key::Char('r'));
         assert!(screen(&mut a, cols).join("\n").contains("hello there"));
     }
@@ -1056,4 +1068,75 @@ fn the_view_survives_a_tiny_window() {
         let rows = a.screen(cols, h);
         fits(&rows, cols);
     }
+}
+
+#[test]
+fn a_project_channel_and_its_members_are_named_not_keyed() {
+    let mut a = opened(1_000);
+    reply(
+        &mut a,
+        json!({"type": "rooms", "rows": [
+            {"id": "host", "kind": "host", "project": "", "members": 1, "last_seq": 0, "unread": 0},
+            {"id": PROJECT, "kind": "project", "project": "ab12cd34ef56", "label": "rano",
+             "members": 1, "last_seq": 2, "unread": 0}]}),
+    );
+    a.key(Key::Down);
+    reply(
+        &mut a,
+        history(PROJECT, vec![msg(2, PROJECT, "s-1791", "session", "built")]),
+    );
+    reply(
+        &mut a,
+        json!({"type": "roster", "room": PROJECT, "rows": [
+            {"name": "s-1791", "kind": "session", "connected": true, "project": "", "label": "rano 1791"}]}),
+    );
+    let all = screen(&mut a, 100).join("\n");
+    assert!(all.contains("#rano"), "{all}");
+    assert!(!all.contains("ab12cd34ef56"), "{all}");
+    assert!(all.contains("<rano 1791>"), "{all}");
+}
+
+#[test]
+fn scrolling_to_the_first_line_asks_for_the_page_before_it_once() {
+    let mut a = opened(1_000);
+    reply(&mut a, rooms_reply(&[("host", 1, 400, 0)]));
+    let rows: Vec<Value> = (201..=400)
+        .map(|n| msg(n, "host", "s-a", "session", "line"))
+        .collect();
+    reply(&mut a, history("host", rows));
+    a.take_actions();
+    // The first draw follows the tail; scrolling all the way back reaches the first line.
+    let _ = screen(&mut a, 100);
+    for _ in 0..400 {
+        a.key(Key::PageUp);
+        let _ = screen(&mut a, 100);
+    }
+    let asked: Vec<Value> = a
+        .take_actions()
+        .into_iter()
+        .filter_map(|x| match x {
+            Action::RoomChat { op, id } if id.as_deref() == Some("older:host") => Some(op),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        asked,
+        vec![json!({"type": "read", "room": "host", "before": 201, "last": 200})],
+        "asked once while the page is in flight"
+    );
+    // The page lands: it joins the list above, and the room is not exhausted.
+    let older: Vec<Value> = (1..=200)
+        .map(|n| msg(n, "host", "s-a", "session", "older"))
+        .collect();
+    reply_as(&mut a, "older:host", history("host", older));
+    assert_eq!(
+        a.rooms
+            .messages(&crate::app::rooms::Chan::Room("host".into()))
+            .len(),
+        400
+    );
+    assert!(!a.rooms.oldest_known.contains("host"));
+    // An empty page says the stored history starts here.
+    reply_as(&mut a, "older:host", history("host", Vec::new()));
+    assert!(a.rooms.oldest_known.contains("host"));
 }
