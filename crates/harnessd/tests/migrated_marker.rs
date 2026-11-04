@@ -81,7 +81,7 @@ fn the_listing_names_the_host_a_moved_session_lives_on() {
         listed.contains("s-here-1")
             && !listed
                 .lines()
-                .any(|l| l.contains("s-here-1") && l.contains("lives on")),
+                .any(|l| l.contains("s-here-1's conversation") && l.contains("lives on")),
         "a session that is here is not marked:\n{listed}"
     );
     assert!(

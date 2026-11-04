@@ -43,24 +43,29 @@ impl Harness {
     }
 }
 
-/// A few words from the first message, as a session name. Deliberately dumb: the first line, first six
-/// words, no model call, because a name is an ADDRESS a person recognises a week later and a paraphrase
-/// is a worse one. Empty for a message with no words, and the caller then leaves the session unnamed.
+/// A session's default name from its first message: the first five words of the first line, as a
+/// slug (`fix-the-parser-bug`). Deterministic and no model call, because a name is an ADDRESS a
+/// person types a week later. Empty for a message with no words; the caller then leaves the
+/// session unnamed. The 48-character bound is the address's, not a terminal's.
 pub fn derive_title(text: &str) -> String {
+    const WORDS: usize = 5;
+    const MAX: usize = 48;
     let line = text
         .lines()
         .map(str::trim)
         .find(|l| !l.is_empty())
         .unwrap_or("");
-    let words: Vec<&str> = line.split_whitespace().take(6).collect();
-    let mut out = words.join(" ");
-    // Long enough to recognise, short enough for a picker row and a header. This is a NAMING rule and its
-    // bound is the ADDRESS, which is why nothing about a terminal belongs here: the title is also the
-    // fabric alias a person has to type. A string only ever DISPLAYED takes `subagent_title`'s rule.
-    const MAX: usize = 48;
+    let words: Vec<&str> = line
+        .split_whitespace()
+        .filter(|w| w.chars().any(char::is_alphanumeric))
+        .take(WORDS)
+        .collect();
+    let mut out = letibot_tokencore::store::slug_of(&words.join(" "));
     if out.chars().count() > MAX {
-        out = out.chars().take(MAX - 1).collect::<String>();
-        out.push('…');
+        out = out.chars().take(MAX).collect();
+        while out.ends_with('-') {
+            out.pop();
+        }
     }
     out
 }

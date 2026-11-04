@@ -119,18 +119,25 @@ fn a_worktree_is_arranged_with_its_branch_and_the_main_tree_untouched() {
 }
 
 /// The subagent's title is not the session's name, and the two have different bounds: a session name is an ADDRESS
-/// somebody types, held to six words and 48 characters, while a subagent's title is a ROW whose cap is the UI's.
+/// somebody types, held to five words and 48 characters, while a subagent's title is a ROW whose cap is the UI's.
 /// Reusing the address rule cut every subagent line to a name's length, so both are pinned here.
 #[test]
 fn a_subagent_title_is_a_row_and_a_session_name_is_an_address() {
     let long = "audit the session store and say which rows are never read by anything at \
                     all in the whole tree, and then propose a fix for each";
-    // The ADDRESS rule: six words and no more, 48 characters at the outside.
+    // The ADDRESS rule: five words as a slug, 48 characters at the outside.
     assert_eq!(
         super::derive_title(long),
-        "audit the session store and say",
-        "a name is six words, so it stays a name somebody can type"
+        "audit-the-session-store-and",
+        "a name is five words, so it stays a name somebody can type"
     );
+    assert_eq!(
+        super::derive_title("  \n Fix: the parser, now!\nmore"),
+        "fix-the-parser-now"
+    );
+    assert_eq!(super::derive_title("... ---"), "");
+    let one_word = "x".repeat(200);
+    assert_eq!(super::derive_title(&one_word).chars().count(), 48);
     // The DISPLAY rule: the whole first line, and the six-word rule does not apply.
     let title = super::subagent_title(long);
     assert_eq!(

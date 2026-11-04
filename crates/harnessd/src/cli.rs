@@ -2720,16 +2720,27 @@ fn run_query(
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis() as i64)
                 .unwrap_or(0);
-            let wid = all.iter().map(|s| s.id.len()).max().unwrap_or(8);
+            // The name leads: it is what a person types for `--session`. An unnamed session leads
+            // with its id, which is its only handle; a named one keeps the id on the line below.
+            let label = |s: &letibot_tokencore::store::StoredSession| -> String {
+                match s.title.as_deref() {
+                    Some(t) if !t.is_empty() => t.to_string(),
+                    _ => s.id.clone(),
+                }
+            };
+            let wid = all
+                .iter()
+                .map(|s| label(s).chars().count() + 2)
+                .max()
+                .unwrap_or(8);
             // The one row per session the listing draws, as a closure so the two groups that
             // are not plain rows (a child under its parent, everything else) share it.
             let row = |s: &letibot_tokencore::store::StoredSession, indent: &str| {
                 println!(
-                    "{:<wid$}  {:>5}  {:>7}  {indent}{}{}",
-                    s.id,
+                    "{:<wid$}  {:>5}  {:>7}{}",
+                    format!("{indent}{}", label(s)),
                     s.items,
                     age(now - s.last_activity_ms),
-                    s.title.clone().unwrap_or_else(|| "(unnamed)".into()),
                     // Where it LIVES, when that is not here. A row whose live copy is on a host is not a
                     // session this box is appending to, and a listing that offered it unmarked would be
                     // offering a conversation that stopped the day it moved (`docs/remote-hosts.md` RH4).
@@ -2738,9 +2749,8 @@ fn run_query(
                         None => String::new(),
                     },
                 );
-                // The same prefix width as the row above it, so the workspace lines up under the
-                // title rather than three columns past it.
-                println!("{:<wid$}  {:>16}  {indent}{}", "", "", s.workspace_root);
+                // Details: the id (the handle `--session` also takes) and the workspace.
+                println!("{indent}  {}  {}", s.id, s.workspace_root);
             };
             // The same rows `grouped()` built, for the one question the printing asks that the
             // grouping does not
@@ -2759,8 +2769,8 @@ fn run_query(
                 })
                 .collect();
             println!(
-                "{:<wid$}  {:>5}  {:>7}  TITLE / WORKSPACE",
-                "ID", "ROWS", "AGE"
+                "{:<wid$}  {:>5}  {:>7}  (ID / WORKSPACE below)",
+                "NAME", "ROWS", "AGE"
             );
             for (group, members) in &groups {
                 // No empty group line, for the reason the picker draws none: a header saying
@@ -2825,7 +2835,7 @@ fn scoped(
 }
 
 /// The session a name means in this project: an id as typed, else the exact name
-/// (case-insensitive), else a unique prefix. Ambiguity and absence are refused with the
+/// (case-insensitive) or its slug, else a unique prefix. Ambiguity and absence are refused with the
 /// candidates.
 fn resolve_session_name(
     all: &[letibot_tokencore::store::StoredSession],
@@ -2861,7 +2871,11 @@ fn resolve_session_name(
             .collect::<Vec<_>>()
             .join("\n")
     };
-    let exact: Vec<_> = named.iter().copied().filter(|s| title(s) == want).collect();
+    let exact: Vec<_> = named
+        .iter()
+        .copied()
+        .filter(|s| letibot_tokencore::store::same_name(&title(s), &want))
+        .collect();
     let hits = if exact.is_empty() {
         named
             .iter()
@@ -3210,6 +3224,15 @@ mod tests {
         assert_eq!(r("stroppy").unwrap(), "s-3", "exact beats prefix");
         assert_eq!(r("stroppy-g").unwrap(), "s-2", "unique prefix");
         assert_eq!(r("s-4").unwrap(), "s-4", "an id is an id");
+    }
+
+    /// A title typed with spaces and its slug are one name.
+    #[test]
+    fn a_slug_resolves_to_the_title_it_was_cut_from() {
+        let all = stored(&[("s-1", Some("Stroppy Conformity")), ("s-2", Some("other"))]);
+        let r = |n: &str| resolve_session_name(&all, n, None);
+        assert_eq!(r("stroppy-conformity").unwrap(), "s-1");
+        assert_eq!(r("Stroppy Conformity").unwrap(), "s-1");
     }
 
     #[test]

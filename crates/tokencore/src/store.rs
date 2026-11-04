@@ -692,6 +692,32 @@ pub struct SessionRecord {
     pub parent_session_id: Option<String>,
 }
 
+/// A session name as an identifier: lowercase letters and digits, every other run of characters
+/// one `-`, none at the ends. `Stroppy Conformity` and `stroppy-conformity` are one name.
+pub fn slug_of(title: &str) -> String {
+    let mut out = String::new();
+    for c in title.chars() {
+        if c.is_alphanumeric() {
+            out.extend(c.to_lowercase());
+        } else if !out.is_empty() && !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    while out.ends_with('-') {
+        out.pop();
+    }
+    out
+}
+
+/// Do two titles name one session: equal ignoring case, or equal as slugs when they have one.
+pub fn same_name(a: &str, b: &str) -> bool {
+    if a.to_lowercase() == b.to_lowercase() {
+        return true;
+    }
+    let slug = slug_of(a);
+    !slug.is_empty() && slug == slug_of(b)
+}
+
 /// A session as the store holds it: enough to list, pick and resume. Separate from
 /// [`SessionRecord`], the write shape, and carrying three computed things (transcript id,
 /// row count, last activity) that every list would otherwise re-derive differently.
@@ -2782,18 +2808,18 @@ impl Store {
     }
 
     /// [`Store::set_title`] for a name a person typed: refused when another session in the same
-    /// workspace already has it (case-insensitive), because `--session NAME` must pick one.
+    /// workspace already has it, by title (case-insensitive) or by [`slug_of`], because
+    /// `--session NAME` and `@NAME` must pick one.
     pub fn rename_unique(&self, id: &str, title: &str) -> Result<()> {
         if !title.is_empty() {
             let me = self
                 .session(id)?
                 .ok_or_else(|| StoreError::NotFound(format!("session {id}")))?;
-            let want = title.to_lowercase();
-            if let Some(o) = self.list_sessions()?.into_iter().find(|o| {
-                o.id != id
-                    && o.workspace_root == me.workspace_root
-                    && o.title.as_deref().is_some_and(|t| t.to_lowercase() == want)
-            }) {
+            if let Some(o) = self
+                .sessions_matching(" WHERE s.workspace_root = ?1", &[&me.workspace_root])?
+                .into_iter()
+                .find(|o| o.id != id && o.title.as_deref().is_some_and(|t| same_name(t, title)))
+            {
                 return Err(StoreError::Refused(format!(
                     "the name {title:?} is taken in this project by {}",
                     o.id
@@ -2801,6 +2827,46 @@ impl Store {
             }
         }
         self.set_title(id, title)
+    }
+
+    /// Give an unnamed session `base` as its name, with `-2`, `-3`... appended until no other
+    /// session in the workspace has it. `None` when the session already has a name, so a default
+    /// never overwrites what a person typed.
+    pub fn name_default(&self, id: &str, base: &str) -> Result<Option<String>> {
+        let me = self
+            .session(id)?
+            .ok_or_else(|| StoreError::NotFound(format!("session {id}")))?;
+        if me.title.as_deref().is_some_and(|t| !t.is_empty()) || base.is_empty() {
+            return Ok(None);
+        }
+        let others =
+            self.sessions_matching(" WHERE s.workspace_root = ?1", &[&me.workspace_root])?;
+        let taken = |name: &str| {
+            others
+                .iter()
+                .any(|o| o.id != id && o.title.as_deref().is_some_and(|t| same_name(t, name)))
+        };
+        let mut name = base.to_string();
+        let mut n = 2u32;
+        while taken(&name) {
+            name = format!("{base}-{n}");
+            n += 1;
+        }
+        self.set_title(id, &name)?;
+        Ok(Some(name))
+    }
+
+    /// The conversations of `workspace` that a typed `name` means exactly: the same title
+    /// (case-insensitive) or the same [`slug_of`]. Subagents are not addressed by name.
+    pub fn named_in(&self, workspace: &str, name: &str) -> Result<Vec<StoredSession>> {
+        Ok(self
+            .sessions_matching(" WHERE s.workspace_root = ?1", &[&workspace])?
+            .into_iter()
+            .filter(|s| {
+                s.parent_session_id.is_none()
+                    && s.title.as_deref().is_some_and(|t| same_name(t, name))
+            })
+            .collect())
     }
 
     /// Write down who this session is for. Set once, and the `AND origin IS NULL` is the guarantee:

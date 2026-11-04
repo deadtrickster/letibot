@@ -3046,3 +3046,62 @@ fn rename_refuses_a_name_another_session_in_the_project_has() {
         .expect("its own name again");
     s.rename_unique("sess-1", "").expect("clearing is free");
 }
+
+/// A name is an identifier too: `Stroppy Conformity` and `stroppy-conformity` are one name, so a
+/// rename to the second is refused while the first is held.
+#[test]
+fn rename_refuses_a_name_with_the_same_slug() {
+    let s = store();
+    seeded(&s);
+    named_session(&s, "sess-2", "/w", None);
+    s.rename_unique("sess-1", "Stroppy Conformity").unwrap();
+    let e = s.rename_unique("sess-2", "stroppy-conformity").unwrap_err();
+    assert!(matches!(e, StoreError::Refused(_)), "{e}");
+    assert_eq!(super::slug_of("  Fix the  parser!! "), "fix-the-parser");
+    assert_eq!(super::slug_of("!!!"), "");
+}
+
+/// A default name is unique per project with a numeric suffix, and never replaces a name.
+#[test]
+fn a_default_name_takes_a_suffix_and_leaves_a_name_alone() {
+    let s = store();
+    seeded(&s);
+    s.set_title("sess-1", "").unwrap();
+    named_session(&s, "sess-2", "/w", None);
+    named_session(&s, "sess-3", "/w", None);
+    named_session(&s, "sess-4", "/other", None);
+    assert_eq!(
+        s.name_default("sess-1", "fix-parser").unwrap().as_deref(),
+        Some("fix-parser")
+    );
+    assert_eq!(
+        s.name_default("sess-2", "fix-parser").unwrap().as_deref(),
+        Some("fix-parser-2")
+    );
+    assert_eq!(
+        s.name_default("sess-3", "fix-parser").unwrap().as_deref(),
+        Some("fix-parser-3")
+    );
+    assert_eq!(
+        s.name_default("sess-4", "fix-parser").unwrap().as_deref(),
+        Some("fix-parser"),
+        "another project"
+    );
+    assert_eq!(s.name_default("sess-1", "other").unwrap(), None);
+    assert_eq!(s.title("sess-1").unwrap().as_deref(), Some("fix-parser"));
+}
+
+/// `named_in` finds a name by title or slug, in one workspace only.
+#[test]
+fn named_in_matches_title_or_slug_in_the_workspace() {
+    let s = store();
+    seeded(&s);
+    named_session(&s, "sess-2", "/other", None);
+    s.rename_unique("sess-1", "Stroppy Conformity").unwrap();
+    s.rename_unique("sess-2", "Stroppy Conformity").unwrap();
+    let got = s.named_in("/w", "stroppy-conformity").unwrap();
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].id, "sess-1");
+    assert_eq!(s.named_in("/w", "STROPPY CONFORMITY").unwrap().len(), 1);
+    assert!(s.named_in("/w", "stroppy").unwrap().is_empty());
+}

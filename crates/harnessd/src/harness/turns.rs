@@ -1390,23 +1390,27 @@ impl Harness {
             _ => None,
         });
         let Some(text) = first_user else { return };
-        let title = derive_title(text);
-        if title.is_empty() {
+        let base = derive_title(text);
+        if base.is_empty() {
             return;
         }
-        if let Some(store) = &self.store
-            && let Err(e) = store.set_title(&self.cfg.session_id, &title)
-        {
-            {
-                // Not fatal and not silent: an unnamed session is usable, and a
-                // store that refused a title is a fact about the store.
-                self.hub.warn(
-                    "title_not_stored",
-                    format!("this session could not be named in the store: {e}"),
-                );
-                return;
-            }
-        }
+        let title = match &self.store {
+            Some(store) => match store.name_default(&self.cfg.session_id, &base) {
+                Ok(Some(t)) => t,
+                // A name appeared between the read above and now; it stays.
+                Ok(None) => return,
+                Err(e) => {
+                    // Not fatal and not silent: an unnamed session is usable, and a
+                    // store that refused a title is a fact about the store.
+                    self.hub.warn(
+                        "title_not_stored",
+                        format!("this session could not be named in the store: {e}"),
+                    );
+                    return;
+                }
+            },
+            None => base,
+        };
         self.cfg.title = title.clone();
         self.hub
             .publish(letibot_sessionlog::SessionEvent::SessionRenamed {

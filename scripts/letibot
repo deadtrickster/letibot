@@ -2223,7 +2223,7 @@ case "${1:-}" in
         note=""
         [ "$running" = true ] && note="RUNNING"
         [ "${heads:-0}" != 0 ] && note="$note ${heads} head(s)"
-        printf '     %-30.30s %6s rows  %-16s %s\n' "$title" "$rows" "$model" "$note"
+        printf '     %-30.30s %6s rows  %-16s %s\n' "${title:-$id}" "$rows" "$model" "$note"
       done <<SESSIONS_EOF
 $all
 SESSIONS_EOF

@@ -182,10 +182,13 @@ fn group_of_rows(listed: &str, group: &str) -> Vec<String> {
         if current != Some(group) {
             continue;
         }
-        // A session's line starts with its id at the left margin; the workspace line under it
-        // starts with padding, and the header lines are caught above.
-        let id = line.split_whitespace().next().unwrap_or("");
-        if line.starts_with("s-") {
+        // A session's details line is `<id>  <workspace>` under its name; the name line is skipped
+        // because an unnamed session leads with its id too.
+        let mut words = line.split_whitespace();
+        if let (Some(id), Some(ws)) = (words.next(), words.next())
+            && id.starts_with("s-")
+            && ws.starts_with('/')
+        {
             out.push(id.to_string());
         }
     }
@@ -286,5 +289,37 @@ fn a_workspace_holding_nothing_but_children_says_so_and_exits_one() {
     assert!(
         stderr.contains("sub-session") && stderr.contains("--session ID"),
         "the sentence names what is there and what to do about it: {stderr}"
+    );
+}
+
+/// `--sessions` leads each row with the name and keeps the id in the details line below it. An
+/// unnamed session leads with its id, its only handle.
+#[test]
+fn the_listing_leads_with_the_name_and_keeps_the_id_below() {
+    let scratch = Scratch::new("names");
+    let path = scratch.store();
+    let store = Store::open(&path).expect("opening");
+    session_row(&store, "s-named", Some("stroppy-conformity"), None, None);
+    session_row(&store, "s-bare", None, None, None);
+    rows_for(&store, "s-named", 1, 0);
+    rows_for(&store, "s-bare", 1, 0);
+
+    let listed = listing(&path);
+    let lines: Vec<&str> = listed.lines().collect();
+    let at = lines
+        .iter()
+        .position(|l| l.starts_with("stroppy-conformity"))
+        .unwrap_or_else(|| panic!("the name leads its row:\n{listed}"));
+    assert!(
+        !lines[at].contains("s-named"),
+        "the id is not on the name's line:\n{listed}"
+    );
+    assert!(
+        lines[at + 1].trim_start().starts_with("s-named") && lines[at + 1].contains(WS),
+        "the id and the workspace are the details line:\n{listed}"
+    );
+    assert!(
+        lines.iter().any(|l| l.starts_with("s-bare")),
+        "an unnamed session leads with its id:\n{listed}"
     );
 }
