@@ -128,7 +128,7 @@ fn a_client_that_named_another_room_is_refused_with_both_names() {
     let good = Client::connect_named(server.path(), Speaker::top_level("s-a"), "lab2x1", wake)
         .expect("the right room is reached");
     assert!(
-        good.welcome().identity.contains("no store"),
+        good.welcome().identity.contains("no item store"),
         "the welcome carries the room's own sentence: {}",
         good.welcome().identity
     );
