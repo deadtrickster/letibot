@@ -580,10 +580,12 @@ fn a_wide_seat_with_the_injected_token_authenticates_gh_and_git_for_github_only(
 
 #[test]
 fn gh_is_not_logged_in_in_a_tight_seat() {
-    if !gh_logged_in_outside() {
-        eprintln!("skipped: gh is not logged in on this machine");
+    let Some(_) = letibot_tokencore::apparatus::present(
+        "a logged-in gh outside the seat (the credential the seat must not see)",
+        gh_logged_in_outside(),
+    ) else {
         return;
-    }
+    };
     let f = Fixture::new("tight-gh");
     let s = Seatbelt::probe_as(f.view(), Egress::Denied, vec![f.denied()], real_home())
         .unwrap_or_else(|e| panic!("the macOS boundary did not measure on this box: {e}"));
