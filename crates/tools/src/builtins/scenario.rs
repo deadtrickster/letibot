@@ -415,7 +415,7 @@ fn plan(args: &Value) -> Result<Planned, (String, String)> {
         };
         let deadline_role = match seconds(spec.get("deadline_s")) {
             Ok(Some(0)) => None,
-            Ok(Some(s)) => Some(Duration::from_secs(s)),
+            Ok(Some(s)) => Some(Duration::from_secs(s).min(MAX_DEADLINE)),
             Ok(None) => None,
             Err(e) => return Err((format!("role `{name}`: {e}"), String::new())),
         };
@@ -427,7 +427,7 @@ fn plan(args: &Value) -> Result<Planned, (String, String)> {
                         .into(),
                 ));
             }
-            Ok(Some(s)) => Duration::from_secs(s),
+            Ok(Some(s)) => Duration::from_secs(s).min(MAX_DEADLINE),
             Ok(None) => DEFAULT_READY,
             Err(e) => return Err((format!("role `{name}`: {e}"), String::new())),
         };
@@ -534,7 +534,7 @@ fn plan(args: &Value) -> Result<Planned, (String, String)> {
                 .to_string();
             let deadline_run = match seconds(spec.get("deadline_s")) {
                 Ok(Some(0)) => None,
-                Ok(Some(s)) => Some(Duration::from_secs(s)),
+                Ok(Some(s)) => Some(Duration::from_secs(s).min(MAX_DEADLINE)),
                 Ok(None) => None,
                 Err(e) => return Err((format!("`run`: {e}"), String::new())),
             };
@@ -1098,6 +1098,23 @@ mod tests {
             vec!["web", "client", "b", "a"],
             "`client` waits for `web`; the rest keep the caller's order"
         );
+    }
+
+    #[test]
+    fn a_role_deadline_past_the_ceiling_is_held_to_it() {
+        let text = r#"{
+            "roles": {
+                "a": {"host": "h", "command": "a", "deadline_s": 18446744073709551615,
+                      "ready_deadline_s": 18446744073709551615}
+            },
+            "run": {"command": "t", "deadline_s": 18446744073709551615}
+        }"#;
+        let args: Value = serde_json::from_str(text).expect("the call");
+        let planned = plan(&args).expect("the plan");
+        let a = &planned.roles[0];
+        assert_eq!(a.ready_deadline, MAX_DEADLINE);
+        assert_eq!(a.deadline, Some(MAX_DEADLINE));
+        assert_eq!(planned.run.as_ref().unwrap().deadline, Some(MAX_DEADLINE));
     }
 
     /// A cycle is refused by the names in it, before any process exists.

@@ -1036,6 +1036,12 @@ impl std::fmt::Debug for TimerCondition {
     }
 }
 
+/// `from + interval`, held to a century so an absurd interval never overflows `Instant`.
+fn due(from: Instant, interval: Duration) -> Instant {
+    const FAR: Duration = Duration::from_secs(100 * 365 * 24 * 3600);
+    from + interval.min(FAR)
+}
+
 impl TimerCondition {
     /// Fire after `interval`, and - when the monitor is continuous - every
     /// `interval` after each firing.
@@ -1048,7 +1054,7 @@ impl TimerCondition {
     pub fn on(interval: Duration, now: Now) -> Arc<Self> {
         Arc::new(TimerCondition {
             interval,
-            next: Mutex::new(now() + interval),
+            next: Mutex::new(due(now(), interval)),
             now,
         })
     }
@@ -1063,7 +1069,7 @@ impl Condition for TimerCondition {
 
     fn rearm(&self) {
         let mut next = self.next.lock().expect("timer");
-        *next = (self.now)() + self.interval;
+        *next = due((self.now)(), self.interval);
     }
 
     fn describe(&self) -> String {
@@ -1726,6 +1732,14 @@ mod tests {
         assert!(matches!(&f2[0].fired, Fired::Fired { .. }));
         assert_eq!(ms.firings().len(), 2, "two firings, one monitor");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_timer_of_u64_max_ms_neither_panics_nor_fires() {
+        let t = TimerCondition::after(Duration::from_millis(u64::MAX));
+        assert!(t.met().is_none());
+        t.rearm();
+        assert!(t.met().is_none());
     }
 
     #[test]
