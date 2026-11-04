@@ -188,12 +188,20 @@ pub struct ShapelessAdmit {
 /// The schema version: what the FILE holds. [`floor`] says what a reader must know, and the
 /// two are separate on purpose: a migration that only adds leaves the floor alone, and one
 /// that rewrites what an older reader reads declares itself in [`READER_ARMS`].
-pub const SCHEMA_VERSION: i64 = 38;
+pub const SCHEMA_VERSION: i64 = 39;
 
 /// What this row's columns mean. Stamped on every corpus row, because a column can keep its
 /// name and its type while changing what it records, and a trainer that pools two meanings
 /// under one name fits a model to the seam.
 pub const CORPUS_VERSION: i64 = 1;
+
+/// The session list's indexes: every per-session subquery ends in `transcript_by_session`, and a
+/// parent's children are `session_by_parent`. Run beside `SCHEMA_SQL` on a fresh store and by the
+/// v38 arm, not inside it, so the migration tests that rebuild an old shape can still drop columns.
+pub const SESSION_INDEXES_SQL: &str = "
+CREATE INDEX IF NOT EXISTS transcript_by_session ON transcript (session_id, created_at);
+CREATE INDEX IF NOT EXISTS session_by_parent ON session (parent_session_id);
+";
 
 pub const SCHEMA_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -1243,6 +1251,47 @@ fn file_id(path: &Path) -> Option<(u64, u64)> {
 /// draws a paged row from. A named type so the page's shape is said once.
 pub type RowJson = (u32, String, String, String, u64);
 
+/// The session list's one SELECT, with an optional `WHERE` appended. A free function so a test
+/// can ask SQLite for its plan.
+pub(crate) fn sessions_sql(filter: &str) -> String {
+    format!(
+        "SELECT s.id, s.title, s.model_id, s.dialect_sha, s.workspace_root, s.owner,
+                    s.created_at,
+                    (SELECT t.id FROM transcript t
+                      WHERE t.session_id = s.id
+                      ORDER BY t.created_at DESC, t.rowid DESC LIMIT 1),
+                    (SELECT COALESCE(MAX(i.seq) + 1, 0) FROM transcript_item i
+                      WHERE i.transcript_id = (SELECT t.id FROM transcript t
+                          WHERE t.session_id = s.id
+                          ORDER BY t.created_at DESC, t.rowid DESC LIMIT 1)),
+                    (SELECT MAX((SELECT i.created_at FROM transcript_item i
+                                  WHERE i.transcript_id = t.id
+                                  ORDER BY i.seq DESC LIMIT 1))
+                       FROM transcript t WHERE t.session_id = s.id),
+                    s.role,
+                    s.parent_session_id,
+                    s.context_tokens,
+                    s.context_cached,
+                    s.context_ledger,
+                    s.provider_choice,
+                    s.context_window,
+                    s.auto_compact_resident,
+                    s.auto_compact_after,
+                    (SELECT i.item_json FROM transcript_item i
+                      WHERE i.transcript_id = (SELECT t.id FROM transcript t
+                          WHERE t.session_id = s.id
+                          ORDER BY t.created_at DESC, t.rowid DESC LIMIT 1)
+                        AND i.kind <> 'offer'
+                      ORDER BY i.seq DESC LIMIT 1),
+                    s.prefix_fingerprint,
+                    s.nags_paused_until,
+                    s.lives_on,
+                    s.moved_ms,
+                    s.origin
+               FROM session s{filter}"
+    )
+}
+
 impl Store {
     /// The process's one connection to this store file: SQLite caches a descriptor per inode inside
     /// the process and releases it only when the last connection closes, so a connection per caller
@@ -1390,6 +1439,7 @@ impl Store {
             None => {}
         }
         self.conn().execute_batch(SCHEMA_SQL)?;
+        self.conn().execute_batch(SESSION_INDEXES_SQL)?;
         self.conn().execute_batch(queues::QUEUES_SQL)?;
         self.conn().execute_batch(subagents::SUBAGENTS_SQL)?;
         self.conn().execute_batch(modes::MODES_SQL)?;
@@ -1961,6 +2011,27 @@ impl Store {
         if from < 38 {
             // v38: accepted prompts the hub has not started - one new table, `IF NOT EXISTS`.
             self.conn().execute_batch(prompts::PROMPTS_SQL)?;
+        }
+        if from < 39 {
+            // v39: two indexes so a session's transcripts and a parent's children are lookups, not scans.
+            // A store with no `transcript` table cannot be listed and has nothing to index.
+            let has_transcripts: bool = self.conn().query_row(
+                "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'transcript')",
+                [],
+                |r| r.get(0),
+            )?;
+            if has_transcripts {
+                let began = std::time::Instant::now();
+                self.conn().execute_batch(SESSION_INDEXES_SQL)?;
+                // Said after the fact: the build is one pass over two small tables, and a
+                // store large enough to make it noticeable should not look hung.
+                if began.elapsed() > std::time::Duration::from_millis(300) {
+                    eprintln!(
+                        "letibot: indexed the session store for faster listing ({} ms, one time)",
+                        began.elapsed().as_millis()
+                    );
+                }
+            }
         }
         Ok(())
     }
@@ -2564,45 +2635,13 @@ impl Store {
         filter: &str,
         args: &[&dyn rusqlite::ToSql],
     ) -> Result<Vec<StoredSession>> {
+        // Count and last activity read the newest `seq` by key: `seq` is dense from 0 (the insert
+        // trigger enforces it) and rows are written in time order, so neither needs a row scan.
         // The "current transcript" subquery orders by `created_at DESC, rowid DESC`, and the rowid
         // is not decoration: a fork is written in the same millisecond as the transcript it forked
         // from, and a created-at-only order breaks that tie randomly.
         let conn = self.conn();
-        let mut stmt = conn.prepare(&format!(
-            "SELECT s.id, s.title, s.model_id, s.dialect_sha, s.workspace_root, s.owner,
-                    s.created_at,
-                    (SELECT t.id FROM transcript t
-                      WHERE t.session_id = s.id
-                      ORDER BY t.created_at DESC, t.rowid DESC LIMIT 1),
-                    (SELECT COUNT(*) FROM transcript_item i
-                      WHERE i.transcript_id = (SELECT t.id FROM transcript t
-                          WHERE t.session_id = s.id
-                          ORDER BY t.created_at DESC, t.rowid DESC LIMIT 1)),
-                     (SELECT MAX(i.created_at) FROM transcript_item i
-                       JOIN transcript t ON t.id = i.transcript_id
-                      WHERE t.session_id = s.id),
-                    s.role,
-                    s.parent_session_id,
-                    s.context_tokens,
-                    s.context_cached,
-                    s.context_ledger,
-                    s.provider_choice,
-                    s.context_window,
-                    s.auto_compact_resident,
-                    s.auto_compact_after,
-                    (SELECT i.item_json FROM transcript_item i
-                      WHERE i.transcript_id = (SELECT t.id FROM transcript t
-                          WHERE t.session_id = s.id
-                          ORDER BY t.created_at DESC, t.rowid DESC LIMIT 1)
-                        AND i.kind <> 'offer'
-                      ORDER BY i.seq DESC LIMIT 1),
-                    s.prefix_fingerprint,
-                    s.nags_paused_until,
-                    s.lives_on,
-                    s.moved_ms,
-                    s.origin
-               FROM session s{filter}",
-        ))?;
+        let mut stmt = conn.prepare(&sessions_sql(filter))?;
         let mut out: Vec<StoredSession> = stmt
             .query_map(args, |r| {
                 let created_ms: i64 = r.get(6)?;
@@ -2684,6 +2723,12 @@ impl Store {
             .sessions_matching(" WHERE s.id = ?1", &[&id])?
             .into_iter()
             .next())
+    }
+
+    /// The sessions whose parent is `parent_id`: one indexed lookup, for the caller that needs
+    /// a session's kin and not the whole store.
+    pub fn children_of(&self, parent_id: &str) -> Result<Vec<StoredSession>> {
+        self.sessions_matching(" WHERE s.parent_session_id = ?1", &[&parent_id])
     }
 
     /// A session's parent, and nothing else: `Some(None)` for a root, `None` for an id this store

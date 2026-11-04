@@ -1641,7 +1641,10 @@ impl Harness {
             return out;
         };
         let mut kin: Vec<(String, String)> = Vec::new();
-        for b in self.session_registry.list() {
+        let kin_briefs = self
+            .session_registry
+            .kin(&self.cfg.session_id, self.cfg.parent_session_id.as_deref());
+        for b in kin_briefs {
             let child = b.parent_session_id.as_deref() == Some(self.cfg.session_id.as_str());
             let parent = self.cfg.parent_session_id.as_deref() == Some(b.session_id.as_str());
             if child || parent {

@@ -132,7 +132,7 @@ impl ParentTodos {
     fn my_children(&self) -> Vec<String> {
         let mut out: Vec<String> = self
             .registry
-            .list()
+            .kin(&self.caller, None)
             .into_iter()
             .filter(|b| b.parent_session_id.as_deref() == Some(self.caller.as_str()))
             .map(|b| letibot_tools::builtins::task::subagent_label(Some(&b.slug), &b.session_id))
@@ -153,7 +153,7 @@ impl ParentTodos {
     fn starting(&self) -> Vec<(String, String)> {
         let live: std::collections::HashSet<String> = self
             .registry
-            .list()
+            .kin(&self.caller, None)
             .into_iter()
             .map(|b| b.session_id)
             .collect();
@@ -189,10 +189,11 @@ impl ParentTodos {
     /// form [`short_id`] spells - the one the subagent pane and `task_result` show. Ambiguity
     /// is refused with the candidates named
     fn resolve(&self, target: &str) -> Result<letibot_sessionlog::registry::SessionBrief, String> {
-        let all = self.registry.list();
-        if let Some(exact) = all.iter().find(|b| b.session_id == target) {
-            return Ok(exact.clone());
+        if let Some(exact) = self.registry.brief(target) {
+            return Ok(exact);
         }
+        // The caller's children only, by key: the name and the held-list below need no more.
+        let all = self.registry.kin(&self.caller, None);
         // A child's name - its slug, among the CALLER's children only: a name is unique among
         // one parent's children, not across the daemon, and a sibling's child of the same name is
         // not this caller's to write.
@@ -215,12 +216,24 @@ impl ParentTodos {
                 ));
             }
         }
-        let hits: Vec<_> = all
+        let mut hits: Vec<_> = all
             .iter()
             .filter(|b| short_id(&b.session_id) == target)
+            .cloned()
             .collect();
+        // Only a tail that is none of the caller's children walks the whole store, to say what
+        // it is: the refusal below names it.
+        let everyone;
+        if hits.is_empty() {
+            everyone = self.registry.list();
+            hits = everyone
+                .iter()
+                .filter(|b| short_id(&b.session_id) == target)
+                .cloned()
+                .collect();
+        }
         match hits.as_slice() {
-            [one] => Ok((*one).clone()),
+            [one] => Ok(one.clone()),
             [] => Err(format!(
                 "no session this daemon holds is `{target}` (full id or short `…tail` form). {}",
                 self.held()

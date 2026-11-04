@@ -557,6 +557,7 @@ fn a_v1_store_is_migrated_and_its_rows_read_as_unrecorded() {
         let c = rusqlite::Connection::open(&path).unwrap();
         c.execute_batch(
             "ALTER TABLE session DROP COLUMN role;
+                 DROP INDEX session_by_parent;
                  ALTER TABLE session DROP COLUMN parent_session_id;
                  DELETE FROM schema_version;
                  INSERT INTO schema_version (version) VALUES (1);",
@@ -664,6 +665,7 @@ fn a_v2_store_is_migrated_and_gains_a_todo_table() {
         // back.
         let c = rusqlite::Connection::open(&path).unwrap();
         c.execute("DROP TABLE todo", []).unwrap();
+        c.execute("DROP INDEX session_by_parent", []).unwrap();
         c.execute("ALTER TABLE session DROP COLUMN parent_session_id", [])
             .unwrap();
         c.execute("UPDATE schema_version SET version = 2", [])
@@ -2879,4 +2881,131 @@ fn queued_prompts_are_replaced_whole_in_order_per_session() {
     assert_eq!(texts("s-b"), vec!["other"]);
     s.replace_queued_prompts("s-a", &[]).unwrap();
     assert!(texts("s-a").is_empty());
+}
+
+/// A store of `n` sessions, each with a transcript of `items` rows; every tenth is the child of
+/// the first. In a file, since the cost under test is page reads.
+fn synthetic_store(path: &std::path::Path, n: usize, items: u32) -> Store {
+    let s = Store::open(path).unwrap();
+    let p = prefix();
+    let prefix_id = s.put_stable_prefix(&p).unwrap();
+    for i in 0..n {
+        let id = format!("sess-{i}");
+        s.put_session(&SessionRecord {
+            id: id.clone(),
+            title: None,
+            model_id: "qwen".into(),
+            dialect_sha: p.dialect_sha.clone(),
+            workspace_root: format!("/w/{}", i % 7),
+            owner: "o".into(),
+            role: None,
+            approvers: vec![],
+            parent_session_id: (i > 0 && i % 10 == 0).then(|| "sess-0".to_string()),
+        })
+        .unwrap();
+        let tr = format!("tr-{i}");
+        s.put_transcript(&tr, &id, &prefix_id).unwrap();
+        let mut ledger = TokenLedger::new(&tr, &p.tokens).unwrap();
+        let item = TranscriptItem::Assistant {
+            text: "x".repeat(400),
+            tool_calls: vec![],
+            truncated: false,
+        };
+        let mut rows = Vec::new();
+        for seq in 0..items {
+            let toks = vec![seq + 1; 32];
+            let row = ledger
+                .append(&format!("it-{i}-{seq}"), &toks)
+                .unwrap()
+                .clone();
+            rows.push((row, toks));
+        }
+        s.append_items(&tr, 0, rows.iter().map(|(r, t)| (&item, r, t.as_slice())))
+            .unwrap();
+    }
+    s
+}
+
+/// The per-round kin read does not grow with the store: its plan has no table scan, its rows
+/// are the list's rows for the same sessions, and it finishes in a fixed fraction of a full list.
+#[test]
+fn a_childrens_read_is_keyed_and_independent_of_the_session_count() {
+    let path = std::env::temp_dir().join(format!("letibot-kin-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let s = synthetic_store(&path, 2000, 20);
+
+    // Plan: every table is reached by SEARCH. A SCAN of `session`, `transcript` or
+    // `transcript_item` is the walk of the store this exists to avoid.
+    let raw = rusqlite::Connection::open(&path).unwrap();
+    for filter in [" WHERE s.parent_session_id = ?1", " WHERE s.id = ?1"] {
+        let mut st = raw
+            .prepare(&format!("EXPLAIN QUERY PLAN {}", sessions_sql(filter)))
+            .unwrap();
+        let plan: Vec<String> = st
+            .query_map(["x"], |r| r.get::<_, String>(3))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert!(
+            plan.iter().all(|l| !l.starts_with("SCAN")),
+            "{filter}: a scan in the plan: {plan:#?}"
+        );
+    }
+
+    let t = std::time::Instant::now();
+    let kids = s.children_of("sess-0").unwrap();
+    let kin_ms = t.elapsed().as_millis();
+    assert_eq!(kids.len(), 199);
+    let t = std::time::Instant::now();
+    let one = s.children_of("sess-1999").unwrap();
+    let none_ms = t.elapsed().as_millis();
+    assert!(one.is_empty());
+    let t = std::time::Instant::now();
+    let all = s.list_sessions().unwrap();
+    let list_ms = t.elapsed().as_millis();
+    assert_eq!(all.len(), 2000);
+    eprintln!(
+        "children_of(199 kids): {kin_ms} ms, children_of(none): {none_ms} ms, list_sessions(2000): {list_ms} ms"
+    );
+
+    // Same rows as the list, and the count and activity read by key are the real ones.
+    let mut listed: Vec<_> = all
+        .into_iter()
+        .filter(|x| x.parent_session_id.as_deref() == Some("sess-0"))
+        .collect();
+    let mut kids = kids;
+    listed.sort_by(|a, b| a.id.cmp(&b.id));
+    kids.sort_by(|a, b| a.id.cmp(&b.id));
+    assert_eq!(kids, listed);
+    assert!(kids.iter().all(|k| k.items == 20));
+    // A lookup that finds no child is a few index probes: it must not cost a list.
+    assert!(
+        none_ms * 10 <= list_ms.max(10) || none_ms < 50,
+        "children_of(none) took {none_ms} ms against {list_ms} ms for the whole list"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+/// The count and the last activity of a session come from its newest `seq`, so a session with
+/// a forked second transcript reports the newer one, and an empty one reports zero rows.
+#[test]
+fn a_listed_session_counts_its_newest_transcripts_rows() {
+    let s = store();
+    let (tr, prefix_id) = seeded(&s);
+    assert_eq!(s.list_sessions().unwrap()[0].items, 0);
+    let mut ledger = TokenLedger::new(&tr, &[1, 2, 3, 4]).unwrap();
+    let item = TranscriptItem::Assistant {
+        text: "a".into(),
+        tool_calls: vec![],
+        truncated: false,
+    };
+    for seq in 0..3u32 {
+        let toks = vec![10 + seq];
+        let row = ledger.append(&format!("c-{seq}"), &toks).unwrap().clone();
+        s.append_item(&tr, seq, &item, &row, &toks).unwrap();
+    }
+    let got = s.list_sessions().unwrap().remove(0);
+    assert_eq!(got.items, 3);
+    assert!(got.last_activity_ms > 0);
+    let _ = prefix_id;
 }

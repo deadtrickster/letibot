@@ -429,6 +429,18 @@ pub struct StoredBrief {
     pub origin: SessionOrigin,
 }
 
+/// A live entry as `Registry::assemble` needs it. A named type rather than a seven-tuple: a
+/// reader that miscounted would take a title for a session id.
+type LiveRow = (
+    String,
+    String,
+    u64,
+    Arc<Hub>,
+    SessionWiring,
+    Option<String>,
+    SessionOrigin,
+);
+
 /// Where a registry can find sessions it is not already holding. A trait and not a `Store`: a
 /// dependency on the store crate here would put SQL in the daemon's session list.
 pub trait SessionSource: Send + Sync {
@@ -437,6 +449,14 @@ pub trait SessionSource: Send + Sync {
     /// One session, or `None` if nothing anywhere has heard of it.
     fn lookup(&self, session_id: &str) -> Option<StoredBrief> {
         self.list().into_iter().find(|s| s.session_id == session_id)
+    }
+    /// The sessions on disk whose parent is `parent_id`. The default filters [`SessionSource::list`];
+    /// a source with an index overrides it so a session's kin never costs a walk of the store.
+    fn children_of(&self, parent_id: &str) -> Vec<StoredBrief> {
+        self.list()
+            .into_iter()
+            .filter(|s| s.parent_session_id.as_deref() == Some(parent_id))
+            .collect()
     }
     /// Make the name durable. An empty title clears it. The default refuses, and refusing is the
     /// point: a registry with no source has nowhere to write it.
@@ -1267,7 +1287,34 @@ impl Registry {
 
     /// One session, as a picker row. `None` if it is not here.
     pub fn brief(&self, session_id: &str) -> Option<SessionBrief> {
-        self.list().into_iter().find(|b| b.session_id == session_id)
+        let rows = self.live_rows(|id, _| id == session_id);
+        let stored = self
+            .source()
+            .and_then(|s| s.lookup(session_id))
+            .into_iter()
+            .collect();
+        self.assemble(rows, stored)
+            .into_iter()
+            .find(|b| b.session_id == session_id)
+    }
+
+    /// The children of `session_id` and its `parent`, as picker rows, from keyed reads: the cost
+    /// follows the number of kin, never the number of sessions in the store.
+    pub fn kin(&self, session_id: &str, parent: Option<&str>) -> Vec<SessionBrief> {
+        let mut stored: Vec<StoredBrief> = Vec::new();
+        if let Some(src) = self.source() {
+            stored.extend(src.children_of(session_id));
+            if let Some(p) = parent
+                && let Some(row) = src.lookup(p)
+            {
+                stored.push(row);
+            }
+        }
+        // A live child the store names as one counts too, so it is not listed as unheld.
+        let rows = self.live_rows(|id, p| {
+            p == Some(session_id) || Some(id) == parent || stored.iter().any(|d| d.session_id == id)
+        });
+        self.assemble(rows, stored)
     }
 
     /// What a session is attached to. Empty for a session nobody registered.
@@ -1750,36 +1797,35 @@ impl Registry {
     /// Every session, in creation order, each cut under its own hub's lock. The hubs are cloned
     /// out from under the registry lock first, so a slow session cannot hold the list.
     pub fn list(&self) -> Vec<SessionBrief> {
-        // A live entry as the row below needs it, cloned out under one lock. A named type rather
-        // than a seven-tuple spelled twice: a reader that miscounted would have taken a title for a
-        // session id.
-        type LiveRow = (
-            String,
-            String,
-            u64,
-            Arc<Hub>,
-            SessionWiring,
-            Option<String>,
-            SessionOrigin,
-        );
-        let rows: Vec<LiveRow> = {
-            let g = self.lock();
-            g.entries
-                .iter()
-                .map(|(id, e)| {
-                    (
-                        id.clone(),
-                        e.title.clone(),
-                        e.created_ms,
-                        e.hub.clone(),
-                        e.wiring.clone(),
-                        e.parent_session_id.clone(),
-                        e.origin,
-                    )
-                })
-                .collect()
-        };
+        let rows = self.live_rows(|_, _| true);
         let stored: Vec<StoredBrief> = self.source().map(|s| s.list()).unwrap_or_default();
+        self.assemble(rows, stored)
+    }
+
+    /// The live entries `keep` accepts (called with the id and the entry's parent), cloned out
+    /// under one lock.
+    fn live_rows(&self, keep: impl Fn(&str, Option<&str>) -> bool) -> Vec<LiveRow> {
+        let g = self.lock();
+        g.entries
+            .iter()
+            .filter(|(id, e)| keep(id, e.parent_session_id.as_deref()))
+            .map(|(id, e)| {
+                (
+                    id.clone(),
+                    e.title.clone(),
+                    e.created_ms,
+                    e.hub.clone(),
+                    e.wiring.clone(),
+                    e.parent_session_id.clone(),
+                    e.origin,
+                )
+            })
+            .collect()
+    }
+
+    /// Join live rows with the stored rows read for them, then append the stored rows no live
+    /// entry holds.
+    fn assemble(&self, rows: Vec<LiveRow>, stored: Vec<StoredBrief>) -> Vec<SessionBrief> {
         let mut out: Vec<SessionBrief> = rows
             .into_iter()
             .map(
@@ -2112,6 +2158,92 @@ mod tests {
 
     fn reg() -> Arc<Registry> {
         Registry::new()
+    }
+
+    fn stored(id: &str, parent: Option<&str>) -> StoredBrief {
+        StoredBrief {
+            session_id: id.into(),
+            title: id.into(),
+            items: 1,
+            last_activity_ms: 1,
+            wiring: SessionWiring::default(),
+            parent_session_id: parent.map(Into::into),
+            context_tokens: None,
+            context_cached: None,
+            stored_end: None,
+            nags_paused: None,
+            waits_on_operator: 0,
+            slug: String::new(),
+            origin: SessionOrigin::default(),
+        }
+    }
+
+    /// A source that keys its answers and counts how often the whole store is walked.
+    struct Keyed {
+        rows: Vec<StoredBrief>,
+        lists: std::sync::atomic::AtomicUsize,
+    }
+
+    impl SessionSource for Keyed {
+        fn list(&self) -> Vec<StoredBrief> {
+            self.lists.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.rows.clone()
+        }
+        fn lookup(&self, id: &str) -> Option<StoredBrief> {
+            self.rows.iter().find(|r| r.session_id == id).cloned()
+        }
+        fn children_of(&self, parent: &str) -> Vec<StoredBrief> {
+            self.rows
+                .iter()
+                .filter(|r| r.parent_session_id.as_deref() == Some(parent))
+                .cloned()
+                .collect()
+        }
+    }
+
+    /// The per-round kin read and a one-session read ask the source by key and never list it.
+    #[test]
+    fn kin_and_brief_read_the_source_by_key_and_never_list_it() {
+        let r = reg();
+        let mut rows: Vec<StoredBrief> = (0..500)
+            .map(|i| stored(&format!("s-other-{i}"), None))
+            .collect();
+        rows.push(stored("s-me", Some("s-mum")));
+        rows.push(stored("s-mum", None));
+        rows.push(stored("s-kid-1", Some("s-me")));
+        rows.push(stored("s-kid-2", Some("s-me")));
+        let src = Arc::new(Keyed {
+            rows,
+            lists: Default::default(),
+        });
+        r.set_source(src.clone());
+        // One kid is live: it must come back once, as live.
+        r.create_under("s-kid-1", "", SessionWiring::default(), Some("s-me".into()))
+            .unwrap();
+        let mut got: Vec<(String, bool)> = r
+            .kin("s-me", Some("s-mum"))
+            .into_iter()
+            .map(|b| (b.session_id, b.live))
+            .collect();
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                ("s-kid-1".to_string(), true),
+                ("s-kid-2".to_string(), false),
+                ("s-mum".to_string(), false),
+            ]
+        );
+        assert_eq!(
+            r.brief("s-me").map(|b| b.session_id).as_deref(),
+            Some("s-me")
+        );
+        assert!(r.brief("s-nobody").is_none());
+        assert_eq!(
+            src.lists.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "the whole store was listed"
+        );
     }
 
     /// A moved `model` row, said to the heads already attached. The rows answer a request, so a

@@ -26,13 +26,21 @@ pub struct RegistryFeed {
     /// would be a process per row every five seconds, and a workspace's repository does not change
     /// while a daemon runs. A workspace git cannot answer for is cached as empty too.
     repos: Mutex<HashMap<PathBuf, String>>,
+    /// The last rows and when they were built: every pane frame asks, and each build walks the
+    /// store's sessions.
+    rows: Mutex<Option<(std::time::Instant, Vec<Value>)>>,
 }
+
+/// How long a built `sessions` feed is reused. The panes redraw every few seconds; a row older
+/// than this is the most a pane can show stale.
+const ROWS_TTL: std::time::Duration = std::time::Duration::from_secs(2);
 
 impl RegistryFeed {
     pub fn new(registry: Arc<Registry>) -> RegistryFeed {
         RegistryFeed {
             registry,
             repos: Mutex::new(HashMap::new()),
+            rows: Mutex::new(None),
         }
     }
 
@@ -57,6 +65,20 @@ impl RegistryFeed {
 
 impl SessionFeed for RegistryFeed {
     fn rows(&self) -> Vec<Value> {
+        if let Some((at, rows)) = &*self.rows.lock().unwrap_or_else(|e| e.into_inner())
+            && at.elapsed() < ROWS_TTL
+        {
+            return rows.clone();
+        }
+        let built = self.build_rows();
+        *self.rows.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some((std::time::Instant::now(), built.clone()));
+        built
+    }
+}
+
+impl RegistryFeed {
+    fn build_rows(&self) -> Vec<Value> {
         self.registry
             .list()
             .into_iter()

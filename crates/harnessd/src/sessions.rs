@@ -5142,41 +5142,106 @@ impl SessionSource for StoreSessions {
         g.list_sessions()
             .unwrap_or_default()
             .into_iter()
-            .map(|s| StoredBrief {
-                waits_on_operator: waiting.get(&s.id).copied().unwrap_or(0),
-                slug: slugs.get(&s.id).cloned().unwrap_or_default(),
-                // Who it is for, off its own row - `None` is a row written before the
-                // column existed, and every row was the operator's then.
-                origin: s
-                    .origin
-                    .as_deref()
-                    .and_then(letibot_sessionlog::SessionOrigin::parse)
-                    .unwrap_or_default(),
-                session_id: s.id,
-                title: s.title.unwrap_or_default(),
-                items: s.items,
-                last_activity_ms: s.last_activity_ms.max(0) as u64,
-                parent_session_id: s.parent_session_id,
-                context_tokens: s.context_tokens,
-                context_cached: s.context_cached,
-                stored_end: s.last_item.as_ref().map(stored_end),
-                // A pause already over is no pause, whoever has yet to say so: a session this daemon is
-                // not holding has no clock to end it, and a picker row that went on saying *paused* past
-                // its hour would be the stale state this field exists to replace.
-                nags_paused: s
-                    .nags_paused_until
-                    .map(letibot_sessionlog::NagPause::from_stored)
-                    .filter(|p| !p.over_at(letibot_sessionlog::registry::now_ms())),
-                wiring: SessionWiring {
-                    // The session's own model and workspace, from its row. The dialect and endpoint are this
-                    // daemon's - they are not stored per session, and a plausible guess on a picker row is a
-                    // guess somebody quotes.
-                    model: s.model_id,
-                    workspace: s.workspace_root,
-                    ..self.wiring.clone()
-                },
+            .map(|s| {
+                let waits = waiting.get(&s.id).copied().unwrap_or(0);
+                let slug = slugs.get(&s.id).cloned().unwrap_or_default();
+                self.brief_of(s, waits, slug)
             })
             .collect()
+    }
+
+    fn lookup(&self, session_id: &str) -> Option<StoredBrief> {
+        let g = self.store.lock().unwrap_or_else(|e| e.into_inner());
+        let s = g.session(session_id).ok().flatten()?;
+        Some(self.keyed_brief(&g, s))
+    }
+
+    fn children_of(&self, parent_id: &str) -> Vec<StoredBrief> {
+        let g = self.store.lock().unwrap_or_else(|e| e.into_inner());
+        let kids = g.children_of(parent_id).unwrap_or_default();
+        // One parent, so one run list names every child's slug.
+        let runs = g.subagent_runs_of(parent_id).unwrap_or_default();
+        let slugs: std::collections::HashMap<String, String> = runs
+            .iter()
+            .map(|r| r.child_id.clone())
+            .zip(crate::subagent_record::recorded_slugs(&runs))
+            .collect();
+        kids.into_iter()
+            .map(|s| {
+                let slug = slugs.get(&s.id).cloned().unwrap_or_default();
+                let waits = Self::waits_of(&g, &s.id);
+                self.brief_of(s, waits, slug)
+            })
+            .collect()
+    }
+}
+
+impl StoreSessions {
+    fn waits_of(g: &Store, id: &str) -> usize {
+        g.todos(id)
+            .map(|t| letibot_tokencore::store::operator_asks(&t).len())
+            .unwrap_or(0)
+    }
+
+    /// A row with its two off-row facts read by key: the board of this session, and the run
+    /// list of its parent.
+    fn keyed_brief(&self, g: &Store, s: letibot_tokencore::store::StoredSession) -> StoredBrief {
+        let slug = s
+            .parent_session_id
+            .as_deref()
+            .and_then(|p| {
+                let runs = g.subagent_runs_of(p).ok()?;
+                runs.iter()
+                    .map(|r| r.child_id.clone())
+                    .zip(crate::subagent_record::recorded_slugs(&runs))
+                    .find(|(c, _)| *c == s.id)
+                    .map(|(_, slug)| slug)
+            })
+            .unwrap_or_default();
+        let waits = Self::waits_of(g, &s.id);
+        self.brief_of(s, waits, slug)
+    }
+
+    fn brief_of(
+        &self,
+        s: letibot_tokencore::store::StoredSession,
+        waits: usize,
+        slug: String,
+    ) -> StoredBrief {
+        StoredBrief {
+            waits_on_operator: waits,
+            slug,
+            // Who it is for, off its own row - `None` is a row written before the
+            // column existed, and every row was the operator's then.
+            origin: s
+                .origin
+                .as_deref()
+                .and_then(letibot_sessionlog::SessionOrigin::parse)
+                .unwrap_or_default(),
+            session_id: s.id,
+            title: s.title.unwrap_or_default(),
+            items: s.items,
+            last_activity_ms: s.last_activity_ms.max(0) as u64,
+            parent_session_id: s.parent_session_id,
+            context_tokens: s.context_tokens,
+            context_cached: s.context_cached,
+            stored_end: s.last_item.as_ref().map(stored_end),
+            // A pause already over is no pause, whoever has yet to say so: a session this daemon is
+            // not holding has no clock to end it, and a picker row that went on saying *paused* past
+            // its hour would be the stale state this field exists to replace.
+            nags_paused: s
+                .nags_paused_until
+                .map(letibot_sessionlog::NagPause::from_stored)
+                .filter(|p| !p.over_at(letibot_sessionlog::registry::now_ms())),
+            wiring: SessionWiring {
+                // The session's own model and workspace, from its row. The dialect and endpoint are this
+                // daemon's - they are not stored per session, and a plausible guess on a picker row is a
+                // guess somebody quotes.
+                model: s.model_id,
+                workspace: s.workspace_root,
+                ..self.wiring.clone()
+            },
+        }
     }
 }
 
