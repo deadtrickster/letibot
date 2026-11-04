@@ -110,7 +110,7 @@ impl TaskJournal {
             .collect();
         let skills: Vec<serde_json::Value> = self
             .skills
-            .skills
+            .live_skills()
             .iter()
             .map(|s| json!({ "name": s.name, "description": s.description }))
             .collect();

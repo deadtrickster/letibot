@@ -235,14 +235,17 @@ pub trait SkillShelf: Send + Sync {
 }
 
 /// Said wherever the shelf is missing, so a model does not read "no shelf" as "no skills".
-const DISK_DIRS: &str = "Skills on disk still load, at session open, from the project's \
+const DISK_DIRS: &str = "Skills on disk still load from the project's \
     .letibot/skills and .claude/skills, ~/.config/letibot/skills and ~/.claude/skills.";
 
-/// The loaded skills, shared with the tool. The disk half is immutable after
-/// construction; the shelf is installed once, by the daemon, when it has one.
+/// The loaded skills, shared with the tool. `skills` is the snapshot taken at open and feeds the
+/// prompt; the tool re-reads the folders per call. The shelf is installed by the daemon.
 #[derive(Default)]
 pub struct SkillRegistry {
     pub skills: Vec<Skill>,
+    /// Where `skills` was read from, so the tool's live answers can read the folders again. The
+    /// prompt's index stays on `skills`: a pin is fixed at open.
+    dirs: Option<SkillDirs>,
     /// The names the operator pinned for this project: the only rows the prompt's index carries.
     /// A pin is not a load - the body still arrives only when `skill` is asked for it.
     pins: BTreeSet<String>,
@@ -262,6 +265,7 @@ impl SkillRegistry {
     pub fn new(skills: Vec<Skill>) -> Self {
         SkillRegistry {
             skills,
+            dirs: None,
             pins: BTreeSet::new(),
             shelf: Mutex::new(None),
         }
@@ -313,20 +317,18 @@ impl SkillRegistry {
     /// name found twice is held once, by the higher-priority source, and a directory that cannot be
     /// read is skipped rather than fatal.
     pub fn load_for(dirs: &SkillDirs) -> Self {
-        let mut skills = Self::built_in();
-        for (dir, source) in dirs.walk() {
-            for skill in read_dir(dir, &source) {
-                match skills.iter_mut().find(|s| s.name == skill.name) {
-                    Some(existing) if existing.source.priority() < skill.source.priority() => {
-                        continue;
-                    }
-                    Some(existing) => *existing = skill,
-                    None => skills.push(skill),
-                }
-            }
+        let mut reg = SkillRegistry::new(scan(dirs));
+        reg.dirs = Some(dirs.clone());
+        reg
+    }
+
+    /// The skills as the disk has them now: built-ins plus a fresh read of the folders. Without
+    /// folders (a registry built from a list) it is the list as given.
+    pub fn live_skills(&self) -> Vec<Skill> {
+        match &self.dirs {
+            Some(dirs) => scan(dirs),
+            None => self.skills.clone(),
         }
-        sort_for_display(&mut skills);
-        SkillRegistry::new(skills)
     }
 
     /// This box's directories ([`SkillDirs::for_this_box`]) with nothing named: the default a
@@ -401,44 +403,38 @@ impl SkillRegistry {
     /// title. `Err` carries the reason a shelf could not answer, which is a
     /// different fact from "no such skill".
     pub fn load_any(&self, key: &str) -> Result<Skill, String> {
-        if let Some(s) = self.skills.iter().find(|s| s.name == key) {
+        let live = self.live_skills();
+        if let Some(s) = live.iter().find(|s| s.name == key) {
             return Ok(s.clone());
         }
         let Some(shelf) = self.shelf() else {
             return Err(format!(
                 "no skill named `{key}` on disk, and no shelf is attached (no fabric seat on \
                  this daemon). {DISK_DIRS} On disk: {}",
-                self.names_or_none()
+                names_or_none(&live)
             ));
         };
         shelf.load(key).map_err(|e| {
             format!(
                 "no skill named `{key}` on disk, and the shelf ({}) says: {e}. On disk: {}",
                 shelf.describe(),
-                self.names_or_none()
+                names_or_none(&live)
             )
         })
     }
 
-    fn names_or_none(&self) -> String {
-        if self.skills.is_empty() {
-            "none".into()
-        } else {
-            self.names().join(", ")
-        }
-    }
-
     fn list(&self) -> String {
+        let skills = self.live_skills();
         let mut out = String::new();
-        if self.skills.is_empty() {
+        if skills.is_empty() {
             out.push_str("no skills are loaded — none on disk and none in this build.\n");
         } else {
             out.push_str(&format!(
                 "{} skill(s) — the label says where each was found, and only `the operator's` is \
                  an instruction of theirs:\n",
-                self.skills.len()
+                skills.len()
             ));
-            for s in &self.skills {
+            for s in &skills {
                 out.push_str(&format!(
                     "- {}  [{}]  {}\n",
                     s.name,
@@ -592,7 +588,7 @@ impl SkillRegistry {
         most: usize,
         tier: Option<&crate::similarity::Tier>,
     ) -> Vec<(String, f64)> {
-        let docs = self.documents();
+        let docs = self.documents(&self.live_skills());
         let corpus = crate::similarity::Corpus::of_texts(&docs);
         // Filled from THIS registry, through the door that keys it as the score reads it. A fill
         // that cannot answer leaves no vectors, so the words stand alone.
@@ -615,9 +611,8 @@ impl SkillRegistry {
 
     /// What this registry is scored on, in the corpus's own shape: one document per skill, and
     /// one per shelf entry, whose title and visibility are all that is known about it.
-    fn documents(&self) -> Vec<(PathBuf, String)> {
-        let mut docs: Vec<(PathBuf, String)> = self
-            .skills
+    fn documents(&self, skills: &[Skill]) -> Vec<(PathBuf, String)> {
+        let mut docs: Vec<(PathBuf, String)> = skills
             .iter()
             .map(|s| (PathBuf::from(&s.name), s.document()))
             .collect();
@@ -651,6 +646,56 @@ impl SkillRegistry {
         }
         declared.then_some(out)
     }
+}
+
+fn names_or_none(skills: &[Skill]) -> String {
+    if skills.is_empty() {
+        "none".into()
+    } else {
+        skills
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+/// Built-ins with the folders read over them: a name found twice is held once, by the
+/// higher-priority source, and a directory that cannot be read is skipped.
+fn scan(dirs: &SkillDirs) -> Vec<Skill> {
+    let mut skills = SkillRegistry::built_in();
+    for (dir, source) in dirs.walk() {
+        let mut found = read_dir(dir, &source);
+        // Claude Code's synced skills sit one level further down; only that shape is read.
+        if matches!(source, SkillSource::Installed(_)) {
+            found.extend(read_synced(dir, &source));
+        }
+        for skill in found {
+            match skills.iter_mut().find(|s| s.name == skill.name) {
+                Some(existing) if existing.source.priority() < skill.source.priority() => {
+                    continue;
+                }
+                Some(existing) => *existing = skill,
+                None => skills.push(skill),
+            }
+        }
+    }
+    sort_for_display(&mut skills);
+    skills
+}
+
+/// `<root>/synced/<uuid>/<name>/SKILL.md`, in directory order made stable by the sort.
+fn read_synced(root: &std::path::Path, source: &SkillSource) -> Vec<Skill> {
+    let Ok(entries) = std::fs::read_dir(root.join("synced")) else {
+        return Vec::new();
+    };
+    let mut groups: Vec<_> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
+    groups.sort();
+    groups.iter().flat_map(|g| read_dir(g, source)).collect()
 }
 
 /// One skill directory's `SKILL.md`: frontmatter `name` + `description`, then the body. `None`
@@ -1395,5 +1440,78 @@ mod tests {
             l.contains("could not be read: node unreachable. That is not an empty shelf"),
             "{l}"
         );
+    }
+
+    fn write_skill(dir: &Path, name: &str, desc: &str) {
+        std::fs::create_dir_all(dir).expect("a skill dir");
+        std::fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: {desc}\n---\n\nbody of {name}\n"),
+        )
+        .expect("a skill");
+    }
+
+    fn temp_root(tag: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("letibot-skill-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        root
+    }
+
+    /// The tool answers from the disk as it is now, and the prompt's index stays as composed.
+    #[test]
+    fn a_skill_added_after_open_is_live_in_the_tool_and_not_in_the_index() {
+        let root = temp_root("live");
+        let op = root.join("operator");
+        write_skill(&op.join("first"), "first", "the first one");
+        let dirs = SkillDirs {
+            operator: vec![op.clone()],
+            ..SkillDirs::default()
+        };
+        let r = SkillRegistry::load_for(&dirs);
+        let vocab = letibot_tokencore::Vocab::bytes([], []);
+        let before = r.index(&vocab);
+
+        write_skill(
+            &op.join("zebra-grooming"),
+            "zebra-grooming",
+            "groom a zebra",
+        );
+        assert!(r.list().contains("zebra-grooming"), "{}", r.list());
+        assert!(
+            r.load_any("zebra-grooming")
+                .unwrap()
+                .body
+                .contains("body of")
+        );
+        let found = r.ranked("groom a zebra", 3);
+        assert_eq!(found.first().map(|f| f.0.as_str()), Some("zebra-grooming"));
+        assert_eq!(r.index(&vocab), before, "the pinned index is fixed at open");
+        assert!(!r.names().contains(&"zebra-grooming"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_synced_skill_two_levels_down_is_installed() {
+        let root = temp_root("synced");
+        let installed = root.join(".claude/skills");
+        write_skill(
+            &installed.join("synced/abc-123/deck"),
+            "deck",
+            "make a deck",
+        );
+        write_skill(
+            &installed.join("synced/abc-123/nested/too/deep"),
+            "deep",
+            "no",
+        );
+        let dirs = SkillDirs {
+            installed: vec![installed],
+            ..SkillDirs::default()
+        };
+        let r = SkillRegistry::load_for(&dirs);
+        let deck = r.skills.iter().find(|s| s.name == "deck").expect("deck");
+        assert_eq!(deck.source.label(), "installed");
+        assert!(!r.skills.iter().any(|s| s.name == "deep"));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
