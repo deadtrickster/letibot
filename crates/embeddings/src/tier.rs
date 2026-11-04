@@ -438,6 +438,16 @@ impl Embedder {
         if let Some(v) = self.remembered(&hash) {
             return Ok((v, Hit::Cached));
         }
+        let words = word_set(text);
+        if words.len() >= NEAR_WORDS {
+            let last = self.last.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some((seen, v)) = last.as_ref()
+                && seen.len() >= NEAR_WORDS
+                && jaccard(seen, &words) >= NEAR
+            {
+                return Ok((v.clone(), Hit::Cached));
+            }
+        }
         // Two visits to the cache with the embed between them rather than `Cache::embed_or_get`,
         // which would hold the box's one connection for the whole of a request to an endpoint.
         self.lookups.fetch_add(1, Ordering::Relaxed);
@@ -448,16 +458,6 @@ impl Embedder {
             }
             Ok(None) => {}
             Err(e) => return Err(self.fail(EmbedOrCacheError::Cache(e))),
-        }
-        let words = word_set(text);
-        if words.len() >= NEAR_WORDS {
-            let last = self.last.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some((seen, v)) = last.as_ref()
-                && seen.len() >= NEAR_WORDS
-                && jaccard(seen, &words) >= NEAR
-            {
-                return Ok((v.clone(), Hit::Cached));
-            }
         }
         self.spend_query_budget()?;
         self.embedded.fetch_add(1, Ordering::Relaxed);
