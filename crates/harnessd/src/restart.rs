@@ -398,14 +398,7 @@ pub fn header(
     // the same whether the daemon can name its stop time or not. `~` is an inference from a
     // heartbeat rather than a recorded stop.
     let est = if estimated_from.is_some() { "~" } else { "" };
-    let past = |opened_ms: u64| {
-        let after = Duration::from_millis(opened_ms.saturating_sub(at_ms));
-        format!(
-            "; the session was opened {} after the stop, past the {} restore window",
-            span(after),
-            span(threshold)
-        )
-    };
+    let _ = (opened_ms, threshold);
     match outcome {
         Outcome::Restored => format!(
             "[restart] The daemon restarted (down {est}{}). Restored:",
@@ -417,14 +410,9 @@ pub fn header(
             span(down)
         ),
         Outcome::Reminded => format!(
-            "[restart] The daemon restarted (down {est}{}{}). Nothing was restored automatically; \
+            "[restart] The daemon restarted (down {est}{}). Nothing was restored automatically; \
              this is what you were running when it stopped — bring back only what still matters:",
-            span(down),
-            if Duration::from_millis(opened_ms.saturating_sub(at_ms)) >= threshold {
-                past(opened_ms)
-            } else {
-                String::new()
-            }
+            span(down)
         ),
         // Unreachable - the empty restart returned above - and written out rather than as an
         // `unreachable!` so that a later arm cannot make this function lie.

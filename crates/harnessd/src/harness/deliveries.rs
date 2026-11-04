@@ -787,6 +787,9 @@ impl Deliveries {
     pub(crate) fn read(&self, told: &[JobCompletion]) {
         if !told.is_empty() {
             self.watch.read_now(told);
+            // Every caller has the notice's row in the transcript already, so the store may say
+            // delivered now. The steering path (`immediates`, `batch`) cannot, and waits.
+            self.watch.mark_delivered();
         }
     }
 

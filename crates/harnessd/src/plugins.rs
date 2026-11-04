@@ -4382,7 +4382,7 @@ mod tests {
     /// A trapping layer falls to the one below, and the model is told: a call is never left
     /// undecided because a layer broke.
     #[test]
-    fn a_trapping_call_layer_falls_down_and_is_reported() {
+    fn a_trapping_call_layer_closes_the_call_and_is_reported() {
         let root = tempdir("call-trap");
         let table = Table::new();
         table.layer(
@@ -4397,14 +4397,18 @@ mod tests {
         let answered = host
             .on_tool_call(&hub, &asked, &standing())
             .expect("answers");
-        assert_eq!(
-            answered.out.verdict(),
-            letibot_plugin::tool_call::Verdict::Refuse("from below")
+        let letibot_plugin::tool_call::Verdict::Refuse(why) = answered.out.verdict() else {
+            panic!("a failed guard refuses: {:?}", answered.out);
+        };
+        assert!(
+            why.contains("guards this call and failed"),
+            "the refusal says why: {why}"
         );
+        assert_eq!(answered.by, "p2", "and names the layer that failed");
         assert!(
             host.take_notices()
                 .iter()
-                .any(|n| n.contains("the layer below it answered")),
+                .any(|n| n.contains("guards this call and failed")),
             "and the failure is said to the model"
         );
     }

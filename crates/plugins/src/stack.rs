@@ -1050,9 +1050,13 @@ impl Stack {
             // The layer below is resolved and its answer is handed back to this layer, which is
             // asked again with the same input plus `below`. A mask or a pass below is `null`:
             // the lower stack answered nothing, and the layer that asked is told so.
+            let mut below_failed: Option<Step> = None;
             let below = match self.run(i + 1, below_input, walk) {
                 Step::Answer { value, .. } => value,
-                failed @ Step::Failed { .. } => return failed,
+                f @ Step::Failed { .. } => {
+                    below_failed = Some(f);
+                    Value::Null
+                }
                 Step::Passed | Step::Masked => Value::Null,
             };
             let Some(mut second) = input.as_object().cloned() else {
@@ -1065,7 +1069,19 @@ impl Stack {
             };
             second.insert("below".to_string(), below);
             let second = Value::Object(second);
-            return self.ask(i, module, &second, true, walk);
+            let step = self.ask(i, module, &second, true, walk);
+            // A failed guard below still closes the call, unless the layer that asked answered
+            // with a refusal or its own answer: neither lets the call run.
+            return match (step, below_failed) {
+                (step @ Step::Answer { .. }, Some(f)) => {
+                    let stops = matches!(&step, Step::Answer { value, .. }
+                        if value.get("refuse").is_some_and(|v| !v.is_null())
+                            || value.get("answer").is_some_and(|v| !v.is_null()));
+                    if stops { step } else { f }
+                }
+                (Step::Passed, Some(f)) => f,
+                (step, _) => step,
+            };
         }
         if is(&answer, "pass") {
             return Step::Passed;

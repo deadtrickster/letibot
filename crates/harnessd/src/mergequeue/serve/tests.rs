@@ -5394,24 +5394,13 @@ fn one_approved_branch_takes_the_single_path_even_with_a_train_of_three() {
 /// A store error on the lease heartbeat is a refusal to land, never "held".
 #[test]
 fn a_lease_that_cannot_be_confirmed_refuses_to_land() {
-    let Some(()) = letibot_tokencore::apparatus::present(
-        "the sqlite3 command",
-        std::process::Command::new("sqlite3")
-            .arg("-version")
-            .output()
-            .is_ok(),
-    ) else {
-        return;
-    };
     let w = World::new("lease-error");
     let q = w.worker(Arc::new(GreenGate), "a");
     assert_eq!(q.lease_refusal(), None, "a held lease lands");
-    let out = std::process::Command::new("sqlite3")
-        .arg(&w.db)
-        .arg("ALTER TABLE queue_lease RENAME TO queue_lease_gone;")
-        .output()
+    w.store()
+        .connection()
+        .execute("ALTER TABLE queue_lease RENAME TO queue_lease_gone", [])
         .unwrap();
-    assert!(out.status.success(), "{out:?}");
     let why = q.lease_refusal().expect("a store error refuses");
     assert!(why.contains("could not be confirmed"), "{why}");
 }
