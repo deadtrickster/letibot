@@ -1420,6 +1420,7 @@ name = "letibot-bridge"
 version = "0.5.1"
 dependencies = [
  "letibot-harnessd",
+ "letibot-room",
  "letibot-sessionlog",
  "letibot-tokencore",
  "letibot-tools",

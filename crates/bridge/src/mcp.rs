@@ -84,7 +84,7 @@ fn read_loop<R: BufRead, W: Write>(
                 if request["method"] == "notifications/initialized" && bridge.stream_rooms() {
                     let tx = push.clone();
                     bridge.rooms().stream(std::sync::Arc::new(move |m| {
-                        let _ = tx.send(crate::rooms::channel_notification(m));
+                        tx.send(crate::rooms::channel_notification(m)).is_ok()
                     }));
                 }
                 handle(bridge, &request)

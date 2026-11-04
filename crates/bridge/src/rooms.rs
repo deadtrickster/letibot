@@ -1,5 +1,5 @@
-//! Claude Code in the rooms: the bridge as the external seat `claude-code`. It may not depend on
-//! the room crate, so it speaks the chat wire itself (`docs/room.md`). No tool argument reaches
+//! Claude Code in the rooms: the bridge as the external seat `claude-code`. It speaks the chat wire
+//! as JSON and takes only the protocol number from the room crate (`docs/room.md`). No tool argument reaches
 //! `author`, `kind` or `seat`, so it cannot post as the operator or a session.
 
 use std::io::{BufRead, BufReader, Write};
@@ -15,15 +15,16 @@ use serde_json::{Value, json};
 /// The handle this bridge speaks as.
 pub const HANDLE: &str = "claude-code";
 
-/// The room wire's version (`ROOM_PROTOCOL_VERSION`). A coordinator on another number refuses the
-/// hello with both numbers, which reaches the tool as its error.
-const PROTOCOL: u16 = 6;
+/// The room wire's version. A coordinator on another number refuses the hello with both numbers,
+/// which reaches the tool as its error.
+pub const PROTOCOL: u16 = letibot_room::ROOM_PROTOCOL_VERSION;
 
 const REPLY_TIMEOUT: Duration = Duration::from_secs(10);
 const REDIAL_EVERY: Duration = Duration::from_secs(2);
 
-/// What the stream hands a message to: the bridge's MCP writer.
-pub type Deliver = Arc<dyn Fn(&Value) + Send + Sync>;
+/// What the stream hands a message to: the bridge's MCP writer. `false` means it was not taken,
+/// so the message stays undelivered and the next replay offers it again.
+pub type Deliver = Arc<dyn Fn(&Value) -> bool + Send + Sync>;
 
 type Hook = Arc<dyn Fn(&Value, bool) + Send + Sync>;
 
@@ -195,6 +196,9 @@ struct Inner {
     ids: AtomicU64,
     /// The newest seq handed to the stream, so a replay never repeats a push.
     delivered: Mutex<u64>,
+    /// The coordinator start the last welcome named. A different one means the log restarted, so
+    /// `delivered` no longer orders anything.
+    instance: Mutex<Option<u64>>,
 }
 
 impl Drop for Inner {
@@ -231,6 +235,7 @@ impl RoomLink {
                 generation: AtomicU64::new(0),
                 ids: AtomicU64::new(0),
                 delivered: Mutex::new(0),
+                instance: Mutex::new(None),
             }),
         }
     }
@@ -290,7 +295,23 @@ impl RoomLink {
         let first: Value = serde_json::from_str(first.trim())
             .map_err(|_| "the room closed the connection before saying hello".to_string())?;
         match first["type"].as_str() {
-            Some("welcome") => {}
+            Some("welcome") => {
+                let now = first["instance"].as_u64().unwrap_or(0);
+                let mut seen = self
+                    .inner
+                    .instance
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                if seen.is_some_and(|was| was != now) {
+                    // The log restarted, possibly empty: seqs below the old mark are new messages.
+                    *self
+                        .inner
+                        .delivered
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner()) = 0;
+                }
+                *seen = Some(now);
+            }
             Some("refused") => {
                 return Err(format!(
                     "the room refused `{HANDLE}`: {}",
@@ -413,8 +434,10 @@ impl RoomLink {
         if seq <= *last {
             return;
         }
-        *last = seq;
-        deliver(m);
+        // The mark moves only once the writer took the message.
+        if deliver(m) {
+            *last = seq;
+        }
     }
 
     /// What was missed since the cursor, through `attention`. The cursor is not moved.

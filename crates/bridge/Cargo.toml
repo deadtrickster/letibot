@@ -21,6 +21,9 @@ letibot-sessionlog.workspace = true
 # A transcript row is the source of the last assistant message, and it is this crate's
 # type — the session log re-exports its rows, and matching on them needs the type named.
 letibot-transcript.workspace = true
+# Only `ROOM_PROTOCOL_VERSION`: the number this bridge says in its hello is the room's own, so a
+# bump cannot leave the bridge on the old one.
+letibot-room.workspace = true
 serde_json.workspace = true
 # **Where a host name is checked, and it is the tree's one reader** (`crates/tools/src/remote.rs`,
 # RH5): `~/.config/letibot/hosts.toml`, parsed strictly, with the refusal that lists the declared

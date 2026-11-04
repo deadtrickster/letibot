@@ -18,6 +18,8 @@ struct Fake {
     conns: Arc<Mutex<Vec<UnixStream>>>,
     log: Arc<Mutex<Vec<Value>>>,
     cursor: Arc<Mutex<u64>>,
+    /// The coordinator start the welcome names; `restart` moves it.
+    instance: Arc<Mutex<u64>>,
 }
 
 impl Fake {
@@ -39,18 +41,25 @@ impl Fake {
             conns: Arc::default(),
             log: Arc::default(),
             cursor: Arc::default(),
+            instance: Arc::new(Mutex::new(1)),
         };
-        let (frames, conns, log, cursor) = (
+        let (frames, conns, log, cursor, instance) = (
             fake.frames.clone(),
             fake.conns.clone(),
             fake.log.clone(),
             fake.cursor.clone(),
+            fake.instance.clone(),
         );
         std::thread::spawn(move || {
             for stream in listener.incoming().flatten() {
                 conns.lock().unwrap().push(stream.try_clone().unwrap());
-                let (frames, log, cursor) = (frames.clone(), log.clone(), cursor.clone());
-                std::thread::spawn(move || serve_one(stream, frames, log, cursor));
+                let (frames, log, cursor, instance) = (
+                    frames.clone(),
+                    log.clone(),
+                    cursor.clone(),
+                    instance.clone(),
+                );
+                std::thread::spawn(move || serve_one(stream, frames, log, cursor, instance));
             }
         });
         fake
@@ -68,6 +77,14 @@ impl Fake {
             let _ = writeln!(c, "{frame}");
         }
         m
+    }
+
+    /// A coordinator that came back with no store: empty log and cursor, a new instance.
+    fn restart(&self) {
+        self.log.lock().unwrap().clear();
+        *self.cursor.lock().unwrap() = 0;
+        *self.instance.lock().unwrap() += 1;
+        self.drop_connections();
     }
 
     fn drop_connections(&self) {
@@ -92,6 +109,7 @@ fn serve_one(
     frames: Arc<Mutex<Vec<Value>>>,
     log: Arc<Mutex<Vec<Value>>>,
     cursor: Arc<Mutex<u64>>,
+    instance: Arc<Mutex<u64>>,
 ) {
     let mut w = stream.try_clone().unwrap();
     let mut seat = String::from("session");
@@ -103,8 +121,13 @@ fn serve_one(
             "hello" => {
                 seat = f["seat"].as_str().unwrap().to_string();
                 name = f["speaker"]["session"].as_str().unwrap().to_string();
-                json!({"type": "welcome", "protocol": 6, "lease_ms": 0, "beat_every_ms": 0,
-                    "threshold": 0, "identity": "fake", "missed": 0, "missed_since_ms": 0})
+                if f["protocol"] != letibot_room::ROOM_PROTOCOL_VERSION {
+                    let _ = writeln!(w, "{}", json!({"type": "bye", "why": "protocol"}));
+                    return;
+                }
+                json!({"type": "welcome", "protocol": letibot_room::ROOM_PROTOCOL_VERSION,
+                    "lease_ms": 0, "beat_every_ms": 0, "threshold": 0, "identity": "fake",
+                    "missed": 0, "missed_since_ms": 0, "instance": *instance.lock().unwrap()})
             }
             "rooms" => json!({"type": "rooms", "rows": [
                 {"id": "host", "kind": "host", "project": "", "members": 2,
@@ -352,6 +375,79 @@ fn the_stream_reconnects_and_replays_what_the_gap_held() {
     let n = out.notifications();
     assert!(n[1]["params"]["content"].as_str().unwrap().contains("two"));
     assert_eq!(fake.frames("hello").len(), 2);
+}
+
+#[test]
+fn the_bridge_says_the_rooms_protocol_number() {
+    assert_eq!(rooms::PROTOCOL, letibot_room::ROOM_PROTOCOL_VERSION);
+    // The fake refuses any other number, so a link that connects spoke the constant.
+    let fake = Fake::start("protocol");
+    let link = RoomLink::at(&fake.path);
+    link.ensure().expect("the hello was accepted");
+    let hello = fake.frames("hello");
+    assert_eq!(hello[0]["protocol"], letibot_room::ROOM_PROTOCOL_VERSION);
+}
+
+#[test]
+fn a_restarted_coordinator_resets_the_delivered_mark() {
+    let fake = Fake::start("restart");
+    let bridge = Bridge::with_room_socket(&fake.path).streaming_rooms();
+    let input = ChannelInput::new();
+    let out = SharedOut::default();
+    let out2 = out.clone();
+    std::thread::scope(|scope| {
+        let h = scope.spawn(|| {
+            mcp::serve(BufReader::new(input.reader()), out2, &bridge).unwrap();
+        });
+        input.send(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#);
+        wait_until(|| !fake.conns.lock().unwrap().is_empty());
+        fake.push("s-a", "session", "host", Some("claude-code"), "one");
+        fake.push("s-a", "session", "host", Some("claude-code"), "two");
+        wait_until(|| out.notifications().len() == 2);
+        // The coordinator lost its log: the next message is seq 1 again.
+        fake.restart();
+        {
+            let mut log = fake.log.lock().unwrap();
+            log.push(
+                json!({"seq": 1, "ts": 0, "room": "host", "author": "s-a", "kind": "session",
+                "to": "claude-code", "thread": null, "refs": [], "text": "after"}),
+            );
+        }
+        wait_until(|| out.notifications().len() == 3);
+        input.close();
+        h.join().unwrap();
+    });
+    let n = out.notifications();
+    assert!(
+        n[2]["params"]["content"]
+            .as_str()
+            .unwrap()
+            .contains("after")
+    );
+}
+
+#[test]
+fn a_message_the_writer_did_not_take_is_offered_again() {
+    let fake = Fake::start("retake");
+    let link = RoomLink::at(&fake.path);
+    let taken = Arc::new(Mutex::new(Vec::<u64>::new()));
+    let refuse = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let (t, r) = (taken.clone(), refuse.clone());
+    link.stream(Arc::new(move |m| {
+        if r.load(std::sync::atomic::Ordering::SeqCst) {
+            return false;
+        }
+        t.lock().unwrap().push(m["seq"].as_u64().unwrap());
+        true
+    }));
+    wait_until(|| link.connected());
+    fake.push("s-a", "session", "host", Some("claude-code"), "one");
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(taken.lock().unwrap().is_empty());
+    refuse.store(false, std::sync::atomic::Ordering::SeqCst);
+    // The supervisor's next replay (after a drop) offers the unacked row again.
+    fake.drop_connections();
+    wait_until(|| taken.lock().unwrap().as_slice() == [1]);
 }
 
 #[test]
