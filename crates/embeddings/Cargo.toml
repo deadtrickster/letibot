@@ -34,6 +34,14 @@ candle-transformers = "0.9"
 # is the pure-Rust half of the pair tokenizers refuses to compile without.
 tokenizers = { version = "0.21", default-features = false, features = ["fancy-regex"] }
 
+# Apple Accelerate BLAS for the f32 matmuls that are all of BERT's cost. macOS only: it links the
+# system framework, and Linux keeps candle's pure-Rust gemm. `metal` is not enabled - the model is
+# 22M parameters and a launch per op costs more than the CPU does at this size.
+[target.'cfg(target_os = "macos")'.dependencies]
+candle-core = { version = "0.9", features = ["accelerate"] }
+candle-nn = { version = "0.9", features = ["accelerate"] }
+candle-transformers = { version = "0.9", features = ["accelerate"] }
+
 [features]
 # The tiny BERT a test builds, for a crate that wants the internal path without a
 # 90 MB download: `letibot-embeddings = { path = "../embeddings", features = ["testing"] }`.
