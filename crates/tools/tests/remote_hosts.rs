@@ -579,6 +579,56 @@ fn a_rewritten_pid_file_does_not_move_the_kill() {
     let _ = decoy.wait();
 }
 
+/// A deadline killer is a `sleep` on that machine holding the job's pid. Left armed after the job
+/// ended, it fires on whatever process holds that number when it wakes, which is why the settle
+/// cancels it.
+#[test]
+fn a_settled_job_takes_its_deadline_killer_with_it() {
+    let mut rig = Rig::new("deadlineoff");
+    let b = rig.place();
+    let host = b.processes_arc().expect("this backend starts processes");
+    let id = host
+        .spawn(&SpawnRequest {
+            command: "sleep 120".into(),
+            slug: None,
+            cwd: String::new(),
+            scope: ScopeKind::Session,
+            scope_name: None,
+            background: true,
+            env: Vec::new(),
+            tty: false,
+            memory: None,
+        })
+        .expect("the job starts");
+    let real = host.job(&id).expect("known").pid;
+    assert!(real > 1, "the job has a pid");
+
+    // Long enough that the only way it ends here is the cancel, not the wake.
+    host.arm_deadline(&id, Duration::from_secs(300));
+    let n = id.0.trim_start_matches('j').to_string();
+    let arm = rig.jobs.join(format!("{n}.deadline"));
+    let killer: Option<u32> = std::fs::read_to_string(&arm)
+        .ok()
+        .and_then(|s| s.trim().parse().ok());
+    let killer = killer.expect("the killer wrote its pid down");
+    assert!(
+        alive(killer),
+        "the deadline is armed and its killer is running: {killer}"
+    );
+
+    let _ = host.kill_job_as(&id, "the test asking");
+
+    assert!(
+        !alive(killer),
+        "the killer outlived the job it was armed for, so it will fire on whatever holds {killer}          next"
+    );
+    assert!(
+        !arm.exists(),
+        "and its file went with it: {}",
+        arm.display()
+    );
+}
+
 /// A job that exits settles from its exit file, and the status is the command's own.
 #[test]
 fn a_finished_job_reports_the_commands_own_exit_status() {

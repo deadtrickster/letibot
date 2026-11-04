@@ -4512,8 +4512,8 @@ impl ExecBackend for SshBackend {
             self.branch,
             self.back_branch,
             if self.processes.is_some() {
-                "exec through ssh; a background job runs under setsid with its output in \
-                 `.letibot-remote/jobs/` and outlives the connection"
+                "exec through ssh; a background job runs under setsid, keeps its pid, output and \
+                 exit status in a directory outside the checkout, and outlives the connection"
             } else {
                 "NO exec (downgraded)"
             }
@@ -4586,6 +4586,9 @@ struct RemoteJob {
     /// when the pid goes away with no status file, so the settlement says *its deadline passed*
     /// rather than *something on that machine ended it*.
     armed_kill: Mutex<Option<String>>,
+    /// The deadline killer has been cancelled, or there was none to cancel. Once is enough, and a
+    /// second cancellation would signal whatever holds that pid next.
+    disarmed: std::sync::atomic::AtomicBool,
 }
 
 impl RemoteJob {
@@ -4752,9 +4755,12 @@ impl RemoteProcesses {
         }
         let code = code.trim();
         if !code.is_empty() {
-            job.settle(JobState::Exited {
-                code: code.parse().unwrap_or(-1),
-            });
+            self.settle(
+                job,
+                JobState::Exited {
+                    code: code.parse().unwrap_or(-1),
+                },
+            );
         } else if alive.trim() == "0" && job.pid() != 0 {
             // A second look at the status file, before this is called a kill: the poll reads the
             // exit file first and the pid second, so a job that finished in between answers "no
@@ -4771,9 +4777,12 @@ impl RemoteProcesses {
             };
             let again = said.trim();
             if !again.is_empty() {
-                job.settle(JobState::Exited {
-                    code: again.parse().unwrap_or(-1),
-                });
+                self.settle(
+                    job,
+                    JobState::Exited {
+                        code: again.parse().unwrap_or(-1),
+                    },
+                );
                 return;
             }
             // No exit file, and the pid we saw is gone: something on that machine ended
@@ -4787,7 +4796,7 @@ impl RemoteProcesses {
                 .unwrap_or_else(|| {
                     "something on the remote ended it and it wrote no exit status".to_string()
                 });
-            job.settle(JobState::Killed { by });
+            self.settle(job, JobState::Killed { by });
         }
     }
 
@@ -4967,6 +4976,7 @@ impl RemoteProcesses {
             pid_path,
             exit,
             armed_kill: Mutex::new(None),
+            disarmed: std::sync::atomic::AtomicBool::new(false),
         });
         // The pid is the evidence it started, polled rather than assumed: a launcher that could not
         // `cd` writes its pid and then exits 97, so no pid after two seconds is a job that never
@@ -4981,9 +4991,12 @@ impl RemoteProcesses {
             std::thread::sleep(Duration::from_millis(40));
         }
         if seen == 0 && job.is_running() {
-            job.settle(JobState::Killed {
-                by: "the remote wrote no pid, so the command never started".into(),
-            });
+            self.settle(
+                &job,
+                JobState::Killed {
+                    by: "the remote wrote no pid, so the command never started".into(),
+                },
+            );
             // What the launcher said, when it said anything: a job that never wrote its pid is either a
             // launcher that could not run or one that died between the two writes, and the difference is
             // in this file.
@@ -5012,6 +5025,51 @@ impl RemoteProcesses {
             .unwrap_or_else(|e| e.into_inner())
             .push(job);
         Ok(id)
+    }
+
+    /// Settle a job and cancel its deadline killer. Every end goes through here: a killer left
+    /// armed is a `sleep` on that machine holding a pid, and it fires on whatever process holds
+    /// that number when it wakes.
+    fn settle(&self, job: &RemoteJob, state: JobState) {
+        job.settle(state);
+        self.disarm_deadline(job);
+    }
+
+    /// Cancel the deadline killer, once. The killer runs a script of this job's own, so the pid
+    /// is only signalled when the host says that script is what the pid is running: a pid that
+    /// has been reused by something else is left alone.
+    fn disarm_deadline(&self, job: &RemoteJob) {
+        if job.disarmed.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
+        let Some((arm, script)) = self.deadline_paths(job) else {
+            return;
+        };
+        let _ = self.ssh.sh_once(
+            "cancelling the job's deadline",
+            &format!(
+                "if [ -f {arm} ]; then\n\
+                 \x20 k=$(cat {arm} 2>/dev/null)\n\
+                 \x20 case \"$(ps -p \"$k\" -o args= 2>/dev/null)\" in\n\
+                 \x20   *{script}*) kill -TERM \"$k\" 2>/dev/null; sleep 0.2; \
+                 kill -KILL \"$k\" 2>/dev/null;;\n\
+                 \x20 esac\n\
+                 \x20 rm -f {arm}\n\
+                 fi",
+                arm = quote(&arm),
+                script = quote(&script),
+            ),
+        );
+    }
+
+    /// The two files a job's deadline uses: the pid of the killer, and the script it runs.
+    fn deadline_paths(&self, job: &RemoteJob) -> Option<(String, String)> {
+        let dir = self.jobs_dir.as_deref()?;
+        let n = job.id.0.trim_start_matches('j');
+        Some((
+            format!("{dir}/{n}.deadline"),
+            format!("{dir}/{n}.deadline.sh"),
+        ))
     }
 
     /// Whose process `pid` is, asked of the host before it is signalled. The launcher's own script
@@ -5055,7 +5113,7 @@ impl RemoteProcesses {
         if pid == 0 {
             reaping.mechanism = "nothing to kill";
             reaping.note = Some(format!("{} never started", job.id.0));
-            job.settle(JobState::Killed { by: by.into() });
+            self.settle(job, JobState::Killed { by: by.into() });
             return Ok(reaping);
         }
         // What is there before the kill, so a zero is falsifiable.
@@ -5085,11 +5143,14 @@ impl RemoteProcesses {
                     "pid {pid} is not this job's launcher, so nothing was signalled: the pid file \
                      names a process this session did not start (it is running `{what}`)"
                 ));
-                job.settle(JobState::Killed {
-                    by: format!(
-                        "{by}: the pid on the remote was not this job's, so nothing was signalled"
-                    ),
-                });
+                self.settle(
+                    job,
+                    JobState::Killed {
+                        by: format!(
+                            "{by}: the pid on the remote was not this job's, so nothing was signalled"
+                        ),
+                    },
+                );
                 return Ok(reaping);
             }
             PidProof::Unanswered(why) => {
@@ -5098,12 +5159,15 @@ impl RemoteProcesses {
                     "whether pid {pid} is this job's launcher is UNKNOWN, so nothing was \
                      signalled: {why}"
                 ));
-                job.settle(JobState::Killed {
-                    by: format!(
-                        "{by}: the host did not answer, so nothing was signalled and what is \
+                self.settle(
+                    job,
+                    JobState::Killed {
+                        by: format!(
+                            "{by}: the host did not answer, so nothing was signalled and what is \
                          running there is UNKNOWN"
-                    ),
-                });
+                        ),
+                    },
+                );
                 return Ok(reaping);
             }
         }
@@ -5155,7 +5219,7 @@ impl RemoteProcesses {
             reaping.note = Some(format!("{} ignored SIGTERM and was killed hard", job.id.0));
         }
         reaping.waited = started.elapsed();
-        job.settle(JobState::Killed { by: by.into() });
+        self.settle(job, JobState::Killed { by: by.into() });
         // Who is left, read back the way it was read before. When the read-back does not come,
         // that is said rather than counted as a clean kill: `removed` means *this daemon looked
         // and found nothing*, and a host that never answered has not been looked at.
@@ -5245,11 +5309,24 @@ impl ProcessHost for RemoteProcesses {
              if [ \"$g\" = \"{pid}\" ]; then kill -KILL -{pid} 2>/dev/null; \
              else kill -KILL {pid} 2>/dev/null; fi\n"
         );
+        // The killer is a SCRIPT of this job's own, in the ledger, and its pid is written down:
+        // a `bash -c` in the arming command left nothing to cancel, and a killer nobody cancels
+        // fires on whatever holds the pid after the job has ended.
+        let Some((arm, script_path)) = self.deadline_paths(&job) else {
+            return;
+        };
+        if self.ssh.write_abs(&script_path, script.as_bytes()).is_err() {
+            return;
+        }
+        job.disarmed
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         let _ = self.ssh.sh_once(
             "arming the job's deadline",
             &format!(
-                "nohup bash -c {} </dev/null >/dev/null 2>&1 & echo armed",
-                quote(&script)
+                "rm -f {arm}; nohup bash {s} </dev/null >/dev/null 2>&1 & echo $! > {arm}; \
+                 echo armed",
+                arm = quote(&arm),
+                s = quote(&script_path)
             ),
         );
     }
@@ -6192,7 +6269,10 @@ user     = "root"
         assert_eq!(reaping.mechanism, "nothing to kill", "{reaping:?}");
         assert!(note.contains("not this job's launcher"), "{note}");
         assert!(
-            !rig.calls().iter().any(|c| c.contains("kill -TERM")),
+            !rig.calls().iter().any(|c| c.contains("kill -TERM 4242")
+                || c.contains("kill -TERM -4242")
+                || c.contains("kill -KILL 4242")
+                || c.contains("kill -KILL -4242")),
             "nothing may be signalled when the pid is unproven: {:?}",
             rig.calls()
         );
