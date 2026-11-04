@@ -1,34 +1,37 @@
 # TODO
 
-Work queue. **The first section is everything that can be finished without the
-operator**; nothing in it waits on a decision, and each entry says how to check it
-is still open before starting.
+Work queue, open work only. The INDEX below has one row per open entry. Settled work is in
+`TODO-settled.md` (each entry there has a `settled:` line naming what settled it), review records are
+in `docs/reviews/`. Nothing closed belongs in this file.
 
-Settled work is in `TODO-settled.md`, with its verdict, the tests that prove it, and the entry as
-it was filed. Nothing closed belongs in this file.
+How to read it: find the entry in the INDEX, then read its **Status** line (one sentence, then
+`left:`). Entries are in three groups, in this order: Code work, Needs the operator, Parked. Entries
+marked "in flight on a branch" are being changed by other branches and keep their old text until those land.
 
 ## If you are an agent picking work from this file
 
-1. **Take one item from READY. Nothing else.** Sections 2 and 3 are blocked on a
-   human; starting one produces work that cannot land.
-2. **Re-run the item's `still open?` check first.** Statuses go stale. On 2026-09-10
-   three items in this file — T12, T20.4, T21.1/2 — were found already implemented
-   while still filed as open, and would have been re-done from scratch.
-3. **Verify with the item's `done when`, not by reading your own diff.** If a check
-   needs a live model, `~/bin/model status` says what is serving; several test files
-   require it and will otherwise pass vacuously.
-4. **If you find it already done**, move it to `TODO-settled.md` with the evidence
-   and stop. That is a complete, valuable outcome.
-5. **If it turns out to need a decision**, move it to section 3 with the question
-   stated. Do not guess the answer.
+1. **Take one item from Code work. Nothing else.** Needs the operator and Parked cannot land without
+   a human; starting one produces work that cannot land.
+2. **Re-run the item's `still open?` check first.** Statuses go stale, and items have been found
+   already implemented while filed as open.
+3. **Verify with the item's `done when`, not by reading your own diff.** If a check needs a live
+   model, see what is serving on 127.0.0.1:8080 first; several test files require it and will
+   otherwise pass vacuously.
+4. **If you find it already done**, move it to `TODO-settled.md` with a header line
+   `settled: <commit or file>` and stop. That is a complete, valuable outcome.
+5. **If it turns out to need a decision**, move it to Needs the operator with the question stated.
+   Do not guess the answer.
+6. **Do not edit an entry marked "in flight on a branch".**
 
 ## Repo facts you will need
 
     cargo check --workspace
-    cargo test -p <crate>            # crates/: transcript turn dialect{,-glm,-qwen}
-                                     #   tools harnessd sessionlog tui ui code
-                                     #   backend tokencore metrics room plugins
+    cargo test -p <crate>            # crates/: backend bridge builtins claude code dialect{,-glm,-qwen}
+                                     #   embeddings flowy github harnessd http letibot leticode-config
+                                     #   llama metrics opencode plugin-sdk plugins provider room
+                                     #   sessionlog tokencore tools transcript tui turn ui vt webfetch websearch
     python3 tests/fidelity/run_gate.py    # template fidelity gate, must print GATE PASS
+    scripts/clippy-gate.sh                # the gate's clippy step
 
 Tests needing a live model server on 127.0.0.1:8080: `sessionlog/{live_e2e,late_head,
 sessions,resume_frames}`, `harnessd/{loop_closes,wired}`, `turn/{live_qwen,
@@ -36,403 +39,17 @@ engine_decisions}`, `tools/{exec,background,confine}`.
 
 ---
 
-# 1. READY — no operator needed
+---
 
-*Each entry says how to re-check that it is still open. Re-run that check before starting; statuses
-go stale.*
+# Code work
+
+Things an agent can do in this repo, ordered by value: stability and UX first.
 
 ---
 
-## R120 - One seat and a working automode, instead of roles - **PARKED 2026-11-03: no oracle passes yet**
+## R93 - What the model is told: tics, leaked numbers, contradictions, schema mismatches
 
-The operator, deciding N4: "the more i use things the more i understand the roles were overcomplication - we need working automode". N4 (a coder can write a test and cannot run it) is superseded: the answer is not a shaped verb for one role, it is fewer roles.
-
-- One working seat that can read, write and run commands. What it may do without asking is the MODE's business, not the role's. The coder/runner/m2 split and role switching go, except where a confined seat is the point (a VM or a placement).
-- `automode` works out of the box: today it requires an adjudicator and a reachable oracle and refuses without them. Its default decider is the session's own provider or a cheap fast model, with no setup. It admits in-checkout reads, writes, builds and tests; asks the operator for the network, paths outside the project, the always-ask list and destructive or irreversible actions; tells the model why when it denies; and records each decision with its reason, so the decisions can be reviewed and measured (the etalon oracle corpus exists for that).
-- It must be predictable: the same call in the same context gets the same answer, and the operator can read why.
-
-N4 moves to TODO-settled.md as superseded by this entry.
-
-Parked by the operator the same day. There is no default oracle because every open, locally hosted model tried so far FAILED the oracle tests (the etalon corpus, `crates/harnessd/src/etalon_oracle.rs`), and automode without a passing oracle is a model approving its own actions. The work resumes when a model passes the corpus; until then the seats keep today's modes.
-
-## R118 - A GitHub reviewer seat: `letibot attach github <org|repo>` reviews every PR and answers as @letibot - **OPEN, filed 2026-11-03, the operator's ask; the worker is in and drafts are drawn, left: the seat in the daemon so the pane has a feed, the review panel, a mirror per repository, and R116's verdict**
-
-The operator wants letibot to work like CodeRabbit on their own repositories, starting with stroppy-io: "it just attaches to whatever pr is on the repo given to it and does reviews ... responding as @letibot".
-
-**Done** (docs/github-reviewer.md): the poll, the row states, the config and its `post` gate, the 6-an-hour cap, and the worker - a review is a brief (title, description, diff, the comments so far) run in that PR's own letibot session, whose answer is the review kept as a draft on the row; a mention is answered in the same session; the pane draws each draft's words. The session stands in a detached worktree of the PR head, fetched as `refs/pull/<n>/head`.
-
-**Left**: the seat lives in `letibot attach github`'s process, not the daemon's, so the daemon builds no `github` feed and `/pane github/github` still draws "no scope is attached"; a PR of another repository in an org scope is refused by name until a mirror per repository exists; the review is one session's answer and not yet R116's review panel; and R114's similarity offers are not wired.
-
-- `letibot attach github <org or owner/repo>` starts a long-lived reviewer seat for that scope. It polls with `gh api` for new PRs and new pushes to open PRs. Polling is used rather than webhooks, so no endpoint is exposed.
-- Each PR is a letibot session with its own worktree of the PR head. A new PR gets a review panel (reviewers plus the gatekeeper, the same machinery as the merge queue's review) and one GitHub review: inline comments on lines and a summary. A push gets a re-review of the new commits only.
-- A comment that mentions `@letibot` in the PR's thread is answered by that PR's session. The operator can attach to the session like any other.
-- Identity: the seat posts as its own GitHub account or App named `letibot`, with a token scoped to the configured repositories. It never posts as the operator. The operator creates the account or App; the token lives in letibot's config, mode 0600.
-- Limits: one review per push, a per-repo rate cap, and no review of a PR from a fork without the operator's opt-in (an untrusted diff runs nothing; review is read-only).
-- R114 callers: a new PR or issue similar to an open todo or a running session's brief is offered as "watch this"; a session whose brief matches an open PR attaches to its thread; similar past reviews are offered as context.
-
-Depends on R116 (a review verdict schema shared by every reviewer) and R114 for the similarity offers.
-
-A pane, `/pane github`, lists the attachers: one line per scope (org or repo) with its state (polling, rate-limited, token missing), and under it one row per open PR with its review state (queued, reviewing, posted, re-review pending, answering a mention), the last action and its age. Enter on a PR row attaches to that PR's session; a key opens the PR in the browser; another pauses or resumes a scope. It is a plugin pane like the queue's, so the seat's state lives in the daemon and the pane only draws it.
-
-## R116 - Claude Code as a merge-queue reviewer, through headless `claude -p` - **OPEN, filed 2026-11-02, after the operator's queue trial**
-
-The queue hands a branch to a reviewer and needs a verdict back. Headless Claude Code fits without waking any live session:
-`claude -p --output-format json --json-schema <verdict schema> --permission-mode <mode> --allowedTools <read-only list>`, started with its cwd in a worktree of the branch.
-
-- The verdict arrives in `structured_output`. A run without that field is a failed review, not a pass.
-- Store the result's `session_id`, so a re-review after new commits uses `--resume <id>` and keeps the reviewer's context.
-- Time limit enforced by the queue. End a run with SIGINT, which ends the turn cleanly; SIGTERM exits 143.
-- The verdict schema is the queue's existing reviewer verdict, so a Claude reviewer and a letibot reviewer are interchangeable in a panel.
-
-Docs: https://code.claude.com/docs/en/headless.md
-
-## R117 - The leticode MCP bridge pushes package and queue events into the orchestrating Claude Code session as a channel - **OPEN, filed 2026-11-02, research preview**
-
-Today an orchestrating Claude Code session learns that a package finished through a tracked background `leticode-wait` per session. A channel replaces that: the bridge is already an MCP server, so it can declare `capabilities.experimental["claude/channel"]` and send `notifications/claude/channel` with `{content, meta}` when a session ends its turn, asks, fails, or a queue row changes state. An idle Claude Code session starts a turn on it.
-
-- Claude Code sends no acknowledgement. Expose a reply tool through which the orchestrator acknowledges each event, and re-send an unacknowledged event with backoff.
-- Permission asks can be relayed through `experimental["claude/channel/permission"]`.
-- Claude Code must be started with `--dangerously-load-development-channels server:leticode`. It works in interactive sessions only, and custom channels are not on the allowlist.
-- Keep `letibot-mcp wait` as the fallback for sessions started without the flag.
-
-Docs: https://code.claude.com/docs/en/channels-reference.md
-
-## R114 - Embeddings as the second similarity tier, in `letibot_tools::similarity` for every caller - **filed 2026-11-02, operator's ask; items 1 and 2 landed (`crates/embeddings`, blended into `similarity::blended` and reaching the notes and skills offers, the duplicate gate, the context claim, the waits offer and the already-done offer); left: item 3's measurement from the take-up logs (are the misses synonyms?), the paraphrase scored against the worst measured negative, and the per-round cost on lab2x1**
-
-`crates/tools/src/similarity.rs` is lexical, and its own measurement shows where that ends: a paraphrase of the review-queue note scored 0.126, under a docker prompt's 0.133 against an unrelated note, so no floor separates them. The skill offer (R113) will meet the same gap on synonyms (presentation and beamer).
-
-1. Engine. Decided 2026-11-02 (operator): candle is the runtime, in pure Rust, with no llama. The built-in model is a fast small one (all-MiniLM-L6-v2, or multilingual-e5-small if English-only proves too narrow), downloaded once into the data dir and never compiled into the binary. A user who wants quality gives a model file: a local directory with `config.json`, `tokenizer.json` and `model.safetensors` of an architecture candle runs (BERT family, nomic, Qwen3-Embedding, Gemma3 to verify), e.g. Qwen3-Embedding-0.6B or nomic-embed-text v1.5. An architecture the build does not know is refused at open by name, not at the first round.
-   Configuration, one key with three values: `[embeddings] mode = "off"` (lexical only, the default until point 3 says otherwise), `"internal"` (candle with the built-in model, or `model = "<dir>"` for the user's own), or a URL to an OpenAI-compatible `/v1/embeddings` endpoint with its model name. A URL sends note and skill text to that endpoint, so it is only ever the operator's explicit setting, and its failures fall back to lexical and are said once per session, not per round.
-   Scope: the blended score lives in `letibot_tools::similarity`, so every caller gets it at once: the notes offer, the duplicate gate on a note write and on an edit made durable (a paraphrased duplicate is the case lexical misses), the context-claim check, and the skill offer (R113). `mode = "off"` turns it off for all of them. Each caller keeps its own floor, tuned from its own log: offering a note and refusing a duplicate want different thresholds.
-2. Shape. Each note and skill is embedded once when it changes, cached on disk beside the corpus; per round only the round's text is embedded. Cosine over the whole corpus, no vector store, since the corpus is hundreds of documents. Storage is a cache, not a record: `<data dir>/embeddings.db` (SQLite, its own file so `sessions.db` gets no schema bump), one table keyed by `(model, sha256 of the embedded text)` holding the dimension, the vector as an f32 blob and a last-used time. A content key needs no invalidation: an edited note is a new key, a changed `mode` or model is a new key, and rows unused for 30 days are dropped at open. Deleting the file loses nothing but time. At open the corpus's vectors are loaded into memory; a few thousand 256-1024 dim vectors are a few MB. The score is combined with the lexical one, not a replacement for it, and one floor is tuned from the take-up log.
-3. Data first. R113 logs every skill offer taken and missed, as the notes offer already does. The test set is the missed cases from both logs plus the paraphrase above. If the misses are not mostly synonyms, this entry closes as not needed.
-
-**Done when**: the paraphrase case scores above the worst negative in the measured set, the offer's per-round cost on lab2x1 CPU is stated, and the harness builds with the embedder and without llama.
-**Still open?** whether R113's log shows synonym misses.
-
----
-
-
-More callers, from the operator on 2026-11-03:
-
-- Waits. When a brief, task or subagent prompt is written, score it against the open todo rows of the session and its relatives. A close match is offered as "this looks like todo X, owned by Y - consider `needs`/wait_on it instead of starting it".
-- Already done. Score a new brief against recent commit subjects and TODO-settled.md. A close match is offered as "looks like <sha> already did this - check before starting". On 2026-11-02 four of fifteen packages found their whole scope already fixed on main.
-- Compaction relevance. Rank old turns by their score against the current todos and plan, keep the relevant ones in full and summarise the rest, instead of cutting by age. This feeds R22.
-
-## R113 - Skills are offered like notes, the index shows only pins, and a live check proves the whole path - **filed 2026-11-02, operator's ask; items 1-3 landed (the offer in the request tail over the whole frontmatter, the index listing only pins, `[skills] pin` read from both levels); left: item 4's live check on lab2x1 - `/skills` hands a test skill over, `task {skills}` preloads it in a child, an unknown name is refused, each already pinned by an in-tree test**
-
-The prompt's skill index (`crates/tools/src/builtins/skill.rs`, `SkillRegistry::index`) sorts by source priority then name and stops at 60 rows, 4000 bytes or 800 tokens. Nothing ranks by relevance, so a box with many installed skills fills the slots alphabetically, and nothing offers a skill the way `crates/harnessd/src/notes_offer.rs` offers a note. The operator (2026-11-02): the offer is wanted, listing skills in full is not, pins are wanted.
-
-1. Offer. Per round, score the skill corpus (`SkillRegistry::ranked`) against the latest prompt, the plan, the todo board and the model's latest text and reasoning (the notes offer reads only the prompt and tool results), and name at most two above `QUERY_FLOOR` in the request tail (`TurnRequest::tail`), the same delivery as the notes offer: never a row, never a load, dropped when the model does not take it.
-   The score is lexical (`letibot_tools::similarity`), so a skill's document is its whole frontmatter (`description`, `when_to_use`, keywords), not only the name and one line: "latex presentation" must reach a skill described as beamer slides. Embeddings are a later step, not this entry.
-2. Index. The prompt lists only pinned skills plus a count of the rest and the `skill` verbs. No source gets listed in full.
-3. Pins. `[skills] pin = ["name", ...]` in the project file and the operator's config. A pin that names no skill is said at open, by name.
-4. Live check, before 1-3 land and again after: a session on lab2x1 with a test skill in the worktree's `.letibot/skills`, `/skills` lists and hands it over, `task {skills: [...]}` preloads it in a child, and an unknown name is refused. The R112 change moved the skill roots onto `Config`, so the check covers that too.
-
-**Done when**: a session whose prompt is about a skill's subject gets that skill offered in the tail without the model searching, an unpinned skill is not in the index, and the live check passes on main.
-**Still open?** this entry's list.
-
----
-
-## R105 - The work order after the 2026-11-01 review, folded with the open list - **five of the nine steps are closed (1, 2 except R99's live Done-when, 3, 5, 7); left: step 4's four live facts on lab2x1, step 6's tree-wide comment rule (478 blocks over three lines today), step 8's two decisions about script layers, and step 9, the backlog entries further down**
-
-Record: `docs/review/2026-11-01-ab5f7841-90dd9c84.md` (three reviewers, two rounds, synthesis). In order; each step relies on the one before it.
-
-1. Guards. Remove the 15 `#![allow(clippy::all)]` crate by crate, each replaced by targeted allows with a reason. The gate's clippy step must not pass on a warm target. A check that every `#[test]` sits on its own function (or `--list` counts per binary). A test that cannot run on the gate host fails there instead of printing SKIPPED (`crates/bridge/tests/daemon_record.rs:84-89`).
-2. Orchestration bugs that cost runs: R106, R107, R108; re-check R99's own Done-when now that R101 is closed.
-3. Contracts from the review: version the sessions plugin answer so a layer written for groups is refused out loud; record reviewers-on-host in DECISIONS.md and restore a test of the VM arm (`mergequeue/review.rs:700`); the single-attempt retry test (`crates/http/src/retry.rs`); the room protocol bumps only at release points.
-4. R100, firecode for remote sessions.
-5. De-duplication: one queue renderer (`crates/tui/src/ui/panes/queue.rs` or `plugins/builtin/queue`), one `now_ms`, one truncation helper, `crates/harnessd/tests/common`.
-6. Deslop per `hands-off/templates/deslop.md`: comments to the 2-3 line rule, `.letibot/notes` merged into rewritten topic docs.
-7. Structure: split `open_with_registry`, `rounds`, `run_to_completion`; break `harness.rs` into modules.
-8. Plugins: script layers (`docs/plugins-plan.md` step 11).
-9. Backlog, unchanged: R95, R98 half 1, R104, R89-R93, R64-R66 and the older open entries below.
-
-**Status 2026-11-03, each step re-checked against main.** 1, 2, 3, 5 and 7 are closed. 4 is built and owes a live run on lab2x1. 6 is half: the docs and the reviewed range's code are deslopped, the tree-wide comment rule is not. 8 is not built and stops on a decision. 9 is the backlog further down.
-
-1. **Closed.** No crate root carries `#![allow(clippy::all)]` any more; they went crate by crate, with the items annotated that the allow had hidden (d1a22002 provider, 5f799705 turn, 76b1d3b9 sessionlog, 2c604e95 tools, a91283f7 tui, 77634a08 flowy, 90c249a9 opencode, e6f1239e dialect-glm). The gate's clippy step is `scripts/clippy-gate.sh`, which touches every member's root so a warm target cannot answer for the lints (3feb2606, and agents.md says why). `scripts/check-test-attrs.sh` is the gate's second step, and rejects a `#[test]` that is not on a function of its own (d0e344cb). The daemon-record test refuses on a box without python3 instead of printing SKIPPED (6daadf89).
-2. **Closed, except R99's Done-when, which is a live run.** R106 landed as `ecae1af7` (`a_session_that_joins_a_daemon_runs_its_own_model`), R107 as `f1e7f9ec` (with `crates/bridge/tests/wait_activity.rs` holding a wait on a running job and answering through it when the daemon says quiet), and R108 is closed in TODO-settled.md (`8d1b0f2a`). R99's code is `ccf7b895`, `559048a7` and `36752792`; its Done-when, six packages placed on lab2x1 at once and a forced mid-write drop, needs a real host and a real sshd, so nothing in a sandbox can say it.
-3. **Closed.** The sessions answer is versioned: `MOVED` (`crates/plugins/src/lib.rs:98`) and `[contracts] pane_sessions = 3` refuse a layer written for the groups at load, naming the layer and both numbers (`b5a2925a`, `a_layer_written_for_the_old_shape_is_refused_and_the_layer_below_answers`). D18 records reviewers-on-host, and the VM arm's test is back (`fcc559aa`, `a_project_that_asks_for_vms_gets_its_reviewer_placed_in_one`). The single-attempt retry test is `one_attempt_means_no_retry_and_the_default_still_retries` (`59c9c90d`). The room's number moves at release points, said above the constant (`609521f9`).
-4. **Built; the shape has tests now, the live run still owes four facts.** `Placement::RemoteVm` is built, and the two arms the review found asserted nowhere have tests: the checkout a VM placement makes is a clone and a host placement's is a linked worktree (`7a964d46`), and the mode a placement puts a session in is `mode_in_vm`, with `RemoteVm` asserted at allow-all (`16e91852`). Still owed are the lab2x1 run's four facts: item 2 with a real `firecode` copy carrying a commit out, item 4 with a resumed session, the guest's `cargo test` with no card, and the copy-out's cost off the daemon's own line.
-5. **Closed.** One queue renderer (`e147d979`: the pane is the `queue` layer's answer and the head hosts it), one clock (`682e5a69`, fifteen copies into `letibot-metrics`; the `i64` sites keep a named two-line adapter, and the copy that arrived after it went in `397b3ef2`), one truncation helper per meaning in `letibot_transcript::text` (`2b356d3a`; two aliases went in `397b3ef2`), and the tests' shared support is `crates/harnessd/tests/support` (`a43d2748`), not `tests/common`.
-6. **Half.** The docs were deslopped one by one, and the notes were merged into them and cut: `.letibot/notes` holds 160 files, with the ones whose content moved deleted in the same commit. The comment rule is not tree-wide: `python3 scripts/comment-blocks.py count $(git ls-files 'crates/**/*.rs')` still finds 456 blocks over three lines.
-7. **Closed.** `harness.rs` is 1,894 lines and its parts are `crates/harnessd/src/harness/` (`open.rs` e4e00ff0, `turns.rs` 967c5718, `children.rs` 0d2aca9c, `models.rs` 42931d7c, `wall.rs` c2a9c60d and the rest), and the three long functions are named steps (`rounds` 7aa68541, 60a3af8a, 8767a6f6, 8e3b3a9a; `run_to_completion` c86e6f44; `open_with_registry` 43f26515, 2b0701a2, 3ce469cf, 592241c4).
-8. **Not built, and it stops on two decisions this entry cannot take** (`docs/plugins-plan.md` step 11): where a JavaScript engine comes from, with none in `Cargo.lock` and none in the offline registry cache, and the JS-side contract, including how the shadow gate's replay stays exact with a clock and `Math.random` inside it.
-9. **Unchanged**: the backlog entries further down this file are their own work.
-
-**Done when**: steps 1-8 are closed or moved to their own entries. **Still open?** step 4's live run, step 6's comment rule, step 8's two decisions, and step 9's backlog.
-
----
-
-## R95 — A variable an earlier command assigned is unread in the next one — **filed 2026-10-27; the design note, the resolver, the card and a placement-true seed are BUILT 2026-11-03; left: an `export` in one `bash` call still does not reach the next, because the model's command is a one-shot spawn and `SessionEnv::observe` has no production caller — closing it makes the session's shell stateful, which §4j.5 says needs its own decision (a deny-list for names that change what a program does without appearing in any text)**
-
-About 500 recorded commands (`$p`, `$d`, `$pr`, `$CARGO_TARGET_DIR`, …) use a variable the
-session set in an EARLIER `bash` call, and G3 resolves only a variable assigned earlier in the
-SAME command, so these stay unread (`docs/boundary-and-adjudication.md` §4i.4).
-
-**The operator's decision (D14):** the session's environment is tracked, and a value the session
-set may make a command readable for adjudication. Observed, not inferred: the persistent shell's
-trailer (`ShellSession`, which already reports cwd) reports the environment after every call.
-`PATH` is recorded but not used for resolution until R96 is ruled.
-
-**Done when**: a design note in `docs/boundary-and-adjudication.md` (where it is observed, its
-lifetime across a daemon restart, a migrated session, a confined and a remote shell, and how the
-card shows it); the resolver reads the tracked environment; the corpus replay shows the
-cross-command bucket gone without any command becoming unread; the card names a variable the
-session set when it decided the reading.
-
-**And R96, `$PATH`, decided 2026-10-27 (D15): resolved too, built with this.** 527 commands
-on lab2x1 and 1,347 on the mac. When `PATH` is resolved, each stage's program is resolved to the
-file it will run, and the stage, shape and card name that file when it differs from what the
-bare name finds today, so a grant given for one binary cannot settle a stage that runs another.
-
-**Still open?** grep the corpus replay's unread list for variables with no assignment in the
-same command.
-
-**What is built (2026-11-03).** §4j is the design note; the resolver reads the tracked environment
-(`intent::env`, `parameters::value_at`), and the card names the value and its source for both of the
-sources this tree has — the pairs a spawn is given, and a shell's report. The seed is now the
-environment this box's spawn really gives, on this box only: a remote host's and a guest's spawn
-export the CALL's own pairs into their own shell, so `surroundings_for` seeds nothing there and a
-command using one stays unread rather than being placed on a machine it is not on
-(`a_placement_that_is_not_this_box_seeds_no_environment`). The corpus counterfactual is built
-(`Report::env_fixed`) and needs `~/letibot-corpus/<host>.json`, which this box has not got.
-
-**What is left, precisely.** Nothing observes a `bash` call's own environment, so an `export` in
-one call is still not in the next: the model's command is a one-shot `/bin/sh -c` that exits with
-whatever it exported, and `ShellSession` — the only thing in the tree whose trailer reports an
-environment — is opened by its own tests and no production code. A trailer appended to each call
-would report it; carrying that report into the next spawn's pairs is what makes the session's
-shell stateful, and §4j.5 refuses that without a deny-list for the names that change what a
-program does without appearing in any text (`LD_PRELOAD`, `BASH_ENV`, `PATH` itself). That is the
-operator's call, not this item's: with it, R95's remaining sentence is one trailer and one pair
-merge; without it, the seed is the whole of what the gate can honestly resolve.
-
----
-
-## R98 — macOS has no boundary for a command, so tests there must ask (D16, amended) — **half 1 BUILT 2026-10-27 (the policy), half 2 BUILT, and the default local seat on a Mac now runs inside it; one live card check is left**
-
-D16 admits a command without a card only inside a measured boundary, and its amendment says
-that on a raw host a command that executes code the agent wrote (a test runner) must keep
-asking, and no standing grant may admit it, because the oracle does not read a runner's files.
-The macOS host shell has no boundary at all (firecode VMs are the only macOS boundary letibot
-has, `docs/firecode-on-macos.md`), so every `cargo test` on the Mac is either asked about or
-theater.
-
-Two halves, the first smaller and first:
-
-1. **Make the rule true on a raw host now.** A `bash` call whose stages run a test runner or a
-   build that executes project code (`cargo test|run|build` with build scripts, `pytest`,
-   `go test`, `npm test`, `make`, a script the session wrote) is not settled by a session or
-   durable grant when the backend is unconfined; it asks every time, and the card says why
-   (*"runs code the agent wrote, on a host with no boundary"*). Measure what this costs on the
-   corpus replay (how many past grants would no longer settle) before landing. — **BUILT.** — The
-   rule is the policy now, and it has no setting: `runs_project_code_unconfined` reads one fact,
-   `has_measured_boundary`, which `Harness::open` hands it off the backend — so a Linux test
-   constructs the Mac's case by handing the gate `None`, and nothing in the gate probes a platform.
-   `[permissions] ask_unconfined_code`, `with_unconfined_code_asks` and the startup note that
-   disclosed it are gone with the switch — in `crates/leticode-config`, and in
-   `crates/harnessd/src/harness/open.rs`. Tests:
-   `a_host_with_no_measured_boundary_asks_with_nothing_switched_on`,
-   `the_same_runner_is_admitted_inside_the_boundary` (unchanged) and
-   `the_card_narrows_the_ladder_and_says_why`, whose note must say *no boundary*. The cost was
-   measured on the corpus before it was turned on — `docs/boundary-and-adjudication.md` §R98 (1),
-   **171** of the mac's 834 standing settles would ask, 137 of them the session's own programs and
-   24 `cargo test`.
-2. **Give the Mac a boundary** — **BUILT 2026-10-27**, `crates/tools/src/exec/seatbelt.rs`, and
-   written up in `docs/boundary-and-adjudication.md` §4k. Seatbelt (`sandbox-exec -f <profile>`)
-   renders the same `ViewSpec` the Linux side renders as a bubblewrap argv, and the probe measures
-   it from inside: the deny list beating an allow (a canary inside a writable `$HOME`), a write
-   outside the checkout refused, a write inside it succeeding, fork/exec, a nested `sh -c` denied
-   the same path, `kill -0` on the launcher `EPERM`, and both egress subjects refused when egress
-   is denied. `confine::probe` chooses the mechanism by platform, so `HostBackend::confined`, the
-   session's `/tmp` and every grant re-probe through one dispatch, and a Mac session's `bash`,
-   jobs and persistent shell all run inside it. A Mac that cannot measure one is **unconfined and
-   says so** (`boundary_absent` on the session's log, with the refusal's own words).
-
-   The measured cost: **+5.1 ms per exec** (100 `true` calls: 1.28 → 6.41 ms/call), +4.5 ms on a
-   real `cargo --version`, and it does not grow with the command's work. What macOS cannot give —
-   a PID namespace, so processes are unreachable but not absent, and no `PR_SET_NO_NEW_PRIVS` —
-   is printed on the boundary's own description as `ABSENT` / `NOT APPLICABLE`, never omitted.
-   Reaping stays the process-group tree (`exec::scope::ProcessGroups`), as it already was. — ✓ fixed in 5442b7c8, test the_probe_measures_a_boundary_and_says_what_macos_cannot_give
-
-   **Two levels (2026-11-04).** The tight view alone made `git push` and `gh` fail in a top-level
-   Mac session ("could not read Username", "not logged into any GitHub hosts"). A top-level session
-   is now wide (real `$HOME` read-write, filesystem readable, `DENY_UNDER_HOME` less `.config/gh` as
-   the only fence). A child keeps the tight view plus the operator's git identity and its worktree's
-   git dir (hooks and config read-only), with no credentials, so it commits and cannot push. A
-   top-level seat gets `GH_TOKEN` and a github.com-only git credential helper, from one `gh auth
-   token` the daemon runs at open, masked in output; `Library/Keychains` stays denied. See §4k.
-
-   **What half 2 still needs: a Mac.** `crates/tools/src/exec/seatbelt.rs` and
-   `crates/tools/tests/seatbelt.rs` are in the tree now, and nothing on a Linux box can run
-   `sandbox-exec` or a `#![cfg(target_os = "macos")]` test, so the profile has never been read by
-   the kernel that enforces it and D16's admit *inside* a Mac boundary has never run.
-
-**Done when**: (1) on an unconfined backend no grant settles a test run, with a test; (2) a Mac
-session's commands run inside a measured boundary that `~/.ssh` and the profiles are absent
-from, and D16 admits them there. — **(1) is done**: the rule is the policy and
-`a_host_with_no_measured_boundary_asks_with_nothing_switched_on` proves it from the injected fact,
-with the ladder narrowed and no grant recorded. **(2) is done on its Linux side**: macOS has no
-mount namespace to make `.ssh` and the profiles *absent*, so they are **denied** rather than absent,
-the probe measures the denial, and the description says which of the two it is holding. The
-`bwrap` half is measured on this box; the seatbelt half is not.
-
-**Measured on a Mac, 2026-11-03**: `cargo test --offline -p letibot-tools --test seatbelt --test
-seatbelt_no_helper` passes 8/8. The default local session (`leticode` seat, `bash` on) was NOT inside
-the boundary: a live `writes-allowed` session asked a card for `cargo test --offline` ("this host has
-no boundary") and published no `boundary_absent`, because only `runner`/`coder`/`gatekeeper` took the
-confined arm in `place_the_tools`. Fixed: on macOS that seat's commands run in the seatbelt boundary
-over the checkout (`HostBackend::confined_over`, file tools still rooted at `/`), `backend.boundary()`
-is set so `Prereq::Confinement` and the D16 gate see it, and a refused probe stays unconfined with
-`boundary_absent`. Tests: `harness::open::mac_default_seat_tests` (boundary built, no warning, write
-inside ok, write outside refused). Linux is untouched (the new arm is `cfg(target_os = "macos")`).
-
-**Still open**: the live card. Build the daemon with this branch, start a default local session at
-`writes-allowed` in a checkout, ask it to run `cargo test --offline`: it must run with no card and no
-`boundary_absent`. The refused-probe arm is the old path and is exercised only on a Mac where the probe fails. Expect that a
-build needing a new dependency fails inside the boundary (toolchain is read-only, offline only).
-
----
-
-## R100 — A remote session cannot run in a firecode VM: `--host` and `--vm` are two placements, not one — **BUILT and on main (`ad447d53`, `46949113`, `e4c69ac2`); left: the live proof - the four facts the 2026-11-02 lab2x1 run did not reach (a real `firecode` copy of a clone carrying a commit out, a resumed session keeping its clone, the guest's `cargo test` with no card, and the copy-out's cost off the daemon's own line); filed 2026-10-28, operator's ask**
-
-The operator: *"how to run those remote letibots in firecode"*, and *"lab2x1 has firecode, it even
-has source code for it"*. It does: `~/bin/firecode` (login `PATH`), the source in
-`~/Projects/firecode`, and `/dev/kvm` with an ACL for the operator's user (checked 2026-10-28;
-`firecode ls` answers). What is missing is on letibot's side: `Placement` is either `Firecode`
-(local, this Mac) or a remote host, and `cli.rs` says a remote session is not in a VM.
-
-**Build**: a combined placement, `leticode --host lab2x1 --vm` — `firecode up`/`in` driven over the
-session's existing ssh link (login shell, so `~/bin` is on `PATH`), the session's tools inside that
-guest, the VM measured as the session's boundary so D16 admits builds and tests in it, and the
-commits coming back the way remote placements' do. Then `leticode_start {host, vm: true}` in the
-bridge. This is also where Docker for sessions belongs (the operator, 2026-10-27: *"firecode suites
-better here"*): lab2x1's `dockerd` is rootful, so the socket is root on the host, and a container
-inside a guest stays inside a boundary.
-
-**Done when**: a package started with `{host: "lab2x1", vm: true}` builds and tests letibot inside a
-guest on lab2x1 at `writes-allowed` without a card, and its commits come back.
-
-**Landed (2026-10-31): the SILENT DROP is fixed; the combination is refused by name.**
-`--where` and `--host` wrote ONE field (`cfg.placement`), so the flag that came LAST won and the
-other ask was dropped without a word: `--host lab2x1 --where firecode` booted a VM **here** on a
-copy of this box's workspace, and `--where firecode --host lab2x1` ran on lab2x1 with no VM at all.
-Neither refused anything, so both looked healthy. The two asks are now recorded separately and
-resolved once after the whole line is read, by `cli::placement_from_flags`, which refuses the pair
-with the reason and says what each flag alone does; `--help` says the same. **What the pair SHOULD
-mean is a VM on `lab2x1`, whose copy source is the remote checkout** — and that is still not built,
-because `FirecodeBackend` runs a `firecode` binary on THIS box and holds THIS box's paths
-(`FirecodeSpec::bin`, `~/.cache/letibot/firecode`, a promoted job's scratch file, the `.git` it
-reads to decide a worktree is mounted). It needs a remote runner for the firecode backend, not a
-flag. `docs/subagents.md` §2 carries the decision. Tests:
-`crates/harnessd/tests/cli_placement.rs` (both flag orders, through `cli::run`) and the pair test in
-`cli::tests`, which now asserts the pair IS the placement (the build below). — ✓ fixed in ad447d53, test a_vm_and_a_host_are_one_placement_whichever_flag_came_first
-
-**Built (2026-11-01, branch `firecode-remote`): the pair is the placement.** `leticode --host lab2x1
---vm`, `leticode_start { host: "lab2x1", vm: true }` and `where: "host:lab2x1:vm"` are one
-`Placement::RemoteVm(name)`; either flag alone still means what it did. `SshSpec::vm` carries the
-ask into `SshBackend::place`, and five things follow from it:
-— ✓ fixed in 46949113, test a_vm_and_a_host_are_two_asks_and_the_pair_is_a_vm_there
-
-1. **The host is asked once per host per process** (`Ssh::probe_firecode`): `command -v firecode` in
-a login shell, and `$LETIBOT_KVM_DEVICE`/`/dev/kvm` readable and writable by this connection's user.
-A host that cannot boot a guest is refused **by name before anything is arranged there** — no
-bundle, no checkout — and a probe that did not answer is not cached. — ✓ fixed in 46949113, test a_host_without_firecode_is_refused_by_name
-2. **The checkout is a CLONE when the ask is a VM**, not the linked worktree every other placement
-gets. The guest holds a *copy* of the directory, and a worktree's `.git` is a file naming a
-directory in the mirror that the copy does not carry — so no commit inside the guest would have
-worked. `bring_back` fetches the branch from the checkout in that case, from the mirror otherwise. — fixed in 46949113 in code, untested: nothing asserts the VM checkout is a clone rather than a linked worktree, so a revert to `git worktree add` would leave a guest copy with no repository and only a comment to notice
-3. `firecode up --project <checkout>`, and then **every call is `firecode in --project <checkout>
---cwd <checkout> '<script>'`** — `Ssh::remote_command` wraps every door at once, so a command, a
-file read, a file write, a job's launcher, a poll and the group kill all run in the guest, and the
-cancel path builds its own command for the same reason. — ✓ fixed in 46949113, test a_vm_placement_boots_the_guest_and_runs_every_call_in_it
-4. **The guest is the boundary**, so `cfg.placement.is_vm()` puts the session at `allow-all`
-(`Harness::open`'s `in_vm`) and no `bwrap` is probed for. — fixed in 46949113 in code, untested: no test opens a session at `Placement::RemoteVm`, so the `allow-all` arm (`crates/harnessd/src/harness/open.rs:594`) is asserted nowhere
-5. **On close: `firecode down`, then the guest's work is taken onto the host checkout** — `down`
-leaves a sibling `<checkout>-<stamp>` when something changed, that copy's branch is fetched into
-the checkout and fast-forwarded, and the branch then comes home as `remote/<host>/<short id>` as
-every host placement's does. — ✓ fixed in 46949113, test a_commit_made_in_the_guest_comes_back_as_the_branch
-
-**Tests** (`crates/tools/tests/remote_vm.rs`, a fake `firecode` on the fake remote's `PATH` through
-the same fake ssh `remote_hosts.rs` uses): `up`, then `in` for the session's calls, then `down`, in
-that order; a commit made in the guest arrives as the branch that came back; a host with no
-`firecode` is refused by name with nothing arranged there; and a host placement never asks for a
-guest. Plus `cli::tests::a_vm_and_a_host_are_two_asks_and_the_pair_is_a_vm_there`,
-`bridge::tools::tests::the_vm_flag_turns_a_host_into_a_vm_on_that_host` and
-`bridge::daemon::tests::a_vm_on_a_host_is_both_flags`.
-
-**The live run on `lab2x1` (2026-11-02), and the two defects it found.** `leticode --host lab2x1
---vm` **booted a guest** and a **foreground `bash` ran inside it**, so half of item 1 is answered for
-a command that travels in the command text; a manual `firecode down` there took **15 s** and
-delivered the copy to `<project>-<run id>`. It did not reach item 2, and item 1's `cargo test` (no
-card) and item 4 were not tried, because:
-
-1. **A background job never started.** Its launcher is staged by `Ssh::write_abs`, whose bytes travel
-   on the ssh's **stdin** (`base64 -d > "$t"`). `firecode in` sends the command over the vsock and
-   never the caller's stdin, so the guest waited for an end that cannot come: ten calls sat for 52
-   minutes and the jobs directory was never made. Fixed: a step fed on stdin now takes the guest's
-   own road, the payload in the command when it is small (`VM_INLINE_WRITE`) and staged on the host,
-   where stdin works, then carried in by `firecode cp` above that. The audit of every stdin-fed call
-   in `remote.rs` and `firecode.rs` found this one and no other: `Ssh::write_abs` is the only one,
-   `firecode.rs` feeds no stdin at all (its writes are inline base64 or `firecode cp`), and the two
-   other `run_bounded_fed` sites (`mergequeue/gate_host.rs`, `room/supervise.rs`) feed a declared
-   host's ssh and never a guest. — ✓ fixed in e4c69ac2, test a_background_job_starts_in_a_guest_whose_client_forwards_no_stdin
-2. **A one-shot stopped with SIGINT left the VM up**, with the calls still stuck in it. The forced
-   exits (`stop_on_signal`'s second signal and its 5 s give-up) end the process without closing a
-   backend, and the orderly stop closes no backend at all. Fixed: a guest this process booted is on
-   one list (`remote::guests_down`), bounded at 30 s for `down` and 10 s for the copy-out, and every
-   exit path runs it once and prints one line saying whether the VM came down and where the copy
-   landed. A session's own close takes its guest off that list, so no guest is brought down twice. — ✓ fixed in e4c69ac2, test a_guest_nothing_closed_is_brought_down_once_by_the_last_act
-
-**Still owed, for the next live run**: item 2 (whether a real `firecode` copy of a clone carries a
-commit out), item 4 (a resumed session keeps its clone, and a file one command writes is there for
-the next command), the `cargo test` inside the guest with no card, and the copy-out's real cost read
-off the daemon's own line rather than a manual `down`. — OPEN: no live proof — the 2026-11-02 run saw a guest boot and one foreground `bash` inside it and nothing more, so the guest `cargo test` with no card, item 2, item 4 and the copy-out's cost are still untried on lab2x1.
-
-**Done when**: a package started with `{host: "lab2x1", vm: true}` builds and tests letibot inside a
-guest on lab2x1 at `writes-allowed` without a card, and its commits come back.
-
----
-
-## R104 — A ⌘-chord reaches the head as its plain letter, because rano drops the super bit — **OPEN, filed 2026-10-29, rano's**
-
-MEASURED 2026-10-29 on this box, rano pinned at `bf3fa48`: the operator selects with the mouse
-and types ⌘C. The text is copied (the terminal's own copy, and this head's drag release), **and a
-`c` lands in the composer** — because the chord never arrives as a chord. Ghostty sends it as
-`CSI 99;9u` (modifier 9 = 1 + 8, and bit 8 is super — this head does ask for the kitty keyboard),
-and:
-
-* rano's `Mods::from_bits` is `Mods(b & 7)` (`src/term/event.rs:27-29`, and there is no super
-  constant at all), so the bit is discarded before any letibot code sees it; — ✓ fixed in 46f8409b (rano f4c624e), test a_cmd_chord_arrives_as_a_chord_and_never_as_a_typed_letter
-* `kitty_key` then re-encodes the character through `kitty_legacy`, which carries alt and ctrl
-  only (`src/term/decode.rs:402-421`, `482-512`), so `CSI 99;9u` decodes to `Key::Char('c')` with
-  empty mods; — ✓ fixed in 46f8409b (rano f4c624e), test a_cmd_chord_arrives_as_a_chord_and_never_as_a_typed_letter
-* and the one door to the raw bytes is lossy the same way — `Terminal::raw_input` answers
-  `legacy_bytes` under the kitty keyboard (`src/term/terminal.rs:504-514`). — OPEN: rano's `legacy_bytes` still turns a `CSI … u` into the legacy spelling (`crates/tui/src/app/keys/input.rs:571` pins it) and that is the door a `!term` pane's program reads (`crates/tui/src/head.rs:1041`), so ⌘C still types a `c` into a pane — a decision, not a line. Rechecked at rano v0.10.1 (4e16345f): the super bit is still carried and the head's chord test passes on it, and `Terminal::raw_input` still answers `legacy_bytes`, so this bullet stays open.
-
-**The fix is two lines in rano**, not in this tree: keep the bit in `Mods::from_bits`, and in
-`kitty_key` emit `Char(ch)` **with its mods** when a bit the legacy spelling cannot carry is set.
-Verified against a scratch copy of the pinned rev: both `CSI 99;9u` and `CSI 99;13u` then decode
-to nothing, every existing decode test still passes, and **letibot needs no change** — `key()`'s
-last character arm already answers `None` for a modifier it does not bind. — ✓ fixed in 46f8409b (rano f4c624e), test a_cmd_chord_arrives_as_a_chord_and_never_as_a_typed_letter; the head's own bindings landed in 8eaa4985, so "letibot needs no change" was not quite so.
-
-**And ⌘⌃C is worse than the report**: with the super bit masked it decodes to `CtrlC`, which
-interrupts the turn instead of copying. — ✓ fixed in 46f8409b (rano f4c624e), test a_cmd_chord_arrives_as_a_chord_and_never_as_a_typed_letter (both bits are kept and the head answers nothing)
-
-`crates/tui/src/app/tests/keys.rs` carries a characterization test pinning today's decode
-(`a_cmd_chord_arrives_as_its_plain_character_because_rano_drops_the_super_bit`), written to fail
-loudly with instructions the day rano keeps the bit, and
-`a_selection_does_not_swallow_what_is_typed` refuses the tempting wrong fix (a head that goes deaf
-under a selection). — ✓ fixed in 8eaa4985, test a_cmd_chord_arrives_as_a_chord_and_never_as_a_typed_letter (the characterization test and its file are gone; a_selection_does_not_swallow_what_is_typed is at `crates/tui/src/app/tests/editor.rs:1136`)
-**Still open?** `printf '\033[99;9u'` into the key decoder, or press ⌘C over a selection after a
-rano bump — a `c` in the composer means it is still rano's. — ✓ fixed in 46f8409b (rano f4c624e), test a_cmd_chord_arrives_as_a_chord_and_never_as_a_typed_letter — the decoder is fed exactly those bytes and no `c` comes out
-
----
-
----
-
-## R93 — What the model is told: tics, leaked numbers, contradictions, schema mismatches — **OPEN, filed 2026-10-12; left: item 3 (B1), 7 (the F findings the named ones do not cover) and 8 (a fabric memory body no tool reads, and the fabric block's time changing per open)**
+**Status:** open, filed 2026-10-12. Items 1, 4, 5 and 6 are done (R93b, 2026-11-04), A1 to A7 are in. left: item 3 (B1), item 7 (the F findings the named ones do not cover), item 8 (a fabric memory body no tool reads, and the fabric block's time changing per open); `restart_restore`'s integration tests cannot open a harness on a box without `/sys/fs/cgroup`, so the restart wording has no end-to-end read there.
 
 From real data (`sessions.db`, fork copies removed: 4,347 injected items) and the code. The full
 report has the exact text and a replacement for every item — work from it. **Every lettered item
@@ -472,239 +89,9 @@ own right**, addressed as R93.<id>; the list below groups them by what to fix fi
 
 ---
 
-## R65 — The model chooses each tool call's memory cap, knowing what is free and what a cap costs — **LANDED on main 2026-10-11 (073c1ea, 51dd340), and its remaining items on 2026-11-03 (71ebd8e7, a1824340, 389dca2f, 1228e425, 31b496e1); left: the cross-session ledger only, which is a proposal the operator has not decided**
+## R74 - What the 2026-10-11 landings left open
 
-The operator: *"the question is how many for 2. I think model should try to decide, so it should
-know the free, how much it can ask and what are the consequences"*.
-
-Verified on lab2x1 that the mechanism exists: the user manager delegates `cpu memory pids`, and
-`systemd-run --user --scope -p MemoryMax=64M` around a 200 MB allocation ends that process alone
-with `Killed`, rc 137.
-
-1. **The model asks.** `bash` (and a backgrounded job) gains a memory argument — `memory: "8G"`.
-   — ✓ fixed in d755bf51, test uncapped_is_an_ask_and_a_blank_is_the_default
-2. **The model knows what is free** — said where it decides, in the tool's description or the
-   turn's disclosure: the box's total, `MemAvailable` now, swap, and what this daemon's live
-   calls and jobs already hold under their caps. — ✓ fixed in 71ebd8e7 and a1824340, test
-   every_round_says_what_is_free_and_no_schema_carries_it (`crates/harnessd/tests/memory_line.rs`).
-   The description cannot carry it - a tool schema is the session's stable prefix, and this number
-   moves every second - so it rides the ROUND'S TAIL instead: `harness::memory::memory_tail`
-   composes one `[memory - the harness's own line]` item per round from `Meminfo::round_clause`
-   (`crates/tools/src/exec/memory.rs`, which replaced the callerless `Meminfo::clause`) and
-   `Holds::of` (the daemon's open scopes: their caps added up and their peaks). The test reads two
-   real requests off a fake provider: the line is in both, once each - never in the transcript -
-   and the two requests' `tools` are byte-identical.
-3. **The model knows how much it can ask** — a ceiling per call, derived from what is free at
-   call time. An ask over it is refused with the numbers, not silently clipped. — ✓ fixed in
-   d755bf51, test
-   the_default_is_granted_an_ask_up_to_the_ceiling_is_granted_and_anything_above_is_the_operators
-4. **The model knows the consequences, in the description and in the result:** over the cap, the
-   call's process tree is killed and only it (rc 137, the result names the cap and the peak).
-   **With no cap, an exhausted box kills whatever the kernel picks, and systemd then stops the
-   whole window** — R64's table. Omitting the argument gets a stated default, not no cap.
-   — ✓ fixed in d755bf51, test
-   a_kill_at_the_cap_says_what_to_ask_for_next_and_where_the_default_lives
-5. **Every result reports its peak** (`memory.peak` of the call's scope), so the model learns
-   what its commands cost instead of guessing again next time; a job's peak is in `job_list`.
-   — ✓ fixed in 389dca2f, test a_finished_call_reports_its_peak: a call that ended well inside
-   its cap now ends `memory: peak 12 MiB of a 64 MiB cap.`, and `MemoryUse::worth_saying` - the
-   predicate that said the opposite - is gone with its test.
-6. **A box with no user systemd says so** — the call runs uncapped, and the disclosure says it
-   is uncapped. Never silently. — ✓ fixed in d755bf51, test 1228e425
-   (an_uncapped_call_names_the_ask_and_the_reason): `MemoryCap::Uncapped` names the ask and the
-   reason in the result (`crates/tools/src/builtins/bash.rs`)
-
-**The default is a config option, 64 MB out of the box** — the operator: *"default memory either
-as absolute or a fraction is a config option with 64mb being a good default"*. The setting takes
-either an absolute size (`64M`, `2G`) or a fraction (`0.05` — of `MemAvailable` at call time),
-and the description states the value in force, resolved to bytes. 64 MB is deliberately small:
-most calls fit in it, and a call that does not is killed at once with a result that says what to
-ask for, which is cheaper than a runaway found by the OOM killer.
-
-**The ceiling is a config option too, and it is not a hard limit** — the operator: *"ceiling is a
-config too, with both absolute and fraction and the max is uncapped but if model wants it - must
-ask me. unaskable ask is 50%."* So there are two bands:
-
-- **Up to the ceiling** (default `0.5`, of `MemAvailable` at call time; absolute sizes allowed),
-  the model's ask is granted without asking anyone.
-- **Above it, up to uncapped**, the ask is legal but goes to the operator as a card naming the
-  amount, what is free, and the command. Refused → the call does not run, and the result says so.
-
-**The mechanism, MEASURED on lab2x1 2026-10-11:** a process started with `systemd-run --user
---scope -p Delegate=yes` moves itself into a leaf (`<scope>/daemon`), writes `+memory` to the
-scope's `cgroup.subtree_control`, makes the tree (`<scope>/tree`, `+memory` again) and a job under
-it with `memory.max=64M`, `memory.swap.max=0`; a child that joins the job and allocates 200 MB dies
-with SIGKILL, `memory.events` `oom_kill 1`, `memory.peak` 64 MB, and nothing else is touched. The
-daemon must not be IN the cgroup whose children get controllers (cgroup v2's no-internal-processes
-rule) — which is why the tree today, rooted in the daemon's own cgroup, cannot carry a cap.
-**OPEN — the operator, same day:** *"then again - depends on who does what - if nothing else going
-then even 80% becomes possible. and if something else going can be changed by other sessions - so
-both sessions can ask 50% independently which means some central daemon that checks it and rejects
-the second ask? no idea yet"*. The defect named: a ceiling read from `MemAvailable` at call time
-does not see a GRANT that has not been USED yet, so two sessions (or two daemons — one per folder)
-can each be granted 50% within a second of each other. A proposal, not a decision: **the kernel is
-already the ledger** — every grant is a `memory.max` on a job cgroup under some daemon's scope, so
-what is promised box-wide is the sum over `letibot*.scope/tree/**/memory.max` (minus what those
-jobs already use, which `MemAvailable` has counted), read under one `flock` in
-`$XDG_RUNTIME_DIR/letibot/` for the check-and-grant. No central daemon; the second ask is judged
-against what is left. Nothing in the per-call cap, the default, the peak report or the operator
-card depends on this, so those can land first.
-
-(Trap met while measuring: `systemd-run` expands `$VAR` and `$$` in its arguments, so a probe
-written inline as `sh -c 'echo $$ > …'` writes `$` and fails with EINVAL/EIO. Use a script.)
-
-**Done when:** R64's done-when holds, the model's next call after a kill asks for a different
-cap on its own, and `job_list` shows each job's cap and peak.
-
-**Landed (branch `memory-caps`):** `exec::memory` (the policy: `Amount`, `MemoryPolicy`,
-`Meminfo`, `Ask`, `decide`); `exec::scope::delegate_memory` (the daemon steps into
-`<scope>/daemon` and enables `memory`, refusing by name when it shares its cgroup) called first
-thing in `harnessd`'s `main`; `ScopeTree::{memory_caps, cap_memory, memory_use}`;
-`SpawnRequest::memory` → `memory.max` + `memory.swap.max=0` before any process joins, carried
-across a promotion; the job's `memory.peak`/`oom_kill` read at the settle; `bash`'s `memory`
-argument, the description, the note on every model call's result (the cap and the peak, now
-unconditionally), a dedicated *killed at its memory cap* outcome; `Gate::grant_memory`
-with an `AlwaysAsk` card in `AdjudicatedGate`; `providers.toml` `[memory] default` / `ceiling`,
-a malformed value refusing the start by name. The operator's own `!` run is uncapped.
-MEASURED end to end through deepseek: no `memory` → `killed at its memory cap — peak 64 MiB of a
-64 MiB cap`; `memory: "512M"` → ran, `peak 192 MiB of a 512 MiB cap`.
-`tools/tests/memory_cap.rs` re-runs itself in a delegated scope and asserts both.
-
-`job_list`, `job_wait` and a background job's completion notice carry a `memory:` line (cap,
-peak, KILLED at the cap) — measured: `job_list` read `memory:  peak 97 MiB of a 128 MiB cap` for a
-backgrounded 100 MB awk.
-
-**Still open:** the cross-session ledger above, and nothing else. — ✓ the card above the ceiling is
-answered by a person in a head: 31b496e1, test a_head_answers_the_memory_card_above_the_ceiling
-(`crates/harnessd/src/answers/tests.rs`) puts the ask on a `HeadAdjudicator`, has a head answer
-`grant_memory_session`, and shows the next, smaller ask is granted with no second card. — OPEN: no
-ledger sums `memory.max` under `letibot*.scope/tree` — `flock` appears only in
-`crates/room/src/lease.rs:206` — and the operator has not decided whether to build one (*"a
-proposal, not a decision"*, above).
-
----
-
-## R66 — A harnessd reached 113 GB — **OPEN: instrumented (memwatch, 4eb1dbb) and MEASURED on a scratch daemon (2026-11-02, extended 2026-11-03) — 40 turns with a refused compaction each grow nothing, and what a tree keeps of a CHILD is now bounded by a test; the two-threads-per-subagent leak is explained in R68.3 / R67.13 and closed on `r68-lifecycle`; left: the LOCAL-model route, which needs a local server and a GGUF on this box and so is the operator's, and the incident's own 113 GB**
-
-MEASURED in the kernel's OOM report, 2026-10-11 00:47:00: `Killed process 3985588 (harnessd)
-anon-rss:113190136kB` — the daemon's own heap, not a child's. It was the `/home/dead/Projects/letibot`
-daemon serving `s-1789462738453908838` (qwen-3.8-flash-next on :8082), the session whose
-compaction failed repeatedly the same week and accumulated six copies of the compaction
-instruction in its transcript. Its window's scope peaked at 131.6 GB over 1 d 23 h. The
-allocating thread named in the report is `harness::queue_`.
-
-Nothing is known yet about the cause. **Start with:** what that session's transcript and
-`harness::queue_` hold; whether a daemon's RSS grows per turn on a long session (sample
-`/proc/PID/status` VmRSS across turns on a scratch daemon); whether the failed-compaction retries
-grow anything.
-
-**Done when:** the growth is reproduced on a scratch daemon and either bounded or explained.
-
-**MEASURED 2026-10-11 — what it is NOT, and one smaller leak found on the way:**
-
-- **Not job output.** `HostProcesses` keeps every job it ever ran (`jobs.push`, never removed),
-  each with up to 8 MiB of capture — but across the session tree's 15,405 `bash` results between
-  10-09 and the kill, the retained capture sums to ~0.1 GB.
-- **Not the transcripts.** 76 transcripts, a few MB each in the store.
-- **`harness::queue_…` is not a daemon thread.** It is the task that ALLOCATED when the box ran
-  out — a test binary's thread (a `harness::queue_*` test); the kernel then chose the largest
-  process, harnessd, at 108 GB RSS (131 GB in the task table's total_vm column).
-- **On deepseek (metered) a scratch daemon does not grow like that:** 245 MB at start; +75 MB
-  for six sequential subagents; +12 MB for three turns each printing ~15 MB of tool output.
-- **A smaller leak, real:** each finished subagent leaves **two threads** behind (7 → 19 for six,
-  never released) and ~12 MB. At the 519 subagents that tree started, ~6 GB — not 108.
-  **CLOSED on branch `r68-lifecycle` (R68.2/R68.3):** R67 item 13 ended the `letibot-deadline`
-  thread with its host, and the host now dies: a finished child idle for `child_park_after`
-  (10 min) parks as store-only — its `subagent-*` thread leaves, its hub is removed from the
-  registry, its harness drops. MEASURED (`tests/session_lifecycle.rs`, 50 children): threads
-  (subagent, deadline) 0,1 before → 50,51 with all answered → 0,1 after parking, one registry
-  entry left; with the policy off (the old behaviour) 50,51 and 51 entries stay.
-
-**Instrumented 2026-10-11 (`harnessd::memwatch`), so the next growth is SEEN:** a counting global
-allocator (heap live / peak, and a backtrace for any single allocation ≥ `LETIBOT_LARGE_ALLOC`,
-64 MiB by default); a watchdog line every `LETIBOT_MEMWATCH_SECS` (60) with rss, heap, threads,
-sessions, hub logs, view items, heads and job rows; a census at each rss step from 1 GiB
-(doubling) — hubs holding most, threads grouped by name — with a `memory_high` warning on every
-session; `BOUND BROKEN` when a hub's log or a head's queue is past its bound, or a view list
-with no bound passes 10,000; and `memory.high` on the daemon's own leaf (`[memory] daemon_high`,
-16 GiB default, `max` = off) so the kernel throttles the daemon instead of taking the box.
-First reading on a scratch daemon: **rss 279 MiB with heap live 35 MiB** — most of a daemon's
-resident memory is NOT on the Rust heap (SQLite's page cache and the vocabulary map use their own
-allocations), so a census showing rss far above heap live points there and not at a Rust
-collection. And the large-alloc log found its first: `Catalogue::load` re-reads the 5 MiB model
-catalogue from disk on every `Config::settings`, i.e. on every session open.
-
-**Not yet tried, and the likeliest place left:** the LOCAL-model path. The killed daemon served
-qwen-3.8-flash-next on :8082, which streams token ids through `/completion` and keeps the token
-ledger itself; deepseek does neither. Reproducing it needs the local server running, which is
-the operator's to start. — OPEN: the cause is still unreproduced; the instrument is
-`crates/harnessd/src/memwatch.rs`, and the local-model path that was killed has not been run
-under it.
-
-**MEASURED 2026-11-02 — a scratch daemon with a fake model does not grow per turn, and the four
-lines that could have carried it are each bounded:**
-
-- **The daemon itself.** `crates/harnessd/tests/r66_daemon_rss.rs` starts a real `harnessd` on its
-own store, socket and runtime dirs under an address-space cap, with a fake model whose summary
-requests it refuses, and drives one session: **40 turns of 8 KiB prompts, a refused compaction
-after each — rss 230.5 → 223.5 MiB, and the last watch line reads `grew s-r66 events +7 · view +1 ·
-warnings +1`.** The same file takes `R66_TURNS`/`R66_PROMPT_BYTES`/`R66_IDLE_SECS` for the probe at
-its own scale. A session with a refused compaction refuses its next prompt for room (`0 refused`
-above is what a session with room looks like), so the driver waits on the turn's own events rather
-than on the model.
-- **The probe at its own scale, and idling.** 120 turns of 16 KiB prompts with a refused compaction
-after each: **rss 235.6 → 257.3 MiB over 119 turns — 0.18 MiB a turn against 1.9 MiB of prompts
-appended**, most of it the token region (4 bytes a token on a byte vocabulary) and the hub's own two
-copies, so ~1.4× what the rows cost and inside the 2× the CI test allows. Then **60 s idle: 257.3 MiB
-at all six readings** — nothing grows with the clock.
-- **The worker and the queue gain nothing per turn.** `crates/harnessd/tests/r66_queue.rs`: 40 turns
-through the real `Sessions` and its worker leave `opened()==1`, one registry entry and a watcher set
-holding nothing, at **0.01 MiB of heap a turn, the same in both halves**. Every map is keyed by session
-and removed at close; `Outcome` is a return value; activity is rebuilt per publish; metrics are a
-bounded channel. **Two maps were unbounded per JOB and are now bounded**: `JobWatchers.settled` (one
-name per backgrounded job, never removed) and `ReadRecord.seen` (one entry per delivered completion),
-which also made `want_now`'s guard read a record with no history.
-- **What is per CHILD, and what still holds an answer after the child is gone:** `TaskSlots`
-(`harness/children.rs`) is a `Vec` that only grows, one row a child of **at most 512 bytes** — a
-handle is an address and not a payload — and a slot keeps an answer only while it is OWED. A reader
-handed one drops it: both the answer the slot settled with and the last answer a later turn gave,
-where the child's row kept that one (a slot is never the last copy, and the case it does keep is a
-child whose row never landed — `TaskSlot::hand_over_answer`, `SubagentRecord::answered_again`). The
-later answer was a real leak, found 2026-11-03: `spoke_again` wrote a whole answer into the slot and
-no reader ever removed it, so a parent that steers its children held one answer each for the
-daemon's life. MEASURED (`harness/tests/children.rs`,
-`a_later_answer_the_record_keeps_is_not_kept_twice`, 20 children of a 17 600-byte later answer):
-**355 200 B held before, 3 200 after, against a bound of 512 a child** — what is left is the
-~160-byte sentence naming where the text is. What is left per child is the row; what a child costs
-in its parent's transcript is the conversation and not the tree. `HostProcesses` also keeps a row per
-command ever run (1.1 KB a row, per HARNESS and not per daemon, its capture already bounded at
-64 MiB), which is what makes `job_output j12` answer at all.
-- **One failed fold** leaves exactly one row — the 1 470-byte `SUMMARY_INSTRUCTION` — and 1 511
-ledger tokens, and no failure arm takes it back (`crates/turn/src/compaction.rs:210`). Measured over
-40 attempts on a 2 MiB conversation: +0.19 MiB of heap in total, flat. It compounds the *prompt*
-(+1 494 bytes per attempt), not the heap, and 113 GB of it would be ~74 million attempts.
-- **A round's working set** is two whole-prompt copies inside the stream (22.4 bytes per prompt
-token at 244 139 tokens) and none of it survives the round; a fork frees both the rows and the token
-region (40 rows / 1.06 MiB → 1 row / 0.27 MiB). The region only grows by doubling and never shrinks
-between forks, which is the capacity the footprint already states.
-- **Two blind spots were real and are fixed.** `restate_footprint` did not run for a compaction's own
-rows, so a session that could not compact under-reported itself by exactly the instructions it kept
-(58 800 bytes after 40 attempts) — `harnessd: walk the census after a compaction's own rows`. And
-`TranscriptItem::bytes` counted a picture's base64 body as 32 and a tool call's arguments as zero,
-so the ceiling and the hub's byte bound were blind to the largest rows a session can hold —
-`transcript: count a picture's body and a write call's arguments in a row's bytes`.
-- **The watch now says what GREW**, not only what is held: every line after the first prints
-`memwatch: grew <term> +<bytes> · …` (biggest first, per session), and three growth readings in a
-row with nothing in the census accounting for them raise `MEMORY CREEP` in the log and a
-`memory_creep` warning on every session. That is the line the 47-hour daemon's log never had.
-
-**What is still unexplained:** the incident's own 113 GB. Nothing measured here produces it, and the
-one route that was never exercised is the LOCAL model (`/completion`, token ids, no GGUF on this
-box). The watch now names the term that grows, so the next daemon to do it says which.
-
----
-
-## R74 — What the 2026-10-11 landings left open — **AUDITED 2026-11: nine fixed, seven already done, six not a session's to settle, and 37 since settled — the workspace-wide clippy step is the merge gate's own; then WORKED 2026-11: eight of the eleven left, 4, 11, 12, 16, 23, 25 and 33 closed (4 was already working and had no test); left: 20 (the rest of the report sink's sites — the sink is built and 18 of them are routed), 39 (a live gate on lubuntu1/2), 40 (the inline blocks over 800 lines)**
+**Status:** audited 2026-11 (nine fixed, seven already done, six not a session's to settle, 37 since settled), then worked (4, 11, 12, 16, 23, 25 and 33 closed). left: item 20 (the rest of the report sink's sites - the sink is built and 18 of them are routed), item 39 (a live gate on lubuntu1/2), item 40 (the inline blocks over 800 lines).
 
 Everything merged on 2026-10-11 (main `cf47e65`: R61, R64, R65, R66 instrumentation, R67, R68, R69,
 R71, R72 + follow-up, R73, the no-llama build), and the gaps each landing reported or a check
@@ -962,46 +349,94 @@ nothing to design.
 
 ---
 
-## R84a — Worktrees and landing trees beside the checkout (`wt/`, `landing/`) — **PARKED 2026-10-12, built on branch `parked/layout-wt-landing` (e7f4e55), not on main**
+## R95 - A variable an earlier command assigned is unread in the next one
 
-The operator proposed the placement: *"so id suggest to correct the placement - ~/Projects/rano/rano
-<- the main checkout and then ~/Projects/rano/wt/* ~/Projects/rano/landing/*"*, and for a repository
-not inside its own project directory chose a per-project option with a fallback. It was built, then
-parked the same night: *"on placement - lets park it in todo. keep worktree, fix that .git thing with
-something small. i dont have time to reason about proposed behaviour changes now"*. Main keeps R84
-(landing in the data dir, out of `.git`) and subagent worktrees stay in `<workspace>/.claude/worktrees`.
+**Status:** the design note (section 4j), the resolver, the card and a placement-true seed are built (2026-11-03). left: an `export` in one `bash` call still does not reach the next - the model's command is a one-shot spawn and `SessionEnv::observe` has no production caller. Closing it makes the session's shell stateful, which section 4j.5 says needs a deny-list for names that change what a program does without appearing in any text.
 
-What `e7f4e55` does, for when it is picked up (rebase it onto main; it was cut on top of `d27ed56`):
+About 500 recorded commands (`$p`, `$d`, `$pr`, `$CARGO_TARGET_DIR`, …) use a variable the
+session set in an EARLIER `bash` call, and G3 resolves only a variable assigned earlier in the
+SAME command, so these stay unread (`docs/boundary-and-adjudication.md` §4i.4).
 
-- **The rule** (`crates/harnessd/src/layout.rs`), first match wins: `$LETIBOT_LAYOUT_ROOT`;
-  `[layout] root = "<dir>"` in the project's `leticode.toml` (absolute or `~/`; relative, `..` and
-  unknown keys refused by name); the X/X layout (`~/Projects/rano/rano` → root `~/Projects/rano`,
-  so `wt/` and `landing/` in it); otherwise siblings named after the checkout
-  (`~/Projects/firecode-wt`, `~/Projects/firecode-landing`).
-- **Landing** at `<landing>/<target>` (branch name sanitised to one folder), replacing R84's data-dir
-  path; migration of `.git/letibot-landing` as in R84.
-- **Subagent worktrees** at `<wt>/agent-<slug>` instead of `<workspace>/.claude/worktrees/`; existing
-  ones not moved. Because `wt/` can be outside the workspace, a session's write access to its
-  children's trees is kept three ways: the sandbox binds `wt/` read-write, the file tools reach it
-  through `HostBackend::with_extra_root`, and the permission gate treats it as the workspace
-  (`Surroundings::worktrees`).
+**The operator's decision (D14):** the session's environment is tracked, and a value the session
+set may make a command readable for adjudication. Observed, not inferred: the persistent shell's
+trailer (`ShellSession`, which already reports cwd) reports the environment after every call.
+`PATH` is recorded but not used for resolution until R96 is ruled.
 
-**The behaviour changes the operator has not ruled on** — the reason it is parked:
+**Done when**: a design note in `docs/boundary-and-adjudication.md` (where it is observed, its
+lifetime across a daemon restart, a migrated session, a confined and a remote shell, and how the
+card shows it); the resolver reads the tracked environment; the corpus replay shows the
+cross-command bucket gone without any command becoming unread; the card names a variable the
+session set when it decided the reading.
 
-1. With the X/X layout and a session rooted at the project directory (`~/Projects/rano`), `landing/`
-   is inside the workspace: the sandbox sees it read-only but `write`/`edit` can still write there
-   (their check knows only the workspace root). Closing it needs a per-session read-only path in the
-   backend.
-   — OPEN: still parked — `e7f4e55` is not an object in this checkout, there is no `crates/harnessd/src/layout.rs` and no `[layout]` key, and the landing tree is still `<data dir>/landing` (`crates/harnessd/src/mergequeue/git.rs:435`).
-2. Child daemons, whose workspace becomes `wt/agent-*` outside the checkout, no longer take the
-   repository's merge-queue lease; only the project's own daemon serves its queue.
-   — OPEN: still parked — `e7f4e55` is not an object in this checkout, there is no `crates/harnessd/src/layout.rs` and no `[layout]` key, and the landing tree is still `<data dir>/landing` (`crates/harnessd/src/mergequeue/git.rs:435`).
-3. Every place that assumed `.claude/worktrees` moves with it (grants, cleanup, texts).
-   — OPEN: still parked — `e7f4e55` is not an object in this checkout, there is no `crates/harnessd/src/layout.rs` and no `[layout]` key, and the landing tree is still `<data dir>/landing` (`crates/harnessd/src/mergequeue/git.rs:435`).
+**And R96, `$PATH`, decided 2026-10-27 (D15): resolved too, built with this.** 527 commands
+on lab2x1 and 1,347 on the mac. When `PATH` is resolved, each stage's program is resolved to the
+file it will run, and the stage, shape and card name that file when it differs from what the
+bare name finds today, so a grant given for one binary cannot settle a stage that runs another.
+
+**Still open?** grep the corpus replay's unread list for variables with no assignment in the
+same command.
+
+**What is built (2026-11-03).** §4j is the design note; the resolver reads the tracked environment
+(`intent::env`, `parameters::value_at`), and the card names the value and its source for both of the
+sources this tree has — the pairs a spawn is given, and a shell's report. The seed is now the
+environment this box's spawn really gives, on this box only: a remote host's and a guest's spawn
+export the CALL's own pairs into their own shell, so `surroundings_for` seeds nothing there and a
+command using one stays unread rather than being placed on a machine it is not on
+(`a_placement_that_is_not_this_box_seeds_no_environment`). The corpus counterfactual is built
+(`Report::env_fixed`) and needs `~/letibot-corpus/<host>.json`, which this box has not got.
+
+**What is left, precisely.** Nothing observes a `bash` call's own environment, so an `export` in
+one call is still not in the next: the model's command is a one-shot `/bin/sh -c` that exits with
+whatever it exported, and `ShellSession` — the only thing in the tree whose trailer reports an
+environment — is opened by its own tests and no production code. A trailer appended to each call
+would report it; carrying that report into the next spawn's pairs is what makes the session's
+shell stateful, and §4j.5 refuses that without a deny-list for the names that change what a
+program does without appearing in any text (`LD_PRELOAD`, `BASH_ENV`, `PATH` itself). That is the
+operator's call, not this item's: with it, R95's remaining sentence is one trailer and one pair
+merge; without it, the seed is the whole of what the gate can honestly resolve.
 
 ---
 
-## R55 — a round's end and a turn's end are the same event on the wire — **reported from leticl through the relay 2026-10-03; left: leticl's `:turn-finished` arm reading `ends_turn` (and its own test on that head), and `Hub::turn_in_flight` still reading the round rather than the field**
+## R104 - A ⌘-chord reaches the head as its plain letter, because rano drops the super bit
+
+**Status:** open, filed 2026-10-29, rano's. The chord reaches the head as a chord (46f8409b, rano f4c624e). left: rano's `legacy_bytes` still turns a `CSI ... u` into the legacy spelling and that is the door a `!term` pane's program reads, so cmd-C still types a `c` into a pane - a decision, not a line (rechecked at rano v0.10.1).
+
+MEASURED 2026-10-29 on this box, rano pinned at `bf3fa48`: the operator selects with the mouse
+and types ⌘C. The text is copied (the terminal's own copy, and this head's drag release), **and a
+`c` lands in the composer** — because the chord never arrives as a chord. Ghostty sends it as
+`CSI 99;9u` (modifier 9 = 1 + 8, and bit 8 is super — this head does ask for the kitty keyboard),
+and:
+
+* rano's `Mods::from_bits` is `Mods(b & 7)` (`src/term/event.rs:27-29`, and there is no super
+  constant at all), so the bit is discarded before any letibot code sees it; — ✓ fixed in 46f8409b (rano f4c624e), test a_cmd_chord_arrives_as_a_chord_and_never_as_a_typed_letter
+* `kitty_key` then re-encodes the character through `kitty_legacy`, which carries alt and ctrl
+  only (`src/term/decode.rs:402-421`, `482-512`), so `CSI 99;9u` decodes to `Key::Char('c')` with
+  empty mods; — ✓ fixed in 46f8409b (rano f4c624e), test a_cmd_chord_arrives_as_a_chord_and_never_as_a_typed_letter
+* and the one door to the raw bytes is lossy the same way — `Terminal::raw_input` answers
+  `legacy_bytes` under the kitty keyboard (`src/term/terminal.rs:504-514`). — OPEN: rano's `legacy_bytes` still turns a `CSI … u` into the legacy spelling (`crates/tui/src/app/keys/input.rs:571` pins it) and that is the door a `!term` pane's program reads (`crates/tui/src/head.rs:1041`), so ⌘C still types a `c` into a pane — a decision, not a line. Rechecked at rano v0.10.1 (4e16345f): the super bit is still carried and the head's chord test passes on it, and `Terminal::raw_input` still answers `legacy_bytes`, so this bullet stays open.
+
+**The fix is two lines in rano**, not in this tree: keep the bit in `Mods::from_bits`, and in
+`kitty_key` emit `Char(ch)` **with its mods** when a bit the legacy spelling cannot carry is set.
+Verified against a scratch copy of the pinned rev: both `CSI 99;9u` and `CSI 99;13u` then decode
+to nothing, every existing decode test still passes, and **letibot needs no change** — `key()`'s
+last character arm already answers `None` for a modifier it does not bind. — ✓ fixed in 46f8409b (rano f4c624e), test a_cmd_chord_arrives_as_a_chord_and_never_as_a_typed_letter; the head's own bindings landed in 8eaa4985, so "letibot needs no change" was not quite so.
+
+**And ⌘⌃C is worse than the report**: with the super bit masked it decodes to `CtrlC`, which
+interrupts the turn instead of copying. — ✓ fixed in 46f8409b (rano f4c624e), test a_cmd_chord_arrives_as_a_chord_and_never_as_a_typed_letter (both bits are kept and the head answers nothing)
+
+`crates/tui/src/app/tests/keys.rs` carries a characterization test pinning today's decode
+(`a_cmd_chord_arrives_as_its_plain_character_because_rano_drops_the_super_bit`), written to fail
+loudly with instructions the day rano keeps the bit, and
+`a_selection_does_not_swallow_what_is_typed` refuses the tempting wrong fix (a head that goes deaf
+under a selection). — ✓ fixed in 8eaa4985, test a_cmd_chord_arrives_as_a_chord_and_never_as_a_typed_letter (the characterization test and its file are gone; a_selection_does_not_swallow_what_is_typed is at `crates/tui/src/app/tests/editor.rs:1136`)
+**Still open?** `printf '\033[99;9u'` into the key decoder, or press ⌘C over a selection after a
+rano bump — a `c` in the composer means it is still rano's. — ✓ fixed in 46f8409b (rano f4c624e), test a_cmd_chord_arrives_as_a_chord_and_never_as_a_typed_letter — the decoder is fed exactly those bytes and no `c` comes out
+
+---
+
+## R55 - A round's end and a turn's end are the same event on the wire
+
+**Status:** the field is built - `SessionEvent::TurnFinished` carries `ends_turn` (`crates/sessionlog/src/event.rs:12`, test `crates/harnessd/tests/turn_end_marker.rs`) and this head's row holds across rounds (`a_prompt_in_flight_holds_the_row_up_between_its_rounds`). left: `Hub::turn_in_flight` (`crates/sessionlog/src/hub.rs:1632`) still reads the round and not the field; a round with no calls followed by a nudge still says `true`; unclear: leticl's `:turn-finished` arm reading `ends_turn` is in another repo, check there.
 
 The operator, watching leticl's composer edge during a multi-round turn: *"sometimes 'responding'
 timers flickers to Responded and then back, without time reset. not harmful but annoying"*, and then
@@ -1190,67 +625,398 @@ the guess this row warned about**: a round that proposed NO calls but is followe
 steering round still says `true`, so the flicker survives there — only a marker at the convergence
 point could remove it. `Hub::turn_in_flight` is unchanged and still reads the round, not the field.
 
-## Which side owns WEATHER — a classification both heads must answer the same way — **SETTLED 2026-11-02 on this side: the daemon classifies, and what was broken was the head's FILING; `model_endpoint_retry` is the ruling still open**
+---
 
-The operator ruled: *"both heads should not emit it inside conversation"* for `model_slow_first_byte` —
-the diagnostic is wanted, its PLACEMENT was wrong, so it leaves the transcript, lights the `⚠` and
-`/notes` still lists the sentence. leticl landed its half in `973d58f`, and the shape it took is worth
-copying or overruling deliberately rather than by accident:
+## T15 - Replace §10's compaction design with structural eviction
 
-  · the test is **not** *is this routine* but **is this an event in the record**. `+weather-warnings+` is
-    `model_slow_first_byte` and `model_endpoint_retry`; `auto_compact` and `compacted` are routine too
-    and STAY ROWS, because a compaction changes the conversation; `prefix_check_skipped` stays a row
-    because a skipped check is *said, never counted as a pass*;
-  · it is a **subset of the routine register** (`warning.rs`'s `Class::Routine`), asserted by a test
-    (`821d218`) so a code cannot be silenced here alone.
+**Status:** partly landed - structural eviction of units runs before every summary turn, the addressable map is in the new base, `recall` opens any id it names, and section 10 of the plan reads structural eviction. left: a standalone `prune`.
 
-**The question: where does WEATHER live?** leticl's list is head-local and yours is the daemon's
-register, so the two heads now hold two answers to one question — and a code added to one and not the
-other is two heads disagreeing about whether a sentence is an event, which is the two-lists defect the
-archive's file set was made un-driftable for in `018fc45`.
+`docs/compaction.md`. Compaction today bundles *reducing what is resident* (necessary)
+with *destroying what is recoverable* (an accident). Falsifier B removed the usual
+justification — quality does not degrade with depth — so the trigger is the context
+wall and memory pressure only.
 
-Two shapes, and the second needs a reason written down: **the daemon classifies weather beside
-`Class::Routine`** (one answer, both heads read it, neither can drift — leticl's preference, because it
-is what the register already does), or the lists stay head-local with the reason they must exist
-separately stated in both trees.
+The key constraint that rules out the easy fix: **plain eviction invalidates the
+prefix just as summarisation does**, because the prefix *is* the old turns. Both cost
+a re-prefill, so the question is what to get for it. Answer: replace an evicted span
+with a **structured, addressable map** rather than prose, maintained incrementally so
+there is no stop-the-world summarisation call, with zoom-in appended via `recall`
+rather than rewritten in place.
 
-**done when** a code added on one side cannot silently change a head's placement without the other
-side seeing it — one list, or two with a stated reason and a guard that reads the other.
+Depends on nothing. Feeds `docs/memory.md`. Gives `SegmentMark` its missing producer.
 
-**SETTLED, 2026-11-02: the daemon classifies, and the head holds no list of its own.** The first shape,
-and leticl's preference, is what this tree already had and what it keeps. `warning::ALARM_ONLY` sits
-beside `Class::Routine` in `crates/sessionlog/src/warning.rs`, the head asks it through
-`warning::to_the_alarm`, and `crates/tui` has no placement list to drift — so a code added here cannot
-be placed one way by the head that saw it live and another way by the head that attached later. The
-guard is the register's own: `an_alarm_only_code_is_never_a_failure_or_a_refusal` fails if a code on
-the edge is also a `Failure` or a `Refused`, and it names the routine codes that must stay rows
-(`compacted`, `auto_compact`, `compact_half`, `reseated`, `cleared`) — the same subset argument
-`821d218` makes on leticl's side, read off the table rather than restated.
+— PARTLY LANDED: the record is sized by the room and gated on what it kept, and the tail keeps the
+old turns most relevant to the plan (embedding relevance). Structural eviction of units runs before
+every summary turn (`crates/turn/src/evict.rs`, test `crates/turn/tests/evict_summary.rs`):
+superseded reads, settled subagents and finished calls go as stubs, and failures, the exchange in
+hand and anything a plan row names stay. Each unit is kept before it goes, under the id the map
+prints, in the session's spill store; the new base carries one line per unit under the record
+(`evict::map_text`, written by `Harness::fork_onto`), and `recall id=<id>` returns that body
+exactly, bounded to an eighth of the window (`crates/tools/src/recall.rs`, seats on every role that
+can be compacted). An id the map never named is refused by name, listing the ids it does have.
+Tested end to end in `crates/harnessd/src/harness/tests/recall.rs`. §10 of the plan
+(`docs/implementation-plan.md:215-224`) now reads *structural eviction*. OPEN: a standalone `prune`
+(`docs/compaction.md` §6, its own `/prune` verb, no model behind it).
 
-**And the defect this entry was chasing was not in the list — it was in the FILING.** MEASURED on the
-tree: `crates/tui/src/app/events/warnings.rs`'s alarm arm returned `Disposition::Filtered` *before*
-filing anything, while the snapshot arm (`app/events/mod.rs`, the `Placed::Before` push) files every
-warning it replays. So one `model_slow_first_byte` had two records, decided by WHEN THE HEAD ATTACHED:
-a head that came later listed the sentence under `/notes`, and a live head kept only the `/status`
-count — the diagnostic the ruling is about, gone on the head that watched it happen.
+---
 
-Landed: the alarm arm files the daemon's sentence through a new door, `App::note_beside`
-(`crates/tui/src/app/notes.rs`), and then counts it. `note_beside` files `Placed::Before` — listed by
-`/notes`, counted by `/status`, drawn nowhere — through `App::note`'s own identity test, and the note
-cap is one function now (`cap_notes`, over a new `NOTES_KEPT`) because filing has two doors and a cap
-written into one of them is a list that grows through the other. `/status`'s third number reads
-`N not drawn` rather than `N from before this window`, because a live edge-bound note is not from
-before the window. `ALARM_ONLY`'s docstring says where the sentence goes, so the next code added there
-is told. Test: `an_edge_bound_warning_is_listed_in_notes_rather_than_deleted`, beside the older
-`an_edge_bound_warning_raises_the_alarm_and_never_becomes_a_row`, which still pins the half that
-matters most — it is not a row in the conversation.
+## R105 - The work order after the 2026-11-01 review, folded with the open list
 
-**STILL OPEN, and it is the operator's ruling rather than a change to make: `model_endpoint_retry`.**
-leticl's `+weather-warnings+` carries it and this side's `ALARM_ONLY` does not, so a retry ladder is a
-row here and weather there — the one code where the two heads still answer *is this an event in the
-record* differently. Nothing above changes it: it stays a routine row until somebody rules.
+**Status:** steps 1, 2, 3, 5 and 7 are closed (evidence per step below), 4 is built and owes a live run, 6 is half done, 8 stops on two decisions, 9 is the backlog. left: step 4's four live facts on lab2x1 (R100), step 6's comment rule (486 blocks over three lines by `scripts/comment-blocks.py count`; the list below says 456, written earlier), step 8's two decisions (where a JavaScript engine comes from, and the JS-side contract), step 9 (the entries in this file).
 
-## R59 — the context wall's denominator moves a third between firings — **raised by the operator 2026-10-03; left: the operator's ruling on smoothing the ratio, which has not been given and which the tree now keeps per-round as recommended (the id, `bd012ed`, and the provider-unit printing, `e8343165`, are landed)**
+Record: `docs/review/2026-11-01-ab5f7841-90dd9c84.md` (three reviewers, two rounds, synthesis). In order; each step relies on the one before it.
+
+1. Guards. Remove the 15 `#![allow(clippy::all)]` crate by crate, each replaced by targeted allows with a reason. The gate's clippy step must not pass on a warm target. A check that every `#[test]` sits on its own function (or `--list` counts per binary). A test that cannot run on the gate host fails there instead of printing SKIPPED (`crates/bridge/tests/daemon_record.rs:84-89`).
+2. Orchestration bugs that cost runs: R106, R107, R108; re-check R99's own Done-when now that R101 is closed.
+3. Contracts from the review: version the sessions plugin answer so a layer written for groups is refused out loud; record reviewers-on-host in DECISIONS.md and restore a test of the VM arm (`mergequeue/review.rs:700`); the single-attempt retry test (`crates/http/src/retry.rs`); the room protocol bumps only at release points.
+4. R100, firecode for remote sessions.
+5. De-duplication: one queue renderer (`crates/tui/src/ui/panes/queue.rs` or `plugins/builtin/queue`), one `now_ms`, one truncation helper, `crates/harnessd/tests/common`.
+6. Deslop per `hands-off/templates/deslop.md`: comments to the 2-3 line rule, `.letibot/notes` merged into rewritten topic docs.
+7. Structure: split `open_with_registry`, `rounds`, `run_to_completion`; break `harness.rs` into modules.
+8. Plugins: script layers (`docs/plugins-plan.md` step 11).
+9. Backlog, unchanged: R95, R98 half 1, R104, R89-R93, R64-R66 and the older open entries below.
+
+**Status 2026-11-03, each step re-checked against main.** 1, 2, 3, 5 and 7 are closed. 4 is built and owes a live run on lab2x1. 6 is half: the docs and the reviewed range's code are deslopped, the tree-wide comment rule is not. 8 is not built and stops on a decision. 9 is the backlog further down.
+
+1. **Closed.** No crate root carries `#![allow(clippy::all)]` any more; they went crate by crate, with the items annotated that the allow had hidden (d1a22002 provider, 5f799705 turn, 76b1d3b9 sessionlog, 2c604e95 tools, a91283f7 tui, 77634a08 flowy, 90c249a9 opencode, e6f1239e dialect-glm). The gate's clippy step is `scripts/clippy-gate.sh`, which touches every member's root so a warm target cannot answer for the lints (3feb2606, and agents.md says why). `scripts/check-test-attrs.sh` is the gate's second step, and rejects a `#[test]` that is not on a function of its own (d0e344cb). The daemon-record test refuses on a box without python3 instead of printing SKIPPED (6daadf89).
+2. **Closed, except R99's Done-when, which is a live run.** R106 landed as `ecae1af7` (`a_session_that_joins_a_daemon_runs_its_own_model`), R107 as `f1e7f9ec` (with `crates/bridge/tests/wait_activity.rs` holding a wait on a running job and answering through it when the daemon says quiet), and R108 is closed in TODO-settled.md (`8d1b0f2a`). R99's code is `ccf7b895`, `559048a7` and `36752792`; its Done-when, six packages placed on lab2x1 at once and a forced mid-write drop, needs a real host and a real sshd, so nothing in a sandbox can say it.
+3. **Closed.** The sessions answer is versioned: `MOVED` (`crates/plugins/src/lib.rs:98`) and `[contracts] pane_sessions = 3` refuse a layer written for the groups at load, naming the layer and both numbers (`b5a2925a`, `a_layer_written_for_the_old_shape_is_refused_and_the_layer_below_answers`). D18 records reviewers-on-host, and the VM arm's test is back (`fcc559aa`, `a_project_that_asks_for_vms_gets_its_reviewer_placed_in_one`). The single-attempt retry test is `one_attempt_means_no_retry_and_the_default_still_retries` (`59c9c90d`). The room's number moves at release points, said above the constant (`609521f9`).
+4. **Built; the shape has tests now, the live run still owes four facts.** `Placement::RemoteVm` is built, and the two arms the review found asserted nowhere have tests: the checkout a VM placement makes is a clone and a host placement's is a linked worktree (`7a964d46`), and the mode a placement puts a session in is `mode_in_vm`, with `RemoteVm` asserted at allow-all (`16e91852`). Still owed are the lab2x1 run's four facts: item 2 with a real `firecode` copy carrying a commit out, item 4 with a resumed session, the guest's `cargo test` with no card, and the copy-out's cost off the daemon's own line.
+5. **Closed.** One queue renderer (`e147d979`: the pane is the `queue` layer's answer and the head hosts it), one clock (`682e5a69`, fifteen copies into `letibot-metrics`; the `i64` sites keep a named two-line adapter, and the copy that arrived after it went in `397b3ef2`), one truncation helper per meaning in `letibot_transcript::text` (`2b356d3a`; two aliases went in `397b3ef2`), and the tests' shared support is `crates/harnessd/tests/support` (`a43d2748`), not `tests/common`.
+6. **Half.** The docs were deslopped one by one, and the notes were merged into them and cut: `.letibot/notes` holds 160 files, with the ones whose content moved deleted in the same commit. The comment rule is not tree-wide: `python3 scripts/comment-blocks.py count $(git ls-files 'crates/**/*.rs')` still finds 456 blocks over three lines.
+7. **Closed.** `harness.rs` is 1,894 lines and its parts are `crates/harnessd/src/harness/` (`open.rs` e4e00ff0, `turns.rs` 967c5718, `children.rs` 0d2aca9c, `models.rs` 42931d7c, `wall.rs` c2a9c60d and the rest), and the three long functions are named steps (`rounds` 7aa68541, 60a3af8a, 8767a6f6, 8e3b3a9a; `run_to_completion` c86e6f44; `open_with_registry` 43f26515, 2b0701a2, 3ce469cf, 592241c4).
+8. **Not built, and it stops on two decisions this entry cannot take** (`docs/plugins-plan.md` step 11): where a JavaScript engine comes from, with none in `Cargo.lock` and none in the offline registry cache, and the JS-side contract, including how the shadow gate's replay stays exact with a clock and `Math.random` inside it.
+9. **Unchanged**: the backlog entries further down this file are their own work.
+
+**Done when**: steps 1-8 are closed or moved to their own entries. **Still open?** step 4's live run, step 6's comment rule, step 8's two decisions, and step 9's backlog.
+
+---
+
+## R114 - Embeddings as the second similarity tier, in `letibot_tools::similarity` for every caller
+
+**Status:** items 1 and 2 are built - `crates/embeddings` (modes off, internal, URL) blended in `similarity::blended` (`crates/tools/src/similarity.rs:297`) and reaching the notes and skills offers, the duplicate gate, the context claim, the waits offer and the already-done offer. left: item 3's measurement from the take-up logs (are the misses synonyms?), the paraphrase case scored against the worst measured negative, and the per-round cost on lab2x1.
+
+`crates/tools/src/similarity.rs` is lexical, and its own measurement shows where that ends: a paraphrase of the review-queue note scored 0.126, under a docker prompt's 0.133 against an unrelated note, so no floor separates them. The skill offer (R113) will meet the same gap on synonyms (presentation and beamer).
+
+1. Engine. Decided 2026-11-02 (operator): candle is the runtime, in pure Rust, with no llama. The built-in model is a fast small one (all-MiniLM-L6-v2, or multilingual-e5-small if English-only proves too narrow), downloaded once into the data dir and never compiled into the binary. A user who wants quality gives a model file: a local directory with `config.json`, `tokenizer.json` and `model.safetensors` of an architecture candle runs (BERT family, nomic, Qwen3-Embedding, Gemma3 to verify), e.g. Qwen3-Embedding-0.6B or nomic-embed-text v1.5. An architecture the build does not know is refused at open by name, not at the first round.
+   Configuration, one key with three values: `[embeddings] mode = "off"` (lexical only, the default until point 3 says otherwise), `"internal"` (candle with the built-in model, or `model = "<dir>"` for the user's own), or a URL to an OpenAI-compatible `/v1/embeddings` endpoint with its model name. A URL sends note and skill text to that endpoint, so it is only ever the operator's explicit setting, and its failures fall back to lexical and are said once per session, not per round.
+   Scope: the blended score lives in `letibot_tools::similarity`, so every caller gets it at once: the notes offer, the duplicate gate on a note write and on an edit made durable (a paraphrased duplicate is the case lexical misses), the context-claim check, and the skill offer (R113). `mode = "off"` turns it off for all of them. Each caller keeps its own floor, tuned from its own log: offering a note and refusing a duplicate want different thresholds.
+2. Shape. Each note and skill is embedded once when it changes, cached on disk beside the corpus; per round only the round's text is embedded. Cosine over the whole corpus, no vector store, since the corpus is hundreds of documents. Storage is a cache, not a record: `<data dir>/embeddings.db` (SQLite, its own file so `sessions.db` gets no schema bump), one table keyed by `(model, sha256 of the embedded text)` holding the dimension, the vector as an f32 blob and a last-used time. A content key needs no invalidation: an edited note is a new key, a changed `mode` or model is a new key, and rows unused for 30 days are dropped at open. Deleting the file loses nothing but time. At open the corpus's vectors are loaded into memory; a few thousand 256-1024 dim vectors are a few MB. The score is combined with the lexical one, not a replacement for it, and one floor is tuned from the take-up log.
+3. Data first. R113 logs every skill offer taken and missed, as the notes offer already does. The test set is the missed cases from both logs plus the paraphrase above. If the misses are not mostly synonyms, this entry closes as not needed.
+
+**Done when**: the paraphrase case scores above the worst negative in the measured set, the offer's per-round cost on lab2x1 CPU is stated, and the harness builds with the embedder and without llama.
+**Still open?** whether R113's log shows synonym misses.
+
+---
+
+
+More callers, from the operator on 2026-11-03:
+
+- Waits. When a brief, task or subagent prompt is written, score it against the open todo rows of the session and its relatives. A close match is offered as "this looks like todo X, owned by Y - consider `needs`/wait_on it instead of starting it".
+- Already done. Score a new brief against recent commit subjects and TODO-settled.md. A close match is offered as "looks like <sha> already did this - check before starting". On 2026-11-02 four of fifteen packages found their whole scope already fixed on main.
+- Compaction relevance. Rank old turns by their score against the current todos and plan, keep the relevant ones in full and summarise the rest, instead of cutting by age. This feeds R22.
+
+---
+
+## R118 - A GitHub reviewer seat: `letibot attach github <org|repo>` reviews every PR and answers as @letibot
+
+**Status:** open, filed 2026-11-03, the operator's ask. The worker is in and drafts are drawn (`docs/github-reviewer.md`). left: the seat in the daemon so the pane has a feed, a mirror per repository, the review panel, R116's verdict, and R114's similarity offers.
+
+The operator wants letibot to work like CodeRabbit on their own repositories, starting with stroppy-io: "it just attaches to whatever pr is on the repo given to it and does reviews ... responding as @letibot".
+
+**Done** (docs/github-reviewer.md): the poll, the row states, the config and its `post` gate, the 6-an-hour cap, and the worker - a review is a brief (title, description, diff, the comments so far) run in that PR's own letibot session, whose answer is the review kept as a draft on the row; a mention is answered in the same session; the pane draws each draft's words. The session stands in a detached worktree of the PR head, fetched as `refs/pull/<n>/head`.
+
+**Left**: the seat lives in `letibot attach github`'s process, not the daemon's, so the daemon builds no `github` feed and `/pane github/github` still draws "no scope is attached"; a PR of another repository in an org scope is refused by name until a mirror per repository exists; the review is one session's answer and not yet R116's review panel; and R114's similarity offers are not wired.
+
+- `letibot attach github <org or owner/repo>` starts a long-lived reviewer seat for that scope. It polls with `gh api` for new PRs and new pushes to open PRs. Polling is used rather than webhooks, so no endpoint is exposed.
+- Each PR is a letibot session with its own worktree of the PR head. A new PR gets a review panel (reviewers plus the gatekeeper, the same machinery as the merge queue's review) and one GitHub review: inline comments on lines and a summary. A push gets a re-review of the new commits only.
+- A comment that mentions `@letibot` in the PR's thread is answered by that PR's session. The operator can attach to the session like any other.
+- Identity: the seat posts as its own GitHub account or App named `letibot`, with a token scoped to the configured repositories. It never posts as the operator. The operator creates the account or App; the token lives in letibot's config, mode 0600.
+- Limits: one review per push, a per-repo rate cap, and no review of a PR from a fork without the operator's opt-in (an untrusted diff runs nothing; review is read-only).
+- R114 callers: a new PR or issue similar to an open todo or a running session's brief is offered as "watch this"; a session whose brief matches an open PR attaches to its thread; similar past reviews are offered as context.
+
+Depends on R116 (a review verdict schema shared by every reviewer) and R114 for the similarity offers.
+
+A pane, `/pane github`, lists the attachers: one line per scope (org or repo) with its state (polling, rate-limited, token missing), and under it one row per open PR with its review state (queued, reviewing, posted, re-review pending, answering a mention), the last action and its age. Enter on a PR row attaches to that PR's session; a key opens the PR in the browser; another pauses or resumes a scope. It is a plugin pane like the queue's, so the seat's state lives in the daemon and the pane only draws it.
+
+---
+
+## R116 - Claude Code as a merge-queue reviewer, through headless `claude -p`
+
+**Status:** not started. left: all of it - no `claude -p`, `--json-schema` or `structured_output` use exists under `crates/` (grep, 2026-11-03). The verdict schema is the queue's existing reviewer verdict.
+
+The queue hands a branch to a reviewer and needs a verdict back. Headless Claude Code fits without waking any live session:
+`claude -p --output-format json --json-schema <verdict schema> --permission-mode <mode> --allowedTools <read-only list>`, started with its cwd in a worktree of the branch.
+
+- The verdict arrives in `structured_output`. A run without that field is a failed review, not a pass.
+- Store the result's `session_id`, so a re-review after new commits uses `--resume <id>` and keeps the reviewer's context.
+- Time limit enforced by the queue. End a run with SIGINT, which ends the turn cleanly; SIGTERM exits 143.
+- The verdict schema is the queue's existing reviewer verdict, so a Claude reviewer and a letibot reviewer are interchangeable in a panel.
+
+Docs: https://code.claude.com/docs/en/headless.md
+
+---
+
+## R117 - The leticode MCP bridge pushes package and queue events into the orchestrating Claude Code session as a channel
+
+**Status:** not started. left: all of it - the bridge declares no `claude/channel` capability and sends no `notifications/claude` (grep under `crates/`, 2026-11-03). Claude Code's side is a research preview that needs `--dangerously-load-development-channels`.
+
+Today an orchestrating Claude Code session learns that a package finished through a tracked background `leticode-wait` per session. A channel replaces that: the bridge is already an MCP server, so it can declare `capabilities.experimental["claude/channel"]` and send `notifications/claude/channel` with `{content, meta}` when a session ends its turn, asks, fails, or a queue row changes state. An idle Claude Code session starts a turn on it.
+
+- Claude Code sends no acknowledgement. Expose a reply tool through which the orchestrator acknowledges each event, and re-send an unacknowledged event with backoff.
+- Permission asks can be relayed through `experimental["claude/channel/permission"]`.
+- Claude Code must be started with `--dangerously-load-development-channels server:leticode`. It works in interactive sessions only, and custom channels are not on the allowlist.
+- Keep `letibot-mcp wait` as the fallback for sessions started without the flag.
+
+Docs: https://code.claude.com/docs/en/channels-reference.md
+
+---
+
+## T16 - W9's open questions
+
+**Status:** items 1 to 6 are fixed (66077505, d81863e8, 229555bf, c44d41e7; item 3 has no test). left: item 7 - call ids are positional per turn (`call_{n}` at `crates/turn/src/items.rs:175`, `call_{i}` at `crates/provider/src/openai.rs:681`), so an id repeats across turns; unclear: item 6 asked lubuntu3 whether RAGFlow signals "no coverage" in a field, no answer is recorded.
+
+From the tool runtime, in descending order of consequence.
+
+1. **§8.1 clause 3 gives the outcome vocabulary but never the mapping.** Which outcome
+   is an empty `grep`? W9 decided: matches in scope or elsewhere ⇒ `Ok`; nothing
+   anywhere under any relaxation ⇒ `Abstained`; a nonexistent path ⇒ `Failed`. That
+   choice determines how often `propagate()` blocks a caller and should be recorded
+   rather than inherited.
+   — ✓ fixed in 66077505, test `a_term_that_is_nowhere_abstains_and_says_what_it_searched`;
+   the nonexistent-path case is recorded as the listing rather than `Failed`
+   (`a_scope_that_does_not_exist_returns_the_listing`, `crates/tools/src/builtins/grep.rs:915`).
+2. **D6 answered means M1 ships with clause 5 switched off.** `NoBudget` is correct per
+   D6 — unset is a genuine no-op — so **nothing spills until a budget is configured**.
+   A session-config gap, not a code one, and invisible unless said.
+   — ✓ fixed in d81863e8, test `every_thing_that_is_off_is_disclosed`: `Config::disclosures`
+   says `UNSET` and that nothing will spill (`crates/harnessd/src/config.rs:2139`).
+3. **`Gate` will collide with W11.** W9 defined the smallest adjudication seam the
+   runtime needs (`admit(name, access, args)`). W11 should absorb it rather than build
+   a parallel one.
+   — fixed in 229555bf in code, untested: there is one `Gate` trait
+   (`crates/tools/src/runtime.rs:621`) and its only implementation is `AdjudicatedGate`
+   (`crates/tools/src/adjudicate.rs`), so no parallel seam exists to collide with.
+4. **§8.1 clause 1 and §9.4 pull against each other.** Relaxing a pattern *is*
+   rewriting the query, which §9.4 forbids. The reconciling word is **visible**: every
+   relaxation appears in the result. Worth stating in §9.4 so nobody deletes one of
+   the two.
+   — ✓ fixed in 66077505, test `a_too_strict_anchor_is_relaxed_to_the_bare_identifier_and_says_so`;
+   §9.4 now carries the rule ("and if it ever does, the rewrite must be visible",
+   `docs/implementation-plan.md:213`, 7bdfd6c9).
+5. **§8.4's `orchestrator` role has no `read_spill`** though its `read`/`grep` can
+   spill — so for that role the omission notice is advisory, which §8.3 says it must
+   not be. W9 shipped `read_spill` in its place.
+   — ✓ fixed in 66077505, test `the_default_session_is_read_only_and_seats_exactly_what_it_did`
+   (the orchestrator's seated set includes `read_spill`, `crates/harnessd/tests/wired.rs:112`).
+6. **Retrieval is inert — no MCP server is running anywhere.** Confirmed by lubuntu3
+   on 2026-09-09, checked rather than recalled.
+   - `192.168.1.55:9755` is the **flowy node**, not oracle. Never was the address.
+   - **RAGFlow and oracle are on lubuntu3 (192.168.1.82)** — but its MCP server **is
+     not started by that deployment**. Docker publishes 9382-9384, so a **TCP connect
+     succeeds while nothing is behind it** (`curl` → HTTP 000, zero mcp processes in
+     the container). That is why a client reports "unable to connect to the url": the
+     connection is fine, the service is absent. Same shape as the embed wedge — a
+     check that succeeds without touching the thing it checks.
+   - `:8100/sse` **looks** like an SSE endpoint and is not — it is arxiv-search, whose
+     catch-all returns identical HTML for every path. Do not use it.
+   - **Use the REST API instead: `192.168.1.82:9380`, base `/api/v1`, bearer auth.**
+     Do not ask for an MCP listener to be started while ingestion is live.
+   - `ask_code` is a **separate problem**: per-box, against the local codebase, and
+     **nothing is running on this box** (checked — only qwen/bge/postgres listen).
+   - **Open and load-bearing:** does RAGFlow signal "the corpus does not cover this"
+     in a *field*, or only in prose? §8.1 clause 3 requires abstention to be
+     structurally distinguishable. If it is a field, it maps to `Abstained` and the
+     harness can never report it as grounded. **If it is only prose, we will not parse
+     the prose and pretend** — the tool returns `Ok` with the text and the hole stays
+     documented. Asked; awaiting an answer.
+   - Note from lubuntu3: `.82:11434` enforces **one request per backend and will hold
+     a call rather than refuse it**. Do not point volume at it unannounced.
+   — ✓ fixed in c44d41e7, test `a_session_with_nothing_attached_discloses_only_retrieval`:
+   retrieval is disclosed as `INERT` under its own name (T16.6) and an answer with no
+   citations comes back `NO_RESULT` (`crates/tools/src/builtins/external/mod.rs:173-200`).
+7. **Call ids are positional per turn** (`call_0`; GLM carries none), so an id-derived
+   mark repeats across turns. Fine now, wrong once a head correlates across a session.
+   — OPEN: still positional — `crates/turn/src/items.rs:175` mints `call_{n}` per round and
+   `crates/provider/src/openai.rs:624` mints `call_{i}`, so an id still repeats across turns.
+
+---
+
+## T10 - Contract gaps found by W6
+
+**Status:** items 1, 2, 3 and 5 are fixed (TODO-settled.md R1 to R4; 3 and 5 have no test naming them). left: item 4 - `render_incremental` still takes the whole history (`crates/turn/src/renderer.rs:24`) and there is no resumable state token, so one ledger row per item is O(n squared) replays. T1 may delete it.
+
+The turn engine is the first real consumer of the crates below, and it found five
+things. Listed in the order I would fix them.
+
+1. **`TranscriptItem::Assistant` has no `truncated` field**, and both §5.7 and §5.8
+   require one. Currently tracked on the turn record instead, which is why **one
+   piece of steering is unbuilt**. Needs a `transcript` crate change — the only item
+   here that blocks a feature rather than costing elegance.
+   — ✓ fixed in e5a11374, test `truncated_survives_a_round_trip` (and
+   `a_row_written_before_the_field_existed_reads_as_not_truncated`): `Assistant { truncated }`
+   is on the row, `crates/transcript/src/lib.rs:102`.
+2. **`ParsedSpan` carries no token offsets**, so a `Parser` cannot say which ids an
+   item owns. Cost an entire module (`crates/turn/src/items.rs`) to work around
+   without reimplementing the parser. Adding a span to `ParsedSpan` would delete it.
+   — ✓ fixed in 5a01de3b, test `parse_round_trips_reasoning_and_two_tool_calls`: every variant
+   carries its `Range<usize>` of ids (`crates/dialect/src/lib.rs:177`) and the test asserts the
+   spans tile the stream from zero (`crates/dialect-glm/tests/invariants.rs:279-289`).
+3. **`DialectSpec` has no `ReasoningField`** — a per-model fact of exactly the kind
+   that crate exists to model as data. The engine takes it as config rather than
+   guessing, which works but puts a model fact in the wrong place.
+   — fixed in 5a01de3b in code, untested: `DialectSpec.reasoning_field` is data
+   (`crates/dialect/src/lib.rs:266`) and the engine reads it there
+   (`crates/turn/src/engine.rs:665`), but no test asserts the spec's field rather than the
+   transcript's copy.
+4. **`render_incremental(history, new)` replays the whole history** for boundary
+   state, so building one ledger row per item is O(n²) replays. Microseconds today
+   at our sizes; a resumable state token fixes it. Note T1 may delete this entirely
+   when the template-driven renderer lands.
+   — OPEN: still O(n²) by design — `render_incremental` takes the whole history
+   (`crates/turn/src/renderer.rs:24-30`, whose comment says boundary state is not derivable
+   from a `usize`) and there is no resumable state token; `append_items` renders one item at a
+   time (`crates/turn/src/engine.rs:434`).
+5. **`cargo:rustc-link-arg` does not propagate across crates**, so every crate that
+   links `libllama` needs its own `build.rs` to bake the rpath. Without it, test
+   binaries link fine and fail at exec looking like a missing library. Fixed in
+   `crates/turn`; worth a note so the third crate does not rediscover it.
+   — fixed in e51847ed in code, untested: that commit was the last crate to get its own
+   `build.rs`, and every crate that links `libllama` now bakes the rpath through the shared
+   `crates/llama/build-support.rs` (`crates/bridge/build.rs`, `crates/sessionlog/build.rs`,
+   `crates/turn/build.rs`, `crates/harnessd/build.rs`, `crates/letibot/build.rs`), each header
+   saying why. A build script is not testable.
+
+---
+
+# Needs the operator
+
+A decision, an account, a live run on real hosts, or an install. Do not start these from an agent seat.
+
+---
+
+## R113 - Skills are offered like notes, the index shows only pins, and a live check proves the whole path
+
+**Status:** items 1 to 3 landed (the offer in the request tail over the whole frontmatter, the index listing only pins, `[skills] pin` read from both levels; `SkillRegistry::ranked` at `crates/tools/src/builtins/skill.rs:572`). left: item 4's live check on lab2x1 - `/skills` hands a test skill over, `task {skills}` preloads it in a child, an unknown name is refused - each already pinned by an in-tree test.
+
+The prompt's skill index (`crates/tools/src/builtins/skill.rs`, `SkillRegistry::index`) sorts by source priority then name and stops at 60 rows, 4000 bytes or 800 tokens. Nothing ranks by relevance, so a box with many installed skills fills the slots alphabetically, and nothing offers a skill the way `crates/harnessd/src/notes_offer.rs` offers a note. The operator (2026-11-02): the offer is wanted, listing skills in full is not, pins are wanted.
+
+1. Offer. Per round, score the skill corpus (`SkillRegistry::ranked`) against the latest prompt, the plan, the todo board and the model's latest text and reasoning (the notes offer reads only the prompt and tool results), and name at most two above `QUERY_FLOOR` in the request tail (`TurnRequest::tail`), the same delivery as the notes offer: never a row, never a load, dropped when the model does not take it.
+   The score is lexical (`letibot_tools::similarity`), so a skill's document is its whole frontmatter (`description`, `when_to_use`, keywords), not only the name and one line: "latex presentation" must reach a skill described as beamer slides. Embeddings are a later step, not this entry.
+2. Index. The prompt lists only pinned skills plus a count of the rest and the `skill` verbs. No source gets listed in full.
+3. Pins. `[skills] pin = ["name", ...]` in the project file and the operator's config. A pin that names no skill is said at open, by name.
+4. Live check, before 1-3 land and again after: a session on lab2x1 with a test skill in the worktree's `.letibot/skills`, `/skills` lists and hands it over, `task {skills: [...]}` preloads it in a child, and an unknown name is refused. The R112 change moved the skill roots onto `Config`, so the check covers that too.
+
+**Done when**: a session whose prompt is about a skill's subject gets that skill offered in the tail without the model searching, an unpinned skill is not in the index, and the live check passes on main.
+**Still open?** this entry's list.
+
+---
+
+## R100 - A remote session cannot run in a firecode VM: `--host` and `--vm` are two placements, not one
+
+**Status:** built and on main (`ad447d53`, `46949113`, `e4c69ac2`; `Placement::RemoteVm`). left: the live proof the 2026-11-02 lab2x1 run did not reach - a real `firecode` copy of a clone carrying a commit out, a resumed session keeping its clone, the guest's `cargo test` with no card, and the copy-out's cost off the daemon's own line.
+
+The operator: *"how to run those remote letibots in firecode"*, and *"lab2x1 has firecode, it even
+has source code for it"*. It does: `~/bin/firecode` (login `PATH`), the source in
+`~/Projects/firecode`, and `/dev/kvm` with an ACL for the operator's user (checked 2026-10-28;
+`firecode ls` answers). What is missing is on letibot's side: `Placement` is either `Firecode`
+(local, this Mac) or a remote host, and `cli.rs` says a remote session is not in a VM.
+
+**Build**: a combined placement, `leticode --host lab2x1 --vm` — `firecode up`/`in` driven over the
+session's existing ssh link (login shell, so `~/bin` is on `PATH`), the session's tools inside that
+guest, the VM measured as the session's boundary so D16 admits builds and tests in it, and the
+commits coming back the way remote placements' do. Then `leticode_start {host, vm: true}` in the
+bridge. This is also where Docker for sessions belongs (the operator, 2026-10-27: *"firecode suites
+better here"*): lab2x1's `dockerd` is rootful, so the socket is root on the host, and a container
+inside a guest stays inside a boundary.
+
+**Done when**: a package started with `{host: "lab2x1", vm: true}` builds and tests letibot inside a
+guest on lab2x1 at `writes-allowed` without a card, and its commits come back.
+
+**Landed (2026-10-31): the SILENT DROP is fixed; the combination is refused by name.**
+`--where` and `--host` wrote ONE field (`cfg.placement`), so the flag that came LAST won and the
+other ask was dropped without a word: `--host lab2x1 --where firecode` booted a VM **here** on a
+copy of this box's workspace, and `--where firecode --host lab2x1` ran on lab2x1 with no VM at all.
+Neither refused anything, so both looked healthy. The two asks are now recorded separately and
+resolved once after the whole line is read, by `cli::placement_from_flags`, which refuses the pair
+with the reason and says what each flag alone does; `--help` says the same. **What the pair SHOULD
+mean is a VM on `lab2x1`, whose copy source is the remote checkout** — and that is still not built,
+because `FirecodeBackend` runs a `firecode` binary on THIS box and holds THIS box's paths
+(`FirecodeSpec::bin`, `~/.cache/letibot/firecode`, a promoted job's scratch file, the `.git` it
+reads to decide a worktree is mounted). It needs a remote runner for the firecode backend, not a
+flag. `docs/subagents.md` §2 carries the decision. Tests:
+`crates/harnessd/tests/cli_placement.rs` (both flag orders, through `cli::run`) and the pair test in
+`cli::tests`, which now asserts the pair IS the placement (the build below). — ✓ fixed in ad447d53, test a_vm_and_a_host_are_one_placement_whichever_flag_came_first
+
+**Built (2026-11-01, branch `firecode-remote`): the pair is the placement.** `leticode --host lab2x1
+--vm`, `leticode_start { host: "lab2x1", vm: true }` and `where: "host:lab2x1:vm"` are one
+`Placement::RemoteVm(name)`; either flag alone still means what it did. `SshSpec::vm` carries the
+ask into `SshBackend::place`, and five things follow from it:
+— ✓ fixed in 46949113, test a_vm_and_a_host_are_two_asks_and_the_pair_is_a_vm_there
+
+1. **The host is asked once per host per process** (`Ssh::probe_firecode`): `command -v firecode` in
+a login shell, and `$LETIBOT_KVM_DEVICE`/`/dev/kvm` readable and writable by this connection's user.
+A host that cannot boot a guest is refused **by name before anything is arranged there** — no
+bundle, no checkout — and a probe that did not answer is not cached. — ✓ fixed in 46949113, test a_host_without_firecode_is_refused_by_name
+2. **The checkout is a CLONE when the ask is a VM**, not the linked worktree every other placement
+gets. The guest holds a *copy* of the directory, and a worktree's `.git` is a file naming a
+directory in the mirror that the copy does not carry — so no commit inside the guest would have
+worked. `bring_back` fetches the branch from the checkout in that case, from the mirror otherwise. — fixed in 46949113 in code, untested: nothing asserts the VM checkout is a clone rather than a linked worktree, so a revert to `git worktree add` would leave a guest copy with no repository and only a comment to notice
+3. `firecode up --project <checkout>`, and then **every call is `firecode in --project <checkout>
+--cwd <checkout> '<script>'`** — `Ssh::remote_command` wraps every door at once, so a command, a
+file read, a file write, a job's launcher, a poll and the group kill all run in the guest, and the
+cancel path builds its own command for the same reason. — ✓ fixed in 46949113, test a_vm_placement_boots_the_guest_and_runs_every_call_in_it
+4. **The guest is the boundary**, so `cfg.placement.is_vm()` puts the session at `allow-all`
+(`Harness::open`'s `in_vm`) and no `bwrap` is probed for. — fixed in 46949113 in code, untested: no test opens a session at `Placement::RemoteVm`, so the `allow-all` arm (`crates/harnessd/src/harness/open.rs:594`) is asserted nowhere
+5. **On close: `firecode down`, then the guest's work is taken onto the host checkout** — `down`
+leaves a sibling `<checkout>-<stamp>` when something changed, that copy's branch is fetched into
+the checkout and fast-forwarded, and the branch then comes home as `remote/<host>/<short id>` as
+every host placement's does. — ✓ fixed in 46949113, test a_commit_made_in_the_guest_comes_back_as_the_branch
+
+**Tests** (`crates/tools/tests/remote_vm.rs`, a fake `firecode` on the fake remote's `PATH` through
+the same fake ssh `remote_hosts.rs` uses): `up`, then `in` for the session's calls, then `down`, in
+that order; a commit made in the guest arrives as the branch that came back; a host with no
+`firecode` is refused by name with nothing arranged there; and a host placement never asks for a
+guest. Plus `cli::tests::a_vm_and_a_host_are_two_asks_and_the_pair_is_a_vm_there`,
+`bridge::tools::tests::the_vm_flag_turns_a_host_into_a_vm_on_that_host` and
+`bridge::daemon::tests::a_vm_on_a_host_is_both_flags`.
+
+**The live run on `lab2x1` (2026-11-02), and the two defects it found.** `leticode --host lab2x1
+--vm` **booted a guest** and a **foreground `bash` ran inside it**, so half of item 1 is answered for
+a command that travels in the command text; a manual `firecode down` there took **15 s** and
+delivered the copy to `<project>-<run id>`. It did not reach item 2, and item 1's `cargo test` (no
+card) and item 4 were not tried, because:
+
+1. **A background job never started.** Its launcher is staged by `Ssh::write_abs`, whose bytes travel
+   on the ssh's **stdin** (`base64 -d > "$t"`). `firecode in` sends the command over the vsock and
+   never the caller's stdin, so the guest waited for an end that cannot come: ten calls sat for 52
+   minutes and the jobs directory was never made. Fixed: a step fed on stdin now takes the guest's
+   own road, the payload in the command when it is small (`VM_INLINE_WRITE`) and staged on the host,
+   where stdin works, then carried in by `firecode cp` above that. The audit of every stdin-fed call
+   in `remote.rs` and `firecode.rs` found this one and no other: `Ssh::write_abs` is the only one,
+   `firecode.rs` feeds no stdin at all (its writes are inline base64 or `firecode cp`), and the two
+   other `run_bounded_fed` sites (`mergequeue/gate_host.rs`, `room/supervise.rs`) feed a declared
+   host's ssh and never a guest. — ✓ fixed in e4c69ac2, test a_background_job_starts_in_a_guest_whose_client_forwards_no_stdin
+2. **A one-shot stopped with SIGINT left the VM up**, with the calls still stuck in it. The forced
+   exits (`stop_on_signal`'s second signal and its 5 s give-up) end the process without closing a
+   backend, and the orderly stop closes no backend at all. Fixed: a guest this process booted is on
+   one list (`remote::guests_down`), bounded at 30 s for `down` and 10 s for the copy-out, and every
+   exit path runs it once and prints one line saying whether the VM came down and where the copy
+   landed. A session's own close takes its guest off that list, so no guest is brought down twice. — ✓ fixed in e4c69ac2, test a_guest_nothing_closed_is_brought_down_once_by_the_last_act
+
+**Still owed, for the next live run**: item 2 (whether a real `firecode` copy of a clone carries a
+commit out), item 4 (a resumed session keeps its clone, and a file one command writes is there for
+the next command), the `cargo test` inside the guest with no card, and the copy-out's real cost read
+off the daemon's own line rather than a manual `down`. — OPEN: no live proof — the 2026-11-02 run saw a guest boot and one foreground `bash` inside it and nothing more, so the guest `cargo test` with no card, item 2, item 4 and the copy-out's cost are still untried on lab2x1.
+
+**Done when**: a package started with `{host: "lab2x1", vm: true}` builds and tests letibot inside a
+guest on lab2x1 at `writes-allowed` without a card, and its commits come back.
+
+---
+
+## R59 - The context wall's denominator moves a third between firings
+
+**Status:** the wall line carries the session id (`bd012ed`) and prints the provider's count with its unit (`e8343165`). left: the operator's ruling on smoothing the ratio, not given. The tree keeps it per round, as recommended.
 
 The operator, on letibot's compaction: *"something is off here, like too much too early too wtf."* Four
 `context wall` lines on one daemon whose `context_window` is 999,999 — **and no way to say which session
@@ -1355,7 +1121,75 @@ it on the compaction path.
 sentence and the banner now print the provider's count and its unit, with the ledger pair in parentheses, and
 `tokens_are_converted()` is what chooses that aside (`crates/harnessd/src/harness/turns.rs:1363`).
 
-## R13 — cloud GLM, DeepSeek and Grok as turn backends — **SETTLED 2026-09-14 (claude-lab2x1); left: nothing in the tree has run against a real provider — every provider test is a fake server (`crates/provider/tests/fake_provider.rs`), and the entry's `Done when` asks for live tests behind the key — and the providers' prompt caches are still only relied on, `PrefixGuarantee::Asserted` (`crates/backend/src/lib.rs:224`) being the whole claim**
+---
+
+## Which side owns WEATHER - a classification both heads must answer the same way
+
+**Status:** settled on this side on 2026-11-02 - the daemon classifies (`warning::ALARM_ONLY`, `crates/sessionlog/src/warning.rs:596`) and the head files the sentence under `/notes`. left: the operator's ruling on `model_endpoint_retry`, which is a row here and weather in leticl; unclear: `6b52aae6` now draws a retried model call as one row that moves and settles, check whether that closes the ruling.
+
+The operator ruled: *"both heads should not emit it inside conversation"* for `model_slow_first_byte` —
+the diagnostic is wanted, its PLACEMENT was wrong, so it leaves the transcript, lights the `⚠` and
+`/notes` still lists the sentence. leticl landed its half in `973d58f`, and the shape it took is worth
+copying or overruling deliberately rather than by accident:
+
+  · the test is **not** *is this routine* but **is this an event in the record**. `+weather-warnings+` is
+    `model_slow_first_byte` and `model_endpoint_retry`; `auto_compact` and `compacted` are routine too
+    and STAY ROWS, because a compaction changes the conversation; `prefix_check_skipped` stays a row
+    because a skipped check is *said, never counted as a pass*;
+  · it is a **subset of the routine register** (`warning.rs`'s `Class::Routine`), asserted by a test
+    (`821d218`) so a code cannot be silenced here alone.
+
+**The question: where does WEATHER live?** leticl's list is head-local and yours is the daemon's
+register, so the two heads now hold two answers to one question — and a code added to one and not the
+other is two heads disagreeing about whether a sentence is an event, which is the two-lists defect the
+archive's file set was made un-driftable for in `018fc45`.
+
+Two shapes, and the second needs a reason written down: **the daemon classifies weather beside
+`Class::Routine`** (one answer, both heads read it, neither can drift — leticl's preference, because it
+is what the register already does), or the lists stay head-local with the reason they must exist
+separately stated in both trees.
+
+**done when** a code added on one side cannot silently change a head's placement without the other
+side seeing it — one list, or two with a stated reason and a guard that reads the other.
+
+**SETTLED, 2026-11-02: the daemon classifies, and the head holds no list of its own.** The first shape,
+and leticl's preference, is what this tree already had and what it keeps. `warning::ALARM_ONLY` sits
+beside `Class::Routine` in `crates/sessionlog/src/warning.rs`, the head asks it through
+`warning::to_the_alarm`, and `crates/tui` has no placement list to drift — so a code added here cannot
+be placed one way by the head that saw it live and another way by the head that attached later. The
+guard is the register's own: `an_alarm_only_code_is_never_a_failure_or_a_refusal` fails if a code on
+the edge is also a `Failure` or a `Refused`, and it names the routine codes that must stay rows
+(`compacted`, `auto_compact`, `compact_half`, `reseated`, `cleared`) — the same subset argument
+`821d218` makes on leticl's side, read off the table rather than restated.
+
+**And the defect this entry was chasing was not in the list — it was in the FILING.** MEASURED on the
+tree: `crates/tui/src/app/events/warnings.rs`'s alarm arm returned `Disposition::Filtered` *before*
+filing anything, while the snapshot arm (`app/events/mod.rs`, the `Placed::Before` push) files every
+warning it replays. So one `model_slow_first_byte` had two records, decided by WHEN THE HEAD ATTACHED:
+a head that came later listed the sentence under `/notes`, and a live head kept only the `/status`
+count — the diagnostic the ruling is about, gone on the head that watched it happen.
+
+Landed: the alarm arm files the daemon's sentence through a new door, `App::note_beside`
+(`crates/tui/src/app/notes.rs`), and then counts it. `note_beside` files `Placed::Before` — listed by
+`/notes`, counted by `/status`, drawn nowhere — through `App::note`'s own identity test, and the note
+cap is one function now (`cap_notes`, over a new `NOTES_KEPT`) because filing has two doors and a cap
+written into one of them is a list that grows through the other. `/status`'s third number reads
+`N not drawn` rather than `N from before this window`, because a live edge-bound note is not from
+before the window. `ALARM_ONLY`'s docstring says where the sentence goes, so the next code added there
+is told. Test: `an_edge_bound_warning_is_listed_in_notes_rather_than_deleted`, beside the older
+`an_edge_bound_warning_raises_the_alarm_and_never_becomes_a_row`, which still pins the half that
+matters most — it is not a row in the conversation.
+
+**STILL OPEN, and it is the operator's ruling rather than a change to make: `model_endpoint_retry`.**
+leticl's `+weather-warnings+` carries it and this side's `ALARM_ONLY` does not, so a retry ladder is a
+row here and weather there — the one code where the two heads still answer *is this an event in the
+record* differently. Nothing above changes it: it stays a routine row until somebody rules.
+
+---
+
+## R13 - Cloud GLM, DeepSeek and Grok as turn backends
+
+**Status:** built (`crates/provider`, `MessagesBackend`, `--provider`) and tested against a fake server only (`crates/provider/tests/fake_provider.rs`). left: live tests behind a real provider key, which no box here has, and the providers' prompt caches are only relied on - `PrefixGuarantee::Asserted` (`crates/backend/src/lib.rs:230`) is the whole claim.
 
 Done: `crates/provider`, `MessagesBackend` in `letibot-backend`,
 `TurnEngine::run_turn_messages`, `--provider/--api-key/--thinking`, the `provider`
@@ -1379,9 +1213,332 @@ key being set; cost reported as `TurnCost.micros_usd`.
 
 ---
 
-# 2. NEEDS A NOD — small question first, then unblocked
+## R98 - macOS has no boundary for a command, so tests there must ask (D16, amended)
 
-## N5 — the agent should know the view is hermetic, and propose the grant it needs; left: which asks must be refused rather than prompted is undecided — `grant_view` raises an ordinary card for `~/.ssh`, with no never-write precheck
+**Status:** half 1 (the policy, `runs_project_code_unconfined`) and half 2 (`crates/tools/src/exec/seatbelt.rs`) are built, the seatbelt tests pass 8/8 on a Mac (2026-11-03), and the default local seat on a Mac now runs its commands inside the boundary. left: the live card check - a default local session at `writes-allowed` in a checkout runs `cargo test --offline` with no card and no `boundary_absent`.
+
+D16 admits a command without a card only inside a measured boundary, and its amendment says
+that on a raw host a command that executes code the agent wrote (a test runner) must keep
+asking, and no standing grant may admit it, because the oracle does not read a runner's files.
+The macOS host shell has no boundary at all (firecode VMs are the only macOS boundary letibot
+has, `docs/firecode-on-macos.md`), so every `cargo test` on the Mac is either asked about or
+theater.
+
+Two halves, the first smaller and first:
+
+1. **Make the rule true on a raw host now.** A `bash` call whose stages run a test runner or a
+   build that executes project code (`cargo test|run|build` with build scripts, `pytest`,
+   `go test`, `npm test`, `make`, a script the session wrote) is not settled by a session or
+   durable grant when the backend is unconfined; it asks every time, and the card says why
+   (*"runs code the agent wrote, on a host with no boundary"*). Measure what this costs on the
+   corpus replay (how many past grants would no longer settle) before landing. — **BUILT.** — The
+   rule is the policy now, and it has no setting: `runs_project_code_unconfined` reads one fact,
+   `has_measured_boundary`, which `Harness::open` hands it off the backend — so a Linux test
+   constructs the Mac's case by handing the gate `None`, and nothing in the gate probes a platform.
+   `[permissions] ask_unconfined_code`, `with_unconfined_code_asks` and the startup note that
+   disclosed it are gone with the switch — in `crates/leticode-config`, and in
+   `crates/harnessd/src/harness/open.rs`. Tests:
+   `a_host_with_no_measured_boundary_asks_with_nothing_switched_on`,
+   `the_same_runner_is_admitted_inside_the_boundary` (unchanged) and
+   `the_card_narrows_the_ladder_and_says_why`, whose note must say *no boundary*. The cost was
+   measured on the corpus before it was turned on — `docs/boundary-and-adjudication.md` §R98 (1),
+   **171** of the mac's 834 standing settles would ask, 137 of them the session's own programs and
+   24 `cargo test`.
+2. **Give the Mac a boundary** — **BUILT 2026-10-27**, `crates/tools/src/exec/seatbelt.rs`, and
+   written up in `docs/boundary-and-adjudication.md` §4k. Seatbelt (`sandbox-exec -f <profile>`)
+   renders the same `ViewSpec` the Linux side renders as a bubblewrap argv, and the probe measures
+   it from inside: the deny list beating an allow (a canary inside a writable `$HOME`), a write
+   outside the checkout refused, a write inside it succeeding, fork/exec, a nested `sh -c` denied
+   the same path, `kill -0` on the launcher `EPERM`, and both egress subjects refused when egress
+   is denied. `confine::probe` chooses the mechanism by platform, so `HostBackend::confined`, the
+   session's `/tmp` and every grant re-probe through one dispatch, and a Mac session's `bash`,
+   jobs and persistent shell all run inside it. A Mac that cannot measure one is **unconfined and
+   says so** (`boundary_absent` on the session's log, with the refusal's own words).
+
+   The measured cost: **+5.1 ms per exec** (100 `true` calls: 1.28 → 6.41 ms/call), +4.5 ms on a
+   real `cargo --version`, and it does not grow with the command's work. What macOS cannot give —
+   a PID namespace, so processes are unreachable but not absent, and no `PR_SET_NO_NEW_PRIVS` —
+   is printed on the boundary's own description as `ABSENT` / `NOT APPLICABLE`, never omitted.
+   Reaping stays the process-group tree (`exec::scope::ProcessGroups`), as it already was. — ✓ fixed in 5442b7c8, test the_probe_measures_a_boundary_and_says_what_macos_cannot_give
+
+   **Two levels (2026-11-04).** The tight view alone made `git push` and `gh` fail in a top-level
+   Mac session ("could not read Username", "not logged into any GitHub hosts"). A top-level session
+   is now wide (real `$HOME` read-write, filesystem readable, `DENY_UNDER_HOME` less `.config/gh` as
+   the only fence). A child keeps the tight view plus the operator's git identity and its worktree's
+   git dir (hooks and config read-only), with no credentials, so it commits and cannot push. A
+   top-level seat gets `GH_TOKEN` and a github.com-only git credential helper, from one `gh auth
+   token` the daemon runs at open, masked in output; `Library/Keychains` stays denied. See §4k.
+
+   **What half 2 still needs: a Mac.** `crates/tools/src/exec/seatbelt.rs` and
+   `crates/tools/tests/seatbelt.rs` are in the tree now, and nothing on a Linux box can run
+   `sandbox-exec` or a `#![cfg(target_os = "macos")]` test, so the profile has never been read by
+   the kernel that enforces it and D16's admit *inside* a Mac boundary has never run.
+
+**Done when**: (1) on an unconfined backend no grant settles a test run, with a test; (2) a Mac
+session's commands run inside a measured boundary that `~/.ssh` and the profiles are absent
+from, and D16 admits them there. — **(1) is done**: the rule is the policy and
+`a_host_with_no_measured_boundary_asks_with_nothing_switched_on` proves it from the injected fact,
+with the ladder narrowed and no grant recorded. **(2) is done on its Linux side**: macOS has no
+mount namespace to make `.ssh` and the profiles *absent*, so they are **denied** rather than absent,
+the probe measures the denial, and the description says which of the two it is holding. The
+`bwrap` half is measured on this box; the seatbelt half is not.
+
+**Measured on a Mac, 2026-11-03**: `cargo test --offline -p letibot-tools --test seatbelt --test
+seatbelt_no_helper` passes 8/8. The default local session (`leticode` seat, `bash` on) was NOT inside
+the boundary: a live `writes-allowed` session asked a card for `cargo test --offline` ("this host has
+no boundary") and published no `boundary_absent`, because only `runner`/`coder`/`gatekeeper` took the
+confined arm in `place_the_tools`. Fixed: on macOS that seat's commands run in the seatbelt boundary
+over the checkout (`HostBackend::confined_over`, file tools still rooted at `/`), `backend.boundary()`
+is set so `Prereq::Confinement` and the D16 gate see it, and a refused probe stays unconfined with
+`boundary_absent`. Tests: `harness::open::mac_default_seat_tests` (boundary built, no warning, write
+inside ok, write outside refused). Linux is untouched (the new arm is `cfg(target_os = "macos")`).
+
+**Still open**: the live card. Build the daemon with this branch, start a default local session at
+`writes-allowed` in a checkout, ask it to run `cargo test --offline`: it must run with no card and no
+`boundary_absent`. The refused-probe arm is the old path and is exercised only on a Mac where the probe fails. Expect that a
+build needing a new dependency fails inside the boundary (toolchain is read-only, offline only).
+
+---
+
+## R66 - A harnessd reached 113 GB
+
+**Status:** instrumented (memwatch, 4eb1dbb) and measured on a scratch daemon (2026-11-02, extended 2026-11-03): 40 turns with a refused compaction each grow nothing, a child's retained state is bounded by a test, and the two-threads-per-subagent leak is closed on `r68-lifecycle` (R68.3, R67.13). left: the LOCAL-model route, which needs a local server and a GGUF on this box and so is the operator's, and the incident's own 113 GB.
+
+MEASURED in the kernel's OOM report, 2026-10-11 00:47:00: `Killed process 3985588 (harnessd)
+anon-rss:113190136kB` — the daemon's own heap, not a child's. It was the `/home/dead/Projects/letibot`
+daemon serving `s-1789462738453908838` (qwen-3.8-flash-next on :8082), the session whose
+compaction failed repeatedly the same week and accumulated six copies of the compaction
+instruction in its transcript. Its window's scope peaked at 131.6 GB over 1 d 23 h. The
+allocating thread named in the report is `harness::queue_`.
+
+Nothing is known yet about the cause. **Start with:** what that session's transcript and
+`harness::queue_` hold; whether a daemon's RSS grows per turn on a long session (sample
+`/proc/PID/status` VmRSS across turns on a scratch daemon); whether the failed-compaction retries
+grow anything.
+
+**Done when:** the growth is reproduced on a scratch daemon and either bounded or explained.
+
+**MEASURED 2026-10-11 — what it is NOT, and one smaller leak found on the way:**
+
+- **Not job output.** `HostProcesses` keeps every job it ever ran (`jobs.push`, never removed),
+  each with up to 8 MiB of capture — but across the session tree's 15,405 `bash` results between
+  10-09 and the kill, the retained capture sums to ~0.1 GB.
+- **Not the transcripts.** 76 transcripts, a few MB each in the store.
+- **`harness::queue_…` is not a daemon thread.** It is the task that ALLOCATED when the box ran
+  out — a test binary's thread (a `harness::queue_*` test); the kernel then chose the largest
+  process, harnessd, at 108 GB RSS (131 GB in the task table's total_vm column).
+- **On deepseek (metered) a scratch daemon does not grow like that:** 245 MB at start; +75 MB
+  for six sequential subagents; +12 MB for three turns each printing ~15 MB of tool output.
+- **A smaller leak, real:** each finished subagent leaves **two threads** behind (7 → 19 for six,
+  never released) and ~12 MB. At the 519 subagents that tree started, ~6 GB — not 108.
+  **CLOSED on branch `r68-lifecycle` (R68.2/R68.3):** R67 item 13 ended the `letibot-deadline`
+  thread with its host, and the host now dies: a finished child idle for `child_park_after`
+  (10 min) parks as store-only — its `subagent-*` thread leaves, its hub is removed from the
+  registry, its harness drops. MEASURED (`tests/session_lifecycle.rs`, 50 children): threads
+  (subagent, deadline) 0,1 before → 50,51 with all answered → 0,1 after parking, one registry
+  entry left; with the policy off (the old behaviour) 50,51 and 51 entries stay.
+
+**Instrumented 2026-10-11 (`harnessd::memwatch`), so the next growth is SEEN:** a counting global
+allocator (heap live / peak, and a backtrace for any single allocation ≥ `LETIBOT_LARGE_ALLOC`,
+64 MiB by default); a watchdog line every `LETIBOT_MEMWATCH_SECS` (60) with rss, heap, threads,
+sessions, hub logs, view items, heads and job rows; a census at each rss step from 1 GiB
+(doubling) — hubs holding most, threads grouped by name — with a `memory_high` warning on every
+session; `BOUND BROKEN` when a hub's log or a head's queue is past its bound, or a view list
+with no bound passes 10,000; and `memory.high` on the daemon's own leaf (`[memory] daemon_high`,
+16 GiB default, `max` = off) so the kernel throttles the daemon instead of taking the box.
+First reading on a scratch daemon: **rss 279 MiB with heap live 35 MiB** — most of a daemon's
+resident memory is NOT on the Rust heap (SQLite's page cache and the vocabulary map use their own
+allocations), so a census showing rss far above heap live points there and not at a Rust
+collection. And the large-alloc log found its first: `Catalogue::load` re-reads the 5 MiB model
+catalogue from disk on every `Config::settings`, i.e. on every session open.
+
+**Not yet tried, and the likeliest place left:** the LOCAL-model path. The killed daemon served
+qwen-3.8-flash-next on :8082, which streams token ids through `/completion` and keeps the token
+ledger itself; deepseek does neither. Reproducing it needs the local server running, which is
+the operator's to start. — OPEN: the cause is still unreproduced; the instrument is
+`crates/harnessd/src/memwatch.rs`, and the local-model path that was killed has not been run
+under it.
+
+**MEASURED 2026-11-02 — a scratch daemon with a fake model does not grow per turn, and the four
+lines that could have carried it are each bounded:**
+
+- **The daemon itself.** `crates/harnessd/tests/r66_daemon_rss.rs` starts a real `harnessd` on its
+own store, socket and runtime dirs under an address-space cap, with a fake model whose summary
+requests it refuses, and drives one session: **40 turns of 8 KiB prompts, a refused compaction
+after each — rss 230.5 → 223.5 MiB, and the last watch line reads `grew s-r66 events +7 · view +1 ·
+warnings +1`.** The same file takes `R66_TURNS`/`R66_PROMPT_BYTES`/`R66_IDLE_SECS` for the probe at
+its own scale. A session with a refused compaction refuses its next prompt for room (`0 refused`
+above is what a session with room looks like), so the driver waits on the turn's own events rather
+than on the model.
+- **The probe at its own scale, and idling.** 120 turns of 16 KiB prompts with a refused compaction
+after each: **rss 235.6 → 257.3 MiB over 119 turns — 0.18 MiB a turn against 1.9 MiB of prompts
+appended**, most of it the token region (4 bytes a token on a byte vocabulary) and the hub's own two
+copies, so ~1.4× what the rows cost and inside the 2× the CI test allows. Then **60 s idle: 257.3 MiB
+at all six readings** — nothing grows with the clock.
+- **The worker and the queue gain nothing per turn.** `crates/harnessd/tests/r66_queue.rs`: 40 turns
+through the real `Sessions` and its worker leave `opened()==1`, one registry entry and a watcher set
+holding nothing, at **0.01 MiB of heap a turn, the same in both halves**. Every map is keyed by session
+and removed at close; `Outcome` is a return value; activity is rebuilt per publish; metrics are a
+bounded channel. **Two maps were unbounded per JOB and are now bounded**: `JobWatchers.settled` (one
+name per backgrounded job, never removed) and `ReadRecord.seen` (one entry per delivered completion),
+which also made `want_now`'s guard read a record with no history.
+- **What is per CHILD, and what still holds an answer after the child is gone:** `TaskSlots`
+(`harness/children.rs`) is a `Vec` that only grows, one row a child of **at most 512 bytes** — a
+handle is an address and not a payload — and a slot keeps an answer only while it is OWED. A reader
+handed one drops it: both the answer the slot settled with and the last answer a later turn gave,
+where the child's row kept that one (a slot is never the last copy, and the case it does keep is a
+child whose row never landed — `TaskSlot::hand_over_answer`, `SubagentRecord::answered_again`). The
+later answer was a real leak, found 2026-11-03: `spoke_again` wrote a whole answer into the slot and
+no reader ever removed it, so a parent that steers its children held one answer each for the
+daemon's life. MEASURED (`harness/tests/children.rs`,
+`a_later_answer_the_record_keeps_is_not_kept_twice`, 20 children of a 17 600-byte later answer):
+**355 200 B held before, 3 200 after, against a bound of 512 a child** — what is left is the
+~160-byte sentence naming where the text is. What is left per child is the row; what a child costs
+in its parent's transcript is the conversation and not the tree. `HostProcesses` also keeps a row per
+command ever run (1.1 KB a row, per HARNESS and not per daemon, its capture already bounded at
+64 MiB), which is what makes `job_output j12` answer at all.
+- **One failed fold** leaves exactly one row — the 1 470-byte `SUMMARY_INSTRUCTION` — and 1 511
+ledger tokens, and no failure arm takes it back (`crates/turn/src/compaction.rs:210`). Measured over
+40 attempts on a 2 MiB conversation: +0.19 MiB of heap in total, flat. It compounds the *prompt*
+(+1 494 bytes per attempt), not the heap, and 113 GB of it would be ~74 million attempts.
+- **A round's working set** is two whole-prompt copies inside the stream (22.4 bytes per prompt
+token at 244 139 tokens) and none of it survives the round; a fork frees both the rows and the token
+region (40 rows / 1.06 MiB → 1 row / 0.27 MiB). The region only grows by doubling and never shrinks
+between forks, which is the capacity the footprint already states.
+- **Two blind spots were real and are fixed.** `restate_footprint` did not run for a compaction's own
+rows, so a session that could not compact under-reported itself by exactly the instructions it kept
+(58 800 bytes after 40 attempts) — `harnessd: walk the census after a compaction's own rows`. And
+`TranscriptItem::bytes` counted a picture's base64 body as 32 and a tool call's arguments as zero,
+so the ceiling and the hub's byte bound were blind to the largest rows a session can hold —
+`transcript: count a picture's body and a write call's arguments in a row's bytes`.
+- **The watch now says what GREW**, not only what is held: every line after the first prints
+`memwatch: grew <term> +<bytes> · …` (biggest first, per session), and three growth readings in a
+row with nothing in the census accounting for them raise `MEMORY CREEP` in the log and a
+`memory_creep` warning on every session. That is the line the 47-hour daemon's log never had.
+
+**What is still unexplained:** the incident's own 113 GB. Nothing measured here produces it, and the
+one route that was never exercised is the LOCAL model (`/completion`, token ids, no GGUF on this
+box). The watch now names the term that grows, so the next daemon to do it says which.
+
+---
+
+## R65 - The model chooses each tool call's memory cap, knowing what is free and what a cap costs
+
+**Status:** landed on main 2026-10-11 (073c1ea, 51dd340) and its remaining items on 2026-11-03 (71ebd8e7, a1824340, 389dca2f, 1228e425, 31b496e1). left: the cross-session ledger only, which is a proposal the operator has not decided.
+
+The operator: *"the question is how many for 2. I think model should try to decide, so it should
+know the free, how much it can ask and what are the consequences"*.
+
+Verified on lab2x1 that the mechanism exists: the user manager delegates `cpu memory pids`, and
+`systemd-run --user --scope -p MemoryMax=64M` around a 200 MB allocation ends that process alone
+with `Killed`, rc 137.
+
+1. **The model asks.** `bash` (and a backgrounded job) gains a memory argument — `memory: "8G"`.
+   — ✓ fixed in d755bf51, test uncapped_is_an_ask_and_a_blank_is_the_default
+2. **The model knows what is free** — said where it decides, in the tool's description or the
+   turn's disclosure: the box's total, `MemAvailable` now, swap, and what this daemon's live
+   calls and jobs already hold under their caps. — ✓ fixed in 71ebd8e7 and a1824340, test
+   every_round_says_what_is_free_and_no_schema_carries_it (`crates/harnessd/tests/memory_line.rs`).
+   The description cannot carry it - a tool schema is the session's stable prefix, and this number
+   moves every second - so it rides the ROUND'S TAIL instead: `harness::memory::memory_tail`
+   composes one `[memory - the harness's own line]` item per round from `Meminfo::round_clause`
+   (`crates/tools/src/exec/memory.rs`, which replaced the callerless `Meminfo::clause`) and
+   `Holds::of` (the daemon's open scopes: their caps added up and their peaks). The test reads two
+   real requests off a fake provider: the line is in both, once each - never in the transcript -
+   and the two requests' `tools` are byte-identical.
+3. **The model knows how much it can ask** — a ceiling per call, derived from what is free at
+   call time. An ask over it is refused with the numbers, not silently clipped. — ✓ fixed in
+   d755bf51, test
+   the_default_is_granted_an_ask_up_to_the_ceiling_is_granted_and_anything_above_is_the_operators
+4. **The model knows the consequences, in the description and in the result:** over the cap, the
+   call's process tree is killed and only it (rc 137, the result names the cap and the peak).
+   **With no cap, an exhausted box kills whatever the kernel picks, and systemd then stops the
+   whole window** — R64's table. Omitting the argument gets a stated default, not no cap.
+   — ✓ fixed in d755bf51, test
+   a_kill_at_the_cap_says_what_to_ask_for_next_and_where_the_default_lives
+5. **Every result reports its peak** (`memory.peak` of the call's scope), so the model learns
+   what its commands cost instead of guessing again next time; a job's peak is in `job_list`.
+   — ✓ fixed in 389dca2f, test a_finished_call_reports_its_peak: a call that ended well inside
+   its cap now ends `memory: peak 12 MiB of a 64 MiB cap.`, and `MemoryUse::worth_saying` - the
+   predicate that said the opposite - is gone with its test.
+6. **A box with no user systemd says so** — the call runs uncapped, and the disclosure says it
+   is uncapped. Never silently. — ✓ fixed in d755bf51, test 1228e425
+   (an_uncapped_call_names_the_ask_and_the_reason): `MemoryCap::Uncapped` names the ask and the
+   reason in the result (`crates/tools/src/builtins/bash.rs`)
+
+**The default is a config option, 64 MB out of the box** — the operator: *"default memory either
+as absolute or a fraction is a config option with 64mb being a good default"*. The setting takes
+either an absolute size (`64M`, `2G`) or a fraction (`0.05` — of `MemAvailable` at call time),
+and the description states the value in force, resolved to bytes. 64 MB is deliberately small:
+most calls fit in it, and a call that does not is killed at once with a result that says what to
+ask for, which is cheaper than a runaway found by the OOM killer.
+
+**The ceiling is a config option too, and it is not a hard limit** — the operator: *"ceiling is a
+config too, with both absolute and fraction and the max is uncapped but if model wants it - must
+ask me. unaskable ask is 50%."* So there are two bands:
+
+- **Up to the ceiling** (default `0.5`, of `MemAvailable` at call time; absolute sizes allowed),
+  the model's ask is granted without asking anyone.
+- **Above it, up to uncapped**, the ask is legal but goes to the operator as a card naming the
+  amount, what is free, and the command. Refused → the call does not run, and the result says so.
+
+**The mechanism, MEASURED on lab2x1 2026-10-11:** a process started with `systemd-run --user
+--scope -p Delegate=yes` moves itself into a leaf (`<scope>/daemon`), writes `+memory` to the
+scope's `cgroup.subtree_control`, makes the tree (`<scope>/tree`, `+memory` again) and a job under
+it with `memory.max=64M`, `memory.swap.max=0`; a child that joins the job and allocates 200 MB dies
+with SIGKILL, `memory.events` `oom_kill 1`, `memory.peak` 64 MB, and nothing else is touched. The
+daemon must not be IN the cgroup whose children get controllers (cgroup v2's no-internal-processes
+rule) — which is why the tree today, rooted in the daemon's own cgroup, cannot carry a cap.
+**OPEN — the operator, same day:** *"then again - depends on who does what - if nothing else going
+then even 80% becomes possible. and if something else going can be changed by other sessions - so
+both sessions can ask 50% independently which means some central daemon that checks it and rejects
+the second ask? no idea yet"*. The defect named: a ceiling read from `MemAvailable` at call time
+does not see a GRANT that has not been USED yet, so two sessions (or two daemons — one per folder)
+can each be granted 50% within a second of each other. A proposal, not a decision: **the kernel is
+already the ledger** — every grant is a `memory.max` on a job cgroup under some daemon's scope, so
+what is promised box-wide is the sum over `letibot*.scope/tree/**/memory.max` (minus what those
+jobs already use, which `MemAvailable` has counted), read under one `flock` in
+`$XDG_RUNTIME_DIR/letibot/` for the check-and-grant. No central daemon; the second ask is judged
+against what is left. Nothing in the per-call cap, the default, the peak report or the operator
+card depends on this, so those can land first.
+
+(Trap met while measuring: `systemd-run` expands `$VAR` and `$$` in its arguments, so a probe
+written inline as `sh -c 'echo $$ > …'` writes `$` and fails with EINVAL/EIO. Use a script.)
+
+**Done when:** R64's done-when holds, the model's next call after a kill asks for a different
+cap on its own, and `job_list` shows each job's cap and peak.
+
+**Landed (branch `memory-caps`):** `exec::memory` (the policy: `Amount`, `MemoryPolicy`,
+`Meminfo`, `Ask`, `decide`); `exec::scope::delegate_memory` (the daemon steps into
+`<scope>/daemon` and enables `memory`, refusing by name when it shares its cgroup) called first
+thing in `harnessd`'s `main`; `ScopeTree::{memory_caps, cap_memory, memory_use}`;
+`SpawnRequest::memory` → `memory.max` + `memory.swap.max=0` before any process joins, carried
+across a promotion; the job's `memory.peak`/`oom_kill` read at the settle; `bash`'s `memory`
+argument, the description, the note on every model call's result (the cap and the peak, now
+unconditionally), a dedicated *killed at its memory cap* outcome; `Gate::grant_memory`
+with an `AlwaysAsk` card in `AdjudicatedGate`; `providers.toml` `[memory] default` / `ceiling`,
+a malformed value refusing the start by name. The operator's own `!` run is uncapped.
+MEASURED end to end through deepseek: no `memory` → `killed at its memory cap — peak 64 MiB of a
+64 MiB cap`; `memory: "512M"` → ran, `peak 192 MiB of a 512 MiB cap`.
+`tools/tests/memory_cap.rs` re-runs itself in a delegated scope and asserts both.
+
+`job_list`, `job_wait` and a background job's completion notice carry a `memory:` line (cap,
+peak, KILLED at the cap) — measured: `job_list` read `memory:  peak 97 MiB of a 128 MiB cap` for a
+backgrounded 100 MB awk.
+
+**Still open:** the cross-session ledger above, and nothing else. — ✓ the card above the ceiling is
+answered by a person in a head: 31b496e1, test a_head_answers_the_memory_card_above_the_ceiling
+(`crates/harnessd/src/answers/tests.rs`) puts the ask on a `HeadAdjudicator`, has a head answer
+`grant_memory_session`, and shows the next, smaller ask is granted with no second card. — OPEN: no
+ledger sums `memory.max` under `letibot*.scope/tree` — `flock` appears only in
+`crates/room/src/lease.rs:206` — and the operator has not decided whether to build one (*"a
+proposal, not a decision"*, above).
+
+---
+
+## N5 - the agent should know the view is hermetic, and propose the grant it needs
+
+**Status:** built in part; the view is hermetic and the grant card exists. left: which asks must be refused rather than prompted is undecided - `grant_view` raises an ordinary card for `~/.ssh`, with no never-write precheck.
 
 Operator, 2026-09-11: *"i guess the agent should know it is hermetic and prompt me with
 his idea of shared data which i can allow."*
@@ -1470,35 +1627,9 @@ That is N4's answer too — see `TODO-settled.md`'s N4 for why a shaped runner w
 
 ---
 
+## T25 - Everything waiting on the operator
 
----
-
-# 3. BLOCKED ON THE OPERATOR — do not start
-
-- **T5, T25** — 17 open decisions. Several gate everything else.
-- **T22 and T17** — both wait on **D11**. "Until it is decided, M1 remains formally
-  unexited."
-- **T19** — rewrite-or-not is the decision itself.
-- **T24** — needs **D3** (firecode's two asks).
-- **T16** — several items explicitly want an operator or a strand owner.
-- **T3** — the minja bug report is written and ready, but `llama.cpp/AGENTS.md` says
-  reports and PR text are the operator's to write.
-- **T6** — not started; `pytest` is still not installed, which `docs/workstreams.md`
-  calls blocking for W1/W2.
-
----
-
-# 4. Review records
-
-Review records, kept verbatim and not repeated here: the five read-only reviews of 2026-10-12 (R89 to R93) are in `docs/reviews/2026-10-12-edge-cases.md`, the four stabilization reviews of 2026-10-11 (R61, R67 to R70) are in `docs/reviews/2026-10-11-stabilization.md`.
-
----
-
----
-
----
-
-## T25 — Everything waiting on the operator
+**Status:** a list of operator decisions D11 to D28. D11 and D12 are settled (their lines say so); D14, D15, D17, D20 to D24 and D26 carry an OPEN line; D13, D16, D18, D25, D27 and D28 carry none. left: the operator's answers to the open ones; unclear: the six without a status line, check each against the tree.
 
 Filed on request, so a question does not live only in a scrollback. Continues the D
 series. **Two arrived answered in the same message and are recorded as resolved** rather
@@ -1724,17 +1855,11 @@ documents. Small enough to re-embed rather than manage; lubuntu3's corpus, our c
 
 — OPEN, not this tree: lubuntu1's chunker, unowned, and nothing here enforces the length.
 
-
-
 ---
 
----
+## T17 - harnessd
 
-
-
----
-
-## T17 — harnessd — **BUILT 2026-09-09. M1's exit criterion is NOT met as written; left: the 30-turn re-measurement under D11's metric, M0's opencode baseline (the comparison has no left side), C7's server half and C8's `length`, and C2 run as part of the exit — the per-clause status below says what is measured and what cannot be.**
+**Status:** built 2026-09-09. M1's exit criterion is not met as written - C4 `f_keep` p10 was 0.8771 against 0.99 on the only 30-turn run, taken before D11's metric landed; `letibot-m1` ends with one `M1 EXIT` line and exits 1 unless it says `MET` (`crates/harnessd/src/m1.rs`). left: the 30-turn re-measurement in D11's metric (a live server), M0's opencode baseline (the comparison has no left side), C7's server half and C8's `length`, and C2 run as part of the exit.
 
 `crates/harnessd`. Scripted 30-turn session against `qwen-3.8-flash-next`: 53
 submissions, 25 tool calls, 161 persisted rows, 22,201 final prompt tokens, 85 s.
@@ -1829,9 +1954,9 @@ the evidence through a function with a test that fails when the evidence violate
 
 ---
 
----
+## T19 - Rewrite or not, on the KV representation
 
-## T19 — Rewrite or not, on the KV representation — **rows 1 and 2 are SETTLED NEGATIVE, measured (`experiments/kv-stitching/RESULTS.md`); left: row 3, which should not be built as written yet — it is the one checkpoint at `TokenLedger::prefix_len()` rather than §3.4.1's placement, and the §6 measurement that says whether it pays needs the :8080 server restarted, which is the operator's**
+**Status:** rows 1 and 2 are settled negative, measured (`experiments/kv-stitching/RESULTS.md`). left: row 3, which should not be built as written yet - it is the one checkpoint at `TokenLedger::prefix_len()` and not section 3.4.1's placement. The section 6 measurement that says whether it pays needs the :8080 server restarted, which is the operator's.
 
 The operator's framing, and it is the right one: llama.cpp's data structures are not
 the question. The question is **what would require a rewrite, and whether that rewrite
@@ -1898,193 +2023,12 @@ needs the operator: the :8080 server is never restarted for a measurement.
 
 ---
 
----
-
-## T16 — W9's open questions — **several want an operator or a strand owner, not me**
-
-From the tool runtime, in descending order of consequence.
-
-1. **§8.1 clause 3 gives the outcome vocabulary but never the mapping.** Which outcome
-   is an empty `grep`? W9 decided: matches in scope or elsewhere ⇒ `Ok`; nothing
-   anywhere under any relaxation ⇒ `Abstained`; a nonexistent path ⇒ `Failed`. That
-   choice determines how often `propagate()` blocks a caller and should be recorded
-   rather than inherited.
-   — ✓ fixed in 66077505, test `a_term_that_is_nowhere_abstains_and_says_what_it_searched`;
-   the nonexistent-path case is recorded as the listing rather than `Failed`
-   (`a_scope_that_does_not_exist_returns_the_listing`, `crates/tools/src/builtins/grep.rs:915`).
-2. **D6 answered means M1 ships with clause 5 switched off.** `NoBudget` is correct per
-   D6 — unset is a genuine no-op — so **nothing spills until a budget is configured**.
-   A session-config gap, not a code one, and invisible unless said.
-   — ✓ fixed in d81863e8, test `every_thing_that_is_off_is_disclosed`: `Config::disclosures`
-   says `UNSET` and that nothing will spill (`crates/harnessd/src/config.rs:2139`).
-3. **`Gate` will collide with W11.** W9 defined the smallest adjudication seam the
-   runtime needs (`admit(name, access, args)`). W11 should absorb it rather than build
-   a parallel one.
-   — fixed in 229555bf in code, untested: there is one `Gate` trait
-   (`crates/tools/src/runtime.rs:621`) and its only implementation is `AdjudicatedGate`
-   (`crates/tools/src/adjudicate.rs`), so no parallel seam exists to collide with.
-4. **§8.1 clause 1 and §9.4 pull against each other.** Relaxing a pattern *is*
-   rewriting the query, which §9.4 forbids. The reconciling word is **visible**: every
-   relaxation appears in the result. Worth stating in §9.4 so nobody deletes one of
-   the two.
-   — ✓ fixed in 66077505, test `a_too_strict_anchor_is_relaxed_to_the_bare_identifier_and_says_so`;
-   §9.4 now carries the rule ("and if it ever does, the rewrite must be visible",
-   `docs/implementation-plan.md:213`, 7bdfd6c9).
-5. **§8.4's `orchestrator` role has no `read_spill`** though its `read`/`grep` can
-   spill — so for that role the omission notice is advisory, which §8.3 says it must
-   not be. W9 shipped `read_spill` in its place.
-   — ✓ fixed in 66077505, test `the_default_session_is_read_only_and_seats_exactly_what_it_did`
-   (the orchestrator's seated set includes `read_spill`, `crates/harnessd/tests/wired.rs:112`).
-6. **Retrieval is inert — no MCP server is running anywhere.** Confirmed by lubuntu3
-   on 2026-09-09, checked rather than recalled.
-   - `192.168.1.55:9755` is the **flowy node**, not oracle. Never was the address.
-   - **RAGFlow and oracle are on lubuntu3 (192.168.1.82)** — but its MCP server **is
-     not started by that deployment**. Docker publishes 9382-9384, so a **TCP connect
-     succeeds while nothing is behind it** (`curl` → HTTP 000, zero mcp processes in
-     the container). That is why a client reports "unable to connect to the url": the
-     connection is fine, the service is absent. Same shape as the embed wedge — a
-     check that succeeds without touching the thing it checks.
-   - `:8100/sse` **looks** like an SSE endpoint and is not — it is arxiv-search, whose
-     catch-all returns identical HTML for every path. Do not use it.
-   - **Use the REST API instead: `192.168.1.82:9380`, base `/api/v1`, bearer auth.**
-     Do not ask for an MCP listener to be started while ingestion is live.
-   - `ask_code` is a **separate problem**: per-box, against the local codebase, and
-     **nothing is running on this box** (checked — only qwen/bge/postgres listen).
-   - **Open and load-bearing:** does RAGFlow signal "the corpus does not cover this"
-     in a *field*, or only in prose? §8.1 clause 3 requires abstention to be
-     structurally distinguishable. If it is a field, it maps to `Abstained` and the
-     harness can never report it as grounded. **If it is only prose, we will not parse
-     the prose and pretend** — the tool returns `Ok` with the text and the hole stays
-     documented. Asked; awaiting an answer.
-   - Note from lubuntu3: `.82:11434` enforces **one request per backend and will hold
-     a call rather than refuse it**. Do not point volume at it unannounced.
-   — ✓ fixed in c44d41e7, test `a_session_with_nothing_attached_discloses_only_retrieval`:
-   retrieval is disclosed as `INERT` under its own name (T16.6) and an answer with no
-   citations comes back `NO_RESULT` (`crates/tools/src/builtins/external/mod.rs:173-200`).
-7. **Call ids are positional per turn** (`call_0`; GLM carries none), so an id-derived
-   mark repeats across turns. Fine now, wrong once a head correlates across a session.
-   — OPEN: still positional — `crates/turn/src/items.rs:175` mints `call_{n}` per round and
-   `crates/provider/src/openai.rs:624` mints `call_{i}`, so an id still repeats across turns.
 
 ---
 
----
+## T18 - The prompt cache costs ~120 KiB/token on recurrent models
 
-## T3 — Report the minja scoping bug upstream — **ready, not filed**
-
-`{% set %}` inside `{% for %}` is not scoped per iteration in llama.cpp's minja.
-Repro needs no GPU: a template, four messages, one `/apply-template` call.
-Full writeup and both engines' output in `docs/chat-templates.md` §2.
-
-Affects any llama.cpp user serving GLM with `messages` — the model is conditioned on
-reasoning it never produced. We are insulated because we submit token ids.
-
-— OPEN: ready and unfiled — nothing in `docs/` records a link or an issue number, and the
-writeup at `docs/chat-templates.md:55-65` cites no upstream report.
-
----
-
----
-
-## T6 — Not started, from `docs/workstreams.md`
-
-W1 measurement rig · W2 prefix-invariant suite (grok port, Apache-2.0) · W6 turn
-engine (**critical path**) · W7 session log and head protocol · W8 heads · W9 tool
-runtime · W10 firecode substrate · W11 adjudication · W12 flowy connector · W13
-segments and compaction · W14 EXPLAIN · W15 server track · W16 experiments.
-
-`pytest` is still not installed; `docs/workstreams.md` calls that blocking for W1/W2.
-
-— OPEN: the list is stale — `docs/workstreams.md:20-27` now maps W6 to `crates/turn`, W9 to
-`crates/tools`, W11 to `tools/src/adjudicate`, W13 to `turn/src/compaction`, so only W1/W2 and
-the docs' own status still wait; `pytest` is genuinely absent (`python3 -m pytest` → `No module
-named pytest`).
-
----
-
----
-
-## T15 — Replace §10's compaction design with structural eviction — **PARTLY LANDED: structural eviction of units runs before every summary turn, the addressable map is in the new base, `recall` opens any id it names, and §10 of the plan now reads structural eviction; left: a standalone `prune`**
-
-`docs/compaction.md`. Compaction today bundles *reducing what is resident* (necessary)
-with *destroying what is recoverable* (an accident). Falsifier B removed the usual
-justification — quality does not degrade with depth — so the trigger is the context
-wall and memory pressure only.
-
-The key constraint that rules out the easy fix: **plain eviction invalidates the
-prefix just as summarisation does**, because the prefix *is* the old turns. Both cost
-a re-prefill, so the question is what to get for it. Answer: replace an evicted span
-with a **structured, addressable map** rather than prose, maintained incrementally so
-there is no stop-the-world summarisation call, with zoom-in appended via `recall`
-rather than rewritten in place.
-
-Depends on nothing. Feeds `docs/memory.md`. Gives `SegmentMark` its missing producer.
-
-— PARTLY LANDED: the record is sized by the room and gated on what it kept, and the tail keeps the
-old turns most relevant to the plan (embedding relevance). Structural eviction of units runs before
-every summary turn (`crates/turn/src/evict.rs`, test `crates/turn/tests/evict_summary.rs`):
-superseded reads, settled subagents and finished calls go as stubs, and failures, the exchange in
-hand and anything a plan row names stay. Each unit is kept before it goes, under the id the map
-prints, in the session's spill store; the new base carries one line per unit under the record
-(`evict::map_text`, written by `Harness::fork_onto`), and `recall id=<id>` returns that body
-exactly, bounded to an eighth of the window (`crates/tools/src/recall.rs`, seats on every role that
-can be compacted). An id the map never named is refused by name, listing the ids it does have.
-Tested end to end in `crates/harnessd/src/harness/tests/recall.rs`. §10 of the plan
-(`docs/implementation-plan.md:215-224`) now reads *structural eviction*. OPEN: a standalone `prune`
-(`docs/compaction.md` §6, its own `/prune` verb, no model behind it).
-
----
-
----
-
-## T10 — Contract gaps found by W6 — **items 1, 2, 3 and 5 SETTLED 2026-09-11, see TODO-settled.md (R1, R2, R3, R4), of which 3 and 5 landed in code with no test naming them; left: item 4 — `render_incremental` still takes the whole history and there is no resumable state token**
-
-The turn engine is the first real consumer of the crates below, and it found five
-things. Listed in the order I would fix them.
-
-1. **`TranscriptItem::Assistant` has no `truncated` field**, and both §5.7 and §5.8
-   require one. Currently tracked on the turn record instead, which is why **one
-   piece of steering is unbuilt**. Needs a `transcript` crate change — the only item
-   here that blocks a feature rather than costing elegance.
-   — ✓ fixed in e5a11374, test `truncated_survives_a_round_trip` (and
-   `a_row_written_before_the_field_existed_reads_as_not_truncated`): `Assistant { truncated }`
-   is on the row, `crates/transcript/src/lib.rs:102`.
-2. **`ParsedSpan` carries no token offsets**, so a `Parser` cannot say which ids an
-   item owns. Cost an entire module (`crates/turn/src/items.rs`) to work around
-   without reimplementing the parser. Adding a span to `ParsedSpan` would delete it.
-   — ✓ fixed in 5a01de3b, test `parse_round_trips_reasoning_and_two_tool_calls`: every variant
-   carries its `Range<usize>` of ids (`crates/dialect/src/lib.rs:177`) and the test asserts the
-   spans tile the stream from zero (`crates/dialect-glm/tests/invariants.rs:279-289`).
-3. **`DialectSpec` has no `ReasoningField`** — a per-model fact of exactly the kind
-   that crate exists to model as data. The engine takes it as config rather than
-   guessing, which works but puts a model fact in the wrong place.
-   — fixed in 5a01de3b in code, untested: `DialectSpec.reasoning_field` is data
-   (`crates/dialect/src/lib.rs:266`) and the engine reads it there
-   (`crates/turn/src/engine.rs:665`), but no test asserts the spec's field rather than the
-   transcript's copy.
-4. **`render_incremental(history, new)` replays the whole history** for boundary
-   state, so building one ledger row per item is O(n²) replays. Microseconds today
-   at our sizes; a resumable state token fixes it. Note T1 may delete this entirely
-   when the template-driven renderer lands.
-   — OPEN: still O(n²) by design — `render_incremental` takes the whole history
-   (`crates/turn/src/renderer.rs:24-30`, whose comment says boundary state is not derivable
-   from a `usize`) and there is no resumable state token; `append_items` renders one item at a
-   time (`crates/turn/src/engine.rs:434`).
-5. **`cargo:rustc-link-arg` does not propagate across crates**, so every crate that
-   links `libllama` needs its own `build.rs` to bake the rpath. Without it, test
-   binaries link fine and fail at exec looking like a missing library. Fixed in
-   `crates/turn`; worth a note so the third crate does not rediscover it.
-   — fixed in e51847ed in code, untested: that commit was the last crate to get its own
-   `build.rs`, and every crate that links `libllama` now bakes the rpath through the shared
-   `crates/llama/build-support.rs` (`crates/bridge/build.rs`, `crates/sessionlog/build.rs`,
-   `crates/turn/build.rs`, `crates/harnessd/build.rs`, `crates/letibot/build.rs`), each header
-   saying why. A build script is not testable.
-
----
-
----
-
-## T18 — The prompt cache costs ~120 KiB/token on recurrent models — **operational, caused a fifth OOM; left: every cost here is the server's and outside this tree — nothing sizes or caps the per-sequence accumulator, `--cache-ram` or `-c`, the eviction and warm/cold figures have no consumer, and `--cache-reuse`'s dense-model disable has no explanation**
+**Status:** operational; it caused a fifth OOM. left: nothing in this tree - every cost is the server's. Nothing sizes or caps the per-sequence accumulator, `--cache-ram` or `-c`, the eviction and warm/cold figures have no consumer, and `--cache-reuse`'s dense-model disable has no explanation.
 
 Found while running UNVERIFIED-16, which **OOM-killed `qwen-flash-next` at 14:35 on
 2026-09-09** (158.1 GiB peak; systemd restarted it, `qwen-slots-restore` put the slots
@@ -2183,3 +2127,104 @@ re-reading metadata for 931 GB across 386 entries — the sleep/wake cycle
 lost, more disk reads), or make the RAM tier write-through (survives the kill, costs
 NVMe bandwidth that is measurably spare). Not a letibot change either way — it is
 `~/bin/glm-flash-server` and llama.cpp's `server_prompt_cache`.
+
+---
+
+## T3 - Report the minja scoping bug upstream
+
+**Status:** writeup ready (`docs/chat-templates.md` section 2), not filed - nothing in `docs/` records a link or an issue number. left: the operator files it, since `llama.cpp/AGENTS.md` makes reports and PR text the operator's to write.
+
+`{% set %}` inside `{% for %}` is not scoped per iteration in llama.cpp's minja.
+Repro needs no GPU: a template, four messages, one `/apply-template` call.
+Full writeup and both engines' output in `docs/chat-templates.md` §2.
+
+Affects any llama.cpp user serving GLM with `messages` — the model is conditioned on
+reasoning it never produced. We are insulated because we submit token ids.
+
+— OPEN: ready and unfiled — nothing in `docs/` records a link or an issue number, and the
+writeup at `docs/chat-templates.md:55-65` cites no upstream report.
+
+---
+
+## T6 - Workstreams not started, from `docs/workstreams.md`
+
+**Status:** the list below is stale - `docs/workstreams.md:20-27` maps W6 to `crates/turn`, W9 to `crates/tools`, W11 to `tools/src/adjudicate` and W13 to `turn/src/compaction`. left: W1 and W2 wait on `pytest`, which is not installed (`python3 -m pytest` fails), and this list needs rewriting from the workstreams doc.
+
+W1 measurement rig · W2 prefix-invariant suite (grok port, Apache-2.0) · W6 turn
+engine (**critical path**) · W7 session log and head protocol · W8 heads · W9 tool
+runtime · W10 firecode substrate · W11 adjudication · W12 flowy connector · W13
+segments and compaction · W14 EXPLAIN · W15 server track · W16 experiments.
+
+`pytest` is still not installed; `docs/workstreams.md` calls that blocking for W1/W2.
+
+— OPEN: the list is stale — `docs/workstreams.md:20-27` now maps W6 to `crates/turn`, W9 to
+`crates/tools`, W11 to `tools/src/adjudicate`, W13 to `turn/src/compaction`, so only W1/W2 and
+the docs' own status still wait; `pytest` is genuinely absent (`python3 -m pytest` → `No module
+named pytest`).
+
+---
+
+# Parked
+
+Stopped or deferred on purpose, with the reason in the entry's status line.
+
+---
+
+## R120 - One seat and a working automode, instead of roles
+
+**Status:** parked by the operator on 2026-11-03. No open, locally hosted model passes the etalon oracle corpus (`crates/harnessd/src/etalon_oracle.rs`), and automode without a passing oracle is a model approving its own actions. left: everything, until a model passes the corpus.
+
+The operator, deciding N4: "the more i use things the more i understand the roles were overcomplication - we need working automode". N4 (a coder can write a test and cannot run it) is superseded: the answer is not a shaped verb for one role, it is fewer roles.
+
+- One working seat that can read, write and run commands. What it may do without asking is the MODE's business, not the role's. The coder/runner/m2 split and role switching go, except where a confined seat is the point (a VM or a placement).
+- `automode` works out of the box: today it requires an adjudicator and a reachable oracle and refuses without them. Its default decider is the session's own provider or a cheap fast model, with no setup. It admits in-checkout reads, writes, builds and tests; asks the operator for the network, paths outside the project, the always-ask list and destructive or irreversible actions; tells the model why when it denies; and records each decision with its reason, so the decisions can be reviewed and measured (the etalon oracle corpus exists for that).
+- It must be predictable: the same call in the same context gets the same answer, and the operator can read why.
+
+N4 moves to TODO-settled.md as superseded by this entry.
+
+Parked by the operator the same day. There is no default oracle because every open, locally hosted model tried so far FAILED the oracle tests (the etalon corpus, `crates/harnessd/src/etalon_oracle.rs`), and automode without a passing oracle is a model approving its own actions. The work resumes when a model passes the corpus; until then the seats keep today's modes.
+
+---
+
+## R84a - Worktrees and landing trees beside the checkout (`wt/`, `landing/`)
+
+**Status:** parked by the operator on 2026-10-12. It was built on branch `parked/layout-wt-landing` (`e7f4e55`), which is not an object in this checkout; main has no `crates/harnessd/src/layout.rs` and the landing tree is still `<data dir>/landing` (`crates/harnessd/src/mergequeue/git.rs:435`). left: the three behaviour changes below, which the operator has not ruled on, then rebasing the branch onto main.
+
+The operator proposed the placement: *"so id suggest to correct the placement - ~/Projects/rano/rano
+<- the main checkout and then ~/Projects/rano/wt/* ~/Projects/rano/landing/*"*, and for a repository
+not inside its own project directory chose a per-project option with a fallback. It was built, then
+parked the same night: *"on placement - lets park it in todo. keep worktree, fix that .git thing with
+something small. i dont have time to reason about proposed behaviour changes now"*. Main keeps R84
+(landing in the data dir, out of `.git`) and subagent worktrees stay in `<workspace>/.claude/worktrees`.
+
+What `e7f4e55` does, for when it is picked up (rebase it onto main; it was cut on top of `d27ed56`):
+
+- **The rule** (`crates/harnessd/src/layout.rs`), first match wins: `$LETIBOT_LAYOUT_ROOT`;
+  `[layout] root = "<dir>"` in the project's `leticode.toml` (absolute or `~/`; relative, `..` and
+  unknown keys refused by name); the X/X layout (`~/Projects/rano/rano` → root `~/Projects/rano`,
+  so `wt/` and `landing/` in it); otherwise siblings named after the checkout
+  (`~/Projects/firecode-wt`, `~/Projects/firecode-landing`).
+- **Landing** at `<landing>/<target>` (branch name sanitised to one folder), replacing R84's data-dir
+  path; migration of `.git/letibot-landing` as in R84.
+- **Subagent worktrees** at `<wt>/agent-<slug>` instead of `<workspace>/.claude/worktrees/`; existing
+  ones not moved. Because `wt/` can be outside the workspace, a session's write access to its
+  children's trees is kept three ways: the sandbox binds `wt/` read-write, the file tools reach it
+  through `HostBackend::with_extra_root`, and the permission gate treats it as the workspace
+  (`Surroundings::worktrees`).
+
+**The behaviour changes the operator has not ruled on** — the reason it is parked:
+
+1. With the X/X layout and a session rooted at the project directory (`~/Projects/rano`), `landing/`
+   is inside the workspace: the sandbox sees it read-only but `write`/`edit` can still write there
+   (their check knows only the workspace root). Closing it needs a per-session read-only path in the
+   backend.
+   — OPEN: still parked — `e7f4e55` is not an object in this checkout, there is no `crates/harnessd/src/layout.rs` and no `[layout]` key, and the landing tree is still `<data dir>/landing` (`crates/harnessd/src/mergequeue/git.rs:435`).
+2. Child daemons, whose workspace becomes `wt/agent-*` outside the checkout, no longer take the
+   repository's merge-queue lease; only the project's own daemon serves its queue.
+3. Every place that assumed `.claude/worktrees` moves with it (grants, cleanup, texts).
+
+---
+
+# Review records
+
+Kept verbatim and not repeated here: the five read-only reviews of 2026-10-12 (R89 to R93) are in `docs/reviews/2026-10-12-edge-cases.md`. The four stabilization reviews of 2026-10-11 (R61, R67 to R70) are in `docs/reviews/2026-10-11-stabilization.md`.
